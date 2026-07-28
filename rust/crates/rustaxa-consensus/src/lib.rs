@@ -33,6 +33,7 @@ pub mod rewards_stats;
 pub mod slashing;
 pub mod sortition;
 pub mod transaction_manager;
+pub mod transaction_packing_service;
 pub mod transaction_queue;
 pub mod transaction_storage;
 pub mod verified_votes;
@@ -327,6 +328,12 @@ pub use transaction_manager::{
     DagTransactionSaveFact, DagTransactionSavePayload, DagTransactionSavePlan,
     TransactionPackCandidate, TransactionPackCandidateDecision, TransactionPackEstimate,
     TransactionPackEstimateOutcome, TransactionPackingPlanner, plan_transactions_from_dag_block,
+};
+pub use transaction_packing_service::{
+    TransactionPackingCacheIntent, TransactionPackingCandidate, TransactionPackingDemotionIntent,
+    TransactionPackingEffect, TransactionPackingEstimate, TransactionPackingEstimateRequest,
+    TransactionPackingOwner, TransactionPackingRequest, TransactionPackingSelection,
+    TransactionPackingService, TransactionPackingStep,
 };
 pub use transaction_queue::TransactionQueue;
 pub use transaction_storage::{

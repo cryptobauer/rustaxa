@@ -33,10 +33,7 @@ use crate::ffi::rustaxa_ffi::{
     TransactionQueueProposableAccountFact, TransactionQueueStoredTransaction,
     TransactionQueueTransactionGroup,
 };
-use crate::ffi::{
-    BridgeStorage, TransactionManagerRuntimePackSession, TransactionPackSessionOwner,
-    TransactionRuntimeState,
-};
+use crate::ffi::{BridgeStorage, TransactionRuntimeState};
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::{H160, H256, U256};
@@ -56,8 +53,12 @@ use rustaxa_consensus::transaction_manager::{
     TransactionManagerSidecarRecoveryEntry as ConsensusTransactionManagerSidecarRecoveryEntry,
     TransactionManagerValidatedInsertFact as ConsensusTransactionManagerValidatedInsertFact,
     TransactionManagerVerifyTransactionFact as ConsensusTransactionManagerVerifyTransactionFact,
-    TransactionManagerVerifyTransactionStatus, TransactionPackCandidate, TransactionPackEstimate,
-    TransactionPackingPlanner,
+    TransactionManagerVerifyTransactionStatus,
+};
+use rustaxa_consensus::transaction_packing_service::{
+    TransactionPackingCandidate, TransactionPackingEffect, TransactionPackingEstimate,
+    TransactionPackingOwner, TransactionPackingRequest, TransactionPackingService,
+    TransactionPackingStep,
 };
 use rustaxa_consensus::transaction_queue::{
     TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueDemoteStatus,
@@ -572,94 +573,6 @@ fn transaction_pack_session_empty_candidate() -> TransactionPackSessionCandidate
         receiver: [0; 20],
         value: [0; 32],
         data: Vec::new(),
-    }
-}
-
-fn runtime_pack_next_estimable_entry(
-    session: &mut TransactionManagerRuntimePackSession,
-) -> Result<Option<TransactionQueueEntry>> {
-    if session.stopped {
-        return Ok(None);
-    }
-
-    while session.next_index < session.candidates.len() {
-        let candidate = session.candidates[session.next_index].clone();
-        session.next_index += 1;
-        if !runtime_pack_candidate_matches_shard(&candidate, session)? {
-            continue;
-        }
-        let decision = session
-            .planner
-            .consider_candidate(TransactionPackCandidate {
-                hash: candidate.hash,
-                declared_gas: candidate.gas,
-            })?;
-        if decision.should_estimate {
-            session.current = Some(candidate.clone());
-            return Ok(Some(candidate));
-        }
-    }
-
-    Ok(None)
-}
-
-fn runtime_pack_candidate_matches_shard(
-    candidate: &TransactionQueueEntry,
-    session: &TransactionManagerRuntimePackSession,
-) -> Result<bool> {
-    if session.total_shards <= 1 {
-        return Ok(true);
-    }
-    ensure!(
-        session.node_shard < session.total_shards,
-        "TM_RUNTIME_PACK_SHARD_OUT_OF_RANGE"
-    );
-    ensure!(
-        session.shard_period_interval != 0,
-        "TM_RUNTIME_PACK_SHARD_INTERVAL_ZERO"
-    );
-
-    let sender_prefix = legacy_transaction_shard_sender_prefix(candidate.sender);
-    let shard = sender_prefix.wrapping_add(session.proposal_period / session.shard_period_interval)
-        % u64::from(session.total_shards);
-    Ok(shard == u64::from(session.node_shard))
-}
-
-/// Returns the legacy DAG transaction-sharding sender prefix.
-///
-/// Legacy proposer sharding parses the first ten hexadecimal sender characters,
-/// which are the first five address bytes. The Rust runtime keeps that exact
-/// 40-bit prefix so multi-shard DAG proposal remains wire-compatible.
-fn legacy_transaction_shard_sender_prefix(sender: H160) -> u64 {
-    u64::from_be_bytes([
-        0,
-        0,
-        0,
-        sender.0[0],
-        sender.0[1],
-        sender.0[2],
-        sender.0[3],
-        sender.0[4],
-    ])
-}
-
-fn runtime_pack_session_final_step(
-    session: &TransactionManagerRuntimePackSession,
-) -> TransactionPackSessionStep {
-    TransactionPackSessionStep {
-        request_estimate: false,
-        candidate: transaction_pack_session_empty_candidate(),
-        selected_transactions: session
-            .selected
-            .iter()
-            .map(|(entry, gas_used)| TransactionPackSelectedTransaction {
-                hash: entry.hash.0,
-                gas_used: *gas_used,
-                tx_rlp: entry.rlp.clone(),
-            })
-            .collect(),
-        demoted_hashes: runtime_hashes_to_bridge(session.demoted_hashes.clone()),
-        stopped: session.stopped,
     }
 }
 
@@ -1519,7 +1432,7 @@ fn build_transaction_state_inner(
         proposal_dag_gas_limit,
         storage,
         last_drop_observed: None,
-        transaction_pack_session: None,
+        transaction_packing: TransactionPackingService::new(),
     })
 }
 
@@ -1545,53 +1458,6 @@ fn test_gas_pricer_config() -> DomainGasPricerConfig {
 }
 
 impl TransactionRuntimeState {
-    fn create_pack_session(
-        &self,
-        owner: TransactionPackSessionOwner,
-        weight_limit: u64,
-        min_transaction_gas: u64,
-        proposal_period: u64,
-        estimate_gas_limit: u64,
-        last_block_number: u64,
-        total_shards: u16,
-        node_shard: u16,
-        shard_period_interval: u64,
-    ) -> Result<TransactionManagerRuntimePackSession> {
-        ensure!(total_shards != 0, "TM_RUNTIME_PACK_TOTAL_SHARDS_ZERO");
-        ensure!(
-            node_shard < total_shards,
-            "TM_RUNTIME_PACK_NODE_SHARD_OUT_OF_RANGE"
-        );
-        ensure!(
-            total_shards <= 1 || shard_period_interval != 0,
-            "TM_RUNTIME_PACK_SHARD_INTERVAL_ZERO"
-        );
-
-        let planner = TransactionPackingPlanner::new(weight_limit, min_transaction_gas)?;
-        let candidates = self
-            .queue
-            .ordered_transactions(planner.max_candidate_count());
-
-        Ok(TransactionManagerRuntimePackSession {
-            owner,
-            planner,
-            proposal_period,
-            estimate_gas_limit,
-            last_block_number,
-            total_shards,
-            node_shard,
-            shard_period_interval,
-            candidates,
-            next_index: 0,
-            current: None,
-            selected: Vec::new(),
-            demoted_hashes: Vec::new(),
-            stopped: false,
-            pending_estimate_candidates: Vec::new(),
-            pending_estimate_index: 0,
-        })
-    }
-
     /// Begins one runtime-owned packing flow and returns all candidates that
     /// require C++ gas estimation.
     #[allow(clippy::too_many_arguments)]
@@ -1607,7 +1473,7 @@ impl TransactionRuntimeState {
         shard_period_interval: u64,
     ) -> Result<TransactionPackPreparedPlan> {
         self.transaction_manager_runtime_pack_prepare_sharded_for_owner(
-            TransactionPackSessionOwner::Compatibility,
+            TransactionPackingOwner::Compatibility,
             weight_limit,
             min_transaction_gas,
             proposal_period,
@@ -1623,7 +1489,7 @@ impl TransactionRuntimeState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn transaction_manager_runtime_pack_prepare_sharded_for_owner(
         &mut self,
-        owner: TransactionPackSessionOwner,
+        owner: TransactionPackingOwner,
         weight_limit: u64,
         min_transaction_gas: u64,
         proposal_period: u64,
@@ -1633,110 +1499,76 @@ impl TransactionRuntimeState {
         node_shard: u16,
         shard_period_interval: u64,
     ) -> Result<TransactionPackPreparedPlan> {
-        ensure!(
-            self.transaction_pack_session.is_none(),
-            "TM_RUNTIME_PACK_SESSION_ALREADY_ACTIVE"
-        );
-        self.transaction_pack_session = Some(self.create_pack_session(
-            owner,
+        let candidate_limit = TransactionPackingService::candidate_limit(
             weight_limit,
             min_transaction_gas,
-            proposal_period,
-            estimate_gas_limit,
-            last_block_number,
             total_shards,
             node_shard,
             shard_period_interval,
-        )?);
-
-        let mut session = self
-            .transaction_pack_session
-            .take()
-            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
-
-        let plan = self
-            .transaction_manager_runtime_pack_prepare_inner(&mut session)
+        )?;
+        let candidates = self
+            .queue
+            .ordered_transactions(candidate_limit)
+            .into_iter()
+            .map(|entry| {
+                let cached_gas_used = self
+                    .sidecar
+                    .gas_estimation_cache_get(entry.hash, proposal_period)
+                    .context("TM_RUNTIME_PACK_GAS_ESTIMATION_CACHE_GET")?
+                    .map(|cached| cached.gas_used);
+                Ok(TransactionPackingCandidate {
+                    entry,
+                    cached_gas_used,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let step = self
+            .transaction_packing
+            .prepare(TransactionPackingRequest {
+                owner,
+                weight_limit,
+                min_transaction_gas,
+                proposal_period,
+                estimate_gas_limit,
+                last_block_number,
+                total_shards,
+                node_shard,
+                shard_period_interval,
+                candidates,
+            })
             .context("TM_RUNTIME_PACK_PREPARE")?;
-
-        if plan.request_estimates.is_empty() {
-            self.transaction_pack_session = None;
-        } else {
-            self.transaction_pack_session = Some(session);
-        }
-
-        Ok(plan)
-    }
-
-    fn transaction_manager_runtime_pack_prepare_inner(
-        &mut self,
-        session: &mut TransactionManagerRuntimePackSession,
-    ) -> Result<TransactionPackPreparedPlan> {
-        let mut request_estimates = Vec::new();
-
-        loop {
-            let Some(candidate) = runtime_pack_next_estimable_entry(session)? else {
-                let final_step = runtime_pack_session_final_step(session);
-                return Ok(TransactionPackPreparedPlan {
-                    request_estimates,
-                    selected_transactions: final_step.selected_transactions,
-                    demoted_hashes: final_step.demoted_hashes,
-                    stopped: final_step.stopped,
-                });
-            };
-
-            if candidate.gas <= session.estimate_gas_limit {
-                let input = TransactionPackSessionEstimateInput {
-                    hash: candidate.hash.0,
-                    gas_used: candidate.gas,
-                    last_block_number: session.last_block_number,
-                    result_rlp: Vec::new(),
-                };
-                self.transaction_manager_runtime_pack_record_estimate_inner(session, input)?;
-
-                if session.stopped {
-                    let final_step = runtime_pack_session_final_step(session);
-                    return Ok(TransactionPackPreparedPlan {
-                        request_estimates,
-                        selected_transactions: final_step.selected_transactions,
-                        demoted_hashes: final_step.demoted_hashes,
-                        stopped: final_step.stopped,
-                    });
-                }
-
-                continue;
+        let result = (|| {
+            let (selected_transactions, mut demoted_hashes) =
+                self.apply_packing_step_effects(&step)?;
+            if !step.request_estimates.is_empty() {
+                self.transaction_packing.acknowledge_demotions(
+                    owner,
+                    demoted_hashes
+                        .iter()
+                        .map(|hash| H256::from(hash.hash))
+                        .collect(),
+                )?;
             }
-
-            if let Some(cached) = self
-                .sidecar
-                .gas_estimation_cache_get(candidate.hash, session.proposal_period)
-                .context("TM_RUNTIME_PACK_GAS_ESTIMATION_CACHE_GET")?
-            {
-                let input = TransactionPackSessionEstimateInput {
-                    hash: candidate.hash.0,
-                    gas_used: cached.gas_used,
-                    last_block_number: session.last_block_number,
-                    result_rlp: Vec::new(),
-                };
-                self.transaction_manager_runtime_pack_record_estimate_inner(session, input)?;
-
-                if session.stopped {
-                    let final_step = runtime_pack_session_final_step(session);
-                    return Ok(TransactionPackPreparedPlan {
-                        request_estimates,
-                        selected_transactions: final_step.selected_transactions,
-                        demoted_hashes: final_step.demoted_hashes,
-                        stopped: final_step.stopped,
-                    });
-                }
-
-                continue;
-            }
-
-            request_estimates.push(transaction_pack_candidate_from_entry(Some(
-                candidate.clone(),
-            ))?);
-            session.pending_estimate_candidates.push(candidate.clone());
+            demoted_hashes.splice(
+                0..0,
+                runtime_hashes_to_bridge(step.acknowledged_demotions.clone()),
+            );
+            Ok(TransactionPackPreparedPlan {
+                request_estimates: step
+                    .request_estimates
+                    .iter()
+                    .cloned()
+                    .map(|candidate| transaction_pack_candidate_from_entry(Some(candidate.entry)))
+                    .collect::<Result<Vec<_>>>()?,
+                selected_transactions,
+                demoted_hashes,
+                stopped: step.stopped,
+            })
+        })();
+        if result.is_err() {
+            let _ = self.transaction_packing.abort(owner);
         }
+        result
     }
 
     /// Completes one prepared packing plan with a batch of C++ estimates.
@@ -1748,7 +1580,7 @@ impl TransactionRuntimeState {
         inputs: Vec<TransactionPackSessionEstimateInput>,
     ) -> Result<TransactionPackSessionStep> {
         self.transaction_manager_runtime_pack_finalize_with_estimates_for_owner(
-            TransactionPackSessionOwner::Compatibility,
+            TransactionPackingOwner::Compatibility,
             inputs,
         )
     }
@@ -1756,152 +1588,93 @@ impl TransactionRuntimeState {
     /// Completes packing only when the active cursor belongs to `owner`.
     pub(crate) fn transaction_manager_runtime_pack_finalize_with_estimates_for_owner(
         &mut self,
-        owner: TransactionPackSessionOwner,
+        owner: TransactionPackingOwner,
         inputs: Vec<TransactionPackSessionEstimateInput>,
     ) -> Result<TransactionPackSessionStep> {
-        let active_owner = self
-            .transaction_pack_session
-            .as_ref()
-            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?
-            .owner;
-        ensure!(
-            active_owner == owner,
-            "TM_RUNTIME_PACK_SESSION_OWNER_MISMATCH"
+        let step = self.transaction_packing.finalize(
+            owner,
+            inputs
+                .into_iter()
+                .map(|input| TransactionPackingEstimate {
+                    hash: H256::from(input.hash),
+                    gas_used: input.gas_used,
+                    last_block_number: input.last_block_number,
+                    result_rlp: input.result_rlp,
+                })
+                .collect(),
+        )?;
+        let (selected_transactions, mut demoted_hashes) = self.apply_packing_step_effects(&step)?;
+        demoted_hashes.splice(
+            0..0,
+            runtime_hashes_to_bridge(step.acknowledged_demotions.clone()),
         );
-        let mut session = self
-            .transaction_pack_session
-            .take()
-            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
-
-        let expected_estimates = session.pending_estimate_candidates.len();
-        if inputs.len() != expected_estimates {
-            self.transaction_pack_session = Some(session);
-            anyhow::bail!(
-                "TM_RUNTIME_PACK_FINALIZE_INPUT_COUNT_MISMATCH: expected {} received {}",
-                expected_estimates,
-                inputs.len()
-            );
-        }
-
-        for input in inputs {
-            if session.pending_estimate_index >= session.pending_estimate_candidates.len() {
-                break;
-            }
-
-            let candidate = session
-                .pending_estimate_candidates
-                .get(session.pending_estimate_index)
-                .ok_or_else(|| anyhow!("TM_RUNTIME_PACK_FINALIZE_INPUT_MISSING"))?
-                .clone();
-
-            if candidate.hash.0 != input.hash {
-                self.transaction_pack_session = Some(session);
-                anyhow::bail!("TM_RUNTIME_PACK_FINALIZE_HASH_MISMATCH");
-            }
-
-            session.current = Some(candidate);
-            self.transaction_manager_runtime_pack_record_estimate_inner(&mut session, input)
-                .with_context(|| {
-                    format!(
-                        "TM_RUNTIME_PACK_FINALIZE_RECORD_ESTIMATE_{}",
-                        session.pending_estimate_index
-                    )
-                })?;
-
-            if session.stopped {
-                break;
-            }
-
-            session.pending_estimate_index += 1;
-        }
-
-        if !session.stopped
-            && session.pending_estimate_index != session.pending_estimate_candidates.len()
-        {
-            let pending_missing =
-                session.pending_estimate_candidates.len() - session.pending_estimate_index;
-            self.transaction_pack_session = Some(session);
-            anyhow::bail!(
-                "TM_RUNTIME_PACK_FINALIZE_INPUT_MISSING: expected {} estimates",
-                pending_missing
-            );
-        }
-
-        session.pending_estimate_candidates.clear();
-        session.pending_estimate_index = 0;
-
-        let step = runtime_pack_session_final_step(&session);
-        session.current = None;
-        self.transaction_pack_session = None;
-        Ok(step)
-    }
-
-    fn transaction_manager_runtime_pack_record_estimate_inner(
-        &mut self,
-        session: &mut TransactionManagerRuntimePackSession,
-        input: TransactionPackSessionEstimateInput,
-    ) -> Result<()> {
-        let Some(candidate) = session.current.take() else {
-            return Err(anyhow!("TM_RUNTIME_PACK_NO_ACTIVE_CANDIDATE"));
-        };
-        let estimate_hash = H256::from(input.hash);
-        if candidate.hash != estimate_hash {
-            session.current = Some(candidate);
-            return Err(anyhow!("TM_RUNTIME_PACK_HASH_MISMATCH"));
-        }
-
-        let outcome = session.planner.record_estimate(TransactionPackEstimate {
-            hash: H256::from(input.hash),
-            gas_used: input.gas_used,
-        })?;
-
-        if outcome.demote_to_non_proposable {
-            let demote_outcome = self.queue.demote(estimate_hash, input.last_block_number);
-            if matches!(demote_outcome.status, TransactionQueueDemoteStatus::Demoted) {
-                session.demoted_hashes.push(estimate_hash);
-            }
-        }
-        if !input.result_rlp.is_empty() {
-            self.sidecar
-                .gas_estimation_cache_insert(
-                    estimate_hash,
-                    session.proposal_period,
-                    input.gas_used,
-                    input.result_rlp,
-                )
-                .context("TM_RUNTIME_PACK_GAS_ESTIMATION_CACHE_STORE")?;
-        }
-        if outcome.selected {
-            session.selected.push((candidate, outcome.gas_used));
-        }
-        if outcome.stop {
-            session.stopped = true;
-        }
-        Ok(())
+        Ok(TransactionPackSessionStep {
+            request_estimate: false,
+            candidate: transaction_pack_session_empty_candidate(),
+            selected_transactions,
+            demoted_hashes,
+            stopped: step.stopped,
+        })
     }
 
     /// Aborts and clears the active runtime packing session.
     pub fn transaction_manager_runtime_pack_abort(&mut self) -> bool {
         self.transaction_manager_runtime_pack_abort_for_owner(
-            TransactionPackSessionOwner::Compatibility,
+            TransactionPackingOwner::Compatibility,
         )
     }
 
     /// Aborts only a packing cursor owned by `owner`.
     pub(crate) fn transaction_manager_runtime_pack_abort_for_owner(
         &mut self,
-        owner: TransactionPackSessionOwner,
+        owner: TransactionPackingOwner,
     ) -> bool {
-        if self
-            .transaction_pack_session
-            .as_ref()
-            .is_some_and(|session| session.owner == owner)
-        {
-            self.transaction_pack_session = None;
-            true
-        } else {
-            false
+        self.transaction_packing
+            .abort(owner)
+            .expect("TM_RUNTIME_PACKING_LOCK_POISONED")
+    }
+
+    fn apply_packing_step_effects(
+        &mut self,
+        step: &TransactionPackingStep,
+    ) -> Result<(
+        Vec<TransactionPackSelectedTransaction>,
+        Vec<TransactionQueueHash>,
+    )> {
+        let mut demoted_hashes = Vec::new();
+        for effect in &step.effects {
+            match effect {
+                TransactionPackingEffect::Demote(intent) => {
+                    let outcome = self.queue.demote(intent.hash, intent.last_block_number);
+                    if matches!(outcome.status, TransactionQueueDemoteStatus::Demoted) {
+                        demoted_hashes.push(TransactionQueueHash {
+                            hash: intent.hash.0,
+                        });
+                    }
+                }
+                TransactionPackingEffect::CacheInsert(intent) => {
+                    self.sidecar
+                        .gas_estimation_cache_insert(
+                            intent.hash,
+                            intent.proposal_period,
+                            intent.gas_used,
+                            intent.result_rlp.clone(),
+                        )
+                        .context("TM_RUNTIME_PACK_GAS_ESTIMATION_CACHE_STORE")?;
+                }
+            }
         }
+        Ok((
+            step.selected
+                .iter()
+                .map(|selected| TransactionPackSelectedTransaction {
+                    hash: selected.hash.0,
+                    gas_used: selected.gas_used,
+                    tx_rlp: selected.transaction_rlp.clone(),
+                })
+                .collect(),
+            demoted_hashes,
+        ))
     }
 
     /// Plans one public gas-estimation request using Rust-owned cache policy.
@@ -4305,6 +4078,39 @@ mod tests {
     }
 
     #[test]
+    fn bridge_transaction_manager_runtime_pack_prepare_conversion_error_aborts_session() {
+        let mut runtime =
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 8 });
+        let signing_key = SigningKey::from_slice(&[0x59u8; 32]).unwrap();
+        let sender = address_from_signing_key(&signing_key);
+        let valid_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
+        let envelope = LegacyTransactionEnvelope::decode(&valid_rlp).unwrap();
+        runtime
+            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                hash: envelope.hash.0,
+                sender: sender.0,
+                nonce: envelope.nonce.to_big_endian(),
+                gas_price: envelope.gas_price.to_big_endian(),
+                gas: envelope.gas,
+                data_size: envelope.data.len(),
+                tx_rlp: vec![0xff],
+                proposable: true,
+                last_block_number: 0,
+            })
+            .expect("queue insert should retain the supplied canonical-payload fact");
+
+        let error = runtime
+            .transaction_manager_runtime_pack_prepare_sharded(63_000, 21_000, 7, 0, 10, 1, 0, 1)
+            .err()
+            .expect("malformed retained candidate payload must fail conversion");
+        assert!(error
+            .to_string()
+            .contains("TM_RUNTIME_PACK_CANDIDATE_ENVELOPE_INSPECT_FAILED"));
+        assert!(!runtime.transaction_packing.is_active().unwrap());
+        assert!(!runtime.transaction_manager_runtime_pack_abort());
+    }
+
+    #[test]
     fn bridge_transaction_manager_runtime_pack_enforces_owner_on_finalize_and_abort() {
         let mut runtime =
             build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 8 });
@@ -4326,7 +4132,7 @@ mod tests {
             })
             .expect("queue insert");
 
-        let owner = TransactionPackSessionOwner::DagProposer(42);
+        let owner = TransactionPackingOwner::DagProposer(42);
         let plan = runtime
             .transaction_manager_runtime_pack_prepare_sharded_for_owner(
                 owner, 63_000, 21_000, 7, 0, 10, 1, 0, 1,
@@ -4341,12 +4147,12 @@ mod tests {
             .to_string()
             .contains("TM_RUNTIME_PACK_SESSION_OWNER_MISMATCH"));
         assert!(!runtime.transaction_manager_runtime_pack_abort());
-        assert!(runtime.transaction_pack_session.is_some());
+        assert!(runtime.transaction_packing.is_active().unwrap());
         assert!(!runtime.transaction_manager_runtime_pack_abort_for_owner(
-            TransactionPackSessionOwner::DagProposer(41)
+            TransactionPackingOwner::DagProposer(41)
         ));
         assert!(runtime.transaction_manager_runtime_pack_abort_for_owner(owner));
-        assert!(runtime.transaction_pack_session.is_none());
+        assert!(!runtime.transaction_packing.is_active().unwrap());
     }
 
     #[test]
@@ -4392,7 +4198,16 @@ mod tests {
     #[test]
     fn bridge_transaction_manager_runtime_pack_prepare_filters_candidate_shards() {
         fn legacy_sender_shard(sender: H160, proposal_period: u64, total_shards: u16) -> u16 {
-            let prefix = legacy_transaction_shard_sender_prefix(sender);
+            let prefix = u64::from_be_bytes([
+                0,
+                0,
+                0,
+                sender.0[0],
+                sender.0[1],
+                sender.0[2],
+                sender.0[3],
+                sender.0[4],
+            ]);
             ((prefix + proposal_period / 10) % u64::from(total_shards)) as u16
         }
 
@@ -4474,19 +4289,6 @@ mod tests {
             second_envelope.hash.0
         );
         assert!(!runtime.transaction_manager_runtime_pack_abort());
-    }
-
-    #[test]
-    fn bridge_transaction_manager_shard_prefix_matches_legacy_five_byte_parse() {
-        let sender = H160::from([
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x10, 0x20, 0x30,
-            0x40, 0x50, 0x60, 0x70, 0x80, 0x90,
-        ]);
-
-        assert_eq!(
-            legacy_transaction_shard_sender_prefix(sender),
-            0x01_23_45_67_89
-        );
     }
 
     #[test]
@@ -4577,6 +4379,66 @@ mod tests {
         );
         assert_eq!(cached_plan.selected_transactions[0].gas_used, 30_000);
         assert!(!cached_runtime.transaction_manager_runtime_pack_abort());
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_pack_acknowledges_applied_prepare_demotions() {
+        let mut runtime =
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 100 });
+        let signing_key = SigningKey::from_slice(&[0x53u8; 32]).unwrap();
+        let sender = address_from_signing_key(&signing_key);
+        let first_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
+        let first = LegacyTransactionEnvelope::decode(&first_rlp).unwrap();
+        let second_rlp = signed_legacy_transaction_rlp(&signing_key, 2, 2999);
+        let second = LegacyTransactionEnvelope::decode(&second_rlp).unwrap();
+        for (transaction, tx_rlp) in [(first.clone(), first_rlp), (second.clone(), second_rlp)] {
+            runtime
+                .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                    hash: transaction.hash.0,
+                    sender: sender.0,
+                    nonce: transaction.nonce.to_big_endian(),
+                    gas_price: transaction.gas_price.to_big_endian(),
+                    gas: transaction.gas,
+                    data_size: transaction.data.len(),
+                    tx_rlp,
+                    proposable: true,
+                    last_block_number: 0,
+                })
+                .unwrap();
+        }
+        runtime
+            .transaction_manager_runtime_store_gas_estimation(
+                TransactionManagerGasEstimationResult {
+                    hash: first.hash.0,
+                    proposal_period: 7,
+                    gas_used: 20_000,
+                    result_rlp: vec![0xc0],
+                },
+            )
+            .unwrap();
+
+        let prepared = runtime
+            .transaction_manager_runtime_pack_prepare_sharded(63_000, 21_000, 7, 0, 44, 1, 0, 1)
+            .unwrap();
+        assert_eq!(prepared.request_estimates.len(), 1);
+        assert_eq!(prepared.request_estimates[0].hash, second.hash.0);
+        assert_eq!(prepared.demoted_hashes.len(), 1);
+        assert_eq!(prepared.demoted_hashes[0].hash, first.hash.0);
+        assert_eq!(runtime.transaction_manager_runtime_queue_size(), 1);
+
+        let finalized = runtime
+            .transaction_manager_runtime_pack_finalize_with_estimates(vec![
+                TransactionPackSessionEstimateInput {
+                    hash: second.hash.0,
+                    gas_used: 30_000,
+                    last_block_number: 44,
+                    result_rlp: vec![0xc1],
+                },
+            ])
+            .unwrap();
+        assert_eq!(finalized.demoted_hashes.len(), 1);
+        assert_eq!(finalized.demoted_hashes[0].hash, first.hash.0);
+        assert_eq!(finalized.selected_transactions[0].hash, second.hash.0);
     }
 
     #[test]

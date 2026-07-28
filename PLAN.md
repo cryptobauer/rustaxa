@@ -1092,14 +1092,17 @@ The current Rust consensus footprint is broad but still incomplete:
    production builds exclude the untouched legacy C++ queue source; direct legacy queue tests remain pure-C++ reference
    coverage. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
    snapshotting, candidate scan, Rust-inspected envelope facts for candidate EVM input, declared-gas fit checks,
-   invalid-estimate demotion mutation, accepted output ordering, accepted gas accumulation, and stop rules through a
-   Rust runtime pack session. Compatibility `packTrxs` drives a narrow Rust step protocol, while DAG proposal packing is
+   invalid-estimate demotion intent, accepted output ordering, accepted gas accumulation, and stop rules through native
+   `TransactionPackingService`. That service owns the private packing mutex and poison policy, compatibility-or-DAG
+   owner binding, canonical candidate/RLP snapshot, shard cursor, pending-estimate ordering, actual-demotion
+   acknowledgement, and selective abort. Compatibility `packTrxs` drives a narrow Rust step protocol, while DAG proposal packing is
    composed inside `BridgeDagTransactionService`: Rust derives pack limits from the private DAG cursor, binds the
    transaction cursor to that proposal session, and transfers selected canonical payloads directly back into DAG state.
    C++ sees only required EVM estimate candidates. Declared-gas and gas-estimation-cache hits are consumed inside Rust
    without a callback. The stale standalone planner FFI, proposer request/report carriers, and C++ sharded-pack payload
-   relay are removed. A shim-owned guard prevents compatibility and proposer callers from racing the single Rust pack
-   session while EVM execution is outside the transaction lock. Rust also owns `estimateTransactionGas` and
+   relay are removed. The native service prevents compatibility and proposer callers from racing the single pack
+   session while EVM execution is outside every Rust lock. Queue, sidecar/cache, storage, and atomic DAG/transaction
+   batch publication remain in the bridge root pending the complete native application owner. Rust also owns `estimateTransactionGas` and
    `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction hash, proposal period)` opaque
    `ExecutionResult` cache, while C++ keeps EVM execution, public transaction construction, final selected transaction
    materialization, and lifecycle/finalization orchestration. The shim-only `TransactionQueue::demoteToNonProposable`

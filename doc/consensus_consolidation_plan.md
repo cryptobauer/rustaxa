@@ -118,6 +118,13 @@ Native `rustaxa-consensus::sortition::SortitionService` now owns restored sortit
 and poison policy. The DAG/transaction bridge root contains this service as a required capability, so optional
 sortition state, capability probes, and unavailable-domain branches are gone. A temporary native guard preserves the
 DAG-then-sortition order for coupled cursor revalidation until the remaining DAG runtime moves native.
+Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
+proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
+snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The
+bridge snapshots queue/cache facts under the existing transaction lock, releases every lock for external EVM work,
+then applies typed demotion/cache effects and transfers selected payloads under the established DAG-then-transaction
+order. Queue, sidecar/cache, storage, and atomic DAG/transaction batch publication remain bridge-owned until the wider
+DAG/transaction application root moves native.
 
 ### 3. Collapse configuration topology
 

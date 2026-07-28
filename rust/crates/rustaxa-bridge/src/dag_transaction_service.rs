@@ -1,9 +1,6 @@
 use crate::dag::{build_dag_state_from_storage, DagAddBlockEffectPlan, DagAddBlockRuntimeInput};
 use crate::ffi::rustaxa_ffi::*;
-use crate::ffi::{
-    BridgeFinalChain, BridgeStorage, DagRuntimeState, TransactionPackSessionOwner,
-    TransactionRuntimeState,
-};
+use crate::ffi::{BridgeFinalChain, BridgeStorage, DagRuntimeState, TransactionRuntimeState};
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use crate::transaction_manager::{
     append_prepared_dag_transactions_to_batch, build_transaction_state_from_storage,
@@ -16,6 +13,7 @@ use rustaxa_consensus::dag::{
     dag_block_transaction_hashes, verify_dag_vdf_sortition_from_block, DagVdfSortitionBlockInput,
 };
 use rustaxa_consensus::sortition::{SortitionService, SortitionServiceGuard};
+use rustaxa_consensus::transaction_packing_service::TransactionPackingOwner;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
@@ -668,7 +666,7 @@ pub fn dag_transaction_service_proposer_pack_prepare(
         };
     }
 
-    let owner = TransactionPackSessionOwner::DagProposer(session_id);
+    let owner = TransactionPackingOwner::DagProposer(session_id);
     let (mut dag_guard, mut transaction) = service.dag_and_transaction()?;
     let dag = dag_guard
         .as_mut()
@@ -731,7 +729,7 @@ pub fn dag_transaction_service_proposer_pack_finalize(
     session_id: u64,
     estimates: Vec<TransactionPackSessionEstimateInput>,
 ) -> Result<DagProposerSessionStep> {
-    let owner = TransactionPackSessionOwner::DagProposer(session_id);
+    let owner = TransactionPackingOwner::DagProposer(session_id);
     let (mut dag_guard, mut transaction) = service.dag_and_transaction()?;
     let dag = dag_guard
         .as_mut()
@@ -774,7 +772,7 @@ pub fn dag_transaction_service_proposer_pack_abort(
     service: &BridgeDagTransactionService,
     session_id: u64,
 ) -> Result<bool> {
-    let owner = TransactionPackSessionOwner::DagProposer(session_id);
+    let owner = TransactionPackingOwner::DagProposer(session_id);
     let (mut dag_guard, mut transaction) = service.dag_and_transaction()?;
     let dag = dag_guard
         .as_mut()
@@ -3548,7 +3546,11 @@ mod tests {
             throttled.reason_code,
             rustaxa_consensus::dag::DAG_PROPOSER_REASON_TRANSACTION_PACK_THROTTLED
         );
-        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(!service
+            .transaction()
+            .transaction_packing
+            .is_active()
+            .unwrap());
 
         let empty_id = open_proposer_pack(&service);
         assert!(service.transaction().queue.erase(queued.hash));
@@ -3560,7 +3562,11 @@ mod tests {
             empty.reason_code,
             rustaxa_consensus::dag::DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY
         );
-        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(!service
+            .transaction()
+            .transaction_packing
+            .is_active()
+            .unwrap());
         assert!(!service
             .dag_transaction_service_proposer_pack_abort(empty_id)
             .unwrap());
@@ -3588,7 +3594,11 @@ mod tests {
         let session_id =
             service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
                 .expect("session should begin in external-facts stage");
-        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(!service
+            .transaction()
+            .transaction_packing
+            .is_active()
+            .unwrap());
 
         let error = service
             .dag_transaction_service_proposer_pack_prepare(session_id, true, 21_000, 0, 0)
@@ -3597,7 +3607,11 @@ mod tests {
         assert!(error
             .to_string()
             .contains("DAG_PROPOSER_PACK_SESSION_WRONG_STAGE"));
-        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(!service
+            .transaction()
+            .transaction_packing
+            .is_active()
+            .unwrap());
         let after = service_dag_manager_runtime_proposer_session_next(&service, session_id)
             .expect("missing session should return invalid step");
         assert_eq!(after.status, 2);
@@ -3705,7 +3719,11 @@ mod tests {
             .expect("cache-only prepare");
         assert_eq!(cache_only.action, 2);
         assert!(cache_only.transaction_estimate_requests.is_empty());
-        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(!service
+            .transaction()
+            .transaction_packing
+            .is_active()
+            .unwrap());
         assert!(service
             .dag_transaction_service_proposer_pack_abort(cache_id)
             .unwrap());
@@ -3734,11 +3752,19 @@ mod tests {
         assert!(service
             .dag_transaction_service_proposer_pack_prepare(7, false, 21_000, 0, 0)
             .is_err());
-        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(!service
+            .transaction()
+            .transaction_packing
+            .is_active()
+            .unwrap());
         assert!(!service
             .dag_transaction_service_proposer_pack_abort(7)
             .unwrap());
-        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(!service
+            .transaction()
+            .transaction_packing
+            .is_active()
+            .unwrap());
 
         drop(service);
         drop(storage);
@@ -3786,7 +3812,11 @@ mod tests {
         assert!(service
             .dag_transaction_service_proposer_pack_finalize(session_id, Vec::new())
             .is_err());
-        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(!service
+            .transaction()
+            .transaction_packing
+            .is_active()
+            .unwrap());
         assert!(!service
             .dag_transaction_service_proposer_pack_abort(session_id)
             .unwrap());

@@ -16,13 +16,11 @@ use crate::storage::*;
 use crate::transaction::*;
 use crate::transaction_manager::*;
 use crate::vdf::*;
-use ethereum_types::H256;
 use rustaxa_consensus::dag::DagManagerState;
 use rustaxa_consensus::gas_pricer::GasPriceOracle;
-use rustaxa_consensus::transaction_manager::{
-    TransactionManagerSidecar, TransactionPackingPlanner,
-};
-use rustaxa_consensus::transaction_queue::{TransactionQueue, TransactionQueueEntry};
+use rustaxa_consensus::transaction_manager::TransactionManagerSidecar;
+use rustaxa_consensus::transaction_packing_service::TransactionPackingService;
+use rustaxa_consensus::transaction_queue::TransactionQueue;
 use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusNetworkApi;
 use rustaxa_consensus::ConsensusQueryApi;
@@ -228,43 +226,7 @@ pub(crate) struct TransactionRuntimeState {
     pub proposal_dag_gas_limit: u64,
     pub storage: Option<Arc<Storage>>,
     pub last_drop_observed: Option<Instant>,
-    pub transaction_pack_session: Option<TransactionManagerRuntimePackSession>,
-}
-
-/// Internal owner binding for the single transaction packing cursor.
-///
-/// Compatibility callers retain the public `packTrxs` behavior. DAG proposer
-/// cursors bind by session id so a stale proposer cannot finalize or abort a
-/// sibling cursor during the unlocked EVM interval.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TransactionPackSessionOwner {
-    Compatibility,
-    DagProposer(u64),
-}
-
-/// Runtime-owned state for one TransactionManager proposal-packing pass.
-///
-/// The session owns the ordered queue candidate snapshot, planner accounting,
-/// selected output ordering, and demotion summary. C++ remains responsible only
-/// for materializing the current candidate and supplying FinalChain/EVM gas
-/// estimates back to the runtime.
-pub struct TransactionManagerRuntimePackSession {
-    pub(crate) owner: TransactionPackSessionOwner,
-    pub planner: TransactionPackingPlanner,
-    pub proposal_period: u64,
-    pub estimate_gas_limit: u64,
-    pub last_block_number: u64,
-    pub total_shards: u16,
-    pub node_shard: u16,
-    pub shard_period_interval: u64,
-    pub candidates: Vec<TransactionQueueEntry>,
-    pub next_index: usize,
-    pub current: Option<TransactionQueueEntry>,
-    pub selected: Vec<(TransactionQueueEntry, u64)>,
-    pub demoted_hashes: Vec<H256>,
-    pub stopped: bool,
-    pub pending_estimate_candidates: Vec<TransactionQueueEntry>,
-    pub pending_estimate_index: usize,
+    pub transaction_packing: TransactionPackingService,
 }
 
 #[cxx::bridge(namespace = "rustaxa")]
