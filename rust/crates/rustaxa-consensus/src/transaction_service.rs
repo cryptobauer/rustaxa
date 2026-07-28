@@ -9,14 +9,17 @@ use crate::transaction_packing_service::{
 use crate::transaction_queue::TransactionQueue;
 use crate::transaction_queue::TransactionQueueDemoteStatus;
 use crate::transaction_storage::{
-    NonFinalizedTransactionStoragePayload, append_non_finalized_transactions_to_batch,
-    transaction_finalized,
+    NonFinalizedTransactionStoragePayload, STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
+    STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM, STORED_TRANSACTION_SOURCE_MISSING,
+    STORED_TRANSACTION_SOURCE_PENDING, StoredTransactionLookupRequest,
+    append_non_finalized_transactions_to_batch, load_stored_transactions, transaction_finalized,
 };
 use anyhow::{Context, Result, anyhow, ensure};
-use ethereum_types::{H256, U256};
+use ethereum_types::{H160, H256, U256};
 use rustaxa_storage::StorageWriteBatch;
 use rustaxa_storage::{StatusField, Storage};
 use rustaxa_types::LegacyTransactionEnvelope;
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
@@ -24,6 +27,90 @@ use std::time::Instant;
 /// Stable failure identifier returned when the native transaction lock is poisoned.
 pub const DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED: &str =
     "DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED";
+
+/// Transaction view source used by native verifier/lookup APIs.
+pub const TM_TRANSACTION_VIEW_SOURCE_MISSING: u8 = 0;
+/// Transaction view source for queue-backed transaction payloads.
+pub const TM_TRANSACTION_VIEW_SOURCE_QUEUE: u8 = 1;
+/// Transaction view source for non-finalized transaction sidecar payloads.
+pub const TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR: u8 = 2;
+/// Transaction view source for recently-finalized transaction sidecar payloads.
+pub const TM_TRANSACTION_VIEW_SOURCE_RECENTLY_FINALIZED_SIDECAR: u8 = 3;
+/// Transaction view source for pending storage payloads.
+pub const TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING: u8 = 4;
+/// Transaction view source for finalized regular storage payloads.
+pub const TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR: u8 = 5;
+/// Transaction view source for finalized system storage payloads.
+pub const TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_SYSTEM: u8 = 6;
+
+/// CXX-free request for a single transaction view lookup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServiceTransactionViewRequest {
+    /// Caller-owned input position.
+    pub input_index: u64,
+    /// Canonical transaction hash for the requested view.
+    pub hash: [u8; 32],
+}
+
+/// CXX-free verified transaction view output.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServiceTransactionView {
+    /// Caller-owned input position from the request.
+    pub input_index: u64,
+    /// Canonical transaction hash from the request.
+    pub hash: [u8; 32],
+    /// Whether a payload was found in queue, sidecar, or storage.
+    pub found: bool,
+    /// Source tag matching one of `TM_TRANSACTION_VIEW_SOURCE_*`.
+    pub source: u8,
+    /// Whether a finalized storage payload is older than a supplied sender nonce.
+    pub old_finalized: bool,
+    /// Canonical transaction payload. Empty when not found.
+    pub tx_rlp: Vec<u8>,
+}
+
+/// Bounded transaction view lookup output.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServiceTransactionViewPlan {
+    /// Number of requested items considered from the front of input.
+    pub requested_count: u64,
+    /// Whether lookup completed all requested views.
+    pub complete: bool,
+    /// Result views in input order.
+    pub views: Vec<TransactionServiceTransactionView>,
+}
+
+/// CXX-free account nonce fact for finalized storage filtering.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServiceAccountNonceFact {
+    /// Sender account used by the proposal transaction.
+    pub sender: [u8; 20],
+    /// True when the sender account exists in FinalChain state.
+    pub account_found: bool,
+    /// Sender finalized nonce at proposal period.
+    pub account_nonce: [u8; 32],
+}
+
+#[derive(Clone)]
+struct TransactionServiceStoredTransactionRequest {
+    input_index: u64,
+    hash: [u8; 32],
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct TransactionServiceStoredTransactionLookup {
+    hash: [u8; 32],
+    found: bool,
+    source: u8,
+    old_finalized: bool,
+    tx_rlp: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StoredTransactionIdentity {
+    sender: [u8; 20],
+    nonce: U256,
+}
 
 /// Immutable inputs for constructing and restoring the native transaction owner.
 ///
@@ -238,6 +325,73 @@ impl TransactionServiceState {
         })
     }
 
+    /// Returns bounded, source-ordered transaction views from queue, sidecars, and storage.
+    pub(crate) fn lookup_transaction_views(
+        &self,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+        max_count: u64,
+    ) -> Result<TransactionServiceTransactionViewPlan> {
+        transaction_service_runtime_lookup_transaction_views_inner(
+            self,
+            requests,
+            max_count,
+            |stored_requests| {
+                transaction_service_load_stored_transactions_from_storage(
+                    self.storage.as_ref(),
+                    stored_requests,
+                )
+            },
+        )
+    }
+
+    /// Returns bounded, source-ordered finalized-period proposal views with optional nonce filtering.
+    pub(crate) fn lookup_proposal_transaction_views_with_account_nonce_facts(
+        &self,
+        proposal_period: u64,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+        max_count: u64,
+    ) -> Result<TransactionServiceTransactionViewPlan> {
+        transaction_service_runtime_lookup_transaction_views_inner(
+            self,
+            requests,
+            max_count,
+            |stored_requests| {
+                transaction_service_load_proposal_transactions_with_account_nonce_facts_from_storage(
+                    self.storage.as_ref(),
+                    proposal_period,
+                    account_nonce_facts,
+                    stored_requests,
+                    false,
+                )
+            },
+        )
+    }
+
+    /// Returns proposal views that require an explicit account fact for each finalized sender.
+    pub(crate) fn lookup_proposal_transaction_views_requiring_account_nonce_facts(
+        &self,
+        proposal_period: u64,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+        max_count: u64,
+    ) -> Result<TransactionServiceTransactionViewPlan> {
+        transaction_service_runtime_lookup_transaction_views_inner(
+            self,
+            requests,
+            max_count,
+            |stored_requests| {
+                transaction_service_load_proposal_transactions_with_account_nonce_facts_from_storage(
+                    self.storage.as_ref(),
+                    proposal_period,
+                    account_nonce_facts,
+                    stored_requests,
+                    true,
+                )
+            },
+        )
+    }
+
     /// Prepares owner-scoped proposer packing from a validated queue/cache snapshot.
     ///
     /// Candidate payloads are decoded and cross-checked before any executor
@@ -385,6 +539,265 @@ fn transaction_estimate_request(
     })
 }
 
+fn bounded_transaction_view_count(requests_len: usize, max_count: u64) -> usize {
+    match max_count {
+        0 => requests_len,
+        _ => (max_count.min(requests_len as u64)) as usize,
+    }
+}
+
+fn transaction_service_transaction_view_source_from_stored_transaction_source(
+    source: u8,
+) -> Result<u8> {
+    match source {
+        STORED_TRANSACTION_SOURCE_MISSING => Ok(TM_TRANSACTION_VIEW_SOURCE_MISSING),
+        STORED_TRANSACTION_SOURCE_PENDING => Ok(TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING),
+        STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR => {
+            Ok(TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR)
+        }
+        STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM => {
+            Ok(TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_SYSTEM)
+        }
+        _ => Err(anyhow!("TM_TRANSACTION_VIEW_UNKNOWN_STORED_SOURCE")),
+    }
+}
+
+fn transaction_service_transaction_view_source_from_sidecar_transaction_source(
+    source: u8,
+) -> Result<u8> {
+    match source {
+        crate::transaction_manager::TransactionManagerSidecarLookup::SOURCE_NON_FINALIZED => {
+            Ok(TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR)
+        }
+        crate::transaction_manager::TransactionManagerSidecarLookup::SOURCE_RECENTLY_FINALIZED => {
+            Ok(TM_TRANSACTION_VIEW_SOURCE_RECENTLY_FINALIZED_SIDECAR)
+        }
+        _ => Err(anyhow!("TM_TRANSACTION_VIEW_UNKNOWN_SIDECAR_SOURCE")),
+    }
+}
+
+fn transaction_service_load_stored_transactions_from_storage(
+    storage: &Storage,
+    requests: Vec<TransactionServiceStoredTransactionRequest>,
+) -> Result<Vec<TransactionServiceStoredTransactionLookup>> {
+    let requests = requests
+        .into_iter()
+        .map(|request| StoredTransactionLookupRequest {
+            input_index: request.input_index,
+            hash: H256::from(request.hash),
+        })
+        .collect();
+
+    load_stored_transactions(storage, requests)
+        .context("TM_TRANSACTION_RLP_STORAGE_LOOKUP")?
+        .into_iter()
+        .map(|lookup| {
+            Ok(TransactionServiceStoredTransactionLookup {
+                hash: lookup.hash.0,
+                found: lookup.found,
+                source: lookup.source,
+                old_finalized: false,
+                tx_rlp: lookup.tx_rlp,
+            })
+        })
+        .collect()
+}
+
+fn transaction_service_load_proposal_transactions_with_account_nonce_facts_from_storage(
+    storage: &Storage,
+    _proposal_period: u64,
+    account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+    requests: Vec<TransactionServiceStoredTransactionRequest>,
+    require_finalized_account_nonce_fact: bool,
+) -> Result<Vec<TransactionServiceStoredTransactionLookup>> {
+    let account_nonce_facts: HashMap<H160, (bool, U256)> = account_nonce_facts
+        .into_iter()
+        .map(|fact| {
+            (
+                H160::from(fact.sender),
+                (
+                    fact.account_found,
+                    U256::from_big_endian(&fact.account_nonce),
+                ),
+            )
+        })
+        .collect();
+
+    let lookups = transaction_service_load_stored_transactions_from_storage(storage, requests)?;
+
+    lookups
+        .into_iter()
+        .map(|mut lookup| {
+            if !lookup.found || !is_finalized_stored_transaction_source(lookup.source) {
+                return Ok(lookup);
+            }
+
+            let expected_hash = H256::from(lookup.hash);
+            ensure!(
+                keccak256(&lookup.tx_rlp) == expected_hash,
+                "TM_PROPOSAL_TRANSACTION_HASH_MISMATCH"
+            );
+            let identity = inspect_stored_transaction_identity(&lookup.tx_rlp, lookup.source)
+                .context("TM_PROPOSAL_TRANSACTION_IDENTITY_INSPECT_FAILED")?;
+            let account_nonce = account_nonce_facts
+                .get(&H160::from(identity.sender))
+                .copied();
+            ensure!(
+                account_nonce.is_some() || !require_finalized_account_nonce_fact,
+                "TM_PROPOSAL_FINALIZED_ACCOUNT_NONCE_FACT_MISSING"
+            );
+            let account_nonce = account_nonce.unwrap_or((false, U256::zero()));
+
+            if account_nonce.0 && account_nonce.1 > identity.nonce {
+                lookup.found = false;
+                lookup.old_finalized = true;
+                lookup.tx_rlp.clear();
+            }
+            Ok(lookup)
+        })
+        .collect()
+}
+
+fn is_finalized_stored_transaction_source(source: u8) -> bool {
+    source == STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR
+        || source == STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM
+}
+
+fn inspect_stored_transaction_identity(
+    tx_rpl: &[u8],
+    source: u8,
+) -> Result<StoredTransactionIdentity> {
+    let tx = if source == STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM {
+        LegacyTransactionEnvelope::decode_system(tx_rpl)
+    } else {
+        LegacyTransactionEnvelope::decode(tx_rpl)
+    }
+    .context("TM_TRANSACTION_RLP_PARSE_FAILED")?;
+    let sender = tx
+        .sender
+        .ok_or_else(|| anyhow!("TM_TRANSACTION_RLP_SENDER_RECOVERY_FAILED"))?;
+
+    Ok(StoredTransactionIdentity {
+        sender: sender.0,
+        nonce: tx.nonce,
+    })
+}
+
+fn transaction_service_runtime_lookup_transaction_views_inner(
+    runtime: &TransactionServiceState,
+    requests: Vec<TransactionServiceTransactionViewRequest>,
+    max_count: u64,
+    transaction_lookup: impl FnOnce(
+        Vec<TransactionServiceStoredTransactionRequest>,
+    ) -> Result<Vec<TransactionServiceStoredTransactionLookup>>,
+) -> Result<TransactionServiceTransactionViewPlan> {
+    let total_requests = requests.len();
+    let requested_count = bounded_transaction_view_count(total_requests, max_count) as u64;
+    let mut views = Vec::with_capacity(requested_count as usize);
+    let mut sidecar_requests = Vec::new();
+    let mut sidecar_view_indexes = Vec::new();
+
+    for request in requests.into_iter().take(requested_count as usize) {
+        let hash = H256::from(request.hash);
+        let queue_view = runtime.queue.transaction(hash);
+
+        let mut view = TransactionServiceTransactionView {
+            input_index: request.input_index,
+            hash: request.hash,
+            found: false,
+            source: TM_TRANSACTION_VIEW_SOURCE_MISSING,
+            old_finalized: false,
+            tx_rlp: Vec::new(),
+        };
+
+        if let Some(entry) = queue_view {
+            view.found = true;
+            view.source = TM_TRANSACTION_VIEW_SOURCE_QUEUE;
+            view.tx_rlp = entry.rlp;
+            views.push(view);
+            continue;
+        }
+
+        let view_index = views.len();
+        views.push(view);
+        sidecar_requests.push((request.input_index, hash));
+        sidecar_view_indexes.push(view_index);
+    }
+
+    if !sidecar_requests.is_empty() {
+        let sidecar_lookups = runtime
+            .sidecar
+            .lookup_payloads_ordered(
+                sidecar_requests
+                    .into_iter()
+                    .map(|request| (request.0, request.1))
+                    .collect(),
+            )
+            .context("TM_RUNTIME_TRANSACTION_VIEW_SIDECAR_LOOKUP")?;
+        ensure!(
+            sidecar_lookups.len() == sidecar_view_indexes.len(),
+            "TM_RUNTIME_TRANSACTION_VIEW_SIDECAR_RESULT_COUNT_MISMATCH"
+        );
+
+        let mut storage_requests = Vec::new();
+        let mut storage_view_indexes = Vec::new();
+        for (idx, lookup) in sidecar_lookups.into_iter().enumerate() {
+            let view_index = sidecar_view_indexes[idx];
+            if lookup.found {
+                let source =
+                    transaction_service_transaction_view_source_from_sidecar_transaction_source(
+                        lookup.source,
+                    )
+                    .context("TM_RUNTIME_TRANSACTION_VIEW_SIDECAR_SOURCE")?;
+                views[view_index].found = true;
+                views[view_index].source = source;
+                views[view_index].tx_rlp = lookup.trx_rlp;
+            } else {
+                storage_requests.push(TransactionServiceStoredTransactionRequest {
+                    input_index: lookup.input_index,
+                    hash: lookup.hash.0,
+                });
+                storage_view_indexes.push(view_index);
+            }
+        }
+
+        if !storage_requests.is_empty() {
+            let stored_lookups = transaction_lookup(storage_requests)?;
+            ensure!(
+                stored_lookups.len() == storage_view_indexes.len(),
+                "TM_RUNTIME_TRANSACTION_VIEW_STORED_RESULT_COUNT_MISMATCH"
+            );
+            for (idx, lookup) in stored_lookups.into_iter().enumerate() {
+                let view_index = storage_view_indexes[idx];
+                views[view_index].found = lookup.found;
+                views[view_index].old_finalized = lookup.old_finalized;
+                views[view_index].tx_rlp = lookup.tx_rlp;
+                views[view_index].source =
+                    transaction_service_transaction_view_source_from_stored_transaction_source(
+                        lookup.source,
+                    )
+                    .context("TM_RUNTIME_TRANSACTION_VIEW_STORED_SOURCE")?;
+            }
+        }
+    }
+
+    Ok(TransactionServiceTransactionViewPlan {
+        requested_count,
+        complete: requested_count == total_requests as u64,
+        views,
+    })
+}
+
+fn keccak256(data: &[u8]) -> H256 {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut output = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(data);
+    hasher.finalize(&mut output);
+    H256::from(output)
+}
+
 fn apply_packing_step_effects(
     runtime: &mut TransactionServiceState,
     step: &crate::transaction_packing_service::TransactionPackingStep,
@@ -530,10 +943,13 @@ pub(crate) fn remove_non_finalized_sidecars_after_dag_commit(
 mod tests {
     use super::*;
     use anyhow::Result;
+    use ethereum_types::H160;
     use ethereum_types::H256;
+    use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tiny_keccak::{Hasher, Keccak};
 
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()
@@ -579,6 +995,55 @@ mod tests {
         stream.append(&1u64);
     }
 
+    fn keccak256(bytes: &[u8]) -> H256 {
+        let mut output = [0u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(bytes);
+        hasher.finalize(&mut output);
+        H256::from(output)
+    }
+
+    fn transaction_service_view_request(
+        input_index: u64,
+        hash: u8,
+    ) -> TransactionServiceTransactionViewRequest {
+        TransactionServiceTransactionViewRequest {
+            input_index,
+            hash: [hash; 32],
+        }
+    }
+
+    fn signed_legacy_transaction_rlp(signing_key: &SigningKey) -> Vec<u8> {
+        let chain_id = 2999_u64;
+        let mut unsigned = RlpStream::new_list(9);
+        unsigned.append(&U256::from(1));
+        unsigned.append(&U256::from(2));
+        unsigned.append(&21_000_u64);
+        unsigned.append(&H160::repeat_byte(0x44));
+        unsigned.append(&U256::from(3));
+        unsigned.append(&Vec::<u8>::new());
+        unsigned.append(&U256::from(chain_id));
+        unsigned.append(&U256::zero());
+        unsigned.append(&U256::zero());
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(keccak256(&unsigned.out()).as_bytes())
+            .expect("test transaction signing must succeed");
+        let signature = signature.to_bytes();
+        let mut signed = RlpStream::new_list(9);
+        signed.append(&U256::from(1));
+        signed.append(&U256::from(2));
+        signed.append(&21_000_u64);
+        signed.append(&H160::repeat_byte(0x44));
+        signed.append(&U256::from(3));
+        signed.append(&Vec::<u8>::new());
+        signed.append(&U256::from(
+            chain_id * 2 + 35 + u64::from(recovery_id.to_byte()),
+        ));
+        signed.append(&U256::from_big_endian(&signature[..32]));
+        signed.append(&U256::from_big_endian(&signature[32..]));
+        signed.out().to_vec()
+    }
+
     fn seed_gas_price_history(storage: &Storage, blocks: &[(u64, &[u64])]) -> Result<()> {
         for &(period, prices) in blocks {
             let mut period_rlp = RlpStream::new_list(4);
@@ -614,7 +1079,7 @@ mod tests {
                 blocks_gas_pricer: false,
             },
         )?;
-        let runtime = service.lock()?;
+        let mut runtime = service.lock()?;
 
         assert_eq!(runtime.sidecar.transaction_count(), 0);
 
@@ -637,7 +1102,7 @@ mod tests {
                 blocks_gas_pricer: false,
             },
         )?;
-        let runtime = service.lock()?;
+        let mut runtime = service.lock()?;
 
         assert_eq!(runtime.sidecar.transaction_count(), 73);
 
@@ -700,7 +1165,7 @@ mod tests {
                 proposal_dag_gas_limit: 1_000_000,
             },
         )?;
-        let mut runtime = service.lock()?;
+        let runtime = service.lock()?;
 
         runtime
             .gas_price_oracle
@@ -869,6 +1334,288 @@ mod tests {
                 ethereum_types::U256::from(4_u64)
             );
         }
+
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_lookup_transaction_views_enforces_source_precedence_and_bounds() -> Result<()> {
+        let temp_dir =
+            unique_temp_dir("rustaxa_consensus_transaction_service_lookup_transaction_views");
+        let storage = Arc::new(Storage::new(Config::new(temp_dir.clone()))?);
+        let service = TransactionService::restore(
+            storage,
+            TransactionServiceConfig {
+                queue_max_size: 16,
+                gas_pricer_config: GasPricerConfig {
+                    percentile: 50,
+                    minimum_price: ethereum_types::U256::one(),
+                    history_blocks: 0,
+                    is_light_node: false,
+                    blocks_gas_pricer: false,
+                },
+                proposal_dag_gas_limit: 1_000_000,
+            },
+        )?;
+
+        let runtime = service.lock()?;
+        runtime
+            .queue
+            .insert(
+                crate::transaction_queue::TransactionQueueEntry {
+                    hash: ethereum_types::H256::from_low_u64_be(1),
+                    sender: ethereum_types::H160::from_low_u64_be(11),
+                    nonce: U256::zero(),
+                    gas_price: U256::from(2_u64),
+                    gas: 21_000,
+                    data_size: 0,
+                    rlp: vec![0xAA, 0xBB, 0xCC],
+                    last_block_number: 0,
+                },
+                true,
+            )
+            .expect("queue insert should seed queue source");
+
+        runtime
+            .sidecar
+            .insert_non_finalized(ethereum_types::H256::from_low_u64_be(2), vec![0x22])
+            .expect("sidecar insert should seed non-finalized source");
+        runtime
+            .sidecar
+            .apply_finalized_transition(7, vec![ethereum_types::H256::from_low_u64_be(3)])
+            .expect("sidecar transition should seed recently-finalized source");
+        runtime
+            .storage
+            .transaction()
+            .write(ethereum_types::H256::from_low_u64_be(4), &[0x44])
+            .expect("storage write should seed pending source");
+        runtime
+            .storage
+            .transaction()
+            .write_location(ethereum_types::H256::from_low_u64_be(5), 9, 0, false)
+            .expect("storage location should seed excluded request");
+
+        let mut period_txs = RlpStream::new_list(1);
+        period_txs.append_raw(&[0x55], 1);
+        let mut period_data = RlpStream::new_list(5);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&period_txs.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+        runtime
+            .storage
+            .period()
+            .write(9, &period_data.out())
+            .expect("period source should persist finalized tx");
+
+        let plan = runtime.lookup_transaction_views(
+            vec![
+                transaction_service_view_request(1, 1),
+                transaction_service_view_request(2, 2),
+                transaction_service_view_request(3, 3),
+                transaction_service_view_request(4, 4),
+                transaction_service_view_request(5, 5),
+                transaction_service_view_request(6, 6),
+            ],
+            4,
+        )?;
+
+        assert_eq!(plan.requested_count, 4);
+        assert!(!plan.complete);
+        assert_eq!(plan.views.len(), 4);
+        assert_eq!(plan.views[0].source, TM_TRANSACTION_VIEW_SOURCE_QUEUE);
+        assert!(plan.views[0].found);
+        assert_eq!(plan.views[0].tx_rlp, vec![0xAA, 0xBB, 0xCC]);
+        assert_eq!(
+            plan.views[1].source,
+            TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR
+        );
+        assert!(plan.views[1].found);
+        assert_eq!(plan.views[1].tx_rlp, vec![0x22]);
+        assert_eq!(
+            plan.views[2].source,
+            TM_TRANSACTION_VIEW_SOURCE_RECENTLY_FINALIZED_SIDECAR
+        );
+        assert!(plan.views[2].found);
+        assert_eq!(
+            plan.views[3].source,
+            TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING
+        );
+        assert!(plan.views[3].found);
+
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_lookup_proposal_transaction_views_marks_old_finalized_transactions() -> Result<()> {
+        let temp_dir = unique_temp_dir(
+            "rustaxa_consensus_transaction_service_lookup_proposal_transaction_old_finalized",
+        );
+        let storage = Arc::new(Storage::new(Config::new(temp_dir.clone()))?);
+        let service = TransactionService::restore(
+            storage,
+            TransactionServiceConfig {
+                queue_max_size: 16,
+                gas_pricer_config: GasPricerConfig {
+                    percentile: 50,
+                    minimum_price: ethereum_types::U256::one(),
+                    history_blocks: 0,
+                    is_light_node: false,
+                    blocks_gas_pricer: false,
+                },
+                proposal_dag_gas_limit: 1_000_000,
+            },
+        )?;
+
+        let mut runtime = service.lock()?;
+        let signing_key = SigningKey::from_slice(&[0x33u8; 32])?;
+        let transaction_rlp = signed_legacy_transaction_rlp(&signing_key);
+        let transaction_hash = keccak256(&transaction_rlp);
+        let envelope = LegacyTransactionEnvelope::decode(&transaction_rlp)
+            .expect("proposal test transaction should decode");
+        runtime
+            .storage
+            .transaction()
+            .write_location(transaction_hash, 1, 0, false)
+            .expect("proposal storage location should persist");
+
+        let mut period_txs = RlpStream::new_list(1);
+        period_txs.append_raw(&transaction_rlp, 1);
+        let mut period_data = RlpStream::new_list(5);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&period_txs.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+        runtime
+            .storage
+            .period()
+            .write(1, &period_data.out())
+            .expect("proposal period data should persist");
+
+        let plan = runtime.lookup_proposal_transaction_views_with_account_nonce_facts(
+            1,
+            vec![TransactionServiceTransactionViewRequest {
+                input_index: 10,
+                hash: transaction_hash.to_fixed_bytes(),
+            }],
+            vec![TransactionServiceAccountNonceFact {
+                sender: envelope
+                    .sender
+                    .expect("proposal test should expose sender")
+                    .0,
+                account_found: true,
+                account_nonce: (envelope.nonce + U256::from(1u64)).to_big_endian(),
+            }],
+            0,
+        )?;
+
+        assert_eq!(plan.requested_count, 1);
+        assert!(plan.complete);
+        assert_eq!(plan.views.len(), 1);
+        assert!(plan.views[0].found);
+        assert!(plan.views[0].old_finalized);
+        assert_eq!(
+            plan.views[0].source,
+            TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR
+        );
+        assert!(plan.views[0].tx_rlp.is_empty());
+
+        let permissive_plan = runtime.lookup_proposal_transaction_views_with_account_nonce_facts(
+            1,
+            vec![TransactionServiceTransactionViewRequest {
+                input_index: 10,
+                hash: transaction_hash.to_fixed_bytes(),
+            }],
+            vec![],
+            0,
+        )?;
+        assert!(permissive_plan.views[0].found);
+
+        let strict_error = runtime
+            .lookup_proposal_transaction_views_requiring_account_nonce_facts(
+                1,
+                vec![TransactionServiceTransactionViewRequest {
+                    input_index: 10,
+                    hash: transaction_hash.to_fixed_bytes(),
+                }],
+                vec![],
+                0,
+            )
+            .err();
+        assert!(
+            strict_error
+                .expect("missing finalized nonce fact should be reported")
+                .to_string()
+                .contains("TM_PROPOSAL_FINALIZED_ACCOUNT_NONCE_FACT_MISSING")
+        );
+
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_lookup_proposal_transaction_views_validates_stored_transaction_hash() -> Result<()> {
+        let temp_dir = unique_temp_dir(
+            "rustaxa_consensus_transaction_service_lookup_proposal_transaction_hash",
+        );
+        let storage = Arc::new(Storage::new(Config::new(temp_dir.clone()))?);
+        let service = TransactionService::restore(
+            storage,
+            TransactionServiceConfig {
+                queue_max_size: 16,
+                gas_pricer_config: GasPricerConfig {
+                    percentile: 50,
+                    minimum_price: ethereum_types::U256::one(),
+                    history_blocks: 0,
+                    is_light_node: false,
+                    blocks_gas_pricer: false,
+                },
+                proposal_dag_gas_limit: 1_000_000,
+            },
+        )?;
+        let mut runtime = service.lock()?;
+        let corrupt_hash = H256::from_low_u64_be(8);
+
+        runtime
+            .storage
+            .transaction()
+            .write_location(corrupt_hash, 2, 0, false)
+            .expect("proposal storage location should persist");
+        let mut period_txs = RlpStream::new_list(1);
+        period_txs.append_raw(&[0xFF], 1);
+        let mut period_data = RlpStream::new_list(5);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&period_txs.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+        runtime
+            .storage
+            .period()
+            .write(2, &period_data.out())
+            .expect("proposal period data should persist");
+
+        let err = runtime
+            .lookup_proposal_transaction_views_with_account_nonce_facts(
+                2,
+                vec![TransactionServiceTransactionViewRequest {
+                    input_index: 1,
+                    hash: corrupt_hash.to_fixed_bytes(),
+                }],
+                vec![],
+                0,
+            )
+            .err();
+
+        assert!(
+            err.expect("hash mismatch should be rejected")
+                .to_string()
+                .contains("TM_PROPOSAL_TRANSACTION_HASH_MISMATCH")
+        );
 
         std::fs::remove_dir_all(temp_dir)?;
         Ok(())
