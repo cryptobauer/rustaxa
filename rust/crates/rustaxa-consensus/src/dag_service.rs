@@ -711,8 +711,7 @@ impl DagServiceState {
     }
 
     /// Opens a runtime-owned proposer cursor for one attempt.
-    #[doc(hidden)]
-    pub fn begin_proposer_session(
+    pub(crate) fn begin_proposer_session(
         &mut self,
         input: DagProposerSessionBeginInput,
         transaction_observation: DagProposerTransactionObservation,
@@ -1186,8 +1185,7 @@ impl DagServiceState {
     }
 
     /// Reads the current proposer observation with proposal-period and fingerprint.
-    #[doc(hidden)]
-    pub fn proposer_observation(&self) -> Result<DagProposerObservation> {
+    pub(crate) fn proposer_observation(&self) -> Result<DagProposerObservation> {
         let frontier = self.state.proposer_frontier_facts();
         let proposal_period: DagPeriodStorageLookup =
             proposal_period_for_level_from_storage(self.storage.as_ref(), frontier.propose_level)?;
@@ -2158,10 +2156,12 @@ impl DerefMut for DagServiceGuard<'_> {
 mod tests {
     use super::*;
     use anyhow::Result;
+    use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_storage::Config;
     use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
     use rustaxa_types::pbft::PbftBlockLink;
+    use rustaxa_vdf::vrf::public_key_from_secret;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> std::path::PathBuf {
@@ -2302,6 +2302,191 @@ mod tests {
             gas_step.action, DAG_VERIFY_SESSION_ACTION_GAS,
             "verification cursor should advance to gas check"
         );
+        Ok(())
+    }
+
+    const TEST_VRF_SECRET: [u8; 64] = [
+        0x90, 0xf5, 0x9a, 0x7e, 0xe7, 0xa3, 0x92, 0xc8, 0x11, 0xc5, 0xd2, 0x99, 0xb5, 0x57, 0xa4,
+        0xe0, 0x9e, 0x61, 0x0d, 0xe7, 0xd1, 0x09, 0xd6, 0xb3, 0xfc, 0xb1, 0x9a, 0xb8, 0xd5, 0x1c,
+        0x9a, 0x0d, 0x93, 0x1f, 0x5e, 0x7d, 0xb0, 0x7c, 0x99, 0x69, 0xe4, 0x38, 0xdb, 0x7e, 0x28,
+        0x7e, 0xab, 0xba, 0xac, 0xa4, 0x9c, 0xa4, 0x14, 0xf5, 0xf3, 0xa4, 0x02, 0xea, 0x69, 0x97,
+        0xad, 0xe4, 0x00, 0x81,
+    ];
+
+    fn proposer_seed_address(seed: u8) -> [u8; 20] {
+        let signing_key = SigningKey::from_slice(&[seed; 32]).expect("proposer seed");
+        let encoded = signing_key.verifying_key().to_encoded_point(false);
+        let mut hash = [0u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&encoded.as_bytes()[1..]);
+        hasher.finalize(&mut hash);
+        hash[12..]
+            .try_into()
+            .expect("proposer address slice has fixed length")
+    }
+
+    fn sign_dag_hash(seed: u8, signing_hash: [u8; 32]) -> Vec<u8> {
+        let signing_key = SigningKey::from_slice(&[seed; 32]).expect("signing seed");
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(&signing_hash)
+            .expect("sign proposer intent");
+        let mut bytes = signature.to_bytes().to_vec();
+        bytes.push(recovery_id.to_byte());
+        bytes
+    }
+
+    fn proposer_begin_input(vrf_key: [u8; 32]) -> DagProposerSessionBeginInput {
+        DagProposerSessionBeginInput {
+            max_non_finalized_transactions: 100,
+            dag_expiry_level_limit: 100,
+            wallet_vrf_public_key: vrf_key,
+            wallet_vrf_secret: TEST_VRF_SECRET,
+            proposer_address: proposer_seed_address(0x44),
+            max_non_finalized_dag_blocks: 100,
+            max_non_finalized_dag_blocks_low_difficulty: 50,
+            max_retry_count: 20,
+            proposal_weight_limit: 1_000,
+            total_transaction_shards: 4,
+            node_transaction_shard: 2,
+            shard_period_interval: 10,
+            pbft_gas_limit: 10_000,
+            dag_gas_limit: 1_000,
+            max_tips: 16,
+        }
+    }
+
+    fn proposer_transaction_observation() -> DagProposerTransactionObservation {
+        DagProposerTransactionObservation {
+            transaction_pool_size: 1,
+            non_finalized_transaction_count: 0,
+        }
+    }
+
+    fn proposer_authorization_facts(vrf_key: [u8; 32]) -> DagDposAuthorizationFacts {
+        DagDposAuthorizationFacts {
+            vrf_key: Some(vrf_key),
+            vrf_key_found: true,
+            sender_eligible_vote_count: 10,
+            vdf_sortition_max_vote_count: 20,
+            eligibility_status: crate::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+        }
+    }
+
+    fn proposer_sortition_params() -> SortitionParams {
+        SortitionParams {
+            vrf: VrfParams {
+                threshold_upper: u16::MAX,
+            },
+            vdf: VdfParams {
+                difficulty_min: 3,
+                difficulty_max: 3,
+                difficulty_stale: 9,
+                lambda_bound: 128,
+            },
+        }
+    }
+
+    fn proposer_sortition_params_stale() -> SortitionParams {
+        SortitionParams {
+            vrf: VrfParams {
+                threshold_upper: u16::MAX,
+            },
+            vdf: VdfParams {
+                difficulty_min: 9,
+                difficulty_max: 9,
+                difficulty_stale: 9,
+                lambda_bound: 128,
+            },
+        }
+    }
+
+    fn proposer_vrf_key() -> [u8; 32] {
+        public_key_from_secret(&TEST_VRF_SECRET).expect("VRF key from test secret")
+    }
+
+    fn ensure_period_mapping_for_frontier(runtime: &DagServiceState) -> u64 {
+        let frontier_level = runtime.state.proposer_frontier_facts().propose_level;
+        ensure_proposal_period_mapping(&runtime.storage, frontier_level, 0)
+            .expect("frontier mapping should persist");
+        frontier_level
+    }
+
+    fn apply_proposer_final_chain_facts(
+        runtime: &mut DagServiceGuard<'_>,
+        session_id: u64,
+        vrf_key: [u8; 32],
+        sortition_params: SortitionParams,
+    ) -> Result<DagProposerSessionStep> {
+        let snapshot = match runtime.prepare_proposer_final_chain_facts(session_id) {
+            DagProposerFinalChainFactsPreparation::Snapshot(snapshot) => snapshot,
+            DagProposerFinalChainFactsPreparation::Step(step) => return Ok(*step),
+        };
+        runtime.apply_proposer_final_chain_facts(
+            &snapshot,
+            0,
+            proposer_authorization_facts(vrf_key),
+            sortition_params,
+            sortition_params,
+        )
+    }
+
+    fn begin_proposer_vdf_session(
+        runtime: &mut DagServiceGuard<'_>,
+        sortition_params: SortitionParams,
+        tx_hash: H256,
+    ) -> Result<u64> {
+        let vrf_key = proposer_vrf_key();
+        ensure_period_mapping_for_frontier(&runtime);
+        let session_id = runtime.begin_proposer_session(
+            proposer_begin_input(vrf_key),
+            proposer_transaction_observation(),
+        )?;
+        assert_eq!(
+            runtime.proposer_session_next(session_id).action,
+            DagProposerSessionAction::CollectFinalChainFacts
+        );
+        let attempt =
+            apply_proposer_final_chain_facts(runtime, session_id, vrf_key, sortition_params)?;
+        assert_eq!(
+            attempt.action,
+            DagProposerSessionAction::PackTransactions,
+            "attempt action should request packing, got {:?} reason {:?}",
+            attempt.action,
+            attempt.reason_code
+        );
+        assert_eq!(
+            runtime
+                .apply_proposer_pack(
+                    session_id,
+                    false,
+                    vec![TransactionPackingSelection {
+                        hash: tx_hash,
+                        gas_used: 100,
+                        transaction_rlp: vec![tx_hash.as_bytes()[0]],
+                    }],
+                )?
+                .action,
+            runtime.proposer_session_next(session_id).action,
+            "pack should advance"
+        );
+        Ok(session_id)
+    }
+
+    fn add_frontier_blocks(runtime: &mut DagServiceGuard<'_>) -> Result<()> {
+        runtime.state.add_block(DagManagerBlock {
+            hash: H256::from([2u8; 32]),
+            pivot: H256::from([1u8; 32]),
+            tips: Vec::new(),
+            level: 2,
+            difficulty: 100,
+        })?;
+        runtime.state.add_block(DagManagerBlock {
+            hash: H256::from([3u8; 32]),
+            pivot: H256::from([1u8; 32]),
+            tips: vec![H256::from([2u8; 32])],
+            level: 3,
+            difficulty: 80,
+        })?;
         Ok(())
     }
 
@@ -2755,6 +2940,526 @@ mod tests {
                 invalid.error_code,
                 "DAG_VERIFY_SESSION_UNEXPECTED_GAS_REPORT"
             );
+        }
+        drop(service);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn dag_service_state_proposer_session_orders_the_happy_path() -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_proposer_happy_path");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+        )?;
+        {
+            let mut runtime = service.lock()?;
+            let session_id = begin_proposer_vdf_session(
+                &mut runtime,
+                proposer_sortition_params(),
+                H256::from([0x31u8; 32]),
+            )?;
+            let waiting = runtime.proposer_session_poll_vdf(session_id);
+            assert_eq!(waiting.action, DagProposerSessionAction::StartVdf);
+
+            let sign = runtime.report_proposer_vdf_proof(
+                session_id,
+                DagProposerVdfProofReport {
+                    proof_ok: true,
+                    vdf_rlp: vec![0xC0],
+                },
+            )?;
+            assert_eq!(sign.action, DagProposerSessionAction::SignBlock);
+            assert_ne!(sign.signing_hash, H256::zero());
+
+            let add = runtime.report_proposer_signing(
+                session_id,
+                DagProposerSigningReport {
+                    signature: sign_dag_hash(0x44, sign.signing_hash.into()),
+                },
+            )?;
+            assert_eq!(add.action, DagProposerSessionAction::AddBlock);
+
+            let complete = runtime.report_proposer_add_block(
+                session_id,
+                DagProposerAddBlockReport {
+                    accepted: true,
+                    duplicate: false,
+                    expired: false,
+                    missing_references: Vec::new(),
+                },
+            );
+            assert_eq!(complete.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
+            assert_eq!(complete.action, DagProposerSessionAction::Complete);
+            assert!(complete.return_value);
+            assert!(complete.record_proposed_block);
+            assert!(complete.update_retry_state);
+            assert_eq!(complete.next_last_propose_level, 1);
+            assert_eq!(complete.next_retry_count, 0);
+
+            let retry = runtime
+                .proposer_retry_states
+                .get(&proposer_vrf_key())
+                .expect("retry state should exist");
+            assert_eq!(retry.last_propose_level, 1);
+            assert_eq!(retry.retry_count, 0);
+            assert_eq!(
+                runtime.proposer_session_next(session_id).status,
+                DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT
+            );
+        }
+        drop(service);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn dag_service_state_proposer_session_handles_missing_invalid_out_of_order_and_abort_idempotent()
+    -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_proposer_invalid_reports");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 0,
+            },
+        )?;
+        {
+            let mut runtime = service.lock()?;
+            let vrf_key = proposer_vrf_key();
+            let missing = runtime.begin_proposer_session(
+                proposer_begin_input(vrf_key),
+                proposer_transaction_observation(),
+            )?;
+            let missing_next = runtime.proposer_session_next(missing);
+            assert_eq!(missing_next.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
+            assert_eq!(
+                missing_next.reason_code,
+                crate::dag::DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD
+            );
+
+            ensure_period_mapping_for_frontier(&runtime);
+            let invalid_id = runtime.begin_proposer_session(
+                proposer_begin_input(vrf_key),
+                proposer_transaction_observation(),
+            )?;
+            let invalid = runtime.apply_proposer_pack(invalid_id, false, Vec::new());
+            assert!(invalid.is_err_and(|error| {
+                error
+                    .to_string()
+                    .contains("DAG_PROPOSER_PACK_SESSION_WRONG_STAGE")
+            }));
+            assert!(runtime.abort_proposer_session(invalid_id));
+            let step = match runtime.prepare_proposer_final_chain_facts(invalid_id) {
+                DagProposerFinalChainFactsPreparation::Snapshot(_) => {
+                    anyhow::bail!("invalid report should invalidate the session")
+                }
+                DagProposerFinalChainFactsPreparation::Step(step) => *step,
+            };
+            assert_eq!(step.status, DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT);
+
+            let out_of_order_id = runtime.begin_proposer_session(
+                proposer_begin_input(vrf_key),
+                proposer_transaction_observation(),
+            )?;
+            let snapshot = match runtime.prepare_proposer_final_chain_facts(out_of_order_id) {
+                DagProposerFinalChainFactsPreparation::Snapshot(snapshot) => snapshot,
+                DagProposerFinalChainFactsPreparation::Step(step) => {
+                    panic!("expected fact snapshot, got {:?}", step);
+                }
+            };
+            runtime
+                .apply_proposer_final_chain_facts(
+                    &snapshot,
+                    0,
+                    proposer_authorization_facts(vrf_key),
+                    proposer_sortition_params(),
+                    proposer_sortition_params(),
+                )
+                .expect("facts should advance to packing");
+            runtime
+                .apply_proposer_pack(
+                    out_of_order_id,
+                    false,
+                    vec![TransactionPackingSelection {
+                        hash: H256::from([9u8; 32]),
+                        gas_used: 100,
+                        transaction_rlp: vec![0x99],
+                    }],
+                )
+                .expect("pack should move to VDF");
+            let out_of_order = runtime
+                .report_proposer_signing(
+                    out_of_order_id,
+                    DagProposerSigningReport {
+                        signature: vec![0; 65],
+                    },
+                )
+                .expect("out-of-order report should return terminal step");
+            assert_eq!(
+                out_of_order.status,
+                DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT
+            );
+
+            let duplicate_vdf_id = begin_proposer_vdf_session(
+                &mut runtime,
+                proposer_sortition_params(),
+                H256::from([0x0au8; 32]),
+            )?;
+            let sign = runtime.report_proposer_vdf_proof(
+                duplicate_vdf_id,
+                DagProposerVdfProofReport {
+                    proof_ok: true,
+                    vdf_rlp: vec![0xC0],
+                },
+            )?;
+            assert_eq!(sign.action, DagProposerSessionAction::SignBlock);
+            let duplicate_vdf = runtime.report_proposer_vdf_proof(
+                duplicate_vdf_id,
+                DagProposerVdfProofReport {
+                    proof_ok: true,
+                    vdf_rlp: vec![0xC0],
+                },
+            )?;
+            assert_eq!(
+                duplicate_vdf.status,
+                DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT
+            );
+
+            let duplicate_signing_id = begin_proposer_vdf_session(
+                &mut runtime,
+                proposer_sortition_params(),
+                H256::from([0x0bu8; 32]),
+            )?;
+            let sign = runtime.report_proposer_vdf_proof(
+                duplicate_signing_id,
+                DagProposerVdfProofReport {
+                    proof_ok: true,
+                    vdf_rlp: vec![0xC0],
+                },
+            )?;
+            let signature = sign_dag_hash(0x44, sign.signing_hash.into());
+            let add_block = runtime.report_proposer_signing(
+                duplicate_signing_id,
+                DagProposerSigningReport {
+                    signature: signature.clone(),
+                },
+            )?;
+            assert_eq!(add_block.action, DagProposerSessionAction::AddBlock);
+            let duplicate_signing = runtime.report_proposer_signing(
+                duplicate_signing_id,
+                DagProposerSigningReport { signature },
+            )?;
+            assert_eq!(
+                duplicate_signing.status,
+                DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT
+            );
+
+            let aborted = runtime.begin_proposer_session(
+                proposer_begin_input(vrf_key),
+                proposer_transaction_observation(),
+            )?;
+            assert!(runtime.abort_proposer_session(aborted));
+            assert!(!runtime.abort_proposer_session(aborted));
+            assert!(!runtime.abort_proposer_session(u64::MAX));
+            let _ = runtime.proposer_session_next(aborted).status;
+        }
+        drop(service);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn dag_service_state_proposer_session_tracks_stale_observation_before_and_after_vdf()
+    -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_proposer_stale_observation");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+        )?;
+        {
+            let mut runtime = service.lock()?;
+            let vrf_key = proposer_vrf_key();
+            ensure_period_mapping_for_frontier(&runtime);
+            let before_id = runtime.begin_proposer_session(
+                proposer_begin_input(vrf_key),
+                proposer_transaction_observation(),
+            )?;
+            assert_eq!(
+                runtime.proposer_session_next(before_id).action,
+                DagProposerSessionAction::CollectFinalChainFacts
+            );
+            runtime.state.add_block(DagManagerBlock {
+                hash: H256::from([2u8; 32]),
+                pivot: H256::from([1u8; 32]),
+                tips: Vec::new(),
+                level: 2,
+                difficulty: 100,
+            })?;
+            let stale = apply_proposer_final_chain_facts(
+                &mut runtime,
+                before_id,
+                proposer_vrf_key(),
+                proposer_sortition_params(),
+            )?;
+            assert_eq!(stale.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
+            assert_eq!(
+                stale.reason_code,
+                crate::dag::DAG_PROPOSER_REASON_STALE_OBSERVATION
+            );
+            assert_eq!(stale.error_code, "DAG_PROPOSER_SESSION_STALE_OBSERVATION");
+            assert!(!runtime.proposer_retry_states.contains_key(&vrf_key));
+
+            let after_id = begin_proposer_vdf_session(
+                &mut runtime,
+                proposer_sortition_params(),
+                H256::from([0x22u8; 32]),
+            )?;
+            runtime.state.add_block(DagManagerBlock {
+                hash: H256::from([3u8; 32]),
+                pivot: H256::from([1u8; 32]),
+                tips: Vec::new(),
+                level: 4,
+                difficulty: 90,
+            })?;
+            let stale = runtime.report_proposer_vdf_proof(
+                after_id,
+                DagProposerVdfProofReport {
+                    proof_ok: true,
+                    vdf_rlp: vec![0xC0],
+                },
+            )?;
+            assert_eq!(stale.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
+            assert_eq!(
+                stale.reason_code,
+                crate::dag::DAG_PROPOSER_REASON_STALE_OBSERVATION
+            );
+            assert!(!stale.update_retry_state);
+            let retry = runtime
+                .proposer_retry_states
+                .get(&vrf_key)
+                .expect("retry state should persist");
+            assert_eq!(retry.last_propose_level, 0);
+            assert_eq!(retry.retry_count, 0);
+        }
+        drop(service);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn dag_service_state_proposer_session_rejects_bad_signatures_and_corrupt_tips() -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_proposer_bad_signatures");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+        )?;
+        {
+            let mut runtime = service.lock()?;
+            let malformed_id = begin_proposer_vdf_session(
+                &mut runtime,
+                proposer_sortition_params(),
+                H256::from([0x30u8; 32]),
+            )?;
+            let _malformed_step = runtime.report_proposer_vdf_proof(
+                malformed_id,
+                DagProposerVdfProofReport {
+                    proof_ok: true,
+                    vdf_rlp: vec![0xC0],
+                },
+            )?;
+            let malformed = runtime
+                .report_proposer_signing(
+                    malformed_id,
+                    DagProposerSigningReport {
+                        signature: vec![0; 65],
+                    },
+                )
+                .err()
+                .expect("malformed signature should fail");
+            assert!(
+                malformed
+                    .to_string()
+                    .contains("DAG_PROPOSER_SIGNATURE_RECOVERY")
+            );
+            assert!(!runtime.proposer_sessions.contains_key(&malformed_id));
+
+            let wrong_key_id = begin_proposer_vdf_session(
+                &mut runtime,
+                proposer_sortition_params(),
+                H256::from([0x31u8; 32]),
+            )?;
+            let signing = runtime.report_proposer_vdf_proof(
+                wrong_key_id,
+                DagProposerVdfProofReport {
+                    proof_ok: true,
+                    vdf_rlp: vec![0xC0],
+                },
+            )?;
+            let wrong_key = runtime
+                .report_proposer_signing(
+                    wrong_key_id,
+                    DagProposerSigningReport {
+                        signature: sign_dag_hash(0x45, signing.signing_hash.into()),
+                    },
+                )
+                .err()
+                .expect("wrong-key signature should be rejected");
+            assert!(
+                wrong_key
+                    .to_string()
+                    .contains("DAG_PROPOSER_SIGNATURE_PROPOSER_MISMATCH")
+            );
+            assert!(!runtime.proposer_sessions.contains_key(&wrong_key_id));
+        }
+        {
+            let mut runtime = service.lock()?;
+            let vrf_key = proposer_vrf_key();
+            ensure_period_mapping_for_frontier(&runtime);
+            add_frontier_blocks(&mut runtime)?;
+            let tip_session_id = begin_proposer_vdf_session(
+                &mut runtime,
+                proposer_sortition_params(),
+                H256::from([0x40u8; 32]),
+            )?;
+            let tip = runtime
+                .state
+                .proposer_frontier_facts()
+                .frontier
+                .tips
+                .first()
+                .cloned()
+                .expect("frontier should expose a tip for tip storage checks");
+            runtime.storage.dag().write(tip, 2, 0, &[0x80])?;
+            let corrupt = runtime.report_proposer_vdf_proof(
+                tip_session_id,
+                DagProposerVdfProofReport {
+                    proof_ok: true,
+                    vdf_rlp: vec![0xC0],
+                },
+            );
+            assert!(
+                corrupt.is_err(),
+                "corrupt tip storage should reject signing intent preparation"
+            );
+            assert!(!runtime.proposer_sessions.contains_key(&tip_session_id));
+            let retry = runtime
+                .proposer_retry_states
+                .get(&vrf_key)
+                .expect("retry state should be initialized before signing");
+            assert_eq!(retry.last_propose_level, 0);
+            assert_eq!(retry.retry_count, 0);
+            assert_eq!(retry.max_retry_count, 20);
+        }
+        drop(service);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn dag_service_state_proposer_session_vdf_cancel_and_stale_resume() -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_proposer_vdf_cancel_resume");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+        )?;
+        {
+            let mut runtime = service.lock()?;
+            let cancel_id = begin_proposer_vdf_session(
+                &mut runtime,
+                proposer_sortition_params(),
+                H256::from([0x50u8; 32]),
+            )?;
+            let lowered_minimum = runtime
+                .proposer_sessions
+                .get(&cancel_id)
+                .expect("cancel session should exist")
+                .attempt
+                .vdf_difficulty
+                .saturating_sub(1);
+            runtime
+                .proposer_sessions
+                .get_mut(&cancel_id)
+                .expect("cancel session should remain")
+                .minimum_vdf_difficulty = lowered_minimum;
+            runtime.state.add_block(DagManagerBlock {
+                hash: H256::from([5u8; 32]),
+                pivot: H256::from([1u8; 32]),
+                tips: Vec::new(),
+                level: 3,
+                difficulty: 100,
+            })?;
+            let cancel = runtime.proposer_session_poll_vdf(cancel_id);
+            assert_eq!(cancel.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
+            assert_eq!(cancel.action, DagProposerSessionAction::CancelVdf);
+
+            let resume_level = runtime.state.proposer_frontier_facts().propose_level;
+            runtime.proposer_retry_states.insert(
+                proposer_vrf_key(),
+                DagProposerRetryState {
+                    last_propose_level: resume_level,
+                    retry_count: 20,
+                    max_retry_count: 20,
+                },
+            );
+            let resume_id = begin_proposer_vdf_session(
+                &mut runtime,
+                proposer_sortition_params_stale(),
+                H256::from([0x51u8; 32]),
+            )?;
+            let sleep = runtime.report_proposer_vdf_proof(
+                resume_id,
+                DagProposerVdfProofReport {
+                    proof_ok: true,
+                    vdf_rlp: vec![0xC0],
+                },
+            )?;
+            assert_eq!(sleep.action, DagProposerSessionAction::StaleProofSleep);
+
+            runtime.state.add_block(DagManagerBlock {
+                hash: H256::from([6u8; 32]),
+                pivot: H256::from([1u8; 32]),
+                tips: Vec::new(),
+                level: 4,
+                difficulty: 120,
+            })?;
+            let resumed = runtime.resume_proposer_stale_proof(resume_id)?;
+            assert_eq!(resumed.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
+            assert_eq!(resumed.action, DagProposerSessionAction::Complete);
+            assert_eq!(
+                resumed.reason_code,
+                crate::dag::DAG_PROPOSER_REASON_STALE_OBSERVATION
+            );
+            assert!(!resumed.update_retry_state);
+            assert!(!runtime.proposer_sessions.contains_key(&resume_id));
         }
         drop(service);
         drop(storage);

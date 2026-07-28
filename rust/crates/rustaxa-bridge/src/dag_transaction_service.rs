@@ -1240,38 +1240,36 @@ mod tests {
         let session_id =
             service_dag_manager_runtime_begin_proposer_session(service, proposer_begin_input())
                 .expect("proposer session");
-        let snapshot = {
-            let mut dag = service.dag().unwrap();
-            match dag_manager_runtime_prepare_proposer_final_chain_facts(&mut dag, session_id) {
-                DagProposerFinalChainFactsPreparation::Snapshot(snapshot) => snapshot,
-                DagProposerFinalChainFactsPreparation::Step(_) => {
-                    panic!("proposer cursor should request FinalChain facts")
-                }
+        let request = match service
+            .root
+            .prepare_proposer_final_chain_facts(session_id)
+            .expect("proposer FinalChain preparation")
+        {
+            NativeDagProposerFinalChainRequestOrStep::Request(request) => request,
+            NativeDagProposerFinalChainRequestOrStep::Step(_) => {
+                panic!("proposer cursor should request FinalChain facts")
             }
         };
-        let params = service
-            .sortition()
-            .unwrap()
-            .params_for_period_from_storage(snapshot.proposal_period)
-            .unwrap();
-        let mut dag = service.dag().unwrap();
-        let _sortition = service.sortition().unwrap();
-        let step = dag_manager_runtime_apply_proposer_final_chain_facts(
-            &mut dag,
-            &snapshot,
-            0,
-            rustaxa_consensus::dag::DagDposAuthorizationFacts {
-                vrf_key: Some(public_key_from_secret(&SECRET_KEY).unwrap()),
-                vrf_key_found: true,
-                sender_eligible_vote_count: 1,
-                vdf_sortition_max_vote_count: 1,
-                eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
-            },
-            params,
-            params,
-        )
-        .unwrap();
-        assert_eq!(step.action, 1);
+        let step = service
+            .root
+            .complete_proposer_final_chain_facts(
+                &request,
+                NativeDagProposerFinalChainFacts {
+                    last_finalized_period: 0,
+                    authorization_facts: rustaxa_consensus::dag::DagDposAuthorizationFacts {
+                        vrf_key: Some(public_key_from_secret(&SECRET_KEY).unwrap()),
+                        vrf_key_found: true,
+                        sender_eligible_vote_count: 1,
+                        vdf_sortition_max_vote_count: 1,
+                        eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+                    },
+                },
+            )
+            .expect("proposer FinalChain completion");
+        assert_eq!(
+            step.action,
+            NativeDagProposerSessionAction::PackTransactions
+        );
         session_id
     }
 
@@ -1808,20 +1806,24 @@ mod tests {
         .unwrap();
         assert_eq!(pack.action, 1);
         assert_zero_legacy_sortition_params(&pack.vdf_sortition_params);
-        let start_vdf = {
-            let mut dag = service.dag().unwrap();
-            dag_manager_runtime_apply_proposer_pack(
-                &mut dag,
+        let prepare = service
+            .dag_transaction_service_proposer_pack_prepare(session_id, false, 21_000, 0, 10)
+            .expect("proposer pack should prepare an EVM estimate");
+        let start_vdf = service
+            .dag_transaction_service_proposer_pack_finalize(
                 session_id,
-                false,
-                vec![TransactionPackSelectedTransaction {
-                    hash: [0x72; 32],
-                    gas_used: 21_000,
-                    tx_rlp: vec![0xC0],
-                }],
+                prepare
+                    .transaction_estimate_requests
+                    .iter()
+                    .map(|estimate| TransactionPackSessionEstimateInput {
+                        hash: estimate.hash,
+                        gas_used: 21_000,
+                        last_block_number: 10,
+                        result_rlp: vec![0xC0],
+                    })
+                    .collect(),
             )
-            .unwrap()
-        };
+            .expect("proposer pack should finalize");
         assert_eq!(start_vdf.action, 2);
         assert_eq!(start_vdf.vdf_sortition_params.vrf_threshold_upper, u16::MAX);
         assert_eq!(start_vdf.vdf_sortition_params.vdf_difficulty_min, 1);
@@ -1893,10 +1895,7 @@ mod tests {
                 stale_id,
                 &final_chain,
                 || {
-                    let mut dag = service.dag().unwrap();
-                    assert!(dag_manager_runtime_abort_proposer_session(
-                        &mut dag, stale_id
-                    ));
+                    assert!(service.root.abort_proposer_session(stale_id).unwrap());
                 },
             )
             .err()

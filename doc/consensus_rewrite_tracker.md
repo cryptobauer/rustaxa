@@ -633,6 +633,21 @@ shim lines, CXX functions, carriers, handles, shim directories, granular flags,
 partial factories, compatibility constructors, production callers, and
 non-test C++ consumers are unchanged.
 
+The following bounded `CRW-12` deletion removes the complete superseded direct
+DAG proposer adapter and behavioral-test family from
+`rustaxa-bridge/src/dag.rs`. Proposer cursor ownership, observation
+fingerprinting, FinalChain-fact application, retry/VDF transitions, block
+construction, signature validation, add-block classification, and cleanup are
+now tested directly on native `DagServiceState`; bridge fixtures that still
+exercise the production ABI enter through native `DagTransactionService`
+instead of a parallel runtime facade. The native proposer entry and observation
+methods are crate-private, while the production CXX service functions and the
+retained FinalChain, VDF generation, signing, add-block, and transport leaves
+are unchanged. The checked bridge budget falls by 2,068 lines to 40,274; shim
+lines, CXX functions, carriers, handles, shim directories, granular flags,
+partial factories, compatibility constructors, production callers, and
+non-test C++ consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
