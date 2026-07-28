@@ -524,6 +524,22 @@ cascade; the first affected `PillarChainTest.votes_count_changes` case passes wh
 The Python integration runner is additionally unavailable in the current container because its externally managed
 Python installation has neither `virtualenv` nor `pytest`.
 
+The next bounded `CRW-12` owner contraction introduces CXX-free
+`rustaxa-consensus::dag_service::DagService` as the complete DAG runtime owner. It owns the graph and storage handle,
+proposer/verifier/add-block cursors and id sequences, proposer retry state, restoration, initial proposal-period
+mapping, serialization mutex, and the stable DAG poison policy. Stored proposer inputs and selected transactions are
+native domain values rather than CXX carriers. `BridgeDagTransactionService` now embeds the mandatory native service;
+the optional bridge state, bridge mutex, `DAG_SERVICE_UNAVAILABLE` branch, bridge-local session types, construction,
+and restoration logic are deleted. Five native owner tests cover fresh and idempotent restoration, shared storage and
+empty-session publication, persisted PBFT-anchor/non-finalized graph restoration, missing-anchor and malformed-row
+failure-before-publication, and the stable poison identifier. The former bridge restoration behavior test is deleted;
+bridge coverage remains for conversion, external executor revalidation, lock order, and successful shared
+DAG/transaction publication. Injected batch-commit failure coverage remains follow-up validation debt. Shared
+three-service construction, DAG/transaction batch composition, and temporary
+FFI-shaped methods over the public native state/guard remain explicit `CRW-12` debt. The checked bridge budget falls by
+298 lines to 44,559; shim lines, CXX functions, carriers, handles, shim directories, granular flags, partial factories,
+compatibility constructors, production callers, and non-test C++ consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

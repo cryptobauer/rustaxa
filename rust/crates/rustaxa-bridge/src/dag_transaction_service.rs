@@ -1,6 +1,8 @@
-use crate::dag::{build_dag_state_from_storage, DagAddBlockEffectPlan, DagAddBlockRuntimeInput};
+use crate::dag::{
+    DagAddBlockEffectPlan, DagAddBlockRuntimeInput, DagRuntimeAccess, DagRuntimeGuard,
+};
 use crate::ffi::rustaxa_ffi::*;
-use crate::ffi::{BridgeFinalChain, BridgeStorage, DagRuntimeState};
+use crate::ffi::{BridgeFinalChain, BridgeStorage};
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use crate::transaction_manager::{
     append_prepared_dag_transactions_to_batch, build_transaction_state_from_storage,
@@ -8,16 +10,19 @@ use crate::transaction_manager::{
     prepare_transactions_from_dag_block_with_runtime, publish_prepared_dag_transactions,
     TransactionRuntimeAccess, TransactionRuntimeGuard,
 };
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{
     dag_block_transaction_hashes, verify_dag_vdf_sortition_from_block, DagVdfSortitionBlockInput,
+};
+use rustaxa_consensus::dag_service::{
+    DagAddBlockPreparedTransaction, DagAddBlockSession, DagAddBlockStoredPlan,
+    DagProposerTransactionObservation, DagService, DagServiceConfig,
 };
 use rustaxa_consensus::sortition::{SortitionService, SortitionServiceGuard};
 use rustaxa_consensus::transaction_packing_service::TransactionPackingOwner;
 use rustaxa_consensus::transaction_service::TransactionService;
 use std::collections::BTreeMap;
-use std::sync::{Mutex, MutexGuard};
 
 /// Application-owned consensus service containing sibling DAG, sortition, and transaction runtimes.
 ///
@@ -30,7 +35,7 @@ use std::sync::{Mutex, MutexGuard};
 /// failures clean only their owning cursor. No guard crosses an external executor callback.
 pub struct BridgeDagTransactionService {
     transaction: TransactionService,
-    dag: Mutex<Option<DagRuntimeState>>,
+    dag: DagService,
     sortition: SortitionService,
 }
 
@@ -47,15 +52,8 @@ impl BridgeDagTransactionService {
         self.transaction.lock().map(TransactionRuntimeAccess)
     }
 
-    pub(crate) fn dag(&self) -> Result<MutexGuard<'_, Option<DagRuntimeState>>> {
-        let guard = self
-            .dag
-            .lock()
-            .map_err(|_| anyhow!("DAG_TRANSACTION_SERVICE_DAG_LOCK_POISONED"))?;
-        if guard.is_none() {
-            return Err(anyhow!("DAG_SERVICE_UNAVAILABLE"));
-        }
-        Ok(guard)
+    pub(crate) fn dag(&self) -> Result<DagRuntimeGuard<'_>> {
+        self.dag.lock().map(DagRuntimeAccess)
     }
 
     /// Acquires the native sortition owner after any required DAG lock.
@@ -71,19 +69,14 @@ impl BridgeDagTransactionService {
     ///
     /// Sortition is not needed by this operation. A future three-domain
     /// operation must insert its sortition guard between these two guards.
-    fn dag_and_transaction(
-        &self,
-    ) -> Result<(
-        MutexGuard<'_, Option<DagRuntimeState>>,
-        TransactionRuntimeGuard<'_>,
-    )> {
+    fn dag_and_transaction(&self) -> Result<(DagRuntimeGuard<'_>, TransactionRuntimeGuard<'_>)> {
         let dag = self.dag()?;
         let transaction = self.try_transaction()?;
         Ok((dag, transaction))
     }
 }
 
-/// Constructs the production application service and restores both runtimes before publication.
+/// Constructs the production application service and restores all three runtimes before publication.
 pub fn create_dag_transaction_service_from_storage(
     storage: &BridgeStorage,
     genesis: &[u8; 32],
@@ -100,13 +93,18 @@ pub fn create_dag_transaction_service_from_storage(
         gas_pricer_config,
         proposal_dag_gas_limit,
     )?;
-    let mut dag = *build_dag_state_from_storage(genesis, dag_expiry_limit, storage)?;
-    dag.dag_manager_runtime_restore_from_storage()?;
-    dag.dag_manager_runtime_ensure_proposal_period_mapping(max_levels_per_period, 0)?;
+    let dag = DagService::restore(
+        storage.0.clone(),
+        DagServiceConfig {
+            genesis_hash: H256::from(*genesis),
+            dag_expiry_limit,
+            max_levels_per_period,
+        },
+    )?;
     let sortition = SortitionService::restore(sortition_config.into(), storage.0.clone())?;
     Ok(Box::new(BridgeDagTransactionService {
         transaction,
-        dag: Mutex::new(Some(dag)),
+        dag,
         sortition,
     }))
 }
@@ -147,8 +145,7 @@ macro_rules! dag_shared_value_result {
     ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
         pub fn $name(&self, $( $arg: $ty ),*) -> Result<$ret> {
             let guard = self.dag()?;
-            let runtime = guard.as_ref().ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
-            Ok(runtime.$name($( $arg ),*))
+            Ok(guard.$name($( $arg ),*))
         }
     };
 }
@@ -157,8 +154,7 @@ macro_rules! dag_shared_result {
     ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
         pub fn $name(&self, $( $arg: $ty ),*) -> Result<$ret> {
             let guard = self.dag()?;
-            let runtime = guard.as_ref().ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
-            runtime.$name($( $arg ),*)
+            guard.$name($( $arg ),*)
         }
     };
 }
@@ -232,9 +228,7 @@ impl BridgeDagTransactionService {
         finalized_order: Vec<DagHash>,
     ) -> Result<DagManagerFinalizationApplyPayload> {
         let (mut dag_guard, mut transaction) = self.dag_and_transaction()?;
-        let dag = dag_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        let dag = &mut dag_guard;
         let committed =
             dag.dag_manager_runtime_apply_finalized_order(new_anchor, new_period, finalized_order)?;
         transaction
@@ -272,9 +266,7 @@ impl BridgeDagTransactionService {
         input: DagAddBlockPrepareInput,
     ) -> Result<DagAddBlockPreparation> {
         let (mut dag_guard, _transaction) = self.dag_and_transaction()?;
-        let dag = dag_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        let dag = &mut dag_guard;
         ensure!(
             dag.pending_add_block.is_none(),
             "DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE"
@@ -340,7 +332,7 @@ impl BridgeDagTransactionService {
                     inspection.sender_found,
                     "DAG_ADD_BLOCK_PREPARE_TRANSACTION_SENDER_MISSING"
                 );
-                transactions.push(crate::dag::DagAddBlockPreparedTransaction {
+                transactions.push(DagAddBlockPreparedTransaction {
                     input_index: input_index as u64,
                     hash: expected_hash,
                     trx_rlp: payload.trx_rlp,
@@ -357,7 +349,7 @@ impl BridgeDagTransactionService {
         dag.next_add_block_session_id = cursor_id.wrapping_add(1).max(1);
         let stored_plan = stored_add_block_plan(&plan);
         let block_level = block.level;
-        dag.pending_add_block = Some(crate::dag::DagAddBlockSession {
+        dag.pending_add_block = Some(DagAddBlockSession {
             cursor_id,
             block,
             block_rlp: input.block_rlp,
@@ -384,9 +376,7 @@ impl BridgeDagTransactionService {
         input: DagAddBlockCompletionInput,
     ) -> Result<DagAddBlockCommitReport> {
         let (mut dag_guard, mut transaction) = self.dag_and_transaction()?;
-        let dag = dag_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        let dag = &mut dag_guard;
         let session = dag
             .pending_add_block
             .as_ref()
@@ -525,9 +515,7 @@ impl BridgeDagTransactionService {
     /// newer or unrelated preparation.
     pub fn dag_transaction_service_abort_add_block(&self, cursor_id: u64) -> Result<bool> {
         let mut dag_guard = self.dag()?;
-        let dag = dag_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        let dag = &mut dag_guard;
         if dag
             .pending_add_block
             .as_ref()
@@ -559,8 +547,8 @@ fn add_block_runtime_input(
     }
 }
 
-fn stored_add_block_plan(plan: &DagAddBlockEffectPlan) -> crate::dag::DagAddBlockStoredPlan {
-    crate::dag::DagAddBlockStoredPlan {
+fn stored_add_block_plan(plan: &DagAddBlockEffectPlan) -> DagAddBlockStoredPlan {
+    DagAddBlockStoredPlan {
         accepted: plan.accepted,
         persist_transactions: plan.persist_transactions,
         persist_block: plan.persist_block,
@@ -642,9 +630,7 @@ pub fn dag_transaction_service_proposer_pack_prepare(
 ) -> Result<DagProposerSessionStep> {
     if network_throttled {
         let mut dag_guard = service.dag()?;
-        let dag = dag_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        let dag = &mut dag_guard;
         if let Err(error) =
             crate::dag::dag_manager_runtime_proposer_pack_parameters(dag, session_id)
         {
@@ -667,9 +653,7 @@ pub fn dag_transaction_service_proposer_pack_prepare(
 
     let owner = TransactionPackingOwner::DagProposer(session_id);
     let (mut dag_guard, mut transaction) = service.dag_and_transaction()?;
-    let dag = dag_guard
-        .as_mut()
-        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let dag = &mut dag_guard;
     let params = match crate::dag::dag_manager_runtime_proposer_pack_parameters(dag, session_id) {
         Ok(params) => params,
         Err(error) => {
@@ -730,9 +714,7 @@ pub fn dag_transaction_service_proposer_pack_finalize(
 ) -> Result<DagProposerSessionStep> {
     let owner = TransactionPackingOwner::DagProposer(session_id);
     let (mut dag_guard, mut transaction) = service.dag_and_transaction()?;
-    let dag = dag_guard
-        .as_mut()
-        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let dag = &mut dag_guard;
     if let Err(error) = crate::dag::dag_manager_runtime_proposer_pack_parameters(dag, session_id) {
         transaction.transaction_manager_runtime_pack_abort_for_owner(owner);
         crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
@@ -765,17 +747,15 @@ pub fn dag_transaction_service_proposer_pack_finalize(
 
 /// Idempotently aborts the matching transaction and DAG proposer cursors.
 ///
-/// Services without DAG state return `DAG_SERVICE_UNAVAILABLE` before acquiring or mutating transaction state. The return
-/// value is true when either matching cursor was removed; wrong-owner transaction cursors are preserved.
+/// The return value is true when either matching cursor was removed;
+/// wrong-owner transaction cursors are preserved.
 pub fn dag_transaction_service_proposer_pack_abort(
     service: &BridgeDagTransactionService,
     session_id: u64,
 ) -> Result<bool> {
     let owner = TransactionPackingOwner::DagProposer(session_id);
     let (mut dag_guard, mut transaction) = service.dag_and_transaction()?;
-    let dag = dag_guard
-        .as_mut()
-        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let dag = &mut dag_guard;
     let transaction_aborted = transaction.transaction_manager_runtime_pack_abort_for_owner(owner);
     let dag_aborted = crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
     Ok(transaction_aborted || dag_aborted)
@@ -785,7 +765,7 @@ macro_rules! dag_free_mut_result {
     ($outer:ident, $inner:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
         pub fn $outer(service: &BridgeDagTransactionService, $( $arg: $ty ),*) -> Result<$ret> {
             let mut guard = service.dag()?;
-            let runtime = guard.as_mut().ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+            let runtime = &mut guard;
             Ok($inner(runtime, $( $arg ),*))
         }
     };
@@ -795,7 +775,7 @@ macro_rules! dag_free_mut_fallible {
     ($outer:ident, $inner:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
         pub fn $outer(service: &BridgeDagTransactionService, $( $arg: $ty ),*) -> Result<$ret> {
             let mut guard = service.dag()?;
-            let runtime = guard.as_mut().ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+            let runtime = &mut guard;
             $inner(runtime, $( $arg ),*)
         }
     };
@@ -815,9 +795,7 @@ pub fn service_dag_manager_runtime_verify_block_session_prepare_transactions(
     service: &BridgeDagTransactionService,
 ) -> Result<DagVerifyBlockTransactionPreparation> {
     let (dag_guard, transaction) = service.dag_and_transaction()?;
-    let dag = dag_guard
-        .as_ref()
-        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let dag = &dag_guard;
     let query = dag_manager_runtime_verify_block_transaction_query(dag)?;
     let requests = verify_block_transaction_view_requests(&query);
     let plan = transaction.transaction_manager_runtime_lookup_transaction_views(
@@ -842,9 +820,7 @@ pub fn service_dag_manager_runtime_verify_block_session_complete_transactions(
     report: DagVerifyBlockTransactionCompletionReport,
 ) -> Result<DagVerifyBlockSessionStep> {
     let (mut dag_guard, transaction) = service.dag_and_transaction()?;
-    let dag = dag_guard
-        .as_mut()
-        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let dag = &mut dag_guard;
     let query = dag_manager_runtime_validate_verify_block_transaction_completion(
         dag,
         report.cursor_id,
@@ -915,9 +891,7 @@ fn service_dag_manager_runtime_verify_block_session_report_authorization_with_ho
 ) -> Result<DagVerifyBlockSessionStep> {
     let snapshot = {
         let mut dag_guard = service.dag()?;
-        let dag = dag_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        let dag = &mut dag_guard;
         match dag_manager_runtime_prepare_verify_block_authorization(dag) {
             DagVerifyBlockAuthorizationPreparation::Snapshot(snapshot) => snapshot,
             DagVerifyBlockAuthorizationPreparation::Step(step) => return Ok(step),
@@ -940,9 +914,7 @@ fn service_dag_manager_runtime_verify_block_session_report_authorization_with_ho
         Ok(facts) => facts,
         Err(error) => {
             let mut dag_guard = service.dag()?;
-            let dag = dag_guard
-                .as_mut()
-                .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+            let dag = &mut dag_guard;
             dag_manager_runtime_cleanup_verify_block_authorization(dag, &snapshot);
             return Err(error);
         }
@@ -951,9 +923,7 @@ fn service_dag_manager_runtime_verify_block_session_report_authorization_with_ho
     between_query_and_apply();
 
     let mut dag_guard = service.dag()?;
-    let dag = dag_guard
-        .as_mut()
-        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let dag = &mut dag_guard;
     dag_manager_runtime_apply_verify_block_authorization(dag, &snapshot, facts)
 }
 dag_free_mut_fallible!(service_dag_manager_runtime_verify_block_session_report_gas, dag_manager_runtime_verify_block_session_report_gas(report: DagVerifyBlockGasReport) -> DagVerifyBlockSessionStep);
@@ -966,9 +936,7 @@ pub fn service_dag_transaction_service_verify_block_session_vdf(
 ) -> Result<DagVerifyBlockSessionStep> {
     let snapshot = {
         let dag_guard = service.dag()?;
-        let dag = dag_guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        let dag = &dag_guard;
         dag_manager_runtime_snapshot_verify_block_vdf(dag, request.cursor_id)?
     };
 
@@ -1008,9 +976,7 @@ pub fn service_dag_transaction_service_verify_block_session_vdf(
     };
 
     let mut dag_guard = service.dag()?;
-    let dag = dag_guard
-        .as_mut()
-        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let dag = &mut dag_guard;
     dag_manager_runtime_complete_verify_block_vdf(dag, &snapshot, vdf_status)
 }
 
@@ -1033,9 +999,7 @@ pub fn service_dag_manager_runtime_begin_proposer_session(
     input: DagProposerSessionBeginInput,
 ) -> Result<u64> {
     let (mut dag_guard, transaction) = service.dag_and_transaction()?;
-    let dag = dag_guard
-        .as_mut()
-        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let dag = &mut dag_guard;
     let transaction_observation = DagProposerTransactionObservation {
         transaction_pool_size: transaction.transaction_manager_runtime_queue_size() as u64,
         non_finalized_transaction_count: transaction
@@ -1076,9 +1040,7 @@ fn service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_ho
 ) -> Result<DagProposerSessionStep> {
     let preparation = {
         let mut dag_guard = service.dag()?;
-        let dag = dag_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        let dag = &mut dag_guard;
         dag_manager_runtime_prepare_proposer_final_chain_facts(dag, session_id)
     };
     let snapshot = match preparation {
@@ -1094,9 +1056,7 @@ fn service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_ho
         Ok(params) => params,
         Err(error) => {
             let mut dag_guard = service.dag()?;
-            let dag = dag_guard
-                .as_mut()
-                .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+            let dag = &mut dag_guard;
             dag_manager_runtime_cleanup_proposer_final_chain_facts(dag, &snapshot);
             return Err(error);
         }
@@ -1111,9 +1071,7 @@ fn service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_ho
             Ok(facts) => facts,
             Err(error) => {
                 let mut dag_guard = service.dag()?;
-                let dag = dag_guard
-                    .as_mut()
-                    .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+                let dag = &mut dag_guard;
                 dag_manager_runtime_cleanup_proposer_final_chain_facts(dag, &snapshot);
                 return Err(error);
             }
@@ -1121,9 +1079,7 @@ fn service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_ho
     between_lookups();
 
     let mut dag_guard = service.dag()?;
-    let dag = dag_guard
-        .as_mut()
-        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let dag = &mut dag_guard;
     let sortition = match service.sortition() {
         Ok(sortition) => sortition,
         Err(error) => {
@@ -1424,10 +1380,7 @@ mod tests {
                 .expect("proposer session");
         let snapshot = {
             let mut dag = service.dag().unwrap();
-            match dag_manager_runtime_prepare_proposer_final_chain_facts(
-                dag.as_mut().unwrap(),
-                session_id,
-            ) {
+            match dag_manager_runtime_prepare_proposer_final_chain_facts(&mut dag, session_id) {
                 DagProposerFinalChainFactsPreparation::Snapshot(snapshot) => snapshot,
                 DagProposerFinalChainFactsPreparation::Step(_) => {
                     panic!("proposer cursor should request FinalChain facts")
@@ -1442,7 +1395,7 @@ mod tests {
         let mut dag = service.dag().unwrap();
         let _sortition = service.sortition().unwrap();
         let step = dag_manager_runtime_apply_proposer_final_chain_facts(
-            dag.as_mut().unwrap(),
+            &mut dag,
             &snapshot,
             0,
             rustaxa_consensus::dag::DagDposAuthorizationFacts {
@@ -1723,7 +1676,7 @@ mod tests {
         );
         let snapshot = {
             let mut dag = service.dag().unwrap();
-            match dag_manager_runtime_prepare_verify_block_authorization(dag.as_mut().unwrap()) {
+            match dag_manager_runtime_prepare_verify_block_authorization(&mut dag) {
                 DagVerifyBlockAuthorizationPreparation::Snapshot(snapshot) => snapshot,
                 DagVerifyBlockAuthorizationPreparation::Step(_) => {
                     panic!("verification cursor should await authorization")
@@ -1732,7 +1685,7 @@ mod tests {
         };
         let mut dag = service.dag().unwrap();
         dag_manager_runtime_apply_verify_block_authorization(
-            dag.as_mut().unwrap(),
+            &mut dag,
             &snapshot,
             rustaxa_consensus::dag::DagDposAuthorizationFacts {
                 vrf_key: Some(public_key_from_secret(&SECRET_KEY).unwrap()),
@@ -1908,10 +1861,8 @@ mod tests {
         );
 
         {
-            let mut dag = service.dag().unwrap();
-            dag.as_mut()
-                .unwrap()
-                .dag_manager_runtime_ensure_proposal_period_mapping(1, 1)
+            let dag = service.dag().unwrap();
+            dag.dag_manager_runtime_ensure_proposal_period_mapping(1, 1)
                 .unwrap();
         }
         let proposer_block = sign_vdf_test_block(&vdf_test_block(Vec::new(), 0));
@@ -2016,7 +1967,7 @@ mod tests {
         let start_vdf = {
             let mut dag = service.dag().unwrap();
             dag_manager_runtime_apply_proposer_pack(
-                dag.as_mut().unwrap(),
+                &mut dag,
                 session_id,
                 false,
                 vec![TransactionPackSelectedTransaction {
@@ -2100,8 +2051,7 @@ mod tests {
                 || {
                     let mut dag = service.dag().unwrap();
                     assert!(dag_manager_runtime_abort_proposer_session(
-                        dag.as_mut().unwrap(),
-                        stale_id
+                        &mut dag, stale_id
                     ));
                 },
             )
@@ -2226,8 +2176,6 @@ mod tests {
         );
         assert!(!service
             .dag()
-            .unwrap()
-            .as_ref()
             .unwrap()
             .proposer_sessions
             .contains_key(&corrupt));
@@ -2478,14 +2426,13 @@ mod tests {
 
         let snapshot = {
             let dag = service.dag().unwrap();
-            dag_manager_runtime_snapshot_verify_block_vdf(dag.as_ref().unwrap(), vdf.cursor_id)
-                .unwrap()
+            dag_manager_runtime_snapshot_verify_block_vdf(&dag, vdf.cursor_id).unwrap()
         };
         begin_verify_block_session(&service, &[], &[]);
         let stale = {
             let mut dag = service.dag().unwrap();
             dag_manager_runtime_complete_verify_block_vdf(
-                dag.as_mut().unwrap(),
+                &mut dag,
                 &snapshot,
                 rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
             )
@@ -3475,8 +3422,6 @@ mod tests {
         assert!(!full
             .dag()
             .unwrap()
-            .as_ref()
-            .unwrap()
             .dag_manager_runtime_ensure_proposal_period_mapping(100, 0)
             .unwrap());
 
@@ -3506,12 +3451,7 @@ mod tests {
                 assert!(!full.transaction_manager_runtime_pack_abort());
             });
             scope.spawn(|| {
-                full.dag()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .dag_manager_runtime_restore_from_storage()
-                    .unwrap();
+                assert_eq!(full.dag().unwrap().dag_manager_runtime_vertex_count(), 1);
             });
         });
         drop(restored);
@@ -3843,7 +3783,7 @@ mod tests {
         let tx_hash = H256::from([7u8; 32]);
         {
             let mut dag_guard = service.dag().unwrap();
-            let dag = dag_guard.as_mut().unwrap();
+            let dag = &mut dag_guard;
             dag.dag_manager_runtime_add_block(DagManagerBlock {
                 hash: [3u8; 32],
                 pivot: [1u8; 32],

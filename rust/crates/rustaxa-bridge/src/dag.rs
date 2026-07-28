@@ -9,7 +9,8 @@ use crate::ffi::rustaxa_ffi::{
     DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep, HashLookup,
     TransactionPackSelectedTransaction,
 };
-use crate::ffi::{BridgeStorage, DagRuntimeState};
+#[cfg(test)]
+use crate::ffi::BridgeStorage;
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 #[cfg(test)]
@@ -19,19 +20,17 @@ use rustaxa_consensus::dag::{
     construct_dag_vdf_message, dag_block_exists_in_storage,
     dag_manager_block_from_rlp as domain_dag_manager_block_from_rlp,
     dag_persistence_counters_from_storage, decide_dag_verify_vdf_dpos_authorization,
-    ensure_proposal_period_mapping, finalize_dag_proposer_signed_block_intent,
-    load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_add_block_effects,
-    plan_dag_proposer_attempt, plan_dag_proposer_block_construction_from_storage,
-    plan_dag_proposer_block_intent, plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset,
-    plan_dag_proposer_stale_proof, plan_dag_proposer_tip_selection_from_storage,
-    plan_dag_proposer_vdf_wait, plan_dag_proposer_worker_command,
-    plan_dag_verify_transaction_query, proposal_period_for_level_from_storage,
-    save_dag_block_to_storage, validate_dag_verify_gas,
+    finalize_dag_proposer_signed_block_intent, load_dag_block_from_storage,
+    period_block_hash_from_storage, plan_dag_add_block_effects, plan_dag_proposer_attempt,
+    plan_dag_proposer_block_construction_from_storage, plan_dag_proposer_block_intent,
+    plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
+    plan_dag_proposer_tip_selection_from_storage, plan_dag_proposer_vdf_wait,
+    plan_dag_proposer_worker_command, plan_dag_verify_transaction_query,
+    proposal_period_for_level_from_storage, save_dag_block_to_storage, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
     verify_precheck_from_storage, DagManagerBlock as DomainDagManagerBlock,
     DagManagerFinalizationCleanupStoragePayload as DomainDagManagerFinalizationCleanupStoragePayload,
-    DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
-    DagManagerSnapshot as DomainDagManagerSnapshot, DagManagerState,
+    DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan, DagManagerState,
     DagProposerAttemptInput as DomainDagProposerAttemptInput,
     DagProposerAttemptPlan as DomainDagProposerAttemptPlan,
     DagProposerBlockIntentInput as DomainDagProposerBlockIntentInput,
@@ -47,12 +46,45 @@ use rustaxa_consensus::dag::{
     DagVerifyTransactionAvailabilityInput as DomainDagVerifyTransactionAvailabilityInput,
     DagVerifyVdfDposFacts as DomainDagVerifyVdfDposFacts,
 };
-use rustaxa_consensus::pbft_chain::restore_pbft_chain_from_storage;
+use rustaxa_consensus::dag_service::{
+    DagProposerObservation, DagProposerRetryState, DagProposerSession, DagProposerSessionAction,
+    DagProposerSessionBeginInput as DomainDagProposerSessionBeginInput,
+    DagProposerTransactionObservation, DagServiceGuard, DagServiceState as DagRuntimeState,
+    DagVerifyBlockSession, DagVerifyBlockSessionAction,
+};
 use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
+use rustaxa_consensus::transaction_packing_service::TransactionPackingSelection;
 use rustaxa_storage::Storage;
+#[cfg(test)]
 use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tiny_keccak::{Hasher, Keccak};
+
+/// Temporary FFI adapter over a short-lived native DAG guard or owned test state.
+pub(crate) struct DagRuntimeAccess<T>(pub(crate) T);
+
+impl<T> Deref for DagRuntimeAccess<T>
+where
+    T: Deref<Target = DagRuntimeState>,
+{
+    type Target = DagRuntimeState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for DagRuntimeAccess<T>
+where
+    T: DerefMut<Target = DagRuntimeState>,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+pub(crate) type DagRuntimeGuard<'a> = DagRuntimeAccess<DagServiceGuard<'a>>;
 
 /// Module-private deterministic plan for advancing DAG finalization state.
 ///
@@ -156,43 +188,6 @@ const DAG_PROPOSER_SESSION_ACTION_SIGN_BLOCK: u8 = 5;
 const DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK: u8 = 6;
 const DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS: u8 = 7;
 
-#[derive(Clone)]
-enum DagVerifyBlockSessionAction {
-    TransactionQuery(Vec<H256>),
-    AuthorizationFacts,
-    VdfSortition {
-        vote_count: u64,
-        max_vote_count: u64,
-        vrf_public_key: [u8; 32],
-    },
-    Gas,
-    Complete,
-}
-
-/// Ordered Rust-owned cursor for one `DagManager::verifyBlock` call.
-///
-/// The session owns deterministic validation ordering and terminal reject
-/// selection. Transaction availability advances only after a cursor-bound
-/// prepare/materialize/complete exchange. C++ otherwise supplies requested
-/// FinalChain DPoS/VRF authorization facts, VDF verifier status, and EVM-backed
-/// gas-estimation facts.
-pub struct DagVerifyBlockSession {
-    cursor_id: u64,
-    fingerprint: [u8; 32],
-    generation: u64,
-    action: DagVerifyBlockSessionAction,
-    /// Canonical candidate tips retained for private gas lookup after VDF validation.
-    tips: Vec<H256>,
-    proposal_period: u64,
-    block_rlp: Vec<u8>,
-    expected_transactions: u64,
-    reject_code: u32,
-    sender_eligible_vote_count: u64,
-    vdf_sortition_max_vote_count: u64,
-    eligibility_status: u8,
-    error_code: String,
-}
-
 /// Private identity and verifier inputs captured from one active VDF action.
 ///
 /// No runtime guard survives the snapshot. Cursor identity, immutable candidate
@@ -206,48 +201,6 @@ pub(crate) struct DagVerifyBlockVdfSnapshot {
     pub vote_count: u64,
     pub max_vote_count: u64,
     pub vrf_public_key: [u8; 32],
-}
-
-enum DagProposerSessionAction {
-    CollectFinalChainFacts,
-    PackTransactions,
-    StartVdf,
-    StaleProofSleep,
-    SignBlock,
-    AddBlock,
-    Complete,
-}
-
-/// Ordered Rust-owned cursor for one `DagBlockProposer::proposeDagBlock` attempt.
-///
-/// The session owns deterministic proposer stage ordering and retry-cursor
-/// updates. C++ still executes external boundaries: live transaction packing,
-/// VDF proof work, compatibility sleep, signing/materialization, `addDagBlock`,
-/// and network effects owned by downstream executors.
-pub struct DagProposerSession {
-    action: DagProposerSessionAction,
-    begin_input: DagProposerSessionBeginInput,
-    transaction_observation: DagProposerTransactionObservation,
-    observation: DagProposerObservation,
-    attempt: DomainDagProposerAttemptPlan,
-    retry_key: [u8; 32],
-    minimum_vdf_difficulty: u16,
-    sortition_params: SortitionParams,
-    status: u8,
-    reason_code: u32,
-    return_value: bool,
-    update_retry_state: bool,
-    next_last_propose_level: u64,
-    next_retry_count: u64,
-    record_proposed_block: bool,
-    vdf_message: Vec<u8>,
-    selected_transaction_hashes: Vec<H256>,
-    transaction_gas_estimations: Vec<u64>,
-    selected_transactions: Vec<TransactionPackSelectedTransaction>,
-    vdf_rlp: Vec<u8>,
-    unsigned_intent: Option<DomainDagProposerUnsignedBlockIntent>,
-    signed_intent: Option<rustaxa_consensus::dag::DagProposerSignedBlockIntent>,
-    error_code: String,
 }
 
 /// Exact proposer identity retained across historical sortition lookups.
@@ -268,62 +221,6 @@ pub(crate) enum DagProposerFinalChainFactsPreparation {
     Step(Box<DagProposerSessionStep>),
 }
 
-/// Transaction-pressure snapshot captured from the sibling Rust runtime when a
-/// DAG proposer session begins.
-///
-/// Both counts are immutable for the cursor lifetime and feed only the
-/// deterministic empty-pool and non-finalized-limit gates. They are expressed
-/// as `u64` to match domain planner inputs; the composed service derives them
-/// from sizes held under the TransactionManager lock.
-#[derive(Clone, Copy)]
-pub(crate) struct DagProposerTransactionObservation {
-    pub transaction_pool_size: u64,
-    pub non_finalized_transaction_count: u64,
-}
-
-/// One transaction inspected during non-mutating add-block preparation.
-#[derive(Clone)]
-pub(crate) struct DagAddBlockPreparedTransaction {
-    pub input_index: u64,
-    pub hash: H256,
-    pub trx_rlp: Vec<u8>,
-    pub transaction_nonce: [u8; 32],
-}
-
-/// Pending cursor for one composed accepted-DAG transition.
-#[derive(Clone)]
-pub(crate) struct DagAddBlockSession {
-    pub cursor_id: u64,
-    pub block: rustaxa_consensus::dag::DagManagerBlock,
-    pub block_rlp: Vec<u8>,
-    pub save: bool,
-    pub proposed: bool,
-    pub transactions: Vec<DagAddBlockPreparedTransaction>,
-    pub plan: DagAddBlockStoredPlan,
-}
-
-/// Copyable add-block plan retained across the external latest-account read.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DagAddBlockStoredPlan {
-    pub accepted: bool,
-    pub persist_transactions: bool,
-    pub persist_block: bool,
-    pub add_to_graph: bool,
-    pub emit_verified: bool,
-    pub gossip: bool,
-    pub proposed: bool,
-}
-
-#[derive(Clone)]
-struct DagProposerObservation {
-    frontier: DomainDagProposerFrontierFacts,
-    proposal_period_found: bool,
-    proposal_period: u64,
-    period_block_hash_found: bool,
-    period_block_hash: H256,
-    fingerprint: [u8; 32],
-}
-
 /// Private pack configuration derived from one live DAG proposer cursor.
 pub(crate) struct DagProposerPackParameters {
     pub proposal_period: u64,
@@ -331,17 +228,6 @@ pub(crate) struct DagProposerPackParameters {
     pub total_transaction_shards: u16,
     pub node_transaction_shard: u16,
     pub shard_period_interval: u64,
-}
-
-/// Rust-owned durable retry cursor for one configured DAG proposer wallet.
-///
-/// The DAG manager runtime keys this by proposer wallet VRF public key. It is
-/// read when a proposal session begins and updated atomically with terminal
-/// session steps that request retry-state changes.
-pub struct DagProposerRetryState {
-    last_propose_level: u64,
-    retry_count: u64,
-    max_retry_count: u64,
 }
 
 struct DagManagerRuntimeSyncSnapshot {
@@ -356,12 +242,13 @@ struct DagManagerRuntimeSyncSnapshot {
 /// cannot publish or pass it as a standalone bridge handle. Construction does
 /// not restore persisted state, so the service factory must restore both sibling
 /// domains before publishing the composed service.
+#[cfg(test)]
 pub(crate) fn build_dag_state_from_storage(
     genesis: &[u8; 32],
     dag_expiry_limit: u32,
     storage: &BridgeStorage,
-) -> Result<Box<DagRuntimeState>> {
-    Ok(Box::new(DagRuntimeState {
+) -> Result<Box<DagRuntimeAccess<Box<DagRuntimeState>>>> {
+    Ok(Box::new(DagRuntimeAccess(Box::new(DagRuntimeState {
         state: DagManagerState::new(to_h256(genesis), dag_expiry_limit)?,
         storage: storage.0.clone(),
         next_proposer_session_id: 1,
@@ -371,91 +258,13 @@ pub(crate) fn build_dag_state_from_storage(
         proposer_retry_states: BTreeMap::new(),
         verify_block_session: None,
         pending_add_block: None,
-    }))
+    }))))
 }
 
-impl DagRuntimeState {
-    /// Rebuilds the in-memory DAG runtime from canonical Rust storage.
-    ///
-    /// Inputs:
-    /// - the runtime's existing Rust storage handle, which owns PBFT-chain head
-    ///   recovery and non-finalized DAG block payload rows.
-    ///
-    /// Outputs:
-    /// - replaces the runtime state with a snapshot derived from Rust storage.
-    ///
-    /// Invariants and edge behavior:
-    /// - PBFT period and a nonzero current anchor come from Rust PBFT-chain
-    ///   storage restore. When fresh storage yields the default head's zero
-    ///   anchor, the configured genesis anchor already present in the runtime
-    ///   remains authoritative.
-    /// - Non-finalized DAG block facts are decoded from canonical signed DAG
-    ///   block RLP bytes in Rust storage; malformed rows are returned as
-    ///   bridge errors.
-    /// - The previous anchor is not persisted separately in Rust storage today,
-    ///   so it is restored to the current anchor. Finalization transitions
-    ///   update both anchors through the Rust runtime after startup.
-    pub fn dag_manager_runtime_restore_from_storage(&mut self) -> Result<()> {
-        let pbft_restore = restore_pbft_chain_from_storage(self.storage.as_ref())
-            .context("DAG_RUNTIME_RESTORE_PBFT_HEAD")?;
-        let stored_anchor = pbft_restore.head.last_non_null_pbft_dag_anchor_hash;
-        let anchor = if stored_anchor == H256::zero() {
-            self.state.anchor()
-        } else {
-            stored_anchor
-        };
-        let anchor_level = if stored_anchor == H256::zero() {
-            0
-        } else {
-            self.storage
-                .dag()
-                .by_hash(anchor)
-                .with_context(|| format!("DAG_RUNTIME_RESTORE_ANCHOR_BLOCK: {anchor:?}"))?
-                .level
-        };
-
-        let mut non_finalized_blocks = Vec::new();
-        for (_level, blocks) in self
-            .storage
-            .dag()
-            .non_finalized()
-            .context("DAG_RUNTIME_RESTORE_NON_FINALIZED_BLOCKS")?
-        {
-            for block_rlp in blocks {
-                non_finalized_blocks.push(
-                    domain_dag_manager_block_from_rlp(&block_rlp)
-                        .context("DAG_RUNTIME_RESTORE_NON_FINALIZED_BLOCK_DECODE")?,
-                );
-            }
-        }
-
-        let max_level = non_finalized_blocks
-            .iter()
-            .map(|block| block.level)
-            .chain((stored_anchor != H256::zero()).then_some(anchor_level))
-            .max()
-            .unwrap_or(0);
-        let non_finalized_min_difficulty = non_finalized_blocks
-            .iter()
-            .map(|block| block.difficulty)
-            .min()
-            .unwrap_or(u32::MAX);
-        let dag_expiry_level = max_level.saturating_sub(u64::from(self.state.dag_expiry_limit()));
-
-        self.state
-            .rebuild_from_snapshot(DomainDagManagerSnapshot {
-                old_anchor: anchor,
-                anchor,
-                anchor_level,
-                period: pbft_restore.head.size,
-                max_level,
-                dag_expiry_level,
-                non_finalized_min_difficulty,
-                non_finalized_blocks,
-            })
-            .context("DAG_RUNTIME_RESTORE_REBUILD")
-    }
-
+impl<T> DagRuntimeAccess<T>
+where
+    T: DerefMut<Target = DagRuntimeState>,
+{
     /// Adds one accepted DAG block to the in-memory Rust state.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn dag_manager_runtime_add_block(&mut self, block: DagManagerBlock) -> Result<()> {
@@ -872,6 +681,7 @@ impl DagRuntimeState {
         input: DagProposerSessionBeginInput,
         transaction_observation: DagProposerTransactionObservation,
     ) -> Result<u64> {
+        let input = to_domain_proposer_session_begin_input(input);
         let retry_key = input.wallet_vrf_public_key;
         let observation = self.proposer_observation()?;
         let attempt = placeholder_attempt(&observation, &input);
@@ -1166,12 +976,13 @@ impl DagRuntimeState {
     ///
     /// Returns true when a mapping write was required and false when the
     /// existing lookup already resolves to `period`.
+    #[cfg(test)]
     pub fn dag_manager_runtime_ensure_proposal_period_mapping(
         &self,
         level: u64,
         period: u64,
     ) -> Result<bool> {
-        ensure_proposal_period_mapping(self.storage.as_ref(), level, period)
+        rustaxa_consensus::dag::ensure_proposal_period_mapping(self.storage.as_ref(), level, period)
     }
 
     /// Resolves the finalized proposal period for a DAG level through the
@@ -1284,7 +1095,7 @@ pub fn dag_manager_runtime_begin_verify_block_session(
     runtime: &mut DagRuntimeState,
     input: DagVerifyBlockSessionInput,
 ) -> Result<()> {
-    runtime.begin_verify_block_session(input)
+    DagRuntimeAccess(runtime).begin_verify_block_session(input)
 }
 
 /// Returns the next requested action for the runtime-owned DAG verification cursor.
@@ -1661,7 +1472,7 @@ pub fn dag_manager_runtime_verify_block_session_report_gas(
     let needs_tip_gas = report.dag_gas_limit == 0
         || (tips.len() as u64).saturating_add(1) > report.pbft_gas_limit / report.dag_gas_limit;
     let tip_gas_estimations = if needs_tip_gas {
-        runtime.dag_manager_runtime_tip_gas_estimations(&tips)?
+        DagRuntimeAccess(&mut *runtime).dag_manager_runtime_tip_gas_estimations(&tips)?
     } else {
         Vec::new()
     };
@@ -1701,7 +1512,7 @@ pub(crate) fn dag_manager_runtime_begin_proposer_session(
     input: DagProposerSessionBeginInput,
     transaction_observation: DagProposerTransactionObservation,
 ) -> Result<u64> {
-    runtime.begin_proposer_session(input, transaction_observation)
+    DagRuntimeAccess(runtime).begin_proposer_session(input, transaction_observation)
 }
 
 /// Removes a runtime-owned DAG proposal cursor without applying retry-state effects.
@@ -1843,7 +1654,7 @@ pub(crate) fn dag_manager_runtime_apply_proposer_final_chain_facts(
         "DAG_PROPOSER_SESSION_SORTITION_PARAMS_STALE_RETRY"
     );
 
-    let current = match runtime.proposer_observation() {
+    let current = match DagRuntimeAccess(&mut *runtime).proposer_observation() {
         Ok(current) => current,
         Err(error) => {
             runtime.proposer_sessions.remove(&snapshot.session_id);
@@ -1992,7 +1803,14 @@ pub(crate) fn dag_manager_runtime_apply_proposer_pack(
             session.attempt.frontier.pivot,
             &session.selected_transaction_hashes,
         );
-        session.selected_transactions = selected_transactions;
+        session.selected_transactions = selected_transactions
+            .into_iter()
+            .map(|selected| TransactionPackingSelection {
+                hash: H256::from(selected.hash),
+                gas_used: selected.gas_used,
+                transaction_rlp: selected.tx_rlp,
+            })
+            .collect();
         session.action = DagProposerSessionAction::StartVdf;
     }
     let step = dag_proposer_session_step(session);
@@ -2049,7 +1867,7 @@ fn revalidate_proposer_session_observation(
     runtime: &mut DagRuntimeState,
     session_id: u64,
 ) -> Result<Option<DagProposerSessionStep>> {
-    let current = match runtime.proposer_observation() {
+    let current = match DagRuntimeAccess(&mut *runtime).proposer_observation() {
         Ok(current) => current,
         Err(error) => {
             runtime.proposer_sessions.remove(&session_id);
@@ -2382,7 +2200,7 @@ fn to_h256(hash: &[u8; 32]) -> H256 {
 }
 
 fn domain_attempt_input(
-    input: &DagProposerSessionBeginInput,
+    input: &DomainDagProposerSessionBeginInput,
     transaction_observation: DagProposerTransactionObservation,
     observation: &DagProposerObservation,
     last_finalized_period: u64,
@@ -2427,7 +2245,7 @@ fn domain_attempt_input(
 
 fn placeholder_attempt(
     observation: &DagProposerObservation,
-    input: &DagProposerSessionBeginInput,
+    input: &DomainDagProposerSessionBeginInput,
 ) -> DomainDagProposerAttemptPlan {
     DomainDagProposerAttemptPlan {
         action: rustaxa_consensus::dag::DAG_PROPOSER_ACTION_SKIP,
@@ -2453,6 +2271,29 @@ fn placeholder_attempt(
         total_transaction_shards: input.total_transaction_shards,
         node_transaction_shard: input.node_transaction_shard,
         shard_period_interval: input.shard_period_interval,
+    }
+}
+
+fn to_domain_proposer_session_begin_input(
+    input: DagProposerSessionBeginInput,
+) -> DomainDagProposerSessionBeginInput {
+    DomainDagProposerSessionBeginInput {
+        max_non_finalized_transactions: input.max_non_finalized_transactions,
+        dag_expiry_level_limit: input.dag_expiry_level_limit,
+        wallet_vrf_public_key: input.wallet_vrf_public_key,
+        wallet_vrf_secret: input.wallet_vrf_secret,
+        proposer_address: input.proposer_address,
+        max_non_finalized_dag_blocks: input.max_non_finalized_dag_blocks,
+        max_non_finalized_dag_blocks_low_difficulty: input
+            .max_non_finalized_dag_blocks_low_difficulty,
+        max_retry_count: input.max_retry_count,
+        proposal_weight_limit: input.proposal_weight_limit,
+        total_transaction_shards: input.total_transaction_shards,
+        node_transaction_shard: input.node_transaction_shard,
+        shard_period_interval: input.shard_period_interval,
+        pbft_gas_limit: input.pbft_gas_limit,
+        dag_gas_limit: input.dag_gas_limit,
+        max_tips: input.max_tips,
     }
 }
 
@@ -2566,9 +2407,9 @@ fn dag_proposer_session_step(session: &DagProposerSession) -> DagProposerSession
                 .selected_transactions
                 .iter()
                 .map(|selected| TransactionPackSelectedTransaction {
-                    hash: selected.hash,
+                    hash: selected.hash.0,
                     gas_used: selected.gas_used,
-                    tx_rlp: selected.tx_rlp.clone(),
+                    tx_rlp: selected.transaction_rlp.clone(),
                 })
                 .collect()
         } else {
@@ -3067,29 +2908,6 @@ mod tests {
         period_data.append_empty_data();
         period_data.begin_list(0);
         period_data.out().to_vec()
-    }
-
-    fn dag_block_with_pivot_level_and_difficulty(
-        pivot: H256,
-        level: u64,
-        difficulty: u16,
-    ) -> Vec<u8> {
-        let mut vdf_payload = RlpStream::new_list(4);
-        vdf_payload.append(&vec![0x11u8; 80]);
-        vdf_payload.append(&vec![0x22u8]);
-        vdf_payload.append(&vec![0x33u8]);
-        vdf_payload.append(&difficulty);
-
-        let mut block = RlpStream::new_list(8);
-        block.append(&pivot);
-        block.append(&level);
-        block.append(&0u64);
-        block.append(&vdf_payload.out().to_vec());
-        block.begin_list(0);
-        block.begin_list(0);
-        block.append(&&[0u8; 65][..]);
-        block.append(&123u64);
-        block.out().to_vec()
     }
 
     const SECRET_KEY: [u8; 64] = [
@@ -5224,97 +5042,6 @@ mod tests {
 
             assert_eq!(payload.remove_transaction_hashes.len(), 1);
             assert_eq!(payload.remove_transaction_hashes[0].hash, [1u8; 32]);
-        }
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn dag_manager_runtime_restore_from_storage_rebuilds_graph_without_legacy_snapshot() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_restore_from_storage");
-
-        {
-            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-                .expect("storage should initialize");
-            let seed_runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
-                .expect("seed runtime should initialize");
-
-            let anchor_rlp = dag_block_with_pivot_level_and_difficulty(H256::from([1u8; 32]), 3, 3);
-            let anchor_facts =
-                dag_manager_block_from_rlp(anchor_rlp.clone()).expect("anchor block facts");
-            let anchor_hash = H256::from(anchor_facts.hash);
-            let live_rlp = dag_block_with_pivot_level_and_difficulty(anchor_hash, 4, 4);
-            let live_facts =
-                dag_manager_block_from_rlp(live_rlp.clone()).expect("live block facts");
-
-            let pbft_block = signed_pbft_block_with_pivot(1, 123, anchor_hash);
-            let pbft_link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&pbft_block))
-                .expect("pbft block link");
-            storage
-                .0
-                .period()
-                .write(1, &period_data_with_pbft_block(&pbft_block))
-                .expect("persist period data");
-            storage
-                .0
-                .period()
-                .write_pbft_period(pbft_link.block_hash, 1)
-                .expect("persist pbft period index");
-            storage
-                .0
-                .pbft()
-                .write_head(
-                    H256::zero(),
-                    format!(
-                        r#"{{"head_hash":"0x{:064x}","size":1,"non_empty_size":1,"last_pbft_block_hash":"0x{:064x}"}}"#,
-                        0, pbft_link.block_hash
-                    )
-                    .as_bytes(),
-                )
-                .expect("persist pbft head");
-
-            seed_runtime
-                .dag_manager_runtime_save_block(
-                    &anchor_facts.hash,
-                    anchor_facts.level,
-                    anchor_facts.tips.len() as u64,
-                    anchor_rlp,
-                )
-                .expect("persist anchor block");
-            seed_runtime
-                .dag_manager_runtime_save_block(
-                    &live_facts.hash,
-                    live_facts.level,
-                    live_facts.tips.len() as u64,
-                    live_rlp,
-                )
-                .expect("persist non-finalized block");
-
-            let mut restored = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
-                .expect("restored runtime should initialize");
-            restored
-                .dag_manager_runtime_restore_from_storage()
-                .expect("restore from storage should succeed");
-
-            assert_eq!(restored.dag_manager_runtime_latest_period(), 1);
-            assert_eq!(
-                restored.dag_manager_runtime_anchors().anchor,
-                anchor_facts.hash
-            );
-            assert!(restored
-                .dag_manager_runtime_is_block_known(&live_facts.hash)
-                .expect("knownness should query Rust storage"));
-            assert_eq!(restored.dag_manager_runtime_max_level(), 4);
-            assert_eq!(
-                restored.dag_manager_runtime_non_finalized_min_difficulty(),
-                3
-            );
-            assert_eq!(
-                restored
-                    .dag_manager_runtime_non_finalized_blocks_size()
-                    .blocks,
-                2
-            );
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

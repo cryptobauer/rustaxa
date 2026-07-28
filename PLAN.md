@@ -738,9 +738,9 @@ Completed closeout slices:
    Rust finalization/add/sync plans own DAG consensus decisions. The Rust-mode public facade is detached from the dead
    legacy compile scaffold: it imports no original manager header or `DagManagerOld`, and feature-on builds exclude the
    original `dag_manager.cpp`; pure-C++ builds retain the untouched original implementation.
-   App bootstrap now owns one `BridgeDagTransactionService` that contains bridge-owned DAG state and a complete native
-   `TransactionService` behind sibling Rust mutexes. `TransactionManager` and `DagManager` share that root instead of
-   owning or passing separate runtime handles; full construction restores both domains and the initial proposal-period
+   App bootstrap now owns one `BridgeDagTransactionService` that composes native `DagService`, `SortitionService`, and
+   `TransactionService` siblings behind their Rust mutexes. `TransactionManager` and `DagManager` share that root instead of
+   owning or passing separate runtime handles; full construction restores all three domains and the initial proposal-period
    mapping before publication. Native transaction publication follows durable count and gas-history restoration.
    The service also owns the DAG-proposer transaction-pack transition: proposal/shard limits stay private, an
    owner-bound transaction cursor returns only required EVM estimate candidates, and selected hash/RLP/gas payloads move
@@ -1104,8 +1104,10 @@ The current Rust consensus footprint is broad but still incomplete:
    without a callback. The stale standalone planner FFI, proposer request/report carriers, and C++ sharded-pack payload
    relay are removed. The native service prevents compatibility and proposer callers from racing the single pack
    session while EVM execution is outside every Rust lock. The same native service owns queue, sidecar/count/gas cache,
-   gas oracle, storage, drop observation, restoration, locking, poison policy, and the packing subowner. Atomic
-   DAG/transaction batch composition remains in the bridge root pending the complete native DAG application owner.
+   gas oracle, storage, drop observation, restoration, locking, poison policy, and the packing subowner. Native
+   `DagService` owns graph/storage state, proposer/verifier/add-block cursors, retry state, restoration, initial
+   proposal-period mapping, locking, and poison policy. Atomic DAG/transaction batch composition remains in the bridge
+   root pending the complete native three-service application owner.
    Rust also owns `estimateTransactionGas` and
    `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction hash, proposal period)` opaque
    `ExecutionResult` cache, while C++ keeps EVM execution, public transaction construction, final selected transaction

@@ -110,14 +110,14 @@ The service also exposes native task APIs for current-data publication, own-vote
 current-anchor decisions, consensus threshold, block creation/linkage planning, and latest-finalized lookup; the bridge
 only maps those results to CXX carriers. Pillar protocol/state tests are native, while the bridge retains only FFI
 conversion and FinalChain-unwrapping coverage. PBFT root restoration, shared-owner, failure, and readiness behavior is
-native; remaining bridge orchestration/conversion tests and the DAG/transaction owner remain in this workstream.
+native; remaining bridge orchestration/conversion tests remain in this workstream.
 The native pillar mutex guard, mutable state, state snapshot, and snapshot decoder are crate-private and no longer
 re-exported. Bridge tests use public task behavior rather than pointer, generation, or token introspection; snapshot
 relationship characterization now lives beside the native decoder.
 Native `rustaxa-consensus::sortition::SortitionService` now owns restored sortition state, its serialization mutex,
 and poison policy. The DAG/transaction bridge root contains this service as a required capability, so optional
 sortition state, capability probes, and unavailable-domain branches are gone. A temporary native guard preserves the
-DAG-then-sortition order for coupled cursor revalidation until the remaining DAG runtime moves native.
+DAG-then-sortition order for coupled cursor revalidation.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The
@@ -127,9 +127,11 @@ observation, restoration, serialization mutex, and stable poison policy. Product
 count/config/history restoration; the bridge borrows a short-lived native guard only for FFI-shaped task adapters.
 The bridge snapshots queue/cache facts under the native transaction lock, releases every lock for external EVM work,
 then applies typed demotion/cache effects and transfers selected payloads under the established DAG-then-transaction
-order. Shared DAG/transaction batch composition and DAG state remain bridge-owned until the wider application root
-moves native. The temporarily public native state/guard are explicit bridge escape-hatch debt and may not cross CXX or
-external callbacks.
+order. Native `rustaxa-consensus::dag_service::DagService` owns DAG graph/storage state,
+proposer/verifier/add-block cursors, retry state, restoration, initial proposal-period mapping, serialization mutex,
+and poison policy. The bridge temporarily supplies FFI-shaped task methods over a short native guard and retains
+shared DAG/transaction batch composition until the wider application root moves native. The temporarily public native
+DAG and transaction state/guards are explicit bridge escape-hatch debt and may not cross CXX or external callbacks.
 
 ### 3. Collapse configuration topology
 

@@ -16,7 +16,6 @@ use crate::storage::*;
 use crate::transaction::*;
 use crate::transaction_manager::*;
 use crate::vdf::*;
-use rustaxa_consensus::dag::DagManagerState;
 use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusNetworkApi;
 use rustaxa_consensus::ConsensusQueryApi;
@@ -129,24 +128,6 @@ pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
 /// network module.
 pub struct BridgeConsensusNetworkApi {
     pub api: Mutex<ConsensusNetworkApi>,
-}
-
-/// Private DAG state owned by the application-level DAG/transaction service.
-///
-/// The state couples deterministic graphs and proposal/verification sessions
-/// with the service's shared Rust storage. It never crosses CXX independently;
-/// bridge callers reach it only through `BridgeDagTransactionService`.
-pub(crate) struct DagRuntimeState {
-    pub state: DagManagerState,
-    pub storage: Arc<Storage>,
-    pub next_proposer_session_id: u64,
-    pub next_verify_block_session_id: u64,
-    pub next_add_block_session_id: u64,
-    pub proposer_sessions: std::collections::BTreeMap<u64, crate::dag::DagProposerSession>,
-    pub proposer_retry_states:
-        std::collections::BTreeMap<[u8; 32], crate::dag::DagProposerRetryState>,
-    pub verify_block_session: Option<crate::dag::DagVerifyBlockSession>,
-    pub pending_add_block: Option<crate::dag::DagAddBlockSession>,
 }
 
 /// Pillar-chain storage wrapper used by the C++ manager shim.
