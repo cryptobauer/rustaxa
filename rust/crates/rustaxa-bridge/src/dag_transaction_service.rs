@@ -4,13 +4,14 @@ use crate::ffi::{BridgeFinalChain, BridgeStorage};
 use crate::transaction_manager::{
     domain_gas_pricer_config, TransactionRuntimeAccess, TransactionRuntimeGuard,
 };
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result};
 use ethereum_types::{H256, U256};
-use rustaxa_consensus::dag::{verify_dag_vdf_sortition_from_block, DagVdfSortitionBlockInput};
 use rustaxa_consensus::dag_service::{
     DagProposerSessionAction as NativeDagProposerSessionAction,
     DagProposerSessionStep as NativeDagProposerSessionStep, DagProposerTransactionObservation,
-    DagServiceConfig,
+    DagServiceConfig, DagVerifyBlockGasReport as NativeDagVerifyBlockGasReport,
+    DagVerifyBlockSessionInput as NativeDagVerifyBlockSessionInput,
+    DagVerifyBlockSessionStep as NativeDagVerifyBlockSessionStep,
 };
 use rustaxa_consensus::dag_transaction_service::{
     DagAddBlockAccountNonceFact as NativeDagAddBlockAccountNonceFact,
@@ -19,13 +20,17 @@ use rustaxa_consensus::dag_transaction_service::{
     DagAddBlockTransactionPayload as NativeDagAddBlockTransactionPayload,
     DagProposerPackPrepareRequest, DagProposerPackStep, DagTransactionService,
     DagTransactionServiceConfig,
+    DagVerifyBlockAuthorizationRequestOrStep as NativeDagVerifyBlockAuthorizationRequestOrStep,
+    DagVerifyBlockTransactionCompletionReport as NativeDagVerifyBlockTransactionCompletionReport,
+    DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
 };
 use rustaxa_consensus::sortition::SortitionServiceGuard;
 use rustaxa_consensus::transaction_packing_service::{
     TransactionPackingEstimate, TransactionPackingSelection,
 };
 use rustaxa_consensus::transaction_service::{
-    TransactionServiceConfig, TransactionServiceEstimateRequest,
+    TransactionServiceAccountNonceFact, TransactionServiceConfig,
+    TransactionServiceEstimateRequest, TransactionServiceTransactionView,
 };
 
 /// CXX wrapper over the native DAG application root.
@@ -606,8 +611,44 @@ macro_rules! dag_free_mut_fallible {
 }
 
 use crate::dag::*;
-dag_free_mut_fallible!(service_dag_manager_runtime_begin_verify_block_session, dag_manager_runtime_begin_verify_block_session(input: DagVerifyBlockSessionInput) -> ());
-dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_next, dag_manager_runtime_verify_block_session_next() -> DagVerifyBlockSessionStep);
+
+pub fn service_dag_manager_runtime_begin_verify_block_session(
+    service: &BridgeDagTransactionService,
+    input: DagVerifyBlockSessionInput,
+) -> Result<()> {
+    service
+        .root
+        .begin_verify_block_session(NativeDagVerifyBlockSessionInput {
+            block_hash: input.block_hash,
+            block_level: input.block_level,
+            pivot: input.pivot,
+            tips: input
+                .tips
+                .into_iter()
+                .map(|tip| H256::from(tip.hash))
+                .collect(),
+            block_transaction_hashes: input
+                .block_transaction_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            supplied_transaction_hashes: input
+                .supplied_transaction_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            block_rlp: input.block_rlp,
+        })
+}
+
+pub fn service_dag_manager_runtime_verify_block_session_next(
+    service: &BridgeDagTransactionService,
+) -> Result<DagVerifyBlockSessionStep> {
+    service
+        .root
+        .next_verify_block_session()
+        .map(native_verify_block_step_to_bridge)
+}
 
 /// Prepares the active DAG verification transaction query without advancing it.
 ///
@@ -618,18 +659,15 @@ dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_next, dag_
 pub fn service_dag_manager_runtime_verify_block_session_prepare_transactions(
     service: &BridgeDagTransactionService,
 ) -> Result<DagVerifyBlockTransactionPreparation> {
-    let (dag_guard, transaction) = service.dag_and_transaction()?;
-    let dag = &dag_guard;
-    let query = dag_manager_runtime_verify_block_transaction_query(dag)?;
-    let requests = verify_block_transaction_view_requests(&query);
-    let plan = transaction.transaction_manager_runtime_lookup_transaction_views(
-        requests,
-        query.hashes.len() as u64,
-    )?;
+    let plan = service.root.prepare_verify_block_transactions()?;
     Ok(DagVerifyBlockTransactionPreparation {
-        cursor_id: query.cursor_id,
-        proposal_period: query.proposal_period,
-        transactions: plan.views,
+        cursor_id: plan.cursor_id,
+        proposal_period: plan.proposal_period,
+        transactions: plan
+            .transactions
+            .into_iter()
+            .map(native_transaction_view_to_bridge)
+            .collect(),
     })
 }
 
@@ -643,54 +681,51 @@ pub fn service_dag_manager_runtime_verify_block_session_complete_transactions(
     service: &BridgeDagTransactionService,
     report: DagVerifyBlockTransactionCompletionReport,
 ) -> Result<DagVerifyBlockSessionStep> {
-    let (mut dag_guard, transaction) = service.dag_and_transaction()?;
-    let dag = &mut dag_guard;
-    let query = dag_manager_runtime_validate_verify_block_transaction_completion(
-        dag,
-        report.cursor_id,
-        report.proposal_period,
-    )?;
-    let requests = verify_block_transaction_view_requests(&query);
-    let plan = transaction
-        .transaction_manager_runtime_lookup_proposal_transaction_views_requiring_account_nonce_facts(
-            query.proposal_period,
-            requests,
-            report.account_nonce_facts,
-            query.hashes.len() as u64,
-        )?;
-    let all_resolved = plan.complete
-        && plan.views.len() == query.hashes.len()
-        && plan
-            .views
-            .iter()
-            .all(|view| view.found && !view.old_finalized);
-    let resolved_transactions = if all_resolved {
-        query.expected_transactions
-    } else {
-        0
-    };
-    Ok(
-        dag_manager_runtime_verify_block_session_apply_transaction_resolution(
-            dag,
-            resolved_transactions,
-        ),
-    )
+    service
+        .root
+        .complete_verify_block_transactions(NativeDagVerifyBlockTransactionCompletionReport {
+            cursor_id: report.cursor_id,
+            proposal_period: report.proposal_period,
+            account_nonce_facts: report
+                .account_nonce_facts
+                .into_iter()
+                .map(|fact| TransactionServiceAccountNonceFact {
+                    sender: fact.sender,
+                    account_found: fact.account_found,
+                    account_nonce: fact.account_nonce,
+                })
+                .collect(),
+        })
+        .map(native_verify_block_step_to_bridge)
 }
 
-fn verify_block_transaction_view_requests(
-    query: &DagVerifyBlockTransactionQuery,
-) -> Vec<TransactionManagerTransactionViewRequest> {
-    query
-        .hashes
-        .iter()
-        .enumerate()
-        .map(
-            |(input_index, hash)| TransactionManagerTransactionViewRequest {
-                input_index: input_index as u64,
-                hash: hash.0,
-            },
-        )
-        .collect()
+fn native_transaction_view_to_bridge(
+    view: TransactionServiceTransactionView,
+) -> TransactionManagerTransactionView {
+    TransactionManagerTransactionView {
+        input_index: view.input_index,
+        hash: view.hash,
+        found: view.found,
+        source: view.source,
+        old_finalized: view.old_finalized,
+        tx_rlp: view.tx_rlp,
+    }
+}
+
+fn native_verify_block_step_to_bridge(
+    step: NativeDagVerifyBlockSessionStep,
+) -> DagVerifyBlockSessionStep {
+    DagVerifyBlockSessionStep {
+        cursor_id: step.cursor_id,
+        status: step.status,
+        action: step.action,
+        complete: step.complete,
+        reject_code: step.reject_code,
+        proposal_period: step.proposal_period,
+        vote_count: step.vote_count,
+        max_vote_count: step.max_vote_count,
+        error_code: step.error_code,
+    }
 }
 /// Collects FinalChain DPoS/VRF facts for the exact active DAG verification cursor.
 ///
@@ -713,44 +748,46 @@ fn service_dag_manager_runtime_verify_block_session_report_authorization_with_ho
     final_chain: &BridgeFinalChain,
     between_query_and_apply: impl FnOnce(),
 ) -> Result<DagVerifyBlockSessionStep> {
-    let snapshot = {
-        let mut dag_guard = service.dag()?;
-        let dag = &mut dag_guard;
-        match dag_manager_runtime_prepare_verify_block_authorization(dag) {
-            DagVerifyBlockAuthorizationPreparation::Snapshot(snapshot) => snapshot,
-            DagVerifyBlockAuthorizationPreparation::Step(step) => return Ok(step),
+    let request = match service.root.prepare_verify_block_authorization()? {
+        NativeDagVerifyBlockAuthorizationRequestOrStep::Request(request) => request,
+        NativeDagVerifyBlockAuthorizationRequestOrStep::Step(step) => {
+            return Ok(native_verify_block_step_to_bridge(step));
         }
     };
 
-    let facts_result = (|| {
-        let sender = rustaxa_types::dag::DagBlock::try_from(
-            rustaxa_types::codec::rlp::dag::DagBlockRlp::new(&snapshot.block_rlp),
-        )
-        .context("DAG_VERIFY_SESSION_AUTHORIZATION_BLOCK_DECODE")?
-        .recover_sender()
-        .context("DAG_VERIFY_SESSION_AUTHORIZATION_SENDER_RECOVERY")?
-        .0;
-        final_chain
-            .0
-            .dag_dpos_authorization_facts(snapshot.proposal_period.into(), sender)
-    })();
+    let facts_result = final_chain
+        .0
+        .dag_dpos_authorization_facts(request.proposal_period.into(), request.sender.0);
     let facts = match facts_result {
         Ok(facts) => facts,
         Err(error) => {
-            let mut dag_guard = service.dag()?;
-            let dag = &mut dag_guard;
-            dag_manager_runtime_cleanup_verify_block_authorization(dag, &snapshot);
+            service.root.abort_verify_block_authorization(&request)?;
             return Err(error);
         }
     };
 
     between_query_and_apply();
 
-    let mut dag_guard = service.dag()?;
-    let dag = &mut dag_guard;
-    dag_manager_runtime_apply_verify_block_authorization(dag, &snapshot, facts)
+    service
+        .root
+        .complete_verify_block_authorization(&request, facts)
+        .map(native_verify_block_step_to_bridge)
 }
-dag_free_mut_fallible!(service_dag_manager_runtime_verify_block_session_report_gas, dag_manager_runtime_verify_block_session_report_gas(report: DagVerifyBlockGasReport) -> DagVerifyBlockSessionStep);
+
+pub fn service_dag_manager_runtime_verify_block_session_report_gas(
+    service: &BridgeDagTransactionService,
+    report: DagVerifyBlockGasReport,
+) -> Result<DagVerifyBlockSessionStep> {
+    service
+        .root
+        .report_verify_block_gas(NativeDagVerifyBlockGasReport {
+            block_gas_estimation: report.block_gas_estimation,
+            estimated_transactions_weight: report.estimated_transactions_weight,
+            dag_gas_limit: report.dag_gas_limit,
+            pbft_gas_limit: report.pbft_gas_limit,
+        })
+        .map(native_verify_block_step_to_bridge)
+}
 
 /// Executes cursor-bound DAG VDF verification across isolated DAG and
 /// sortition lock intervals.
@@ -758,59 +795,15 @@ pub fn service_dag_transaction_service_verify_block_session_vdf(
     service: &BridgeDagTransactionService,
     request: DagVerifyBlockVdfRequest,
 ) -> Result<DagVerifyBlockSessionStep> {
-    let snapshot = {
-        let dag_guard = service.dag()?;
-        let dag = &dag_guard;
-        dag_manager_runtime_snapshot_verify_block_vdf(dag, request.cursor_id)?
-    };
-
-    let decoded_block = rustaxa_consensus::dag::dag_manager_block_from_rlp(&request.block_rlp);
-    let request_fingerprint = keccak256_bytes(&request.block_rlp);
-    ensure!(
-        request_fingerprint == snapshot.fingerprint,
-        "DAG_VERIFY_SESSION_VDF_REQUEST_FINGERPRINT_MISMATCH"
-    );
-    if let Ok(block) = decoded_block.as_ref() {
-        ensure!(
-            block.level == request.block_level,
-            "DAG_VERIFY_SESSION_VDF_REQUEST_LEVEL_MISMATCH"
-        );
-    }
-
-    let sortition_params = {
-        let sortition = service.sortition()?;
-        sortition
-            .params_for_period_from_storage(snapshot.proposal_period)
-            .context("DAG_VERIFY_SESSION_VDF_SORTITION_PARAMS")?
-    };
-
-    let vdf_status = match decoded_block.and_then(|_| {
-        verify_dag_vdf_sortition_from_block(DagVdfSortitionBlockInput {
+    service
+        .root
+        .verify_block_vdf(NativeDagVerifyBlockVdfRequest {
+            cursor_id: request.cursor_id,
             block_rlp: request.block_rlp,
             block_level: request.block_level,
             proposal_period_hash: H256::from(request.proposal_period_hash),
-            vrf_public_key: snapshot.vrf_public_key,
-            sortition_params,
-            sender_eligible_vote_count: snapshot.vote_count,
-            vdf_sortition_max_vote_count: snapshot.max_vote_count,
         })
-    }) {
-        Ok(result) => result.vdf_status,
-        Err(_) => rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_INVALID,
-    };
-
-    let mut dag_guard = service.dag()?;
-    let dag = &mut dag_guard;
-    dag_manager_runtime_complete_verify_block_vdf(dag, &snapshot, vdf_status)
-}
-
-fn keccak256_bytes(bytes: &[u8]) -> [u8; 32] {
-    use tiny_keccak::{Hasher, Keccak};
-    let mut hash = [0u8; 32];
-    let mut hasher = Keccak::v256();
-    hasher.update(bytes);
-    hasher.finalize(&mut hash);
-    hash
+        .map(native_verify_block_step_to_bridge)
 }
 /// Opens a proposer session with transaction pressure derived from the sibling
 /// Rust TransactionManager while holding the universal DAG-then-transaction lock order.

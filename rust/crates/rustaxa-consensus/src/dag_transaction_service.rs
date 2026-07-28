@@ -8,18 +8,22 @@
 //! or an external executor boundary.
 
 use crate::dag::{
-    DagPersistenceCounters, dag_block_transaction_hashes, dag_manager_block_from_rlp,
+    DagDposAuthorizationFacts, DagPersistenceCounters, DagVdfSortitionBlockInput,
+    dag_block_transaction_hashes, dag_manager_block_from_rlp, verify_dag_vdf_sortition_from_block,
 };
 use crate::dag_service::{
     DagAddBlockPreparedTransaction, DagAddBlockSession, DagAddBlockStoredPlan,
     DagProposerSessionStep, DagService, DagServiceConfig, DagServiceGuard,
+    DagVerifyBlockAuthorizationPreparation, DagVerifyBlockAuthorizationSnapshot,
+    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
 };
 use crate::sortition::{SortitionConfig, SortitionService, SortitionServiceGuard};
 use crate::transaction_packing_service::{TransactionPackingEstimate, TransactionPackingOwner};
 use crate::transaction_service::{
-    DagTransactionSaveInput, TransactionService, TransactionServiceConfig,
-    TransactionServiceEstimateRequest, TransactionServiceGuard,
+    DagTransactionSaveInput, TransactionService, TransactionServiceAccountNonceFact,
+    TransactionServiceConfig, TransactionServiceEstimateRequest, TransactionServiceGuard,
     TransactionServiceProposerPackFinalized, TransactionServiceProposerPackPrepared,
+    TransactionServiceTransactionView, TransactionServiceTransactionViewRequest,
     append_prepared_dag_transactions, prepare_dag_transaction_publication,
     prepare_dag_transactions, publish_dag_transactions,
     remove_non_finalized_sidecars_after_dag_commit,
@@ -180,6 +184,57 @@ pub struct DagProposerPackStep {
     pub estimate_requests: Vec<TransactionServiceEstimateRequest>,
 }
 
+/// Ordered transaction views prepared for retained C++ materialization.
+#[derive(Clone, Debug)]
+pub struct DagVerifyBlockTransactionPreparation {
+    /// Exact native verifier cursor identity.
+    pub cursor_id: u64,
+    /// Proposal period used for finalized sender nonce facts.
+    pub proposal_period: u64,
+    /// Canonical transaction views in block order.
+    pub transactions: Vec<TransactionServiceTransactionView>,
+}
+
+/// Cursor-bound completion facts after retained C++ transaction materialization.
+#[derive(Clone, Debug)]
+pub struct DagVerifyBlockTransactionCompletionReport {
+    /// Cursor returned by the matching preparation.
+    pub cursor_id: u64,
+    /// Proposal period returned by the matching preparation.
+    pub proposal_period: u64,
+    /// Exact-period sender account facts for finalized storage transactions.
+    pub account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+}
+
+/// FinalChain authorization request prepared without retaining a native guard.
+#[derive(Clone)]
+pub struct DagVerifyBlockAuthorizationRequest {
+    snapshot: DagVerifyBlockAuthorizationSnapshot,
+    /// Proposal period queried at the retained FinalChain boundary.
+    pub proposal_period: u64,
+    /// Recovered DAG block sender queried for DPoS and VRF facts.
+    pub sender: H160,
+}
+
+/// Authorization preparation either requests external facts or returns a status step.
+pub enum DagVerifyBlockAuthorizationRequestOrStep {
+    Request(DagVerifyBlockAuthorizationRequest),
+    Step(DagVerifyBlockSessionStep),
+}
+
+/// Proof-bearing facts supplied by the retained C++ verifier adapter.
+#[derive(Clone, Debug)]
+pub struct DagVerifyBlockVdfRequest {
+    /// Exact verifier cursor identity.
+    pub cursor_id: u64,
+    /// Canonical signed DAG block RLP.
+    pub block_rlp: Vec<u8>,
+    /// Candidate DAG level.
+    pub block_level: u64,
+    /// Proposal-period block hash used by VDF sortition.
+    pub proposal_period_hash: H256,
+}
+
 impl DagTransactionService {
     /// Restores all sibling services and publishes one coherent application root.
     ///
@@ -239,6 +294,211 @@ impl DagTransactionService {
         let dag = self.dag.lock()?;
         let transaction = self.transaction.lock()?;
         Ok((dag, transaction))
+    }
+
+    /// Opens a native DAG verification cursor from canonical block facts.
+    ///
+    /// Storage-backed prechecks and cursor replacement are completed while the
+    /// DAG owner is locked. No CXX carrier or external executor participates.
+    pub fn begin_verify_block_session(&self, input: DagVerifyBlockSessionInput) -> Result<()> {
+        self.dag.lock()?.begin_verify_block_session(input)
+    }
+
+    /// Returns the current native verifier instruction without advancing it.
+    pub fn next_verify_block_session(&self) -> Result<DagVerifyBlockSessionStep> {
+        Ok(self.dag.lock()?.verify_block_session_next())
+    }
+
+    /// Resolves the active transaction query from native queue, sidecar, and storage state.
+    ///
+    /// Locks are acquired DAG then transaction. The cursor does not advance;
+    /// C++ may materialize the returned canonical payloads before reporting
+    /// exact-period account facts.
+    pub fn prepare_verify_block_transactions(
+        &self,
+    ) -> Result<DagVerifyBlockTransactionPreparation> {
+        let (dag, transaction) = self.lock_dag_and_transaction()?;
+        let query = dag.verify_block_transaction_query()?;
+        let requests = query
+            .hashes
+            .iter()
+            .enumerate()
+            .map(
+                |(input_index, hash)| TransactionServiceTransactionViewRequest {
+                    input_index: input_index as u64,
+                    hash: hash.to_fixed_bytes(),
+                },
+            )
+            .collect();
+        let plan = transaction.lookup_transaction_views(requests, query.hashes.len() as u64)?;
+        Ok(DagVerifyBlockTransactionPreparation {
+            cursor_id: query.cursor_id,
+            proposal_period: query.proposal_period,
+            transactions: plan.views,
+        })
+    }
+
+    /// Revalidates a prepared transaction query and advances only when every view remains usable.
+    ///
+    /// Finalized storage payloads require explicit sender facts. Identity,
+    /// lookup, or fact errors leave the active cursor unchanged for retry.
+    pub fn complete_verify_block_transactions(
+        &self,
+        report: DagVerifyBlockTransactionCompletionReport,
+    ) -> Result<DagVerifyBlockSessionStep> {
+        let (mut dag, transaction) = self.lock_dag_and_transaction()?;
+        let query = dag.verify_block_session_validate_transaction_completion(
+            report.cursor_id,
+            report.proposal_period,
+        )?;
+        let requests = query
+            .hashes
+            .iter()
+            .enumerate()
+            .map(
+                |(input_index, hash)| TransactionServiceTransactionViewRequest {
+                    input_index: input_index as u64,
+                    hash: hash.to_fixed_bytes(),
+                },
+            )
+            .collect();
+        let plan = transaction.lookup_proposal_transaction_views_requiring_account_nonce_facts(
+            query.proposal_period,
+            requests,
+            report.account_nonce_facts,
+            query.hashes.len() as u64,
+        )?;
+        let all_resolved = plan.complete
+            && plan.views.len() == query.hashes.len()
+            && plan
+                .views
+                .iter()
+                .all(|view| view.found && !view.old_finalized);
+        let resolved_transactions = if all_resolved {
+            query.expected_transactions
+        } else {
+            0
+        };
+        Ok(dag.verify_block_session_apply_transaction_resolution(resolved_transactions))
+    }
+
+    /// Prepares an unlocked FinalChain authorization query for the exact cursor.
+    ///
+    /// Sender decoding and recovery happen after releasing the DAG lock. A
+    /// decode or recovery failure removes only the unchanged owning cursor.
+    pub fn prepare_verify_block_authorization(
+        &self,
+    ) -> Result<DagVerifyBlockAuthorizationRequestOrStep> {
+        let snapshot = {
+            let mut dag = self.dag.lock()?;
+            match dag.prepare_verify_block_authorization() {
+                DagVerifyBlockAuthorizationPreparation::Snapshot(snapshot) => snapshot,
+                DagVerifyBlockAuthorizationPreparation::Step(step) => {
+                    return Ok(DagVerifyBlockAuthorizationRequestOrStep::Step(step));
+                }
+            }
+        };
+        let sender = match rustaxa_types::dag::DagBlock::try_from(
+            rustaxa_types::codec::rlp::dag::DagBlockRlp::new(&snapshot.block_rlp),
+        )
+        .context("DAG_VERIFY_SESSION_AUTHORIZATION_BLOCK_DECODE")
+        .and_then(|block| {
+            block
+                .recover_sender()
+                .context("DAG_VERIFY_SESSION_AUTHORIZATION_SENDER_RECOVERY")
+        }) {
+            Ok(sender) => H160::from(sender.0),
+            Err(error) => {
+                self.dag
+                    .lock()?
+                    .cleanup_verify_block_authorization(&snapshot);
+                return Err(error);
+            }
+        };
+        Ok(DagVerifyBlockAuthorizationRequestOrStep::Request(
+            DagVerifyBlockAuthorizationRequest {
+                proposal_period: snapshot.proposal_period,
+                sender,
+                snapshot,
+            },
+        ))
+    }
+
+    /// Applies authorization facts to the exact prepared cursor.
+    pub fn complete_verify_block_authorization(
+        &self,
+        request: &DagVerifyBlockAuthorizationRequest,
+        facts: DagDposAuthorizationFacts,
+    ) -> Result<DagVerifyBlockSessionStep> {
+        self.dag
+            .lock()?
+            .apply_verify_block_authorization(&request.snapshot, facts)
+    }
+
+    /// Removes only the unchanged cursor that owned a failed authorization query.
+    pub fn abort_verify_block_authorization(
+        &self,
+        request: &DagVerifyBlockAuthorizationRequest,
+    ) -> Result<bool> {
+        Ok(self
+            .dag
+            .lock()?
+            .cleanup_verify_block_authorization(&request.snapshot))
+    }
+
+    /// Runs native VDF sortition verification between cursor snapshot and revalidation.
+    ///
+    /// DAG and sortition guards are released before proof work. Completion
+    /// advances only the exact cursor/fingerprint/generation/action snapshot.
+    pub fn verify_block_vdf(
+        &self,
+        request: DagVerifyBlockVdfRequest,
+    ) -> Result<DagVerifyBlockSessionStep> {
+        let snapshot = self
+            .dag
+            .lock()?
+            .snapshot_verify_block_vdf(request.cursor_id)?;
+        ensure!(
+            keccak256_bytes(&request.block_rlp) == snapshot.fingerprint,
+            "DAG_VERIFY_SESSION_VDF_REQUEST_FINGERPRINT_MISMATCH"
+        );
+        let decoded_block = dag_manager_block_from_rlp(&request.block_rlp);
+        if let Ok(block) = decoded_block.as_ref() {
+            ensure!(
+                block.level == request.block_level,
+                "DAG_VERIFY_SESSION_VDF_REQUEST_LEVEL_MISMATCH"
+            );
+        }
+        let sortition_params = self
+            .sortition
+            .lock()?
+            .params_for_period_from_storage(snapshot.proposal_period)
+            .context("DAG_VERIFY_SESSION_VDF_SORTITION_PARAMS")?;
+        let vdf_status = match decoded_block.and_then(|_| {
+            verify_dag_vdf_sortition_from_block(DagVdfSortitionBlockInput {
+                block_rlp: request.block_rlp,
+                block_level: request.block_level,
+                proposal_period_hash: request.proposal_period_hash,
+                vrf_public_key: snapshot.vrf_public_key,
+                sortition_params,
+                sender_eligible_vote_count: snapshot.vote_count,
+                vdf_sortition_max_vote_count: snapshot.max_vote_count,
+            })
+        }) {
+            Ok(result) => result.vdf_status,
+            Err(_) => crate::dag::DAG_VERIFY_VDF_STATUS_INVALID,
+        };
+        self.dag
+            .lock()?
+            .complete_verify_block_vdf(&snapshot, vdf_status)
+    }
+
+    /// Applies retained EVM gas facts to the active native verifier cursor.
+    pub fn report_verify_block_gas(
+        &self,
+        report: DagVerifyBlockGasReport,
+    ) -> Result<DagVerifyBlockSessionStep> {
+        self.dag.lock()?.verify_block_session_report_gas(report)
     }
 
     /// Prepares one add-block transition without mutating live or durable state.
@@ -696,6 +956,15 @@ fn stored_add_block_plan(plan: &crate::dag::DagAddBlockEffectPlan) -> DagAddBloc
     }
 }
 
+fn keccak256_bytes(bytes: &[u8]) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+    let mut hash = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(bytes);
+    hasher.finalize(&mut hash);
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,6 +975,7 @@ mod tests {
     use crate::dag_service::{
         DagProposerObservation, DagProposerRetryState, DagProposerSession,
         DagProposerSessionAction, DagProposerSessionBeginInput, DagProposerTransactionObservation,
+        DagVerifyBlockSession, DagVerifyBlockSessionAction,
     };
     use crate::gas_pricer::GasPricerConfig;
     use crate::sortition::{HUNDRED_PERCENT, SortitionParams, VdfParams, VrfParams};
@@ -941,6 +1211,29 @@ mod tests {
             TransactionQueueEntry {
                 hash: envelope.hash,
                 sender: envelope.sender.context("test transaction sender")?,
+                nonce: envelope.nonce,
+                gas_price: envelope.gas_price,
+                gas: envelope.gas,
+                data_size: envelope.data.len() as u64,
+                rlp: transaction_rlp,
+                last_block_number: 0,
+            },
+            true,
+        )?;
+        Ok(envelope)
+    }
+
+    fn insert_verify_transaction(
+        root: &DagTransactionService,
+        signing_key: &SigningKey,
+    ) -> Result<LegacyTransactionEnvelope> {
+        let transaction_rlp = signed_legacy_transaction_rlp(signing_key);
+        let envelope = LegacyTransactionEnvelope::decode(&transaction_rlp)?;
+        let sender = envelope.sender.context("test transaction sender")?;
+        root.lock_transaction()?.queue.insert(
+            TransactionQueueEntry {
+                hash: envelope.hash,
+                sender,
                 nonce: envelope.nonce,
                 gas_price: envelope.gas_price,
                 gas: envelope.gas,
@@ -1214,6 +1507,235 @@ mod tests {
                 .contains("DAG_ADD_BLOCK_SESSION_CURSOR_MISMATCH")
         );
         assert!(root.abort_add_block(second.cursor_id)?);
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_block_transaction_completion_rejects_stale_request_and_advances_when_complete()
+    -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_verify_completion_stale");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let envelope = insert_verify_transaction(
+            &root,
+            &SigningKey::from_slice(&[0x11; 32]).expect("valid test signing key"),
+        )?;
+        root.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: keccak256(&[1_u8]).to_fixed_bytes(),
+            block_level: 1,
+            pivot: [1; 32],
+            tips: Vec::new(),
+            block_transaction_hashes: vec![envelope.hash],
+            supplied_transaction_hashes: vec![envelope.hash],
+            block_rlp: Vec::new(),
+        })?;
+
+        let initial_step = root.next_verify_block_session()?;
+        assert_eq!(initial_step.complete, false);
+        let plan = root.prepare_verify_block_transactions()?;
+        let stale_step = root
+            .complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
+                cursor_id: plan.cursor_id + 1,
+                proposal_period: plan.proposal_period,
+                account_nonce_facts: Vec::new(),
+            })
+            .expect_err("stale cursor must fail without advancing");
+        assert!(
+            stale_step
+                .to_string()
+                .contains("DAG_VERIFY_SESSION_TRANSACTION_CURSOR_MISMATCH")
+        );
+        let replacement = root.next_verify_block_session()?;
+        assert_eq!(replacement.action, initial_step.action);
+
+        let resolved =
+            root.complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
+                cursor_id: plan.cursor_id,
+                proposal_period: plan.proposal_period,
+                account_nonce_facts: Vec::new(),
+            })?;
+        assert_eq!(resolved.complete, false);
+        assert_eq!(resolved.action, 2);
+
+        let incomplete =
+            root.complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
+                cursor_id: resolved.cursor_id + 1,
+                proposal_period: resolved.proposal_period,
+                account_nonce_facts: Vec::new(),
+            });
+        assert!(incomplete.is_err());
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_block_authorization_stale_snapshot_rejects_and_preserves_replacement() -> Result<()> {
+        let path =
+            unique_temp_dir("rustaxa_consensus_dag_transaction_verify_authorization_snapshot");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let envelope = insert_verify_transaction(
+            &root,
+            &SigningKey::from_slice(&[0x22; 32]).expect("valid test signing key"),
+        )?;
+        root.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: keccak256(&[2_u8]).to_fixed_bytes(),
+            block_level: 1,
+            pivot: [1; 32],
+            tips: Vec::new(),
+            block_transaction_hashes: vec![envelope.hash],
+            supplied_transaction_hashes: vec![envelope.hash],
+            block_rlp: Vec::new(),
+        })?;
+        let plan = root.prepare_verify_block_transactions()?;
+        let authorization =
+            root.complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
+                cursor_id: plan.cursor_id,
+                proposal_period: plan.proposal_period,
+                account_nonce_facts: Vec::new(),
+            })?;
+        assert_eq!(authorization.action, 2);
+
+        let request = {
+            let dag = root.lock_dag()?;
+            let session = dag
+                .verify_block_session
+                .as_ref()
+                .expect("verification session must be active for authorization snapshot");
+            let proposal_period = session.proposal_period;
+            let snapshot = DagVerifyBlockAuthorizationSnapshot {
+                cursor_id: session.cursor_id,
+                fingerprint: session.fingerprint,
+                generation: session.generation,
+                proposal_period: session.proposal_period,
+                block_rlp: session.block_rlp.clone(),
+            };
+            DagVerifyBlockAuthorizationRequest {
+                snapshot,
+                proposal_period,
+                sender: H160::repeat_byte(0x33),
+            }
+        };
+        root.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: keccak256(&[3_u8]).to_fixed_bytes(),
+            block_level: 1,
+            pivot: [1; 32],
+            tips: Vec::new(),
+            block_transaction_hashes: vec![],
+            supplied_transaction_hashes: vec![],
+            block_rlp: Vec::new(),
+        })?;
+        let stale = root
+            .complete_verify_block_authorization(
+                &request,
+                crate::dag::DagDposAuthorizationFacts {
+                    vrf_key: None,
+                    vrf_key_found: false,
+                    sender_eligible_vote_count: 0,
+                    vdf_sortition_max_vote_count: 0,
+                    eligibility_status: crate::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
+                },
+            )
+            .expect_err("replacement session must mismatch stale authorization request");
+        assert!(
+            stale
+                .to_string()
+                .contains("DAG_VERIFY_SESSION_AUTHORIZATION_CURSOR_MISMATCH")
+        );
+        let replacement = root.next_verify_block_session()?;
+        assert_eq!(replacement.status, 0);
+        assert_eq!(replacement.action, 1);
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_block_vdf_mismatch_fingerprint_rejects_without_advancing() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_verify_vdf_mismatch");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        {
+            let mut dag = root.lock_dag()?;
+            dag.verify_block_session = Some(DagVerifyBlockSession {
+                cursor_id: 1,
+                fingerprint: [0x11; 32],
+                generation: 1,
+                action: DagVerifyBlockSessionAction::VdfSortition {
+                    vote_count: 4,
+                    max_vote_count: 4,
+                    vrf_public_key: [0x22; 32],
+                },
+                tips: Vec::new(),
+                proposal_period: 0,
+                block_rlp: Vec::new(),
+                expected_transactions: 0,
+                reject_code: 0,
+                sender_eligible_vote_count: 0,
+                vdf_sortition_max_vote_count: 4,
+                eligibility_status: crate::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
+                error_code: String::new(),
+            });
+        }
+
+        let mismatch = root
+            .verify_block_vdf(DagVerifyBlockVdfRequest {
+                cursor_id: 1,
+                block_rlp: vec![0x99],
+                block_level: 1,
+                proposal_period_hash: H256::zero(),
+            })
+            .expect_err("fingerprint mismatch must fail before completion");
+        assert!(
+            mismatch
+                .to_string()
+                .contains("DAG_VERIFY_SESSION_VDF_REQUEST_FINGERPRINT_MISMATCH")
+        );
+        let step = root.next_verify_block_session()?;
+        assert!(!step.complete);
+        assert_eq!(step.action, 3);
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_block_gas_wrong_stage_returns_invalid_report_and_leaves_session() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_verify_wrong_stage_gas");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        root.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: keccak256(&[4_u8]).to_fixed_bytes(),
+            block_level: 1,
+            pivot: [1; 32],
+            tips: Vec::new(),
+            block_transaction_hashes: Vec::new(),
+            supplied_transaction_hashes: Vec::new(),
+            block_rlp: Vec::new(),
+        })?;
+        let step = root
+            .report_verify_block_gas(DagVerifyBlockGasReport {
+                block_gas_estimation: 0,
+                estimated_transactions_weight: 0,
+                dag_gas_limit: 0,
+                pbft_gas_limit: 0,
+            })
+            .expect("wrong-stage gas report should return explicit invalid step");
+        assert!(step.complete);
+        assert_eq!(step.status, 2);
+        let query = root.next_verify_block_session()?;
+        assert_eq!(query.complete, true);
+
         drop(root);
         drop(storage);
         std::fs::remove_dir_all(path)?;

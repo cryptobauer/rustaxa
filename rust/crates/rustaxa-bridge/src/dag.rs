@@ -25,9 +25,9 @@ use rustaxa_consensus::dag::{
     plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
     plan_dag_proposer_tip_selection_from_storage, plan_dag_proposer_vdf_wait,
     plan_dag_proposer_worker_command, plan_dag_verify_transaction_query,
-    proposal_period_for_level_from_storage, save_dag_block_to_storage, validate_dag_verify_gas,
-    validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
-    verify_precheck_from_storage, DagManagerBlock as DomainDagManagerBlock, DagManagerState,
+    proposal_period_for_level_from_storage, save_dag_block_to_storage,
+    validate_pivot_tips_metadata, verify_precheck_from_storage,
+    DagManagerBlock as DomainDagManagerBlock, DagManagerState,
     DagProposerAttemptInput as DomainDagProposerAttemptInput,
     DagProposerAttemptPlan as DomainDagProposerAttemptPlan,
     DagProposerBlockIntentInput as DomainDagProposerBlockIntentInput,
@@ -38,9 +38,7 @@ use rustaxa_consensus::dag::{
     DagProposerUnsignedBlockIntent as DomainDagProposerUnsignedBlockIntent,
     DagProposerWorkerCommandInput as DomainDagProposerWorkerCommandInput,
     DagReferenceMetadata as ReferenceMetadata, DagTipGas,
-    DagVerifyGasInput as DomainDagVerifyGasInput,
     DagVerifyPrecheckStorageInput as DomainDagVerifyPrecheckStorageInput,
-    DagVerifyTransactionAvailabilityInput as DomainDagVerifyTransactionAvailabilityInput,
     DagVerifyVdfDposFacts as DomainDagVerifyVdfDposFacts,
 };
 use rustaxa_consensus::dag_service::{
@@ -135,15 +133,8 @@ pub(crate) const DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS: u8
 /// No runtime guard survives the snapshot. Cursor identity, immutable candidate
 /// fingerprint, action generation, and normalized counts must match again
 /// before the verifier result may advance the session.
-pub(crate) struct DagVerifyBlockVdfSnapshot {
-    pub cursor_id: u64,
-    pub fingerprint: [u8; 32],
-    pub generation: u64,
-    pub proposal_period: u64,
-    pub vote_count: u64,
-    pub max_vote_count: u64,
-    pub vrf_public_key: [u8; 32],
-}
+pub(crate) type DagVerifyBlockVdfSnapshot =
+    rustaxa_consensus::dag_service::DagVerifyBlockVdfSnapshot;
 
 /// Exact proposer identity retained across historical sortition lookups.
 ///
@@ -831,10 +822,7 @@ pub fn dag_manager_runtime_begin_verify_block_session(
 pub fn dag_manager_runtime_verify_block_session_next(
     runtime: &mut DagRuntimeState,
 ) -> DagVerifyBlockSessionStep {
-    let Some(session) = runtime.verify_block_session.as_ref() else {
-        return verify_block_session_not_started_step();
-    };
-    verify_block_session_step(session)
+    native_verify_block_step_to_bridge(DagRuntimeAccess(runtime).verify_block_session_next())
 }
 
 /// Applies resolved transaction availability to the runtime-owned DAG verification cursor.
@@ -842,43 +830,18 @@ pub(crate) fn dag_manager_runtime_verify_block_session_apply_transaction_resolut
     runtime: &mut DagRuntimeState,
     resolved_transactions: u64,
 ) -> DagVerifyBlockSessionStep {
-    let Some(session) = runtime.verify_block_session.as_mut() else {
-        return verify_block_session_not_started_step();
-    };
-    if !matches!(
-        session.action,
-        DagVerifyBlockSessionAction::TransactionQuery(_)
-    ) {
-        return invalid_verify_block_report(
-            session,
-            "DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_REPORT",
-        );
-    }
-
-    let availability =
-        validate_dag_verify_transaction_availability(DomainDagVerifyTransactionAvailabilityInput {
-            expected_transactions: session.expected_transactions,
-            resolved_transactions,
-        });
-    if !availability.continue_validation {
-        return complete_verify_block_session(session, availability.reject_code);
-    }
-
-    session.action = DagVerifyBlockSessionAction::AuthorizationFacts;
-    session.generation = session.generation.wrapping_add(1).max(1);
-    verify_block_session_step(session)
+    native_verify_block_step_to_bridge(
+        DagRuntimeAccess(runtime)
+            .verify_block_session_apply_transaction_resolution(resolved_transactions),
+    )
 }
 
 /// Private transaction query owned by an active DAG verification session.
 ///
 /// The composed DAG/transaction service consumes this value while holding both
 /// runtime locks; hashes are never exposed through CXX.
-pub(crate) struct DagVerifyBlockTransactionQuery {
-    pub cursor_id: u64,
-    pub proposal_period: u64,
-    pub hashes: Vec<H256>,
-    pub expected_transactions: u64,
-}
+pub(crate) type DagVerifyBlockTransactionQuery =
+    rustaxa_consensus::dag_service::DagVerifyBlockTransactionQuery;
 
 /// Takes a snapshot of the active transaction query without advancing it.
 ///
@@ -887,18 +850,7 @@ pub(crate) struct DagVerifyBlockTransactionQuery {
 pub(crate) fn dag_manager_runtime_verify_block_transaction_query(
     runtime: &DagRuntimeState,
 ) -> Result<DagVerifyBlockTransactionQuery> {
-    let Some(session) = runtime.verify_block_session.as_ref() else {
-        anyhow::bail!("DAG_VERIFY_SESSION_NOT_STARTED");
-    };
-    let DagVerifyBlockSessionAction::TransactionQuery(hashes) = &session.action else {
-        anyhow::bail!("DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_COMPLETION");
-    };
-    Ok(DagVerifyBlockTransactionQuery {
-        cursor_id: session.cursor_id,
-        proposal_period: session.proposal_period,
-        hashes: hashes.clone(),
-        expected_transactions: session.expected_transactions,
-    })
+    DagRuntimeAccess(runtime).verify_block_transaction_query()
 }
 
 /// Verifies that a completion targets the still-active prepared query.
@@ -910,60 +862,23 @@ pub(crate) fn dag_manager_runtime_validate_verify_block_transaction_completion(
     cursor_id: u64,
     proposal_period: u64,
 ) -> Result<DagVerifyBlockTransactionQuery> {
-    let query = dag_manager_runtime_verify_block_transaction_query(runtime)?;
-    anyhow::ensure!(
-        query.cursor_id == cursor_id,
-        "DAG_VERIFY_SESSION_TRANSACTION_CURSOR_MISMATCH"
-    );
-    anyhow::ensure!(
-        query.proposal_period == proposal_period,
-        "DAG_VERIFY_SESSION_TRANSACTION_PERIOD_MISMATCH"
-    );
-    Ok(query)
+    DagRuntimeAccess(runtime)
+        .verify_block_session_validate_transaction_completion(cursor_id, proposal_period)
 }
 
 /// Exact private identity of a DAG verification cursor awaiting FinalChain authorization.
-#[derive(Clone)]
-pub(crate) struct DagVerifyBlockAuthorizationSnapshot {
-    pub cursor_id: u64,
-    pub fingerprint: [u8; 32],
-    pub generation: u64,
-    pub proposal_period: u64,
-    pub block_rlp: Vec<u8>,
-}
+pub(crate) type DagVerifyBlockAuthorizationSnapshot =
+    rustaxa_consensus::dag_service::DagVerifyBlockAuthorizationSnapshot;
 
 /// Preparation result preserving the stable missing-session and wrong-action step semantics.
-pub(crate) enum DagVerifyBlockAuthorizationPreparation {
-    Snapshot(DagVerifyBlockAuthorizationSnapshot),
-    Step(DagVerifyBlockSessionStep),
-}
+pub(crate) type DagVerifyBlockAuthorizationPreparation =
+    rustaxa_consensus::dag_service::DagVerifyBlockAuthorizationPreparation;
 
 /// Snapshots the exact authorization cursor before the lock-free FinalChain query.
 pub(crate) fn dag_manager_runtime_prepare_verify_block_authorization(
     runtime: &mut DagRuntimeState,
 ) -> DagVerifyBlockAuthorizationPreparation {
-    let Some(session) = runtime.verify_block_session.as_mut() else {
-        return DagVerifyBlockAuthorizationPreparation::Step(
-            verify_block_session_not_started_step(),
-        );
-    };
-    if !matches!(
-        session.action,
-        DagVerifyBlockSessionAction::AuthorizationFacts
-    ) {
-        return DagVerifyBlockAuthorizationPreparation::Step(invalid_verify_block_report(
-            session,
-            "DAG_VERIFY_SESSION_UNEXPECTED_AUTHORIZATION_REPORT",
-        ));
-    }
-
-    DagVerifyBlockAuthorizationPreparation::Snapshot(DagVerifyBlockAuthorizationSnapshot {
-        cursor_id: session.cursor_id,
-        fingerprint: session.fingerprint,
-        generation: session.generation,
-        proposal_period: session.proposal_period,
-        block_rlp: session.block_rlp.clone(),
-    })
+    DagRuntimeAccess(runtime).prepare_verify_block_authorization()
 }
 
 fn verify_block_authorization_snapshot_matches(
@@ -986,14 +901,7 @@ pub(crate) fn dag_manager_runtime_cleanup_verify_block_authorization(
     runtime: &mut DagRuntimeState,
     snapshot: &DagVerifyBlockAuthorizationSnapshot,
 ) -> bool {
-    let matches = runtime
-        .verify_block_session
-        .as_ref()
-        .is_some_and(|session| verify_block_authorization_snapshot_matches(session, snapshot));
-    if matches {
-        runtime.verify_block_session = None;
-    }
-    matches
+    DagRuntimeAccess(runtime).cleanup_verify_block_authorization(snapshot)
 }
 
 /// Revalidates and applies Rust FinalChain authorization facts to the exact cursor.
@@ -1002,46 +910,9 @@ pub(crate) fn dag_manager_runtime_apply_verify_block_authorization(
     snapshot: &DagVerifyBlockAuthorizationSnapshot,
     facts: rustaxa_consensus::dag::DagDposAuthorizationFacts,
 ) -> Result<DagVerifyBlockSessionStep> {
-    let session = runtime
-        .verify_block_session
-        .as_mut()
-        .context("DAG_VERIFY_SESSION_NOT_STARTED")?;
-    ensure!(
-        verify_block_authorization_snapshot_matches(session, snapshot),
-        "DAG_VERIFY_SESSION_AUTHORIZATION_CURSOR_MISMATCH"
-    );
-
-    session.sender_eligible_vote_count = facts.sender_eligible_vote_count;
-    session.vdf_sortition_max_vote_count = facts.vdf_sortition_max_vote_count;
-    session.eligibility_status = facts.eligibility_status;
-
-    let dpos_status = if facts.eligibility_status
-        == rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
-    {
-        rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
-    } else {
-        rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED
-    };
-    let decision = decide_dag_verify_vdf_dpos_authorization(DomainDagVerifyVdfDposFacts {
-        vrf_key_found: facts.vrf_key_found && facts.vrf_key.is_some(),
-        sender_eligible_vote_count: facts.sender_eligible_vote_count,
-        vdf_sortition_max_vote_count: facts.vdf_sortition_max_vote_count,
-        vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_NOT_CHECKED,
-        dpos_status,
-    });
-    if !decision.continue_validation {
-        return Ok(complete_verify_block_session(session, decision.reject_code));
-    }
-
-    session.action = DagVerifyBlockSessionAction::VdfSortition {
-        vote_count: decision.vote_count,
-        max_vote_count: decision.max_vote_count,
-        vrf_public_key: facts
-            .vrf_key
-            .context("DAG_VERIFY_SESSION_AUTHORIZATION_VRF_KEY_MISSING")?,
-    };
-    session.generation = session.generation.wrapping_add(1).max(1);
-    Ok(verify_block_session_step(session))
+    DagRuntimeAccess(runtime)
+        .apply_verify_block_authorization(snapshot, facts)
+        .map(native_verify_block_step_to_bridge)
 }
 
 /// Snapshots the active VDF action before historical lookup and proof work.
@@ -1053,31 +924,7 @@ pub(crate) fn dag_manager_runtime_snapshot_verify_block_vdf(
     runtime: &DagRuntimeState,
     cursor_id: u64,
 ) -> Result<DagVerifyBlockVdfSnapshot> {
-    let session = runtime
-        .verify_block_session
-        .as_ref()
-        .context("DAG_VERIFY_SESSION_NOT_STARTED")?;
-    ensure!(
-        session.cursor_id == cursor_id,
-        "DAG_VERIFY_SESSION_VDF_CURSOR_MISMATCH"
-    );
-    let DagVerifyBlockSessionAction::VdfSortition {
-        vote_count,
-        max_vote_count,
-        vrf_public_key,
-    } = &session.action
-    else {
-        anyhow::bail!("DAG_VERIFY_SESSION_UNEXPECTED_VDF_ACTION");
-    };
-    Ok(DagVerifyBlockVdfSnapshot {
-        cursor_id: session.cursor_id,
-        fingerprint: session.fingerprint,
-        generation: session.generation,
-        proposal_period: session.proposal_period,
-        vote_count: *vote_count,
-        max_vote_count: *max_vote_count,
-        vrf_public_key: *vrf_public_key,
-    })
+    DagRuntimeAccess(runtime).snapshot_verify_block_vdf(cursor_id)
 }
 
 /// Revalidates an unlocked VDF snapshot and advances it exactly once.
@@ -1089,39 +936,9 @@ pub(crate) fn dag_manager_runtime_complete_verify_block_vdf(
     snapshot: &DagVerifyBlockVdfSnapshot,
     vdf_status: u8,
 ) -> Result<DagVerifyBlockSessionStep> {
-    {
-        let session = runtime
-            .verify_block_session
-            .as_ref()
-            .context("DAG_VERIFY_SESSION_NOT_STARTED")?;
-        ensure!(
-            session.cursor_id == snapshot.cursor_id,
-            "DAG_VERIFY_SESSION_VDF_CURSOR_MISMATCH"
-        );
-        ensure!(
-            session.fingerprint == snapshot.fingerprint,
-            "DAG_VERIFY_SESSION_VDF_FINGERPRINT_MISMATCH"
-        );
-        ensure!(
-            session.generation == snapshot.generation,
-            "DAG_VERIFY_SESSION_VDF_GENERATION_MISMATCH"
-        );
-        let DagVerifyBlockSessionAction::VdfSortition {
-            vote_count,
-            max_vote_count,
-            vrf_public_key,
-        } = &session.action
-        else {
-            anyhow::bail!("DAG_VERIFY_SESSION_UNEXPECTED_VDF_ACTION");
-        };
-        ensure!(
-            *vote_count == snapshot.vote_count
-                && *max_vote_count == snapshot.max_vote_count
-                && *vrf_public_key == snapshot.vrf_public_key,
-            "DAG_VERIFY_SESSION_VDF_ACTION_MISMATCH"
-        );
-    }
-    Ok(apply_verify_block_vdf_status(runtime, vdf_status))
+    DagRuntimeAccess(runtime)
+        .complete_verify_block_vdf(snapshot, vdf_status)
+        .map(native_verify_block_step_to_bridge)
 }
 
 /// Applies a verified status to the currently validated VDF cursor.
@@ -1185,38 +1002,30 @@ pub fn dag_manager_runtime_verify_block_session_report_gas(
     runtime: &mut DagRuntimeState,
     report: DagVerifyBlockGasReport,
 ) -> Result<DagVerifyBlockSessionStep> {
-    let Some(session) = runtime.verify_block_session.as_ref() else {
-        return Ok(verify_block_session_not_started_step());
-    };
-    if !matches!(session.action, DagVerifyBlockSessionAction::Gas) {
-        let Some(session) = runtime.verify_block_session.as_mut() else {
-            return Ok(verify_block_session_not_started_step());
-        };
-        return Ok(invalid_verify_block_report(
-            session,
-            "DAG_VERIFY_SESSION_UNEXPECTED_GAS_REPORT",
-        ));
-    }
-    let tips = session.tips.clone();
-    let needs_tip_gas = report.dag_gas_limit == 0
-        || (tips.len() as u64).saturating_add(1) > report.pbft_gas_limit / report.dag_gas_limit;
-    let tip_gas_estimations = if needs_tip_gas {
-        DagRuntimeAccess(&mut *runtime).dag_manager_runtime_tip_gas_estimations(&tips)?
-    } else {
-        Vec::new()
-    };
+    DagRuntimeAccess(runtime)
+        .verify_block_session_report_gas(rustaxa_consensus::dag_service::DagVerifyBlockGasReport {
+            block_gas_estimation: report.block_gas_estimation,
+            estimated_transactions_weight: report.estimated_transactions_weight,
+            dag_gas_limit: report.dag_gas_limit,
+            pbft_gas_limit: report.pbft_gas_limit,
+        })
+        .map(native_verify_block_step_to_bridge)
+}
 
-    let result = validate_dag_verify_gas(DomainDagVerifyGasInput {
-        block_gas_estimation: report.block_gas_estimation,
-        estimated_transactions_weight: report.estimated_transactions_weight,
-        dag_gas_limit: report.dag_gas_limit,
-        pbft_gas_limit: report.pbft_gas_limit,
-        tip_gas_estimations,
-    });
-    let Some(session) = runtime.verify_block_session.as_mut() else {
-        return Ok(verify_block_session_not_started_step());
-    };
-    Ok(complete_verify_block_session(session, result.reject_code))
+fn native_verify_block_step_to_bridge(
+    step: rustaxa_consensus::dag_service::DagVerifyBlockSessionStep,
+) -> DagVerifyBlockSessionStep {
+    DagVerifyBlockSessionStep {
+        cursor_id: step.cursor_id,
+        status: step.status,
+        action: step.action,
+        complete: step.complete,
+        reject_code: step.reject_code,
+        proposal_period: step.proposal_period,
+        vote_count: step.vote_count,
+        max_vote_count: step.max_vote_count,
+        error_code: step.error_code,
+    }
 }
 
 /// Opens a DAG proposal cursor inside the long-lived DAG manager runtime.

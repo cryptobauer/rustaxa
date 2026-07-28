@@ -1111,8 +1111,11 @@ The current Rust consensus footprint is broad but still incomplete:
    `DagService` owns graph/storage state, proposer/verifier/add-block cursors, retry state, restoration, initial
    proposal-period mapping, locking, and poison policy. Native `DagTransactionService` owns complete three-service
    construction, restoration, lifetime, canonical lock order, add-block cursor and atomic DAG/transaction persistence,
-   and finalized-order application with post-commit transaction-sidecar cleanup. The bridge converts CXX carriers for
-   those operations without owning their state or storage batches.
+   finalized-order application with post-commit transaction-sidecar cleanup, proposer transaction packing, and the
+   complete DAG verification session. Verification resolves queue/sidecar/storage views, revalidates authorization and
+   VDF snapshots, verifies the VDF proof, and decides terminal gas status in Rust; C++ retains only transaction object
+   materialization, exact-period FinalChain reads, and EVM estimation as unlocked executor leaves. The bridge converts
+   CXX carriers for those operations without owning their state, lock choreography, or storage batches.
    Rust also owns `estimateTransactionGas` and
    `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction hash, proposal period)` opaque
    `ExecutionResult` cache, while C++ keeps EVM execution, public transaction construction, final selected transaction

@@ -139,7 +139,11 @@ The native DAG application root also owns the proposer transaction-pack task:
 it validates and advances the DAG cursor, snapshots and applies transaction
 queue/cache effects, retains owner-bound estimate cursors across the unlocked
 EVM interval, and cleans both matching cursors on failure. The bridge
-temporarily supplies the remaining FFI-shaped proposer, verifier, query, and
+also routes the complete verifier task through the native root: Rust owns
+transaction-source resolution, authorization/VDF cursor revalidation, native
+VDF proof verification, and gas decisions, while C++ retains transaction
+materialization, FinalChain lookup, and EVM estimation as unlocked leaves. The
+bridge temporarily supplies the remaining FFI-shaped proposer, query, and
 compatibility task methods over short native guards. The temporarily public
 native DAG and transaction state/guards are explicit bridge escape-hatch debt
 and may not cross CXX or external callbacks.

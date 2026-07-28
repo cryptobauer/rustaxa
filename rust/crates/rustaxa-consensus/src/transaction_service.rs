@@ -345,6 +345,7 @@ impl TransactionServiceState {
     }
 
     /// Returns bounded, source-ordered finalized-period proposal views with optional nonce filtering.
+    #[cfg(test)]
     pub(crate) fn lookup_proposal_transaction_views_with_account_nonce_facts(
         &self,
         proposal_period: u64,
@@ -1005,12 +1006,26 @@ mod tests {
 
     fn transaction_service_view_request(
         input_index: u64,
-        hash: u8,
+        hash: u64,
     ) -> TransactionServiceTransactionViewRequest {
         TransactionServiceTransactionViewRequest {
             input_index,
-            hash: [hash; 32],
+            hash: H256::from_low_u64_be(hash).0,
         }
+    }
+
+    fn period_data_with_transaction_rlps(transactions: &[Vec<u8>]) -> Vec<u8> {
+        let mut txs = RlpStream::new_list(transactions.len());
+        for tx in transactions {
+            txs.append_raw(tx, 1);
+        }
+        let mut stream = RlpStream::new_list(5);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&txs.out(), 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.out().to_vec()
     }
 
     fn signed_legacy_transaction_rlp(signing_key: &SigningKey) -> Vec<u8> {
@@ -1079,7 +1094,7 @@ mod tests {
                 blocks_gas_pricer: false,
             },
         )?;
-        let mut runtime = service.lock()?;
+        let runtime = service.lock()?;
 
         assert_eq!(runtime.sidecar.transaction_count(), 0);
 
@@ -1102,7 +1117,7 @@ mod tests {
                 blocks_gas_pricer: false,
             },
         )?;
-        let mut runtime = service.lock()?;
+        let runtime = service.lock()?;
 
         assert_eq!(runtime.sidecar.transaction_count(), 73);
 
@@ -1165,7 +1180,7 @@ mod tests {
                 proposal_dag_gas_limit: 1_000_000,
             },
         )?;
-        let runtime = service.lock()?;
+        let mut runtime = service.lock()?;
 
         runtime
             .gas_price_oracle
@@ -1359,7 +1374,7 @@ mod tests {
             },
         )?;
 
-        let runtime = service.lock()?;
+        let mut runtime = service.lock()?;
         runtime
             .queue
             .insert(
@@ -1383,8 +1398,8 @@ mod tests {
             .expect("sidecar insert should seed non-finalized source");
         runtime
             .sidecar
-            .apply_finalized_transition(7, vec![ethereum_types::H256::from_low_u64_be(3)])
-            .expect("sidecar transition should seed recently-finalized source");
+            .insert_recently_finalized(7, ethereum_types::H256::from_low_u64_be(3), vec![0x33])
+            .expect("sidecar insertion should seed recently-finalized source");
         runtime
             .storage
             .transaction()
@@ -1396,18 +1411,11 @@ mod tests {
             .write_location(ethereum_types::H256::from_low_u64_be(5), 9, 0, false)
             .expect("storage location should seed excluded request");
 
-        let mut period_txs = RlpStream::new_list(1);
-        period_txs.append_raw(&[0x55], 1);
-        let mut period_data = RlpStream::new_list(5);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&period_txs.out(), 1);
-        period_data.append_raw(&[0xC0], 1);
+        let period_data = period_data_with_transaction_rlps(&[vec![0x55]]);
         runtime
             .storage
             .period()
-            .write(9, &period_data.out())
+            .write(9, &period_data)
             .expect("period source should persist finalized tx");
 
         let plan = runtime.lookup_transaction_views(
@@ -1470,7 +1478,7 @@ mod tests {
             },
         )?;
 
-        let mut runtime = service.lock()?;
+        let runtime = service.lock()?;
         let signing_key = SigningKey::from_slice(&[0x33u8; 32])?;
         let transaction_rlp = signed_legacy_transaction_rlp(&signing_key);
         let transaction_hash = keccak256(&transaction_rlp);
@@ -1482,18 +1490,11 @@ mod tests {
             .write_location(transaction_hash, 1, 0, false)
             .expect("proposal storage location should persist");
 
-        let mut period_txs = RlpStream::new_list(1);
-        period_txs.append_raw(&transaction_rlp, 1);
-        let mut period_data = RlpStream::new_list(5);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&period_txs.out(), 1);
-        period_data.append_raw(&[0xC0], 1);
+        let period_data = period_data_with_transaction_rlps(&[transaction_rlp.clone()]);
         runtime
             .storage
             .period()
-            .write(1, &period_data.out())
+            .write(1, &period_data)
             .expect("proposal period data should persist");
 
         let plan = runtime.lookup_proposal_transaction_views_with_account_nonce_facts(
@@ -1516,7 +1517,7 @@ mod tests {
         assert_eq!(plan.requested_count, 1);
         assert!(plan.complete);
         assert_eq!(plan.views.len(), 1);
-        assert!(plan.views[0].found);
+        assert!(!plan.views[0].found);
         assert!(plan.views[0].old_finalized);
         assert_eq!(
             plan.views[0].source,
@@ -1577,26 +1578,21 @@ mod tests {
                 proposal_dag_gas_limit: 1_000_000,
             },
         )?;
-        let mut runtime = service.lock()?;
+        let runtime = service.lock()?;
         let corrupt_hash = H256::from_low_u64_be(8);
+        let mismatched_transaction_rlp =
+            signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x44u8; 32])?);
 
         runtime
             .storage
             .transaction()
             .write_location(corrupt_hash, 2, 0, false)
             .expect("proposal storage location should persist");
-        let mut period_txs = RlpStream::new_list(1);
-        period_txs.append_raw(&[0xFF], 1);
-        let mut period_data = RlpStream::new_list(5);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&period_txs.out(), 1);
-        period_data.append_raw(&[0xC0], 1);
+        let period_data = period_data_with_transaction_rlps(&[mismatched_transaction_rlp]);
         runtime
             .storage
             .period()
-            .write(2, &period_data.out())
+            .write(2, &period_data)
             .expect("proposal period data should persist");
 
         let err = runtime

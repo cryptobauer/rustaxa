@@ -576,6 +576,26 @@ budget falls by 154 lines to 43,411; shim lines, CXX functions, carriers,
 handles, shim directories, granular flags, partial factories, compatibility
 constructors, production callers, and non-test C++ consumers are unchanged.
 
+The next bounded `CRW-12` owner contraction moves the complete DAG
+`verifyBlock` application task behind native `DagTransactionService`. Native
+Rust now owns the verifier cursor and status transitions, ordered
+queue/sidecar/storage transaction resolution, proposal-period finalized nonce
+filtering, exact authorization snapshots and stale-cursor cleanup, historical
+sortition lookup, VDF proof verification, and terminal tip-gas validation.
+Every native guard is released before the retained FinalChain authorization
+query or C++ transaction/EVM materialization boundary. The production bridge
+functions now convert CXX carriers, perform the unlocked FinalChain leaf query,
+and call one native-root method; they no longer construct private transaction
+queries, coordinate DAG/transaction/sortition locks, validate cursor identity,
+run VDF proof logic, or decide verifier transitions. Native tests cover ordered
+transaction sources and finalized filtering, stale cursor preservation,
+authorization replacement, VDF fingerprint revalidation, and wrong-stage gas
+reports; bridge tests retain carrier and external-leaf wiring coverage.
+Superseded bridge-local verifier test helpers and the remaining proposer/query
+guard escape hatch remain explicit `CRW-12` cleanup debt. The checked bridge
+budget falls by 198 lines to 43,213; all other checked surface budgets are
+unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

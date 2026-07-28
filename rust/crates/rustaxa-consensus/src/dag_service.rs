@@ -7,14 +7,20 @@
 //! poison policy never leave the native owner.
 
 use crate::dag::{
-    DAG_PROPOSER_ACTION_CONTINUE, DagAddBlockEffectInput, DagAddBlockEffectPlan, DagManagerBlock,
-    DagManagerFinalizationPlan, DagManagerSnapshot, DagManagerState, DagPersistenceCounters,
-    DagProposerAttemptPlan, DagProposerFrontierFacts, DagProposerPostPackInput,
-    DagProposerSignedBlockIntent, DagProposerUnsignedBlockIntent, DagReferenceMetadata,
+    DAG_PROPOSER_ACTION_CONTINUE, DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
+    DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE, DAG_VERIFY_VDF_STATUS_NOT_CHECKED,
+    DAG_VERIFY_VDF_STATUS_VALID, DagAddBlockEffectInput, DagAddBlockEffectPlan,
+    DagDposAuthorizationFacts, DagManagerBlock, DagManagerFinalizationPlan, DagManagerSnapshot,
+    DagManagerState, DagPersistenceCounters, DagProposerAttemptPlan, DagProposerFrontierFacts,
+    DagProposerPostPackInput, DagProposerSignedBlockIntent, DagProposerUnsignedBlockIntent,
+    DagReferenceMetadata, DagTipGas, DagVerifyGasInput, DagVerifyPrecheckStorageInput,
+    DagVerifyTransactionAvailabilityInput, DagVerifyVdfDposFacts,
     apply_finalization_cleanup_from_storage, construct_dag_vdf_message,
     dag_block_exists_in_storage, dag_manager_block_from_rlp, dag_persistence_counters_from_storage,
-    ensure_proposal_period_mapping, plan_dag_add_block_effects, plan_dag_proposer_post_pack,
-    validate_pivot_tips_metadata,
+    decide_dag_verify_vdf_dpos_authorization, ensure_proposal_period_mapping,
+    plan_dag_add_block_effects, plan_dag_proposer_post_pack, plan_dag_verify_transaction_query,
+    validate_dag_verify_gas, validate_dag_verify_transaction_availability,
+    validate_pivot_tips_metadata, verify_precheck_from_storage,
 };
 use crate::pbft_chain::restore_pbft_chain_from_storage;
 use crate::sortition::SortitionParams;
@@ -32,6 +38,14 @@ pub const DAG_TRANSACTION_SERVICE_DAG_LOCK_POISONED: &str =
 
 const DAG_PROPOSER_SESSION_STATUS_ACTIVE: u8 = 0;
 const DAG_PROPOSER_SESSION_STATUS_COMPLETE: u8 = 1;
+const DAG_VERIFY_SESSION_STATUS_ACTIVE: u8 = 0;
+const DAG_VERIFY_SESSION_STATUS_COMPLETE: u8 = 1;
+const DAG_VERIFY_SESSION_STATUS_INVALID_REPORT: u8 = 2;
+const DAG_VERIFY_SESSION_ACTION_NONE: u8 = 0;
+const DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY: u8 = 1;
+const DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS: u8 = 2;
+const DAG_VERIFY_SESSION_ACTION_VDF_SORTITION: u8 = 3;
+const DAG_VERIFY_SESSION_ACTION_GAS: u8 = 4;
 
 /// Session-local facts consumed by the native proposal-packing application task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +125,78 @@ pub struct DagVerifyBlockSession {
     pub vdf_sortition_max_vote_count: u64,
     pub eligibility_status: u8,
     pub error_code: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct DagVerifyBlockSessionInput {
+    pub block_hash: [u8; 32],
+    pub block_level: u64,
+    pub pivot: [u8; 32],
+    pub tips: Vec<H256>,
+    pub block_transaction_hashes: Vec<H256>,
+    pub supplied_transaction_hashes: Vec<H256>,
+    pub block_rlp: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DagVerifyBlockSessionStep {
+    pub cursor_id: u64,
+    pub status: u8,
+    pub action: u8,
+    pub complete: bool,
+    pub proposal_period: u64,
+    pub vote_count: u64,
+    pub max_vote_count: u64,
+    pub reject_code: u32,
+    pub error_code: String,
+}
+
+#[derive(Clone)]
+pub struct DagVerifyBlockTransactionQuery {
+    pub cursor_id: u64,
+    pub proposal_period: u64,
+    pub hashes: Vec<H256>,
+    pub expected_transactions: u64,
+}
+
+#[derive(Clone)]
+pub struct DagVerifyBlockTransactionCompletion {
+    pub cursor_id: u64,
+    pub proposal_period: u64,
+    pub resolved_transactions: u64,
+}
+
+#[derive(Clone)]
+pub struct DagVerifyBlockAuthorizationSnapshot {
+    pub cursor_id: u64,
+    pub fingerprint: [u8; 32],
+    pub generation: u64,
+    pub proposal_period: u64,
+    pub block_rlp: Vec<u8>,
+}
+
+pub enum DagVerifyBlockAuthorizationPreparation {
+    Snapshot(DagVerifyBlockAuthorizationSnapshot),
+    Step(DagVerifyBlockSessionStep),
+}
+
+#[derive(Clone)]
+pub struct DagVerifyBlockVdfSnapshot {
+    pub cursor_id: u64,
+    pub fingerprint: [u8; 32],
+    pub generation: u64,
+    pub proposal_period: u64,
+    pub vote_count: u64,
+    pub max_vote_count: u64,
+    pub vrf_public_key: [u8; 32],
+}
+
+#[derive(Clone)]
+pub struct DagVerifyBlockGasReport {
+    pub block_gas_estimation: u64,
+    pub estimated_transactions_weight: u64,
+    pub dag_gas_limit: u64,
+    pub pbft_gas_limit: u64,
 }
 
 /// Next deterministic external boundary requested by a proposer cursor.
@@ -559,6 +645,417 @@ impl DagServiceState {
         self.finish_proposer_session_step(session_id)
     }
 
+    /// Opens a verification cursor for one [`DagManager::verifyBlock`] call.
+    #[doc(hidden)]
+    pub fn begin_verify_block_session(&mut self, input: DagVerifyBlockSessionInput) -> Result<()> {
+        let fingerprint = input.block_hash;
+        let cursor_id = self.next_verify_block_session_id;
+        self.next_verify_block_session_id =
+            self.next_verify_block_session_id.wrapping_add(1).max(1);
+        let tips = input.tips.clone();
+        let precheck = verify_precheck_from_storage(
+            self.storage.as_ref(),
+            DagVerifyPrecheckStorageInput {
+                block_level: input.block_level,
+                pivot: H256::from(input.pivot),
+                tips: tips.clone(),
+                dag_expiry_level: self.state.dag_expiry_level(),
+            },
+        )
+        .context("DAG_RUNTIME_VERIFY_SESSION_PRECHECK")?;
+
+        let expected_transactions = input.block_transaction_hashes.len() as u64;
+        let action = if precheck.continue_validation {
+            let block_transaction_hashes = input.block_transaction_hashes.clone();
+            let supplied_transaction_hashes = input.supplied_transaction_hashes.clone();
+            let query_plan = plan_dag_verify_transaction_query(
+                &block_transaction_hashes,
+                &supplied_transaction_hashes,
+            );
+            DagVerifyBlockSessionAction::TransactionQuery(query_plan.query_hashes)
+        } else {
+            DagVerifyBlockSessionAction::Complete
+        };
+
+        self.verify_block_session = Some(DagVerifyBlockSession {
+            cursor_id,
+            fingerprint,
+            generation: 1,
+            action,
+            tips,
+            proposal_period: precheck.proposal_period,
+            block_rlp: input.block_rlp,
+            expected_transactions,
+            reject_code: precheck.reject_code,
+            sender_eligible_vote_count: 0,
+            vdf_sortition_max_vote_count: 0,
+            eligibility_status: DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
+            error_code: String::new(),
+        });
+        Ok(())
+    }
+
+    /// Returns the current requested action for the verification cursor.
+    #[doc(hidden)]
+    pub fn verify_block_session_next(&self) -> DagVerifyBlockSessionStep {
+        let Some(session) = self.verify_block_session.as_ref() else {
+            return verify_block_session_not_started_step();
+        };
+        verify_block_session_step(session)
+    }
+
+    /// Applies resolved transaction availability and advances authorization planning.
+    #[doc(hidden)]
+    pub fn verify_block_session_apply_transaction_resolution(
+        &mut self,
+        resolved_transactions: u64,
+    ) -> DagVerifyBlockSessionStep {
+        let Some(session) = self.verify_block_session.as_mut() else {
+            return verify_block_session_not_started_step();
+        };
+        if !matches!(
+            session.action,
+            DagVerifyBlockSessionAction::TransactionQuery(_)
+        ) {
+            return invalid_verify_block_report(
+                session,
+                "DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_REPORT",
+            );
+        }
+
+        let availability =
+            validate_dag_verify_transaction_availability(DagVerifyTransactionAvailabilityInput {
+                expected_transactions: session.expected_transactions,
+                resolved_transactions,
+            });
+        if !availability.continue_validation {
+            return complete_verify_block_session(session, availability.reject_code);
+        }
+
+        session.action = DagVerifyBlockSessionAction::AuthorizationFacts;
+        session.generation = session.generation.wrapping_add(1).max(1);
+        verify_block_session_step(session)
+    }
+
+    /// Returns the active transaction query without advancing its cursor.
+    #[doc(hidden)]
+    pub fn verify_block_transaction_query(&self) -> Result<DagVerifyBlockTransactionQuery> {
+        let Some(session) = self.verify_block_session.as_ref() else {
+            anyhow::bail!("DAG_VERIFY_SESSION_NOT_STARTED");
+        };
+        let DagVerifyBlockSessionAction::TransactionQuery(hashes) = &session.action else {
+            anyhow::bail!("DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_COMPLETION");
+        };
+        Ok(DagVerifyBlockTransactionQuery {
+            cursor_id: session.cursor_id,
+            proposal_period: session.proposal_period,
+            hashes: hashes.clone(),
+            expected_transactions: session.expected_transactions,
+        })
+    }
+
+    /// Revalidates that a transaction completion still targets the active cursor.
+    #[doc(hidden)]
+    pub fn verify_block_session_validate_transaction_completion(
+        &self,
+        cursor_id: u64,
+        proposal_period: u64,
+    ) -> Result<DagVerifyBlockTransactionQuery> {
+        let query = self.verify_block_transaction_query()?;
+        ensure!(
+            query.cursor_id == cursor_id,
+            "DAG_VERIFY_SESSION_TRANSACTION_CURSOR_MISMATCH"
+        );
+        ensure!(
+            query.proposal_period == proposal_period,
+            "DAG_VERIFY_SESSION_TRANSACTION_PERIOD_MISMATCH"
+        );
+        Ok(query)
+    }
+
+    /// Snapshots authorization facts for the exact active verify cursor.
+    #[doc(hidden)]
+    pub fn prepare_verify_block_authorization(&mut self) -> DagVerifyBlockAuthorizationPreparation {
+        let Some(session) = self.verify_block_session.as_mut() else {
+            return DagVerifyBlockAuthorizationPreparation::Step(
+                verify_block_session_not_started_step(),
+            );
+        };
+        if !matches!(
+            session.action,
+            DagVerifyBlockSessionAction::AuthorizationFacts
+        ) {
+            return DagVerifyBlockAuthorizationPreparation::Step(invalid_verify_block_report(
+                session,
+                "DAG_VERIFY_SESSION_UNEXPECTED_AUTHORIZATION_REPORT",
+            ));
+        }
+
+        DagVerifyBlockAuthorizationPreparation::Snapshot(DagVerifyBlockAuthorizationSnapshot {
+            cursor_id: session.cursor_id,
+            fingerprint: session.fingerprint,
+            generation: session.generation,
+            proposal_period: session.proposal_period,
+            block_rlp: session.block_rlp.clone(),
+        })
+    }
+
+    /// Removes only the exact authorization cursor that requested facts.
+    #[doc(hidden)]
+    pub fn cleanup_verify_block_authorization(
+        &mut self,
+        snapshot: &DagVerifyBlockAuthorizationSnapshot,
+    ) -> bool {
+        let matches = self
+            .verify_block_session
+            .as_ref()
+            .is_some_and(|session| verify_block_authorization_snapshot_matches(session, snapshot));
+        if matches {
+            self.verify_block_session = None;
+        }
+        matches
+    }
+
+    /// Revalidates and applies FinalChain DPoS authorization facts.
+    #[doc(hidden)]
+    pub fn apply_verify_block_authorization(
+        &mut self,
+        snapshot: &DagVerifyBlockAuthorizationSnapshot,
+        facts: DagDposAuthorizationFacts,
+    ) -> Result<DagVerifyBlockSessionStep> {
+        let session = self
+            .verify_block_session
+            .as_mut()
+            .context("DAG_VERIFY_SESSION_NOT_STARTED")?;
+        ensure!(
+            verify_block_authorization_snapshot_matches(session, snapshot),
+            "DAG_VERIFY_SESSION_AUTHORIZATION_CURSOR_MISMATCH"
+        );
+
+        session.sender_eligible_vote_count = facts.sender_eligible_vote_count;
+        session.vdf_sortition_max_vote_count = facts.vdf_sortition_max_vote_count;
+        session.eligibility_status = facts.eligibility_status;
+
+        let dpos_status = if facts.eligibility_status == DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
+        {
+            DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
+        } else {
+            DAG_VERIFY_DPOS_STATUS_NOT_CHECKED
+        };
+        let decision = decide_dag_verify_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: facts.vrf_key_found && facts.vrf_key.is_some(),
+            sender_eligible_vote_count: facts.sender_eligible_vote_count,
+            vdf_sortition_max_vote_count: facts.vdf_sortition_max_vote_count,
+            vdf_status: DAG_VERIFY_VDF_STATUS_NOT_CHECKED,
+            dpos_status,
+        });
+        if !decision.continue_validation {
+            return Ok(complete_verify_block_session(session, decision.reject_code));
+        }
+
+        session.action = DagVerifyBlockSessionAction::VdfSortition {
+            vote_count: decision.vote_count,
+            max_vote_count: decision.max_vote_count,
+            vrf_public_key: facts
+                .vrf_key
+                .context("DAG_VERIFY_SESSION_AUTHORIZATION_VRF_KEY_MISSING")?,
+        };
+        session.generation = session.generation.wrapping_add(1).max(1);
+        Ok(verify_block_session_step(session))
+    }
+
+    /// Takes a snapshot of the active VDF authorization cursor.
+    #[doc(hidden)]
+    pub fn snapshot_verify_block_vdf(&self, cursor_id: u64) -> Result<DagVerifyBlockVdfSnapshot> {
+        let session = self
+            .verify_block_session
+            .as_ref()
+            .context("DAG_VERIFY_SESSION_NOT_STARTED")?;
+        ensure!(
+            session.cursor_id == cursor_id,
+            "DAG_VERIFY_SESSION_VDF_CURSOR_MISMATCH"
+        );
+        let DagVerifyBlockSessionAction::VdfSortition {
+            vote_count,
+            max_vote_count,
+            vrf_public_key,
+        } = &session.action
+        else {
+            anyhow::bail!("DAG_VERIFY_SESSION_UNEXPECTED_VDF_ACTION");
+        };
+        Ok(DagVerifyBlockVdfSnapshot {
+            cursor_id: session.cursor_id,
+            fingerprint: session.fingerprint,
+            generation: session.generation,
+            proposal_period: session.proposal_period,
+            vote_count: *vote_count,
+            max_vote_count: *max_vote_count,
+            vrf_public_key: *vrf_public_key,
+        })
+    }
+
+    /// Revalidates a VDF snapshot and applies the completion result.
+    #[doc(hidden)]
+    pub fn complete_verify_block_vdf(
+        &mut self,
+        snapshot: &DagVerifyBlockVdfSnapshot,
+        vdf_status: u8,
+    ) -> Result<DagVerifyBlockSessionStep> {
+        {
+            let session = self
+                .verify_block_session
+                .as_ref()
+                .context("DAG_VERIFY_SESSION_NOT_STARTED")?;
+            ensure!(
+                session.cursor_id == snapshot.cursor_id,
+                "DAG_VERIFY_SESSION_VDF_CURSOR_MISMATCH"
+            );
+            ensure!(
+                session.fingerprint == snapshot.fingerprint,
+                "DAG_VERIFY_SESSION_VDF_FINGERPRINT_MISMATCH"
+            );
+            ensure!(
+                session.generation == snapshot.generation,
+                "DAG_VERIFY_SESSION_VDF_GENERATION_MISMATCH"
+            );
+            let DagVerifyBlockSessionAction::VdfSortition {
+                vote_count,
+                max_vote_count,
+                vrf_public_key,
+            } = &session.action
+            else {
+                anyhow::bail!("DAG_VERIFY_SESSION_UNEXPECTED_VDF_ACTION");
+            };
+            ensure!(
+                *vote_count == snapshot.vote_count
+                    && *max_vote_count == snapshot.max_vote_count
+                    && *vrf_public_key == snapshot.vrf_public_key,
+                "DAG_VERIFY_SESSION_VDF_ACTION_MISMATCH"
+            );
+        };
+        let Some(session) = self.verify_block_session.as_mut() else {
+            return Ok(verify_block_session_not_started_step());
+        };
+        Ok(Self::apply_verify_block_vdf_status(session, vdf_status))
+    }
+
+    fn apply_verify_block_vdf_status(
+        session: &mut DagVerifyBlockSession,
+        vdf_status: u8,
+    ) -> DagVerifyBlockSessionStep {
+        if !matches!(
+            session.action,
+            DagVerifyBlockSessionAction::VdfSortition { .. }
+        ) {
+            return invalid_verify_block_report(
+                session,
+                "DAG_VERIFY_SESSION_UNEXPECTED_VDF_REPORT",
+            );
+        }
+
+        let dpos_status =
+            if session.eligibility_status == DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE {
+                DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
+            } else {
+                DAG_VERIFY_DPOS_STATUS_NOT_CHECKED
+            };
+        let vdf_decision = decide_dag_verify_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: true,
+            sender_eligible_vote_count: session.sender_eligible_vote_count,
+            vdf_sortition_max_vote_count: session.vdf_sortition_max_vote_count,
+            vdf_status,
+            dpos_status,
+        });
+        if !vdf_decision.continue_validation {
+            return complete_verify_block_session(session, vdf_decision.reject_code);
+        }
+
+        let dpos_decision = decide_dag_verify_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: true,
+            sender_eligible_vote_count: session.sender_eligible_vote_count,
+            vdf_sortition_max_vote_count: session.vdf_sortition_max_vote_count,
+            vdf_status: DAG_VERIFY_VDF_STATUS_VALID,
+            dpos_status: session.eligibility_status,
+        });
+        if !dpos_decision.continue_validation {
+            return complete_verify_block_session(session, dpos_decision.reject_code);
+        }
+
+        session.action = DagVerifyBlockSessionAction::Gas;
+        session.generation = session.generation.wrapping_add(1).max(1);
+        verify_block_session_step(session)
+    }
+
+    /// Reports block and tip-gas facts from public EVM estimation into the verify cursor.
+    #[doc(hidden)]
+    pub fn verify_block_session_report_gas(
+        &mut self,
+        report: DagVerifyBlockGasReport,
+    ) -> Result<DagVerifyBlockSessionStep> {
+        let Some(session) = self.verify_block_session.as_ref() else {
+            return Ok(verify_block_session_not_started_step());
+        };
+        if !matches!(session.action, DagVerifyBlockSessionAction::Gas) {
+            let Some(session) = self.verify_block_session.as_mut() else {
+                return Ok(verify_block_session_not_started_step());
+            };
+            return Ok(invalid_verify_block_report(
+                session,
+                "DAG_VERIFY_SESSION_UNEXPECTED_GAS_REPORT",
+            ));
+        }
+
+        let tips = session.tips.clone();
+        let needs_tip_gas = report.dag_gas_limit == 0
+            || (tips.len() as u64).saturating_add(1) > report.pbft_gas_limit / report.dag_gas_limit;
+        let tip_gas_estimations = if needs_tip_gas {
+            self.verify_block_session_tip_gas_estimations(&tips)?
+        } else {
+            Vec::new()
+        };
+
+        let result = validate_dag_verify_gas(DagVerifyGasInput {
+            block_gas_estimation: report.block_gas_estimation,
+            estimated_transactions_weight: report.estimated_transactions_weight,
+            dag_gas_limit: report.dag_gas_limit,
+            pbft_gas_limit: report.pbft_gas_limit,
+            tip_gas_estimations,
+        });
+        let Some(session) = self.verify_block_session.as_mut() else {
+            return Ok(verify_block_session_not_started_step());
+        };
+        Ok(complete_verify_block_session(session, result.reject_code))
+    }
+
+    fn verify_block_session_tip_gas_estimations(&self, tips: &[H256]) -> Result<Vec<DagTipGas>> {
+        tips.iter()
+            .map(|hash| {
+                if self
+                    .storage
+                    .dag()
+                    .by_hash_rlp_optional(*hash)
+                    .context("DAG_RUNTIME_TIP_GAS_LOOKUP")?
+                    .is_none()
+                {
+                    return Ok(DagTipGas {
+                        found: false,
+                        gas_estimation: 0,
+                    });
+                }
+
+                let block = self
+                    .storage
+                    .dag()
+                    .by_hash(*hash)
+                    .context("DAG_RUNTIME_TIP_GAS_DECODE")?;
+                Ok(DagTipGas {
+                    found: true,
+                    gas_estimation: block.gas_estimation,
+                })
+            })
+            .collect()
+    }
+
     /// Returns the active proposer instruction without advancing its cursor.
     pub(crate) fn proposer_session_step(&self, session_id: u64) -> Result<DagProposerSessionStep> {
         let session = self
@@ -651,6 +1148,129 @@ fn proposer_session_step(session: &DagProposerSession) -> DagProposerSessionStep
         record_proposed_block: session.record_proposed_block,
         error_code: session.error_code.clone(),
     }
+}
+
+fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockSessionStep {
+    match &session.action {
+        DagVerifyBlockSessionAction::TransactionQuery(_) => DagVerifyBlockSessionStep {
+            cursor_id: session.cursor_id,
+            status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
+            action: DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY,
+            complete: false,
+            reject_code: session.reject_code,
+            proposal_period: session.proposal_period,
+            vote_count: 0,
+            max_vote_count: 0,
+            error_code: session.error_code.clone(),
+        },
+        DagVerifyBlockSessionAction::AuthorizationFacts => DagVerifyBlockSessionStep {
+            cursor_id: session.cursor_id,
+            status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
+            action: DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS,
+            complete: false,
+            reject_code: session.reject_code,
+            proposal_period: session.proposal_period,
+            vote_count: 0,
+            max_vote_count: 0,
+            error_code: session.error_code.clone(),
+        },
+        DagVerifyBlockSessionAction::VdfSortition {
+            vote_count,
+            max_vote_count,
+            ..
+        } => DagVerifyBlockSessionStep {
+            cursor_id: session.cursor_id,
+            status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
+            action: DAG_VERIFY_SESSION_ACTION_VDF_SORTITION,
+            complete: false,
+            reject_code: session.reject_code,
+            proposal_period: session.proposal_period,
+            vote_count: *vote_count,
+            max_vote_count: *max_vote_count,
+            error_code: session.error_code.clone(),
+        },
+        DagVerifyBlockSessionAction::Gas => DagVerifyBlockSessionStep {
+            cursor_id: session.cursor_id,
+            status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
+            action: DAG_VERIFY_SESSION_ACTION_GAS,
+            complete: false,
+            reject_code: session.reject_code,
+            proposal_period: session.proposal_period,
+            vote_count: 0,
+            max_vote_count: 0,
+            error_code: session.error_code.clone(),
+        },
+        DagVerifyBlockSessionAction::Complete => DagVerifyBlockSessionStep {
+            cursor_id: session.cursor_id,
+            status: DAG_VERIFY_SESSION_STATUS_COMPLETE,
+            action: DAG_VERIFY_SESSION_ACTION_NONE,
+            complete: true,
+            reject_code: session.reject_code,
+            proposal_period: session.proposal_period,
+            vote_count: 0,
+            max_vote_count: 0,
+            error_code: session.error_code.clone(),
+        },
+    }
+}
+
+fn invalid_verify_block_report(
+    session: &mut DagVerifyBlockSession,
+    error_code: &str,
+) -> DagVerifyBlockSessionStep {
+    session.action = DagVerifyBlockSessionAction::Complete;
+    session.generation = session.generation.wrapping_add(1).max(1);
+    session.error_code = error_code.to_string();
+    DagVerifyBlockSessionStep {
+        cursor_id: session.cursor_id,
+        status: DAG_VERIFY_SESSION_STATUS_INVALID_REPORT,
+        action: DAG_VERIFY_SESSION_ACTION_NONE,
+        complete: true,
+        reject_code: session.reject_code,
+        proposal_period: session.proposal_period,
+        vote_count: 0,
+        max_vote_count: 0,
+        error_code: session.error_code.clone(),
+    }
+}
+
+fn complete_verify_block_session(
+    session: &mut DagVerifyBlockSession,
+    reject_code: u32,
+) -> DagVerifyBlockSessionStep {
+    session.reject_code = reject_code;
+    session.action = DagVerifyBlockSessionAction::Complete;
+    session.generation = session.generation.wrapping_add(1).max(1);
+    verify_block_session_step(session)
+}
+
+fn verify_block_session_not_started_step() -> DagVerifyBlockSessionStep {
+    DagVerifyBlockSessionStep {
+        cursor_id: 0,
+        status: DAG_VERIFY_SESSION_STATUS_INVALID_REPORT,
+        action: DAG_VERIFY_SESSION_ACTION_NONE,
+        complete: true,
+        reject_code: 0,
+        proposal_period: 0,
+        vote_count: 0,
+        max_vote_count: 0,
+        error_code: "DAG_VERIFY_SESSION_NOT_STARTED".to_string(),
+    }
+}
+
+fn verify_block_authorization_snapshot_matches(
+    session: &DagVerifyBlockSession,
+    snapshot: &DagVerifyBlockAuthorizationSnapshot,
+) -> bool {
+    session.cursor_id == snapshot.cursor_id
+        && session.fingerprint == snapshot.fingerprint
+        && session.generation == snapshot.generation
+        && session.proposal_period == snapshot.proposal_period
+        && session.block_rlp == snapshot.block_rlp
+        && matches!(
+            session.action,
+            DagVerifyBlockSessionAction::AuthorizationFacts
+        )
 }
 
 /// Native owner of DAG construction, restoration, sessions, and locking.
