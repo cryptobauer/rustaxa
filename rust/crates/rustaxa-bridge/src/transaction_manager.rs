@@ -33,11 +33,11 @@ use crate::ffi::rustaxa_ffi::{
     TransactionQueueProposableAccountFact, TransactionQueueStoredTransaction,
     TransactionQueueTransactionGroup,
 };
-use crate::ffi::{BridgeStorage, TransactionRuntimeState};
+use crate::ffi::BridgeStorage;
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::{H160, H256, U256};
-use rustaxa_consensus::gas_pricer::{GasPriceOracle, GasPricerConfig as DomainGasPricerConfig};
+use rustaxa_consensus::gas_pricer::GasPricerConfig as DomainGasPricerConfig;
 use rustaxa_consensus::transaction_manager::{
     plan_exclude_finalized_transactions as plan_exclude_finalized_transactions_from_storage,
     plan_finalized_transactions_status, plan_insert_transaction, plan_transactions_from_dag_block,
@@ -49,7 +49,6 @@ use rustaxa_consensus::transaction_manager::{
     FinalizedTransactionStatusPlan as ConsensusFinalizedTransactionStatusPlan,
     TransactionManagerInsertTransactionFact as ConsensusTransactionManagerInsertTransactionFact,
     TransactionManagerInsertTransactionStatus, TransactionManagerKnownFact,
-    TransactionManagerSidecar,
     TransactionManagerSidecarRecoveryEntry as ConsensusTransactionManagerSidecarRecoveryEntry,
     TransactionManagerValidatedInsertFact as ConsensusTransactionManagerValidatedInsertFact,
     TransactionManagerVerifyTransactionFact as ConsensusTransactionManagerVerifyTransactionFact,
@@ -64,6 +63,9 @@ use rustaxa_consensus::transaction_queue::{
     TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueDemoteStatus,
     TransactionQueueEntry, TransactionQueueInsertStatus, TransactionQueuePurgeOutcome,
 };
+use rustaxa_consensus::transaction_service::{
+    TransactionService, TransactionServiceConfig, TransactionServiceGuard, TransactionServiceState,
+};
 use rustaxa_consensus::transaction_storage::{
     append_non_finalized_transactions_to_batch, load_non_finalized_recovery_entries,
     load_stored_transactions, remove_non_finalized_transactions, save_transaction_count,
@@ -72,11 +74,14 @@ use rustaxa_consensus::transaction_storage::{
     STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
     STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING,
 };
-use rustaxa_storage::{StatusField, Storage, StorageWriteBatch};
+#[cfg(test)]
+use rustaxa_storage::StatusField;
+use rustaxa_storage::{Storage, StorageWriteBatch};
 #[cfg(test)]
 use rustaxa_types::FinalChainNonce;
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
 struct TransactionManagerRuntimeQueueCleanupPlan {
@@ -97,6 +102,83 @@ pub(crate) struct PreparedDagTransactionPublication {
     queue: TransactionQueue,
     sidecar: rustaxa_consensus::transaction_manager::TransactionManagerSidecar,
     pub(crate) outcome: DagTransactionSaveOutcome,
+}
+
+/// Temporary FFI adapter over native transaction state.
+///
+/// Production wraps a short-lived [`TransactionServiceGuard`]; focused bridge
+/// tests wrap an owned state. Both paths keep FFI-shaped behavior in this crate
+/// without returning or storing a native guard across CXX.
+pub(crate) struct TransactionRuntimeAccess<T>(pub(crate) T);
+
+impl<T> Deref for TransactionRuntimeAccess<T>
+where
+    T: Deref<Target = TransactionServiceState>,
+{
+    type Target = TransactionServiceState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for TransactionRuntimeAccess<T>
+where
+    T: DerefMut<Target = TransactionServiceState>,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+pub(crate) type TransactionRuntimeGuard<'a> = TransactionRuntimeAccess<TransactionServiceGuard<'a>>;
+#[cfg(test)]
+type TransactionRuntimeState = TransactionRuntimeAccess<TestTransactionServiceState>;
+
+/// Owned transaction state used by bridge tests.
+///
+/// Tests that create their own RocksDB directory attach it as `cleanup_path`.
+/// Dropping the fixture closes storage before removing that directory, while
+/// tests borrowing an externally managed storage owner leave cleanup to it.
+#[cfg(test)]
+struct TestTransactionServiceState {
+    state: Option<Box<TransactionServiceState>>,
+    cleanup_path: Option<std::path::PathBuf>,
+}
+
+#[cfg(test)]
+impl Deref for TestTransactionServiceState {
+    type Target = TransactionServiceState;
+
+    fn deref(&self) -> &Self::Target {
+        self.state
+            .as_deref()
+            .expect("test transaction state should remain available")
+    }
+}
+
+#[cfg(test)]
+impl DerefMut for TestTransactionServiceState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.state
+            .as_deref_mut()
+            .expect("test transaction state should remain available")
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestTransactionServiceState {
+    fn drop(&mut self) {
+        drop(self.state.take());
+        if let Some(path) = self.cleanup_path.take() {
+            std::fs::remove_dir_all(&path).unwrap_or_else(|error| {
+                panic!(
+                    "test transaction storage cleanup failed for {}: {error}",
+                    path.display()
+                )
+            });
+        }
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -624,16 +706,13 @@ fn runtime_queue_account_nonce_facts_from_bridge(
         .collect()
 }
 
-fn transaction_manager_runtime_storage(runtime: &TransactionRuntimeState) -> Result<&Storage> {
-    runtime
-        .storage
-        .as_deref()
-        .context("TM_RUNTIME_STORAGE_UNAVAILABLE")
+fn transaction_manager_runtime_storage(runtime: &TransactionServiceState) -> Result<&Storage> {
+    Ok(runtime.storage.as_ref())
 }
 
 /// Plans and persists accepted DAG-block transactions through the Rust manager runtime.
 fn save_transactions_from_dag_block_with_runtime(
-    runtime: &mut TransactionRuntimeState,
+    runtime: &mut TransactionServiceState,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<DagTransactionSaveOutcome> {
     let storage = transaction_manager_runtime_storage(runtime)?;
@@ -651,7 +730,7 @@ fn save_transactions_from_dag_block_with_runtime(
 
 /// Plans DAG transaction persistence without mutating storage or live runtime state.
 pub(crate) fn prepare_transactions_from_dag_block_with_runtime(
-    runtime: &TransactionRuntimeState,
+    runtime: &TransactionServiceState,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<PreparedDagTransactionSave> {
     let storage = transaction_manager_runtime_storage(runtime)?;
@@ -715,7 +794,7 @@ pub(crate) fn append_prepared_dag_transactions_to_batch(
 
 /// Preapplies a DAG transaction save to cloned queue and sidecar state.
 pub(crate) fn prepare_dag_transaction_publication(
-    runtime: &TransactionRuntimeState,
+    runtime: &TransactionServiceState,
     prepared: &PreparedDagTransactionSave,
 ) -> Result<PreparedDagTransactionPublication> {
     let mut queue = runtime.queue.clone();
@@ -743,7 +822,7 @@ pub(crate) fn prepare_dag_transaction_publication(
 
 /// Publishes a fully prevalidated DAG transaction live-state transition.
 pub(crate) fn publish_prepared_dag_transactions(
-    runtime: &mut TransactionRuntimeState,
+    runtime: &mut TransactionServiceState,
     publication: PreparedDagTransactionPublication,
 ) -> DagTransactionSaveOutcome {
     runtime.queue = publication.queue;
@@ -753,7 +832,7 @@ pub(crate) fn publish_prepared_dag_transactions(
 
 /// Applies DAG transaction persistence and returns a typed command report.
 pub fn save_transactions_from_dag_block_command_report_with_runtime(
-    runtime: &mut TransactionRuntimeState,
+    runtime: &mut TransactionServiceState,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<TransactionManagerDagSaveCommandReport> {
     let outcome = save_transactions_from_dag_block_with_runtime(runtime, facts)?;
@@ -767,7 +846,7 @@ pub fn save_transactions_from_dag_block_command_report_with_runtime(
 /// finalized payloads, marks queue-known membership, erases matching queued
 /// payloads, and advances the authoritative transaction count.
 fn update_finalized_transactions_status_with_runtime(
-    runtime: &mut TransactionRuntimeState,
+    runtime: &mut TransactionServiceState,
     period: u64,
     retention_window: u64,
     facts: Vec<FinalizedTransactionStatusSidecarFact>,
@@ -841,7 +920,7 @@ fn update_finalized_transactions_status_with_runtime(
 /// Applies finalized-transaction status changes and returns typed command actions.
 #[cfg(test)]
 pub fn update_finalized_transactions_status_command_report_with_runtime(
-    runtime: &mut TransactionRuntimeState,
+    runtime: &mut TransactionServiceState,
     period: u64,
     retention_window: u64,
     facts: Vec<FinalizedTransactionStatusSidecarFact>,
@@ -857,7 +936,7 @@ pub fn update_finalized_transactions_status_command_report_with_runtime(
 
 /// Applies finalized status changes plus queue purge and returns typed command actions.
 pub fn update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
-    runtime: &mut TransactionRuntimeState,
+    runtime: &mut TransactionServiceState,
     period: u64,
     retention_window: u64,
     account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
@@ -871,6 +950,7 @@ pub fn update_finalized_transactions_status_command_report_with_runtime_and_acco
     )?;
     let mut report = finalized_status_command_report(&outcome);
     if report.purge_transaction_queue {
+        let mut runtime = TransactionRuntimeAccess(runtime);
         let cleanup = runtime.transaction_manager_runtime_queue_cleanup_with_account_nonce_facts(
             false,
             0,
@@ -954,7 +1034,7 @@ fn transaction_manager_insert_transaction(
 
 /// Filters finalized transactions using Rust runtime sidecars plus storage.
 pub fn transaction_manager_filter_non_finalized_with_runtime(
-    runtime: &TransactionRuntimeState,
+    runtime: &TransactionServiceState,
     requests: Vec<TransactionManagerSidecarLookupRequest>,
 ) -> Result<FinalizedTransactionFilterPlan> {
     let facts = requests
@@ -1141,7 +1221,7 @@ fn inspect_stored_transaction_identity(
 }
 
 fn transaction_manager_runtime_lookup_transaction_views_inner(
-    runtime: &TransactionRuntimeState,
+    runtime: &TransactionServiceState,
     requests: Vec<TransactionManagerTransactionViewRequest>,
     max_count: u64,
     transaction_lookup: impl FnOnce(
@@ -1258,7 +1338,7 @@ fn keccak256(data: &[u8]) -> H256 {
 /// Verifies transaction hashes against Rust runtime sidecars with sender nonce
 /// facts supplied by the external-EVM compatibility boundary.
 pub fn transaction_manager_verify_not_finalized_with_runtime(
-    runtime: &TransactionRuntimeState,
+    runtime: &TransactionServiceState,
     facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
 ) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
     let storage = transaction_manager_runtime_storage(runtime)?;
@@ -1336,12 +1416,14 @@ fn transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
 
 /// Rebuilds runtime recovery sidecars from Rust-backed storage without exposing count mirrors.
 pub fn transaction_manager_recover_nonfinalized_with_runtime(
-    runtime: &mut TransactionRuntimeState,
+    runtime: &mut TransactionServiceState,
 ) -> Result<()> {
     let entries = transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
         transaction_manager_runtime_storage(runtime)?,
     )?;
-    runtime.insert_recovery_entries(entries).map(|_| ())
+    TransactionRuntimeAccess(runtime)
+        .insert_recovery_entries(entries)
+        .map(|_| ())
 }
 
 /// Creates the Rust-owned TransactionManager runtime for Rust-enabled manager shims.
@@ -1357,13 +1439,34 @@ fn build_transaction_state_for_test(
     initial_transaction_count: u64,
     config: TransactionQueueConfig,
 ) -> Box<TransactionRuntimeState> {
-    build_transaction_state_inner(
-        initial_transaction_count,
-        config,
-        GasPriceOracle::new(test_gas_pricer_config()).expect("test gas config is valid"),
-        u64::MAX,
-        None,
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time should be available")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "rustaxa_bridge_transaction_runtime_{initial_transaction_count}_{nonce}"
+    ));
+    let storage = std::sync::Arc::new(
+        Storage::new(rustaxa_storage::Config::new(path.clone()))
+            .expect("test transaction storage should open"),
+    );
+    storage
+        .metadata()
+        .write_status_field(StatusField::TrxCount as u8, initial_transaction_count)
+        .expect("test transaction count should persist");
+    let state = TransactionServiceState::restore(
+        storage,
+        TransactionServiceConfig {
+            queue_max_size: config.max_size,
+            gas_pricer_config: test_gas_pricer_config(),
+            proposal_dag_gas_limit: u64::MAX,
+        },
     )
+    .expect("test transaction state should restore");
+    Box::new(TransactionRuntimeAccess(TestTransactionServiceState {
+        state: Some(Box::new(state)),
+        cleanup_path: Some(path),
+    }))
 }
 
 /// Builds the production transaction state with durable storage attached.
@@ -1382,58 +1485,15 @@ pub(crate) fn build_transaction_state_from_storage(
     config: TransactionQueueConfig,
     gas_pricer_config: GasPricerConfig,
     proposal_dag_gas_limit: u64,
-) -> Result<Box<TransactionRuntimeState>> {
-    let storage = storage.0.clone();
-    let initial_transaction_count = storage
-        .metadata()
-        .status_field(StatusField::TrxCount as u8)
-        .context("TM_RUNTIME_TRANSACTION_COUNT_READ")?;
-    let gas_pricer_config = domain_gas_pricer_config(gas_pricer_config);
-    let restore_gas_history = gas_pricer_config.blocks_gas_pricer;
-    let mut gas_price_oracle = GasPriceOracle::new(gas_pricer_config)?;
-    if restore_gas_history {
-        gas_price_oracle
-            .restore_from_storage(storage.as_ref())
-            .context("TM_RUNTIME_GAS_PRICE_HISTORY_RESTORE")?;
-    }
-
-    Ok(build_transaction_state_inner(
-        initial_transaction_count,
-        config,
-        gas_price_oracle,
-        proposal_dag_gas_limit,
-        Some(storage),
-    ))
-}
-
-/// Builds transaction runtime state from validated queue and oracle inputs.
-///
-/// Callers may omit storage only for native unit tests. Production
-/// `TransactionManager` construction must use
-/// `build_transaction_state_from_storage` so queue/count and gas history
-/// restore from the same cloned storage handle.
-fn build_transaction_state_inner(
-    initial_transaction_count: u64,
-    config: TransactionQueueConfig,
-    gas_price_oracle: GasPriceOracle,
-    proposal_dag_gas_limit: u64,
-    storage: Option<std::sync::Arc<Storage>>,
-) -> Box<TransactionRuntimeState> {
-    let gas_estimation_cache_size = config.max_size / 10;
-    let gas_estimation_cache_delete_step = config.max_size / 100;
-    Box::new(TransactionRuntimeState {
-        sidecar: TransactionManagerSidecar::new_with_gas_estimation_cache(
-            initial_transaction_count,
-            gas_estimation_cache_size,
-            gas_estimation_cache_delete_step,
-        ),
-        queue: TransactionQueue::new(config.max_size as u64),
-        gas_price_oracle,
-        proposal_dag_gas_limit,
-        storage,
-        last_drop_observed: None,
-        transaction_packing: TransactionPackingService::new(),
-    })
+) -> Result<TransactionService> {
+    TransactionService::restore(
+        storage.0.clone(),
+        TransactionServiceConfig {
+            queue_max_size: config.max_size,
+            gas_pricer_config: domain_gas_pricer_config(gas_pricer_config),
+            proposal_dag_gas_limit,
+        },
+    )
 }
 
 fn domain_gas_pricer_config(config: GasPricerConfig) -> DomainGasPricerConfig {
@@ -1457,7 +1517,10 @@ fn test_gas_pricer_config() -> DomainGasPricerConfig {
     }
 }
 
-impl TransactionRuntimeState {
+impl<T> TransactionRuntimeAccess<T>
+where
+    T: DerefMut<Target = TransactionServiceState>,
+{
     /// Begins one runtime-owned packing flow and returns all candidates that
     /// require C++ gas estimation.
     #[allow(clippy::too_many_arguments)]
@@ -1507,11 +1570,13 @@ impl TransactionRuntimeState {
             shard_period_interval,
         )?;
         let candidates = self
+            .0
             .queue
             .ordered_transactions(candidate_limit)
             .into_iter()
             .map(|entry| {
                 let cached_gas_used = self
+                    .0
                     .sidecar
                     .gas_estimation_cache_get(entry.hash, proposal_period)
                     .context("TM_RUNTIME_PACK_GAS_ESTIMATION_CACHE_GET")?
@@ -1523,6 +1588,7 @@ impl TransactionRuntimeState {
             })
             .collect::<Result<Vec<_>>>()?;
         let step = self
+            .0
             .transaction_packing
             .prepare(TransactionPackingRequest {
                 owner,
@@ -1700,6 +1766,7 @@ impl TransactionRuntimeState {
         }
 
         if let Some(cached) = self
+            .0
             .sidecar
             .gas_estimation_cache_get(hash, fact.proposal_period)
             .context("TM_RUNTIME_GAS_ESTIMATION_CACHE_GET")?
@@ -1869,6 +1936,7 @@ impl TransactionRuntimeState {
         requests: Vec<TransactionManagerTransactionViewRequest>,
     ) -> Result<Vec<TransactionManagerTransactionView>> {
         let lookups = self
+            .0
             .sidecar
             .lookup_payloads_ordered(
                 requests
@@ -2016,6 +2084,7 @@ impl TransactionRuntimeState {
         entries: Vec<ConsensusTransactionManagerSidecarRecoveryEntry>,
     ) -> Result<u64> {
         Ok(self
+            .0
             .sidecar
             .insert_recovery_entries(entries)
             .context("TM_RUNTIME_RECOVERY_INSERT")? as u64)
@@ -2028,6 +2097,7 @@ impl TransactionRuntimeState {
     ) -> Result<TransactionManagerRuntimeQueueInsertOutcome> {
         let proposable = input.proposable;
         let outcome = self
+            .0
             .queue
             .insert(runtime_queue_entry_from_insert_input(&input), proposable)?;
         if matches!(outcome.status, TransactionQueueInsertStatus::Overflow)
@@ -2055,6 +2125,7 @@ impl TransactionRuntimeState {
     ) -> Result<TransactionManagerInsertTransactionOutcome> {
         let tx_hash = H256::from(*hash);
         let hash_known = self
+            .0
             .sidecar
             .is_transaction_known(TransactionManagerKnownFact {
                 hash: tx_hash,
@@ -2331,6 +2402,7 @@ impl TransactionRuntimeState {
     /// minimum floor. C++ supplies neither a mode selector nor a queue scalar.
     pub fn transaction_manager_runtime_gas_price_bid(&self) -> [u8; 32] {
         let pool_price = self
+            .0
             .queue
             .min_gas_price_for_block_inclusion(self.proposal_dag_gas_limit);
         self.gas_price_oracle
@@ -2440,12 +2512,20 @@ mod tests {
         storage: &BridgeStorage,
         config: TransactionQueueConfig,
     ) -> Result<Box<TransactionRuntimeState>> {
-        super::build_transaction_state_from_storage(
-            storage,
-            config,
-            bridge_gas_pricer_config(false),
-            1_000_000,
-        )
+        let state = TransactionServiceState::restore(
+            storage.0.clone(),
+            TransactionServiceConfig {
+                queue_max_size: config.max_size,
+                gas_pricer_config: domain_gas_pricer_config(bridge_gas_pricer_config(false)),
+                proposal_dag_gas_limit: 1_000_000,
+            },
+        )?;
+        Ok(Box::new(TransactionRuntimeAccess(
+            TestTransactionServiceState {
+                state: Some(Box::new(state)),
+                cleanup_path: None,
+            },
+        )))
     }
 
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
@@ -2454,46 +2534,6 @@ mod tests {
             .expect("time should be available")
             .as_nanos();
         std::env::temp_dir().join(format!("{name}_{nonce}"))
-    }
-
-    fn append_gas_price_transaction(stream: &mut RlpStream, gas_price: u64) {
-        stream.begin_list(9);
-        stream.append(&0u64);
-        stream.append(&gas_price);
-        stream.append(&21_000u64);
-        stream.append_empty_data();
-        stream.append(&0u64);
-        stream.append_empty_data();
-        stream.append(&27u64);
-        stream.append(&1u64);
-        stream.append(&1u64);
-    }
-
-    fn seed_gas_price_history(
-        storage: &BridgeStorage,
-        blocks: &[(u64, &[u64])],
-        last_finalized_block: u64,
-    ) {
-        for &(period, prices) in blocks {
-            let mut period_rlp = RlpStream::new_list(4);
-            period_rlp.append_empty_data();
-            period_rlp.append_empty_data();
-            period_rlp.begin_list(0);
-            period_rlp.begin_list(prices.len());
-            for &gas_price in prices {
-                append_gas_price_transaction(&mut period_rlp, gas_price);
-            }
-            storage
-                .0
-                .period()
-                .write(period, &period_rlp.out().to_vec())
-                .unwrap();
-        }
-        storage
-            .0
-            .final_chain()
-            .write_block_header(last_finalized_block, H256::zero(), &[], &[])
-            .unwrap();
     }
 
     fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
@@ -2538,136 +2578,6 @@ mod tests {
                 .expect("runtime should restore the persisted count");
 
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 73);
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn transaction_runtime_oracle_updates_history_and_ignores_empty_blocks() {
-        let mut runtime = build_transaction_state_inner(
-            0,
-            TransactionQueueConfig { max_size: 1 },
-            GasPriceOracle::new(domain_gas_pricer_config(bridge_gas_pricer_config(true))).unwrap(),
-            0,
-            None,
-        );
-        runtime.transaction_manager_runtime_gas_price_update(Vec::new());
-        assert_eq!(
-            U256::from_big_endian(&runtime.transaction_manager_runtime_gas_price_bid()),
-            U256::one()
-        );
-
-        for price in [1_u64, 2, 3, 4, 5] {
-            runtime.transaction_manager_runtime_gas_price_update(vec![GasPricerGasPrice {
-                price: U256::from(price).to_big_endian(),
-            }]);
-        }
-        assert_eq!(
-            U256::from_big_endian(&runtime.transaction_manager_runtime_gas_price_bid()),
-            U256::from(3_u64)
-        );
-    }
-
-    #[test]
-    fn transaction_runtime_pool_bid_uses_owned_queue_limit_and_oracle_floor() {
-        let oracle = GasPriceOracle::new(DomainGasPricerConfig {
-            percentile: 50,
-            minimum_price: U256::from(4_u64),
-            history_blocks: 0,
-            is_light_node: false,
-            blocks_gas_pricer: false,
-        })
-        .unwrap();
-        let mut runtime = build_transaction_state_inner(
-            0,
-            TransactionQueueConfig { max_size: 8 },
-            oracle,
-            42_000,
-            None,
-        );
-        for (hash, gas_price) in [(1_u64, 2_u64), (2, 4)] {
-            runtime
-                .queue
-                .insert(
-                    TransactionQueueEntry {
-                        hash: H256::from_low_u64_be(hash),
-                        sender: H160::from_low_u64_be(hash),
-                        nonce: U256::zero(),
-                        gas_price: U256::from(gas_price),
-                        gas: 21_000,
-                        data_size: 0,
-                        rlp: vec![hash as u8],
-                        last_block_number: 0,
-                    },
-                    true,
-                )
-                .unwrap();
-        }
-
-        assert_eq!(
-            runtime
-                .queue
-                .min_gas_price_for_block_inclusion(runtime.proposal_dag_gas_limit),
-            U256::from(3_u64)
-        );
-        assert_eq!(
-            U256::from_big_endian(&runtime.transaction_manager_runtime_gas_price_bid()),
-            U256::from(4_u64)
-        );
-    }
-
-    #[test]
-    fn transaction_runtime_constructor_restores_gas_history_and_restarts() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_gas_history_restart");
-        let storage = crate::storage::create_storage(temp_dir.to_str().unwrap()).unwrap();
-        seed_gas_price_history(&storage, &[(2, &[9, 5]), (1, &[8])], 2);
-
-        for _ in 0..2 {
-            let runtime = super::build_transaction_state_from_storage(
-                &storage,
-                TransactionQueueConfig { max_size: 16 },
-                bridge_gas_pricer_config(true),
-                1_000_000,
-            )
-            .unwrap();
-            assert_eq!(
-                U256::from_big_endian(&runtime.transaction_manager_runtime_gas_price_bid()),
-                U256::from(5_u64)
-            );
-            assert!(runtime.storage.is_some());
-        }
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn transaction_runtime_light_history_stops_but_full_history_rejects_missing_rows() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_gas_history_missing");
-        let storage = crate::storage::create_storage(temp_dir.to_str().unwrap()).unwrap();
-        seed_gas_price_history(&storage, &[(2, &[9])], 3);
-        let mut light_config = bridge_gas_pricer_config(true);
-        light_config.minimum_price = U256::from(7_u64).to_big_endian();
-        light_config.is_light_node = true;
-        let light = super::build_transaction_state_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 16 },
-            light_config,
-            1_000_000,
-        )
-        .unwrap();
-        assert_eq!(
-            U256::from_big_endian(&light.transaction_manager_runtime_gas_price_bid()),
-            U256::from(7_u64)
-        );
-
-        let error = match super::build_transaction_state_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 16 },
-            bridge_gas_pricer_config(true),
-            1_000_000,
-        ) {
-            Ok(_) => panic!("full-node history restore must reject missing period data"),
-            Err(error) => error,
-        };
-        assert!(format!("{error:#}").contains("missing finalized transactions for block 3"));
         let _ = fs::remove_dir_all(temp_dir);
     }
 

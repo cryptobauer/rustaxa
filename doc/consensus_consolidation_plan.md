@@ -121,10 +121,15 @@ DAG-then-sortition order for coupled cursor revalidation until the remaining DAG
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The
-bridge snapshots queue/cache facts under the existing transaction lock, releases every lock for external EVM work,
+native `rustaxa-consensus::transaction_service::TransactionService` now owns that packing service together with the
+complete transaction queue, sidecar/count/gas cache, gas oracle, proposal gas limit, durable storage handle, drop
+observation, restoration, serialization mutex, and stable poison policy. Production publication follows successful
+count/config/history restoration; the bridge borrows a short-lived native guard only for FFI-shaped task adapters.
+The bridge snapshots queue/cache facts under the native transaction lock, releases every lock for external EVM work,
 then applies typed demotion/cache effects and transfers selected payloads under the established DAG-then-transaction
-order. Queue, sidecar/cache, storage, and atomic DAG/transaction batch publication remain bridge-owned until the wider
-DAG/transaction application root moves native.
+order. Shared DAG/transaction batch composition and DAG state remain bridge-owned until the wider application root
+moves native. The temporarily public native state/guard are explicit bridge escape-hatch debt and may not cross CXX or
+external callbacks.
 
 ### 3. Collapse configuration topology
 

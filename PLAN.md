@@ -738,9 +738,10 @@ Completed closeout slices:
    Rust finalization/add/sync plans own DAG consensus decisions. The Rust-mode public facade is detached from the dead
    legacy compile scaffold: it imports no original manager header or `DagManagerOld`, and feature-on builds exclude the
    original `dag_manager.cpp`; pure-C++ builds retain the untouched original implementation.
-   App bootstrap now owns one `BridgeDagTransactionService` that contains private DAG and transaction state behind
-   sibling Rust mutexes. `TransactionManager` and `DagManager` share that service instead of owning or passing separate
-   runtime handles; full construction restores both domains and the initial proposal-period mapping before publication.
+   App bootstrap now owns one `BridgeDagTransactionService` that contains bridge-owned DAG state and a complete native
+   `TransactionService` behind sibling Rust mutexes. `TransactionManager` and `DagManager` share that root instead of
+   owning or passing separate runtime handles; full construction restores both domains and the initial proposal-period
+   mapping before publication. Native transaction publication follows durable count and gas-history restoration.
    The service also owns the DAG-proposer transaction-pack transition: proposal/shard limits stay private, an
    owner-bound transaction cursor returns only required EVM estimate candidates, and selected hash/RLP/gas payloads move
    directly into the DAG cursor. C++ retains only network-throttle observation and EVM estimate execution.
@@ -1084,8 +1085,9 @@ The current Rust consensus footprint is broad but still incomplete:
    `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and `secondFinish_` should collapse further into
    hash/object resolution plus vote/sign/gossip/storage effect execution.
 10. Port transaction queue behavior before transaction manager orchestration. The standalone Rust-mode
-   `TransactionQueue` compatibility overlay and CXX handle are retired. Private transaction state inside the
-   application-owned `BridgeDagTransactionService` is the sole production owner of the native Rust queue, including
+   `TransactionQueue` compatibility overlay and CXX handle are retired. Native
+   `rustaxa-consensus::transaction_service::TransactionService`, embedded by the application-owned
+   `BridgeDagTransactionService`, is the sole production owner of the native Rust queue, including
    deterministic metadata, per-account nonce ordering,
    same-nonce replacement, non-proposer expiry, limits, gas-price thresholds, canonical payload retention,
    known-transaction cache expiry, overflow/drop observation, and finalized-account purge planning. Rust-enabled
@@ -1101,14 +1103,17 @@ The current Rust consensus footprint is broad but still incomplete:
    C++ sees only required EVM estimate candidates. Declared-gas and gas-estimation-cache hits are consumed inside Rust
    without a callback. The stale standalone planner FFI, proposer request/report carriers, and C++ sharded-pack payload
    relay are removed. The native service prevents compatibility and proposer callers from racing the single pack
-   session while EVM execution is outside every Rust lock. Queue, sidecar/cache, storage, and atomic DAG/transaction
-   batch publication remain in the bridge root pending the complete native application owner. Rust also owns `estimateTransactionGas` and
+   session while EVM execution is outside every Rust lock. The same native service owns queue, sidecar/count/gas cache,
+   gas oracle, storage, drop observation, restoration, locking, poison policy, and the packing subowner. Atomic
+   DAG/transaction batch composition remains in the bridge root pending the complete native DAG application owner.
+   Rust also owns `estimateTransactionGas` and
    `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction hash, proposal period)` opaque
    `ExecutionResult` cache, while C++ keeps EVM execution, public transaction construction, final selected transaction
    materialization, and lifecycle/finalization orchestration. The shim-only `TransactionQueue::demoteToNonProposable`
    API has been removed because pack demotion mutates the Rust runtime queue directly.
-   The TransactionManager shim now owns an opaque Rust runtime handle for live queue metadata/payloads, known-cache
-   state, non-finalized and recently-finalized transaction sidecars, and the authoritative transaction count. DAG
+   Native `TransactionService` now owns live queue metadata/payloads, known-cache state, non-finalized and
+   recently-finalized transaction sidecars, authoritative transaction count, storage, restoration, and locking.
+   The TransactionManager shim borrows that owner only through short-lived FFI-shaped adapters. DAG
    transaction persistence now derives transaction hashes, senders, nonces, gas facts, costs, and canonical RLP payloads
    through the shared Rust legacy transaction envelope before sending facts to the Rust runtime. Rust sources latest
    account nonces from the Rust FinalChain runtime and owns sidecar membership checks, duplicate filtering,

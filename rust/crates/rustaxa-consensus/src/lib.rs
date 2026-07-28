@@ -35,6 +35,7 @@ pub mod sortition;
 pub mod transaction_manager;
 pub mod transaction_packing_service;
 pub mod transaction_queue;
+pub mod transaction_service;
 pub mod transaction_storage;
 pub mod verified_votes;
 
@@ -336,6 +337,10 @@ pub use transaction_packing_service::{
     TransactionPackingService, TransactionPackingStep,
 };
 pub use transaction_queue::TransactionQueue;
+pub use transaction_service::{
+    DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED, TransactionService,
+    TransactionServiceConfig, TransactionServiceGuard, TransactionServiceState,
+};
 pub use transaction_storage::{
     NonFinalizedTransactionRecoveryEntry, NonFinalizedTransactionStoragePayload,
     STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,

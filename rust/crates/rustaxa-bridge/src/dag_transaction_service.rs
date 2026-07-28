@@ -1,11 +1,12 @@
 use crate::dag::{build_dag_state_from_storage, DagAddBlockEffectPlan, DagAddBlockRuntimeInput};
 use crate::ffi::rustaxa_ffi::*;
-use crate::ffi::{BridgeFinalChain, BridgeStorage, DagRuntimeState, TransactionRuntimeState};
+use crate::ffi::{BridgeFinalChain, BridgeStorage, DagRuntimeState};
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use crate::transaction_manager::{
     append_prepared_dag_transactions_to_batch, build_transaction_state_from_storage,
     dag_save_command_report, prepare_dag_transaction_publication,
     prepare_transactions_from_dag_block_with_runtime, publish_prepared_dag_transactions,
+    TransactionRuntimeAccess, TransactionRuntimeGuard,
 };
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::H256;
@@ -14,6 +15,7 @@ use rustaxa_consensus::dag::{
 };
 use rustaxa_consensus::sortition::{SortitionService, SortitionServiceGuard};
 use rustaxa_consensus::transaction_packing_service::TransactionPackingOwner;
+use rustaxa_consensus::transaction_service::TransactionService;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
@@ -27,22 +29,22 @@ use std::sync::{Mutex, MutexGuard};
 /// reacquires only DAG. Both revalidate the exact cursor before applying, and matching infrastructure
 /// failures clean only their owning cursor. No guard crosses an external executor callback.
 pub struct BridgeDagTransactionService {
-    transaction: Mutex<TransactionRuntimeState>,
+    transaction: TransactionService,
     dag: Mutex<Option<DagRuntimeState>>,
     sortition: SortitionService,
 }
 
 impl BridgeDagTransactionService {
-    pub(crate) fn transaction(&self) -> MutexGuard<'_, TransactionRuntimeState> {
-        self.transaction
-            .lock()
-            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+    pub(crate) fn transaction(&self) -> TransactionRuntimeGuard<'_> {
+        TransactionRuntimeAccess(
+            self.transaction
+                .lock()
+                .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED"),
+        )
     }
 
-    fn try_transaction(&self) -> Result<MutexGuard<'_, TransactionRuntimeState>> {
-        self.transaction
-            .lock()
-            .map_err(|_| anyhow!("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED"))
+    fn try_transaction(&self) -> Result<TransactionRuntimeGuard<'_>> {
+        self.transaction.lock().map(TransactionRuntimeAccess)
     }
 
     pub(crate) fn dag(&self) -> Result<MutexGuard<'_, Option<DagRuntimeState>>> {
@@ -73,7 +75,7 @@ impl BridgeDagTransactionService {
         &self,
     ) -> Result<(
         MutexGuard<'_, Option<DagRuntimeState>>,
-        MutexGuard<'_, TransactionRuntimeState>,
+        TransactionRuntimeGuard<'_>,
     )> {
         let dag = self.dag()?;
         let transaction = self.try_transaction()?;
@@ -92,7 +94,7 @@ pub fn create_dag_transaction_service_from_storage(
     gas_pricer_config: GasPricerConfig,
     proposal_dag_gas_limit: u64,
 ) -> Result<Box<BridgeDagTransactionService>> {
-    let transaction = *build_transaction_state_from_storage(
+    let transaction = build_transaction_state_from_storage(
         storage,
         transaction_queue_config,
         gas_pricer_config,
@@ -103,7 +105,7 @@ pub fn create_dag_transaction_service_from_storage(
     dag.dag_manager_runtime_ensure_proposal_period_mapping(max_levels_per_period, 0)?;
     let sortition = SortitionService::restore(sortition_config.into(), storage.0.clone())?;
     Ok(Box::new(BridgeDagTransactionService {
-        transaction: Mutex::new(transaction),
+        transaction,
         dag: Mutex::new(Some(dag)),
         sortition,
     }))
@@ -464,10 +466,7 @@ impl BridgeDagTransactionService {
         let counters;
         let mut pending_batch = None;
         if session.plan.persist_block {
-            let transaction_storage = transaction
-                .storage
-                .as_ref()
-                .context("TM_RUNTIME_STORAGE_UNAVAILABLE")?;
+            let transaction_storage = &transaction.storage;
             ensure!(
                 std::sync::Arc::ptr_eq(&dag.storage, transaction_storage),
                 "DAG_ADD_BLOCK_STORAGE_OWNER_MISMATCH"

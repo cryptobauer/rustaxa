@@ -17,10 +17,6 @@ use crate::transaction::*;
 use crate::transaction_manager::*;
 use crate::vdf::*;
 use rustaxa_consensus::dag::DagManagerState;
-use rustaxa_consensus::gas_pricer::GasPriceOracle;
-use rustaxa_consensus::transaction_manager::TransactionManagerSidecar;
-use rustaxa_consensus::transaction_packing_service::TransactionPackingService;
-use rustaxa_consensus::transaction_queue::TransactionQueue;
 use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusNetworkApi;
 use rustaxa_consensus::ConsensusQueryApi;
@@ -30,7 +26,6 @@ use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Instant;
 
 pub struct BridgeStorage(pub Arc<Storage>);
 
@@ -211,22 +206,6 @@ impl BridgePbftService {
     pub(crate) fn complete_bootstrap(&self) {
         self.0.complete_bootstrap();
     }
-}
-
-/// Private transaction state owned by the application-level DAG/transaction service.
-///
-/// The state combines sidecars, queue, gas oracle, packing sessions, and a
-/// shared Rust storage handle. It never crosses CXX independently; retained C++
-/// facades reach it only through `BridgeDagTransactionService` and materialize
-/// legacy `Transaction` objects at explicit public or EVM executor boundaries.
-pub(crate) struct TransactionRuntimeState {
-    pub sidecar: TransactionManagerSidecar,
-    pub queue: TransactionQueue,
-    pub gas_price_oracle: GasPriceOracle,
-    pub proposal_dag_gas_limit: u64,
-    pub storage: Option<Arc<Storage>>,
-    pub last_drop_observed: Option<Instant>,
-    pub transaction_packing: TransactionPackingService,
 }
 
 #[cxx::bridge(namespace = "rustaxa")]
