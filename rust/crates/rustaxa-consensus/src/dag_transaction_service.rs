@@ -8,17 +8,19 @@
 //! or an external executor boundary.
 
 use crate::dag::{
-    DagDposAuthorizationFacts, DagPersistenceCounters, DagVdfSortitionBlockInput,
-    dag_block_transaction_hashes, dag_manager_block_from_rlp, verify_dag_vdf_sortition_from_block,
+    DagBlockStorageLookup, DagDposAuthorizationFacts, DagFrontier, DagHashStorageLookup,
+    DagPersistenceCounters, DagPivotTipsValidation, DagProposerStorageTipSelectionInput,
+    DagProposerTipSelection, DagVdfSortitionBlockInput, dag_block_transaction_hashes,
+    dag_manager_block_from_rlp, verify_dag_vdf_sortition_from_block,
 };
 use crate::dag_service::{
     DagAddBlockPreparedTransaction, DagAddBlockSession, DagAddBlockStoredPlan,
     DagProposerAddBlockReport, DagProposerFinalChainFactsPreparation,
     DagProposerFinalChainFactsSnapshot, DagProposerSessionBeginInput, DagProposerSessionStep,
     DagProposerSigningReport, DagProposerTransactionObservation, DagProposerVdfProofReport,
-    DagService, DagServiceConfig, DagServiceGuard, DagVerifyBlockAuthorizationPreparation,
-    DagVerifyBlockAuthorizationSnapshot, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
-    DagVerifyBlockSessionStep,
+    DagRuntimeNonFinalizedSyncPayload, DagService, DagServiceConfig, DagServiceGuard,
+    DagVerifyBlockAuthorizationPreparation, DagVerifyBlockAuthorizationSnapshot,
+    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
 };
 use crate::sortition::{SortitionConfig, SortitionService, SortitionServiceGuard};
 use crate::transaction_packing_service::{TransactionPackingEstimate, TransactionPackingOwner};
@@ -266,6 +268,79 @@ pub struct DagVerifyBlockVdfRequest {
     pub proposal_period_hash: H256,
 }
 
+/// Root used when reading a deterministic GHOST path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DagGhostPathRoot {
+    /// Begin at one explicit DAG block.
+    Block(H256),
+    /// Begin at the current finalized anchor.
+    CurrentAnchor,
+}
+
+/// Native graph projection requested for diagnostic GraphViz rendering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DagGraphView {
+    /// Render the complete live DAG.
+    Complete,
+    /// Render only the selected pivot tree.
+    PivotTree,
+}
+
+/// Pair of finalized DAG anchors observed under one native lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DagAnchors {
+    /// Previous finalized anchor.
+    pub old: H256,
+    /// Current finalized anchor.
+    pub current: H256,
+}
+
+/// Lock-consistent status of the native DAG graph and finalization head.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DagRuntimeStatus {
+    /// Number of vertices in the live in-memory graph.
+    pub vertex_count: u64,
+    /// Number of directed edges in the live in-memory graph.
+    pub edge_count: u64,
+    /// Highest level represented by the live graph.
+    pub max_level: u64,
+    /// Latest finalized PBFT period reflected by DAG state.
+    pub period: u64,
+    /// Previous and current finalized DAG anchors.
+    pub anchors: DagAnchors,
+    /// Configured count of retained levels behind the frontier.
+    pub expiry_limit: u32,
+    /// Lowest currently retained DAG level.
+    pub expiry_level: u64,
+}
+
+/// Non-finalized hashes stored at one DAG level.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DagLevelHashes {
+    /// DAG level shared by every returned hash.
+    pub level: u64,
+    /// Deterministically ordered hashes at this level.
+    pub hashes: Vec<H256>,
+}
+
+/// Complete non-finalized level index observed under one native lock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DagNonFinalizedIndex {
+    /// Ascending level entries containing ordered block hashes.
+    pub levels: Vec<DagLevelHashes>,
+}
+
+/// Compact non-finalized pressure facts observed under one native lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DagNonFinalizedSummary {
+    /// Number of non-empty levels.
+    pub levels: u64,
+    /// Total number of non-finalized blocks.
+    pub blocks: u64,
+    /// Minimum live VDF difficulty, or `u32::MAX` when empty.
+    pub min_difficulty: u32,
+}
+
 impl DagTransactionService {
     /// Restores all sibling services and publishes one coherent application root.
     ///
@@ -282,6 +357,165 @@ impl DagTransactionService {
             dag,
             sortition,
         })
+    }
+
+    /// Validates a candidate level against pivot and tip metadata.
+    ///
+    /// Live graph metadata is preferred and canonical storage is the fallback.
+    /// Missing references are returned in deterministic pivot-then-tip order as
+    /// a successful rejection result. Lock, storage, or decode failures return
+    /// an error and no native guard escapes the call.
+    pub fn dag_validate_references(
+        &self,
+        block_level: u64,
+        pivot: H256,
+        tips: Vec<H256>,
+    ) -> Result<DagPivotTipsValidation> {
+        self.dag
+            .runtime_validate_pivot_tips(block_level, pivot, tips)
+    }
+
+    /// Builds one lock-consistent non-finalized synchronization snapshot.
+    ///
+    /// `known_hashes` are excluded before canonical block and transaction
+    /// payloads are loaded. Block order and first-seen transaction order are
+    /// preserved; missing transactions remain explicit successful lookups.
+    /// Lock, storage, or decode failures abort the complete snapshot.
+    pub fn dag_non_finalized_sync(
+        &self,
+        known_hashes: Vec<H256>,
+    ) -> Result<DagRuntimeNonFinalizedSyncPayload> {
+        self.dag.runtime_non_finalized_sync_payload(known_hashes)
+    }
+
+    /// Computes deterministic DAG order for one anchor.
+    ///
+    /// Unknown or non-orderable anchors return `None`; a known empty order is
+    /// `Some(Vec::new())`. The returned hashes are owned and the native lock is
+    /// released before return.
+    pub fn dag_order(&self, anchor: H256) -> Result<Option<Vec<H256>>> {
+        self.dag.runtime_compute_order(anchor)
+    }
+
+    /// Returns an owned pivot-and-tips frontier from one native lock epoch.
+    ///
+    /// Tip order is the canonical order maintained by `DagManagerState`.
+    /// Poisoned lock state returns the stable native DAG lock error.
+    pub fn dag_frontier(&self) -> Result<DagFrontier> {
+        self.dag.runtime_frontier()
+    }
+
+    /// Returns a GHOST path rooted at an explicit block or current anchor.
+    ///
+    /// The complete path is owned by the caller after the native lock is
+    /// released. Unknown explicit roots preserve `DagManagerState` semantics
+    /// and return an empty path rather than a storage error.
+    pub fn dag_ghost_path(&self, root: DagGhostPathRoot) -> Result<Vec<H256>> {
+        match root {
+            DagGhostPathRoot::Block(source) => self.dag.runtime_ghost_path(source),
+            DagGhostPathRoot::CurrentAnchor => self.dag.runtime_anchor_ghost_path(),
+        }
+    }
+
+    /// Renders one deterministic diagnostic graph projection.
+    ///
+    /// The selected complete or pivot-tree view is rendered while holding the
+    /// native lock and returned as owned GraphViz text. The task performs no
+    /// storage writes; poisoned lock state is returned as an error.
+    pub fn dag_graphviz(&self, view: DagGraphView) -> Result<String> {
+        self.dag
+            .runtime_graphviz_dot(matches!(view, DagGraphView::PivotTree))
+    }
+
+    /// Returns graph, finalization, anchor, and expiry facts from one lock epoch.
+    ///
+    /// Counts are widened to stable `u64` domain values. Conversion overflow is
+    /// reported as an error and no partial status is returned.
+    pub fn dag_runtime_status(&self) -> Result<DagRuntimeStatus> {
+        let dag = self.lock_dag()?;
+        let (old, current) = dag.state.anchors();
+        Ok(DagRuntimeStatus {
+            vertex_count: u64::try_from(dag.state.vertex_count())
+                .context("DAG_RUNTIME_VERTEX_COUNT_OVERFLOW")?,
+            edge_count: u64::try_from(dag.state.edge_count())
+                .context("DAG_RUNTIME_EDGE_COUNT_OVERFLOW")?,
+            max_level: dag.state.max_level(),
+            period: dag.state.period(),
+            anchors: DagAnchors { old, current },
+            expiry_limit: dag.state.dag_expiry_limit(),
+            expiry_level: dag.state.dag_expiry_level(),
+        })
+    }
+
+    /// Returns the complete ordered non-finalized level index from one lock epoch.
+    pub fn dag_non_finalized_index(&self) -> Result<DagNonFinalizedIndex> {
+        let dag = self.lock_dag()?;
+        Ok(DagNonFinalizedIndex {
+            levels: dag
+                .state
+                .non_finalized_blocks()
+                .iter()
+                .map(|(level, hashes)| DagLevelHashes {
+                    level: *level,
+                    hashes: hashes.iter().copied().collect(),
+                })
+                .collect(),
+        })
+    }
+
+    /// Returns non-finalized pressure counters from one lock epoch.
+    pub fn dag_non_finalized_summary(&self) -> Result<DagNonFinalizedSummary> {
+        let dag = self.lock_dag()?;
+        let (levels, blocks) = dag.state.non_finalized_blocks_size();
+        Ok(DagNonFinalizedSummary {
+            levels: u64::try_from(levels).context("DAG_RUNTIME_LEVEL_COUNT_OVERFLOW")?,
+            blocks: u64::try_from(blocks).context("DAG_RUNTIME_BLOCK_COUNT_OVERFLOW")?,
+            min_difficulty: dag.state.non_finalized_min_difficulty(),
+        })
+    }
+
+    /// Checks block membership in live state or canonical storage.
+    ///
+    /// Live graph membership returns immediately. Missing storage entries return
+    /// `false`; lock or storage failures return an error.
+    pub fn dag_is_block_known(&self, hash: H256) -> Result<bool> {
+        self.dag.runtime_is_block_known(hash)
+    }
+
+    /// Loads one canonical DAG block payload from native storage.
+    ///
+    /// Missing blocks return `found = false` with an empty payload. Storage or
+    /// decode failures return an error.
+    pub fn dag_load_block(&self, hash: H256) -> Result<DagBlockStorageLookup> {
+        self.dag.runtime_load_block(hash)
+    }
+
+    /// Selects proposer tips from storage-backed candidate metadata.
+    ///
+    /// The native planner owns sender recovery, proposer grouping, level order,
+    /// gas and maximum-tip limits, and missing-tip accounting. It returns owned
+    /// selected hashes; malformed payloads or storage failures are errors.
+    pub fn dag_select_proposer_tips(
+        &self,
+        input: DagProposerStorageTipSelectionInput,
+    ) -> Result<DagProposerTipSelection> {
+        self.dag.runtime_plan_proposer_tip_selection(input)
+    }
+
+    /// Resolves the canonical PBFT block hash for one finalized period.
+    ///
+    /// Missing period data returns `found = false`; malformed period data,
+    /// storage failures, and lock poison are errors.
+    pub fn dag_period_block_hash(&self, period: u64) -> Result<DagHashStorageLookup> {
+        self.dag.runtime_period_block_hash(period)
+    }
+
+    /// Reads persisted DAG block and edge counters from canonical storage.
+    ///
+    /// Both counters are returned from one storage read task. Lock or storage
+    /// failures return an error and no partial counters are exposed.
+    pub fn dag_persistence_counters(&self) -> Result<DagPersistenceCounters> {
+        self.dag.runtime_persistence_counters()
     }
 
     /// Opens one proposer cursor from a single DAG-then-transaction observation.
@@ -456,7 +690,7 @@ impl DagTransactionService {
     /// cross an external executor, callback, sleep, thread handoff, asynchronous
     /// boundary, or CXX return.
     #[doc(hidden)]
-    pub fn lock_dag(&self) -> Result<DagServiceGuard<'_>> {
+    pub(crate) fn lock_dag(&self) -> Result<DagServiceGuard<'_>> {
         self.dag.lock()
     }
 
@@ -475,7 +709,7 @@ impl DagTransactionService {
     /// acquire sortition between these two locks. If transaction locking fails,
     /// the DAG guard is dropped with the returned error.
     #[doc(hidden)]
-    pub fn lock_dag_and_transaction(
+    pub(crate) fn lock_dag_and_transaction(
         &self,
     ) -> Result<(DagServiceGuard<'_>, TransactionServiceGuard<'_>)> {
         let dag = self.dag.lock()?;
@@ -1449,6 +1683,66 @@ mod tests {
         assert_eq!(
             root.lock_sortition()?.current_params().vrf.threshold_upper,
             0x100
+        );
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn dag_query_tasks_return_owned_lock_consistent_domain_snapshots() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_query_tasks");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let genesis = service_config().dag.genesis_hash;
+
+        let status = root.dag_runtime_status()?;
+        assert_eq!(status.vertex_count, 1);
+        assert_eq!(status.edge_count, 0);
+        assert_eq!(status.max_level, 0);
+        assert_eq!(status.period, 0);
+        assert_eq!(status.anchors.current, genesis);
+        assert_eq!(status.expiry_limit, 32);
+
+        let non_finalized = root.dag_non_finalized_index()?;
+        let summary = root.dag_non_finalized_summary()?;
+        assert!(non_finalized.levels.is_empty());
+        assert_eq!(summary.levels, 0);
+        assert_eq!(summary.blocks, 0);
+        assert_eq!(summary.min_difficulty, u32::MAX);
+
+        let validation = root.dag_validate_references(1, genesis, Vec::new())?;
+        assert!(validation.ok);
+        assert_eq!(validation.expected_level, 1);
+        assert!(root.dag_is_block_known(genesis)?);
+
+        let sync = root.dag_non_finalized_sync(Vec::new())?;
+        assert_eq!(sync.period, 0);
+        assert!(sync.storage.blocks.is_empty());
+        assert!(sync.storage.transactions.is_empty());
+        assert!(
+            root.dag_graphviz(DagGraphView::Complete)?
+                .contains("digraph")
+        );
+
+        let malformed_hash = H256::repeat_byte(3);
+        root.lock_dag()?.state.add_block(DagManagerBlock {
+            hash: malformed_hash,
+            pivot: genesis,
+            tips: Vec::new(),
+            level: 1,
+            difficulty: 1,
+        })?;
+        save_dag_block_to_storage(storage.as_ref(), malformed_hash, 1, 0, &[0x80])?;
+        let error = root
+            .dag_non_finalized_sync(Vec::new())
+            .expect_err("malformed selected block must fail the complete sync snapshot");
+        assert!(
+            error
+                .to_string()
+                .contains("DAG_RUNTIME_SYNC_STORAGE_PAYLOAD")
         );
 
         drop(root);

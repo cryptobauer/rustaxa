@@ -648,6 +648,24 @@ lines, CXX functions, carriers, handles, shim directories, granular flags,
 partial factories, compatibility constructors, production callers, and
 non-test C++ consumers are unchanged.
 
+The next bounded `CRW-12` deletion moves the complete DAG manager query,
+storage-lookup, graph-status, and non-finalized-sync task family behind native
+`DagTransactionService`. The public native root now returns owned domain
+snapshots for reference validation, sync payloads, order/frontier/GHOST reads,
+diagnostic graph rendering, lock-consistent status and non-finalized indexes,
+block membership/loading, proposer-tip selection, period hashes, and persisted
+counters. The bridge retains the existing CXX methods only as carrier
+conversion; it no longer acquires a raw DAG guard or extends native state with
+bridge-owned behavior. `DagService`, its mutable state and guard, and the
+root's DAG lock escape hatches are crate-private. Eleven superseded bridge DAG
+runtime/storage/finalization tests and one duplicate composed-finalization test
+are deleted; native storage/state tests plus a root-level query snapshot test
+cover the moved semantics, while two leaf conversion tests remain for the C++
+worker command and legacy VDF bytes. The CXX ABI and retained FinalChain, EVM,
+signing, VDF, transport, and public-query boundaries are unchanged. The checked
+bridge budget falls by 1,238 lines to 39,036; all other checked surface budgets
+are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

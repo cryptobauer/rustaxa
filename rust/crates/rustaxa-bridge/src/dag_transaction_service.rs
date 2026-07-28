@@ -1,4 +1,3 @@
-use crate::dag::{DagRuntimeAccess, DagRuntimeGuard};
 use crate::ffi::rustaxa_ffi::*;
 use crate::ffi::{BridgeFinalChain, BridgeStorage};
 use crate::transaction_manager::{
@@ -21,8 +20,8 @@ use rustaxa_consensus::dag_transaction_service::{
     DagAddBlockAccountNonceFact as NativeDagAddBlockAccountNonceFact,
     DagAddBlockCompletion as NativeDagAddBlockCompletion,
     DagAddBlockPrepareRequest as NativeDagAddBlockPrepareRequest,
-    DagAddBlockTransactionPayload as NativeDagAddBlockTransactionPayload,
-    DagProposerFinalChainFacts as NativeDagProposerFinalChainFacts,
+    DagAddBlockTransactionPayload as NativeDagAddBlockTransactionPayload, DagGhostPathRoot,
+    DagGraphView, DagProposerFinalChainFacts as NativeDagProposerFinalChainFacts,
     DagProposerFinalChainRequestOrStep as NativeDagProposerFinalChainRequestOrStep,
     DagProposerPackPrepareRequest, DagProposerPackStep, DagTransactionService,
     DagTransactionServiceConfig,
@@ -62,10 +61,6 @@ impl BridgeDagTransactionService {
 
     fn try_transaction(&self) -> Result<TransactionRuntimeGuard<'_>> {
         self.root.lock_transaction().map(TransactionRuntimeAccess)
-    }
-
-    pub(crate) fn dag(&self) -> Result<DagRuntimeGuard<'_>> {
-        self.root.lock_dag().map(DagRuntimeAccess)
     }
 
     /// Acquires the native sortition owner after any required DAG lock.
@@ -140,24 +135,6 @@ macro_rules! transaction_mut_result {
     ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
         pub fn $name(&self, $( $arg: $ty ),*) -> Result<$ret> {
             self.try_transaction()?.$name($( $arg ),*)
-        }
-    };
-}
-
-macro_rules! dag_shared_value_result {
-    ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
-        pub fn $name(&self, $( $arg: $ty ),*) -> Result<$ret> {
-            let guard = self.dag()?;
-            Ok(guard.$name($( $arg ),*))
-        }
-    };
-}
-
-macro_rules! dag_shared_result {
-    ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
-        pub fn $name(&self, $( $arg: $ty ),*) -> Result<$ret> {
-            let guard = self.dag()?;
-            guard.$name($( $arg ),*)
         }
     };
 }
@@ -249,28 +226,215 @@ impl BridgeDagTransactionService {
         })
     }
 
-    dag_shared_result!(dag_manager_runtime_validate_pivot_tips(block_level: u64, pivot: &[u8; 32], tips: Vec<DagHash>) -> DagPivotTipsValidation);
-    dag_shared_result!(dag_manager_runtime_non_finalized_sync_payload(known_hashes: Vec<DagHash>) -> DagManagerNonFinalizedSyncPayload);
-    dag_shared_value_result!(dag_manager_runtime_compute_order(anchor: &[u8; 32]) -> DagOrder);
-    dag_shared_value_result!(dag_manager_runtime_frontier() -> DagFrontier);
-    dag_shared_value_result!(dag_manager_runtime_ghost_path(source: &[u8; 32]) -> Vec<DagHash>);
-    dag_shared_value_result!(dag_manager_runtime_anchor_ghost_path() -> Vec<DagHash>);
-    dag_shared_value_result!(dag_manager_runtime_graphviz_dot(pivot_tree: bool) -> String);
-    dag_shared_value_result!(dag_manager_runtime_vertex_count() -> usize);
-    dag_shared_value_result!(dag_manager_runtime_edge_count() -> usize);
-    dag_shared_value_result!(dag_manager_runtime_max_level() -> u64);
-    dag_shared_value_result!(dag_manager_runtime_latest_period() -> u64);
-    dag_shared_value_result!(dag_manager_runtime_anchors() -> DagManagerAnchors);
-    dag_shared_value_result!(dag_manager_runtime_dag_expiry_limit() -> u32);
-    dag_shared_value_result!(dag_manager_runtime_dag_expiry_level() -> u64);
-    dag_shared_value_result!(dag_manager_runtime_non_finalized_blocks() -> Vec<DagLevelHashes>);
-    dag_shared_value_result!(dag_manager_runtime_non_finalized_blocks_size() -> DagManagerNonFinalizedSize);
-    dag_shared_value_result!(dag_manager_runtime_non_finalized_min_difficulty() -> u32);
-    dag_shared_result!(dag_manager_runtime_is_block_known(hash: &[u8; 32]) -> bool);
-    dag_shared_result!(dag_manager_runtime_load_block(hash: &[u8; 32]) -> DagBlockLookup);
-    dag_shared_result!(dag_manager_runtime_plan_proposal_tip_selection(input: DagProposerStorageTipSelectionInput) -> DagProposerTipSelectionPlan);
-    dag_shared_result!(dag_manager_runtime_period_block_hash(period: u64) -> HashLookup);
-    dag_shared_result!(dag_manager_runtime_persistence_counters() -> DagPersistenceCounters);
+    pub fn dag_manager_runtime_validate_pivot_tips(
+        &self,
+        block_level: u64,
+        pivot: &[u8; 32],
+        tips: Vec<DagHash>,
+    ) -> Result<DagPivotTipsValidation> {
+        let validation = self.root.dag_validate_references(
+            block_level,
+            H256::from(*pivot),
+            tips.into_iter().map(|hash| H256::from(hash.hash)).collect(),
+        )?;
+        Ok(DagPivotTipsValidation {
+            ok: validation.ok,
+            expected_level: validation.expected_level,
+            level_matches: validation.level_matches,
+            missing_references: to_dag_hashes(validation.missing_references),
+        })
+    }
+
+    pub fn dag_manager_runtime_non_finalized_sync_payload(
+        &self,
+        known_hashes: Vec<DagHash>,
+    ) -> Result<DagManagerNonFinalizedSyncPayload> {
+        let payload = self.root.dag_non_finalized_sync(
+            known_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+        )?;
+        Ok(DagManagerNonFinalizedSyncPayload {
+            period: payload.period,
+            blocks: payload
+                .storage
+                .blocks
+                .into_iter()
+                .map(|block| DagSyncBlockRlp {
+                    hash: block.hash.into(),
+                    block_rlp: block.block_rlp,
+                })
+                .collect(),
+            transactions: payload
+                .storage
+                .transactions
+                .into_iter()
+                .map(|lookup| DagTransactionRlpLookup {
+                    hash: lookup.hash.into(),
+                    found: lookup.found,
+                    finalized: lookup.finalized,
+                    tx_rlp: lookup.tx_rlp,
+                })
+                .collect(),
+        })
+    }
+
+    pub fn dag_manager_runtime_compute_order(&self, anchor: &[u8; 32]) -> Result<DagOrder> {
+        match self.root.dag_order(H256::from(*anchor))? {
+            Some(hashes) => Ok(DagOrder {
+                found: true,
+                hashes: to_dag_hashes(hashes),
+            }),
+            None => Ok(DagOrder {
+                found: false,
+                hashes: Vec::new(),
+            }),
+        }
+    }
+
+    pub fn dag_manager_runtime_frontier(&self) -> Result<DagFrontier> {
+        let frontier = self.root.dag_frontier()?;
+        Ok(DagFrontier {
+            pivot: frontier.pivot.into(),
+            tips: to_dag_hashes(frontier.tips),
+        })
+    }
+
+    pub fn dag_manager_runtime_ghost_path(&self, source: &[u8; 32]) -> Result<Vec<DagHash>> {
+        let path = self
+            .root
+            .dag_ghost_path(DagGhostPathRoot::Block(H256::from(*source)))?;
+        Ok(to_dag_hashes(path))
+    }
+
+    pub fn dag_manager_runtime_anchor_ghost_path(&self) -> Result<Vec<DagHash>> {
+        let path = self.root.dag_ghost_path(DagGhostPathRoot::CurrentAnchor)?;
+        Ok(to_dag_hashes(path))
+    }
+
+    pub fn dag_manager_runtime_graphviz_dot(&self, pivot_tree: bool) -> Result<String> {
+        self.root.dag_graphviz(if pivot_tree {
+            DagGraphView::PivotTree
+        } else {
+            DagGraphView::Complete
+        })
+    }
+
+    pub fn dag_manager_runtime_vertex_count(&self) -> Result<usize> {
+        usize::try_from(self.root.dag_runtime_status()?.vertex_count)
+            .context("DAG_RUNTIME_VERTEX_COUNT_PLATFORM_OVERFLOW")
+    }
+
+    pub fn dag_manager_runtime_edge_count(&self) -> Result<usize> {
+        usize::try_from(self.root.dag_runtime_status()?.edge_count)
+            .context("DAG_RUNTIME_EDGE_COUNT_PLATFORM_OVERFLOW")
+    }
+
+    pub fn dag_manager_runtime_max_level(&self) -> Result<u64> {
+        Ok(self.root.dag_runtime_status()?.max_level)
+    }
+
+    pub fn dag_manager_runtime_latest_period(&self) -> Result<u64> {
+        Ok(self.root.dag_runtime_status()?.period)
+    }
+
+    pub fn dag_manager_runtime_anchors(&self) -> Result<DagManagerAnchors> {
+        let anchors = self.root.dag_runtime_status()?.anchors;
+        Ok(DagManagerAnchors {
+            old_anchor: anchors.old.into(),
+            anchor: anchors.current.into(),
+        })
+    }
+
+    pub fn dag_manager_runtime_dag_expiry_limit(&self) -> Result<u32> {
+        Ok(self.root.dag_runtime_status()?.expiry_limit)
+    }
+
+    pub fn dag_manager_runtime_dag_expiry_level(&self) -> Result<u64> {
+        Ok(self.root.dag_runtime_status()?.expiry_level)
+    }
+
+    pub fn dag_manager_runtime_non_finalized_blocks(&self) -> Result<Vec<DagLevelHashes>> {
+        let blocks = self
+            .root
+            .dag_non_finalized_index()?
+            .levels
+            .into_iter()
+            .map(|level| DagLevelHashes {
+                level: level.level,
+                hashes: to_dag_hashes(level.hashes),
+            })
+            .collect();
+        Ok(blocks)
+    }
+
+    pub fn dag_manager_runtime_non_finalized_blocks_size(
+        &self,
+    ) -> Result<DagManagerNonFinalizedSize> {
+        let summary = self.root.dag_non_finalized_summary()?;
+        Ok(DagManagerNonFinalizedSize {
+            levels: summary.levels,
+            blocks: summary.blocks,
+        })
+    }
+
+    pub fn dag_manager_runtime_non_finalized_min_difficulty(&self) -> Result<u32> {
+        Ok(self.root.dag_non_finalized_summary()?.min_difficulty)
+    }
+
+    pub fn dag_manager_runtime_is_block_known(&self, hash: &[u8; 32]) -> Result<bool> {
+        self.root.dag_is_block_known(H256::from(*hash))
+    }
+
+    pub fn dag_manager_runtime_load_block(&self, hash: &[u8; 32]) -> Result<DagBlockLookup> {
+        let lookup = self.root.dag_load_block(H256::from(*hash))?;
+        Ok(DagBlockLookup {
+            found: lookup.found,
+            block_rlp: lookup.block_rlp,
+        })
+    }
+
+    pub fn dag_manager_runtime_plan_proposal_tip_selection(
+        &self,
+        input: DagProposerStorageTipSelectionInput,
+    ) -> Result<DagProposerTipSelectionPlan> {
+        let plan = self.root.dag_select_proposer_tips(
+            rustaxa_consensus::dag::DagProposerStorageTipSelectionInput {
+                frontier_tips: input
+                    .frontier_tips
+                    .into_iter()
+                    .map(|hash| H256::from(hash.hash))
+                    .collect(),
+                gas_limit: input.gas_limit,
+                max_tips: input.max_tips,
+            },
+        )?;
+        Ok(DagProposerTipSelectionPlan {
+            selected_tips: plan
+                .selected
+                .into_iter()
+                .map(|hash| DagHash { hash: hash.0 })
+                .collect(),
+            skipped_missing_tips: plan.skipped_missing,
+        })
+    }
+
+    pub fn dag_manager_runtime_period_block_hash(&self, period: u64) -> Result<HashLookup> {
+        let lookup = self.root.dag_period_block_hash(period)?;
+        Ok(HashLookup {
+            found: lookup.found,
+            hash: lookup.hash.into(),
+        })
+    }
+
+    pub fn dag_manager_runtime_persistence_counters(&self) -> Result<DagPersistenceCounters> {
+        let counters = self.root.dag_persistence_counters()?;
+        Ok(DagPersistenceCounters {
+            dag_blocks: counters.dag_blocks,
+            dag_edges: counters.dag_edges,
+        })
+    }
 
     /// Prepares one canonical add-block transition without mutating DAG,
     /// transaction, or storage state.
@@ -356,6 +520,13 @@ impl BridgeDagTransactionService {
     pub fn dag_transaction_service_abort_add_block(&self, cursor_id: u64) -> Result<bool> {
         self.root.abort_add_block(cursor_id)
     }
+}
+
+fn to_dag_hashes(hashes: Vec<H256>) -> Vec<DagHash> {
+    hashes
+        .into_iter()
+        .map(|hash| DagHash { hash: hash.0 })
+        .collect()
 }
 
 pub fn service_save_transactions_from_dag_block_command_report_with_runtime(
@@ -589,9 +760,6 @@ fn selected_transaction_to_bridge(
         tx_rlp: selected.transaction_rlp,
     }
 }
-
-#[cfg(test)]
-use crate::dag::*;
 
 pub fn service_dag_manager_runtime_begin_verify_block_session(
     service: &BridgeDagTransactionService,
@@ -1001,7 +1169,7 @@ mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi;
     use crate::final_chain::create_final_chain_with_rewards_config;
-    use crate::storage::{create_storage, create_transaction_storage_queries};
+    use crate::storage::create_storage;
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
@@ -1151,22 +1319,6 @@ mod tests {
         period_data.append_raw(&transactions.out(), 1);
         period_data.append_raw(&[0xC0], 1);
         period_data.out().to_vec()
-    }
-
-    fn dag_block_rlp(level: u64, transactions: &[[u8; 32]]) -> Vec<u8> {
-        let mut block = RlpStream::new_list(8);
-        block.append(&H256::from([1u8; 32]));
-        block.append(&level);
-        block.append(&0u64);
-        block.append(&vec![0xC0]);
-        block.begin_list(0);
-        block.begin_list(transactions.len());
-        for hash in transactions {
-            block.append(&H256::from(*hash));
-        }
-        block.append(&&[0u8; 65][..]);
-        block.append(&0u64);
-        block.out().to_vec()
     }
 
     fn composed_add_block_rlp(pivot: [u8; 32], level: u64, transactions: &[[u8; 32]]) -> Vec<u8> {
@@ -1702,11 +1854,11 @@ mod tests {
             rustaxa_consensus::dag::DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
         );
 
-        {
-            let dag = service.dag().unwrap();
-            dag.dag_manager_runtime_ensure_proposal_period_mapping(1, 1)
-                .unwrap();
-        }
+        storage
+            .0
+            .dag()
+            .write_proposal_period_at_level(1, 1)
+            .unwrap();
         let proposer_block = sign_vdf_test_block(&vdf_test_block(Vec::new(), 0));
         begin_verify_authorization_action(&service, &proposer_block);
         let unavailable = service_dag_manager_runtime_verify_block_session_report_authorization(
@@ -2017,11 +2169,7 @@ mod tests {
             )
             .is_err()
         );
-        assert!(!service
-            .dag()
-            .unwrap()
-            .proposer_sessions
-            .contains_key(&corrupt));
+        assert!(!service_dag_manager_runtime_abort_proposer_session(&service, corrupt).unwrap());
 
         drop(service);
         drop(storage);
@@ -3322,79 +3470,6 @@ mod tests {
         assert!(service
             .dag_transaction_service_proposer_pack_abort(cache_id)
             .unwrap());
-
-        drop(service);
-        drop(storage);
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn finalized_order_removes_private_sidecars_only_after_dag_commit() {
-        let dir = unique_temp_dir("rustaxa_dag_transaction_service_finalization_cleanup");
-        let storage = create_storage(dir.to_str().unwrap()).unwrap();
-        let service = create_dag_transaction_service_from_storage(
-            &storage,
-            &[1; 32],
-            1,
-            100,
-            sortition_config(),
-            queue_config(),
-            gas_config(),
-            u64::MAX,
-        )
-        .unwrap();
-        let tx_hash = H256::from([7u8; 32]);
-        {
-            let mut dag_guard = service.dag().unwrap();
-            let dag = &mut dag_guard;
-            dag.dag_manager_runtime_add_block(DagManagerBlock {
-                hash: [3u8; 32],
-                pivot: [1u8; 32],
-                tips: Vec::new(),
-                level: 3,
-                difficulty: 90,
-            })
-            .unwrap();
-            dag.dag_manager_runtime_save_block(&[3u8; 32], 3, 0, dag_block_rlp(3, &[[7u8; 32]]))
-                .unwrap();
-            dag.dag_manager_runtime_save_block(&[8u8; 32], 5, 0, dag_block_rlp(5, &[]))
-                .unwrap();
-        }
-        storage.0.transaction().write(tx_hash, &[0xA7]).unwrap();
-        service
-            .transaction()
-            .sidecar
-            .insert_non_finalized(tx_hash, vec![0xA7])
-            .unwrap();
-
-        let failed = service.dag_manager_runtime_apply_finalized_order(
-            [8u8; 32],
-            2,
-            vec![DagHash { hash: [8u8; 32] }],
-        );
-        assert!(failed.is_err());
-        assert!(service
-            .transaction()
-            .sidecar
-            .contains_non_finalized(tx_hash));
-
-        let applied = service
-            .dag_manager_runtime_apply_finalized_order(
-                [8u8; 32],
-                1,
-                vec![DagHash { hash: [8u8; 32] }],
-            )
-            .expect("DAG commit should drive sidecar cleanup");
-        assert_eq!(applied.finalized_count, 1);
-        assert_eq!(applied.expired_hashes.len(), 1);
-        assert!(!service
-            .transaction()
-            .sidecar
-            .contains_non_finalized(tx_hash));
-        assert!(create_transaction_storage_queries(&storage)
-            .get_transaction(&tx_hash.0)
-            .unwrap()
-            .is_empty());
 
         drop(service);
         drop(storage);

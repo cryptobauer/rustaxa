@@ -10,21 +10,24 @@ use crate::dag::{
     DAG_PROPOSER_ACTION_CONTINUE, DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
     DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE, DAG_VERIFY_VDF_STATUS_NOT_CHECKED,
     DAG_VERIFY_VDF_STATUS_VALID, DagAddBlockEffectInput, DagAddBlockEffectPlan,
-    DagDposAuthorizationFacts, DagHashStorageLookup, DagManagerBlock, DagManagerFinalizationPlan,
-    DagManagerSnapshot, DagManagerState, DagPeriodStorageLookup, DagPersistenceCounters,
-    DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockIntentInput,
-    DagProposerFrontierFacts, DagProposerPostPackInput, DagProposerRetryResetInput,
-    DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput, DagProposerStaleProofInput,
-    DagProposerStorageBlockConstructionInput, DagProposerUnsignedBlockIntent,
+    DagBlockStorageLookup, DagDposAuthorizationFacts, DagFrontier, DagHashStorageLookup,
+    DagManagerBlock, DagManagerFinalizationPlan, DagManagerSnapshot, DagManagerState,
+    DagNonFinalizedSyncStoragePayload, DagPeriodStorageLookup, DagPersistenceCounters,
+    DagPivotTipsValidation, DagProposerAttemptInput, DagProposerAttemptPlan,
+    DagProposerBlockIntentInput, DagProposerFrontierFacts, DagProposerPostPackInput,
+    DagProposerRetryResetInput, DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput,
+    DagProposerStaleProofInput, DagProposerStorageBlockConstructionInput,
+    DagProposerStorageTipSelectionInput, DagProposerTipSelection, DagProposerUnsignedBlockIntent,
     DagProposerVdfWaitInput, DagReferenceMetadata, DagTipGas, DagVerifyGasInput,
     DagVerifyPrecheckStorageInput, DagVerifyTransactionAvailabilityInput, DagVerifyVdfDposFacts,
-    apply_finalization_cleanup_from_storage, construct_dag_vdf_message,
-    dag_block_exists_in_storage, dag_manager_block_from_rlp, dag_persistence_counters_from_storage,
-    decide_dag_verify_vdf_dpos_authorization, ensure_proposal_period_mapping,
-    finalize_dag_proposer_signed_block_intent, period_block_hash_from_storage,
-    plan_dag_add_block_effects, plan_dag_proposer_attempt,
-    plan_dag_proposer_block_construction_from_storage, plan_dag_proposer_block_intent,
-    plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
+    apply_finalization_cleanup_from_storage, collect_non_finalized_sync_payload_from_storage,
+    construct_dag_vdf_message, dag_block_exists_in_storage, dag_manager_block_from_rlp,
+    dag_persistence_counters_from_storage, decide_dag_verify_vdf_dpos_authorization,
+    ensure_proposal_period_mapping, finalize_dag_proposer_signed_block_intent,
+    load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_add_block_effects,
+    plan_dag_proposer_attempt, plan_dag_proposer_block_construction_from_storage,
+    plan_dag_proposer_block_intent, plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset,
+    plan_dag_proposer_stale_proof, plan_dag_proposer_tip_selection_from_storage,
     plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
     proposal_period_for_level_from_storage, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
@@ -84,6 +87,20 @@ pub struct DagServiceConfig {
     pub dag_expiry_limit: u32,
     /// Initial level whose proposal-period mapping must resolve to period zero.
     pub max_levels_per_period: u64,
+}
+
+/// One lock-consistent snapshot for non-finalized DAG synchronization.
+///
+/// `period` and the selected block order are observed under the same native
+/// DAG lock. `storage` contains canonical block payloads plus de-duplicated
+/// transaction lookups in that order. Missing transaction payloads remain
+/// explicit lookup results; storage or decode failures abort the whole task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagRuntimeNonFinalizedSyncPayload {
+    /// Finalized period observed while selecting non-finalized hashes.
+    pub period: u64,
+    /// Canonical storage materialization for the selected hashes.
+    pub storage: DagNonFinalizedSyncStoragePayload,
 }
 
 /// Native equivalent of the CXX proposer-session construction input.
@@ -421,21 +438,21 @@ pub struct DagAddBlockSession {
     pub plan: DagAddBlockStoredPlan,
 }
 
-/// Complete mutable state serialized by [`DagService`].
+/// Complete crate-private mutable state serialized by [`DagService`].
 ///
-/// Public fields are a temporary CRW-12 bridge escape hatch. Callers must hold
-/// [`DagServiceGuard`] and may not retain a reference across an external
-/// executor, callback, sleep, thread handoff, or CXX return.
-pub struct DagServiceState {
-    pub state: DagManagerState,
-    pub storage: Arc<Storage>,
-    pub next_proposer_session_id: u64,
-    pub next_verify_block_session_id: u64,
-    pub next_add_block_session_id: u64,
-    pub proposer_sessions: BTreeMap<u64, DagProposerSession>,
-    pub proposer_retry_states: BTreeMap<[u8; 32], DagProposerRetryState>,
-    pub verify_block_session: Option<DagVerifyBlockSession>,
-    pub pending_add_block: Option<DagAddBlockSession>,
+/// Application tasks may inspect it only while holding [`DagServiceGuard`].
+/// Neither state references nor guards may cross CXX or an external executor,
+/// callback, sleep, asynchronous boundary, or thread handoff.
+pub(crate) struct DagServiceState {
+    pub(crate) state: DagManagerState,
+    pub(crate) storage: Arc<Storage>,
+    pub(crate) next_proposer_session_id: u64,
+    pub(crate) next_verify_block_session_id: u64,
+    pub(crate) next_add_block_session_id: u64,
+    pub(crate) proposer_sessions: BTreeMap<u64, DagProposerSession>,
+    pub(crate) proposer_retry_states: BTreeMap<[u8; 32], DagProposerRetryState>,
+    pub(crate) verify_block_session: Option<DagVerifyBlockSession>,
+    pub(crate) pending_add_block: Option<DagAddBlockSession>,
 }
 
 /// Committed native DAG finalization facts consumed by the application root.
@@ -579,6 +596,61 @@ impl DagServiceState {
     /// Reads canonical persisted DAG counters from the shared storage owner.
     pub(crate) fn persistence_counters(&self) -> Result<DagPersistenceCounters> {
         dag_persistence_counters_from_storage(self.storage.as_ref())
+    }
+
+    /// Validates pivot and tip references using live graph state plus storage fallback.
+    pub(crate) fn validate_pivot_tips(
+        &self,
+        block_level: u64,
+        pivot: H256,
+        tips: &[H256],
+    ) -> Result<DagPivotTipsValidation> {
+        let pivot = self.reference_metadata(pivot)?;
+        let tips = tips
+            .iter()
+            .map(|tip| self.reference_metadata(*tip))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(validate_pivot_tips_metadata(block_level, pivot, &tips))
+    }
+
+    /// Builds deterministic non-finalized sync payload from live ordering and storage lookups.
+    pub(crate) fn non_finalized_sync_payload(
+        &self,
+        known_hashes: &[H256],
+    ) -> Result<DagRuntimeNonFinalizedSyncPayload> {
+        let selected_hashes = self
+            .state
+            .select_non_finalized_hashes_excluding_known(known_hashes);
+        let storage = collect_non_finalized_sync_payload_from_storage(
+            self.storage.as_ref(),
+            &selected_hashes,
+        )
+        .context("DAG_RUNTIME_SYNC_STORAGE_PAYLOAD")?;
+        Ok(DagRuntimeNonFinalizedSyncPayload {
+            period: self.state.period(),
+            storage,
+        })
+    }
+
+    /// Resolves a block hash by in-memory membership or persisted storage.
+    pub(crate) fn is_block_known(&self, hash: H256) -> Result<bool> {
+        Ok(
+            self.state.has_vertex(hash)
+                || dag_block_exists_in_storage(self.storage.as_ref(), hash)?,
+        )
+    }
+
+    /// Loads canonical block RLP from persisted storage.
+    pub(crate) fn load_block(&self, hash: H256) -> Result<DagBlockStorageLookup> {
+        load_dag_block_from_storage(self.storage.as_ref(), hash)
+    }
+
+    /// Selects proposer tips from storage-backed frontier hashes and gas policy.
+    pub(crate) fn plan_proposer_tip_selection(
+        &self,
+        input: DagProposerStorageTipSelectionInput,
+    ) -> Result<DagProposerTipSelection> {
+        plan_dag_proposer_tip_selection_from_storage(self.storage.as_ref(), input)
     }
 
     /// Applies a finalized order through candidate state and one Rust storage batch.
@@ -2115,7 +2187,7 @@ fn verify_block_authorization_snapshot_matches(
 }
 
 /// Native owner of DAG construction, restoration, sessions, and locking.
-pub struct DagService {
+pub(crate) struct DagService {
     state: Mutex<DagServiceState>,
 }
 
@@ -2127,6 +2199,77 @@ impl DagService {
         })
     }
 
+    /// Validates DAG pivot/tip references for one block through live graph + storage.
+    pub fn runtime_validate_pivot_tips(
+        &self,
+        block_level: u64,
+        pivot: H256,
+        tips: Vec<H256>,
+    ) -> Result<DagPivotTipsValidation> {
+        self.lock()?.validate_pivot_tips(block_level, pivot, &tips)
+    }
+
+    /// Collects non-finalized sync payload with selected hashes loaded from storage.
+    pub fn runtime_non_finalized_sync_payload(
+        &self,
+        known_hashes: Vec<H256>,
+    ) -> Result<DagRuntimeNonFinalizedSyncPayload> {
+        self.lock()?.non_finalized_sync_payload(&known_hashes)
+    }
+
+    /// Computes the deterministic DAG order for one anchor from runtime state.
+    pub fn runtime_compute_order(&self, anchor: H256) -> Result<Option<Vec<H256>>> {
+        Ok(self.lock()?.state.compute_order(anchor))
+    }
+
+    /// Returns one runtime frontier snapshot.
+    pub fn runtime_frontier(&self) -> Result<DagFrontier> {
+        Ok(self.lock()?.state.frontier().clone())
+    }
+
+    /// Returns ghost path from an explicit DAG source.
+    pub fn runtime_ghost_path(&self, source: H256) -> Result<Vec<H256>> {
+        Ok(self.lock()?.state.ghost_path(source))
+    }
+
+    /// Returns ghost path rooted at the current anchor.
+    pub fn runtime_anchor_ghost_path(&self) -> Result<Vec<H256>> {
+        Ok(self.lock()?.state.anchor_ghost_path())
+    }
+
+    /// Renders graphviz text for either total DAG or pivot tree.
+    pub fn runtime_graphviz_dot(&self, pivot_tree: bool) -> Result<String> {
+        Ok(self.lock()?.state.graphviz_dot(pivot_tree))
+    }
+
+    /// Checks block membership in live runtime state or storage.
+    pub fn runtime_is_block_known(&self, hash: H256) -> Result<bool> {
+        self.lock()?.is_block_known(hash)
+    }
+
+    /// Loads one canonical DAG block from storage.
+    pub fn runtime_load_block(&self, hash: H256) -> Result<DagBlockStorageLookup> {
+        self.lock()?.load_block(hash)
+    }
+
+    /// Loads storage-backed proposer tip plan for legacy block construction.
+    pub fn runtime_plan_proposer_tip_selection(
+        &self,
+        input: DagProposerStorageTipSelectionInput,
+    ) -> Result<DagProposerTipSelection> {
+        self.lock()?.plan_proposer_tip_selection(input)
+    }
+
+    /// Loads proposal-period hash and found flag from storage.
+    pub fn runtime_period_block_hash(&self, period: u64) -> Result<DagHashStorageLookup> {
+        period_block_hash_from_storage(self.lock()?.storage.as_ref(), period)
+    }
+
+    /// Reads persisted DAG counters from storage.
+    pub fn runtime_persistence_counters(&self) -> Result<DagPersistenceCounters> {
+        self.lock()?.persistence_counters()
+    }
+
     /// Locks the complete DAG serialization domain.
     pub fn lock(&self) -> Result<DagServiceGuard<'_>> {
         Ok(DagServiceGuard(self.state.lock().map_err(|_| {
@@ -2136,7 +2279,7 @@ impl DagService {
 }
 
 /// Exclusive short-lived guard over the native DAG runtime.
-pub struct DagServiceGuard<'a>(MutexGuard<'a, DagServiceState>);
+pub(crate) struct DagServiceGuard<'a>(MutexGuard<'a, DagServiceState>);
 
 impl Deref for DagServiceGuard<'_> {
     type Target = DagServiceState;

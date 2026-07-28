@@ -143,12 +143,13 @@ also routes the complete verifier task through the native root: Rust owns
 transaction-source resolution, authorization/VDF cursor revalidation, native
 VDF proof verification, and gas decisions, while C++ retains transaction
 materialization, FinalChain lookup, and EVM estimation as unlocked leaves. The
-bridge temporarily supplies the remaining FFI-shaped proposer, query, and
-compatibility task methods over short native guards. Superseded direct
-verifier adapters and their bridge behavioral tests are deleted; verifier
-behavior now runs directly against the native owner. The temporarily public
-native DAG and transaction state/guards are explicit bridge escape-hatch debt
-and may not cross CXX or external callbacks.
+native root also owns the remaining DAG manager query, storage-lookup,
+graph-status, and non-finalized-sync tasks and returns only owned domain
+snapshots. Superseded direct proposer/verifier/query adapters and their bridge
+behavioral tests are deleted. The DAG service, mutable state, guard, and root
+DAG lock accessors are crate-private; the transaction state/guard remains an
+explicit bridge escape hatch for the unmigrated transaction compatibility
+surface and may not cross CXX or external callbacks.
 
 ### 3. Collapse configuration topology
 
