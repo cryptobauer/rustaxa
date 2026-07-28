@@ -31,11 +31,11 @@ use crate::ffi::rustaxa_ffi::{
     TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
     TransactionPackSessionEstimateInput, TransactionPackSessionStep,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
-    TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueProposableAccountFact,
-    TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
+    TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueStoredTransaction,
+    TransactionQueueTransactionGroup,
 };
 use crate::transaction::legacy_transaction_inspection_from_bytes;
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::gas_pricer::GasPricerConfig as DomainGasPricerConfig;
 use rustaxa_consensus::transaction_manager::{
@@ -65,24 +65,29 @@ use rustaxa_consensus::transaction_queue::{
 };
 #[cfg(test)]
 use rustaxa_consensus::transaction_service::TransactionServiceConfig;
-use rustaxa_consensus::transaction_service::{TransactionServiceGuard, TransactionServiceState};
+use rustaxa_consensus::transaction_service::{
+    TransactionServiceAccountNonceFact, TransactionServiceGasEstimationPlan,
+    TransactionServiceGasEstimationRequest, TransactionServiceGuard, TransactionServiceState,
+    TransactionServiceTransactionView, TransactionServiceTransactionViewPlan,
+    TransactionServiceTransactionViewRequest,
+};
 use rustaxa_consensus::transaction_storage::{
     append_non_finalized_transactions_to_batch, load_non_finalized_recovery_entries,
-    load_stored_transactions, remove_non_finalized_transactions, save_transaction_count,
-    transaction_finalized, NonFinalizedTransactionRecoveryEntry,
-    NonFinalizedTransactionStoragePayload, StoredTransactionLookupRequest,
-    STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
-    STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING,
+    remove_non_finalized_transactions, save_transaction_count, transaction_finalized,
+    NonFinalizedTransactionRecoveryEntry, NonFinalizedTransactionStoragePayload,
 };
 #[cfg(test)]
 use rustaxa_storage::StatusField;
 use rustaxa_storage::{Storage, StorageWriteBatch};
 #[cfg(test)]
 use rustaxa_types::FinalChainNonce;
+#[cfg(test)]
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 struct TransactionManagerRuntimeQueueCleanupPlan {
     non_proposable_expired: TransactionManagerRuntimeQueuePurgePlan,
@@ -213,21 +218,6 @@ struct TransactionManagerRuntimeAdmissionOutcome {
     inserted_hash: [u8; 32],
 }
 
-#[derive(Debug)]
-struct TransactionManagerStoredTransactionRequest {
-    input_index: u64,
-    hash: [u8; 32],
-}
-
-#[derive(Debug)]
-struct TransactionManagerStoredTransactionLookup {
-    hash: [u8; 32],
-    found: bool,
-    source: u8,
-    old_finalized: bool,
-    tx_rlp: Vec<u8>,
-}
-
 #[cfg(test)]
 struct TransactionManagerSidecarHash {
     hash: [u8; 32],
@@ -242,6 +232,108 @@ struct TransactionManagerSidecarTransitionInput {
 struct DagTransactionSaveAccepted {
     hash: [u8; 32],
     erased_from_queue: bool,
+}
+
+fn bridge_to_service_transaction_view_request(
+    request: TransactionManagerTransactionViewRequest,
+) -> TransactionServiceTransactionViewRequest {
+    TransactionServiceTransactionViewRequest {
+        input_index: request.input_index,
+        hash: request.hash,
+    }
+}
+
+pub(crate) fn bridge_to_service_transaction_view_requests(
+    requests: Vec<TransactionManagerTransactionViewRequest>,
+) -> Vec<TransactionServiceTransactionViewRequest> {
+    requests
+        .into_iter()
+        .map(bridge_to_service_transaction_view_request)
+        .collect()
+}
+
+pub(crate) fn service_to_bridge_transaction_view(
+    view: TransactionServiceTransactionView,
+) -> TransactionManagerTransactionView {
+    TransactionManagerTransactionView {
+        input_index: view.input_index,
+        hash: view.hash,
+        found: view.found,
+        source: view.source,
+        old_finalized: view.old_finalized,
+        tx_rlp: view.tx_rlp,
+    }
+}
+
+pub(crate) fn service_to_bridge_transaction_view_plan(
+    plan: TransactionServiceTransactionViewPlan,
+) -> TransactionManagerTransactionViewPlan {
+    TransactionManagerTransactionViewPlan {
+        requested_count: plan.requested_count,
+        complete: plan.complete,
+        views: plan
+            .views
+            .into_iter()
+            .map(service_to_bridge_transaction_view)
+            .collect(),
+    }
+}
+
+pub(crate) fn bridge_to_service_account_nonce_facts(
+    account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
+) -> Vec<TransactionServiceAccountNonceFact> {
+    account_nonce_facts
+        .into_iter()
+        .map(|fact| TransactionServiceAccountNonceFact {
+            sender: fact.sender,
+            account_found: fact.account_found,
+            account_nonce: fact.account_nonce,
+        })
+        .collect()
+}
+
+pub(crate) fn bridge_to_service_gas_estimation_request(
+    fact: TransactionManagerGasEstimationFact,
+) -> TransactionServiceGasEstimationRequest {
+    TransactionServiceGasEstimationRequest {
+        hash: H256::from(fact.hash),
+        declared_gas: fact.declared_gas,
+        proposal_period: fact.proposal_period,
+        estimate_gas_limit: fact.estimate_gas_limit,
+    }
+}
+
+pub(crate) fn service_to_bridge_gas_estimation_plan(
+    plan: TransactionServiceGasEstimationPlan,
+) -> TransactionManagerGasEstimationPlan {
+    match plan {
+        TransactionServiceGasEstimationPlan::Declared { gas_used } => {
+            TransactionManagerGasEstimationPlan {
+                use_declared_gas: true,
+                cache_hit: false,
+                requires_evm_call: false,
+                gas_used,
+                result_rlp: Vec::new(),
+            }
+        }
+        TransactionServiceGasEstimationPlan::Cached {
+            gas_used,
+            result_rlp,
+        } => TransactionManagerGasEstimationPlan {
+            use_declared_gas: false,
+            cache_hit: true,
+            requires_evm_call: false,
+            gas_used,
+            result_rlp,
+        },
+        TransactionServiceGasEstimationPlan::ExecuteEvm => TransactionManagerGasEstimationPlan {
+            use_declared_gas: false,
+            cache_hit: false,
+            requires_evm_call: true,
+            gas_used: 0,
+            result_rlp: Vec::new(),
+        },
+    }
 }
 
 pub(crate) struct DagTransactionSaveOutcome {
@@ -260,13 +352,6 @@ struct FinalizedTransactionStatusPlan {
     purge_transaction_queue: bool,
 }
 
-const TM_TRANSACTION_VIEW_SOURCE_MISSING: u8 = 0;
-const TM_TRANSACTION_VIEW_SOURCE_QUEUE: u8 = 1;
-const TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR: u8 = 2;
-const TM_TRANSACTION_VIEW_SOURCE_RECENTLY_FINALIZED_SIDECAR: u8 = 3;
-const TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING: u8 = 4;
-const TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR: u8 = 5;
-const TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_SYSTEM: u8 = 6;
 const TM_VERIFY_TRANSACTION_STATUS_ACCEPTED: u8 =
     TransactionManagerVerifyTransactionStatus::Accepted as u8;
 const TM_VERIFY_TRANSACTION_STATUS_CHAIN_ID_MISMATCH: u8 =
@@ -290,6 +375,7 @@ const TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT: u8 =
     TransactionManagerInsertTransactionStatus::CouldNotInsert as u8;
 const TM_ADMISSION_SHELL_INTENT_LOG_INSERTED: u8 = 1;
 const TM_ADMISSION_SHELL_INTENT_EMIT_TRANSACTION_ADDED: u8 = 2;
+#[cfg(test)]
 const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
 
 /// Bridge-private facts for TransactionManager insertion planning.
@@ -580,6 +666,21 @@ fn runtime_queue_stored_transaction_from_entry(
             tx_rlp: Vec::new(),
         }
     }
+}
+
+pub(crate) fn service_transaction_groups_to_bridge(
+    groups: Vec<Vec<TransactionQueueEntry>>,
+) -> Vec<TransactionQueueTransactionGroup> {
+    groups
+        .into_iter()
+        .map(|transactions| TransactionQueueTransactionGroup {
+            transactions: transactions
+                .into_iter()
+                .map(Some)
+                .map(runtime_queue_stored_transaction_from_entry)
+                .collect(),
+        })
+        .collect()
 }
 
 fn transaction_pack_candidate_from_entry(
@@ -1067,264 +1168,11 @@ pub fn transaction_manager_filter_non_finalized_with_runtime(
     })
 }
 
-const TM_STORED_TX_SOURCE_MISSING: u8 = STORED_TRANSACTION_SOURCE_MISSING;
-const TM_STORED_TX_SOURCE_PENDING: u8 = STORED_TRANSACTION_SOURCE_PENDING;
-const TM_STORED_TX_SOURCE_FINALIZED_REGULAR: u8 = STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR;
-const TM_STORED_TX_SOURCE_FINALIZED_SYSTEM: u8 = STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_NONE: u8 = 0;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR: u8 = 1;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE: u8 = 2;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct StoredTransactionIdentity {
-    sender: [u8; 20],
-    nonce: U256,
-}
-
-fn transaction_manager_transaction_view_source_from_stored_transaction_source(
-    source: u8,
-) -> Result<u8> {
-    match source {
-        TM_STORED_TX_SOURCE_MISSING => Ok(TM_TRANSACTION_VIEW_SOURCE_MISSING),
-        TM_STORED_TX_SOURCE_PENDING => Ok(TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING),
-        TM_STORED_TX_SOURCE_FINALIZED_REGULAR => {
-            Ok(TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR)
-        }
-        TM_STORED_TX_SOURCE_FINALIZED_SYSTEM => {
-            Ok(TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_SYSTEM)
-        }
-        _ => Err(anyhow!("TM_TRANSACTION_VIEW_UNKNOWN_STORED_SOURCE")),
-    }
-}
-
-fn transaction_manager_transaction_view_source_from_sidecar_transaction_source(
-    source: u8,
-) -> Result<u8> {
-    match source {
-        1 => Ok(TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR),
-        2 => Ok(TM_TRANSACTION_VIEW_SOURCE_RECENTLY_FINALIZED_SIDECAR),
-        _ => Err(anyhow!("TM_TRANSACTION_VIEW_UNKNOWN_SIDECAR_SOURCE")),
-    }
-}
-
-fn bounded_transaction_view_count(requests_len: usize, max_count: u64) -> usize {
-    match max_count {
-        0 => requests_len,
-        _ => (max_count.min(requests_len as u64)) as usize,
-    }
-}
-
-fn transaction_manager_load_stored_transactions_from_storage(
-    storage: &Storage,
-    requests: Vec<TransactionManagerStoredTransactionRequest>,
-) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
-    let requests = requests
-        .into_iter()
-        .map(|request| StoredTransactionLookupRequest {
-            input_index: request.input_index,
-            hash: H256::from(request.hash),
-        })
-        .collect();
-
-    load_stored_transactions(storage, requests)
-        .context("TM_TRANSACTION_RLP_STORAGE_LOOKUP")?
-        .into_iter()
-        .map(|lookup| {
-            Ok(TransactionManagerStoredTransactionLookup {
-                hash: lookup.hash.0,
-                found: lookup.found,
-                source: lookup.source,
-                old_finalized: false,
-                tx_rlp: lookup.tx_rlp,
-            })
-        })
-        .collect()
-}
-
-fn transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
-    storage: &Storage,
-    _proposal_period: u64,
-    account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
-    requests: Vec<TransactionManagerStoredTransactionRequest>,
-    require_finalized_account_nonce_fact: bool,
-) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
-    let account_nonce_facts: HashMap<H160, (bool, U256)> = account_nonce_facts
-        .into_iter()
-        .map(|fact| {
-            (
-                H160::from(fact.sender),
-                (
-                    fact.account_found,
-                    U256::from_big_endian(&fact.account_nonce),
-                ),
-            )
-        })
-        .collect();
-
-    let lookups = transaction_manager_load_stored_transactions_from_storage(storage, requests)?;
-    lookups
-        .into_iter()
-        .map(|mut lookup| {
-            if !lookup.found || !is_finalized_stored_transaction_source(lookup.source) {
-                return Ok(lookup);
-            }
-
-            let expected_hash = H256::from(lookup.hash);
-            ensure!(
-                keccak256(&lookup.tx_rlp) == expected_hash,
-                "TM_PROPOSAL_TRANSACTION_HASH_MISMATCH"
-            );
-            let identity = inspect_stored_transaction_identity(&lookup.tx_rlp, lookup.source)
-                .context("TM_PROPOSAL_TRANSACTION_IDENTITY_INSPECT_FAILED")?;
-            let account_nonce = account_nonce_facts
-                .get(&H160::from(identity.sender))
-                .copied();
-            ensure!(
-                account_nonce.is_some() || !require_finalized_account_nonce_fact,
-                "TM_PROPOSAL_FINALIZED_ACCOUNT_NONCE_FACT_MISSING"
-            );
-            let account_nonce = account_nonce.unwrap_or((false, U256::zero()));
-
-            if account_nonce.0 && account_nonce.1 > identity.nonce {
-                lookup.found = false;
-                lookup.old_finalized = true;
-                lookup.tx_rlp.clear();
-            }
-            Ok(lookup)
-        })
-        .collect()
-}
-
-fn is_finalized_stored_transaction_source(source: u8) -> bool {
-    source == TM_STORED_TX_SOURCE_FINALIZED_REGULAR
-        || source == TM_STORED_TX_SOURCE_FINALIZED_SYSTEM
-}
-
-fn inspect_stored_transaction_identity(
-    tx_rlp: &[u8],
-    source: u8,
-) -> Result<StoredTransactionIdentity> {
-    let tx = if source == TM_STORED_TX_SOURCE_FINALIZED_SYSTEM {
-        LegacyTransactionEnvelope::decode_system(tx_rlp)
-    } else {
-        LegacyTransactionEnvelope::decode(tx_rlp)
-    }
-    .context("TM_TRANSACTION_RLP_PARSE_FAILED")?;
-    let sender = tx
-        .sender
-        .ok_or_else(|| anyhow!("TM_TRANSACTION_RLP_SENDER_RECOVERY_FAILED"))?;
-
-    Ok(StoredTransactionIdentity {
-        sender: sender.0,
-        nonce: tx.nonce,
-    })
-}
-
-fn transaction_manager_runtime_lookup_transaction_views_inner(
-    runtime: &TransactionServiceState,
-    requests: Vec<TransactionManagerTransactionViewRequest>,
-    max_count: u64,
-    transaction_lookup: impl FnOnce(
-        Vec<TransactionManagerStoredTransactionRequest>,
-    ) -> Result<Vec<TransactionManagerStoredTransactionLookup>>,
-) -> Result<TransactionManagerTransactionViewPlan> {
-    let total_requests = requests.len();
-    let requested_count = bounded_transaction_view_count(total_requests, max_count) as u64;
-    let mut views = Vec::with_capacity(requested_count as usize);
-    let mut sidecar_requests = Vec::new();
-    let mut sidecar_view_indexes = Vec::new();
-
-    for request in requests.into_iter().take(requested_count as usize) {
-        let hash = H256::from(request.hash);
-        let queue_view = runtime.queue.transaction(hash);
-
-        let mut view = TransactionManagerTransactionView {
-            input_index: request.input_index,
-            hash: request.hash,
-            found: false,
-            source: TM_TRANSACTION_VIEW_SOURCE_MISSING,
-            old_finalized: false,
-            tx_rlp: Vec::new(),
-        };
-
-        if let Some(entry) = queue_view {
-            view.found = true;
-            view.source = TM_TRANSACTION_VIEW_SOURCE_QUEUE;
-            view.tx_rlp = entry.rlp;
-            views.push(view);
-            continue;
-        }
-
-        let view_index = views.len();
-        views.push(view);
-        sidecar_requests.push((request.input_index, hash));
-        sidecar_view_indexes.push(view_index);
-    }
-
-    if !sidecar_requests.is_empty() {
-        let sidecar_lookups = runtime
-            .sidecar
-            .lookup_payloads_ordered(
-                sidecar_requests
-                    .into_iter()
-                    .map(|request| (request.0, request.1))
-                    .collect(),
-            )
-            .context("TM_RUNTIME_TRANSACTION_VIEW_SIDECAR_LOOKUP")?;
-        ensure!(
-            sidecar_lookups.len() == sidecar_view_indexes.len(),
-            "TM_RUNTIME_TRANSACTION_VIEW_SIDECAR_RESULT_COUNT_MISMATCH"
-        );
-
-        let mut storage_requests = Vec::new();
-        let mut storage_view_indexes = Vec::new();
-        for (idx, lookup) in sidecar_lookups.into_iter().enumerate() {
-            let view_index = sidecar_view_indexes[idx];
-            if lookup.found {
-                let source =
-                    transaction_manager_transaction_view_source_from_sidecar_transaction_source(
-                        lookup.source,
-                    )
-                    .context("TM_RUNTIME_TRANSACTION_VIEW_SIDECAR_SOURCE")?;
-                views[view_index].found = true;
-                views[view_index].source = source;
-                views[view_index].tx_rlp = lookup.trx_rlp;
-            } else {
-                storage_requests.push(TransactionManagerStoredTransactionRequest {
-                    input_index: lookup.input_index,
-                    hash: lookup.hash.0,
-                });
-                storage_view_indexes.push(view_index);
-            }
-        }
-
-        if !storage_requests.is_empty() {
-            let stored_lookups = transaction_lookup(storage_requests)?;
-            ensure!(
-                stored_lookups.len() == storage_view_indexes.len(),
-                "TM_RUNTIME_TRANSACTION_VIEW_STORED_RESULT_COUNT_MISMATCH"
-            );
-            for (idx, lookup) in stored_lookups.into_iter().enumerate() {
-                let view_index = storage_view_indexes[idx];
-                views[view_index].found = lookup.found;
-                views[view_index].old_finalized = lookup.old_finalized;
-                views[view_index].tx_rlp = lookup.tx_rlp;
-                views[view_index].source =
-                    transaction_manager_transaction_view_source_from_stored_transaction_source(
-                        lookup.source,
-                    )
-                    .context("TM_RUNTIME_TRANSACTION_VIEW_STORED_SOURCE")?;
-            }
-        }
-    }
-
-    Ok(TransactionManagerTransactionViewPlan {
-        requested_count,
-        complete: requested_count == total_requests as u64,
-        views,
-    })
-}
-
+#[cfg(test)]
 fn keccak256(data: &[u8]) -> H256 {
     use tiny_keccak::{Hasher, Keccak};
 
@@ -1720,52 +1568,6 @@ where
         ))
     }
 
-    /// Plans one public gas-estimation request using Rust-owned cache policy.
-    ///
-    /// Rust decides the declared-gas fast path and cache hits. C++ must call the
-    /// EVM only when `requires_evm_call` is true, then feed the opaque
-    /// `ExecutionResult` RLP back through `transaction_manager_runtime_store_gas_estimation`.
-    pub fn transaction_manager_runtime_plan_gas_estimation(
-        &self,
-        fact: TransactionManagerGasEstimationFact,
-    ) -> Result<TransactionManagerGasEstimationPlan> {
-        let hash = H256::from(fact.hash);
-        ensure!(!hash.is_zero(), "TM_RUNTIME_GAS_ESTIMATION_HASH_ZERO");
-
-        if fact.declared_gas <= fact.estimate_gas_limit {
-            return Ok(TransactionManagerGasEstimationPlan {
-                use_declared_gas: true,
-                cache_hit: false,
-                requires_evm_call: false,
-                gas_used: fact.declared_gas,
-                result_rlp: Vec::new(),
-            });
-        }
-
-        if let Some(cached) = self
-            .0
-            .sidecar
-            .gas_estimation_cache_get(hash, fact.proposal_period)
-            .context("TM_RUNTIME_GAS_ESTIMATION_CACHE_GET")?
-        {
-            return Ok(TransactionManagerGasEstimationPlan {
-                use_declared_gas: false,
-                cache_hit: true,
-                requires_evm_call: false,
-                gas_used: cached.gas_used,
-                result_rlp: cached.result_rlp,
-            });
-        }
-
-        Ok(TransactionManagerGasEstimationPlan {
-            use_declared_gas: false,
-            cache_hit: false,
-            requires_evm_call: true,
-            gas_used: 0,
-            result_rlp: Vec::new(),
-        })
-    }
-
     /// Stores one opaque C++ `ExecutionResult` RLP in the Rust-owned estimation cache.
     pub fn transaction_manager_runtime_store_gas_estimation(
         &mut self,
@@ -1779,169 +1581,6 @@ where
                 result.result_rlp,
             )
             .context("TM_RUNTIME_GAS_ESTIMATION_CACHE_STORE")
-    }
-
-    /// Returns the authoritative Rust-mode manager transaction count.
-    pub fn transaction_manager_runtime_transaction_count(&self) -> u64 {
-        self.sidecar.transaction_count()
-    }
-
-    /// Returns queue-only payload views.
-    pub fn transaction_manager_runtime_queue_lookup_transaction_views(
-        &self,
-        requests: Vec<TransactionManagerTransactionViewRequest>,
-    ) -> Result<Vec<TransactionManagerTransactionView>> {
-        Ok(requests
-            .into_iter()
-            .map(|request| {
-                let entry = self.queue.transaction(H256::from(request.hash));
-                match entry {
-                    Some(entry) => TransactionManagerTransactionView {
-                        input_index: request.input_index,
-                        hash: request.hash,
-                        found: true,
-                        source: TM_TRANSACTION_VIEW_SOURCE_QUEUE,
-                        old_finalized: false,
-                        tx_rlp: entry.rlp,
-                    },
-                    None => TransactionManagerTransactionView {
-                        input_index: request.input_index,
-                        hash: request.hash,
-                        found: false,
-                        source: TM_TRANSACTION_VIEW_SOURCE_MISSING,
-                        old_finalized: false,
-                        tx_rlp: Vec::new(),
-                    },
-                }
-            })
-            .collect())
-    }
-
-    /// Returns Rust's known-transaction decision for a canonical hash.
-    ///
-    /// Production C++ shims call this hash-only API so queue membership and
-    /// sidecar membership are derived exclusively from the Rust runtime. The
-    /// older fact-shaped helper remains only as a compatibility wrapper for
-    /// lower-level sidecar tests and non-production callers.
-    pub fn transaction_manager_runtime_is_transaction_known_hash(
-        &self,
-        hash: &[u8; 32],
-    ) -> Result<bool> {
-        self.sidecar
-            .is_transaction_known(TransactionManagerKnownFact {
-                hash: H256::from(*hash),
-                queue_known: self.queue.is_transaction_known(H256::from(*hash)),
-            })
-            .context("TM_RUNTIME_IS_TRANSACTION_KNOWN")
-    }
-
-    /// Returns bounded, source-ordered runtime payload views from queue, sidecars, and storage.
-    pub fn transaction_manager_runtime_lookup_transaction_views(
-        &self,
-        requests: Vec<TransactionManagerTransactionViewRequest>,
-        max_count: u64,
-    ) -> Result<TransactionManagerTransactionViewPlan> {
-        let storage = transaction_manager_runtime_storage(self)?;
-        transaction_manager_runtime_lookup_transaction_views_inner(
-            self,
-            requests,
-            max_count,
-            |stored_requests| {
-                transaction_manager_load_stored_transactions_from_storage(storage, stored_requests)
-            },
-        )
-    }
-
-    /// Returns bounded, source-ordered runtime payload views including proposal-period filtering.
-    pub fn transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
-        &self,
-        proposal_period: u64,
-        requests: Vec<TransactionManagerTransactionViewRequest>,
-        account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
-        max_count: u64,
-    ) -> Result<TransactionManagerTransactionViewPlan> {
-        let storage = transaction_manager_runtime_storage(self)?;
-        transaction_manager_runtime_lookup_transaction_views_inner(
-            self,
-            requests,
-            max_count,
-            |stored_requests| {
-                transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
-                    storage,
-                    proposal_period,
-                    account_nonce_facts,
-                    stored_requests,
-                    false,
-                )
-            },
-        )
-    }
-
-    /// Resolves proposal transactions while requiring an explicit account fact
-    /// for every finalized-storage sender encountered by the lookup.
-    ///
-    /// This service-private completion path prevents absent C++ materialization
-    /// facts from implicitly accepting finalized transactions. Queue and live
-    /// sidecar payloads retain the public lookup's source precedence.
-    pub(crate) fn transaction_manager_runtime_lookup_proposal_transaction_views_requiring_account_nonce_facts(
-        &self,
-        proposal_period: u64,
-        requests: Vec<TransactionManagerTransactionViewRequest>,
-        account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
-        max_count: u64,
-    ) -> Result<TransactionManagerTransactionViewPlan> {
-        let storage = transaction_manager_runtime_storage(self)?;
-        transaction_manager_runtime_lookup_transaction_views_inner(
-            self,
-            requests,
-            max_count,
-            |stored_requests| {
-                transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
-                    storage,
-                    proposal_period,
-                    account_nonce_facts,
-                    stored_requests,
-                    true,
-                )
-            },
-        )
-    }
-
-    /// Returns non-finalized/recently-finalized sidecar payload views.
-    pub fn transaction_manager_runtime_lookup_non_finalized_transaction_views(
-        &self,
-        requests: Vec<TransactionManagerTransactionViewRequest>,
-    ) -> Result<Vec<TransactionManagerTransactionView>> {
-        let lookups = self
-            .0
-            .sidecar
-            .lookup_payloads_ordered(
-                requests
-                    .into_iter()
-                    .map(|request| (request.input_index, H256::from(request.hash)))
-                    .collect(),
-            )
-            .context("TM_RUNTIME_TRANSACTION_VIEW_NON_FINALIZED_LOOKUP")?;
-        Ok(lookups
-            .into_iter()
-            .map(|lookup| {
-                let found = lookup.found
-                    && lookup.source
-                        == rustaxa_consensus::transaction_manager::TransactionManagerSidecarLookup::SOURCE_NON_FINALIZED;
-                TransactionManagerTransactionView {
-                    input_index: lookup.input_index,
-                    hash: lookup.hash.0,
-                    found,
-                    source: if found {
-                        TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR
-                    } else {
-                        TM_TRANSACTION_VIEW_SOURCE_MISSING
-                    },
-                    old_finalized: false,
-                    tx_rlp: if found { lookup.trx_rlp } else { Vec::new() },
-                }
-            })
-            .collect())
     }
 
     /// Inserts or updates one live non-finalized sidecar payload.
@@ -1989,11 +1628,6 @@ where
     #[cfg(test)]
     fn transaction_manager_runtime_contains_recently_finalized(&self, hash: &[u8; 32]) -> bool {
         self.sidecar.contains_recently_finalized(H256::from(*hash))
-    }
-
-    /// Returns current non-finalized sidecar size.
-    pub fn transaction_manager_runtime_non_finalized_size(&self) -> usize {
-        self.sidecar.non_finalized_size()
     }
 
     /// Removes requested non-finalized sidecar payloads and returns the removal count.
@@ -2269,43 +1903,10 @@ where
         ))
     }
 
-    /// Returns proposer transaction payloads grouped by sender and nonce order.
-    pub fn transaction_manager_runtime_queue_all_transaction_groups(
-        &self,
-    ) -> Vec<TransactionQueueTransactionGroup> {
-        self.queue
-            .all_transaction_groups()
-            .into_iter()
-            .map(|transactions| TransactionQueueTransactionGroup {
-                transactions: transactions
-                    .into_iter()
-                    .map(Some)
-                    .map(runtime_queue_stored_transaction_from_entry)
-                    .collect(),
-            })
-            .collect()
-    }
-
     /// Returns true when the queue contains a transaction hash.
     #[cfg(test)]
     fn transaction_manager_runtime_queue_contains(&self, hash: &[u8; 32]) -> bool {
         self.queue.contains(H256::from(*hash))
-    }
-
-    /// Returns the number of proposable transactions.
-    pub fn transaction_manager_runtime_queue_size(&self) -> usize {
-        self.queue.size() as usize
-    }
-
-    /// Returns current proposable accounts from Rust queue state.
-    pub fn transaction_manager_runtime_queue_proposable_accounts(
-        &self,
-    ) -> Vec<TransactionQueueProposableAccountFact> {
-        self.queue
-            .proposable_accounts()
-            .into_iter()
-            .map(|sender| TransactionQueueProposableAccountFact { sender: sender.0 })
-            .collect()
     }
 
     /// Applies finalized-block expiry to non-proposable queue state.
@@ -2341,42 +1942,6 @@ where
         })
     }
 
-    /// Returns true while the overflow/drop observation window remains active.
-    pub fn transaction_manager_runtime_queue_transactions_dropped(&self) -> bool {
-        self.last_drop_observed
-            .is_some_and(|observed| observed.elapsed() < TRANSACTION_QUEUE_DROP_WINDOW)
-    }
-
-    /// Returns true when non-proposable queue state exceeds the configured limit.
-    pub fn transaction_manager_runtime_queue_non_proposable_over_limit(&self) -> bool {
-        self.queue.non_proposable_transactions_over_the_limit()
-    }
-
-    /// Returns the minimum big-endian gas price needed for next-block inclusion.
-    pub fn transaction_manager_runtime_queue_min_gas_price_for_block_inclusion(
-        &self,
-        limit: u64,
-    ) -> [u8; 32] {
-        self.queue
-            .min_gas_price_for_block_inclusion(limit)
-            .to_big_endian()
-    }
-
-    /// Returns the gas bid selected by the runtime-owned oracle configuration.
-    ///
-    /// The runtime always derives the current queue inclusion price itself.
-    /// Block-history mode ignores that fact; pool mode applies the configured
-    /// minimum floor. C++ supplies neither a mode selector nor a queue scalar.
-    pub fn transaction_manager_runtime_gas_price_bid(&self) -> [u8; 32] {
-        let pool_price = self
-            .0
-            .queue
-            .min_gas_price_for_block_inclusion(self.proposal_dag_gas_limit);
-        self.gas_price_oracle
-            .configured_bid(pool_price)
-            .to_big_endian()
-    }
-
     /// Updates finalized-block gas-price history from canonical price facts.
     ///
     /// Empty inputs and pool-mode runtimes are deliberate no-ops, preserving
@@ -2390,6 +1955,22 @@ where
                 .into_iter()
                 .map(|gas_price| U256::from_big_endian(&gas_price.price)),
         );
+    }
+}
+
+#[cfg(test)]
+impl TransactionRuntimeAccess<TestTransactionServiceState> {
+    fn transaction_manager_runtime_transaction_count(&self) -> u64 {
+        self.sidecar.transaction_count()
+    }
+
+    fn transaction_manager_runtime_queue_size(&self) -> usize {
+        self.queue.size() as usize
+    }
+
+    fn transaction_manager_runtime_queue_transactions_dropped(&self) -> bool {
+        self.last_drop_observed
+            .is_some_and(|observed| observed.elapsed() < TRANSACTION_QUEUE_DROP_WINDOW)
     }
 }
 
@@ -2668,271 +2249,6 @@ mod tests {
             .expect("finalization should create block-scoped account snapshot");
     }
 
-    fn system_transaction_rlp(nonce: u64) -> Vec<u8> {
-        let mut stream = RlpStream::new_list(9);
-        stream.append(&U256::from(nonce));
-        stream.append(&U256::zero());
-        stream.append(&0u64);
-        stream.append(&H160::zero());
-        stream.append(&U256::zero());
-        stream.append(&Vec::<u8>::new());
-        stream.append(&U256::from(1u64));
-        stream.append(&U256::zero());
-        stream.append(&U256::zero());
-        stream.out().to_vec()
-    }
-
-    #[test]
-    fn stored_transaction_identity_inspects_regular_and_system_rlp() {
-        let signing_key = SigningKey::from_slice(&[0x31u8; 32]).unwrap();
-        let sender = address_from_signing_key(&signing_key);
-        let transaction_rlp = signed_legacy_transaction_rlp(&signing_key, 7, 2999);
-
-        let identity = inspect_stored_transaction_identity(
-            &transaction_rlp,
-            TM_STORED_TX_SOURCE_FINALIZED_REGULAR,
-        )
-        .expect("signed transaction should inspect");
-
-        assert_eq!(identity.sender, sender.0);
-        assert_eq!(identity.nonce, U256::from(7u64));
-
-        let system_identity = inspect_stored_transaction_identity(
-            &system_transaction_rlp(3),
-            TM_STORED_TX_SOURCE_FINALIZED_SYSTEM,
-        )
-        .expect("system transaction should inspect");
-
-        assert_eq!(system_identity.sender, rustaxa_types::TARAXA_SYSTEM_ACCOUNT);
-        assert_eq!(system_identity.nonce, U256::from(3u64));
-        assert!(inspect_stored_transaction_identity(
-            &system_transaction_rlp(3),
-            TM_STORED_TX_SOURCE_FINALIZED_REGULAR
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("SENDER_RECOVERY_FAILED"));
-    }
-
-    #[test]
-    fn proposal_transaction_lookup_filters_old_finalized_with_block_scoped_account() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_transaction_manager_proposal_lookup_filter");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        let signing_key = SigningKey::from_slice(&[0x32u8; 32]).unwrap();
-        let sender = address_from_signing_key(&signing_key);
-        let sender_bytes: [u8; 20] = sender.into();
-        let transaction_rlp = signed_legacy_transaction_rlp(&signing_key, 0, 2999);
-        let transaction_hash = keccak256(&transaction_rlp).0;
-        let pbft_key = SigningKey::from_slice(&[0x33u8; 32]).unwrap();
-        let pbft_block = signed_pbft_block(&pbft_key, 1, 100);
-
-        storage
-            .0
-            .period()
-            .write(
-                1,
-                &period_data_rlp_with_pbft(&pbft_block, std::slice::from_ref(&transaction_rlp)),
-            )
-            .expect("period data should persist");
-
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            100_000,
-            0,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender_bytes,
-                balance: U256::from(1_000_000u64).to_big_endian().to_vec(),
-            }],
-            vec![],
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![],
-                vote_eligibility_balance_step: U256::one().to_big_endian().to_vec(),
-                validator_maximum_stake: U256::from(30_000u64).to_big_endian().to_vec(),
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-
-        finalize_regular_transaction_for_test(
-            &final_chain,
-            pbft_block,
-            crate::ffi::rustaxa_ffi::FinalizationTransaction {
-                hash: transaction_hash,
-                sender: sender_bytes,
-                receiver_found: true,
-                receiver: [0x44u8; 20],
-                nonce: vec![],
-                value: U256::from(3u64).to_big_endian().to_vec(),
-                gas_price: U256::from(2u64).to_big_endian().to_vec(),
-                gas_limit: 21_000,
-                data: vec![],
-                rlp: transaction_rlp.clone(),
-            },
-        );
-
-        let before =
-            transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
-                &storage.0,
-                0,
-                vec![crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
-                    sender: sender_bytes,
-                    account_found: true,
-                    account_nonce: U256::zero().to_big_endian(),
-                }],
-                vec![TransactionManagerStoredTransactionRequest {
-                    input_index: 4,
-                    hash: transaction_hash,
-                }],
-                false,
-            )
-            .expect("proposal lookup at genesis should keep transaction");
-        assert!(before[0].found);
-        assert!(!before[0].old_finalized);
-        assert_eq!(before[0].tx_rlp, transaction_rlp);
-
-        let after =
-            transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
-                &storage.0,
-                1,
-                vec![crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
-                    sender: sender_bytes,
-                    account_found: true,
-                    account_nonce: U256::from(1u64).to_big_endian(),
-                }],
-                vec![TransactionManagerStoredTransactionRequest {
-                    input_index: 4,
-                    hash: transaction_hash,
-                }],
-                false,
-            )
-            .expect("proposal lookup at finalized period should filter old transaction");
-        assert!(!after[0].found);
-        assert!(after[0].old_finalized);
-        assert!(after[0].tx_rlp.is_empty());
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    fn transaction_manager_view_request(
-        input_index: u64,
-        hash: u8,
-    ) -> TransactionManagerTransactionViewRequest {
-        TransactionManagerTransactionViewRequest {
-            input_index,
-            hash: [hash; 32],
-        }
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_lookup_transaction_views_enforces_source_precedence_and_bounds(
-    ) {
-        let temp_dir =
-            unique_temp_dir("rustaxa_bridge_transaction_manager_runtime_lookup_transaction_views");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        let mut runtime =
-            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 32 })
-                .expect("runtime should restore from storage");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
-                1, [9u8; 20], 7, true,
-            ))
-            .expect("queue insert should seed");
-
-        runtime
-            .transaction_manager_runtime_insert_non_finalized(
-                TransactionManagerSidecarInsertInput {
-                    hash: [2u8; 32],
-                    trx_rlp: vec![0x22],
-                },
-            )
-            .expect("non-finalized sidecar insert should seed");
-        runtime
-            .transaction_manager_runtime_initialize_recently_finalized_payloads(
-                10,
-                vec![TransactionManagerSidecarInsertInput {
-                    hash: [3u8; 32],
-                    trx_rlp: vec![0x33],
-                }],
-            )
-            .expect("recently-finalized payload initialization should move source");
-
-        storage
-            .0
-            .transaction()
-            .write(H256::from([4u8; 32]), &[0x44])
-            .expect("storage pending payload should persist");
-
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from([5u8; 32]), 99, 0, false)
-            .expect("finalized location should persist");
-        let mut txs = RlpStream::new_list(1);
-        txs.append_raw(&[0x55], 1);
-        let mut period_data = RlpStream::new_list(5);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&txs.out(), 1);
-        period_data.append_raw(&[0xC0], 1);
-        storage
-            .0
-            .period()
-            .write(99, &period_data.out().as_ref().to_vec())
-            .expect("finalized period data should persist");
-
-        let plan = runtime
-            .transaction_manager_runtime_lookup_transaction_views(
-                vec![
-                    transaction_manager_view_request(1, 1),
-                    transaction_manager_view_request(2, 2),
-                    transaction_manager_view_request(3, 3),
-                    transaction_manager_view_request(4, 4),
-                    transaction_manager_view_request(5, 5),
-                    transaction_manager_view_request(6, 6),
-                ],
-                4,
-            )
-            .expect("bounded runtime view should resolve");
-
-        assert_eq!(plan.requested_count, 4);
-        assert!(!plan.complete);
-        assert_eq!(plan.views.len(), 4);
-        assert_eq!(plan.views[0].source, TM_TRANSACTION_VIEW_SOURCE_QUEUE);
-        assert_eq!(plan.views[0].found, true);
-        assert_eq!(plan.views[0].tx_rlp, vec![0xaa, 0xbb, 0xcc]);
-        assert_eq!(
-            plan.views[1].source,
-            TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR
-        );
-        assert_eq!(plan.views[1].found, true);
-        assert_eq!(plan.views[1].tx_rlp, vec![0x22]);
-        assert_eq!(
-            plan.views[2].source,
-            TM_TRANSACTION_VIEW_SOURCE_RECENTLY_FINALIZED_SIDECAR
-        );
-        assert_eq!(plan.views[2].tx_rlp, vec![0x33]);
-        assert_eq!(
-            plan.views[3].source,
-            TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING
-        );
-        assert_eq!(plan.views[3].tx_rlp, vec![0x44]);
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
     #[test]
     fn bridge_transaction_manager_runtime_remove_non_finalized_deletes_storage_rows() {
         let temp_dir =
@@ -2992,110 +2308,6 @@ mod tests {
             storage.0.transaction().rlp(H256::from([3u8; 32])).unwrap(),
             Some(vec![0x33])
         );
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_lookup_transaction_views_with_final_chain_marks_old_finalized(
-    ) {
-        let temp_dir = unique_temp_dir(
-            "rustaxa_bridge_transaction_manager_runtime_lookup_transaction_views_fc",
-        );
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        let signing_key = SigningKey::from_slice(&[0x34u8; 32]).unwrap();
-        let sender = address_from_signing_key(&signing_key);
-        let sender_bytes: [u8; 20] = sender.into();
-        let transaction_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
-        let transaction_hash = keccak256(&transaction_rlp).0;
-        let pbft_key = SigningKey::from_slice(&[0x35u8; 32]).unwrap();
-        let pbft_block = signed_pbft_block(&pbft_key, 1, 1000);
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from(transaction_hash), 1, 0, false)
-            .expect("proposal storage location should persist");
-        storage
-            .0
-            .period()
-            .write(
-                1,
-                &period_data_rlp_with_pbft(&pbft_block, std::slice::from_ref(&transaction_rlp)),
-            )
-            .expect("period data should persist");
-
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            0,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender_bytes,
-                balance: U256::from(1_000_000u64).to_big_endian().to_vec(),
-            }],
-            vec![],
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![],
-                vote_eligibility_balance_step: U256::one().to_big_endian().to_vec(),
-                validator_maximum_stake: U256::from(30_000u64).to_big_endian().to_vec(),
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-
-        finalize_regular_transaction_for_test(
-            &final_chain,
-            pbft_block,
-            crate::ffi::rustaxa_ffi::FinalizationTransaction {
-                hash: transaction_hash,
-                sender: sender_bytes,
-                receiver_found: true,
-                receiver: [0x55u8; 20],
-                nonce: vec![2],
-                value: U256::from(3u64).to_big_endian().to_vec(),
-                gas_price: U256::from(2u64).to_big_endian().to_vec(),
-                gas_limit: 21_000,
-                data: vec![],
-                rlp: transaction_rlp.clone(),
-            },
-        );
-
-        let runtime =
-            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 32 })
-                .expect("runtime should restore from storage");
-        let plan = runtime
-            .transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
-                1,
-                vec![TransactionManagerTransactionViewRequest {
-                    input_index: 10,
-                    hash: transaction_hash,
-                }],
-                vec![crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
-                    sender: sender_bytes,
-                    account_found: true,
-                    account_nonce: U256::from(2u64).to_big_endian(),
-                }],
-                0,
-            )
-            .expect("runtime view lookup with final-chain filtering should execute");
-
-        assert_eq!(plan.requested_count, 1);
-        assert!(plan.complete);
-        assert_eq!(plan.views.len(), 1);
-        assert!(plan.views[0].old_finalized);
-        assert_eq!(plan.views[0].found, false);
-        assert_eq!(
-            plan.views[0].source,
-            TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR
-        );
-        assert!(plan.views[0].tx_rlp.is_empty());
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -3492,118 +2704,6 @@ mod tests {
         assert!(report.finalized_account_purged.is_empty());
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 7);
         assert!(runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_load_stored_transactions_orders_and_classifies_sources() {
-        let temp_dir =
-            unique_temp_dir("rustaxa_bridge_transaction_manager_load_stored_transactions");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        storage
-            .0
-            .transaction()
-            .write(H256::from([1u8; 32]), &[0x11])
-            .expect("pending transaction should persist");
-
-        // Persist finalized location metadata and tx-by-position data for hash 2 so lookup
-        // exercises finalized fallback path after non-finalized miss.
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from([2u8; 32]), 8, 0, false)
-            .expect("finalized location should persist");
-
-        let mut txs = RlpStream::new_list(1);
-        txs.append_raw(&[0x22], 1);
-
-        let mut period_data = RlpStream::new_list(5);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&txs.out(), 1);
-        period_data.append_raw(&[0xC0], 1);
-        storage
-            .0
-            .period()
-            .write(8, &period_data.out().as_ref().to_vec())
-            .expect("period data should persist");
-        storage
-            .0
-            .transaction()
-            .write_system(H256::from([4u8; 32]), &[0x44])
-            .expect("system transaction should persist");
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from([4u8; 32]), 9, 0, true)
-            .expect("system finalized location should persist");
-
-        let out = transaction_manager_load_stored_transactions_from_storage(
-            &storage.0,
-            vec![
-                TransactionManagerStoredTransactionRequest {
-                    input_index: 7,
-                    hash: [2u8; 32],
-                },
-                TransactionManagerStoredTransactionRequest {
-                    input_index: 8,
-                    hash: [3u8; 32],
-                },
-                TransactionManagerStoredTransactionRequest {
-                    input_index: 9,
-                    hash: [1u8; 32],
-                },
-                TransactionManagerStoredTransactionRequest {
-                    input_index: 10,
-                    hash: [4u8; 32],
-                },
-            ],
-        )
-        .expect("transaction payload lookup should preserve order");
-
-        let out = out
-            .into_iter()
-            .map(|entry| (entry.hash, entry.found, entry.source, entry.tx_rlp))
-            .collect::<Vec<_>>();
-
-        assert_eq!(out.len(), 4);
-        assert_eq!(
-            out[0],
-            (
-                [2u8; 32],
-                true,
-                TM_STORED_TX_SOURCE_FINALIZED_REGULAR,
-                vec![0x22]
-            )
-        );
-        assert_eq!(
-            out[1],
-            (
-                [3u8; 32],
-                false,
-                TM_STORED_TX_SOURCE_MISSING,
-                Vec::<u8>::new()
-            )
-        );
-        assert_eq!(
-            out[2],
-            ([1u8; 32], true, TM_STORED_TX_SOURCE_PENDING, vec![0x11])
-        );
-        assert_eq!(
-            out[3],
-            (
-                [4u8; 32],
-                true,
-                TM_STORED_TX_SOURCE_FINALIZED_SYSTEM,
-                vec![0x44]
-            )
-        );
-
         let _ = fs::remove_dir_all(temp_dir);
     }
 
@@ -4316,71 +3416,5 @@ mod tests {
         assert_eq!(finalized.demoted_hashes.len(), 1);
         assert_eq!(finalized.demoted_hashes[0].hash, first.hash.0);
         assert_eq!(finalized.selected_transactions[0].hash, second.hash.0);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_plans_and_caches_gas_estimation() {
-        let mut runtime =
-            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 100 });
-
-        let small = runtime
-            .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {
-                hash: [1; 32],
-                declared_gas: 21_000,
-                proposal_period: 5,
-                estimate_gas_limit: 200_000,
-            })
-            .expect("small gas estimation plan should succeed");
-        assert!(small.use_declared_gas);
-        assert!(!small.cache_hit);
-        assert!(!small.requires_evm_call);
-        assert_eq!(small.gas_used, 21_000);
-
-        let miss = runtime
-            .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {
-                hash: [2; 32],
-                declared_gas: 300_000,
-                proposal_period: 5,
-                estimate_gas_limit: 200_000,
-            })
-            .expect("cache miss plan should succeed");
-        assert!(!miss.use_declared_gas);
-        assert!(!miss.cache_hit);
-        assert!(miss.requires_evm_call);
-
-        assert!(runtime
-            .transaction_manager_runtime_store_gas_estimation(
-                TransactionManagerGasEstimationResult {
-                    hash: [2; 32],
-                    proposal_period: 5,
-                    gas_used: 44_000,
-                    result_rlp: vec![0xc0],
-                },
-            )
-            .expect("cache store should succeed"));
-
-        let hit = runtime
-            .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {
-                hash: [2; 32],
-                declared_gas: 300_000,
-                proposal_period: 5,
-                estimate_gas_limit: 200_000,
-            })
-            .expect("cache hit plan should succeed");
-        assert!(!hit.use_declared_gas);
-        assert!(hit.cache_hit);
-        assert!(!hit.requires_evm_call);
-        assert_eq!(hit.gas_used, 44_000);
-        assert_eq!(hit.result_rlp, vec![0xc0]);
-
-        let different_period = runtime
-            .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {
-                hash: [2; 32],
-                declared_gas: 300_000,
-                proposal_period: 6,
-                estimate_gas_limit: 200_000,
-            })
-            .expect("different period plan should succeed");
-        assert!(different_period.requires_evm_call);
     }
 }

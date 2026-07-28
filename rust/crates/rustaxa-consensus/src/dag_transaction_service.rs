@@ -24,11 +24,14 @@ use crate::dag_service::{
 };
 use crate::sortition::{SortitionConfig, SortitionService, SortitionServiceGuard};
 use crate::transaction_packing_service::{TransactionPackingEstimate, TransactionPackingOwner};
+use crate::transaction_queue::TransactionQueueEntry;
 use crate::transaction_service::{
     DagTransactionSaveInput, TransactionService, TransactionServiceAccountNonceFact,
-    TransactionServiceConfig, TransactionServiceEstimateRequest, TransactionServiceGuard,
-    TransactionServiceProposerPackFinalized, TransactionServiceProposerPackPrepared,
-    TransactionServiceTransactionView, TransactionServiceTransactionViewRequest,
+    TransactionServiceConfig, TransactionServiceEstimateRequest,
+    TransactionServiceGasEstimationPlan, TransactionServiceGasEstimationRequest,
+    TransactionServiceGuard, TransactionServiceProposerPackFinalized,
+    TransactionServiceProposerPackPrepared, TransactionServiceTransactionView,
+    TransactionServiceTransactionViewPlan, TransactionServiceTransactionViewRequest,
     append_prepared_dag_transactions, prepare_dag_transaction_publication,
     prepare_dag_transactions, publish_dag_transactions,
     remove_non_finalized_sidecars_after_dag_commit,
@@ -357,6 +360,106 @@ impl DagTransactionService {
             dag,
             sortition,
         })
+    }
+
+    /// Returns the transaction owner's queue-aware gas-price bid.
+    pub fn transaction_gas_price_bid(&self) -> Result<[u8; 32]> {
+        self.transaction.gas_price_bid()
+    }
+
+    /// Returns the native declared, cached, or external-EVM gas-estimation decision.
+    pub fn transaction_plan_gas_estimation(
+        &self,
+        request: TransactionServiceGasEstimationRequest,
+    ) -> Result<TransactionServiceGasEstimationPlan> {
+        self.transaction.plan_gas_estimation(request)
+    }
+
+    /// Returns the transaction owner's durable transaction count.
+    pub fn transaction_count(&self) -> Result<u64> {
+        self.transaction.transaction_count()
+    }
+
+    /// Returns whether native queue or sidecar state knows `hash`.
+    pub fn transaction_is_known(&self, hash: [u8; 32]) -> Result<bool> {
+        self.transaction.is_transaction_known(hash)
+    }
+
+    /// Returns the current non-finalized sidecar cardinality.
+    pub fn transaction_non_finalized_size(&self) -> Result<usize> {
+        self.transaction.non_finalized_size()
+    }
+
+    /// Returns queue-only transaction views in request order.
+    pub fn transaction_queue_views(
+        &self,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+    ) -> Result<Vec<TransactionServiceTransactionView>> {
+        self.transaction.queue_transaction_views(requests)
+    }
+
+    /// Returns non-finalized sidecar views in request order.
+    pub fn transaction_non_finalized_views(
+        &self,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+    ) -> Result<Vec<TransactionServiceTransactionView>> {
+        self.transaction.non_finalized_transaction_views(requests)
+    }
+
+    /// Returns bounded transaction views using native source precedence.
+    pub fn transaction_views(
+        &self,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+        max_count: u64,
+    ) -> Result<TransactionServiceTransactionViewPlan> {
+        self.transaction.transaction_views(requests, max_count)
+    }
+
+    /// Returns proposal-period transaction views with optional nonce facts.
+    pub fn proposal_transaction_views(
+        &self,
+        proposal_period: u64,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+        max_count: u64,
+    ) -> Result<TransactionServiceTransactionViewPlan> {
+        self.transaction.proposal_transaction_views(
+            proposal_period,
+            requests,
+            account_nonce_facts,
+            max_count,
+        )
+    }
+
+    /// Returns proposer transaction groups ordered by sender and nonce.
+    pub fn transaction_queue_groups(&self) -> Result<Vec<Vec<TransactionQueueEntry>>> {
+        self.transaction.queue_transaction_groups()
+    }
+
+    /// Returns the current proposable transaction count.
+    pub fn transaction_queue_size(&self) -> Result<usize> {
+        self.transaction.queue_size()
+    }
+
+    /// Returns current proposable accounts as owned native addresses.
+    pub fn transaction_queue_proposable_accounts(&self) -> Result<Vec<H160>> {
+        self.transaction.queue_proposable_accounts()
+    }
+
+    /// Returns whether the queue drop-observation window is active.
+    pub fn transaction_queue_dropped(&self) -> Result<bool> {
+        self.transaction.queue_transactions_dropped()
+    }
+
+    /// Returns whether non-proposable queue state reached its configured bound.
+    pub fn transaction_queue_non_proposable_over_limit(&self) -> Result<bool> {
+        self.transaction.queue_non_proposable_over_limit()
+    }
+
+    /// Returns the minimum gas price for inclusion under `limit`.
+    pub fn transaction_queue_min_gas_price(&self, limit: u64) -> Result<[u8; 32]> {
+        self.transaction
+            .queue_min_gas_price_for_block_inclusion(limit)
     }
 
     /// Validates a candidate level against pivot and tip metadata.

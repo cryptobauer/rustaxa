@@ -147,9 +147,13 @@ native root also owns the remaining DAG manager query, storage-lookup,
 graph-status, and non-finalized-sync tasks and returns only owned domain
 snapshots. Superseded direct proposer/verifier/query adapters and their bridge
 behavioral tests are deleted. The DAG service, mutable state, guard, and root
-DAG lock accessors are crate-private; the transaction state/guard remains an
-explicit bridge escape hatch for the unmigrated transaction compatibility
-surface and may not cross CXX or external callbacks.
+DAG lock accessors are crate-private. Native transaction services also own the
+complete read-task family, including queue/sidecar/storage views, status and gas
+facts, and gas-estimation planning; those paths no longer borrow a bridge
+transaction guard. The transaction state/guard remains an explicit bridge
+escape hatch only for unmigrated mutation, admission, cache-store,
+queue-finalization, sidecar, and compatibility packing adapters and may not
+cross CXX or external callbacks.
 
 ### 3. Collapse configuration topology
 

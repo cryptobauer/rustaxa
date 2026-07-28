@@ -1,7 +1,11 @@
 use crate::ffi::rustaxa_ffi::*;
 use crate::ffi::{BridgeFinalChain, BridgeStorage};
 use crate::transaction_manager::{
-    domain_gas_pricer_config, TransactionRuntimeAccess, TransactionRuntimeGuard,
+    bridge_to_service_account_nonce_facts, bridge_to_service_gas_estimation_request,
+    bridge_to_service_transaction_view_requests, domain_gas_pricer_config,
+    service_to_bridge_gas_estimation_plan, service_to_bridge_transaction_view,
+    service_to_bridge_transaction_view_plan, service_transaction_groups_to_bridge,
+    TransactionRuntimeAccess, TransactionRuntimeGuard,
 };
 use anyhow::{Context, Result};
 use ethereum_types::{H256, U256};
@@ -51,12 +55,10 @@ pub struct BridgeDagTransactionService {
 }
 
 impl BridgeDagTransactionService {
-    pub(crate) fn transaction(&self) -> TransactionRuntimeGuard<'_> {
-        TransactionRuntimeAccess(
-            self.root
-                .lock_transaction()
-                .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED"),
-        )
+    #[cfg(test)]
+    fn transaction(&self) -> TransactionRuntimeGuard<'_> {
+        self.try_transaction()
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
     }
 
     fn try_transaction(&self) -> Result<TransactionRuntimeGuard<'_>> {
@@ -107,26 +109,12 @@ pub fn create_dag_transaction_service_from_storage(
     Ok(Box::new(BridgeDagTransactionService { root }))
 }
 
-macro_rules! transaction_shared {
-    ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
-        pub fn $name(&self, $( $arg: $ty ),*) -> $ret {
-            self.transaction().$name($( $arg ),*)
-        }
-    };
-}
-
 macro_rules! transaction_mut {
     ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
         pub fn $name(&self, $( $arg: $ty ),*) -> $ret {
-            self.transaction().$name($( $arg ),*)
-        }
-    };
-}
-
-macro_rules! transaction_shared_result {
-    ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
-        pub fn $name(&self, $( $arg: $ty ),*) -> Result<$ret> {
-            self.try_transaction()?.$name($( $arg ),*)
+            self.try_transaction()
+                .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+                .$name($( $arg ),*)
         }
     };
 }
@@ -140,31 +128,153 @@ macro_rules! transaction_mut_result {
 }
 
 impl BridgeDagTransactionService {
-    transaction_shared!(transaction_manager_runtime_gas_price_bid() -> [u8; 32]);
     transaction_mut!(transaction_manager_runtime_gas_price_update(gas_prices: Vec<GasPricerGasPrice>) -> ());
     transaction_mut_result!(transaction_manager_runtime_pack_prepare_sharded(weight_limit: u64, min_transaction_gas: u64, proposal_period: u64, estimate_gas_limit: u64, last_block_number: u64, total_shards: u16, node_shard: u16, shard_period_interval: u64) -> TransactionPackPreparedPlan);
     transaction_mut_result!(transaction_manager_runtime_pack_finalize_with_estimates(inputs: Vec<TransactionPackSessionEstimateInput>) -> TransactionPackSessionStep);
     transaction_mut!(transaction_manager_runtime_pack_abort() -> bool);
-    transaction_shared_result!(transaction_manager_runtime_plan_gas_estimation(fact: TransactionManagerGasEstimationFact) -> TransactionManagerGasEstimationPlan);
     transaction_mut_result!(transaction_manager_runtime_store_gas_estimation(result: TransactionManagerGasEstimationResult) -> bool);
-    transaction_shared!(transaction_manager_runtime_transaction_count() -> u64);
-    transaction_shared_result!(transaction_manager_runtime_is_transaction_known_hash(hash: &[u8; 32]) -> bool);
     transaction_mut_result!(transaction_manager_runtime_initialize_recently_finalized_payloads(period: u64, payloads: Vec<TransactionManagerSidecarInsertInput>) -> ());
-    transaction_shared!(transaction_manager_runtime_non_finalized_size() -> usize);
     transaction_mut_result!(transaction_manager_runtime_remove_non_finalized(requests: Vec<TransactionManagerSidecarLookupRequest>) -> u64);
     transaction_mut_result!(transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(fact: TransactionManagerValidatedInsertRuntimeFact, final_chain_fact: TransactionManagerFinalChainAdmissionFact, input: TransactionQueueInsertInput) -> TransactionManagerAdmissionCommandReport);
     transaction_mut_result!(transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(verify_fact: TransactionManagerVerifyTransactionFact, admission_fact: TransactionManagerValidatedInsertRuntimeFact, final_chain_fact: TransactionManagerFinalChainAdmissionFact, input: TransactionQueueInsertInput) -> TransactionManagerPublicAdmissionCommandReport);
-    transaction_shared_result!(transaction_manager_runtime_queue_lookup_transaction_views(requests: Vec<TransactionManagerTransactionViewRequest>) -> Vec<TransactionManagerTransactionView>);
-    transaction_shared!(transaction_manager_runtime_queue_all_transaction_groups() -> Vec<TransactionQueueTransactionGroup>);
-    transaction_shared!(transaction_manager_runtime_queue_size() -> usize);
-    transaction_shared!(transaction_manager_runtime_queue_proposable_accounts() -> Vec<TransactionQueueProposableAccountFact>);
     transaction_mut!(transaction_manager_runtime_queue_block_finalized(block_number: u64) -> Vec<TransactionQueueHash>);
-    transaction_shared!(transaction_manager_runtime_queue_transactions_dropped() -> bool);
-    transaction_shared!(transaction_manager_runtime_queue_non_proposable_over_limit() -> bool);
-    transaction_shared!(transaction_manager_runtime_queue_min_gas_price_for_block_inclusion(limit: u64) -> [u8; 32]);
-    transaction_shared_result!(transaction_manager_runtime_lookup_non_finalized_transaction_views(requests: Vec<TransactionManagerTransactionViewRequest>) -> Vec<TransactionManagerTransactionView>);
-    transaction_shared_result!(transaction_manager_runtime_lookup_transaction_views(requests: Vec<TransactionManagerTransactionViewRequest>, max_count: u64) -> TransactionManagerTransactionViewPlan);
-    transaction_shared_result!(transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(proposal_period: u64, requests: Vec<TransactionManagerTransactionViewRequest>, account_nonce_facts: Vec<TransactionQueueAccountNonceFact>, max_count: u64) -> TransactionManagerTransactionViewPlan);
+
+    pub fn transaction_manager_runtime_gas_price_bid(&self) -> [u8; 32] {
+        self.root
+            .transaction_gas_price_bid()
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+    }
+
+    pub fn transaction_manager_runtime_plan_gas_estimation(
+        &self,
+        fact: TransactionManagerGasEstimationFact,
+    ) -> Result<TransactionManagerGasEstimationPlan> {
+        Ok(service_to_bridge_gas_estimation_plan(
+            self.root
+                .transaction_plan_gas_estimation(bridge_to_service_gas_estimation_request(fact))?,
+        ))
+    }
+
+    pub fn transaction_manager_runtime_transaction_count(&self) -> u64 {
+        self.root
+            .transaction_count()
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+    }
+
+    pub fn transaction_manager_runtime_is_transaction_known_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<bool> {
+        self.root.transaction_is_known(*hash)
+    }
+
+    pub fn transaction_manager_runtime_non_finalized_size(&self) -> usize {
+        self.root
+            .transaction_non_finalized_size()
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+    }
+
+    pub fn transaction_manager_runtime_queue_lookup_transaction_views(
+        &self,
+        requests: Vec<TransactionManagerTransactionViewRequest>,
+    ) -> Result<Vec<TransactionManagerTransactionView>> {
+        Ok(self
+            .root
+            .transaction_queue_views(bridge_to_service_transaction_view_requests(requests))?
+            .into_iter()
+            .map(service_to_bridge_transaction_view)
+            .collect())
+    }
+
+    pub fn transaction_manager_runtime_queue_all_transaction_groups(
+        &self,
+    ) -> Vec<TransactionQueueTransactionGroup> {
+        service_transaction_groups_to_bridge(
+            self.root
+                .transaction_queue_groups()
+                .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED"),
+        )
+    }
+
+    pub fn transaction_manager_runtime_queue_size(&self) -> usize {
+        self.root
+            .transaction_queue_size()
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+    }
+
+    pub fn transaction_manager_runtime_queue_proposable_accounts(
+        &self,
+    ) -> Vec<TransactionQueueProposableAccountFact> {
+        self.root
+            .transaction_queue_proposable_accounts()
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+            .into_iter()
+            .map(|sender| TransactionQueueProposableAccountFact { sender: sender.0 })
+            .collect()
+    }
+
+    pub fn transaction_manager_runtime_queue_transactions_dropped(&self) -> bool {
+        self.root
+            .transaction_queue_dropped()
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+    }
+
+    pub fn transaction_manager_runtime_queue_non_proposable_over_limit(&self) -> bool {
+        self.root
+            .transaction_queue_non_proposable_over_limit()
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+    }
+
+    pub fn transaction_manager_runtime_queue_min_gas_price_for_block_inclusion(
+        &self,
+        limit: u64,
+    ) -> [u8; 32] {
+        self.root
+            .transaction_queue_min_gas_price(limit)
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+    }
+
+    pub fn transaction_manager_runtime_lookup_non_finalized_transaction_views(
+        &self,
+        requests: Vec<TransactionManagerTransactionViewRequest>,
+    ) -> Result<Vec<TransactionManagerTransactionView>> {
+        Ok(self
+            .root
+            .transaction_non_finalized_views(bridge_to_service_transaction_view_requests(requests))?
+            .into_iter()
+            .map(service_to_bridge_transaction_view)
+            .collect())
+    }
+
+    pub fn transaction_manager_runtime_lookup_transaction_views(
+        &self,
+        requests: Vec<TransactionManagerTransactionViewRequest>,
+        max_count: u64,
+    ) -> Result<TransactionManagerTransactionViewPlan> {
+        Ok(service_to_bridge_transaction_view_plan(
+            self.root.transaction_views(
+                bridge_to_service_transaction_view_requests(requests),
+                max_count,
+            )?,
+        ))
+    }
+
+    pub fn transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
+        &self,
+        proposal_period: u64,
+        requests: Vec<TransactionManagerTransactionViewRequest>,
+        account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
+        max_count: u64,
+    ) -> Result<TransactionManagerTransactionViewPlan> {
+        Ok(service_to_bridge_transaction_view_plan(
+            self.root.proposal_transaction_views(
+                proposal_period,
+                bridge_to_service_transaction_view_requests(requests),
+                bridge_to_service_account_nonce_facts(account_nonce_facts),
+                max_count,
+            )?,
+        ))
+    }
 
     pub fn dag_transaction_service_proposer_pack_prepare(
         &self,

@@ -1,13 +1,14 @@
 use crate::gas_pricer::{GasPriceOracle, GasPricerConfig};
-use crate::transaction_manager::TransactionManagerSidecar;
 use crate::transaction_manager::{DagTransactionSaveFact, plan_transactions_from_dag_block};
+use crate::transaction_manager::{TransactionManagerKnownFact, TransactionManagerSidecar};
 use crate::transaction_packing_service::{
     TransactionPackingCandidate, TransactionPackingEffect, TransactionPackingEstimate,
     TransactionPackingEstimateRequest, TransactionPackingOwner, TransactionPackingRequest,
     TransactionPackingSelection, TransactionPackingService,
 };
-use crate::transaction_queue::TransactionQueue;
-use crate::transaction_queue::TransactionQueueDemoteStatus;
+use crate::transaction_queue::{
+    TransactionQueue, TransactionQueueDemoteStatus, TransactionQueueEntry,
+};
 use crate::transaction_storage::{
     NonFinalizedTransactionStoragePayload, STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
     STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM, STORED_TRANSACTION_SOURCE_MISSING,
@@ -22,7 +23,9 @@ use rustaxa_types::LegacyTransactionEnvelope;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
 
 /// Stable failure identifier returned when the native transaction lock is poisoned.
 pub const DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED: &str =
@@ -89,6 +92,30 @@ pub struct TransactionServiceAccountNonceFact {
     pub account_found: bool,
     /// Sender finalized nonce at proposal period.
     pub account_nonce: [u8; 32],
+}
+
+/// CXX-free request for one public transaction gas-estimation decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionServiceGasEstimationRequest {
+    /// Canonical transaction identity.
+    pub hash: H256,
+    /// Gas declared by the transaction.
+    pub declared_gas: u64,
+    /// Proposal period that scopes cached estimation results.
+    pub proposal_period: u64,
+    /// Declared-gas threshold below which EVM execution is unnecessary.
+    pub estimate_gas_limit: u64,
+}
+
+/// Native decision for a public gas-estimation request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransactionServiceGasEstimationPlan {
+    /// Use the transaction's declared gas without an EVM call.
+    Declared { gas_used: u64 },
+    /// Return the proposal-period cache entry and its opaque execution result.
+    Cached { gas_used: u64, result_rlp: Vec<u8> },
+    /// Execute the retained external EVM leaf and report the result separately.
+    ExecuteEvm,
 }
 
 #[derive(Clone)]
@@ -266,6 +293,125 @@ impl TransactionService {
             |_| anyhow!(DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED),
         )?))
     }
+
+    /// Returns the queue-aware gas-price bid from one native lock epoch.
+    ///
+    /// The returned value is an owned big-endian scalar. A poisoned transaction
+    /// lock returns the stable native lock error and no state reference escapes.
+    pub fn gas_price_bid(&self) -> Result<[u8; 32]> {
+        Ok(self.lock()?.gas_price_bid())
+    }
+
+    /// Plans one gas-estimation request under the native transaction lock.
+    ///
+    /// The returned enum makes the declared, cached, and external-EVM paths
+    /// mutually exclusive. The lock is released before the caller executes EVM
+    /// work, and no cache reference escapes.
+    pub fn plan_gas_estimation(
+        &self,
+        request: TransactionServiceGasEstimationRequest,
+    ) -> Result<TransactionServiceGasEstimationPlan> {
+        self.lock()?.plan_gas_estimation(request)
+    }
+
+    /// Returns the durable transaction count from one native lock epoch.
+    pub fn transaction_count(&self) -> Result<u64> {
+        Ok(self.lock()?.transaction_count())
+    }
+
+    /// Returns whether the queue or sidecar knows `hash`.
+    ///
+    /// Queue-known and sidecar membership are evaluated while holding the same
+    /// transaction lock. Sidecar validation failures are returned unchanged.
+    pub fn is_transaction_known(&self, hash: [u8; 32]) -> Result<bool> {
+        self.lock()?.is_transaction_known(hash)
+    }
+
+    /// Returns the current non-finalized sidecar cardinality.
+    pub fn non_finalized_size(&self) -> Result<usize> {
+        Ok(self.lock()?.non_finalized_size())
+    }
+
+    /// Returns queue-only transaction views in request order.
+    ///
+    /// Missing entries are explicit empty views. All payloads are owned before
+    /// the native lock is released.
+    pub fn queue_transaction_views(
+        &self,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+    ) -> Result<Vec<TransactionServiceTransactionView>> {
+        Ok(self.lock()?.queue_transaction_views(requests))
+    }
+
+    /// Returns non-finalized sidecar transaction views in request order.
+    pub fn non_finalized_transaction_views(
+        &self,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+    ) -> Result<Vec<TransactionServiceTransactionView>> {
+        self.lock()?.non_finalized_transaction_views(requests)
+    }
+
+    /// Returns bounded transaction views using queue, sidecar, then storage precedence.
+    ///
+    /// Storage access remains inside the transaction lock so the returned owned
+    /// views describe one serialization epoch.
+    pub fn transaction_views(
+        &self,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+        max_count: u64,
+    ) -> Result<TransactionServiceTransactionViewPlan> {
+        self.lock()?.lookup_transaction_views(requests, max_count)
+    }
+
+    /// Returns proposal-period views with permissive optional account-nonce facts.
+    ///
+    /// Missing nonce facts preserve the public compatibility lookup semantics;
+    /// this method deliberately does not use the verifier's fact-required path.
+    pub fn proposal_transaction_views(
+        &self,
+        proposal_period: u64,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+        max_count: u64,
+    ) -> Result<TransactionServiceTransactionViewPlan> {
+        self.lock()?
+            .lookup_proposal_transaction_views_with_account_nonce_facts(
+                proposal_period,
+                requests,
+                account_nonce_facts,
+                max_count,
+            )
+    }
+
+    /// Returns proposer transaction groups ordered by sender and nonce.
+    pub fn queue_transaction_groups(&self) -> Result<Vec<Vec<TransactionQueueEntry>>> {
+        Ok(self.lock()?.queue_transaction_groups())
+    }
+
+    /// Returns the current proposable transaction count.
+    pub fn queue_size(&self) -> Result<usize> {
+        Ok(self.lock()?.queue_size())
+    }
+
+    /// Returns the current ordered proposable-account set.
+    pub fn queue_proposable_accounts(&self) -> Result<Vec<H160>> {
+        Ok(self.lock()?.queue_proposable_accounts())
+    }
+
+    /// Returns whether the queue drop-observation window remains active.
+    pub fn queue_transactions_dropped(&self) -> Result<bool> {
+        Ok(self.lock()?.queue_transactions_dropped())
+    }
+
+    /// Returns whether non-proposable queue state reached its configured bound.
+    pub fn queue_non_proposable_over_limit(&self) -> Result<bool> {
+        Ok(self.lock()?.queue_non_proposable_over_limit())
+    }
+
+    /// Returns the minimum big-endian gas price for inclusion under `limit`.
+    pub fn queue_min_gas_price_for_block_inclusion(&self, limit: u64) -> Result<[u8; 32]> {
+        Ok(self.lock()?.queue_min_gas_price_for_block_inclusion(limit))
+    }
 }
 
 /// Exclusive native transaction runtime guard.
@@ -353,7 +499,6 @@ impl TransactionServiceState {
     }
 
     /// Returns bounded, source-ordered finalized-period proposal views with optional nonce filtering.
-    #[cfg(test)]
     pub(crate) fn lookup_proposal_transaction_views_with_account_nonce_facts(
         &self,
         proposal_period: u64,
@@ -375,6 +520,46 @@ impl TransactionServiceState {
                 )
             },
         )
+    }
+
+    /// Returns queue-only payload views.
+    pub(crate) fn queue_transaction_views(
+        &self,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+    ) -> Vec<TransactionServiceTransactionView> {
+        requests
+            .into_iter()
+            .map(
+                |request| match self.queue.transaction(H256::from(request.hash)) {
+                    Some(entry) => TransactionServiceTransactionView {
+                        input_index: request.input_index,
+                        hash: request.hash,
+                        found: true,
+                        source: TM_TRANSACTION_VIEW_SOURCE_QUEUE,
+                        old_finalized: false,
+                        tx_rlp: entry.rlp,
+                    },
+                    None => TransactionServiceTransactionView {
+                        input_index: request.input_index,
+                        hash: request.hash,
+                        found: false,
+                        source: TM_TRANSACTION_VIEW_SOURCE_MISSING,
+                        old_finalized: false,
+                        tx_rlp: Vec::new(),
+                    },
+                },
+            )
+            .collect()
+    }
+
+    /// Returns deterministic hash-known state as seen by the Rust runtime.
+    pub(crate) fn is_transaction_known(&self, hash: [u8; 32]) -> Result<bool> {
+        let hash = H256::from(hash);
+        self.sidecar
+            .is_transaction_known(TransactionManagerKnownFact {
+                hash,
+                queue_known: self.queue.is_transaction_known(hash),
+            })
     }
 
     /// Returns proposal views that require an explicit account fact for each finalized sender.
@@ -399,6 +584,119 @@ impl TransactionServiceState {
                 )
             },
         )
+    }
+
+    /// Returns non-finalized/recently-finalized sidecar payload views.
+    pub(crate) fn non_finalized_transaction_views(
+        &self,
+        requests: Vec<TransactionServiceTransactionViewRequest>,
+    ) -> Result<Vec<TransactionServiceTransactionView>> {
+        self.sidecar
+            .lookup_payloads_ordered(
+                requests
+                    .into_iter()
+                    .map(|request| (request.input_index, H256::from(request.hash)))
+                    .collect(),
+            )
+            .context("TM_RUNTIME_TRANSACTION_VIEW_NON_FINALIZED_LOOKUP")?
+            .into_iter()
+            .map(|lookup| {
+                let found = lookup.found
+                    && lookup.source
+                        == crate::transaction_manager::TransactionManagerSidecarLookup::SOURCE_NON_FINALIZED;
+                Ok(TransactionServiceTransactionView {
+                    input_index: lookup.input_index,
+                    hash: lookup.hash.0,
+                    found,
+                    source: if found {
+                        TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR
+                    } else {
+                        TM_TRANSACTION_VIEW_SOURCE_MISSING
+                    },
+                    old_finalized: false,
+                    tx_rlp: if found { lookup.trx_rlp } else { Vec::new() },
+                })
+            })
+            .collect()
+    }
+
+    /// Returns the current transaction count.
+    pub(crate) fn transaction_count(&self) -> u64 {
+        self.sidecar.transaction_count()
+    }
+
+    /// Returns non-finalized sidecar size.
+    pub(crate) fn non_finalized_size(&self) -> usize {
+        self.sidecar.non_finalized_size()
+    }
+
+    /// Returns queue-only payload groups by sender/nonce.
+    pub(crate) fn queue_transaction_groups(&self) -> Vec<Vec<TransactionQueueEntry>> {
+        self.queue.all_transaction_groups()
+    }
+
+    /// Returns queue entry count currently available for proposer scans.
+    pub(crate) fn queue_size(&self) -> usize {
+        self.queue.size() as usize
+    }
+
+    /// Returns proposable accounts currently tracked by Rust queue.
+    pub(crate) fn queue_proposable_accounts(&self) -> Vec<H160> {
+        self.queue.proposable_accounts()
+    }
+
+    /// Returns whether queue overflow/drop telemetry is currently warm.
+    pub(crate) fn queue_transactions_dropped(&self) -> bool {
+        self.last_drop_observed
+            .is_some_and(|observed| observed.elapsed() < TRANSACTION_QUEUE_DROP_WINDOW)
+    }
+
+    /// Returns whether queue size by account exceeds the configured drop bound.
+    pub(crate) fn queue_non_proposable_over_limit(&self) -> bool {
+        self.queue.non_proposable_transactions_over_the_limit()
+    }
+
+    /// Returns the minimum inclusion gas price estimate for a weight limit.
+    pub(crate) fn queue_min_gas_price_for_block_inclusion(&self, limit: u64) -> [u8; 32] {
+        self.queue
+            .min_gas_price_for_block_inclusion(limit)
+            .to_big_endian()
+    }
+
+    /// Returns the runtime gas bid as selected by pool/proposal context.
+    pub(crate) fn gas_price_bid(&self) -> [u8; 32] {
+        self.gas_price_oracle
+            .configured_bid(
+                self.queue
+                    .min_gas_price_for_block_inclusion(self.proposal_dag_gas_limit),
+            )
+            .to_big_endian()
+    }
+
+    pub(crate) fn plan_gas_estimation(
+        &self,
+        request: TransactionServiceGasEstimationRequest,
+    ) -> Result<TransactionServiceGasEstimationPlan> {
+        ensure!(
+            !request.hash.is_zero(),
+            "TM_RUNTIME_GAS_ESTIMATION_HASH_ZERO"
+        );
+        if request.declared_gas <= request.estimate_gas_limit {
+            return Ok(TransactionServiceGasEstimationPlan::Declared {
+                gas_used: request.declared_gas,
+            });
+        }
+        if let Some(cached) = self
+            .sidecar
+            .gas_estimation_cache_get(request.hash, request.proposal_period)
+            .context("TM_RUNTIME_GAS_ESTIMATION_CACHE_GET")?
+        {
+            return Ok(TransactionServiceGasEstimationPlan::Cached {
+                gas_used: cached.gas_used,
+                result_rlp: cached.result_rlp,
+            });
+        }
+        Ok(TransactionServiceGasEstimationPlan::ExecuteEvm)
     }
 
     /// Prepares owner-scoped proposer packing from a validated queue/cache snapshot.
@@ -1304,7 +1602,7 @@ mod tests {
         let service = TransactionService::restore(
             storage,
             TransactionServiceConfig {
-                queue_max_size: 8,
+                queue_max_size: 100,
                 gas_pricer_config: GasPricerConfig {
                     percentile: 50,
                     minimum_price: ethereum_types::U256::from(4_u64),
@@ -1356,7 +1654,51 @@ mod tests {
                 runtime.gas_price_oracle.configured_bid(pool_price),
                 ethereum_types::U256::from(4_u64)
             );
+            runtime.sidecar.gas_estimation_cache_insert(
+                H256::from_low_u64_be(2),
+                7,
+                19_000,
+                vec![0xC1],
+            )?;
         }
+        assert_eq!(
+            U256::from_big_endian(&service.gas_price_bid()?),
+            U256::from(4_u64)
+        );
+        assert_eq!(service.queue_size()?, 2);
+        assert_eq!(service.queue_transaction_groups()?.len(), 2);
+        assert_eq!(service.queue_proposable_accounts()?.len(), 2);
+        assert!(!service.queue_non_proposable_over_limit()?);
+        assert_eq!(
+            service.plan_gas_estimation(TransactionServiceGasEstimationRequest {
+                hash: H256::from_low_u64_be(1),
+                declared_gas: 21_000,
+                proposal_period: 7,
+                estimate_gas_limit: 30_000,
+            })?,
+            TransactionServiceGasEstimationPlan::Declared { gas_used: 21_000 }
+        );
+        assert_eq!(
+            service.plan_gas_estimation(TransactionServiceGasEstimationRequest {
+                hash: H256::from_low_u64_be(2),
+                declared_gas: 50_000,
+                proposal_period: 7,
+                estimate_gas_limit: 30_000,
+            })?,
+            TransactionServiceGasEstimationPlan::Cached {
+                gas_used: 19_000,
+                result_rlp: vec![0xC1],
+            }
+        );
+        assert_eq!(
+            service.plan_gas_estimation(TransactionServiceGasEstimationRequest {
+                hash: H256::from_low_u64_be(3),
+                declared_gas: 50_000,
+                proposal_period: 7,
+                estimate_gas_limit: 30_000,
+            })?,
+            TransactionServiceGasEstimationPlan::ExecuteEvm
+        );
 
         std::fs::remove_dir_all(temp_dir)?;
         Ok(())
@@ -1426,7 +1768,8 @@ mod tests {
             .write(9, &period_data)
             .expect("period source should persist finalized tx");
 
-        let plan = runtime.lookup_transaction_views(
+        drop(runtime);
+        let plan = service.transaction_views(
             vec![
                 transaction_service_view_request(1, 1),
                 transaction_service_view_request(2, 2),
@@ -1505,7 +1848,8 @@ mod tests {
             .write(1, &period_data)
             .expect("proposal period data should persist");
 
-        let plan = runtime.lookup_proposal_transaction_views_with_account_nonce_facts(
+        drop(runtime);
+        let plan = service.proposal_transaction_views(
             1,
             vec![TransactionServiceTransactionViewRequest {
                 input_index: 10,
@@ -1533,7 +1877,7 @@ mod tests {
         );
         assert!(plan.views[0].tx_rlp.is_empty());
 
-        let permissive_plan = runtime.lookup_proposal_transaction_views_with_account_nonce_facts(
+        let permissive_plan = service.proposal_transaction_views(
             1,
             vec![TransactionServiceTransactionViewRequest {
                 input_index: 10,
@@ -1544,6 +1888,7 @@ mod tests {
         )?;
         assert!(permissive_plan.views[0].found);
 
+        let runtime = service.lock()?;
         let strict_error = runtime
             .lookup_proposal_transaction_views_requiring_account_nonce_facts(
                 1,
