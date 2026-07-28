@@ -7,9 +7,13 @@ use crate::transaction_manager::{
 use anyhow::{Context, Result};
 use ethereum_types::{H256, U256};
 use rustaxa_consensus::dag_service::{
+    DagProposerAddBlockReport as NativeDagProposerAddBlockReport,
     DagProposerSessionAction as NativeDagProposerSessionAction,
-    DagProposerSessionStep as NativeDagProposerSessionStep, DagProposerTransactionObservation,
-    DagServiceConfig, DagVerifyBlockGasReport as NativeDagVerifyBlockGasReport,
+    DagProposerSessionBeginInput as NativeDagProposerSessionBeginInput,
+    DagProposerSessionStep as NativeDagProposerSessionStep,
+    DagProposerSigningReport as NativeDagProposerSigningReport,
+    DagProposerVdfProofReport as NativeDagProposerVdfProofReport, DagServiceConfig,
+    DagVerifyBlockGasReport as NativeDagVerifyBlockGasReport,
     DagVerifyBlockSessionInput as NativeDagVerifyBlockSessionInput,
     DagVerifyBlockSessionStep as NativeDagVerifyBlockSessionStep,
 };
@@ -18,6 +22,8 @@ use rustaxa_consensus::dag_transaction_service::{
     DagAddBlockCompletion as NativeDagAddBlockCompletion,
     DagAddBlockPrepareRequest as NativeDagAddBlockPrepareRequest,
     DagAddBlockTransactionPayload as NativeDagAddBlockTransactionPayload,
+    DagProposerFinalChainFacts as NativeDagProposerFinalChainFacts,
+    DagProposerFinalChainRequestOrStep as NativeDagProposerFinalChainRequestOrStep,
     DagProposerPackPrepareRequest, DagProposerPackStep, DagTransactionService,
     DagTransactionServiceConfig,
     DagVerifyBlockAuthorizationRequestOrStep as NativeDagVerifyBlockAuthorizationRequestOrStep,
@@ -69,15 +75,6 @@ impl BridgeDagTransactionService {
     /// executor call.
     pub(crate) fn sortition(&self) -> Result<SortitionServiceGuard<'_>> {
         self.root.lock_sortition()
-    }
-
-    /// Locks the DAG and transaction subset in their universal relative order.
-    ///
-    /// Sortition is not needed by this operation. A future three-domain
-    /// operation must insert its sortition guard between these two guards.
-    fn dag_and_transaction(&self) -> Result<(DagRuntimeGuard<'_>, TransactionRuntimeGuard<'_>)> {
-        let (dag, transaction) = self.root.lock_dag_and_transaction()?;
-        Ok((DagRuntimeAccess(dag), TransactionRuntimeAccess(transaction)))
     }
 }
 
@@ -497,6 +494,9 @@ fn proposer_session_step_to_bridge(step: NativeDagProposerSessionStep) -> DagPro
         NativeDagProposerSessionAction::StartVdf => {
             crate::dag::DAG_PROPOSER_SESSION_ACTION_START_VDF
         }
+        NativeDagProposerSessionAction::CancelVdf => {
+            crate::dag::DAG_PROPOSER_SESSION_ACTION_CANCEL_VDF
+        }
         NativeDagProposerSessionAction::StaleProofSleep => {
             crate::dag::DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP
         }
@@ -590,26 +590,7 @@ fn selected_transaction_to_bridge(
     }
 }
 
-macro_rules! dag_free_mut_result {
-    ($outer:ident, $inner:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
-        pub fn $outer(service: &BridgeDagTransactionService, $( $arg: $ty ),*) -> Result<$ret> {
-            let mut guard = service.dag()?;
-            let runtime = &mut guard;
-            Ok($inner(runtime, $( $arg ),*))
-        }
-    };
-}
-
-macro_rules! dag_free_mut_fallible {
-    ($outer:ident, $inner:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
-        pub fn $outer(service: &BridgeDagTransactionService, $( $arg: $ty ),*) -> Result<$ret> {
-            let mut guard = service.dag()?;
-            let runtime = &mut guard;
-            $inner(runtime, $( $arg ),*)
-        }
-    };
-}
-
+#[cfg(test)]
 use crate::dag::*;
 
 pub fn service_dag_manager_runtime_begin_verify_block_session(
@@ -815,18 +796,44 @@ pub fn service_dag_manager_runtime_begin_proposer_session(
     service: &BridgeDagTransactionService,
     input: DagProposerSessionBeginInput,
 ) -> Result<u64> {
-    let (mut dag_guard, transaction) = service.dag_and_transaction()?;
-    let dag = &mut dag_guard;
-    let transaction_observation = DagProposerTransactionObservation {
-        transaction_pool_size: transaction.transaction_manager_runtime_queue_size() as u64,
-        non_finalized_transaction_count: transaction
-            .transaction_manager_runtime_non_finalized_size()
-            as u64,
-    };
-    dag_manager_runtime_begin_proposer_session(dag, input, transaction_observation)
+    service
+        .root
+        .begin_proposer_session(NativeDagProposerSessionBeginInput {
+            max_non_finalized_transactions: input.max_non_finalized_transactions,
+            dag_expiry_level_limit: input.dag_expiry_level_limit,
+            wallet_vrf_public_key: input.wallet_vrf_public_key,
+            wallet_vrf_secret: input.wallet_vrf_secret,
+            proposer_address: input.proposer_address,
+            max_non_finalized_dag_blocks: input.max_non_finalized_dag_blocks,
+            max_non_finalized_dag_blocks_low_difficulty: input
+                .max_non_finalized_dag_blocks_low_difficulty,
+            max_retry_count: input.max_retry_count,
+            proposal_weight_limit: input.proposal_weight_limit,
+            total_transaction_shards: input.total_transaction_shards,
+            node_transaction_shard: input.node_transaction_shard,
+            shard_period_interval: input.shard_period_interval,
+            pbft_gas_limit: input.pbft_gas_limit,
+            dag_gas_limit: input.dag_gas_limit,
+            max_tips: input.max_tips,
+        })
 }
-dag_free_mut_result!(service_dag_manager_runtime_abort_proposer_session, dag_manager_runtime_abort_proposer_session(session_id: u64) -> bool);
-dag_free_mut_result!(service_dag_manager_runtime_proposer_session_next, dag_manager_runtime_proposer_session_next(session_id: u64) -> DagProposerSessionStep);
+
+pub fn service_dag_manager_runtime_abort_proposer_session(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+) -> Result<bool> {
+    service.root.abort_proposer_session(session_id)
+}
+
+pub fn service_dag_manager_runtime_proposer_session_next(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+) -> Result<DagProposerSessionStep> {
+    service
+        .root
+        .next_proposer_session(session_id)
+        .map(proposer_session_step_to_bridge)
+}
 /// Composes FinalChain facts with exact historical sortition parameters.
 ///
 /// The first DAG lock validates and snapshots the keyed proposer cursor. The
@@ -855,73 +862,39 @@ fn service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_ho
     final_chain: &BridgeFinalChain,
     between_lookups: impl FnOnce(),
 ) -> Result<DagProposerSessionStep> {
-    let preparation = {
-        let mut dag_guard = service.dag()?;
-        let dag = &mut dag_guard;
-        dag_manager_runtime_prepare_proposer_final_chain_facts(dag, session_id)
-    };
-    let snapshot = match preparation {
-        DagProposerFinalChainFactsPreparation::Snapshot(snapshot) => snapshot,
-        DagProposerFinalChainFactsPreparation::Step(step) => return Ok(*step),
-    };
-
-    let initially_loaded_params = match service.sortition().and_then(|sortition| {
-        sortition
-            .params_for_period_from_storage(snapshot.proposal_period)
-            .context("DAG_PROPOSER_SESSION_SORTITION_PARAMS_INITIAL_LOOKUP")
-    }) {
-        Ok(params) => params,
-        Err(error) => {
-            let mut dag_guard = service.dag()?;
-            let dag = &mut dag_guard;
-            dag_manager_runtime_cleanup_proposer_final_chain_facts(dag, &snapshot);
-            return Err(error);
+    let request = match service
+        .root
+        .prepare_proposer_final_chain_facts(session_id)?
+    {
+        NativeDagProposerFinalChainRequestOrStep::Request(request) => request,
+        NativeDagProposerFinalChainRequestOrStep::Step(step) => {
+            return Ok(proposer_session_step_to_bridge(*step));
         }
     };
     let (last_finalized_period, authorization_facts) =
         match proposer_final_chain_facts_from_final_chain(
             final_chain,
-            snapshot.proposal_period_found,
-            snapshot.proposal_period,
-            snapshot.proposer_address,
+            request.proposal_period_found,
+            request.proposal_period,
+            request.proposer_address,
         ) {
             Ok(facts) => facts,
             Err(error) => {
-                let mut dag_guard = service.dag()?;
-                let dag = &mut dag_guard;
-                dag_manager_runtime_cleanup_proposer_final_chain_facts(dag, &snapshot);
+                service.root.abort_proposer_final_chain_facts(&request)?;
                 return Err(error);
             }
         };
     between_lookups();
-
-    let mut dag_guard = service.dag()?;
-    let dag = &mut dag_guard;
-    let sortition = match service.sortition() {
-        Ok(sortition) => sortition,
-        Err(error) => {
-            dag_manager_runtime_cleanup_proposer_final_chain_facts(dag, &snapshot);
-            return Err(error);
-        }
-    };
-    let revalidated_params = match sortition
-        .params_for_period_from_storage(snapshot.proposal_period)
-        .context("DAG_PROPOSER_SESSION_SORTITION_PARAMS_REVALIDATION_LOOKUP")
-    {
-        Ok(params) => params,
-        Err(error) => {
-            dag_manager_runtime_cleanup_proposer_final_chain_facts(dag, &snapshot);
-            return Err(error);
-        }
-    };
-    dag_manager_runtime_apply_proposer_final_chain_facts(
-        dag,
-        &snapshot,
-        last_finalized_period,
-        authorization_facts,
-        revalidated_params,
-        initially_loaded_params,
-    )
+    service
+        .root
+        .complete_proposer_final_chain_facts(
+            &request,
+            NativeDagProposerFinalChainFacts {
+                last_finalized_period,
+                authorization_facts,
+            },
+        )
+        .map(proposer_session_step_to_bridge)
 }
 
 fn proposer_final_chain_facts_from_final_chain(
@@ -946,11 +919,82 @@ fn proposer_final_chain_facts_from_final_chain(
     };
     Ok((last_finalized_period, authorization_facts))
 }
-dag_free_mut_result!(service_dag_manager_runtime_proposer_session_poll_vdf, dag_manager_runtime_proposer_session_poll_vdf(session_id: u64) -> DagProposerSessionStep);
-dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_report_vdf_proof, dag_manager_runtime_proposer_session_report_vdf_proof(session_id: u64, report: DagProposerVdfProofReport) -> DagProposerSessionStep);
-dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_resume_stale_proof, dag_manager_runtime_proposer_session_resume_stale_proof(session_id: u64) -> DagProposerSessionStep);
-dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_report_signing, dag_manager_runtime_proposer_session_report_signing(session_id: u64, report: DagProposerSigningReport) -> DagProposerSessionStep);
-dag_free_mut_result!(service_dag_manager_runtime_proposer_session_report_add_block, dag_manager_runtime_proposer_session_report_add_block(session_id: u64, report: DagProposerAddBlockReport) -> DagProposerSessionStep);
+
+pub fn service_dag_manager_runtime_proposer_session_poll_vdf(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+) -> Result<DagProposerSessionStep> {
+    service
+        .root
+        .poll_proposer_vdf(session_id)
+        .map(proposer_session_step_to_bridge)
+}
+
+pub fn service_dag_manager_runtime_proposer_session_report_vdf_proof(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+    report: DagProposerVdfProofReport,
+) -> Result<DagProposerSessionStep> {
+    service
+        .root
+        .report_proposer_vdf_proof(
+            session_id,
+            NativeDagProposerVdfProofReport {
+                proof_ok: report.proof_ok,
+                vdf_rlp: report.vdf_rlp,
+            },
+        )
+        .map(proposer_session_step_to_bridge)
+}
+
+pub fn service_dag_manager_runtime_proposer_session_resume_stale_proof(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+) -> Result<DagProposerSessionStep> {
+    service
+        .root
+        .resume_proposer_stale_proof(session_id)
+        .map(proposer_session_step_to_bridge)
+}
+
+pub fn service_dag_manager_runtime_proposer_session_report_signing(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+    report: DagProposerSigningReport,
+) -> Result<DagProposerSessionStep> {
+    service
+        .root
+        .report_proposer_signing(
+            session_id,
+            NativeDagProposerSigningReport {
+                signature: report.signature,
+            },
+        )
+        .map(proposer_session_step_to_bridge)
+}
+
+pub fn service_dag_manager_runtime_proposer_session_report_add_block(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+    report: DagProposerAddBlockReport,
+) -> Result<DagProposerSessionStep> {
+    service
+        .root
+        .report_proposer_add_block(
+            session_id,
+            NativeDagProposerAddBlockReport {
+                accepted: report.accepted,
+                duplicate: report.duplicate,
+                expired: report.expired,
+                missing_references: report
+                    .missing_references
+                    .into_iter()
+                    .map(|hash| H256::from(hash.hash))
+                    .collect(),
+            },
+        )
+        .map(proposer_session_step_to_bridge)
+}
 
 #[cfg(test)]
 mod tests {

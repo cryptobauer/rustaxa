@@ -10,27 +10,39 @@ use crate::dag::{
     DAG_PROPOSER_ACTION_CONTINUE, DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
     DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE, DAG_VERIFY_VDF_STATUS_NOT_CHECKED,
     DAG_VERIFY_VDF_STATUS_VALID, DagAddBlockEffectInput, DagAddBlockEffectPlan,
-    DagDposAuthorizationFacts, DagManagerBlock, DagManagerFinalizationPlan, DagManagerSnapshot,
-    DagManagerState, DagPersistenceCounters, DagProposerAttemptPlan, DagProposerFrontierFacts,
-    DagProposerPostPackInput, DagProposerSignedBlockIntent, DagProposerUnsignedBlockIntent,
-    DagReferenceMetadata, DagTipGas, DagVerifyGasInput, DagVerifyPrecheckStorageInput,
-    DagVerifyTransactionAvailabilityInput, DagVerifyVdfDposFacts,
+    DagDposAuthorizationFacts, DagHashStorageLookup, DagManagerBlock, DagManagerFinalizationPlan,
+    DagManagerSnapshot, DagManagerState, DagPeriodStorageLookup, DagPersistenceCounters,
+    DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockIntentInput,
+    DagProposerFrontierFacts, DagProposerPostPackInput, DagProposerRetryResetInput,
+    DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput, DagProposerStaleProofInput,
+    DagProposerStorageBlockConstructionInput, DagProposerUnsignedBlockIntent,
+    DagProposerVdfWaitInput, DagReferenceMetadata, DagTipGas, DagVerifyGasInput,
+    DagVerifyPrecheckStorageInput, DagVerifyTransactionAvailabilityInput, DagVerifyVdfDposFacts,
     apply_finalization_cleanup_from_storage, construct_dag_vdf_message,
     dag_block_exists_in_storage, dag_manager_block_from_rlp, dag_persistence_counters_from_storage,
     decide_dag_verify_vdf_dpos_authorization, ensure_proposal_period_mapping,
-    plan_dag_add_block_effects, plan_dag_proposer_post_pack, plan_dag_verify_transaction_query,
-    validate_dag_verify_gas, validate_dag_verify_transaction_availability,
-    validate_pivot_tips_metadata, verify_precheck_from_storage,
+    finalize_dag_proposer_signed_block_intent, period_block_hash_from_storage,
+    plan_dag_add_block_effects, plan_dag_proposer_attempt,
+    plan_dag_proposer_block_construction_from_storage, plan_dag_proposer_block_intent,
+    plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
+    plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
+    proposal_period_for_level_from_storage, validate_dag_verify_gas,
+    validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
+    verify_precheck_from_storage,
 };
 use crate::pbft_chain::restore_pbft_chain_from_storage;
-use crate::sortition::SortitionParams;
+use crate::sortition::{SortitionParams, VdfParams, VrfParams};
 use crate::transaction_packing_service::TransactionPackingSelection;
 use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::H256;
 use rustaxa_storage::Storage;
+use rustaxa_types::codec::rlp::dag::DagBlockRlp;
+use rustaxa_types::dag::DagBlock;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tiny_keccak::{Hasher, Keccak};
 
 /// Stable failure identifier returned when the native DAG lock is poisoned.
 pub const DAG_TRANSACTION_SERVICE_DAG_LOCK_POISONED: &str =
@@ -38,6 +50,7 @@ pub const DAG_TRANSACTION_SERVICE_DAG_LOCK_POISONED: &str =
 
 const DAG_PROPOSER_SESSION_STATUS_ACTIVE: u8 = 0;
 const DAG_PROPOSER_SESSION_STATUS_COMPLETE: u8 = 1;
+const DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT: u8 = 2;
 const DAG_VERIFY_SESSION_STATUS_ACTIVE: u8 = 0;
 const DAG_VERIFY_SESSION_STATUS_COMPLETE: u8 = 1;
 const DAG_VERIFY_SESSION_STATUS_INVALID_REPORT: u8 = 2;
@@ -199,12 +212,64 @@ pub struct DagVerifyBlockGasReport {
     pub pbft_gas_limit: u64,
 }
 
+/// Input facts returned by a stale-proof VDF probe after the external proposer
+/// loop attempts proof validation.
+#[derive(Clone)]
+pub struct DagProposerVdfProofReport {
+    /// Whether the external verifier accepted the proof.
+    pub proof_ok: bool,
+    /// Raw VDF proof payload for the retained proposal.
+    pub vdf_rlp: Vec<u8>,
+}
+
+/// Input facts returned by the external signing executor.
+#[derive(Clone)]
+pub struct DagProposerSigningReport {
+    /// Canonical 65-byte ECDSA recoverable signature.
+    pub signature: Vec<u8>,
+}
+
+/// Input facts returned by the external DAG add-block callback.
+#[derive(Clone)]
+pub struct DagProposerAddBlockReport {
+    /// Whether execution accepted the proposed block.
+    pub accepted: bool,
+    /// Whether execution returned a duplicate for an already-known block.
+    pub duplicate: bool,
+    /// Whether the block became expired while in the external phase.
+    pub expired: bool,
+    /// Missing references reported by external execution.
+    pub missing_references: Vec<H256>,
+}
+
+/// Cursor snapshot retained across FinalChain authorization and sortition lookup.
+#[derive(Clone)]
+pub(crate) struct DagProposerFinalChainFactsSnapshot {
+    /// Exact native proposer cursor identity.
+    pub session_id: u64,
+    /// Fingerprint of the DAG/frontier observation captured at session begin.
+    pub fingerprint: [u8; 32],
+    /// Proposal period used for historical authorization and sortition facts.
+    pub proposal_period: u64,
+    /// Proposer address used for the historical authorization query.
+    pub proposer_address: [u8; 20],
+    /// Whether native storage resolved the proposal-period mapping.
+    pub proposal_period_found: bool,
+}
+
+/// Deterministic preparation result before an external FinalChain/sortition lookup.
+pub(crate) enum DagProposerFinalChainFactsPreparation {
+    Snapshot(DagProposerFinalChainFactsSnapshot),
+    Step(Box<DagProposerSessionStep>),
+}
+
 /// Next deterministic external boundary requested by a proposer cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DagProposerSessionAction {
     CollectFinalChainFacts,
     PackTransactions,
     StartVdf,
+    CancelVdf,
     StaleProofSleep,
     SignBlock,
     AddBlock,
@@ -645,6 +710,521 @@ impl DagServiceState {
         self.finish_proposer_session_step(session_id)
     }
 
+    /// Opens a runtime-owned proposer cursor for one attempt.
+    #[doc(hidden)]
+    pub fn begin_proposer_session(
+        &mut self,
+        input: DagProposerSessionBeginInput,
+        transaction_observation: DagProposerTransactionObservation,
+    ) -> Result<u64> {
+        let retry_key = input.wallet_vrf_public_key;
+        let observation = self.proposer_observation()?;
+        let attempt = placeholder_attempt(&observation, &input);
+        let action = if observation.proposal_period_found {
+            DagProposerSessionAction::CollectFinalChainFacts
+        } else {
+            DagProposerSessionAction::Complete
+        };
+        let status = if matches!(action, DagProposerSessionAction::Complete) {
+            DAG_PROPOSER_SESSION_STATUS_COMPLETE
+        } else {
+            DAG_PROPOSER_SESSION_STATUS_ACTIVE
+        };
+        let session_id = self.next_proposer_session_id;
+        self.next_proposer_session_id = self.next_proposer_session_id.saturating_add(1).max(1);
+        ensure!(
+            !self.proposer_sessions.contains_key(&session_id),
+            "DAG_PROPOSER_SESSION_ID_COLLISION"
+        );
+        self.proposer_sessions.insert(
+            session_id,
+            DagProposerSession {
+                action,
+                status,
+                begin_input: input,
+                transaction_observation,
+                observation,
+                retry_key,
+                reason_code: if attempt.proposal_period_found {
+                    crate::dag::DAG_PROPOSER_REASON_OK
+                } else {
+                    crate::dag::DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD
+                },
+                return_value: false,
+                update_retry_state: attempt.update_retry_state,
+                next_last_propose_level: attempt.next_last_propose_level,
+                next_retry_count: attempt.next_retry_count,
+                record_proposed_block: false,
+                minimum_vdf_difficulty: 0,
+                sortition_params: empty_sortition_params(),
+                vdf_message: Vec::new(),
+                selected_transaction_hashes: Vec::new(),
+                transaction_gas_estimations: Vec::new(),
+                selected_transactions: Vec::new(),
+                vdf_rlp: Vec::new(),
+                unsigned_intent: None,
+                signed_intent: None,
+                error_code: String::new(),
+                attempt,
+            },
+        );
+        Ok(session_id)
+    }
+
+    /// Returns the current requested action for a proposer cursor.
+    pub(crate) fn proposer_session_next(&mut self, session_id: u64) -> DagProposerSessionStep {
+        let Some(session) = self.proposer_sessions.get(&session_id) else {
+            return proposer_session_not_started_step();
+        };
+        let step = proposer_session_step(session);
+        finish_proposer_session_step(self, session_id, step)
+    }
+
+    /// Validates and snapshots a proposer cursor before external chain/sortition facts.
+    pub(crate) fn prepare_proposer_final_chain_facts(
+        &mut self,
+        session_id: u64,
+    ) -> DagProposerFinalChainFactsPreparation {
+        let Some(session) = self.proposer_sessions.get(&session_id) else {
+            return DagProposerFinalChainFactsPreparation::Step(
+                proposer_session_not_started_step_boxed(),
+            );
+        };
+        if !matches!(
+            session.action,
+            DagProposerSessionAction::CollectFinalChainFacts
+        ) {
+            let session = self
+                .proposer_sessions
+                .get_mut(&session_id)
+                .expect("session still exists");
+            let step = invalid_dag_proposer_report(
+                session,
+                "DAG_PROPOSER_SESSION_UNEXPECTED_FINAL_CHAIN_FACTS_REPORT",
+            );
+            return DagProposerFinalChainFactsPreparation::Step(Box::new(
+                finish_proposer_session_step(self, session_id, step),
+            ));
+        }
+        DagProposerFinalChainFactsPreparation::Snapshot(DagProposerFinalChainFactsSnapshot {
+            session_id,
+            fingerprint: session.observation.fingerprint,
+            proposal_period: session.observation.proposal_period,
+            proposer_address: session.begin_input.proposer_address,
+            proposal_period_found: session.observation.proposal_period_found,
+        })
+    }
+
+    /// Removes only the exact proposer cursor that owned a failed composed lookup.
+    pub(crate) fn cleanup_proposer_final_chain_facts(
+        &mut self,
+        snapshot: &DagProposerFinalChainFactsSnapshot,
+    ) -> bool {
+        if self
+            .proposer_sessions
+            .get(&snapshot.session_id)
+            .is_some_and(|session| proposer_final_chain_snapshot_matches(session, snapshot))
+        {
+            self.proposer_sessions.remove(&snapshot.session_id);
+            return true;
+        }
+        false
+    }
+
+    /// Revalidates and applies FinalChain/sortition facts into one proposer cursor.
+    pub(crate) fn apply_proposer_final_chain_facts(
+        &mut self,
+        snapshot: &DagProposerFinalChainFactsSnapshot,
+        last_finalized_period: u64,
+        authorization_facts: DagDposAuthorizationFacts,
+        sortition_params: SortitionParams,
+        initially_loaded_params: SortitionParams,
+    ) -> Result<DagProposerSessionStep> {
+        let Some(session) = self.proposer_sessions.get(&snapshot.session_id) else {
+            anyhow::bail!("DAG_PROPOSER_SESSION_STALE_CURSOR");
+        };
+        ensure!(
+            matches!(
+                session.action,
+                DagProposerSessionAction::CollectFinalChainFacts
+            ),
+            "DAG_PROPOSER_SESSION_STALE_ACTION"
+        );
+        ensure!(
+            session.observation.fingerprint == snapshot.fingerprint,
+            "DAG_PROPOSER_SESSION_STALE_FINGERPRINT"
+        );
+        ensure!(
+            session.observation.proposal_period == snapshot.proposal_period,
+            "DAG_PROPOSER_SESSION_STALE_PROPOSAL_PERIOD"
+        );
+        ensure!(
+            session.observation.proposal_period_found == snapshot.proposal_period_found,
+            "DAG_PROPOSER_SESSION_STALE_PROPOSAL_PERIOD_FOUND"
+        );
+        ensure!(
+            session.begin_input.proposer_address == snapshot.proposer_address,
+            "DAG_PROPOSER_SESSION_STALE_PROPOSER_ADDRESS"
+        );
+        ensure!(
+            sortition_params == initially_loaded_params,
+            "DAG_PROPOSER_SESSION_SORTITION_PARAMS_STALE_RETRY"
+        );
+
+        let current = match self.proposer_observation() {
+            Ok(current) => current,
+            Err(error) => {
+                self.proposer_sessions.remove(&snapshot.session_id);
+                return Err(error);
+            }
+        };
+        if current.fingerprint != snapshot.fingerprint {
+            let session = self
+                .proposer_sessions
+                .get_mut(&snapshot.session_id)
+                .expect("snapshot still live");
+            session.action = DagProposerSessionAction::Complete;
+            session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+            session.reason_code = crate::dag::DAG_PROPOSER_REASON_STALE_OBSERVATION;
+            session.error_code = "DAG_PROPOSER_SESSION_STALE_OBSERVATION".to_owned();
+            let step = proposer_session_step(session);
+            return Ok(finish_proposer_session_step(
+                self,
+                snapshot.session_id,
+                step,
+            ));
+        }
+
+        let session = &self.proposer_sessions[&snapshot.session_id];
+        let retry = self.proposer_retry_states.get(&session.retry_key);
+        let last_propose_level = retry.map_or(0, |state| state.last_propose_level);
+        let retry_count = retry.map_or(0, |state| state.retry_count);
+        let attempt_input = domain_attempt_input(
+            &session.begin_input,
+            session.transaction_observation,
+            &session.observation,
+            last_finalized_period,
+            authorization_facts,
+            sortition_params,
+            last_propose_level,
+            retry_count,
+        );
+        let minimum_vdf_difficulty = attempt_input.sortition_params.vdf.difficulty_min;
+        let attempt = match plan_dag_proposer_attempt(attempt_input) {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                self.proposer_sessions.remove(&snapshot.session_id);
+                return Err(error);
+            }
+        };
+        let action = if attempt.action == DAG_PROPOSER_ACTION_CONTINUE {
+            DagProposerSessionAction::PackTransactions
+        } else {
+            DagProposerSessionAction::Complete
+        };
+        let session = self
+            .proposer_sessions
+            .get_mut(&snapshot.session_id)
+            .expect("snapshot still live");
+        self.proposer_retry_states
+            .entry(session.retry_key)
+            .or_insert(DagProposerRetryState {
+                last_propose_level,
+                retry_count,
+                max_retry_count: session.begin_input.max_retry_count,
+            })
+            .max_retry_count = session.begin_input.max_retry_count;
+        session.status = if matches!(action, DagProposerSessionAction::Complete) {
+            DAG_PROPOSER_SESSION_STATUS_COMPLETE
+        } else {
+            DAG_PROPOSER_SESSION_STATUS_ACTIVE
+        };
+        session.action = action;
+        session.reason_code = attempt.reason_code;
+        session.update_retry_state = attempt.update_retry_state;
+        session.next_last_propose_level = attempt.next_last_propose_level;
+        session.next_retry_count = attempt.next_retry_count;
+        session.minimum_vdf_difficulty = minimum_vdf_difficulty;
+        session.sortition_params = sortition_params;
+        session.attempt = attempt;
+        let step = proposer_session_step(session);
+        Ok(finish_proposer_session_step(
+            self,
+            snapshot.session_id,
+            step,
+        ))
+    }
+
+    /// Polls proposer VDF work and triggers cancellation when the frontier advanced.
+    pub(crate) fn proposer_session_poll_vdf(&mut self, session_id: u64) -> DagProposerSessionStep {
+        let latest_proposal_level = self.state.proposer_frontier_facts().propose_level;
+        let step = {
+            let Some(session) = self.proposer_sessions.get_mut(&session_id) else {
+                return proposer_session_not_started_step();
+            };
+            if !matches!(session.action, DagProposerSessionAction::StartVdf) {
+                invalid_dag_proposer_report(
+                    session,
+                    "DAG_PROPOSER_SESSION_UNEXPECTED_VDF_WAIT_REPORT",
+                )
+            } else {
+                let wait = plan_dag_proposer_vdf_wait(DagProposerVdfWaitInput {
+                    proposal_level: session.attempt.proposal_level,
+                    latest_proposal_level,
+                    vdf_difficulty: session.attempt.vdf_difficulty,
+                    minimum_vdf_difficulty: session.minimum_vdf_difficulty,
+                });
+                if !wait.cancel_in_flight_proof {
+                    proposer_session_step(session)
+                } else {
+                    let retry = plan_dag_proposer_retry_reset(DagProposerRetryResetInput {
+                        proposal_level: session.attempt.proposal_level,
+                    });
+                    let mut step = proposer_session_step(session);
+                    session.action = DagProposerSessionAction::CancelVdf;
+                    session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+                    step.action = DagProposerSessionAction::CancelVdf;
+                    step.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+                    step.return_value = true;
+                    step.update_retry_state = retry.update_retry_state;
+                    step.next_last_propose_level = retry.next_last_propose_level;
+                    step.next_retry_count = retry.next_retry_count;
+                    step
+                }
+            }
+        };
+        finish_proposer_session_step(self, session_id, step)
+    }
+
+    /// Applies VDF proof completion to a proposer cursor.
+    pub(crate) fn report_proposer_vdf_proof(
+        &mut self,
+        session_id: u64,
+        report: DagProposerVdfProofReport,
+    ) -> Result<DagProposerSessionStep> {
+        let Some(session) = self.proposer_sessions.get_mut(&session_id) else {
+            return Ok(proposer_session_not_started_step());
+        };
+        if !matches!(session.action, DagProposerSessionAction::StartVdf) {
+            let step = invalid_dag_proposer_report(
+                session,
+                "DAG_PROPOSER_SESSION_UNEXPECTED_VDF_PROOF_REPORT",
+            );
+            return Ok(finish_proposer_session_step(self, session_id, step));
+        }
+        if !report.proof_ok {
+            let step =
+                invalid_dag_proposer_report(session, "DAG_PROPOSER_SESSION_VDF_PROOF_FAILED");
+            return Ok(finish_proposer_session_step(self, session_id, step));
+        }
+        if let Some(step) = revalidate_proposer_session_observation(self, session_id)? {
+            return Ok(step);
+        }
+        if self
+            .proposer_sessions
+            .get(&session_id)
+            .expect("session still live")
+            .attempt
+            .vdf_stale
+        {
+            let session = self
+                .proposer_sessions
+                .get_mut(&session_id)
+                .expect("session still live");
+            session.vdf_rlp = report.vdf_rlp;
+            session.action = DagProposerSessionAction::StaleProofSleep;
+            return Ok(proposer_session_step(session));
+        }
+        prepare_proposer_session_signing(self, session_id, report.vdf_rlp)
+    }
+
+    /// Resumes a stale-proof cursor after compatibility sleep.
+    pub(crate) fn resume_proposer_stale_proof(
+        &mut self,
+        session_id: u64,
+    ) -> Result<DagProposerSessionStep> {
+        let latest_proposal_level = self.state.proposer_frontier_facts().propose_level;
+        let Some(session) = self.proposer_sessions.get_mut(&session_id) else {
+            return Ok(proposer_session_not_started_step());
+        };
+        if !matches!(session.action, DagProposerSessionAction::StaleProofSleep) {
+            let step = invalid_dag_proposer_report(
+                session,
+                "DAG_PROPOSER_SESSION_UNEXPECTED_STALE_PROOF_REPORT",
+            );
+            return Ok(finish_proposer_session_step(self, session_id, step));
+        }
+        if let Some(step) = revalidate_proposer_session_observation(self, session_id)? {
+            return Ok(step);
+        }
+        let session = self
+            .proposer_sessions
+            .get_mut(&session_id)
+            .expect("session still live");
+        let stale = plan_dag_proposer_stale_proof(DagProposerStaleProofInput {
+            proposal_level: session.attempt.proposal_level,
+            latest_proposal_level,
+        });
+        session.reason_code = stale.reason_code;
+        session.update_retry_state = stale.update_retry_state;
+        session.next_last_propose_level = stale.next_last_propose_level;
+        session.next_retry_count = stale.next_retry_count;
+        if stale.action != DAG_PROPOSER_ACTION_CONTINUE {
+            session.action = DagProposerSessionAction::Complete;
+            session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+            session.return_value = false;
+            let step = proposer_session_step(session);
+            return Ok(finish_proposer_session_step(self, session_id, step));
+        }
+        let vdf_rlp = session.vdf_rlp.clone();
+        prepare_proposer_session_signing(self, session_id, vdf_rlp)
+    }
+
+    /// Reports one recovered signature and advances to add-block.
+    pub(crate) fn report_proposer_signing(
+        &mut self,
+        session_id: u64,
+        report: DagProposerSigningReport,
+    ) -> Result<DagProposerSessionStep> {
+        let Some(session) = self.proposer_sessions.get_mut(&session_id) else {
+            return Ok(proposer_session_not_started_step());
+        };
+        if !matches!(session.action, DagProposerSessionAction::SignBlock) {
+            let step = invalid_dag_proposer_report(
+                session,
+                "DAG_PROPOSER_SESSION_UNEXPECTED_SIGNING_REPORT",
+            );
+            return Ok(finish_proposer_session_step(self, session_id, step));
+        }
+        let intent = session
+            .unsigned_intent
+            .clone()
+            .context("DAG_PROPOSER_SIGNING_INTENT_MISSING")?;
+        let proposer_address = session.begin_input.proposer_address;
+        if report.signature.len() != 65 {
+            self.proposer_sessions.remove(&session_id);
+            anyhow::bail!("DAG_PROPOSER_SIGNATURE_INVALID_LENGTH");
+        }
+        let signed = match (|| -> Result<DagProposerSignedBlockIntent> {
+            let signed =
+                finalize_dag_proposer_signed_block_intent(DagProposerSignedBlockIntentInput {
+                    intent,
+                    signature: report.signature,
+                })?;
+            let block = DagBlock::try_from(DagBlockRlp::new(&signed.block_rlp))
+                .context("DAG_PROPOSER_SIGNED_BLOCK_DECODE")?;
+            let recovered = block
+                .recover_sender()
+                .context("DAG_PROPOSER_SIGNATURE_RECOVERY")?;
+            ensure!(
+                recovered.0 == proposer_address,
+                "DAG_PROPOSER_SIGNATURE_PROPOSER_MISMATCH"
+            );
+            Ok(signed)
+        })() {
+            Ok(signed) => signed,
+            Err(error) => {
+                self.proposer_sessions.remove(&session_id);
+                return Err(error);
+            }
+        };
+        let session = self
+            .proposer_sessions
+            .get_mut(&session_id)
+            .expect("session still live");
+        session.signed_intent = Some(signed);
+        session.action = DagProposerSessionAction::AddBlock;
+        Ok(proposer_session_step(session))
+    }
+
+    /// Reports add-block submission and finalizes the proposer cursor.
+    pub(crate) fn report_proposer_add_block(
+        &mut self,
+        session_id: u64,
+        report: DagProposerAddBlockReport,
+    ) -> DagProposerSessionStep {
+        let step = {
+            let Some(session) = self.proposer_sessions.get_mut(&session_id) else {
+                return proposer_session_not_started_step();
+            };
+            if !matches!(session.action, DagProposerSessionAction::AddBlock) {
+                invalid_dag_proposer_report(
+                    session,
+                    "DAG_PROPOSER_SESSION_UNEXPECTED_ADD_BLOCK_REPORT",
+                )
+            } else if ((report.accepted || report.duplicate) && report.expired)
+                || (report.accepted && !report.missing_references.is_empty())
+            {
+                invalid_dag_proposer_report(
+                    session,
+                    "DAG_PROPOSER_SESSION_INVALID_ADD_BLOCK_REPORT",
+                )
+            } else {
+                let retry = plan_dag_proposer_retry_reset(DagProposerRetryResetInput {
+                    proposal_level: session.attempt.proposal_level,
+                });
+                session.action = DagProposerSessionAction::Complete;
+                session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+                session.reason_code = if report.accepted {
+                    crate::dag::DAG_PROPOSER_REASON_OK
+                } else if report.expired {
+                    crate::dag::DAG_PROPOSER_REASON_ADD_BLOCK_EXPIRED
+                } else if !report.missing_references.is_empty() {
+                    crate::dag::DAG_PROPOSER_REASON_ADD_BLOCK_MISSING_REFERENCES
+                } else {
+                    crate::dag::DAG_PROPOSER_REASON_ADD_BLOCK_REJECTED
+                };
+                session.return_value = report.accepted;
+                session.update_retry_state = retry.update_retry_state;
+                session.next_last_propose_level = retry.next_last_propose_level;
+                session.next_retry_count = retry.next_retry_count;
+                session.record_proposed_block = report.accepted;
+                proposer_session_step(session)
+            }
+        };
+        finish_proposer_session_step(self, session_id, step)
+    }
+
+    /// Reads the current proposer observation with proposal-period and fingerprint.
+    #[doc(hidden)]
+    pub fn proposer_observation(&self) -> Result<DagProposerObservation> {
+        let frontier = self.state.proposer_frontier_facts();
+        let proposal_period: DagPeriodStorageLookup =
+            proposal_period_for_level_from_storage(self.storage.as_ref(), frontier.propose_level)?;
+        let period_block_hash = if proposal_period.found {
+            let lookup =
+                period_block_hash_from_storage(self.storage.as_ref(), proposal_period.period)?;
+            if !lookup.found && proposal_period.period == 0 {
+                DagHashStorageLookup {
+                    found: true,
+                    hash: H256::zero(),
+                }
+            } else {
+                lookup
+            }
+        } else {
+            DagHashStorageLookup {
+                found: false,
+                hash: H256::zero(),
+            }
+        };
+        let fingerprint = proposer_observation_fingerprint(
+            &frontier,
+            proposal_period.found,
+            proposal_period.period,
+            period_block_hash.found,
+            period_block_hash.hash,
+        );
+        Ok(DagProposerObservation {
+            frontier,
+            proposal_period_found: proposal_period.found,
+            proposal_period: proposal_period.period,
+            period_block_hash_found: period_block_hash.found,
+            period_block_hash: period_block_hash.hash,
+            fingerprint,
+        })
+    }
+
     /// Opens a verification cursor for one [`DagManager::verifyBlock`] call.
     #[doc(hidden)]
     pub fn begin_verify_block_session(&mut self, input: DagVerifyBlockSessionInput) -> Result<()> {
@@ -1067,18 +1647,7 @@ impl DagServiceState {
 
     fn finish_proposer_session_step(&mut self, session_id: u64) -> Result<DagProposerSessionStep> {
         let step = self.proposer_session_step(session_id)?;
-        if step.status == DAG_PROPOSER_SESSION_STATUS_ACTIVE {
-            return Ok(step);
-        }
-        if step.update_retry_state
-            && let Some(session) = self.proposer_sessions.get(&session_id)
-            && let Some(retry_state) = self.proposer_retry_states.get_mut(&session.retry_key)
-        {
-            retry_state.last_propose_level = step.next_last_propose_level;
-            retry_state.retry_count = step.next_retry_count;
-        }
-        self.proposer_sessions.remove(&session_id);
-        Ok(step)
+        Ok(finish_proposer_session_step(self, session_id, step))
     }
 
     /// Removes a proposer session without retry-state mutation.
@@ -1147,6 +1716,283 @@ fn proposer_session_step(session: &DagProposerSession) -> DagProposerSessionStep
         signed_intent: session.signed_intent.clone(),
         record_proposed_block: session.record_proposed_block,
         error_code: session.error_code.clone(),
+    }
+}
+
+fn proposer_session_not_started_step() -> DagProposerSessionStep {
+    DagProposerSessionStep {
+        status: DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT,
+        action: DagProposerSessionAction::Complete,
+        reason_code: crate::dag::DAG_PROPOSER_REASON_OK,
+        return_value: false,
+        update_retry_state: false,
+        next_last_propose_level: 0,
+        next_retry_count: 0,
+        frontier_pivot: H256::zero(),
+        proposal_level: 0,
+        proposal_period: 0,
+        last_finalized_period: 0,
+        vrf_input: Vec::new(),
+        vote_count: 0,
+        max_vote_count: 0,
+        vdf_difficulty: 0,
+        sortition_params: empty_sortition_params(),
+        vdf_stale: false,
+        old_proposal: false,
+        vdf_message: Vec::new(),
+        selected_transaction_hashes: Vec::new(),
+        selected_transactions: Vec::new(),
+        signing_hash: H256::zero(),
+        signed_intent: None,
+        record_proposed_block: false,
+        error_code: "DAG_PROPOSER_SESSION_NOT_STARTED".to_string(),
+    }
+}
+
+fn proposer_session_not_started_step_boxed() -> Box<DagProposerSessionStep> {
+    Box::new(proposer_session_not_started_step())
+}
+
+fn finish_proposer_session_step(
+    state: &mut DagServiceState,
+    session_id: u64,
+    step: DagProposerSessionStep,
+) -> DagProposerSessionStep {
+    if step.status == DAG_PROPOSER_SESSION_STATUS_ACTIVE {
+        return step;
+    }
+    if step.update_retry_state
+        && let Some(session) = state.proposer_sessions.get(&session_id)
+        && let Some(retry_state) = state.proposer_retry_states.get_mut(&session.retry_key)
+    {
+        retry_state.last_propose_level = step.next_last_propose_level;
+        retry_state.retry_count = step.next_retry_count;
+    }
+    state.proposer_sessions.remove(&session_id);
+    step
+}
+
+fn invalid_dag_proposer_report(
+    session: &mut DagProposerSession,
+    error_code: &str,
+) -> DagProposerSessionStep {
+    session.action = DagProposerSessionAction::Complete;
+    session.status = DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT;
+    session.return_value = false;
+    session.error_code = error_code.to_string();
+    proposer_session_step(session)
+}
+
+fn proposer_final_chain_snapshot_matches(
+    session: &DagProposerSession,
+    snapshot: &DagProposerFinalChainFactsSnapshot,
+) -> bool {
+    matches!(
+        session.action,
+        DagProposerSessionAction::CollectFinalChainFacts
+    ) && session.observation.fingerprint == snapshot.fingerprint
+        && session.observation.proposal_period == snapshot.proposal_period
+        && session.observation.proposal_period_found == snapshot.proposal_period_found
+        && session.begin_input.proposer_address == snapshot.proposer_address
+}
+
+fn revalidate_proposer_session_observation(
+    state: &mut DagServiceState,
+    session_id: u64,
+) -> Result<Option<DagProposerSessionStep>> {
+    let current = match state.proposer_observation() {
+        Ok(current) => current,
+        Err(error) => {
+            state.proposer_sessions.remove(&session_id);
+            return Err(error);
+        }
+    };
+    if current.fingerprint == state.proposer_sessions[&session_id].observation.fingerprint {
+        return Ok(None);
+    }
+    let session = state
+        .proposer_sessions
+        .get_mut(&session_id)
+        .expect("session still live");
+    session.action = DagProposerSessionAction::Complete;
+    session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+    session.reason_code = crate::dag::DAG_PROPOSER_REASON_STALE_OBSERVATION;
+    session.return_value = false;
+    session.update_retry_state = false;
+    session.error_code = "DAG_PROPOSER_SESSION_STALE_OBSERVATION".to_owned();
+    let step = proposer_session_step(session);
+    Ok(Some(finish_proposer_session_step(state, session_id, step)))
+}
+
+fn prepare_proposer_session_signing(
+    state: &mut DagServiceState,
+    session_id: u64,
+    vdf_rlp: Vec<u8>,
+) -> Result<DagProposerSessionStep> {
+    let session = &state.proposer_sessions[&session_id];
+    let frontier_tips = session.observation.frontier.frontier.tips.clone();
+    let transaction_gas_estimations = session.transaction_gas_estimations.clone();
+    let pbft_gas_limit = session.begin_input.pbft_gas_limit;
+    let dag_gas_limit = session.begin_input.dag_gas_limit;
+    let max_tips = session.begin_input.max_tips;
+    let pivot = session.observation.frontier.frontier.pivot;
+    let proposal_level = session.attempt.proposal_level;
+    let transaction_hashes = session.selected_transaction_hashes.clone();
+
+    let prepared = (|| -> Result<DagProposerUnsignedBlockIntent> {
+        let construction = plan_dag_proposer_block_construction_from_storage(
+            state.storage.as_ref(),
+            DagProposerStorageBlockConstructionInput {
+                frontier_tips,
+                transaction_gas_estimations,
+                pbft_gas_limit,
+                dag_gas_limit,
+                max_tips,
+            },
+        )?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("DAG_PROPOSER_CURRENT_TIMESTAMP")?
+            .as_secs();
+        Ok(plan_dag_proposer_block_intent(
+            DagProposerBlockIntentInput {
+                pivot,
+                level: proposal_level,
+                timestamp,
+                vdf_rlp,
+                selected_tips: construction.selected_tips,
+                transaction_hashes,
+                block_gas_estimation: construction.block_gas_estimation,
+            },
+        ))
+    })();
+    let intent = match prepared {
+        Ok(intent) => intent,
+        Err(error) => {
+            state.proposer_sessions.remove(&session_id);
+            return Err(error);
+        }
+    };
+    let session = state
+        .proposer_sessions
+        .get_mut(&session_id)
+        .expect("session still live");
+    session.vdf_rlp = intent.vdf_rlp.clone();
+    session.unsigned_intent = Some(intent);
+    session.action = DagProposerSessionAction::SignBlock;
+    Ok(proposer_session_step(session))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn domain_attempt_input(
+    input: &DagProposerSessionBeginInput,
+    transaction_observation: DagProposerTransactionObservation,
+    observation: &DagProposerObservation,
+    last_finalized_period: u64,
+    authorization_facts: DagDposAuthorizationFacts,
+    sortition_params: SortitionParams,
+    last_propose_level: u64,
+    retry_count: u64,
+) -> DagProposerAttemptInput {
+    DagProposerAttemptInput {
+        transaction_pool_size: transaction_observation.transaction_pool_size,
+        non_finalized_transaction_count: transaction_observation.non_finalized_transaction_count,
+        max_non_finalized_transactions: input.max_non_finalized_transactions,
+        frontier: observation.frontier.clone(),
+        proposal_period_found: observation.proposal_period_found,
+        proposal_period: observation.proposal_period,
+        last_finalized_period,
+        dag_expiry_level_limit: input.dag_expiry_level_limit,
+        period_block_hash_found: observation.period_block_hash_found,
+        period_block_hash: observation.period_block_hash,
+        wallet_vrf_public_key: input.wallet_vrf_public_key,
+        wallet_vrf_secret: input.wallet_vrf_secret,
+        authorization_facts: DagDposAuthorizationFacts {
+            vrf_key: authorization_facts.vrf_key,
+            vrf_key_found: authorization_facts.vrf_key_found,
+            sender_eligible_vote_count: authorization_facts.sender_eligible_vote_count,
+            vdf_sortition_max_vote_count: authorization_facts.vdf_sortition_max_vote_count,
+            eligibility_status: authorization_facts.eligibility_status,
+        },
+        sortition_params,
+        max_non_finalized_dag_blocks: input.max_non_finalized_dag_blocks,
+        max_non_finalized_dag_blocks_low_difficulty: input
+            .max_non_finalized_dag_blocks_low_difficulty,
+        last_propose_level,
+        retry_count,
+        max_retry_count: input.max_retry_count,
+        proposal_weight_limit: input.proposal_weight_limit,
+        total_transaction_shards: input.total_transaction_shards,
+        node_transaction_shard: input.node_transaction_shard,
+        shard_period_interval: input.shard_period_interval,
+    }
+}
+
+fn placeholder_attempt(
+    observation: &DagProposerObservation,
+    input: &DagProposerSessionBeginInput,
+) -> DagProposerAttemptPlan {
+    DagProposerAttemptPlan {
+        action: crate::dag::DAG_PROPOSER_ACTION_SKIP,
+        reason_code: crate::dag::DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD,
+        frontier: observation.frontier.frontier.clone(),
+        anchor: observation.frontier.anchor,
+        proposal_level: observation.frontier.propose_level,
+        proposal_period_found: observation.proposal_period_found,
+        proposal_period: observation.proposal_period,
+        last_finalized_period: 0,
+        period_block_hash_found: observation.period_block_hash_found,
+        period_block_hash: observation.period_block_hash,
+        vrf_input: Vec::new(),
+        vote_count: 0,
+        max_vote_count: 0,
+        vdf_difficulty: 0,
+        vdf_stale: false,
+        old_proposal: false,
+        update_retry_state: false,
+        next_last_propose_level: 0,
+        next_retry_count: 0,
+        proposal_weight_limit: input.proposal_weight_limit,
+        total_transaction_shards: input.total_transaction_shards,
+        node_transaction_shard: input.node_transaction_shard,
+        shard_period_interval: input.shard_period_interval,
+    }
+}
+
+fn proposer_observation_fingerprint(
+    frontier: &DagProposerFrontierFacts,
+    proposal_period_found: bool,
+    proposal_period: u64,
+    period_block_hash_found: bool,
+    period_block_hash: H256,
+) -> [u8; 32] {
+    let mut hasher = Keccak::v256();
+    hasher.update(frontier.frontier.pivot.as_bytes());
+    for tip in &frontier.frontier.tips {
+        hasher.update(tip.as_bytes());
+    }
+    hasher.update(&frontier.propose_level.to_be_bytes());
+    hasher.update(frontier.anchor.as_bytes());
+    hasher.update(&(frontier.non_finalized_block_count as u64).to_be_bytes());
+    hasher.update(&frontier.non_finalized_min_difficulty.to_be_bytes());
+    hasher.update(&[u8::from(proposal_period_found)]);
+    hasher.update(&proposal_period.to_be_bytes());
+    hasher.update(&[u8::from(period_block_hash_found)]);
+    hasher.update(period_block_hash.as_bytes());
+    let mut output = [0_u8; 32];
+    hasher.finalize(&mut output);
+    output
+}
+
+fn empty_sortition_params() -> SortitionParams {
+    SortitionParams {
+        vrf: VrfParams { threshold_upper: 0 },
+        vdf: VdfParams {
+            difficulty_min: 0,
+            difficulty_max: 0,
+            difficulty_stale: 0,
+            lambda_bound: 0,
+        },
     }
 }
 

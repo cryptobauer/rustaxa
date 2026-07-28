@@ -290,6 +290,14 @@ impl DerefMut for TransactionServiceGuard<'_> {
 }
 
 impl TransactionServiceState {
+    /// Returns the transaction-pressure facts captured by a DAG proposer cursor.
+    ///
+    /// Both counts are observed under the transaction service lock. The snapshot
+    /// contains no queue or sidecar references and may safely outlive the guard.
+    pub(crate) fn dag_proposer_transaction_pressure(&self) -> (u64, u64) {
+        (self.queue.size(), self.sidecar.non_finalized_size() as u64)
+    }
+
     /// Restores the complete state used by [`TransactionService`].
     ///
     /// This is public only for the temporary bridge adapter and its focused

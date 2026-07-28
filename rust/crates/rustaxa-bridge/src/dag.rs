@@ -24,8 +24,7 @@ use rustaxa_consensus::dag::{
     plan_dag_proposer_block_construction_from_storage, plan_dag_proposer_block_intent,
     plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
     plan_dag_proposer_tip_selection_from_storage, plan_dag_proposer_vdf_wait,
-    plan_dag_proposer_worker_command, plan_dag_verify_transaction_query,
-    proposal_period_for_level_from_storage, save_dag_block_to_storage,
+    plan_dag_proposer_worker_command, plan_dag_verify_transaction_query, save_dag_block_to_storage,
     validate_pivot_tips_metadata, verify_precheck_from_storage,
     DagManagerBlock as DomainDagManagerBlock, DagManagerState,
     DagProposerAttemptInput as DomainDagProposerAttemptInput,
@@ -122,7 +121,7 @@ const DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT: u8 = 2;
 pub(crate) const DAG_PROPOSER_SESSION_ACTION_NONE: u8 = 0;
 pub(crate) const DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS: u8 = 1;
 pub(crate) const DAG_PROPOSER_SESSION_ACTION_START_VDF: u8 = 2;
-const DAG_PROPOSER_SESSION_ACTION_CANCEL_VDF: u8 = 3;
+pub(crate) const DAG_PROPOSER_SESSION_ACTION_CANCEL_VDF: u8 = 3;
 pub(crate) const DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP: u8 = 4;
 pub(crate) const DAG_PROPOSER_SESSION_ACTION_SIGN_BLOCK: u8 = 5;
 pub(crate) const DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK: u8 = 6;
@@ -387,112 +386,6 @@ where
     /// Returns the current Rust-owned DAG frontier.
     pub fn dag_manager_runtime_frontier(&self) -> DagFrontier {
         to_bridge_frontier(self.state.frontier())
-    }
-
-    /// Opens a runtime-owned DAG proposer cursor for one proposal attempt.
-    ///
-    /// The cursor atomically derives the frontier, proposal period, period hash, and an observation fingerprint from
-    /// Rust-owned runtime state and retains the sibling transaction-pressure snapshot supplied by the composed service.
-    /// A valid observation first requests only FinalChain authorization and sortition facts; the planner runs after
-    /// those facts arrive and only if the observation still matches. Later stages advance through explicit external
-    /// reports or runtime-derived VDF frontier polls.
-    pub fn begin_proposer_session(
-        &mut self,
-        input: DagProposerSessionBeginInput,
-        transaction_observation: DagProposerTransactionObservation,
-    ) -> Result<u64> {
-        let input = to_domain_proposer_session_begin_input(input);
-        let retry_key = input.wallet_vrf_public_key;
-        let observation = self.proposer_observation()?;
-        let attempt = placeholder_attempt(&observation, &input);
-        let action = if observation.proposal_period_found {
-            DagProposerSessionAction::CollectFinalChainFacts
-        } else {
-            DagProposerSessionAction::Complete
-        };
-        let status = if matches!(action, DagProposerSessionAction::Complete) {
-            DAG_PROPOSER_SESSION_STATUS_COMPLETE
-        } else {
-            DAG_PROPOSER_SESSION_STATUS_ACTIVE
-        };
-        let session_id = self.next_proposer_session_id;
-        self.next_proposer_session_id = self.next_proposer_session_id.saturating_add(1);
-        ensure!(
-            !self.proposer_sessions.contains_key(&session_id),
-            "DAG_PROPOSER_SESSION_ID_COLLISION"
-        );
-
-        self.proposer_sessions.insert(
-            session_id,
-            DagProposerSession {
-                action,
-                status,
-                begin_input: input,
-                transaction_observation,
-                observation,
-                retry_key,
-                reason_code: if attempt.proposal_period_found {
-                    rustaxa_consensus::dag::DAG_PROPOSER_REASON_OK
-                } else {
-                    rustaxa_consensus::dag::DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD
-                },
-                return_value: false,
-                update_retry_state: attempt.update_retry_state,
-                next_last_propose_level: attempt.next_last_propose_level,
-                next_retry_count: attempt.next_retry_count,
-                record_proposed_block: false,
-                minimum_vdf_difficulty: 0,
-                sortition_params: empty_sortition_params(),
-                vdf_message: Vec::new(),
-                selected_transaction_hashes: Vec::new(),
-                transaction_gas_estimations: Vec::new(),
-                selected_transactions: Vec::new(),
-                vdf_rlp: Vec::new(),
-                unsigned_intent: None,
-                signed_intent: None,
-                attempt,
-                error_code: String::new(),
-            },
-        );
-        Ok(session_id)
-    }
-
-    fn proposer_observation(&self) -> Result<DagProposerObservation> {
-        let frontier = self.state.proposer_frontier_facts();
-        let proposal_period =
-            proposal_period_for_level_from_storage(self.storage.as_ref(), frontier.propose_level)?;
-        let period_block_hash = if proposal_period.found {
-            let lookup =
-                period_block_hash_from_storage(self.storage.as_ref(), proposal_period.period)?;
-            if !lookup.found && proposal_period.period == 0 {
-                rustaxa_consensus::dag::DagHashStorageLookup {
-                    found: true,
-                    hash: H256::zero(),
-                }
-            } else {
-                lookup
-            }
-        } else {
-            rustaxa_consensus::dag::DagHashStorageLookup {
-                found: false,
-                hash: H256::zero(),
-            }
-        };
-        let fingerprint = proposer_observation_fingerprint(
-            &frontier,
-            proposal_period.found,
-            proposal_period.period,
-            period_block_hash.found,
-            period_block_hash.hash,
-        );
-        Ok(DagProposerObservation {
-            frontier,
-            proposal_period_found: proposal_period.found,
-            proposal_period: proposal_period.period,
-            period_block_hash_found: period_block_hash.found,
-            period_block_hash: period_block_hash.hash,
-            fingerprint,
-        })
     }
 
     /// Returns the ghost path from a source block.
@@ -1050,7 +943,10 @@ pub(crate) fn dag_manager_runtime_begin_proposer_session(
     input: DagProposerSessionBeginInput,
     transaction_observation: DagProposerTransactionObservation,
 ) -> Result<u64> {
-    DagRuntimeAccess(runtime).begin_proposer_session(input, transaction_observation)
+    runtime.begin_proposer_session(
+        to_domain_proposer_session_begin_input(input),
+        transaction_observation,
+    )
 }
 
 /// Removes a runtime-owned DAG proposal cursor without applying retry-state effects.
@@ -1883,6 +1779,7 @@ fn dag_proposer_session_step(session: &DagProposerSession) -> DagProposerSession
         }
         DagProposerSessionAction::PackTransactions => DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS,
         DagProposerSessionAction::StartVdf => DAG_PROPOSER_SESSION_ACTION_START_VDF,
+        DagProposerSessionAction::CancelVdf => DAG_PROPOSER_SESSION_ACTION_CANCEL_VDF,
         DagProposerSessionAction::StaleProofSleep => DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP,
         DagProposerSessionAction::SignBlock => DAG_PROPOSER_SESSION_ACTION_SIGN_BLOCK,
         DagProposerSessionAction::AddBlock => DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK,

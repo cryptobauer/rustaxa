@@ -596,6 +596,24 @@ guard escape hatch remain explicit `CRW-12` cleanup debt. The checked bridge
 budget falls by 198 lines to 43,213; all other checked surface budgets are
 unchanged.
 
+The following bounded `CRW-12` owner contraction moves the complete DAG
+proposer-session application task behind native `DagTransactionService`.
+Native Rust now owns frontier and proposal-period observation, cursor identity,
+historical-sortition revalidation, eligibility/retry planning, VDF wait and
+stale-proof transitions, timestamped unsigned block construction, signature
+validation, signed block assembly, add-block report classification, and
+terminal cleanup. The native application root captures transaction pressure
+under DAG-then-transaction locking, releases every guard before FinalChain,
+VDF, sleep, signing, and add-block execution, and revalidates exact cursor
+snapshots before applying external facts. Production bridge functions now only
+convert CXX carriers, execute the unlocked FinalChain read, and translate the
+native step. General proposer abort also removes an exact owner-bound pending
+transaction-pack cursor. The existing bridge behavioral suite now exercises
+the native production route; relocating and deleting its superseded direct
+runtime adapters remains explicit `CRW-12` cleanup debt. The checked bridge
+budget falls by 59 lines to 43,154; all other checked surface budgets are
+unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

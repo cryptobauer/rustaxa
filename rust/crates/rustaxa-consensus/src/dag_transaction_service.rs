@@ -13,9 +13,12 @@ use crate::dag::{
 };
 use crate::dag_service::{
     DagAddBlockPreparedTransaction, DagAddBlockSession, DagAddBlockStoredPlan,
-    DagProposerSessionStep, DagService, DagServiceConfig, DagServiceGuard,
-    DagVerifyBlockAuthorizationPreparation, DagVerifyBlockAuthorizationSnapshot,
-    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
+    DagProposerAddBlockReport, DagProposerFinalChainFactsPreparation,
+    DagProposerFinalChainFactsSnapshot, DagProposerSessionBeginInput, DagProposerSessionStep,
+    DagProposerSigningReport, DagProposerTransactionObservation, DagProposerVdfProofReport,
+    DagService, DagServiceConfig, DagServiceGuard, DagVerifyBlockAuthorizationPreparation,
+    DagVerifyBlockAuthorizationSnapshot, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
+    DagVerifyBlockSessionStep,
 };
 use crate::sortition::{SortitionConfig, SortitionService, SortitionServiceGuard};
 use crate::transaction_packing_service::{TransactionPackingEstimate, TransactionPackingOwner};
@@ -184,6 +187,34 @@ pub struct DagProposerPackStep {
     pub estimate_requests: Vec<TransactionServiceEstimateRequest>,
 }
 
+/// External FinalChain facts requested for one exact proposer cursor.
+#[derive(Clone)]
+pub struct DagProposerFinalChainRequest {
+    snapshot: DagProposerFinalChainFactsSnapshot,
+    initially_loaded_params: crate::sortition::SortitionParams,
+    /// Proposal period queried at the retained FinalChain boundary.
+    pub proposal_period: u64,
+    /// Whether the native DAG observation resolved a proposal period.
+    pub proposal_period_found: bool,
+    /// Proposer address queried for historical DPoS authorization.
+    pub proposer_address: [u8; 20],
+}
+
+/// Proposer preparation either requests unlocked FinalChain facts or returns a terminal step.
+pub enum DagProposerFinalChainRequestOrStep {
+    Request(DagProposerFinalChainRequest),
+    Step(Box<DagProposerSessionStep>),
+}
+
+/// FinalChain facts returned across the retained external executor boundary.
+#[derive(Clone)]
+pub struct DagProposerFinalChainFacts {
+    /// Latest finalized period observed by FinalChain.
+    pub last_finalized_period: u64,
+    /// Historical proposer authorization and vote facts.
+    pub authorization_facts: DagDposAuthorizationFacts,
+}
+
 /// Ordered transaction views prepared for retained C++ materialization.
 #[derive(Clone, Debug)]
 pub struct DagVerifyBlockTransactionPreparation {
@@ -251,6 +282,162 @@ impl DagTransactionService {
             dag,
             sortition,
         })
+    }
+
+    /// Opens one proposer cursor from a single DAG-then-transaction observation.
+    ///
+    /// CXX supplies only immutable wallet/configuration facts. Queue and
+    /// non-finalized pressure are captured from the native transaction sibling
+    /// while both state domains remain serialized.
+    pub fn begin_proposer_session(&self, input: DagProposerSessionBeginInput) -> Result<u64> {
+        let (mut dag, transaction) = self.lock_dag_and_transaction()?;
+        let (transaction_pool_size, non_finalized_transaction_count) =
+            transaction.dag_proposer_transaction_pressure();
+        dag.begin_proposer_session(
+            input,
+            DagProposerTransactionObservation {
+                transaction_pool_size,
+                non_finalized_transaction_count,
+            },
+        )
+    }
+
+    /// Returns the current proposer instruction without bridge-owned state transitions.
+    pub fn next_proposer_session(&self, session_id: u64) -> Result<DagProposerSessionStep> {
+        Ok(self.dag.lock()?.proposer_session_next(session_id))
+    }
+
+    /// Idempotently removes the exact DAG cursor and any paired packing cursor.
+    pub fn abort_proposer_session(&self, session_id: u64) -> Result<bool> {
+        self.abort_proposer_pack(session_id)
+    }
+
+    /// Prepares an unlocked FinalChain query for an exact proposer cursor.
+    ///
+    /// DAG and sortition locks are acquired in separate intervals and both are
+    /// released before the request is returned. Sortition lookup failure removes
+    /// only the still-matching proposer cursor.
+    pub fn prepare_proposer_final_chain_facts(
+        &self,
+        session_id: u64,
+    ) -> Result<DagProposerFinalChainRequestOrStep> {
+        let snapshot = {
+            let mut dag = self.dag.lock()?;
+            match dag.prepare_proposer_final_chain_facts(session_id) {
+                DagProposerFinalChainFactsPreparation::Snapshot(snapshot) => snapshot,
+                DagProposerFinalChainFactsPreparation::Step(step) => {
+                    return Ok(DagProposerFinalChainRequestOrStep::Step(step));
+                }
+            }
+        };
+        let initially_loaded_params = match self.sortition.lock().and_then(|sortition| {
+            sortition
+                .params_for_period_from_storage(snapshot.proposal_period)
+                .context("DAG_PROPOSER_SESSION_SORTITION_PARAMS_INITIAL_LOOKUP")
+        }) {
+            Ok(params) => params,
+            Err(error) => {
+                self.dag
+                    .lock()?
+                    .cleanup_proposer_final_chain_facts(&snapshot);
+                return Err(error);
+            }
+        };
+        Ok(DagProposerFinalChainRequestOrStep::Request(
+            DagProposerFinalChainRequest {
+                proposal_period: snapshot.proposal_period,
+                proposal_period_found: snapshot.proposal_period_found,
+                proposer_address: snapshot.proposer_address,
+                snapshot,
+                initially_loaded_params,
+            },
+        ))
+    }
+
+    /// Revalidates one prepared proposer cursor and applies unlocked FinalChain facts.
+    pub fn complete_proposer_final_chain_facts(
+        &self,
+        request: &DagProposerFinalChainRequest,
+        facts: DagProposerFinalChainFacts,
+    ) -> Result<DagProposerSessionStep> {
+        let mut dag = self.dag.lock()?;
+        let sortition = match self.sortition.lock() {
+            Ok(sortition) => sortition,
+            Err(error) => {
+                dag.cleanup_proposer_final_chain_facts(&request.snapshot);
+                return Err(error);
+            }
+        };
+        let revalidated_params = match sortition
+            .params_for_period_from_storage(request.proposal_period)
+            .context("DAG_PROPOSER_SESSION_SORTITION_PARAMS_REVALIDATION_LOOKUP")
+        {
+            Ok(params) => params,
+            Err(error) => {
+                dag.cleanup_proposer_final_chain_facts(&request.snapshot);
+                return Err(error);
+            }
+        };
+        dag.apply_proposer_final_chain_facts(
+            &request.snapshot,
+            facts.last_finalized_period,
+            facts.authorization_facts,
+            revalidated_params,
+            request.initially_loaded_params,
+        )
+    }
+
+    /// Removes only the unchanged cursor that owned a failed FinalChain request.
+    pub fn abort_proposer_final_chain_facts(
+        &self,
+        request: &DagProposerFinalChainRequest,
+    ) -> Result<bool> {
+        Ok(self
+            .dag
+            .lock()?
+            .cleanup_proposer_final_chain_facts(&request.snapshot))
+    }
+
+    /// Polls the active native VDF stage without retaining a guard across executor work.
+    pub fn poll_proposer_vdf(&self, session_id: u64) -> Result<DagProposerSessionStep> {
+        Ok(self.dag.lock()?.proposer_session_poll_vdf(session_id))
+    }
+
+    /// Applies an external VDF proof report to the exact native cursor.
+    pub fn report_proposer_vdf_proof(
+        &self,
+        session_id: u64,
+        report: DagProposerVdfProofReport,
+    ) -> Result<DagProposerSessionStep> {
+        self.dag
+            .lock()?
+            .report_proposer_vdf_proof(session_id, report)
+    }
+
+    /// Resumes one stale-proof cursor after the retained external sleep.
+    pub fn resume_proposer_stale_proof(&self, session_id: u64) -> Result<DagProposerSessionStep> {
+        self.dag.lock()?.resume_proposer_stale_proof(session_id)
+    }
+
+    /// Applies an external signing report to the exact native cursor.
+    pub fn report_proposer_signing(
+        &self,
+        session_id: u64,
+        report: DagProposerSigningReport,
+    ) -> Result<DagProposerSessionStep> {
+        self.dag.lock()?.report_proposer_signing(session_id, report)
+    }
+
+    /// Applies retained add-block executor facts and completes the native cursor.
+    pub fn report_proposer_add_block(
+        &self,
+        session_id: u64,
+        report: DagProposerAddBlockReport,
+    ) -> Result<DagProposerSessionStep> {
+        Ok(self
+            .dag
+            .lock()?
+            .report_proposer_add_block(session_id, report))
     }
 
     /// Locks the transaction sibling for one short-lived native task.
