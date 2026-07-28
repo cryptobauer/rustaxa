@@ -1,11 +1,13 @@
 use crate::ffi::rustaxa_ffi::*;
 use crate::ffi::{BridgeFinalChain, BridgeStorage};
 use crate::transaction_manager::{
-    bridge_to_service_account_nonce_facts, bridge_to_service_gas_estimation_request,
-    bridge_to_service_transaction_view_requests, domain_gas_pricer_config,
-    service_to_bridge_gas_estimation_plan, service_to_bridge_transaction_view,
-    service_to_bridge_transaction_view_plan, service_transaction_groups_to_bridge,
-    TransactionRuntimeAccess, TransactionRuntimeGuard,
+    bridge_to_service_account_nonce_facts, bridge_to_service_final_chain_admission_fact,
+    bridge_to_service_gas_estimation_request, bridge_to_service_queue_entry,
+    bridge_to_service_transaction_view_requests, bridge_to_service_validated_admission_fact,
+    consensus_verify_transaction_fact_from_ffi_fact, domain_gas_pricer_config,
+    service_public_admission_to_bridge, service_to_bridge_gas_estimation_plan,
+    service_to_bridge_transaction_view, service_to_bridge_transaction_view_plan,
+    service_transaction_groups_to_bridge, TransactionRuntimeAccess, TransactionRuntimeGuard,
 };
 use anyhow::{Context, Result};
 use ethereum_types::{H256, U256};
@@ -113,17 +115,38 @@ pub fn create_dag_transaction_service_from_storage(
     Ok(Box::new(BridgeDagTransactionService { root }))
 }
 
-macro_rules! transaction_mut_result {
-    ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
-        pub fn $name(&self, $( $arg: $ty ),*) -> Result<$ret> {
-            self.try_transaction()?.$name($( $arg ),*)
-        }
-    };
-}
-
 impl BridgeDagTransactionService {
-    transaction_mut_result!(transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(fact: TransactionManagerValidatedInsertRuntimeFact, final_chain_fact: TransactionManagerFinalChainAdmissionFact, input: TransactionQueueInsertInput) -> TransactionManagerAdmissionCommandReport);
-    transaction_mut_result!(transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(verify_fact: TransactionManagerVerifyTransactionFact, admission_fact: TransactionManagerValidatedInsertRuntimeFact, final_chain_fact: TransactionManagerFinalChainAdmissionFact, input: TransactionQueueInsertInput) -> TransactionManagerPublicAdmissionCommandReport);
+    pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
+        &self,
+        fact: TransactionManagerValidatedInsertRuntimeFact,
+        final_chain_fact: TransactionManagerFinalChainAdmissionFact,
+        input: TransactionQueueInsertInput,
+    ) -> Result<TransactionManagerAdmissionCommandReport> {
+        Ok(crate::transaction_manager::service_admission_to_bridge(
+            self.root.transaction_execute_admission(
+                bridge_to_service_validated_admission_fact(fact),
+                bridge_to_service_final_chain_admission_fact(final_chain_fact),
+                bridge_to_service_queue_entry(&input),
+            )?,
+        ))
+    }
+
+    pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(
+        &self,
+        verify_fact: TransactionManagerVerifyTransactionFact,
+        admission_fact: TransactionManagerValidatedInsertRuntimeFact,
+        final_chain_fact: TransactionManagerFinalChainAdmissionFact,
+        input: TransactionQueueInsertInput,
+    ) -> Result<TransactionManagerPublicAdmissionCommandReport> {
+        Ok(service_public_admission_to_bridge(
+            self.root.transaction_execute_public_admission(
+                consensus_verify_transaction_fact_from_ffi_fact(verify_fact),
+                bridge_to_service_validated_admission_fact(admission_fact),
+                bridge_to_service_final_chain_admission_fact(final_chain_fact),
+                bridge_to_service_queue_entry(&input),
+            )?,
+        ))
+    }
 
     pub fn transaction_manager_runtime_gas_price_update(&self, gas_prices: Vec<GasPricerGasPrice>) {
         self.root

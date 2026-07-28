@@ -154,8 +154,11 @@ transaction guard. Native transaction services additionally own compatibility
 packing, gas-oracle/cache mutation, recently-finalized initialization,
 non-finalized durable removal, and finalized-block queue expiry. The
 transaction state/guard remains an explicit bridge escape hatch only for
-unmigrated admission and DAG-save/finalized-status adapters and may not cross
-CXX or external callbacks.
+unmigrated DAG-save/finalized-status adapters and may not cross CXX or external
+callbacks. Native transaction services also own validated and public admission
+as lock-owning tasks: C++ supplies retained FinalChain/account facts, while the
+bridge performs carrier conversion and no longer plans or mutates admission
+state.
 
 ### 3. Collapse configuration topology
 

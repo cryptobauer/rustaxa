@@ -728,6 +728,23 @@ falls by 420 lines to 36,953; CXX functions, carriers, handles, shim lines and
 directories, granular flags, partial factories, compatibility constructors,
 production C++ consumers, and public signatures are unchanged.
 
+The next bounded `CRW-12` transaction contraction moves validated and public
+admission behind lock-owning native `TransactionService` and
+`DagTransactionService` tasks. Rust now owns known-fast-path precedence,
+verification, latest-account eligibility, proposable/non-proposable queue
+mutation, overflow/drop observation, insertion status and legacy public-result
+selection, and the transaction-added shell fact. The retained C++ FinalChain
+boundary supplies owned account and finalized-location facts; the bridge only
+converts those facts, canonical queue entries, and native reports into unchanged
+CXX carriers. The bridge admission state machine, private planning carriers,
+guard methods, mutation helpers, and one duplicated planner test are deleted;
+native service tests cover accepted publication, known-before-verification
+precedence, and rejection without mutation. The remaining transaction guard
+escape hatch is DAG-save/finalized-status. The checked bridge budget falls by
+422 lines to 36,531; CXX functions, carriers, handles, shim lines and
+directories, granular flags, partial factories, compatibility constructors,
+production C++ consumers, and public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

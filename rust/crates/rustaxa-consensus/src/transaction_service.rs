@@ -1,9 +1,12 @@
 use crate::gas_pricer::{GasPriceOracle, GasPricerConfig};
 use crate::transaction_manager::{
     DagTransactionSaveFact, FinalizedTransactionFilterFact, FinalizedTransactionFilterPlan,
+    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionStatus,
     TransactionManagerKnownFact, TransactionManagerSidecar, TransactionManagerSidecarRecoveryEntry,
-    VerifyNotFinalizedTransactionFact, plan_exclude_finalized_transactions,
-    plan_transactions_from_dag_block, plan_verify_not_finalized_transactions,
+    TransactionManagerValidatedInsertFact, TransactionManagerVerifyTransactionFact,
+    TransactionManagerVerifyTransactionStatus, VerifyNotFinalizedTransactionFact,
+    plan_exclude_finalized_transactions, plan_insert_transaction, plan_transactions_from_dag_block,
+    plan_validated_insert, plan_verify_not_finalized_transactions, plan_verify_transaction,
 };
 use crate::transaction_packing_service::{
     TransactionPackingCandidate, TransactionPackingEffect, TransactionPackingEstimate,
@@ -12,6 +15,7 @@ use crate::transaction_packing_service::{
 };
 use crate::transaction_queue::{
     TransactionQueue, TransactionQueueDemoteStatus, TransactionQueueEntry,
+    TransactionQueueInsertStatus,
 };
 use crate::transaction_storage::{
     NonFinalizedTransactionStoragePayload, STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
@@ -149,6 +153,135 @@ pub struct TransactionServiceVerifyNotFinalizedOutcome {
     pub hash: H256,
     /// One of the `TM_VERIFY_NOT_FINALIZED_SOURCE_*` tags.
     pub source: u8,
+}
+
+/// CXX-free facts for one validated transaction admission attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionServiceValidatedAdmissionFact {
+    /// Canonical transaction identity.
+    pub tx_hash: H256,
+    /// Transaction nonce decoded from the canonical envelope.
+    pub transaction_nonce: U256,
+    /// Maximum account debit implied by the transaction.
+    pub transaction_cost: U256,
+    /// Transaction gas limit.
+    pub gas_limit: u64,
+    /// Current proposal DAG gas limit.
+    pub proposal_dag_gas_limit: u64,
+    /// Whether invalid latest-state transactions may remain non-proposable.
+    pub insert_non_proposable: bool,
+}
+
+/// Latest FinalChain facts supplied by the retained external execution boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionServiceFinalChainAdmissionFact {
+    /// Whether the sender account exists.
+    pub account_found: bool,
+    /// Latest sender nonce.
+    pub account_nonce: U256,
+    /// Latest sender balance.
+    pub account_balance: U256,
+    /// Finalized transaction period when the hash is already finalized.
+    pub finalized_period: Option<u64>,
+}
+
+/// Native result of one transaction admission command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServiceAdmissionReport {
+    /// Public insertion status selected after queue mutation.
+    pub insert_status: TransactionManagerInsertTransactionStatus,
+    /// Queue mutation status.
+    pub transaction_status: TransactionQueueInsertStatus,
+    /// Finalized period for an already-finalized transaction.
+    pub finalized_period: Option<u64>,
+    /// Hash inserted into the queue, when insertion published one.
+    pub inserted_hash: Option<H256>,
+    /// Whether the retained shell should emit its transaction-added event.
+    pub emit_transaction_added: bool,
+}
+
+/// Legacy public result text selected by native admission behavior.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServicePublicInsertResult {
+    /// Whether public insertion succeeded.
+    pub accepted: bool,
+    /// Stable legacy message, empty on success.
+    pub message: String,
+}
+
+/// Native result of public precheck, verification, and admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServicePublicAdmissionReport {
+    /// Deterministic verification status.
+    pub verification_status: TransactionManagerVerifyTransactionStatus,
+    /// Transaction chain identifier.
+    pub verification_chain_id: u64,
+    /// Configured chain identifier.
+    pub verification_expected_chain_id: u64,
+    /// Public compatibility result.
+    pub public_result: TransactionServicePublicInsertResult,
+    /// Admission result; absent when verification rejected the transaction.
+    pub admission: Option<TransactionServiceAdmissionReport>,
+}
+
+fn public_verification_result(
+    status: TransactionManagerVerifyTransactionStatus,
+    chain_id: u64,
+    expected_chain_id: u64,
+) -> TransactionServicePublicInsertResult {
+    let message = match status {
+        TransactionManagerVerifyTransactionStatus::Accepted => "",
+        TransactionManagerVerifyTransactionStatus::ChainIdMismatch => {
+            return TransactionServicePublicInsertResult {
+                accepted: false,
+                message: format!("chain_id mismatch {chain_id} {expected_chain_id}"),
+            };
+        }
+        TransactionManagerVerifyTransactionStatus::InvalidGas => "invalid gas",
+        TransactionManagerVerifyTransactionStatus::IntrinsicGasNotCovered => {
+            "intrinsic gas too low"
+        }
+        TransactionManagerVerifyTransactionStatus::InvalidSignature => "invalid signature",
+        TransactionManagerVerifyTransactionStatus::GasPriceTooLow => "gas_price too low",
+    };
+    TransactionServicePublicInsertResult {
+        accepted: status == TransactionManagerVerifyTransactionStatus::Accepted,
+        message: message.to_string(),
+    }
+}
+
+fn public_insert_result(
+    admission: &TransactionServiceAdmissionReport,
+) -> TransactionServicePublicInsertResult {
+    match admission.insert_status {
+        TransactionManagerInsertTransactionStatus::Accepted => {
+            TransactionServicePublicInsertResult {
+                accepted: true,
+                message: String::new(),
+            }
+        }
+        TransactionManagerInsertTransactionStatus::AlreadyKnown => {
+            TransactionServicePublicInsertResult {
+                accepted: false,
+                message: "Transaction already in transactions pool".to_string(),
+            }
+        }
+        TransactionManagerInsertTransactionStatus::AlreadyFinalized => {
+            TransactionServicePublicInsertResult {
+                accepted: false,
+                message: format!(
+                    "Transaction already finalized in period{}",
+                    admission.finalized_period.unwrap_or_default()
+                ),
+            }
+        }
+        TransactionManagerInsertTransactionStatus::CouldNotInsert => {
+            TransactionServicePublicInsertResult {
+                accepted: false,
+                message: "Transaction could not be inserted".to_string(),
+            }
+        }
+    }
 }
 
 /// CXX-free request for one public transaction gas-estimation decision.
@@ -683,6 +816,37 @@ impl TransactionService {
     pub fn recover_non_finalized(&self) -> Result<u64> {
         self.lock()?.recover_non_finalized()
     }
+
+    /// Executes one validated admission under the native transaction lock.
+    ///
+    /// The caller supplies only decoded envelope and retained FinalChain facts.
+    /// Rust validates carrier identity, plans queue eligibility, mutates the
+    /// queue, and selects the public status and shell-event fact atomically.
+    pub fn execute_admission(
+        &self,
+        fact: TransactionServiceValidatedAdmissionFact,
+        final_chain_fact: TransactionServiceFinalChainAdmissionFact,
+        entry: TransactionQueueEntry,
+    ) -> Result<TransactionServiceAdmissionReport> {
+        self.lock()?
+            .execute_admission(fact, final_chain_fact, entry)
+    }
+
+    /// Executes public known-fast-path, verification, and admission behavior.
+    ///
+    /// Known state is checked before verification to preserve legacy error
+    /// precedence. Verification rejection does not mutate the queue. All
+    /// returned data is owned before the native transaction lock is released.
+    pub fn execute_public_admission(
+        &self,
+        verify_fact: TransactionManagerVerifyTransactionFact,
+        admission_fact: TransactionServiceValidatedAdmissionFact,
+        final_chain_fact: TransactionServiceFinalChainAdmissionFact,
+        entry: TransactionQueueEntry,
+    ) -> Result<TransactionServicePublicAdmissionReport> {
+        self.lock()?
+            .execute_public_admission(verify_fact, admission_fact, final_chain_fact, entry)
+    }
 }
 
 /// Exclusive native transaction runtime guard.
@@ -831,6 +995,137 @@ impl TransactionServiceState {
                 hash,
                 queue_known: self.queue.is_transaction_known(hash),
             })
+    }
+
+    fn execute_admission(
+        &mut self,
+        fact: TransactionServiceValidatedAdmissionFact,
+        final_chain_fact: TransactionServiceFinalChainAdmissionFact,
+        entry: TransactionQueueEntry,
+    ) -> Result<TransactionServiceAdmissionReport> {
+        ensure!(
+            entry.hash == fact.tx_hash,
+            "TM_RUNTIME_VALIDATED_INSERT_HASH_MISMATCH"
+        );
+        ensure!(
+            entry.nonce == fact.transaction_nonce,
+            "TM_RUNTIME_VALIDATED_INSERT_NONCE_MISMATCH"
+        );
+        ensure!(
+            entry.gas == fact.gas_limit,
+            "TM_RUNTIME_VALIDATED_INSERT_GAS_MISMATCH"
+        );
+
+        let plan = plan_validated_insert(TransactionManagerValidatedInsertFact {
+            tx_hash: fact.tx_hash,
+            transaction_nonce: fact.transaction_nonce,
+            transaction_cost: fact.transaction_cost,
+            gas_limit: fact.gas_limit,
+            propose_dag_gas_limit: fact.proposal_dag_gas_limit,
+            insert_non_proposable: fact.insert_non_proposable,
+            in_non_finalized_cache: self.sidecar.contains_non_finalized(fact.tx_hash),
+            in_recently_finalized_cache: self.sidecar.contains_recently_finalized(fact.tx_hash),
+            account_found: final_chain_fact.account_found,
+            account_nonce: final_chain_fact.account_nonce,
+            account_balance: final_chain_fact.account_balance,
+        })?;
+
+        let (queue_status, inserted_hash) = if plan.should_insert_queue {
+            let outcome = self.queue.insert(entry, plan.queue_proposable)?;
+            if outcome.status == TransactionQueueInsertStatus::Overflow
+                || !outcome.overflow_removed_hashes.is_empty()
+            {
+                self.last_drop_observed = Some(Instant::now());
+            }
+            (outcome.status, outcome.inserted_hash)
+        } else {
+            (plan.status, None)
+        };
+        let insert = plan_insert_transaction(TransactionManagerInsertTransactionFact {
+            tx_hash: fact.tx_hash,
+            hash_known: false,
+            queue_status,
+            has_finalized_period: final_chain_fact.finalized_period.is_some(),
+            finalized_period: final_chain_fact.finalized_period.unwrap_or_default(),
+        })?;
+
+        Ok(TransactionServiceAdmissionReport {
+            insert_status: insert.status,
+            transaction_status: queue_status,
+            finalized_period: insert.finalized_period,
+            inserted_hash,
+            emit_transaction_added: plan.emit_transaction_added
+                && queue_status == TransactionQueueInsertStatus::Inserted,
+        })
+    }
+
+    fn execute_public_admission(
+        &mut self,
+        verify_fact: TransactionManagerVerifyTransactionFact,
+        admission_fact: TransactionServiceValidatedAdmissionFact,
+        final_chain_fact: TransactionServiceFinalChainAdmissionFact,
+        entry: TransactionQueueEntry,
+    ) -> Result<TransactionServicePublicAdmissionReport> {
+        ensure!(
+            verify_fact.tx_hash == admission_fact.tx_hash,
+            "TM_RUNTIME_PUBLIC_INSERT_VERIFY_HASH_MISMATCH"
+        );
+        let chain_id = verify_fact.chain_id;
+        let expected_chain_id = verify_fact.expected_chain_id;
+        let hash_known = self
+            .sidecar
+            .is_transaction_known(TransactionManagerKnownFact {
+                hash: verify_fact.tx_hash,
+                queue_known: self.queue.is_transaction_known(verify_fact.tx_hash),
+            })
+            .context("TM_RUNTIME_INSERT_PRECHECK_KNOWN_CHECK_FAILED")?;
+        let precheck = plan_insert_transaction(TransactionManagerInsertTransactionFact {
+            tx_hash: verify_fact.tx_hash,
+            hash_known,
+            queue_status: TransactionQueueInsertStatus::Inserted,
+            has_finalized_period: false,
+            finalized_period: 0,
+        })?;
+        if precheck.status != TransactionManagerInsertTransactionStatus::Accepted {
+            let admission = TransactionServiceAdmissionReport {
+                insert_status: precheck.status,
+                transaction_status: TransactionQueueInsertStatus::Inserted,
+                finalized_period: precheck.finalized_period,
+                inserted_hash: None,
+                emit_transaction_added: false,
+            };
+            return Ok(TransactionServicePublicAdmissionReport {
+                verification_status: TransactionManagerVerifyTransactionStatus::Accepted,
+                verification_chain_id: chain_id,
+                verification_expected_chain_id: expected_chain_id,
+                public_result: public_insert_result(&admission),
+                admission: Some(admission),
+            });
+        }
+
+        let verification = plan_verify_transaction(verify_fact)?;
+        if verification.status != TransactionManagerVerifyTransactionStatus::Accepted {
+            return Ok(TransactionServicePublicAdmissionReport {
+                verification_status: verification.status,
+                verification_chain_id: chain_id,
+                verification_expected_chain_id: expected_chain_id,
+                public_result: public_verification_result(
+                    verification.status,
+                    chain_id,
+                    expected_chain_id,
+                ),
+                admission: None,
+            });
+        }
+
+        let admission = self.execute_admission(admission_fact, final_chain_fact, entry)?;
+        Ok(TransactionServicePublicAdmissionReport {
+            verification_status: TransactionManagerVerifyTransactionStatus::Accepted,
+            verification_chain_id: chain_id,
+            verification_expected_chain_id: expected_chain_id,
+            public_result: public_insert_result(&admission),
+            admission: Some(admission),
+        })
     }
 
     /// Returns proposal views that require an explicit account fact for each finalized sender.
@@ -2868,6 +3163,158 @@ mod tests {
         drop(state);
 
         std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_admission_owns_mutation_and_public_error_precedence() -> Result<()> {
+        let (service, path) = build_service_with_defaults(
+            None,
+            8,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let hash = H256::from_low_u64_be(0xa1);
+        let entry = TransactionQueueEntry {
+            hash,
+            sender: H160::from_low_u64_be(0xb1),
+            nonce: U256::from(3),
+            gas_price: U256::from(4),
+            gas: 21_000,
+            data_size: 0,
+            rlp: vec![0xc0],
+            last_block_number: 9,
+        };
+        let admission_fact = TransactionServiceValidatedAdmissionFact {
+            tx_hash: hash,
+            transaction_nonce: U256::from(3),
+            transaction_cost: U256::from(5),
+            gas_limit: 21_000,
+            proposal_dag_gas_limit: 30_000,
+            insert_non_proposable: false,
+        };
+        let final_chain_fact = TransactionServiceFinalChainAdmissionFact {
+            account_found: true,
+            account_nonce: U256::from(3),
+            account_balance: U256::from(100),
+            finalized_period: None,
+        };
+
+        let accepted =
+            service.execute_admission(admission_fact, final_chain_fact, entry.clone())?;
+        assert_eq!(
+            accepted.insert_status,
+            TransactionManagerInsertTransactionStatus::Accepted
+        );
+        assert_eq!(accepted.inserted_hash, Some(hash));
+        assert!(accepted.emit_transaction_added);
+
+        let known = service.execute_public_admission(
+            TransactionManagerVerifyTransactionFact {
+                tx_hash: hash,
+                chain_id: 1,
+                expected_chain_id: 2,
+                gas_limit: u64::MAX,
+                max_gas_limit: 0,
+                last_block_number: 0,
+                cornus_active: true,
+                intrinsic_gas_covered: false,
+                signature_valid: false,
+                gas_price: U256::zero(),
+                minimum_gas_price: U256::one(),
+            },
+            admission_fact,
+            final_chain_fact,
+            entry,
+        )?;
+        assert_eq!(
+            known.verification_status,
+            TransactionManagerVerifyTransactionStatus::Accepted
+        );
+        assert_eq!(
+            known
+                .admission
+                .expect("known precheck returns admission")
+                .insert_status,
+            TransactionManagerInsertTransactionStatus::AlreadyKnown
+        );
+        assert_eq!(
+            known.public_result.message,
+            "Transaction already in transactions pool"
+        );
+
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn public_verification_rejection_does_not_mutate_native_queue() -> Result<()> {
+        let (service, path) = build_service_with_defaults(
+            None,
+            8,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let hash = H256::from_low_u64_be(0xa2);
+        let entry = TransactionQueueEntry {
+            hash,
+            sender: H160::from_low_u64_be(0xb2),
+            nonce: U256::zero(),
+            gas_price: U256::one(),
+            gas: 21_000,
+            data_size: 0,
+            rlp: vec![0xc0],
+            last_block_number: 0,
+        };
+        let report = service.execute_public_admission(
+            TransactionManagerVerifyTransactionFact {
+                tx_hash: hash,
+                chain_id: 1,
+                expected_chain_id: 2,
+                gas_limit: 21_000,
+                max_gas_limit: 30_000,
+                last_block_number: 0,
+                cornus_active: false,
+                intrinsic_gas_covered: true,
+                signature_valid: true,
+                gas_price: U256::one(),
+                minimum_gas_price: U256::one(),
+            },
+            TransactionServiceValidatedAdmissionFact {
+                tx_hash: hash,
+                transaction_nonce: U256::zero(),
+                transaction_cost: U256::one(),
+                gas_limit: 21_000,
+                proposal_dag_gas_limit: 30_000,
+                insert_non_proposable: false,
+            },
+            TransactionServiceFinalChainAdmissionFact {
+                account_found: true,
+                account_nonce: U256::zero(),
+                account_balance: U256::from(100),
+                finalized_period: None,
+            },
+            entry,
+        )?;
+        assert_eq!(
+            report.verification_status,
+            TransactionManagerVerifyTransactionStatus::ChainIdMismatch
+        );
+        assert!(report.admission.is_none());
+        assert_eq!(report.public_result.message, "chain_id mismatch 1 2");
+        assert!(!service.is_transaction_known(hash.0)?);
+
+        std::fs::remove_dir_all(path)?;
         Ok(())
     }
 

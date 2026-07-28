@@ -23,18 +23,21 @@ use crate::dag_service::{
     DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
 };
 use crate::sortition::{SortitionConfig, SortitionService, SortitionServiceGuard};
+use crate::transaction_manager::TransactionManagerVerifyTransactionFact;
 use crate::transaction_packing_service::{TransactionPackingEstimate, TransactionPackingOwner};
 use crate::transaction_queue::TransactionQueueEntry;
 use crate::transaction_service::{
     DagTransactionSaveInput, TransactionService, TransactionServiceAccountNonceFact,
-    TransactionServiceCompatibilityPackFinalized, TransactionServiceCompatibilityPackPrepared,
-    TransactionServiceCompatibilityPackRequest, TransactionServiceConfig,
-    TransactionServiceEstimateRequest, TransactionServiceFinalizedFilterRequest,
+    TransactionServiceAdmissionReport, TransactionServiceCompatibilityPackFinalized,
+    TransactionServiceCompatibilityPackPrepared, TransactionServiceCompatibilityPackRequest,
+    TransactionServiceConfig, TransactionServiceEstimateRequest,
+    TransactionServiceFinalChainAdmissionFact, TransactionServiceFinalizedFilterRequest,
     TransactionServiceGasEstimationPlan, TransactionServiceGasEstimationRequest,
     TransactionServiceGasEstimationResult, TransactionServiceGuard, TransactionServicePackEstimate,
     TransactionServicePayload, TransactionServiceProposerPackFinalized,
-    TransactionServiceProposerPackPrepared, TransactionServiceTransactionView,
-    TransactionServiceTransactionViewPlan, TransactionServiceTransactionViewRequest,
+    TransactionServiceProposerPackPrepared, TransactionServicePublicAdmissionReport,
+    TransactionServiceTransactionView, TransactionServiceTransactionViewPlan,
+    TransactionServiceTransactionViewRequest, TransactionServiceValidatedAdmissionFact,
     TransactionServiceVerifyNotFinalizedFact, TransactionServiceVerifyNotFinalizedOutcome,
     append_prepared_dag_transactions, prepare_dag_transaction_publication,
     prepare_dag_transactions, publish_dag_transactions,
@@ -469,6 +472,33 @@ impl DagTransactionService {
     /// Updates finalized gas-price facts inside the native transaction owner.
     pub fn transaction_update_gas_prices(&self, gas_prices: Vec<U256>) -> Result<()> {
         self.transaction.update_gas_prices(gas_prices)
+    }
+
+    /// Executes validated transaction admission inside the native lock owner.
+    pub fn transaction_execute_admission(
+        &self,
+        fact: TransactionServiceValidatedAdmissionFact,
+        final_chain_fact: TransactionServiceFinalChainAdmissionFact,
+        entry: TransactionQueueEntry,
+    ) -> Result<TransactionServiceAdmissionReport> {
+        self.transaction
+            .execute_admission(fact, final_chain_fact, entry)
+    }
+
+    /// Executes public precheck, verification, and admission inside the native owner.
+    pub fn transaction_execute_public_admission(
+        &self,
+        verify_fact: TransactionManagerVerifyTransactionFact,
+        admission_fact: TransactionServiceValidatedAdmissionFact,
+        final_chain_fact: TransactionServiceFinalChainAdmissionFact,
+        entry: TransactionQueueEntry,
+    ) -> Result<TransactionServicePublicAdmissionReport> {
+        self.transaction.execute_public_admission(
+            verify_fact,
+            admission_fact,
+            final_chain_fact,
+            entry,
+        )
     }
 
     /// Starts one compatibility packing cursor and returns unlocked EVM requests.
