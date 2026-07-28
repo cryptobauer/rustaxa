@@ -1,6 +1,8 @@
 use crate::gas_pricer::{GasPriceOracle, GasPricerConfig};
-use crate::transaction_manager::{DagTransactionSaveFact, plan_transactions_from_dag_block};
-use crate::transaction_manager::{TransactionManagerKnownFact, TransactionManagerSidecar};
+use crate::transaction_manager::{
+    DagTransactionSaveFact, TransactionManagerKnownFact, TransactionManagerSidecar,
+    plan_transactions_from_dag_block,
+};
 use crate::transaction_packing_service::{
     TransactionPackingCandidate, TransactionPackingEffect, TransactionPackingEstimate,
     TransactionPackingEstimateRequest, TransactionPackingOwner, TransactionPackingRequest,
@@ -13,7 +15,8 @@ use crate::transaction_storage::{
     NonFinalizedTransactionStoragePayload, STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
     STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM, STORED_TRANSACTION_SOURCE_MISSING,
     STORED_TRANSACTION_SOURCE_PENDING, StoredTransactionLookupRequest,
-    append_non_finalized_transactions_to_batch, load_stored_transactions, transaction_finalized,
+    append_non_finalized_transactions_to_batch, load_stored_transactions,
+    remove_non_finalized_transactions, transaction_finalized,
 };
 use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::{H160, H256, U256};
@@ -261,6 +264,93 @@ pub(crate) struct TransactionServiceProposerPackFinalized {
     pub selected_transactions: Vec<TransactionPackingSelection>,
 }
 
+/// Complete native output of compatibility pack preparation.
+///
+/// All payloads are owned and validated before the transaction lock is
+/// released. A non-empty estimate list means the native compatibility cursor
+/// remains active; otherwise preparation is terminal.
+#[derive(Clone, Debug)]
+pub struct TransactionServiceCompatibilityPackPrepared {
+    /// Compatibility-session candidates that still need estimator input.
+    pub request_estimates: Vec<TransactionServiceEstimateRequest>,
+    /// Deterministic selections already accepted without external estimation.
+    pub selected_transactions: Vec<TransactionPackingSelection>,
+    /// Hashes demoted by the runtime session outcome.
+    pub demoted_hashes: Vec<H256>,
+    /// Whether planner stop condition was triggered.
+    pub stopped: bool,
+}
+
+/// Complete native output of compatibility pack finalization.
+///
+/// Selections and demotions preserve planner order. Construction succeeds only
+/// after the exact owner, input count, and hash sequence are validated.
+#[derive(Clone, Debug)]
+pub struct TransactionServiceCompatibilityPackFinalized {
+    /// Deterministic selected proposals with canonical RLP payloads.
+    pub selected_transactions: Vec<TransactionPackingSelection>,
+    /// Hashes demoted by the runtime session outcome.
+    pub demoted_hashes: Vec<H256>,
+    /// Whether planner stop condition was triggered.
+    pub stopped: bool,
+}
+
+/// CXX-free inputs for one compatibility transaction-packing session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionServiceCompatibilityPackRequest {
+    /// Maximum cumulative proposal gas weight.
+    pub weight_limit: u64,
+    /// Minimum gas charged when deriving the candidate snapshot bound.
+    pub min_transaction_gas: u64,
+    /// Proposal period used for cache and shard selection.
+    pub proposal_period: u64,
+    /// Declared-gas ceiling below which EVM execution is unnecessary.
+    pub estimate_gas_limit: u64,
+    /// FinalChain head recorded on queue demotions.
+    pub last_block_number: u64,
+    /// Number of configured transaction shards.
+    pub total_shards: u16,
+    /// Local transaction shard.
+    pub node_shard: u16,
+    /// Periods per transaction-shard rotation.
+    pub shard_period_interval: u64,
+}
+
+/// CXX-free external estimate for a pending compatibility pack.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServicePackEstimate {
+    /// Candidate identity, validated against the pending cursor.
+    pub hash: H256,
+    /// Gas used by the retained external EVM executor.
+    pub gas_used: u64,
+    /// FinalChain head associated with any resulting demotion.
+    pub last_block_number: u64,
+    /// Opaque execution-result RLP retained by the native cache.
+    pub result_rlp: Vec<u8>,
+}
+
+/// CXX-free opaque gas-estimation cache insertion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServiceGasEstimationResult {
+    /// Canonical transaction identity.
+    pub hash: H256,
+    /// Proposal period forming the cache key.
+    pub proposal_period: u64,
+    /// Estimated gas used.
+    pub gas_used: u64,
+    /// Opaque external execution-result RLP.
+    pub result_rlp: Vec<u8>,
+}
+
+/// Owned canonical payload used by transaction-sidecar mutation tasks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServicePayload {
+    /// Canonical transaction identity.
+    pub hash: H256,
+    /// Canonical transaction RLP.
+    pub transaction_rlp: Vec<u8>,
+}
+
 /// Native owner of transaction construction, restoration, and serialization.
 ///
 /// One mutex protects queue, sidecar/cache/count, gas oracle, durable storage,
@@ -411,6 +501,98 @@ impl TransactionService {
     /// Returns the minimum big-endian gas price for inclusion under `limit`.
     pub fn queue_min_gas_price_for_block_inclusion(&self, limit: u64) -> Result<[u8; 32]> {
         Ok(self.lock()?.queue_min_gas_price_for_block_inclusion(limit))
+    }
+
+    /// Updates finalized-block gas-price history in one native lock epoch.
+    ///
+    /// Empty input and pool-mode owners retain the gas oracle's no-op
+    /// semantics. No state reference escapes the operation.
+    pub fn update_gas_prices(&self, gas_prices: Vec<U256>) -> Result<()> {
+        self.lock()?.update_gas_prices(gas_prices);
+        Ok(())
+    }
+
+    /// Starts the compatibility transaction pack under native lock ownership.
+    ///
+    /// Candidate selection, cache reads, payload validation, demotions, and
+    /// cursor publication are atomic with respect to transaction state. The
+    /// returned owned requests cross the unlocked external-EVM interval.
+    pub fn prepare_compatibility_pack(
+        &self,
+        request: TransactionServiceCompatibilityPackRequest,
+    ) -> Result<TransactionServiceCompatibilityPackPrepared> {
+        self.lock()?.prepare_proposer_pack_for_owner(
+            TransactionPackingOwner::Compatibility,
+            request.weight_limit,
+            request.min_transaction_gas,
+            request.proposal_period,
+            request.estimate_gas_limit,
+            request.last_block_number,
+            request.total_shards,
+            request.node_shard,
+            request.shard_period_interval,
+        )
+    }
+
+    /// Finalizes the active compatibility pack from ordered external estimates.
+    ///
+    /// Owner, count, and hash mismatches retain the matching cursor without
+    /// publishing queue or cache state.
+    pub fn finalize_compatibility_pack(
+        &self,
+        estimates: Vec<TransactionServicePackEstimate>,
+    ) -> Result<TransactionServiceCompatibilityPackFinalized> {
+        self.lock()?.finalize_proposer_pack_for_owner(
+            TransactionPackingOwner::Compatibility,
+            estimates
+                .into_iter()
+                .map(|estimate| TransactionPackingEstimate {
+                    hash: estimate.hash,
+                    gas_used: estimate.gas_used,
+                    last_block_number: estimate.last_block_number,
+                    result_rlp: estimate.result_rlp,
+                })
+                .collect(),
+        )
+    }
+
+    /// Aborts only an active compatibility-owned packing cursor.
+    pub fn abort_compatibility_pack(&self) -> Result<bool> {
+        self.lock()?
+            .abort_proposer_pack(TransactionPackingOwner::Compatibility)
+    }
+
+    /// Stores one opaque external EVM result in the native estimation cache.
+    pub fn store_gas_estimation(
+        &self,
+        result: TransactionServiceGasEstimationResult,
+    ) -> Result<bool> {
+        self.lock()?.store_gas_estimation(result)
+    }
+
+    /// Inserts canonical payloads and moves them to recently-finalized state.
+    ///
+    /// All payload mutations occur while the transaction owner is locked;
+    /// malformed sidecar state returns without exposing a guard.
+    pub fn initialize_recently_finalized(
+        &self,
+        period: u64,
+        payloads: Vec<TransactionServicePayload>,
+    ) -> Result<()> {
+        self.lock()?.initialize_recently_finalized(period, payloads)
+    }
+
+    /// Removes selected non-finalized payloads durably before live publication.
+    ///
+    /// Zero hashes fail before storage mutation. Storage failure leaves the
+    /// native sidecar unchanged.
+    pub fn remove_non_finalized(&self, hashes: Vec<H256>) -> Result<u64> {
+        self.lock()?.remove_non_finalized(hashes)
+    }
+
+    /// Applies finalized-block expiry to non-proposable queue state.
+    pub fn queue_block_finalized(&self, block_number: u64) -> Result<Vec<H256>> {
+        Ok(self.lock()?.queue_block_finalized(block_number))
     }
 }
 
@@ -699,6 +881,67 @@ impl TransactionServiceState {
         Ok(TransactionServiceGasEstimationPlan::ExecuteEvm)
     }
 
+    fn update_gas_prices(&mut self, gas_prices: Vec<U256>) {
+        self.gas_price_oracle.update_from_gas_prices(gas_prices);
+    }
+
+    fn store_gas_estimation(
+        &mut self,
+        result: TransactionServiceGasEstimationResult,
+    ) -> Result<bool> {
+        self.sidecar
+            .gas_estimation_cache_insert(
+                result.hash,
+                result.proposal_period,
+                result.gas_used,
+                result.result_rlp,
+            )
+            .context("TM_RUNTIME_GAS_ESTIMATION_CACHE_STORE")
+    }
+
+    fn initialize_recently_finalized(
+        &mut self,
+        period: u64,
+        payloads: Vec<TransactionServicePayload>,
+    ) -> Result<()> {
+        let mut next_sidecar = self.sidecar.clone();
+        let mut hashes = Vec::with_capacity(payloads.len());
+        for payload in payloads {
+            next_sidecar
+                .insert_non_finalized(payload.hash, payload.transaction_rlp)
+                .context("TM_RUNTIME_RECENT_FINALIZED_INIT_INSERT")?;
+            hashes.push(payload.hash);
+        }
+        next_sidecar
+            .apply_finalized_transition(period, hashes)
+            .context("TM_RUNTIME_RECENT_FINALIZED_INIT_TRANSITION")?;
+        self.sidecar = next_sidecar;
+        Ok(())
+    }
+
+    fn remove_non_finalized(&mut self, hashes: Vec<H256>) -> Result<u64> {
+        let mut existing = Vec::with_capacity(hashes.len());
+        for hash in hashes {
+            ensure!(
+                !hash.is_zero(),
+                "runtime sidecar removal hash cannot be zero"
+            );
+            if self.sidecar.contains_non_finalized(hash) {
+                existing.push(hash);
+            }
+        }
+        remove_non_finalized_transactions(&self.storage, existing.clone())
+            .context("TM_RUNTIME_REMOVE_NON_FINALIZED_STORAGE")?;
+        Ok(existing
+            .into_iter()
+            .filter(|hash| self.sidecar.remove_non_finalized(*hash))
+            .count() as u64)
+    }
+
+    fn queue_block_finalized(&mut self, block_number: u64) -> Vec<H256> {
+        self.queue.block_finalized(block_number)
+    }
+
     /// Prepares owner-scoped proposer packing from a validated queue/cache snapshot.
     ///
     /// Candidate payloads are decoded and cross-checked before any executor
@@ -713,62 +956,20 @@ impl TransactionServiceState {
         estimate_gas_limit: u64,
         last_block_number: u64,
     ) -> Result<TransactionServiceProposerPackPrepared> {
-        let candidate_limit = TransactionPackingService::candidate_limit(
+        let outcome = self.prepare_proposer_pack_for_owner(
+            owner,
             params.weight_limit,
             min_transaction_gas,
+            params.proposal_period,
+            estimate_gas_limit,
+            last_block_number,
             params.total_transaction_shards,
             params.node_transaction_shard,
             params.shard_period_interval,
         )?;
-        let candidates = self
-            .queue
-            .ordered_transactions(candidate_limit)
-            .into_iter()
-            .map(|entry| {
-                let cached_gas_used = self
-                    .sidecar
-                    .gas_estimation_cache_get(entry.hash, params.proposal_period)
-                    .context("TM_RUNTIME_PACK_GAS_ESTIMATION_CACHE_GET")?
-                    .map(|cached| cached.gas_used);
-                Ok((entry, cached_gas_used))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let step = self
-            .transaction_packing
-            .prepare(TransactionPackingRequest {
-                owner,
-                weight_limit: params.weight_limit,
-                min_transaction_gas,
-                proposal_period: params.proposal_period,
-                estimate_gas_limit,
-                last_block_number,
-                total_shards: params.total_transaction_shards,
-                node_shard: params.node_transaction_shard,
-                shard_period_interval: params.shard_period_interval,
-                candidates: candidates
-                    .into_iter()
-                    .map(|(entry, cached_gas_used)| TransactionPackingCandidate {
-                        entry,
-                        cached_gas_used,
-                    })
-                    .collect(),
-            })
-            .context("TM_RUNTIME_PACK_PREPARE")?;
-        let request_estimates = step
-            .request_estimates
-            .iter()
-            .cloned()
-            .map(transaction_estimate_request)
-            .collect::<Result<Vec<_>>>()?;
-        let (selected_transactions, demoted_hashes) =
-            apply_packing_step_effects(self, &step, "TM_RUNTIME_PACK_PREPARE")?;
-        if !demoted_hashes.is_empty() {
-            self.transaction_packing
-                .acknowledge_demotions(owner, demoted_hashes.clone())?;
-        }
         Ok(TransactionServiceProposerPackPrepared {
-            request_estimates,
-            selected_transactions,
+            request_estimates: outcome.request_estimates,
+            selected_transactions: outcome.selected_transactions,
         })
     }
 
@@ -783,14 +984,122 @@ impl TransactionServiceState {
         owner: TransactionPackingOwner,
         estimates: Vec<TransactionPackingEstimate>,
     ) -> Result<TransactionServiceProposerPackFinalized> {
+        let outcome = self.finalize_proposer_pack_for_owner(owner, estimates)?;
+        Ok(TransactionServiceProposerPackFinalized {
+            selected_transactions: outcome.selected_transactions,
+        })
+    }
+
+    /// Prepares owner-scoped proposer packing with compatibility demotion metadata.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_proposer_pack_for_owner(
+        &mut self,
+        owner: TransactionPackingOwner,
+        weight_limit: u64,
+        min_transaction_gas: u64,
+        proposal_period: u64,
+        estimate_gas_limit: u64,
+        last_block_number: u64,
+        total_shards: u16,
+        node_shard: u16,
+        shard_period_interval: u64,
+    ) -> Result<TransactionServiceCompatibilityPackPrepared> {
+        let candidate_limit = TransactionPackingService::candidate_limit(
+            weight_limit,
+            min_transaction_gas,
+            total_shards,
+            node_shard,
+            shard_period_interval,
+        )?;
+        let candidates = self
+            .queue
+            .ordered_transactions(candidate_limit)
+            .into_iter()
+            .map(|entry| {
+                let cached_gas_used = self
+                    .sidecar
+                    .gas_estimation_cache_get(entry.hash, proposal_period)
+                    .context("TM_RUNTIME_PACK_GAS_ESTIMATION_CACHE_GET")?
+                    .map(|cached| cached.gas_used);
+                Ok((entry, cached_gas_used))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let step = self
+            .transaction_packing
+            .prepare(TransactionPackingRequest {
+                owner,
+                weight_limit,
+                min_transaction_gas,
+                proposal_period,
+                estimate_gas_limit,
+                last_block_number,
+                total_shards,
+                node_shard,
+                shard_period_interval,
+                candidates: candidates
+                    .into_iter()
+                    .map(|(entry, cached_gas_used)| TransactionPackingCandidate {
+                        entry,
+                        cached_gas_used,
+                    })
+                    .collect(),
+            })
+            .context("TM_RUNTIME_PACK_PREPARE")?;
+
+        let request_estimates = match step
+            .request_estimates
+            .iter()
+            .cloned()
+            .map(transaction_estimate_request)
+            .collect::<Result<Vec<_>>>()
+        {
+            Ok(requests) => requests,
+            Err(error) => {
+                let _ = self.transaction_packing.abort(owner);
+                return Err(error);
+            }
+        };
+        let (selected_transactions, demoted_hashes) =
+            match apply_packing_step_effects(self, &step, "TM_RUNTIME_PACK_PREPARE") {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    let _ = self.transaction_packing.abort(owner);
+                    return Err(error);
+                }
+            };
+        if !step.request_estimates.is_empty() {
+            self.transaction_packing
+                .acknowledge_demotions(owner, demoted_hashes.to_vec())?;
+        }
+        let mut ordered_demoted_hashes = step.acknowledged_demotions.clone();
+        ordered_demoted_hashes.extend(demoted_hashes);
+
+        Ok(TransactionServiceCompatibilityPackPrepared {
+            request_estimates,
+            selected_transactions,
+            demoted_hashes: ordered_demoted_hashes,
+            stopped: step.stopped,
+        })
+    }
+
+    /// Finalizes an owner-scoped estimate sequence and returns compatibility metadata.
+    pub(crate) fn finalize_proposer_pack_for_owner(
+        &mut self,
+        owner: TransactionPackingOwner,
+        estimates: Vec<TransactionPackingEstimate>,
+    ) -> Result<TransactionServiceCompatibilityPackFinalized> {
         let step = self
             .transaction_packing
             .finalize(owner, estimates)
             .context("TM_RUNTIME_PACK_FINALIZE")?;
-        let (selected_transactions, _demoted_hashes) =
+        let (selected_transactions, demoted_hashes) =
             apply_packing_step_effects(self, &step, "TM_RUNTIME_PACK_FINALIZE")?;
-        Ok(TransactionServiceProposerPackFinalized {
+        let mut ordered_demoted_hashes = step.acknowledged_demotions;
+        ordered_demoted_hashes.extend(demoted_hashes);
+        Ok(TransactionServiceCompatibilityPackFinalized {
             selected_transactions,
+            demoted_hashes: ordered_demoted_hashes,
+            stopped: step.stopped,
         })
     }
 
@@ -805,6 +1114,9 @@ fn transaction_estimate_request(
 ) -> Result<TransactionServiceEstimateRequest> {
     let entry = request.entry;
     let envelope = LegacyTransactionEnvelope::decode(&entry.rlp)
+        .context("TM_RUNTIME_PACK_CANDIDATE_ENVELOPE_INSPECT_FAILED")?;
+    envelope
+        .cost()
         .context("TM_RUNTIME_PACK_CANDIDATE_ENVELOPE_INSPECT_FAILED")?;
     ensure!(
         envelope.hash == entry.hash,
@@ -1335,13 +1647,29 @@ mod tests {
     }
 
     fn signed_legacy_transaction_rlp(signing_key: &SigningKey) -> Vec<u8> {
+        signed_legacy_transaction_rlp_with_fields(
+            signing_key,
+            U256::from(1),
+            U256::from(2),
+            21_000,
+            U256::from(3),
+        )
+    }
+
+    fn signed_legacy_transaction_rlp_with_fields(
+        signing_key: &SigningKey,
+        nonce: U256,
+        gas_price: U256,
+        gas: u64,
+        value: U256,
+    ) -> Vec<u8> {
         let chain_id = 2999_u64;
         let mut unsigned = RlpStream::new_list(9);
-        unsigned.append(&U256::from(1));
-        unsigned.append(&U256::from(2));
-        unsigned.append(&21_000_u64);
+        unsigned.append(&nonce);
+        unsigned.append(&gas_price);
+        unsigned.append(&gas);
         unsigned.append(&H160::repeat_byte(0x44));
-        unsigned.append(&U256::from(3));
+        unsigned.append(&value);
         unsigned.append(&Vec::<u8>::new());
         unsigned.append(&U256::from(chain_id));
         unsigned.append(&U256::zero());
@@ -1351,11 +1679,11 @@ mod tests {
             .expect("test transaction signing must succeed");
         let signature = signature.to_bytes();
         let mut signed = RlpStream::new_list(9);
-        signed.append(&U256::from(1));
-        signed.append(&U256::from(2));
-        signed.append(&21_000_u64);
+        signed.append(&nonce);
+        signed.append(&gas_price);
+        signed.append(&gas);
         signed.append(&H160::repeat_byte(0x44));
-        signed.append(&U256::from(3));
+        signed.append(&value);
         signed.append(&Vec::<u8>::new());
         signed.append(&U256::from(
             chain_id * 2 + 35 + u64::from(recovery_id.to_byte()),
@@ -1965,6 +2293,270 @@ mod tests {
                 .to_string()
                 .contains("TM_PROPOSAL_TRANSACTION_HASH_MISMATCH")
         );
+
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_direct_mutations_and_compatibility_pack_own_the_lock() -> Result<()> {
+        let (service, temp_dir) = build_service_with_defaults(
+            None,
+            16,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let transaction_rlp =
+            signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x71u8; 32])?);
+        let envelope = LegacyTransactionEnvelope::decode(&transaction_rlp)?;
+        let sender = envelope.sender.context("signed transaction sender")?;
+        {
+            let mut state = service.lock()?;
+            state.queue.insert(
+                TransactionQueueEntry {
+                    hash: envelope.hash,
+                    sender,
+                    nonce: envelope.nonce,
+                    gas_price: envelope.gas_price,
+                    gas: envelope.gas,
+                    data_size: envelope.data.len() as u64,
+                    rlp: transaction_rlp.clone(),
+                    last_block_number: 0,
+                },
+                true,
+            )?;
+        }
+
+        let prepared =
+            service.prepare_compatibility_pack(TransactionServiceCompatibilityPackRequest {
+                weight_limit: 63_000,
+                min_transaction_gas: 21_000,
+                proposal_period: 7,
+                estimate_gas_limit: 0,
+                last_block_number: 10,
+                total_shards: 1,
+                node_shard: 0,
+                shard_period_interval: 1,
+            })?;
+        assert_eq!(prepared.request_estimates.len(), 1);
+        assert_eq!(prepared.request_estimates[0].hash, envelope.hash);
+        assert!(prepared.selected_transactions.is_empty());
+
+        let finalized =
+            service.finalize_compatibility_pack(vec![TransactionServicePackEstimate {
+                hash: envelope.hash,
+                gas_used: 21_000,
+                last_block_number: 10,
+                result_rlp: vec![0xC0],
+            }])?;
+        assert_eq!(finalized.selected_transactions.len(), 1);
+        assert_eq!(finalized.selected_transactions[0].hash, envelope.hash);
+        assert!(!service.abort_compatibility_pack()?);
+
+        let cached_hash = H256::from_low_u64_be(9);
+        assert!(
+            service.store_gas_estimation(TransactionServiceGasEstimationResult {
+                hash: cached_hash,
+                proposal_period: 7,
+                gas_used: 19_000,
+                result_rlp: vec![0xC1],
+            },)?
+        );
+        assert_eq!(
+            service.plan_gas_estimation(TransactionServiceGasEstimationRequest {
+                hash: cached_hash,
+                declared_gas: 50_000,
+                proposal_period: 7,
+                estimate_gas_limit: 30_000,
+            })?,
+            TransactionServiceGasEstimationPlan::Cached {
+                gas_used: 19_000,
+                result_rlp: vec![0xC1],
+            }
+        );
+
+        let recent_hash = H256::from_low_u64_be(10);
+        service.initialize_recently_finalized(
+            8,
+            vec![TransactionServicePayload {
+                hash: recent_hash,
+                transaction_rlp: vec![0x22],
+            }],
+        )?;
+        assert!(service.is_transaction_known(recent_hash.0)?);
+
+        let removable_hash = H256::from_low_u64_be(11);
+        {
+            let mut state = service.lock()?;
+            state.storage.transaction().write(removable_hash, &[0x33])?;
+            state
+                .sidecar
+                .insert_non_finalized(removable_hash, vec![0x33])?;
+        }
+        assert_eq!(service.remove_non_finalized(vec![removable_hash])?, 1);
+        assert_eq!(
+            service.lock()?.storage.transaction().rlp(removable_hash)?,
+            None
+        );
+
+        let expired_hash = H256::from_low_u64_be(12);
+        service.lock()?.queue.insert(
+            TransactionQueueEntry {
+                hash: expired_hash,
+                sender,
+                nonce: U256::from(2),
+                gas_price: U256::one(),
+                gas: 21_000,
+                data_size: 0,
+                rlp: vec![0x44],
+                last_block_number: 0,
+            },
+            false,
+        )?;
+        assert_eq!(service.queue_block_finalized(20)?, vec![expired_hash]);
+
+        service.update_gas_prices(vec![U256::from(5)])?;
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn compatibility_pack_acknowledges_prepare_demotions_on_finalize() -> Result<()> {
+        let (service, temp_dir) = build_service_with_defaults(
+            None,
+            16,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let signing_key = SigningKey::from_slice(&[0x53u8; 32])?;
+        let mut envelopes = Vec::new();
+        {
+            let mut state = service.lock()?;
+            for nonce in [U256::one(), U256::from(2)] {
+                let rlp = signed_legacy_transaction_rlp_with_fields(
+                    &signing_key,
+                    nonce,
+                    U256::from(2),
+                    21_000,
+                    U256::from(3),
+                );
+                let envelope = LegacyTransactionEnvelope::decode(&rlp)?;
+                state.queue.insert(
+                    TransactionQueueEntry {
+                        hash: envelope.hash,
+                        sender: envelope.sender.context("signed transaction sender")?,
+                        nonce: envelope.nonce,
+                        gas_price: envelope.gas_price,
+                        gas: envelope.gas,
+                        data_size: envelope.data.len() as u64,
+                        rlp,
+                        last_block_number: 0,
+                    },
+                    true,
+                )?;
+                envelopes.push(envelope);
+            }
+        }
+        service.store_gas_estimation(TransactionServiceGasEstimationResult {
+            hash: envelopes[0].hash,
+            proposal_period: 7,
+            gas_used: 20_000,
+            result_rlp: vec![0xC0],
+        })?;
+
+        let prepared =
+            service.prepare_compatibility_pack(TransactionServiceCompatibilityPackRequest {
+                weight_limit: 63_000,
+                min_transaction_gas: 21_000,
+                proposal_period: 7,
+                estimate_gas_limit: 0,
+                last_block_number: 44,
+                total_shards: 1,
+                node_shard: 0,
+                shard_period_interval: 1,
+            })?;
+        assert_eq!(prepared.request_estimates.len(), 1);
+        assert_eq!(prepared.request_estimates[0].hash, envelopes[1].hash);
+        assert_eq!(prepared.demoted_hashes, vec![envelopes[0].hash]);
+        assert_eq!(service.queue_size()?, 1);
+
+        let finalized =
+            service.finalize_compatibility_pack(vec![TransactionServicePackEstimate {
+                hash: envelopes[1].hash,
+                gas_used: 30_000,
+                last_block_number: 44,
+                result_rlp: vec![0xC1],
+            }])?;
+        assert_eq!(finalized.demoted_hashes, vec![envelopes[0].hash]);
+        assert_eq!(finalized.selected_transactions[0].hash, envelopes[1].hash);
+
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn compatibility_pack_rejects_overflowing_envelope_cost_and_aborts() -> Result<()> {
+        let (service, temp_dir) = build_service_with_defaults(
+            None,
+            16,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let rlp = signed_legacy_transaction_rlp_with_fields(
+            &SigningKey::from_slice(&[0x72u8; 32])?,
+            U256::one(),
+            U256::MAX,
+            21_000,
+            U256::from(3),
+        );
+        let envelope = LegacyTransactionEnvelope::decode(&rlp)?;
+        service.lock()?.queue.insert(
+            TransactionQueueEntry {
+                hash: envelope.hash,
+                sender: envelope.sender.context("signed transaction sender")?,
+                nonce: envelope.nonce,
+                gas_price: envelope.gas_price,
+                gas: envelope.gas,
+                data_size: envelope.data.len() as u64,
+                rlp,
+                last_block_number: 0,
+            },
+            true,
+        )?;
+
+        let error = service
+            .prepare_compatibility_pack(TransactionServiceCompatibilityPackRequest {
+                weight_limit: 63_000,
+                min_transaction_gas: 21_000,
+                proposal_period: 7,
+                estimate_gas_limit: 0,
+                last_block_number: 44,
+                total_shards: 1,
+                node_shard: 0,
+                shard_period_interval: 1,
+            })
+            .expect_err("overflowing envelope cost must fail packing");
+        assert!(
+            error
+                .to_string()
+                .contains("TM_RUNTIME_PACK_CANDIDATE_ENVELOPE_INSPECT_FAILED")
+        );
+        assert!(!service.abort_compatibility_pack()?);
 
         std::fs::remove_dir_all(temp_dir)?;
         Ok(())

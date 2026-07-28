@@ -27,13 +27,15 @@ use crate::transaction_packing_service::{TransactionPackingEstimate, Transaction
 use crate::transaction_queue::TransactionQueueEntry;
 use crate::transaction_service::{
     DagTransactionSaveInput, TransactionService, TransactionServiceAccountNonceFact,
-    TransactionServiceConfig, TransactionServiceEstimateRequest,
-    TransactionServiceGasEstimationPlan, TransactionServiceGasEstimationRequest,
-    TransactionServiceGuard, TransactionServiceProposerPackFinalized,
-    TransactionServiceProposerPackPrepared, TransactionServiceTransactionView,
-    TransactionServiceTransactionViewPlan, TransactionServiceTransactionViewRequest,
-    append_prepared_dag_transactions, prepare_dag_transaction_publication,
-    prepare_dag_transactions, publish_dag_transactions,
+    TransactionServiceCompatibilityPackFinalized, TransactionServiceCompatibilityPackPrepared,
+    TransactionServiceCompatibilityPackRequest, TransactionServiceConfig,
+    TransactionServiceEstimateRequest, TransactionServiceGasEstimationPlan,
+    TransactionServiceGasEstimationRequest, TransactionServiceGasEstimationResult,
+    TransactionServiceGuard, TransactionServicePackEstimate, TransactionServicePayload,
+    TransactionServiceProposerPackFinalized, TransactionServiceProposerPackPrepared,
+    TransactionServiceTransactionView, TransactionServiceTransactionViewPlan,
+    TransactionServiceTransactionViewRequest, append_prepared_dag_transactions,
+    prepare_dag_transaction_publication, prepare_dag_transactions, publish_dag_transactions,
     remove_non_finalized_sidecars_after_dag_commit,
 };
 use anyhow::{Context, Result, ensure};
@@ -460,6 +462,60 @@ impl DagTransactionService {
     pub fn transaction_queue_min_gas_price(&self, limit: u64) -> Result<[u8; 32]> {
         self.transaction
             .queue_min_gas_price_for_block_inclusion(limit)
+    }
+
+    /// Updates finalized gas-price facts inside the native transaction owner.
+    pub fn transaction_update_gas_prices(&self, gas_prices: Vec<U256>) -> Result<()> {
+        self.transaction.update_gas_prices(gas_prices)
+    }
+
+    /// Starts one compatibility packing cursor and returns unlocked EVM requests.
+    pub fn transaction_prepare_compatibility_pack(
+        &self,
+        request: TransactionServiceCompatibilityPackRequest,
+    ) -> Result<TransactionServiceCompatibilityPackPrepared> {
+        self.transaction.prepare_compatibility_pack(request)
+    }
+
+    /// Finalizes the active compatibility packing cursor.
+    pub fn transaction_finalize_compatibility_pack(
+        &self,
+        estimates: Vec<TransactionServicePackEstimate>,
+    ) -> Result<TransactionServiceCompatibilityPackFinalized> {
+        self.transaction.finalize_compatibility_pack(estimates)
+    }
+
+    /// Aborts only an active compatibility packing cursor.
+    pub fn transaction_abort_compatibility_pack(&self) -> Result<bool> {
+        self.transaction.abort_compatibility_pack()
+    }
+
+    /// Stores one opaque external gas-estimation result.
+    pub fn transaction_store_gas_estimation(
+        &self,
+        result: TransactionServiceGasEstimationResult,
+    ) -> Result<bool> {
+        self.transaction.store_gas_estimation(result)
+    }
+
+    /// Initializes recently-finalized sidecars in one native lock epoch.
+    pub fn transaction_initialize_recently_finalized(
+        &self,
+        period: u64,
+        payloads: Vec<TransactionServicePayload>,
+    ) -> Result<()> {
+        self.transaction
+            .initialize_recently_finalized(period, payloads)
+    }
+
+    /// Removes selected non-finalized payloads durably before live publication.
+    pub fn transaction_remove_non_finalized(&self, hashes: Vec<H256>) -> Result<u64> {
+        self.transaction.remove_non_finalized(hashes)
+    }
+
+    /// Applies finalized-block expiry to native non-proposable queue state.
+    pub fn transaction_queue_block_finalized(&self, block_number: u64) -> Result<Vec<H256>> {
+        self.transaction.queue_block_finalized(block_number)
     }
 
     /// Validates a candidate level against pivot and tip metadata.

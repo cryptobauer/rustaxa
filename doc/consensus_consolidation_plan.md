@@ -150,10 +150,12 @@ behavioral tests are deleted. The DAG service, mutable state, guard, and root
 DAG lock accessors are crate-private. Native transaction services also own the
 complete read-task family, including queue/sidecar/storage views, status and gas
 facts, and gas-estimation planning; those paths no longer borrow a bridge
-transaction guard. The transaction state/guard remains an explicit bridge
-escape hatch only for unmigrated mutation, admission, cache-store,
-queue-finalization, sidecar, and compatibility packing adapters and may not
-cross CXX or external callbacks.
+transaction guard. Native transaction services additionally own compatibility
+packing, gas-oracle/cache mutation, recently-finalized initialization,
+non-finalized durable removal, and finalized-block queue expiry. The
+transaction state/guard remains an explicit bridge escape hatch only for
+unmigrated admission, DAG-save/finalized-status, recovery, and finalized
+filter/verification adapters and may not cross CXX or external callbacks.
 
 ### 3. Collapse configuration topology
 

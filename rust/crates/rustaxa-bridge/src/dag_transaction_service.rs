@@ -38,8 +38,11 @@ use rustaxa_consensus::transaction_packing_service::{
     TransactionPackingEstimate, TransactionPackingSelection,
 };
 use rustaxa_consensus::transaction_service::{
-    TransactionServiceAccountNonceFact, TransactionServiceConfig,
-    TransactionServiceEstimateRequest, TransactionServiceTransactionView,
+    TransactionServiceAccountNonceFact, TransactionServiceCompatibilityPackFinalized,
+    TransactionServiceCompatibilityPackPrepared, TransactionServiceCompatibilityPackRequest,
+    TransactionServiceConfig, TransactionServiceEstimateRequest,
+    TransactionServiceGasEstimationResult, TransactionServicePackEstimate,
+    TransactionServicePayload, TransactionServiceTransactionView,
 };
 
 /// CXX wrapper over the native DAG application root.
@@ -109,16 +112,6 @@ pub fn create_dag_transaction_service_from_storage(
     Ok(Box::new(BridgeDagTransactionService { root }))
 }
 
-macro_rules! transaction_mut {
-    ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
-        pub fn $name(&self, $( $arg: $ty ),*) -> $ret {
-            self.try_transaction()
-                .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
-                .$name($( $arg ),*)
-        }
-    };
-}
-
 macro_rules! transaction_mut_result {
     ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
         pub fn $name(&self, $( $arg: $ty ),*) -> Result<$ret> {
@@ -128,16 +121,134 @@ macro_rules! transaction_mut_result {
 }
 
 impl BridgeDagTransactionService {
-    transaction_mut!(transaction_manager_runtime_gas_price_update(gas_prices: Vec<GasPricerGasPrice>) -> ());
-    transaction_mut_result!(transaction_manager_runtime_pack_prepare_sharded(weight_limit: u64, min_transaction_gas: u64, proposal_period: u64, estimate_gas_limit: u64, last_block_number: u64, total_shards: u16, node_shard: u16, shard_period_interval: u64) -> TransactionPackPreparedPlan);
-    transaction_mut_result!(transaction_manager_runtime_pack_finalize_with_estimates(inputs: Vec<TransactionPackSessionEstimateInput>) -> TransactionPackSessionStep);
-    transaction_mut!(transaction_manager_runtime_pack_abort() -> bool);
-    transaction_mut_result!(transaction_manager_runtime_store_gas_estimation(result: TransactionManagerGasEstimationResult) -> bool);
-    transaction_mut_result!(transaction_manager_runtime_initialize_recently_finalized_payloads(period: u64, payloads: Vec<TransactionManagerSidecarInsertInput>) -> ());
-    transaction_mut_result!(transaction_manager_runtime_remove_non_finalized(requests: Vec<TransactionManagerSidecarLookupRequest>) -> u64);
     transaction_mut_result!(transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(fact: TransactionManagerValidatedInsertRuntimeFact, final_chain_fact: TransactionManagerFinalChainAdmissionFact, input: TransactionQueueInsertInput) -> TransactionManagerAdmissionCommandReport);
     transaction_mut_result!(transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(verify_fact: TransactionManagerVerifyTransactionFact, admission_fact: TransactionManagerValidatedInsertRuntimeFact, final_chain_fact: TransactionManagerFinalChainAdmissionFact, input: TransactionQueueInsertInput) -> TransactionManagerPublicAdmissionCommandReport);
-    transaction_mut!(transaction_manager_runtime_queue_block_finalized(block_number: u64) -> Vec<TransactionQueueHash>);
+
+    pub fn transaction_manager_runtime_gas_price_update(&self, gas_prices: Vec<GasPricerGasPrice>) {
+        self.root
+            .transaction_update_gas_prices(
+                gas_prices
+                    .into_iter()
+                    .map(|gas_price| U256::from_big_endian(&gas_price.price))
+                    .collect(),
+            )
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn transaction_manager_runtime_pack_prepare_sharded(
+        &self,
+        weight_limit: u64,
+        min_transaction_gas: u64,
+        proposal_period: u64,
+        estimate_gas_limit: u64,
+        last_block_number: u64,
+        total_shards: u16,
+        node_shard: u16,
+        shard_period_interval: u64,
+    ) -> Result<TransactionPackPreparedPlan> {
+        Ok(service_pack_prepared_to_bridge(
+            self.root.transaction_prepare_compatibility_pack(
+                TransactionServiceCompatibilityPackRequest {
+                    weight_limit,
+                    min_transaction_gas,
+                    proposal_period,
+                    estimate_gas_limit,
+                    last_block_number,
+                    total_shards,
+                    node_shard,
+                    shard_period_interval,
+                },
+            )?,
+        ))
+    }
+
+    pub fn transaction_manager_runtime_pack_finalize_with_estimates(
+        &self,
+        inputs: Vec<TransactionPackSessionEstimateInput>,
+    ) -> Result<TransactionPackSessionStep> {
+        Ok(service_pack_finalized_to_bridge(
+            self.root.transaction_finalize_compatibility_pack(
+                inputs
+                    .into_iter()
+                    .map(|input| TransactionServicePackEstimate {
+                        hash: H256::from(input.hash),
+                        gas_used: input.gas_used,
+                        last_block_number: input.last_block_number,
+                        result_rlp: input.result_rlp,
+                    })
+                    .collect(),
+            )?,
+        ))
+    }
+
+    pub fn transaction_manager_runtime_pack_abort(&self) -> bool {
+        match self.root.transaction_abort_compatibility_pack() {
+            Ok(aborted) => aborted,
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED") =>
+            {
+                panic!("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+            }
+            Err(error) => panic!("TM_RUNTIME_PACKING_LOCK_POISONED: {error}"),
+        }
+    }
+
+    pub fn transaction_manager_runtime_store_gas_estimation(
+        &self,
+        result: TransactionManagerGasEstimationResult,
+    ) -> Result<bool> {
+        self.root
+            .transaction_store_gas_estimation(TransactionServiceGasEstimationResult {
+                hash: H256::from(result.hash),
+                proposal_period: result.proposal_period,
+                gas_used: result.gas_used,
+                result_rlp: result.result_rlp,
+            })
+    }
+
+    pub fn transaction_manager_runtime_initialize_recently_finalized_payloads(
+        &self,
+        period: u64,
+        payloads: Vec<TransactionManagerSidecarInsertInput>,
+    ) -> Result<()> {
+        self.root.transaction_initialize_recently_finalized(
+            period,
+            payloads
+                .into_iter()
+                .map(|payload| TransactionServicePayload {
+                    hash: H256::from(payload.hash),
+                    transaction_rlp: payload.trx_rlp,
+                })
+                .collect(),
+        )
+    }
+
+    pub fn transaction_manager_runtime_remove_non_finalized(
+        &self,
+        requests: Vec<TransactionManagerSidecarLookupRequest>,
+    ) -> Result<u64> {
+        self.root.transaction_remove_non_finalized(
+            requests
+                .into_iter()
+                .map(|request| H256::from(request.hash))
+                .collect(),
+        )
+    }
+
+    pub fn transaction_manager_runtime_queue_block_finalized(
+        &self,
+        block_number: u64,
+    ) -> Vec<TransactionQueueHash> {
+        self.root
+            .transaction_queue_block_finalized(block_number)
+            .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
+            .into_iter()
+            .map(|hash| TransactionQueueHash { hash: hash.0 })
+            .collect()
+    }
 
     pub fn transaction_manager_runtime_gas_price_bid(&self) -> [u8; 32] {
         self.root
@@ -868,6 +979,65 @@ fn selected_transaction_to_bridge(
         hash: selected.hash.0,
         gas_used: selected.gas_used,
         tx_rlp: selected.transaction_rlp,
+    }
+}
+
+fn empty_pack_candidate() -> TransactionPackSessionCandidate {
+    TransactionPackSessionCandidate {
+        found: false,
+        hash: [0; 32],
+        declared_gas: 0,
+        sender: [0; 20],
+        nonce: [0; 32],
+        gas_price: [0; 32],
+        gas: 0,
+        receiver_found: false,
+        receiver: [0; 20],
+        value: [0; 32],
+        data: Vec::new(),
+    }
+}
+
+fn service_pack_prepared_to_bridge(
+    prepared: TransactionServiceCompatibilityPackPrepared,
+) -> TransactionPackPreparedPlan {
+    TransactionPackPreparedPlan {
+        request_estimates: prepared
+            .request_estimates
+            .into_iter()
+            .map(pack_candidate_from_request)
+            .collect(),
+        selected_transactions: prepared
+            .selected_transactions
+            .into_iter()
+            .map(selected_transaction_to_bridge)
+            .collect(),
+        demoted_hashes: prepared
+            .demoted_hashes
+            .into_iter()
+            .map(|hash| TransactionQueueHash { hash: hash.0 })
+            .collect(),
+        stopped: prepared.stopped,
+    }
+}
+
+fn service_pack_finalized_to_bridge(
+    finalized: TransactionServiceCompatibilityPackFinalized,
+) -> TransactionPackSessionStep {
+    TransactionPackSessionStep {
+        request_estimate: false,
+        candidate: empty_pack_candidate(),
+        selected_transactions: finalized
+            .selected_transactions
+            .into_iter()
+            .map(selected_transaction_to_bridge)
+            .collect(),
+        demoted_hashes: finalized
+            .demoted_hashes
+            .into_iter()
+            .map(|hash| TransactionQueueHash { hash: hash.0 })
+            .collect(),
+        stopped: finalized.stopped,
     }
 }
 

@@ -690,6 +690,28 @@ bridge budget falls by 856 lines to 38,180; CXX functions, carriers, handles,
 shim lines and directories, granular flags, partial factories, compatibility
 constructors, production C++ consumers, and public signatures are unchanged.
 
+The next bounded `CRW-12` transaction contraction moves compatibility packing
+and the remaining direct mutation family behind lock-owning native
+`TransactionService` and `DagTransactionService` APIs. Rust now owns
+compatibility pack preparation/finalization/abort, canonical candidate
+inspection, queue/cache effect publication, gas-oracle and estimation-cache
+updates, recently-finalized sidecar initialization, durable non-finalized
+removal, and finalized-block queue expiry. Packing alone retains an
+owner-scoped cursor across the unlocked EVM interval; every other operation
+completes in one native transaction lock epoch. The bridge preserves all CXX
+signatures and only converts owned hashes, scalars, canonical RLP, estimates,
+selections, and demotion facts. Eight production guard methods, the infallible
+mutation-forwarding macro, bridge-local candidate inspection, and nine
+superseded bridge behavioral tests are deleted; native service coverage now
+exercises packing, cache/sidecar publication, durable removal, gas updates, and
+queue expiry. The C++ compatibility mutex remains explicit debt because
+admission, DAG-save/finalized-status, recovery, and finalized
+filter/verification still use multi-step compatibility fact collection. The
+checked bridge budget falls by 807 lines to 37,373; CXX functions, carriers,
+handles, shim lines and directories, granular flags, partial factories,
+compatibility constructors, production C++ consumers, and public signatures
+are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
