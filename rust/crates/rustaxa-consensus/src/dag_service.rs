@@ -7,17 +7,19 @@
 //! poison policy never leave the native owner.
 
 use crate::dag::{
-    DagAddBlockEffectInput, DagAddBlockEffectPlan, DagManagerBlock, DagManagerFinalizationPlan,
-    DagManagerSnapshot, DagManagerState, DagPersistenceCounters, DagProposerAttemptPlan,
-    DagProposerFrontierFacts, DagProposerSignedBlockIntent, DagProposerUnsignedBlockIntent,
-    DagReferenceMetadata, apply_finalization_cleanup_from_storage, dag_block_exists_in_storage,
-    dag_manager_block_from_rlp, dag_persistence_counters_from_storage,
-    ensure_proposal_period_mapping, plan_dag_add_block_effects, validate_pivot_tips_metadata,
+    DAG_PROPOSER_ACTION_CONTINUE, DagAddBlockEffectInput, DagAddBlockEffectPlan, DagManagerBlock,
+    DagManagerFinalizationPlan, DagManagerSnapshot, DagManagerState, DagPersistenceCounters,
+    DagProposerAttemptPlan, DagProposerFrontierFacts, DagProposerPostPackInput,
+    DagProposerSignedBlockIntent, DagProposerUnsignedBlockIntent, DagReferenceMetadata,
+    apply_finalization_cleanup_from_storage, construct_dag_vdf_message,
+    dag_block_exists_in_storage, dag_manager_block_from_rlp, dag_persistence_counters_from_storage,
+    ensure_proposal_period_mapping, plan_dag_add_block_effects, plan_dag_proposer_post_pack,
+    validate_pivot_tips_metadata,
 };
 use crate::pbft_chain::restore_pbft_chain_from_storage;
 use crate::sortition::SortitionParams;
 use crate::transaction_packing_service::TransactionPackingSelection;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::H256;
 use rustaxa_storage::Storage;
 use std::collections::BTreeMap;
@@ -27,6 +29,24 @@ use std::sync::{Arc, Mutex, MutexGuard};
 /// Stable failure identifier returned when the native DAG lock is poisoned.
 pub const DAG_TRANSACTION_SERVICE_DAG_LOCK_POISONED: &str =
     "DAG_TRANSACTION_SERVICE_DAG_LOCK_POISONED";
+
+const DAG_PROPOSER_SESSION_STATUS_ACTIVE: u8 = 0;
+const DAG_PROPOSER_SESSION_STATUS_COMPLETE: u8 = 1;
+
+/// Session-local facts consumed by the native proposal-packing application task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DagProposerPackParameters {
+    /// Proposal period used for cache and shard selection.
+    pub proposal_period: u64,
+    /// Maximum cumulative proposal weight.
+    pub weight_limit: u64,
+    /// Configured transaction shard count.
+    pub total_transaction_shards: u16,
+    /// Local transaction shard.
+    pub node_transaction_shard: u16,
+    /// Number of periods between shard rotations.
+    pub shard_period_interval: u64,
+}
 
 /// Immutable inputs for restoring the native DAG owner.
 #[derive(Clone, Copy, Debug)]
@@ -94,6 +114,7 @@ pub struct DagVerifyBlockSession {
 }
 
 /// Next deterministic external boundary requested by a proposer cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DagProposerSessionAction {
     CollectFinalChainFacts,
     PackTransactions,
@@ -102,6 +123,66 @@ pub enum DagProposerSessionAction {
     SignBlock,
     AddBlock,
     Complete,
+}
+
+/// Owned proposer instruction snapshot returned by native application tasks.
+///
+/// The snapshot contains only executor-facing facts. It deliberately excludes
+/// wallet secrets, retry keys, internal observations, and mutable cursor state.
+/// Active snapshots do not advance a cursor. Terminal snapshots are returned
+/// only after their retry effects have been published and the cursor removed.
+#[derive(Clone, Debug)]
+pub struct DagProposerSessionStep {
+    /// Native cursor status: active, complete, or invalid report.
+    pub status: u8,
+    /// Next external boundary selected by the proposer state machine.
+    pub action: DagProposerSessionAction,
+    /// Stable protocol reason code.
+    pub reason_code: u32,
+    /// Final proposer return value when the step is terminal.
+    pub return_value: bool,
+    /// Whether the retained retry cursor was updated.
+    pub update_retry_state: bool,
+    /// Next last-proposed level for retry publication.
+    pub next_last_propose_level: u64,
+    /// Next retry count for retry publication.
+    pub next_retry_count: u64,
+    /// Pivot captured by the proposer attempt.
+    pub frontier_pivot: H256,
+    /// Candidate proposal level.
+    pub proposal_level: u64,
+    /// Candidate proposal period.
+    pub proposal_period: u64,
+    /// Last finalized period used by the attempt.
+    pub last_finalized_period: u64,
+    /// VRF input passed to the retained external executor.
+    pub vrf_input: Vec<u8>,
+    /// Sender-eligible vote count.
+    pub vote_count: u64,
+    /// VDF-sortition maximum vote count.
+    pub max_vote_count: u64,
+    /// Selected VDF difficulty.
+    pub vdf_difficulty: u16,
+    /// Exact historical sortition parameters retained by the cursor.
+    pub sortition_params: SortitionParams,
+    /// Whether the proposal is stale under native policy.
+    pub vdf_stale: bool,
+    /// Whether the attempt is an old proposal.
+    pub old_proposal: bool,
+    /// Canonical VDF message for the proof executor.
+    pub vdf_message: Vec<u8>,
+    /// Selected transaction hashes in proposal order.
+    pub selected_transaction_hashes: Vec<H256>,
+    /// Selected canonical transaction payloads exposed only at add-block.
+    pub selected_transactions: Vec<TransactionPackingSelection>,
+    /// Hash passed to the retained signing executor.
+    pub signing_hash: H256,
+    /// Canonical signed block intent exposed only at add-block.
+    pub signed_intent: Option<DagProposerSignedBlockIntent>,
+    /// Whether successful add-block execution records the proposed identity.
+    pub record_proposed_block: bool,
+    /// Stable error identifier for invalid or failed reports.
+    pub error_code: String,
 }
 
 /// Transaction-pressure snapshot retained by a proposer cursor.
@@ -407,6 +488,107 @@ impl DagServiceState {
         })
     }
 
+    /// Snapshots pack-shaper facts for an active proposer session.
+    pub(crate) fn proposer_pack_parameters(
+        &self,
+        session_id: u64,
+    ) -> Result<DagProposerPackParameters> {
+        let session = self
+            .proposer_sessions
+            .get(&session_id)
+            .context("DAG_PROPOSER_PACK_SESSION_NOT_ACTIVE")?;
+        ensure!(
+            matches!(session.action, DagProposerSessionAction::PackTransactions),
+            "DAG_PROPOSER_PACK_SESSION_WRONG_STAGE"
+        );
+        Ok(DagProposerPackParameters {
+            proposal_period: session.attempt.proposal_period,
+            weight_limit: session.attempt.proposal_weight_limit,
+            total_transaction_shards: session.attempt.total_transaction_shards,
+            node_transaction_shard: session.attempt.node_transaction_shard,
+            shard_period_interval: session.attempt.shard_period_interval,
+        })
+    }
+
+    /// Applies transaction packing output and advances proposer control flow.
+    pub(crate) fn apply_proposer_pack(
+        &mut self,
+        session_id: u64,
+        network_throttled: bool,
+        selected_transactions: Vec<TransactionPackingSelection>,
+    ) -> Result<DagProposerSessionStep> {
+        let session = self
+            .proposer_sessions
+            .get_mut(&session_id)
+            .context("DAG_PROPOSER_PACK_SESSION_NOT_ACTIVE")?;
+        ensure!(
+            matches!(session.action, DagProposerSessionAction::PackTransactions),
+            "DAG_PROPOSER_PACK_SESSION_WRONG_STAGE"
+        );
+        let post_pack = plan_dag_proposer_post_pack(DagProposerPostPackInput {
+            proposal_level: session.attempt.proposal_level,
+            network_throttled,
+            packed_transaction_count: selected_transactions.len() as u64,
+        });
+        session.reason_code = post_pack.reason_code;
+        session.update_retry_state = post_pack.update_retry_state;
+        session.next_last_propose_level = post_pack.next_last_propose_level;
+        session.next_retry_count = post_pack.next_retry_count;
+
+        if post_pack.action != DAG_PROPOSER_ACTION_CONTINUE {
+            session.action = DagProposerSessionAction::Complete;
+            session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+            session.return_value = false;
+        } else {
+            session.selected_transaction_hashes = selected_transactions
+                .iter()
+                .map(|selected| selected.hash)
+                .collect();
+            session.transaction_gas_estimations = selected_transactions
+                .iter()
+                .map(|selected| selected.gas_used)
+                .collect();
+            session.vdf_message = construct_dag_vdf_message(
+                session.attempt.frontier.pivot,
+                &session.selected_transaction_hashes,
+            );
+            session.selected_transactions = selected_transactions;
+            session.action = DagProposerSessionAction::StartVdf;
+            session.status = DAG_PROPOSER_SESSION_STATUS_ACTIVE;
+        }
+        self.finish_proposer_session_step(session_id)
+    }
+
+    /// Returns the active proposer instruction without advancing its cursor.
+    pub(crate) fn proposer_session_step(&self, session_id: u64) -> Result<DagProposerSessionStep> {
+        let session = self
+            .proposer_sessions
+            .get(&session_id)
+            .context("DAG_PROPOSER_PACK_SESSION_NOT_ACTIVE")?;
+        Ok(proposer_session_step(session))
+    }
+
+    fn finish_proposer_session_step(&mut self, session_id: u64) -> Result<DagProposerSessionStep> {
+        let step = self.proposer_session_step(session_id)?;
+        if step.status == DAG_PROPOSER_SESSION_STATUS_ACTIVE {
+            return Ok(step);
+        }
+        if step.update_retry_state
+            && let Some(session) = self.proposer_sessions.get(&session_id)
+            && let Some(retry_state) = self.proposer_retry_states.get_mut(&session.retry_key)
+        {
+            retry_state.last_propose_level = step.next_last_propose_level;
+            retry_state.retry_count = step.next_retry_count;
+        }
+        self.proposer_sessions.remove(&session_id);
+        Ok(step)
+    }
+
+    /// Removes a proposer session without retry-state mutation.
+    pub(crate) fn abort_proposer_session(&mut self, session_id: u64) -> bool {
+        self.proposer_sessions.remove(&session_id).is_some()
+    }
+
     fn reference_metadata(&self, hash: H256) -> Result<DagReferenceMetadata> {
         let metadata = self.state.reference_metadata(hash);
         if metadata.found {
@@ -431,6 +613,43 @@ impl DagServiceState {
             found: true,
             level: block.level,
         })
+    }
+}
+
+fn proposer_session_step(session: &DagProposerSession) -> DagProposerSessionStep {
+    DagProposerSessionStep {
+        status: session.status,
+        action: session.action,
+        reason_code: session.reason_code,
+        return_value: session.return_value,
+        update_retry_state: session.update_retry_state,
+        next_last_propose_level: session.next_last_propose_level,
+        next_retry_count: session.next_retry_count,
+        frontier_pivot: session.attempt.frontier.pivot,
+        proposal_level: session.attempt.proposal_level,
+        proposal_period: session.attempt.proposal_period,
+        last_finalized_period: session.attempt.last_finalized_period,
+        vrf_input: session.attempt.vrf_input.clone(),
+        vote_count: session.attempt.vote_count,
+        max_vote_count: session.attempt.max_vote_count,
+        vdf_difficulty: session.attempt.vdf_difficulty,
+        sortition_params: session.sortition_params,
+        vdf_stale: session.attempt.vdf_stale,
+        old_proposal: session.attempt.old_proposal,
+        vdf_message: session.vdf_message.clone(),
+        selected_transaction_hashes: session.selected_transaction_hashes.clone(),
+        selected_transactions: if matches!(session.action, DagProposerSessionAction::AddBlock) {
+            session.selected_transactions.clone()
+        } else {
+            Vec::new()
+        },
+        signing_hash: session
+            .unsigned_intent
+            .as_ref()
+            .map_or_else(H256::zero, |intent| intent.signing_hash),
+        signed_intent: session.signed_intent.clone(),
+        record_proposed_block: session.record_proposed_block,
+        error_code: session.error_code.clone(),
     }
 }
 

@@ -13,6 +13,8 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::BridgeStorage;
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
+#[cfg(test)]
+use rustaxa_consensus::dag::plan_dag_proposer_post_pack;
 use rustaxa_consensus::dag::{
     collect_non_finalized_sync_payload_from_storage, construct_dag_vdf_message,
     dag_block_exists_in_storage, dag_manager_block_from_rlp as domain_dag_manager_block_from_rlp,
@@ -20,7 +22,7 @@ use rustaxa_consensus::dag::{
     finalize_dag_proposer_signed_block_intent, load_dag_block_from_storage,
     period_block_hash_from_storage, plan_dag_proposer_attempt,
     plan_dag_proposer_block_construction_from_storage, plan_dag_proposer_block_intent,
-    plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
+    plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
     plan_dag_proposer_tip_selection_from_storage, plan_dag_proposer_vdf_wait,
     plan_dag_proposer_worker_command, plan_dag_verify_transaction_query,
     proposal_period_for_level_from_storage, save_dag_block_to_storage, validate_dag_verify_gas,
@@ -48,6 +50,7 @@ use rustaxa_consensus::dag_service::{
     DagVerifyBlockSession, DagVerifyBlockSessionAction,
 };
 use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
+#[cfg(test)]
 use rustaxa_consensus::transaction_packing_service::TransactionPackingSelection;
 use rustaxa_storage::Storage;
 #[cfg(test)]
@@ -118,14 +121,14 @@ pub(crate) struct DagManagerBlock {
 const DAG_PROPOSER_SESSION_STATUS_ACTIVE: u8 = 0;
 const DAG_PROPOSER_SESSION_STATUS_COMPLETE: u8 = 1;
 const DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT: u8 = 2;
-const DAG_PROPOSER_SESSION_ACTION_NONE: u8 = 0;
-const DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS: u8 = 1;
-const DAG_PROPOSER_SESSION_ACTION_START_VDF: u8 = 2;
+pub(crate) const DAG_PROPOSER_SESSION_ACTION_NONE: u8 = 0;
+pub(crate) const DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS: u8 = 1;
+pub(crate) const DAG_PROPOSER_SESSION_ACTION_START_VDF: u8 = 2;
 const DAG_PROPOSER_SESSION_ACTION_CANCEL_VDF: u8 = 3;
-const DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP: u8 = 4;
-const DAG_PROPOSER_SESSION_ACTION_SIGN_BLOCK: u8 = 5;
-const DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK: u8 = 6;
-const DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS: u8 = 7;
+pub(crate) const DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP: u8 = 4;
+pub(crate) const DAG_PROPOSER_SESSION_ACTION_SIGN_BLOCK: u8 = 5;
+pub(crate) const DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK: u8 = 6;
+pub(crate) const DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS: u8 = 7;
 
 /// Private identity and verifier inputs captured from one active VDF action.
 ///
@@ -161,6 +164,7 @@ pub(crate) enum DagProposerFinalChainFactsPreparation {
 }
 
 /// Private pack configuration derived from one live DAG proposer cursor.
+#[cfg(test)]
 pub(crate) struct DagProposerPackParameters {
     pub proposal_period: u64,
     pub weight_limit: u64,
@@ -1465,6 +1469,7 @@ pub(crate) fn dag_manager_runtime_apply_proposer_final_chain_facts(
 }
 
 /// Returns private transaction-pack parameters for a live proposer cursor.
+#[cfg(test)]
 pub(crate) fn dag_manager_runtime_proposer_pack_parameters(
     runtime: &DagRuntimeState,
     session_id: u64,
@@ -1487,6 +1492,7 @@ pub(crate) fn dag_manager_runtime_proposer_pack_parameters(
 }
 
 /// Applies Rust transaction-pack output directly to its owning DAG cursor.
+#[cfg(test)]
 pub(crate) fn dag_manager_runtime_apply_proposer_pack(
     runtime: &mut DagRuntimeState,
     session_id: u64,
@@ -2001,7 +2007,7 @@ fn to_domain_proposer_session_begin_input(
     }
 }
 
-fn empty_sortition_params() -> SortitionParams {
+pub(crate) fn empty_sortition_params() -> SortitionParams {
     SortitionParams {
         vrf: VrfParams { threshold_upper: 0 },
         vdf: VdfParams {
@@ -2013,7 +2019,7 @@ fn empty_sortition_params() -> SortitionParams {
     }
 }
 
-fn legacy_sortition_params(
+pub(crate) fn legacy_sortition_params(
     params: SortitionParams,
 ) -> crate::ffi::rustaxa_ffi::LegacySortitionParams {
     crate::ffi::rustaxa_ffi::LegacySortitionParams {

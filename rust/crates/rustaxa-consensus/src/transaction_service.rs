@@ -1,16 +1,22 @@
 use crate::gas_pricer::{GasPriceOracle, GasPricerConfig};
 use crate::transaction_manager::TransactionManagerSidecar;
 use crate::transaction_manager::{DagTransactionSaveFact, plan_transactions_from_dag_block};
-use crate::transaction_packing_service::TransactionPackingService;
+use crate::transaction_packing_service::{
+    TransactionPackingCandidate, TransactionPackingEffect, TransactionPackingEstimate,
+    TransactionPackingEstimateRequest, TransactionPackingOwner, TransactionPackingRequest,
+    TransactionPackingSelection, TransactionPackingService,
+};
 use crate::transaction_queue::TransactionQueue;
+use crate::transaction_queue::TransactionQueueDemoteStatus;
 use crate::transaction_storage::{
     NonFinalizedTransactionStoragePayload, append_non_finalized_transactions_to_batch,
     transaction_finalized,
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::{H256, U256};
 use rustaxa_storage::StorageWriteBatch;
 use rustaxa_storage::{StatusField, Storage};
+use rustaxa_types::LegacyTransactionEnvelope;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
@@ -96,6 +102,49 @@ pub(crate) struct PreparedDagTransactionPublication {
     queue: TransactionQueue,
     sidecar: TransactionManagerSidecar,
     outcome: DagTransactionSaveOutcome,
+}
+
+/// Prepared transaction owner output returned by one proposer-packing step.
+#[derive(Clone, Debug)]
+pub(crate) struct TransactionServiceProposerPackPrepared {
+    /// Candidates that still need estimator input from the compatibility EVM boundary.
+    pub request_estimates: Vec<TransactionServiceEstimateRequest>,
+    /// Deterministic selections already accepted without external estimation.
+    pub selected_transactions: Vec<TransactionPackingSelection>,
+}
+
+/// Executor-ready transaction candidate returned across the unlocked EVM boundary.
+///
+/// Construction decodes and cross-checks the canonical queue payload while the
+/// transaction lock is held. Bridge conversion is therefore infallible and a
+/// malformed queue entry cannot strand the paired DAG and packing cursors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionServiceEstimateRequest {
+    /// Canonical transaction identity.
+    pub hash: H256,
+    /// Declared transaction gas used by legacy estimator routing.
+    pub declared_gas: u64,
+    /// Recovered sender, validated against queue metadata.
+    pub sender: ethereum_types::H160,
+    /// Transaction nonce.
+    pub nonce: U256,
+    /// Transaction gas price.
+    pub gas_price: U256,
+    /// Transaction gas limit.
+    pub gas: u64,
+    /// Optional receiver; `None` denotes contract creation.
+    pub receiver: Option<ethereum_types::H160>,
+    /// Transaction value.
+    pub value: U256,
+    /// Calldata or initcode.
+    pub data: Vec<u8>,
+}
+
+/// Finalized proposer-packing output after all required estimator results are known.
+#[derive(Clone, Debug)]
+pub(crate) struct TransactionServiceProposerPackFinalized {
+    /// Deterministic selected proposals with canonical RLP payloads.
+    pub selected_transactions: Vec<TransactionPackingSelection>,
 }
 
 /// Native owner of transaction construction, restoration, and serialization.
@@ -188,6 +237,185 @@ impl TransactionServiceState {
             transaction_packing: TransactionPackingService::new(),
         })
     }
+
+    /// Prepares owner-scoped proposer packing from a validated queue/cache snapshot.
+    ///
+    /// Candidate payloads are decoded and cross-checked before any executor
+    /// request escapes. Queue demotions and cache writes publish from cloned
+    /// next state only after every effect succeeds. An estimate-needed result
+    /// retains the exact packing owner; immediate results leave it inactive.
+    pub(crate) fn prepare_proposer_pack(
+        &mut self,
+        owner: TransactionPackingOwner,
+        params: crate::dag_service::DagProposerPackParameters,
+        min_transaction_gas: u64,
+        estimate_gas_limit: u64,
+        last_block_number: u64,
+    ) -> Result<TransactionServiceProposerPackPrepared> {
+        let candidate_limit = TransactionPackingService::candidate_limit(
+            params.weight_limit,
+            min_transaction_gas,
+            params.total_transaction_shards,
+            params.node_transaction_shard,
+            params.shard_period_interval,
+        )?;
+        let candidates = self
+            .queue
+            .ordered_transactions(candidate_limit)
+            .into_iter()
+            .map(|entry| {
+                let cached_gas_used = self
+                    .sidecar
+                    .gas_estimation_cache_get(entry.hash, params.proposal_period)
+                    .context("TM_RUNTIME_PACK_GAS_ESTIMATION_CACHE_GET")?
+                    .map(|cached| cached.gas_used);
+                Ok((entry, cached_gas_used))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let step = self
+            .transaction_packing
+            .prepare(TransactionPackingRequest {
+                owner,
+                weight_limit: params.weight_limit,
+                min_transaction_gas,
+                proposal_period: params.proposal_period,
+                estimate_gas_limit,
+                last_block_number,
+                total_shards: params.total_transaction_shards,
+                node_shard: params.node_transaction_shard,
+                shard_period_interval: params.shard_period_interval,
+                candidates: candidates
+                    .into_iter()
+                    .map(|(entry, cached_gas_used)| TransactionPackingCandidate {
+                        entry,
+                        cached_gas_used,
+                    })
+                    .collect(),
+            })
+            .context("TM_RUNTIME_PACK_PREPARE")?;
+        let request_estimates = step
+            .request_estimates
+            .iter()
+            .cloned()
+            .map(transaction_estimate_request)
+            .collect::<Result<Vec<_>>>()?;
+        let (selected_transactions, demoted_hashes) =
+            apply_packing_step_effects(self, &step, "TM_RUNTIME_PACK_PREPARE")?;
+        if !demoted_hashes.is_empty() {
+            self.transaction_packing
+                .acknowledge_demotions(owner, demoted_hashes.clone())?;
+        }
+        Ok(TransactionServiceProposerPackPrepared {
+            request_estimates,
+            selected_transactions,
+        })
+    }
+
+    /// Finalizes an exact owner-scoped estimate sequence and publishes its effects.
+    ///
+    /// Count, ordering, hash, or owner mismatches return without publishing
+    /// queue/cache state. Successful demotion and cache effects are precomputed
+    /// on clones and then installed together before selected canonical payloads
+    /// are returned to the application root.
+    pub(crate) fn finalize_proposer_pack(
+        &mut self,
+        owner: TransactionPackingOwner,
+        estimates: Vec<TransactionPackingEstimate>,
+    ) -> Result<TransactionServiceProposerPackFinalized> {
+        let step = self
+            .transaction_packing
+            .finalize(owner, estimates)
+            .context("TM_RUNTIME_PACK_FINALIZE")?;
+        let (selected_transactions, _demoted_hashes) =
+            apply_packing_step_effects(self, &step, "TM_RUNTIME_PACK_FINALIZE")?;
+        Ok(TransactionServiceProposerPackFinalized {
+            selected_transactions,
+        })
+    }
+
+    /// Aborts one active owner session from Rust proposer packing.
+    pub(crate) fn abort_proposer_pack(&mut self, owner: TransactionPackingOwner) -> Result<bool> {
+        self.transaction_packing.abort(owner)
+    }
+}
+
+fn transaction_estimate_request(
+    request: TransactionPackingEstimateRequest,
+) -> Result<TransactionServiceEstimateRequest> {
+    let entry = request.entry;
+    let envelope = LegacyTransactionEnvelope::decode(&entry.rlp)
+        .context("TM_RUNTIME_PACK_CANDIDATE_ENVELOPE_INSPECT_FAILED")?;
+    ensure!(
+        envelope.hash == entry.hash,
+        "TM_RUNTIME_PACK_CANDIDATE_HASH_MISMATCH"
+    );
+    let sender = envelope
+        .sender
+        .context("TM_RUNTIME_PACK_CANDIDATE_SENDER_MISSING")?;
+    ensure!(
+        sender == entry.sender,
+        "TM_RUNTIME_PACK_CANDIDATE_SENDER_MISMATCH"
+    );
+    ensure!(
+        envelope.nonce == entry.nonce,
+        "TM_RUNTIME_PACK_CANDIDATE_NONCE_MISMATCH"
+    );
+    ensure!(
+        envelope.gas_price == entry.gas_price,
+        "TM_RUNTIME_PACK_CANDIDATE_GAS_PRICE_MISMATCH"
+    );
+    ensure!(
+        envelope.gas == entry.gas,
+        "TM_RUNTIME_PACK_CANDIDATE_GAS_MISMATCH"
+    );
+    ensure!(
+        envelope.data.len() as u64 == entry.data_size,
+        "TM_RUNTIME_PACK_CANDIDATE_DATA_SIZE_MISMATCH"
+    );
+    Ok(TransactionServiceEstimateRequest {
+        hash: entry.hash,
+        declared_gas: entry.gas,
+        sender,
+        nonce: entry.nonce,
+        gas_price: entry.gas_price,
+        gas: entry.gas,
+        receiver: envelope.receiver,
+        value: envelope.value,
+        data: envelope.data,
+    })
+}
+
+fn apply_packing_step_effects(
+    runtime: &mut TransactionServiceState,
+    step: &crate::transaction_packing_service::TransactionPackingStep,
+    cache_context: &'static str,
+) -> Result<(Vec<TransactionPackingSelection>, Vec<H256>)> {
+    let mut next_queue = runtime.queue.clone();
+    let mut next_sidecar = runtime.sidecar.clone();
+    let mut demoted_hashes = Vec::new();
+    for effect in &step.effects {
+        match effect {
+            TransactionPackingEffect::Demote(intent) => {
+                let outcome = next_queue.demote(intent.hash, intent.last_block_number);
+                if matches!(outcome.status, TransactionQueueDemoteStatus::Demoted) {
+                    demoted_hashes.push(intent.hash);
+                }
+            }
+            TransactionPackingEffect::CacheInsert(intent) => {
+                next_sidecar
+                    .gas_estimation_cache_insert(
+                        intent.hash,
+                        intent.proposal_period,
+                        intent.gas_used,
+                        intent.result_rlp.clone(),
+                    )
+                    .context(cache_context)?;
+            }
+        }
+    }
+    runtime.queue = next_queue;
+    runtime.sidecar = next_sidecar;
+    Ok((step.selected.clone(), demoted_hashes))
 }
 
 /// Plans accepted DAG transactions without mutating storage or live state.

@@ -557,6 +557,25 @@ over hidden native guard accessors remain explicit `CRW-12` debt. The checked br
 43,565; shim lines, CXX functions, carriers, handles, shim directories, granular flags, partial factories,
 compatibility constructors, production callers, and non-test C++ consumers are unchanged.
 
+The following bounded `CRW-12` contraction moves the complete DAG-proposer
+transaction-pack task behind native `DagTransactionService`. Native code now
+owns DAG-stage validation, queue/cache snapshot and ordered effect publication,
+owner-bound transaction-packing cursors, immediate terminal advancement,
+estimate finalization, selected payload transfer, and exact DAG/transaction
+cursor cleanup. EVM estimation remains an unlocked leaf boundary over
+executor-ready native candidates; the three bridge functions contain only
+carrier conversion and one native-root call. Four native application tests
+cover the unlocked estimate interval and cache/payload publication, throttled,
+empty, retry-state publication, mismatch, idempotent and lock-poison cleanup
+paths, compatibility-owner isolation, and malformed queue payload rejection.
+Four superseded bridge semantic tests are deleted while one full
+carrier-conversion path remains. Temporary
+FFI-shaped proposer phases, verifier, query, and compatibility methods over
+hidden native guard accessors remain explicit `CRW-12` debt. The checked bridge
+budget falls by 154 lines to 43,411; shim lines, CXX functions, carriers,
+handles, shim directories, granular flags, partial factories, compatibility
+constructors, production callers, and non-test C++ consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

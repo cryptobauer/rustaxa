@@ -135,9 +135,14 @@ owner, publishes only after all three succeed, and owns access to the canonical 
 DAG-then-transaction acquisition. It also owns the complete add-block cursor, canonical transaction validation,
 single shared DAG/transaction persistence batch, post-commit live publication, finalized-order storage application,
 and sibling transaction-sidecar cleanup.
-The bridge temporarily supplies remaining FFI-shaped proposer, verifier, packing, query, and compatibility task methods
-over short native guards. The temporarily public native DAG and transaction state/guards are explicit bridge
-escape-hatch debt and may not cross CXX or external callbacks.
+The native DAG application root also owns the proposer transaction-pack task:
+it validates and advances the DAG cursor, snapshots and applies transaction
+queue/cache effects, retains owner-bound estimate cursors across the unlocked
+EVM interval, and cleans both matching cursors on failure. The bridge
+temporarily supplies the remaining FFI-shaped proposer, verifier, query, and
+compatibility task methods over short native guards. The temporarily public
+native DAG and transaction state/guards are explicit bridge escape-hatch debt
+and may not cross CXX or external callbacks.
 
 ### 3. Collapse configuration topology
 

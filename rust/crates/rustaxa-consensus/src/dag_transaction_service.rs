@@ -11,12 +11,15 @@ use crate::dag::{
     DagPersistenceCounters, dag_block_transaction_hashes, dag_manager_block_from_rlp,
 };
 use crate::dag_service::{
-    DagAddBlockPreparedTransaction, DagAddBlockSession, DagAddBlockStoredPlan, DagService,
-    DagServiceConfig, DagServiceGuard,
+    DagAddBlockPreparedTransaction, DagAddBlockSession, DagAddBlockStoredPlan,
+    DagProposerSessionStep, DagService, DagServiceConfig, DagServiceGuard,
 };
 use crate::sortition::{SortitionConfig, SortitionService, SortitionServiceGuard};
+use crate::transaction_packing_service::{TransactionPackingEstimate, TransactionPackingOwner};
 use crate::transaction_service::{
-    DagTransactionSaveInput, TransactionService, TransactionServiceConfig, TransactionServiceGuard,
+    DagTransactionSaveInput, TransactionService, TransactionServiceConfig,
+    TransactionServiceEstimateRequest, TransactionServiceGuard,
+    TransactionServiceProposerPackFinalized, TransactionServiceProposerPackPrepared,
     append_prepared_dag_transactions, prepare_dag_transaction_publication,
     prepare_dag_transactions, publish_dag_transactions,
     remove_non_finalized_sidecars_after_dag_commit,
@@ -151,6 +154,30 @@ pub struct DagFinalizationReport {
     pub finalized_count: usize,
     /// Expired DAG identities for temporary external seen-block cleanup.
     pub expired_hashes: Vec<H256>,
+}
+
+/// Complete native request for one proposer transaction-pack preparation.
+#[derive(Clone, Copy, Debug)]
+pub struct DagProposerPackPrepareRequest {
+    /// DAG proposer cursor identity.
+    pub session_id: u64,
+    /// Whether transport pressure prevents transaction packing.
+    pub network_throttled: bool,
+    /// Minimum transaction gas used to bound the queue snapshot.
+    pub min_transaction_gas: u64,
+    /// Declared-gas ceiling below which EVM estimation is unnecessary.
+    pub estimate_gas_limit: u64,
+    /// FinalChain head recorded on any queue demotion.
+    pub last_block_number: u64,
+}
+
+/// Native proposer instruction returned across the unlocked EVM boundary.
+#[derive(Clone, Debug)]
+pub struct DagProposerPackStep {
+    /// Current proposer state-machine instruction.
+    pub session: DagProposerSessionStep,
+    /// Executor-ready candidates requiring live EVM estimation.
+    pub estimate_requests: Vec<TransactionServiceEstimateRequest>,
 }
 
 impl DagTransactionService {
@@ -339,6 +366,162 @@ impl DagTransactionService {
         })
     }
 
+    /// Prepares one owner-bound proposer transaction-pack stage.
+    ///
+    /// A throttled request validates and advances only the DAG cursor. Other
+    /// requests acquire DAG then transaction, derive private proposal/shard
+    /// parameters, snapshot the queue and cache, and either return
+    /// executor-ready estimate requests or advance the DAG cursor immediately.
+    /// Every guard is released before return. Any failure removes the matching
+    /// DAG cursor and aborts only the matching transaction-packing owner.
+    pub fn prepare_proposer_pack(
+        &self,
+        request: DagProposerPackPrepareRequest,
+    ) -> Result<DagProposerPackStep> {
+        if request.network_throttled {
+            let mut dag = self.lock_dag()?;
+            let result = (|| {
+                let _ = dag.proposer_pack_parameters(request.session_id)?;
+                let session = dag.apply_proposer_pack(request.session_id, true, Vec::new())?;
+                Ok(DagProposerPackStep {
+                    session,
+                    estimate_requests: Vec::new(),
+                })
+            })();
+            if result.is_err() {
+                dag.abort_proposer_session(request.session_id);
+            }
+            return result;
+        }
+
+        let mut dag = self.lock_dag()?;
+        let mut transaction = match self.lock_transaction() {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                dag.abort_proposer_session(request.session_id);
+                return Err(error);
+            }
+        };
+        let owner = TransactionPackingOwner::DagProposer(request.session_id);
+        let result = (|| {
+            let params = dag.proposer_pack_parameters(request.session_id)?;
+            let prepared: TransactionServiceProposerPackPrepared = transaction
+                .prepare_proposer_pack(
+                    owner,
+                    params,
+                    request.min_transaction_gas,
+                    request.estimate_gas_limit,
+                    request.last_block_number,
+                )?;
+            let session = if prepared.request_estimates.is_empty() {
+                dag.apply_proposer_pack(request.session_id, false, prepared.selected_transactions)?
+            } else {
+                dag.proposer_session_step(request.session_id)?
+            };
+            Ok(DagProposerPackStep {
+                session,
+                estimate_requests: prepared.request_estimates,
+            })
+        })();
+        match result {
+            Ok(report) => Ok(report),
+            Err(error) => {
+                let _ = transaction.abort_proposer_pack(owner);
+                dag.abort_proposer_session(request.session_id);
+                Err(error)
+            }
+        }
+    }
+
+    /// Finalizes one proposer pack after the unlocked EVM interval.
+    ///
+    /// Estimates must match the retained owner-bound candidate sequence exactly.
+    /// The method acquires DAG then transaction, validates the DAG stage before
+    /// transaction mutation, atomically publishes queue/cache effects, transfers
+    /// selected canonical payloads into the DAG cursor, and returns its next
+    /// instruction. Count, hash, owner, cache, or DAG errors clean both matching
+    /// cursors while preserving any compatibility-owned packing session.
+    pub fn finalize_proposer_pack(
+        &self,
+        session_id: u64,
+        estimates: Vec<TransactionPackingEstimate>,
+    ) -> Result<DagProposerPackStep> {
+        let owner = TransactionPackingOwner::DagProposer(session_id);
+        let mut dag = match self.lock_dag() {
+            Ok(dag) => dag,
+            Err(error) => {
+                self.abort_transaction_pack_after_dag_lock_failure(owner);
+                return Err(error);
+            }
+        };
+        let mut transaction = match self.lock_transaction() {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                dag.abort_proposer_session(session_id);
+                return Err(error);
+            }
+        };
+        let result = (|| {
+            let _ = dag.proposer_pack_parameters(session_id)?;
+            let finalized: TransactionServiceProposerPackFinalized =
+                transaction.finalize_proposer_pack(owner, estimates)?;
+            let session =
+                dag.apply_proposer_pack(session_id, false, finalized.selected_transactions)?;
+            Ok(DagProposerPackStep {
+                session,
+                estimate_requests: Vec::new(),
+            })
+        })();
+        match result {
+            Ok(report) => Ok(report),
+            Err(error) => {
+                let _ = transaction.abort_proposer_pack(owner);
+                let _ = dag.abort_proposer_session(session_id);
+                Err(error)
+            }
+        }
+    }
+
+    /// Idempotently aborts one owner-bound proposer pack.
+    ///
+    /// DAG is locked before transaction. The return is true when either matching
+    /// cursor was removed. Other transaction-packing owners are preserved. Lock
+    /// poison is returned as a stable error; the DAG cursor is still removed when
+    /// transaction locking fails.
+    pub fn abort_proposer_pack(&self, session_id: u64) -> Result<bool> {
+        let owner = TransactionPackingOwner::DagProposer(session_id);
+        let mut dag = match self.lock_dag() {
+            Ok(dag) => dag,
+            Err(error) => {
+                self.abort_transaction_pack_after_dag_lock_failure(owner);
+                return Err(error);
+            }
+        };
+        let mut transaction = match self.lock_transaction() {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                dag.abort_proposer_session(session_id);
+                return Err(error);
+            }
+        };
+        let transaction_result = transaction.abort_proposer_pack(owner);
+        let dag_aborted = dag.abort_proposer_session(session_id);
+        let transaction_aborted = transaction_result?;
+        Ok(transaction_aborted || dag_aborted)
+    }
+
+    /// Best-effort cleanup for a transaction-packing cursor whose DAG sibling
+    /// can no longer be locked.
+    ///
+    /// The caller retains and returns the original DAG poison error. Cleanup is
+    /// owner-scoped so a compatibility cursor or another proposer session is
+    /// never removed while the DAG domain is unavailable.
+    fn abort_transaction_pack_after_dag_lock_failure(&self, owner: TransactionPackingOwner) {
+        if let Ok(mut transaction) = self.lock_transaction() {
+            let _ = transaction.abort_proposer_pack(owner);
+        }
+    }
+
     fn complete_add_block_with_commit(
         &self,
         completion: DagAddBlockCompletion,
@@ -516,7 +699,14 @@ fn stored_add_block_plan(plan: &crate::dag::DagAddBlockEffectPlan) -> DagAddBloc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dag::{DagManagerBlock, ensure_proposal_period_mapping, save_dag_block_to_storage};
+    use crate::dag::{
+        DAG_PROPOSER_ACTION_CONTINUE, DagFrontier, DagManagerBlock, DagProposerAttemptPlan,
+        DagProposerFrontierFacts, ensure_proposal_period_mapping, save_dag_block_to_storage,
+    };
+    use crate::dag_service::{
+        DagProposerObservation, DagProposerRetryState, DagProposerSession,
+        DagProposerSessionAction, DagProposerSessionBeginInput, DagProposerTransactionObservation,
+    };
     use crate::gas_pricer::GasPricerConfig;
     use crate::sortition::{HUNDRED_PERCENT, SortitionParams, VdfParams, VrfParams};
     use crate::transaction_queue::TransactionQueueEntry;
@@ -645,6 +835,122 @@ mod tests {
             proposed: false,
             transactions: Vec::new(),
         }
+    }
+
+    fn install_pack_session(root: &DagTransactionService, session_id: u64) -> Result<()> {
+        let sortition_params = service_config().sortition.params;
+        let frontier = DagFrontier {
+            pivot: H256::repeat_byte(1),
+            tips: Vec::new(),
+        };
+        let frontier_facts = DagProposerFrontierFacts {
+            frontier: frontier.clone(),
+            propose_level: 1,
+            anchor: H256::repeat_byte(1),
+            non_finalized_block_count: 0,
+            non_finalized_min_difficulty: u32::MAX,
+        };
+        root.lock_dag()?.proposer_sessions.insert(
+            session_id,
+            DagProposerSession {
+                action: DagProposerSessionAction::PackTransactions,
+                begin_input: DagProposerSessionBeginInput {
+                    max_non_finalized_transactions: 100,
+                    dag_expiry_level_limit: 100,
+                    wallet_vrf_public_key: [2; 32],
+                    wallet_vrf_secret: [3; 64],
+                    proposer_address: [4; 20],
+                    max_non_finalized_dag_blocks: 100,
+                    max_non_finalized_dag_blocks_low_difficulty: 50,
+                    max_retry_count: 20,
+                    proposal_weight_limit: 100_000,
+                    total_transaction_shards: 1,
+                    node_transaction_shard: 0,
+                    shard_period_interval: 10,
+                    pbft_gas_limit: 1_000_000,
+                    dag_gas_limit: 100_000,
+                    max_tips: 16,
+                },
+                transaction_observation: DagProposerTransactionObservation {
+                    transaction_pool_size: 1,
+                    non_finalized_transaction_count: 0,
+                },
+                observation: DagProposerObservation {
+                    frontier: frontier_facts.clone(),
+                    proposal_period_found: true,
+                    proposal_period: 0,
+                    period_block_hash_found: true,
+                    period_block_hash: H256::zero(),
+                    fingerprint: [5; 32],
+                },
+                attempt: DagProposerAttemptPlan {
+                    action: DAG_PROPOSER_ACTION_CONTINUE,
+                    reason_code: 0,
+                    frontier,
+                    anchor: H256::repeat_byte(1),
+                    proposal_level: 1,
+                    proposal_period_found: true,
+                    proposal_period: 0,
+                    last_finalized_period: 0,
+                    period_block_hash_found: true,
+                    period_block_hash: H256::zero(),
+                    vrf_input: Vec::new(),
+                    vote_count: 1,
+                    max_vote_count: 1,
+                    vdf_difficulty: 1,
+                    vdf_stale: false,
+                    old_proposal: false,
+                    update_retry_state: false,
+                    next_last_propose_level: 0,
+                    next_retry_count: 0,
+                    proposal_weight_limit: 100_000,
+                    total_transaction_shards: 1,
+                    node_transaction_shard: 0,
+                    shard_period_interval: 10,
+                },
+                retry_key: [2; 32],
+                minimum_vdf_difficulty: 1,
+                sortition_params,
+                status: 0,
+                reason_code: 0,
+                return_value: false,
+                update_retry_state: false,
+                next_last_propose_level: 0,
+                next_retry_count: 0,
+                record_proposed_block: false,
+                vdf_message: Vec::new(),
+                selected_transaction_hashes: Vec::new(),
+                transaction_gas_estimations: Vec::new(),
+                selected_transactions: Vec::new(),
+                vdf_rlp: Vec::new(),
+                unsigned_intent: None,
+                signed_intent: None,
+                error_code: String::new(),
+            },
+        );
+        Ok(())
+    }
+
+    fn insert_pack_transaction(
+        root: &DagTransactionService,
+        signing_key: &SigningKey,
+    ) -> Result<LegacyTransactionEnvelope> {
+        let transaction_rlp = signed_legacy_transaction_rlp(signing_key);
+        let envelope = LegacyTransactionEnvelope::decode(&transaction_rlp)?;
+        root.lock_transaction()?.queue.insert(
+            TransactionQueueEntry {
+                hash: envelope.hash,
+                sender: envelope.sender.context("test transaction sender")?,
+                nonce: envelope.nonce,
+                gas_price: envelope.gas_price,
+                gas: envelope.gas,
+                data_size: envelope.data.len() as u64,
+                rlp: transaction_rlp,
+                last_block_number: 0,
+            },
+            true,
+        )?;
+        Ok(envelope)
     }
 
     #[test]
@@ -993,6 +1299,425 @@ mod tests {
                 .contains("DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE")
         );
         assert!(root.abort_add_block(cursors[0])?);
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn proposer_pack_estimate_interval_is_unlocked_and_finalizes_natively() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_pack_estimate");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let session_id = 41;
+        install_pack_session(&root, session_id)?;
+        let envelope = insert_pack_transaction(
+            &root,
+            &SigningKey::from_slice(&[0x47; 32]).expect("valid test signing key"),
+        )?;
+
+        let prepared = root.prepare_proposer_pack(DagProposerPackPrepareRequest {
+            session_id,
+            network_throttled: false,
+            min_transaction_gas: 21_000,
+            estimate_gas_limit: 0,
+            last_block_number: 10,
+        })?;
+        assert_eq!(
+            prepared.session.action,
+            DagProposerSessionAction::PackTransactions
+        );
+        assert_eq!(prepared.estimate_requests.len(), 1);
+        assert_eq!(prepared.estimate_requests[0].hash, envelope.hash);
+        assert_eq!(
+            prepared.estimate_requests[0].sender,
+            envelope.sender.expect("test sender")
+        );
+
+        // The external EVM interval owns no DAG, transaction, or packing guard.
+        assert!(root.lock_transaction()?.transaction_packing.is_active()?);
+
+        let completed = root.finalize_proposer_pack(
+            session_id,
+            vec![TransactionPackingEstimate {
+                hash: envelope.hash,
+                gas_used: 21_000,
+                last_block_number: 10,
+                result_rlp: vec![0xC0],
+            }],
+        )?;
+        assert_eq!(completed.session.action, DagProposerSessionAction::StartVdf);
+        assert_eq!(
+            completed.session.selected_transaction_hashes,
+            vec![envelope.hash]
+        );
+        {
+            let transaction = root.lock_transaction()?;
+            assert!(!transaction.transaction_packing.is_active()?);
+            assert_eq!(
+                transaction
+                    .sidecar
+                    .gas_estimation_cache_get(envelope.hash, 0)?
+                    .expect("estimate cache entry")
+                    .gas_used,
+                21_000
+            );
+        }
+        assert!(root.abort_proposer_pack(session_id)?);
+
+        install_pack_session(&root, 42)?;
+        let cached = root.prepare_proposer_pack(DagProposerPackPrepareRequest {
+            session_id: 42,
+            network_throttled: false,
+            min_transaction_gas: 21_000,
+            estimate_gas_limit: 0,
+            last_block_number: 10,
+        })?;
+        assert!(cached.estimate_requests.is_empty());
+        assert_eq!(cached.session.action, DagProposerSessionAction::StartVdf);
+        assert_eq!(
+            cached.session.selected_transaction_hashes,
+            vec![envelope.hash]
+        );
+        assert!(!root.lock_transaction()?.transaction_packing.is_active()?);
+        assert!(root.abort_proposer_pack(42)?);
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn proposer_pack_terminal_and_failure_paths_clean_exact_cursors() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_pack_cleanup");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+
+        install_pack_session(&root, 51)?;
+        let throttled = root.prepare_proposer_pack(DagProposerPackPrepareRequest {
+            session_id: 51,
+            network_throttled: true,
+            min_transaction_gas: 21_000,
+            estimate_gas_limit: 0,
+            last_block_number: 0,
+        })?;
+        assert_eq!(throttled.session.action, DagProposerSessionAction::Complete);
+        assert!(!root.lock_transaction()?.transaction_packing.is_active()?);
+        assert!(!root.abort_proposer_pack(51)?);
+
+        install_pack_session(&root, 52)?;
+        root.lock_dag()?.proposer_retry_states.insert(
+            [2; 32],
+            DagProposerRetryState {
+                last_propose_level: 99,
+                retry_count: 7,
+                max_retry_count: 20,
+            },
+        );
+        let empty = root.prepare_proposer_pack(DagProposerPackPrepareRequest {
+            session_id: 52,
+            network_throttled: false,
+            min_transaction_gas: 21_000,
+            estimate_gas_limit: 0,
+            last_block_number: 0,
+        })?;
+        assert_eq!(empty.session.action, DagProposerSessionAction::Complete);
+        assert!(empty.estimate_requests.is_empty());
+        assert!(!root.lock_transaction()?.transaction_packing.is_active()?);
+        {
+            let dag = root.lock_dag()?;
+            let retry = dag
+                .proposer_retry_states
+                .get(&[2; 32])
+                .expect("matching proposer retry state");
+            assert_eq!(retry.last_propose_level, 1);
+            assert_eq!(retry.retry_count, 0);
+            assert!(!dag.proposer_sessions.contains_key(&52));
+        }
+
+        install_pack_session(&root, 53)?;
+        insert_pack_transaction(
+            &root,
+            &SigningKey::from_slice(&[0x48; 32]).expect("valid test signing key"),
+        )?;
+        let prepared = root.prepare_proposer_pack(DagProposerPackPrepareRequest {
+            session_id: 53,
+            network_throttled: false,
+            min_transaction_gas: 21_000,
+            estimate_gas_limit: 0,
+            last_block_number: 0,
+        })?;
+        assert_eq!(prepared.estimate_requests.len(), 1);
+        let error = root
+            .finalize_proposer_pack(53, Vec::new())
+            .expect_err("estimate count mismatch must terminate the composed task");
+        assert!(error.to_string().contains("TM_RUNTIME_PACK_FINALIZE"));
+        assert!(!root.lock_transaction()?.transaction_packing.is_active()?);
+        assert!(!root.abort_proposer_pack(53)?);
+
+        install_pack_session(&root, 54)?;
+        let prepared = root.prepare_proposer_pack(DagProposerPackPrepareRequest {
+            session_id: 54,
+            network_throttled: false,
+            min_transaction_gas: 21_000,
+            estimate_gas_limit: 0,
+            last_block_number: 0,
+        })?;
+        let wrong_hash = root
+            .finalize_proposer_pack(
+                54,
+                vec![TransactionPackingEstimate {
+                    hash: H256::repeat_byte(0x54),
+                    gas_used: 21_000,
+                    last_block_number: 0,
+                    result_rlp: vec![0xC0],
+                }],
+            )
+            .expect_err("estimate hash mismatch must terminate the composed task");
+        assert_eq!(prepared.estimate_requests.len(), 1);
+        assert!(format!("{wrong_hash:#}").contains("TM_RUNTIME_PACK_FINALIZE_HASH_MISMATCH"));
+        assert!(!root.lock_transaction()?.transaction_packing.is_active()?);
+        assert!(!root.abort_proposer_pack(54)?);
+
+        install_pack_session(&root, 55)?;
+        root.lock_dag()?
+            .proposer_sessions
+            .get_mut(&55)
+            .expect("installed proposer cursor")
+            .action = DagProposerSessionAction::CollectFinalChainFacts;
+        let wrong_stage = root
+            .prepare_proposer_pack(DagProposerPackPrepareRequest {
+                session_id: 55,
+                network_throttled: true,
+                min_transaction_gas: 21_000,
+                estimate_gas_limit: 0,
+                last_block_number: 0,
+            })
+            .expect_err("wrong DAG stage must remove only its cursor");
+        assert!(
+            wrong_stage
+                .to_string()
+                .contains("DAG_PROPOSER_PACK_SESSION_WRONG_STAGE")
+        );
+        assert!(!root.abort_proposer_pack(55)?);
+
+        install_pack_session(&root, 56)?;
+        let declared = root.prepare_proposer_pack(DagProposerPackPrepareRequest {
+            session_id: 56,
+            network_throttled: false,
+            min_transaction_gas: 21_000,
+            estimate_gas_limit: 21_000,
+            last_block_number: 0,
+        })?;
+        assert!(declared.estimate_requests.is_empty());
+        assert_eq!(declared.session.action, DagProposerSessionAction::StartVdf);
+        assert!(!root.lock_transaction()?.transaction_packing.is_active()?);
+        assert!(root.abort_proposer_pack(56)?);
+        assert!(!root.abort_proposer_pack(999)?);
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn proposer_pack_dag_poison_cleans_only_the_matching_transaction_owner() -> Result<()> {
+        fn poison_dag(root: &DagTransactionService) {
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let _guard = root.lock_dag().expect("DAG lock before poisoning");
+                        panic!("poison DAG lock");
+                    })
+                    .join()
+                    .expect_err("DAG poison thread must panic");
+            });
+        }
+
+        let finalize_path = unique_temp_dir("rustaxa_consensus_pack_finalize_dag_poison");
+        let finalize_storage = Arc::new(Storage::new(Config::new(finalize_path.clone()))?);
+        let finalize_root =
+            DagTransactionService::restore(finalize_storage.clone(), service_config())?;
+        install_pack_session(&finalize_root, 71)?;
+        insert_pack_transaction(
+            &finalize_root,
+            &SigningKey::from_slice(&[0x71; 32]).expect("valid test signing key"),
+        )?;
+        let prepared = finalize_root.prepare_proposer_pack(DagProposerPackPrepareRequest {
+            session_id: 71,
+            network_throttled: false,
+            min_transaction_gas: 21_000,
+            estimate_gas_limit: 0,
+            last_block_number: 0,
+        })?;
+        assert_eq!(prepared.estimate_requests.len(), 1);
+        poison_dag(&finalize_root);
+        let finalize_error = finalize_root
+            .finalize_proposer_pack(71, Vec::new())
+            .expect_err("poisoned DAG must reject finalize");
+        assert!(
+            finalize_error
+                .to_string()
+                .contains("DAG_TRANSACTION_SERVICE_DAG_LOCK_POISONED")
+        );
+        assert!(
+            !finalize_root
+                .lock_transaction()?
+                .transaction_packing
+                .is_active()?
+        );
+        drop(finalize_root);
+        drop(finalize_storage);
+        std::fs::remove_dir_all(finalize_path)?;
+
+        let abort_path = unique_temp_dir("rustaxa_consensus_pack_abort_dag_poison");
+        let abort_storage = Arc::new(Storage::new(Config::new(abort_path.clone()))?);
+        let abort_root = DagTransactionService::restore(abort_storage.clone(), service_config())?;
+        install_pack_session(&abort_root, 72)?;
+        insert_pack_transaction(
+            &abort_root,
+            &SigningKey::from_slice(&[0x72; 32]).expect("valid test signing key"),
+        )?;
+        let prepared = abort_root.prepare_proposer_pack(DagProposerPackPrepareRequest {
+            session_id: 72,
+            network_throttled: false,
+            min_transaction_gas: 21_000,
+            estimate_gas_limit: 0,
+            last_block_number: 0,
+        })?;
+        assert_eq!(prepared.estimate_requests.len(), 1);
+        poison_dag(&abort_root);
+        let abort_error = abort_root
+            .abort_proposer_pack(72)
+            .expect_err("poisoned DAG must reject abort");
+        assert!(
+            abort_error
+                .to_string()
+                .contains("DAG_TRANSACTION_SERVICE_DAG_LOCK_POISONED")
+        );
+        assert!(
+            !abort_root
+                .lock_transaction()?
+                .transaction_packing
+                .is_active()?
+        );
+        drop(abort_root);
+        drop(abort_storage);
+        std::fs::remove_dir_all(abort_path)?;
+
+        let compatibility_path = unique_temp_dir("rustaxa_consensus_pack_compatibility_dag_poison");
+        let compatibility_storage =
+            Arc::new(Storage::new(Config::new(compatibility_path.clone()))?);
+        let compatibility_root =
+            DagTransactionService::restore(compatibility_storage.clone(), service_config())?;
+        install_pack_session(&compatibility_root, 73)?;
+        insert_pack_transaction(
+            &compatibility_root,
+            &SigningKey::from_slice(&[0x73; 32]).expect("valid test signing key"),
+        )?;
+        {
+            let params = compatibility_root
+                .lock_dag()?
+                .proposer_pack_parameters(73)?;
+            compatibility_root
+                .lock_transaction()?
+                .prepare_proposer_pack(
+                    TransactionPackingOwner::Compatibility,
+                    params,
+                    21_000,
+                    0,
+                    0,
+                )?;
+        }
+        poison_dag(&compatibility_root);
+        compatibility_root
+            .abort_proposer_pack(73)
+            .expect_err("poisoned DAG must reject compatibility collision cleanup");
+        {
+            let mut transaction = compatibility_root.lock_transaction()?;
+            assert!(transaction.transaction_packing.is_active()?);
+            assert!(transaction.abort_proposer_pack(TransactionPackingOwner::Compatibility)?);
+        }
+        drop(compatibility_root);
+        drop(compatibility_storage);
+        std::fs::remove_dir_all(compatibility_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn proposer_pack_preserves_compatibility_owner_and_rejects_malformed_queue_rlp() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_pack_owner");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+
+        install_pack_session(&root, 61)?;
+        insert_pack_transaction(
+            &root,
+            &SigningKey::from_slice(&[0x61; 32]).expect("valid test signing key"),
+        )?;
+        {
+            let params = root.lock_dag()?.proposer_pack_parameters(61)?;
+            root.lock_transaction()?.prepare_proposer_pack(
+                TransactionPackingOwner::Compatibility,
+                params,
+                21_000,
+                0,
+                0,
+            )?;
+        }
+        let collision = root
+            .prepare_proposer_pack(DagProposerPackPrepareRequest {
+                session_id: 61,
+                network_throttled: false,
+                min_transaction_gas: 21_000,
+                estimate_gas_limit: 0,
+                last_block_number: 0,
+            })
+            .expect_err("compatibility owner must prevent DAG packing");
+        assert!(
+            format!("{collision:#}").contains("TM_RUNTIME_PACK_SESSION_ALREADY_ACTIVE"),
+            "unexpected collision error: {collision:#}"
+        );
+        {
+            let mut transaction = root.lock_transaction()?;
+            assert!(transaction.transaction_packing.is_active()?);
+            assert!(transaction.abort_proposer_pack(TransactionPackingOwner::Compatibility)?);
+        }
+        assert!(!root.abort_proposer_pack(61)?);
+
+        install_pack_session(&root, 62)?;
+        root.lock_transaction()?.queue.insert(
+            TransactionQueueEntry {
+                hash: H256::repeat_byte(0x62),
+                sender: H160::repeat_byte(0x62),
+                nonce: U256::zero(),
+                gas_price: U256::one(),
+                gas: 21_000,
+                data_size: 0,
+                rlp: vec![0xFF],
+                last_block_number: 0,
+            },
+            true,
+        )?;
+        let malformed = root
+            .prepare_proposer_pack(DagProposerPackPrepareRequest {
+                session_id: 62,
+                network_throttled: false,
+                min_transaction_gas: 21_000,
+                estimate_gas_limit: 0,
+                last_block_number: 0,
+            })
+            .expect_err("malformed queue payload must fail before returning an executor request");
+        assert!(
+            malformed
+                .to_string()
+                .contains("TM_RUNTIME_PACK_CANDIDATE_ENVELOPE_INSPECT_FAILED")
+        );
+        assert!(!root.lock_transaction()?.transaction_packing.is_active()?);
+        assert!(!root.abort_proposer_pack(62)?);
+
         drop(root);
         drop(storage);
         std::fs::remove_dir_all(path)?;
