@@ -41,8 +41,9 @@ use rustaxa_consensus::transaction_service::{
     TransactionServiceAccountNonceFact, TransactionServiceCompatibilityPackFinalized,
     TransactionServiceCompatibilityPackPrepared, TransactionServiceCompatibilityPackRequest,
     TransactionServiceConfig, TransactionServiceEstimateRequest,
-    TransactionServiceGasEstimationResult, TransactionServicePackEstimate,
-    TransactionServicePayload, TransactionServiceTransactionView,
+    TransactionServiceFinalizedFilterRequest, TransactionServiceGasEstimationResult,
+    TransactionServicePackEstimate, TransactionServicePayload, TransactionServiceTransactionView,
+    TransactionServiceVerifyNotFinalizedFact,
 };
 
 /// CXX wrapper over the native DAG application root.
@@ -778,31 +779,55 @@ pub fn service_transaction_manager_filter_non_finalized_with_runtime(
     service: &BridgeDagTransactionService,
     requests: Vec<TransactionManagerSidecarLookupRequest>,
 ) -> Result<FinalizedTransactionFilterPlan> {
-    let transaction = service.try_transaction()?;
-    crate::transaction_manager::transaction_manager_filter_non_finalized_with_runtime(
-        &transaction,
-        requests,
-    )
+    Ok(FinalizedTransactionFilterPlan {
+        not_finalized: service
+            .root
+            .transaction_filter_non_finalized(
+                requests
+                    .into_iter()
+                    .map(|request| TransactionServiceFinalizedFilterRequest {
+                        input_index: request.input_index,
+                        hash: H256::from(request.hash),
+                    })
+                    .collect(),
+            )?
+            .not_finalized
+            .into_iter()
+            .map(|action| TransactionManagerFilterAction {
+                input_index: action.input_index,
+                hash: action.hash.0,
+            })
+            .collect(),
+    })
 }
 
 pub fn service_transaction_manager_verify_not_finalized_with_runtime(
     service: &BridgeDagTransactionService,
     facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
 ) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
-    let transaction = service.try_transaction()?;
-    crate::transaction_manager::transaction_manager_verify_not_finalized_with_runtime(
-        &transaction,
-        facts,
-    )
+    let outcome = service.root.transaction_verify_not_finalized(
+        facts
+            .into_iter()
+            .map(|fact| TransactionServiceVerifyNotFinalizedFact {
+                input_index: fact.input_index,
+                hash: H256::from(fact.hash),
+                transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
+                sender_account_nonce: U256::from_big_endian(&fact.sender_account_nonce),
+            })
+            .collect(),
+    )?;
+    Ok(TransactionManagerVerifyNotFinalizedOutcome {
+        is_finalized: outcome.is_finalized,
+        input_index: outcome.input_index,
+        hash: outcome.hash.0,
+        source: outcome.source,
+    })
 }
 
 pub fn service_transaction_manager_recover_nonfinalized_with_runtime(
     service: &BridgeDagTransactionService,
 ) -> Result<()> {
-    let mut transaction = service.try_transaction()?;
-    crate::transaction_manager::transaction_manager_recover_nonfinalized_with_runtime(
-        &mut transaction,
-    )
+    service.root.transaction_recover_non_finalized().map(|_| ())
 }
 
 /// Prepares one DAG-owned transaction pack without exposing private pack configuration.

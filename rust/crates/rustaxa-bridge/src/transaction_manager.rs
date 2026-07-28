@@ -16,39 +16,31 @@ use crate::ffi::rustaxa_ffi::TransactionManagerSidecarInsertInput;
 #[cfg(test)]
 use crate::ffi::rustaxa_ffi::TransactionQueueConfig;
 use crate::ffi::rustaxa_ffi::{
-    DagTransactionSaveSidecarFact, FinalizedTransactionFilterPlan,
-    FinalizedTransactionStatusSidecarFact, GasPricerConfig,
+    DagTransactionSaveSidecarFact, FinalizedTransactionStatusSidecarFact, GasPricerConfig,
     TransactionManagerAdmissionCommandReport, TransactionManagerAdmissionResult,
     TransactionManagerAdmissionShellIntent, TransactionManagerDagSaveCommandReport,
-    TransactionManagerFilterAction, TransactionManagerFinalChainAdmissionFact,
-    TransactionManagerFinalizedStatusCommandReport, TransactionManagerGasEstimationFact,
-    TransactionManagerGasEstimationPlan, TransactionManagerHashCommand,
-    TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
-    TransactionManagerSidecarLookupRequest, TransactionManagerTransactionView,
+    TransactionManagerFinalChainAdmissionFact, TransactionManagerFinalizedStatusCommandReport,
+    TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
+    TransactionManagerHashCommand, TransactionManagerPublicAdmissionCommandReport,
+    TransactionManagerPublicInsertResult, TransactionManagerTransactionView,
     TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
-    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedOutcome,
-    TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
+    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
     TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueStoredTransaction,
     TransactionQueueTransactionGroup,
 };
-use crate::transaction::legacy_transaction_inspection_from_bytes;
 use anyhow::{ensure, Context, Result};
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::gas_pricer::GasPricerConfig as DomainGasPricerConfig;
 use rustaxa_consensus::transaction_manager::{
-    plan_exclude_finalized_transactions as plan_exclude_finalized_transactions_from_storage,
     plan_finalized_transactions_status, plan_insert_transaction, plan_transactions_from_dag_block,
     plan_validated_insert, plan_verify_transaction,
     DagTransactionSaveFact as ConsensusDagTransactionSaveFact,
-    FinalizedTransactionFilterFact as ConsensusFinalizedTransactionFilterFact,
-    FinalizedTransactionFilterPlan as ConsensusFinalizedTransactionFilterPlan,
     FinalizedTransactionStatusFact as ConsensusFinalizedTransactionStatusFact,
     FinalizedTransactionStatusPlan as ConsensusFinalizedTransactionStatusPlan,
     TransactionManagerInsertTransactionFact as ConsensusTransactionManagerInsertTransactionFact,
     TransactionManagerInsertTransactionStatus, TransactionManagerKnownFact,
-    TransactionManagerSidecarRecoveryEntry as ConsensusTransactionManagerSidecarRecoveryEntry,
     TransactionManagerValidatedInsertFact as ConsensusTransactionManagerValidatedInsertFact,
     TransactionManagerVerifyTransactionFact as ConsensusTransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionStatus,
@@ -66,15 +58,12 @@ use rustaxa_consensus::transaction_service::{
     TransactionServiceTransactionViewRequest,
 };
 use rustaxa_consensus::transaction_storage::{
-    append_non_finalized_transactions_to_batch, load_non_finalized_recovery_entries,
-    save_transaction_count, transaction_finalized, NonFinalizedTransactionRecoveryEntry,
+    append_non_finalized_transactions_to_batch, save_transaction_count, transaction_finalized,
     NonFinalizedTransactionStoragePayload,
 };
 #[cfg(test)]
 use rustaxa_storage::StatusField;
 use rustaxa_storage::{Storage, StorageWriteBatch};
-#[cfg(test)]
-use rustaxa_types::LegacyTransactionEnvelope;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 #[cfg(test)]
@@ -208,17 +197,6 @@ struct TransactionManagerRuntimeAdmissionOutcome {
     emit_transaction_added: bool,
     inserted_hash_found: bool,
     inserted_hash: [u8; 32],
-}
-
-#[cfg(test)]
-struct TransactionManagerSidecarHash {
-    hash: [u8; 32],
-}
-
-#[cfg(test)]
-struct TransactionManagerSidecarTransitionInput {
-    period: u64,
-    hashes: Vec<TransactionManagerSidecarHash>,
 }
 
 struct DagTransactionSaveAccepted {
@@ -1049,147 +1027,6 @@ fn transaction_manager_insert_transaction(
     })
 }
 
-/// Filters finalized transactions using Rust runtime sidecars plus storage.
-pub fn transaction_manager_filter_non_finalized_with_runtime(
-    runtime: &TransactionServiceState,
-    requests: Vec<TransactionManagerSidecarLookupRequest>,
-) -> Result<FinalizedTransactionFilterPlan> {
-    let facts = requests
-        .into_iter()
-        .map(|request| {
-            let hash = H256::from(request.hash);
-            ConsensusFinalizedTransactionFilterFact {
-                input_index: request.input_index,
-                hash,
-                in_recently_finalized_cache: runtime.sidecar.contains_recently_finalized(hash),
-            }
-        })
-        .collect();
-
-    let plan: ConsensusFinalizedTransactionFilterPlan =
-        plan_exclude_finalized_transactions_from_storage(facts, |hash| {
-            transaction_finalized(transaction_manager_runtime_storage(runtime)?, hash)
-                .context("TM_FILTER_FINALIZED_LOOKUP")
-        })?;
-
-    Ok(FinalizedTransactionFilterPlan {
-        not_finalized: plan
-            .not_finalized
-            .into_iter()
-            .map(|action| TransactionManagerFilterAction {
-                input_index: action.input_index,
-                hash: action.hash.0,
-            })
-            .collect(),
-    })
-}
-
-const TM_VERIFY_NOT_FINALIZED_SOURCE_NONE: u8 = 0;
-const TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR: u8 = 1;
-const TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE: u8 = 2;
-
-#[cfg(test)]
-fn keccak256(data: &[u8]) -> H256 {
-    use tiny_keccak::{Hasher, Keccak};
-
-    let mut output = [0u8; 32];
-    let mut hasher = Keccak::v256();
-    hasher.update(data);
-    hasher.finalize(&mut output);
-    H256::from(output)
-}
-
-/// Verifies transaction hashes against Rust runtime sidecars with sender nonce
-/// facts supplied by the external-EVM compatibility boundary.
-pub fn transaction_manager_verify_not_finalized_with_runtime(
-    runtime: &TransactionServiceState,
-    facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
-) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
-    let storage = transaction_manager_runtime_storage(runtime)?;
-    for fact in facts {
-        let hash = H256::from(fact.hash);
-        ensure!(
-            !hash.is_zero(),
-            "finalized verification transaction hash cannot be zero"
-        );
-        if runtime.sidecar.contains_recently_finalized(hash) {
-            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
-                is_finalized: true,
-                input_index: fact.input_index,
-                hash: hash.0,
-                source: TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR,
-            });
-        }
-        if U256::from_big_endian(&fact.sender_account_nonce)
-            >= U256::from_big_endian(&fact.transaction_nonce)
-            && transaction_finalized(storage, hash).context("TM_VERIFY_FINALIZED_LOOKUP")?
-        {
-            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
-                is_finalized: true,
-                input_index: fact.input_index,
-                hash: hash.0,
-                source: TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE,
-            });
-        }
-    }
-    Ok(TransactionManagerVerifyNotFinalizedOutcome {
-        is_finalized: false,
-        input_index: 0,
-        hash: [0; 32],
-        source: TM_VERIFY_NOT_FINALIZED_SOURCE_NONE,
-    })
-}
-
-fn transaction_manager_load_nonfinalized_recovery_from_storage(
-    storage: &Storage,
-) -> Result<Vec<NonFinalizedTransactionRecoveryEntry>> {
-    load_non_finalized_recovery_entries(storage).context("TM_NONFINALIZED_RECOVERY_STORAGE")
-}
-
-fn transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
-    storage: &Storage,
-) -> Result<Vec<ConsensusTransactionManagerSidecarRecoveryEntry>> {
-    let entries = transaction_manager_load_nonfinalized_recovery_from_storage(storage)?;
-    let mut recovered = Vec::with_capacity(entries.len());
-
-    for entry in entries {
-        if entry.finalized {
-            continue;
-        }
-
-        let inspection = legacy_transaction_inspection_from_bytes(&entry.trx_rlp, 0)
-            .context("TM_NONFINALIZED_RECOVERY_ENVELOPE_INSPECT")?;
-        ensure!(
-            H256::from(inspection.hash) == entry.hash,
-            "TM_NONFINALIZED_RECOVERY_HASH_MISMATCH"
-        );
-        ensure!(
-            inspection.sender_found,
-            "TM_NONFINALIZED_RECOVERY_SENDER_MISSING"
-        );
-
-        recovered.push(ConsensusTransactionManagerSidecarRecoveryEntry {
-            hash: entry.hash,
-            finalized: false,
-            trx_rlp: inspection.tx_rlp,
-        });
-    }
-
-    Ok(recovered)
-}
-
-/// Rebuilds runtime recovery sidecars from Rust-backed storage without exposing count mirrors.
-pub fn transaction_manager_recover_nonfinalized_with_runtime(
-    runtime: &mut TransactionServiceState,
-) -> Result<()> {
-    let entries = transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
-        transaction_manager_runtime_storage(runtime)?,
-    )?;
-    TransactionRuntimeAccess(runtime)
-        .insert_recovery_entries(entries)
-        .map(|_| ())
-}
-
 /// Creates the Rust-owned TransactionManager runtime for Rust-enabled manager shims.
 ///
 /// The runtime owns both the live manager sidecars and the transaction queue
@@ -1283,35 +1120,6 @@ where
     #[cfg(test)]
     fn transaction_manager_runtime_contains_recently_finalized(&self, hash: &[u8; 32]) -> bool {
         self.sidecar.contains_recently_finalized(H256::from(*hash))
-    }
-
-    /// Moves finalized hashes from non-finalized to recently-finalized sidecar state.
-    #[cfg(test)]
-    fn transaction_manager_runtime_apply_finalized_transition(
-        &mut self,
-        transition: TransactionManagerSidecarTransitionInput,
-    ) -> Result<()> {
-        self.sidecar
-            .apply_finalized_transition(
-                transition.period,
-                transition
-                    .hashes
-                    .into_iter()
-                    .map(|hash| H256::from(hash.hash))
-                    .collect::<Vec<_>>(),
-            )
-            .context("TM_RUNTIME_FINALIZED_TRANSITION")
-    }
-
-    fn insert_recovery_entries(
-        &mut self,
-        entries: Vec<ConsensusTransactionManagerSidecarRecoveryEntry>,
-    ) -> Result<u64> {
-        Ok(self
-            .0
-            .sidecar
-            .insert_recovery_entries(entries)
-            .context("TM_RUNTIME_RECOVERY_INSERT")? as u64)
     }
 
     /// Inserts transaction metadata and canonical bytes into the Rust-owned queue.
@@ -1636,12 +1444,8 @@ fn queue_status_from_ffi(status: u8) -> Result<TransactionQueueInsertStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::{
-        BridgeMetadataStorageQueries, BridgeStorage, BridgeTransactionStorageQueries,
-    };
-    use crate::storage::{create_metadata_storage_queries, create_transaction_storage_queries};
-    use k256::ecdsa::SigningKey;
-    use rlp::RlpStream;
+    use crate::ffi::{BridgeMetadataStorageQueries, BridgeStorage};
+    use crate::storage::create_metadata_storage_queries;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1683,10 +1487,6 @@ mod tests {
         std::env::temp_dir().join(format!("{name}_{nonce}"))
     }
 
-    fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
-        create_transaction_storage_queries(storage)
-    }
-
     fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
         create_metadata_storage_queries(storage)
     }
@@ -1726,43 +1526,6 @@ mod tests {
 
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 73);
         let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    fn signed_legacy_transaction_rlp(
-        signing_key: &SigningKey,
-        nonce: u64,
-        chain_id: u64,
-    ) -> Vec<u8> {
-        let mut signature_stream = RlpStream::new_list(9);
-        signature_stream.append(&U256::from(nonce));
-        signature_stream.append(&U256::from(2u64));
-        signature_stream.append(&21_000u64);
-        signature_stream.append(&H160::from([0x44u8; 20]));
-        signature_stream.append(&U256::from(3u64));
-        signature_stream.append(&Vec::<u8>::new());
-        signature_stream.append(&U256::from(chain_id));
-        signature_stream.append(&U256::zero());
-        signature_stream.append(&U256::zero());
-        let message_hash = keccak256(&signature_stream.out());
-        let (signature, recovery_id) = signing_key
-            .sign_prehash_recoverable(message_hash.as_bytes())
-            .expect("test transaction should sign");
-        let signature = signature.to_bytes();
-        let r = U256::from_big_endian(&signature[..32]);
-        let s = U256::from_big_endian(&signature[32..]);
-        let v = U256::from(chain_id * 2 + 35 + u64::from(recovery_id.to_byte()));
-
-        let mut stream = RlpStream::new_list(9);
-        stream.append(&U256::from(nonce));
-        stream.append(&U256::from(2u64));
-        stream.append(&21_000u64);
-        stream.append(&H160::from([0x44u8; 20]));
-        stream.append(&U256::from(3u64));
-        stream.append(&Vec::<u8>::new());
-        stream.append(&v);
-        stream.append(&r);
-        stream.append(&s);
-        stream.out().to_vec()
     }
 
     fn dag_tx_sidecar_fact(
@@ -1933,67 +1696,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_transaction_manager_filter_non_finalized_with_runtime_uses_live_sidecar_and_storage()
-    {
-        let temp_dir =
-            unique_temp_dir("rustaxa_bridge_transaction_manager_runtime_filter_non_finalized");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let mut runtime =
-            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
-                .expect("runtime should restore from storage");
-
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from([2u8; 32]), 7, 0, false)
-            .expect("finalized hash should be persisted in trx period");
-        runtime
-            .transaction_manager_runtime_insert_non_finalized(
-                TransactionManagerSidecarInsertInput {
-                    hash: [3; 32],
-                    trx_rlp: vec![0x03],
-                },
-            )
-            .expect("runtime sidecar insert should succeed");
-        runtime
-            .transaction_manager_runtime_apply_finalized_transition(
-                TransactionManagerSidecarTransitionInput {
-                    period: 7,
-                    hashes: vec![TransactionManagerSidecarHash { hash: [3; 32] }],
-                },
-            )
-            .expect("runtime finalized transition should succeed");
-
-        let out = transaction_manager_filter_non_finalized_with_runtime(
-            &runtime,
-            vec![
-                TransactionManagerSidecarLookupRequest {
-                    input_index: 0,
-                    hash: [1; 32],
-                },
-                TransactionManagerSidecarLookupRequest {
-                    input_index: 1,
-                    hash: [2; 32],
-                },
-                TransactionManagerSidecarLookupRequest {
-                    input_index: 2,
-                    hash: [3; 32],
-                },
-            ],
-        )
-        .expect("runtime filtering plan should map finalized inputs");
-
-        assert_eq!(out.not_finalized.len(), 1);
-        assert_eq!(out.not_finalized[0].input_index, 0);
-        assert_eq!(out.not_finalized[0].hash, [1; 32]);
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
     fn bridge_save_transactions_from_dag_block_command_report_uses_admission_commit_path() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_wrapper");
         let storage = crate::storage::create_storage(
@@ -2157,153 +1859,6 @@ mod tests {
         assert!(report.finalized_account_purged.is_empty());
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 7);
         assert!(runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_recovery_payloads_mark_stale_finalized_entries() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_transaction_manager_recovery_payloads");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        storage
-            .0
-            .transaction()
-            .write(H256::from([1u8; 32]), &[0x11])
-            .expect("non-finalized transaction should persist");
-        storage
-            .0
-            .transaction()
-            .write(H256::from([2u8; 32]), &[0x22])
-            .expect("finalized stale entry should persist");
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from([2u8; 32]), 11, 0, false)
-            .expect("stale finalized entry location should persist");
-
-        let mut txs = RlpStream::new_list(1);
-        txs.append_raw(&[0x22], 1);
-
-        let mut period_data = RlpStream::new_list(5);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&txs.out(), 1);
-        period_data.append_raw(&[0xC0], 1);
-        storage
-            .0
-            .period()
-            .write(11, &period_data.out().as_ref().to_vec())
-            .expect("period data should persist");
-
-        let out = transaction_manager_load_nonfinalized_recovery_from_storage(&storage.0)
-            .expect("recovery payload lookup should inspect all non-finalized storage rows");
-
-        assert_eq!(out.len(), 2);
-        let mut by_hash = out
-            .into_iter()
-            .map(|entry| (entry.hash.0[0], entry.finalized))
-            .collect::<Vec<_>>();
-        by_hash.sort_unstable();
-        assert_eq!(by_hash, vec![(1u8, false), (2u8, true)]);
-        assert_eq!(
-            transaction_queries(&storage)
-                .get_transaction(&[2u8; 32])
-                .expect("stale finalized entry should be removed"),
-            Vec::<u8>::new()
-        );
-        assert_eq!(
-            transaction_queries(&storage)
-                .get_transaction(&[1u8; 32])
-                .expect("live non-finalized entry should remain"),
-            vec![0x11]
-        );
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_recovery_inputs_validate_survivor_envelopes() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_transaction_manager_recovery_inputs");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        let signing_key = SigningKey::from_slice(&[0x43u8; 32]).unwrap();
-        let tx_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
-        let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
-        storage
-            .0
-            .transaction()
-            .write(envelope.hash, &tx_rlp)
-            .expect("non-finalized transaction should persist");
-
-        let inputs = transaction_manager_load_nonfinalized_recovery_inputs_from_storage(&storage.0)
-            .expect("recovery inputs should validate live survivor envelopes");
-
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].hash, envelope.hash);
-        assert!(!inputs[0].finalized);
-        assert_eq!(inputs[0].trx_rlp, tx_rlp);
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_recover_nonfinalized_command_report_inserts_survivors() {
-        let temp_dir =
-            unique_temp_dir("rustaxa_bridge_transaction_manager_recover_nonfinalized_cmd_report");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        let signing_key = SigningKey::from_slice(&[0x43u8; 32]).unwrap();
-        let live_tx = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
-        let live_hash = LegacyTransactionEnvelope::decode(&live_tx)
-            .expect("live transaction should decode")
-            .hash
-            .0;
-        storage
-            .0
-            .transaction()
-            .write(H256::from(live_hash), &live_tx)
-            .expect("non-finalized transaction should persist");
-        storage
-            .0
-            .transaction()
-            .write(H256::from([2u8; 32]), &[0x22])
-            .expect("stale transaction should persist");
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from([2u8; 32]), 11, 0, false)
-            .expect("stale finalized location should persist");
-        storage
-            .0
-            .metadata()
-            .write_status_field(StatusField::TrxCount as u8, 4)
-            .expect("status field seed should persist");
-
-        let mut runtime =
-            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
-                .expect("runtime should restore from storage");
-
-        transaction_manager_recover_nonfinalized_with_runtime(&mut runtime)
-            .expect("runtime recovery should execute");
-
-        assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 4);
-        assert!(runtime.transaction_manager_runtime_contains_non_finalized(&live_hash));
-        assert_eq!(
-            transaction_queries(&storage)
-                .get_transaction(&[2u8; 32])
-                .expect("stale tx should be removed"),
-            Vec::<u8>::new()
-        );
         let _ = fs::remove_dir_all(temp_dir);
     }
 

@@ -712,6 +712,22 @@ handles, shim lines and directories, granular flags, partial factories,
 compatibility constructors, production C++ consumers, and public signatures
 are unchanged.
 
+The following bounded `CRW-12` transaction contraction moves finalized
+filtering, first-finalized verification, and startup non-finalized recovery
+behind lock-owning native `TransactionService` and `DagTransactionService`
+tasks. Rust now owns sidecar/storage precedence, sender-nonce-gated finalized
+lookups, source classification, stale finalized-row cleanup, survivor envelope
+validation, and atomic live-sidecar publication. The bridge preserves the CXX
+signatures and converts only owned indices, hashes, nonces, and result tags.
+Three bridge behavioral implementations, their recovery insertion helper, and
+four superseded bridge tests are deleted; native transaction-service coverage
+exercises recent-sidecar and durable filtering, both verification sources, and
+validated recovery publication. The remaining transaction guard debt is
+fact-backed admission and DAG-save/finalized-status. The checked bridge budget
+falls by 420 lines to 36,953; CXX functions, carriers, handles, shim lines and
+directories, granular flags, partial factories, compatibility constructors,
+production C++ consumers, and public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

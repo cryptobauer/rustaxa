@@ -1,7 +1,9 @@
 use crate::gas_pricer::{GasPriceOracle, GasPricerConfig};
 use crate::transaction_manager::{
-    DagTransactionSaveFact, TransactionManagerKnownFact, TransactionManagerSidecar,
-    plan_transactions_from_dag_block,
+    DagTransactionSaveFact, FinalizedTransactionFilterFact, FinalizedTransactionFilterPlan,
+    TransactionManagerKnownFact, TransactionManagerSidecar, TransactionManagerSidecarRecoveryEntry,
+    VerifyNotFinalizedTransactionFact, plan_exclude_finalized_transactions,
+    plan_transactions_from_dag_block, plan_verify_not_finalized_transactions,
 };
 use crate::transaction_packing_service::{
     TransactionPackingCandidate, TransactionPackingEffect, TransactionPackingEstimate,
@@ -15,8 +17,8 @@ use crate::transaction_storage::{
     NonFinalizedTransactionStoragePayload, STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
     STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM, STORED_TRANSACTION_SOURCE_MISSING,
     STORED_TRANSACTION_SOURCE_PENDING, StoredTransactionLookupRequest,
-    append_non_finalized_transactions_to_batch, load_stored_transactions,
-    remove_non_finalized_transactions, transaction_finalized,
+    append_non_finalized_transactions_to_batch, load_non_finalized_recovery_entries,
+    load_stored_transactions, remove_non_finalized_transactions, transaction_finalized,
 };
 use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::{H160, H256, U256};
@@ -48,6 +50,12 @@ pub const TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING: u8 = 4;
 pub const TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR: u8 = 5;
 /// Transaction view source for finalized system storage payloads.
 pub const TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_SYSTEM: u8 = 6;
+/// No finalized transaction was found by native verification.
+pub const TM_VERIFY_NOT_FINALIZED_SOURCE_NONE: u8 = 0;
+/// Verification stopped on native recently-finalized sidecar state.
+pub const TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR: u8 = 1;
+/// Verification stopped on durable finalized transaction state.
+pub const TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE: u8 = 2;
 
 /// CXX-free request for a single transaction view lookup.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -95,6 +103,52 @@ pub struct TransactionServiceAccountNonceFact {
     pub account_found: bool,
     /// Sender finalized nonce at proposal period.
     pub account_nonce: [u8; 32],
+}
+
+/// CXX-free request for finalized transaction filtering.
+///
+/// Requests preserve caller order and identity through the returned actions.
+/// A zero hash is rejected before its storage lookup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionServiceFinalizedFilterRequest {
+    /// Caller-owned input position.
+    pub input_index: u64,
+    /// Canonical transaction identity.
+    pub hash: H256,
+}
+
+/// CXX-free fact for verifying one transaction against finalized state.
+///
+/// Recently-finalized sidecar membership short-circuits immediately. Durable
+/// storage is queried only when `sender_account_nonce >= transaction_nonce`;
+/// zero hashes and storage errors fail the complete operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionServiceVerifyNotFinalizedFact {
+    /// Caller-owned input position.
+    pub input_index: u64,
+    /// Canonical transaction identity.
+    pub hash: H256,
+    /// Nonce declared by the transaction.
+    pub transaction_nonce: U256,
+    /// Sender nonce supplied by the retained FinalChain boundary.
+    pub sender_account_nonce: U256,
+}
+
+/// First finalized transaction found by native verification.
+///
+/// The output identifies the first finalized input in request order and its
+/// native source. When every input passes, `is_finalized` is false and the
+/// remaining fields use their zero/none sentinels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionServiceVerifyNotFinalizedOutcome {
+    /// True when verification stopped on a finalized transaction.
+    pub is_finalized: bool,
+    /// Caller-owned input position, or zero when all inputs pass.
+    pub input_index: u64,
+    /// Finalized transaction identity, or zero when all inputs pass.
+    pub hash: H256,
+    /// One of the `TM_VERIFY_NOT_FINALIZED_SOURCE_*` tags.
+    pub source: u8,
 }
 
 /// CXX-free request for one public transaction gas-estimation decision.
@@ -594,6 +648,41 @@ impl TransactionService {
     pub fn queue_block_finalized(&self, block_number: u64) -> Result<Vec<H256>> {
         Ok(self.lock()?.queue_block_finalized(block_number))
     }
+
+    /// Filters finalized hashes using sidecar and durable state in one lock epoch.
+    ///
+    /// Input order and caller indices are preserved for every non-finalized
+    /// action. Recent-sidecar hits precede storage checks; zero hashes or
+    /// storage failures return an error without exposing a state guard.
+    pub fn filter_non_finalized(
+        &self,
+        requests: Vec<TransactionServiceFinalizedFilterRequest>,
+    ) -> Result<FinalizedTransactionFilterPlan> {
+        self.lock()?.filter_non_finalized(requests)
+    }
+
+    /// Returns the first finalized transaction using supplied FinalChain nonce facts.
+    ///
+    /// Verification short-circuits in input order. Recent-sidecar hits do not
+    /// consult storage, and durable lookup occurs only when the supplied sender
+    /// nonce covers the transaction nonce. Zero hashes and storage failures
+    /// return an error.
+    pub fn verify_not_finalized(
+        &self,
+        facts: Vec<TransactionServiceVerifyNotFinalizedFact>,
+    ) -> Result<TransactionServiceVerifyNotFinalizedOutcome> {
+        self.lock()?.verify_not_finalized(facts)
+    }
+
+    /// Rebuilds live non-finalized sidecars from durable native storage.
+    ///
+    /// Stale finalized rows are removed by the storage loader before survivor
+    /// envelopes are decoded, cost-checked, and hash/sender-validated. All
+    /// survivors publish atomically from a cloned sidecar; validation failure
+    /// preserves the prior live sidecar and returns a stable contextual error.
+    pub fn recover_non_finalized(&self) -> Result<u64> {
+        self.lock()?.recover_non_finalized()
+    }
 }
 
 /// Exclusive native transaction runtime guard.
@@ -940,6 +1029,100 @@ impl TransactionServiceState {
 
     fn queue_block_finalized(&mut self, block_number: u64) -> Vec<H256> {
         self.queue.block_finalized(block_number)
+    }
+
+    fn filter_non_finalized(
+        &self,
+        requests: Vec<TransactionServiceFinalizedFilterRequest>,
+    ) -> Result<FinalizedTransactionFilterPlan> {
+        plan_exclude_finalized_transactions(
+            requests
+                .into_iter()
+                .map(|request| FinalizedTransactionFilterFact {
+                    input_index: request.input_index,
+                    hash: request.hash,
+                    in_recently_finalized_cache: self
+                        .sidecar
+                        .contains_recently_finalized(request.hash),
+                })
+                .collect(),
+            |hash| transaction_finalized(&self.storage, hash).context("TM_FILTER_FINALIZED_LOOKUP"),
+        )
+    }
+
+    fn verify_not_finalized(
+        &self,
+        facts: Vec<TransactionServiceVerifyNotFinalizedFact>,
+    ) -> Result<TransactionServiceVerifyNotFinalizedOutcome> {
+        let plan = plan_verify_not_finalized_transactions(
+            facts
+                .into_iter()
+                .map(|fact| VerifyNotFinalizedTransactionFact {
+                    input_index: fact.input_index,
+                    hash: fact.hash,
+                    transaction_nonce: fact.transaction_nonce,
+                    sender_account_nonce: fact.sender_account_nonce,
+                    in_recently_finalized_cache: self
+                        .sidecar
+                        .contains_recently_finalized(fact.hash),
+                })
+                .collect(),
+            |hash| transaction_finalized(&self.storage, hash).context("TM_VERIFY_FINALIZED_LOOKUP"),
+        )?;
+        let Some(finalized) = plan.finalized else {
+            return Ok(TransactionServiceVerifyNotFinalizedOutcome {
+                is_finalized: false,
+                input_index: 0,
+                hash: H256::zero(),
+                source: TM_VERIFY_NOT_FINALIZED_SOURCE_NONE,
+            });
+        };
+        let source = if self.sidecar.contains_recently_finalized(finalized.hash) {
+            TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR
+        } else {
+            TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE
+        };
+        Ok(TransactionServiceVerifyNotFinalizedOutcome {
+            is_finalized: true,
+            input_index: finalized.input_index,
+            hash: finalized.hash,
+            source,
+        })
+    }
+
+    fn recover_non_finalized(&mut self) -> Result<u64> {
+        let entries = load_non_finalized_recovery_entries(&self.storage)
+            .context("TM_NONFINALIZED_RECOVERY_STORAGE")?;
+        let mut recovered = Vec::with_capacity(entries.len());
+        for entry in entries {
+            if entry.finalized {
+                continue;
+            }
+            let envelope = LegacyTransactionEnvelope::decode(&entry.trx_rlp)
+                .context("TM_NONFINALIZED_RECOVERY_ENVELOPE_INSPECT")?;
+            envelope
+                .cost()
+                .context("TM_NONFINALIZED_RECOVERY_ENVELOPE_INSPECT")?;
+            ensure!(
+                envelope.hash == entry.hash,
+                "TM_NONFINALIZED_RECOVERY_HASH_MISMATCH"
+            );
+            ensure!(
+                envelope.sender.is_some(),
+                "TM_NONFINALIZED_RECOVERY_SENDER_MISSING"
+            );
+            recovered.push(TransactionManagerSidecarRecoveryEntry {
+                hash: entry.hash,
+                finalized: false,
+                trx_rlp: entry.trx_rlp,
+            });
+        }
+        let mut next_sidecar = self.sidecar.clone();
+        let inserted = next_sidecar
+            .insert_recovery_entries(recovered)
+            .context("TM_RUNTIME_RECOVERY_INSERT")?;
+        self.sidecar = next_sidecar;
+        Ok(inserted as u64)
     }
 
     /// Prepares owner-scoped proposer packing from a validated queue/cache snapshot.
@@ -2421,6 +2604,71 @@ mod tests {
         assert_eq!(service.queue_block_finalized(20)?, vec![expired_hash]);
 
         service.update_gas_prices(vec![U256::from(5)])?;
+
+        let finalized_hash = H256::from_low_u64_be(13);
+        service
+            .lock()?
+            .storage
+            .transaction()
+            .write_location(finalized_hash, 9, 0, false)?;
+        let filtered = service.filter_non_finalized(vec![
+            TransactionServiceFinalizedFilterRequest {
+                input_index: 0,
+                hash: H256::from_low_u64_be(14),
+            },
+            TransactionServiceFinalizedFilterRequest {
+                input_index: 1,
+                hash: finalized_hash,
+            },
+            TransactionServiceFinalizedFilterRequest {
+                input_index: 2,
+                hash: recent_hash,
+            },
+        ])?;
+        assert_eq!(filtered.not_finalized.len(), 1);
+        assert_eq!(filtered.not_finalized[0].input_index, 0);
+
+        let recent_outcome =
+            service.verify_not_finalized(vec![TransactionServiceVerifyNotFinalizedFact {
+                input_index: 4,
+                hash: recent_hash,
+                transaction_nonce: U256::MAX,
+                sender_account_nonce: U256::zero(),
+            }])?;
+        assert_eq!(
+            recent_outcome.source,
+            TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR
+        );
+        let storage_outcome =
+            service.verify_not_finalized(vec![TransactionServiceVerifyNotFinalizedFact {
+                input_index: 5,
+                hash: finalized_hash,
+                transaction_nonce: U256::one(),
+                sender_account_nonce: U256::one(),
+            }])?;
+        assert_eq!(
+            storage_outcome.source,
+            TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE
+        );
+
+        let recovery_rlp = signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x73u8; 32])?);
+        let recovery_envelope = LegacyTransactionEnvelope::decode(&recovery_rlp)?;
+        service
+            .lock()?
+            .storage
+            .transaction()
+            .write(recovery_envelope.hash, &recovery_rlp)?;
+        assert_eq!(service.recover_non_finalized()?, 1);
+        assert!(
+            service
+                .non_finalized_transaction_views(vec![TransactionServiceTransactionViewRequest {
+                    input_index: 0,
+                    hash: recovery_envelope.hash.0,
+                },])?
+                .first()
+                .is_some_and(|view| view.found)
+        );
+
         std::fs::remove_dir_all(temp_dir)?;
         Ok(())
     }
@@ -2557,6 +2805,67 @@ mod tests {
                 .contains("TM_RUNTIME_PACK_CANDIDATE_ENVELOPE_INSPECT_FAILED")
         );
         assert!(!service.abort_compatibility_pack()?);
+
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_validation_failure_does_not_publish_partial_sidecar_state() -> Result<()> {
+        let (service, temp_dir) = build_service_with_defaults(
+            None,
+            16,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let existing_hash = H256::from_low_u64_be(1);
+        service
+            .lock()?
+            .sidecar
+            .insert_non_finalized(existing_hash, vec![0x11])?;
+
+        let valid_rlp = signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x74u8; 32])?);
+        let valid = LegacyTransactionEnvelope::decode(&valid_rlp)?;
+        let (overflow_rlp, overflow) = (0x75u8..=0xFE)
+            .find_map(|key_byte| {
+                let signing_key = SigningKey::from_slice(&[key_byte; 32]).ok()?;
+                let rlp = signed_legacy_transaction_rlp_with_fields(
+                    &signing_key,
+                    U256::one(),
+                    U256::MAX,
+                    21_000,
+                    U256::from(3),
+                );
+                let envelope = LegacyTransactionEnvelope::decode(&rlp).ok()?;
+                (envelope.hash > valid.hash).then_some((rlp, envelope))
+            })
+            .context("test must find an overflowing transaction ordered after survivor")?;
+        {
+            let state = service.lock()?;
+            state.storage.transaction().write(valid.hash, &valid_rlp)?;
+            state
+                .storage
+                .transaction()
+                .write(overflow.hash, &overflow_rlp)?;
+        }
+
+        let error = service
+            .recover_non_finalized()
+            .expect_err("overflowing recovery envelope must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("TM_NONFINALIZED_RECOVERY_ENVELOPE_INSPECT")
+        );
+        let state = service.lock()?;
+        assert!(state.sidecar.contains_non_finalized(existing_hash));
+        assert!(!state.sidecar.contains_non_finalized(valid.hash));
+        drop(state);
 
         std::fs::remove_dir_all(temp_dir)?;
         Ok(())

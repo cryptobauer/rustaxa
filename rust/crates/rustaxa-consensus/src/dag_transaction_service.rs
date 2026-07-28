@@ -29,13 +29,15 @@ use crate::transaction_service::{
     DagTransactionSaveInput, TransactionService, TransactionServiceAccountNonceFact,
     TransactionServiceCompatibilityPackFinalized, TransactionServiceCompatibilityPackPrepared,
     TransactionServiceCompatibilityPackRequest, TransactionServiceConfig,
-    TransactionServiceEstimateRequest, TransactionServiceGasEstimationPlan,
-    TransactionServiceGasEstimationRequest, TransactionServiceGasEstimationResult,
-    TransactionServiceGuard, TransactionServicePackEstimate, TransactionServicePayload,
-    TransactionServiceProposerPackFinalized, TransactionServiceProposerPackPrepared,
-    TransactionServiceTransactionView, TransactionServiceTransactionViewPlan,
-    TransactionServiceTransactionViewRequest, append_prepared_dag_transactions,
-    prepare_dag_transaction_publication, prepare_dag_transactions, publish_dag_transactions,
+    TransactionServiceEstimateRequest, TransactionServiceFinalizedFilterRequest,
+    TransactionServiceGasEstimationPlan, TransactionServiceGasEstimationRequest,
+    TransactionServiceGasEstimationResult, TransactionServiceGuard, TransactionServicePackEstimate,
+    TransactionServicePayload, TransactionServiceProposerPackFinalized,
+    TransactionServiceProposerPackPrepared, TransactionServiceTransactionView,
+    TransactionServiceTransactionViewPlan, TransactionServiceTransactionViewRequest,
+    TransactionServiceVerifyNotFinalizedFact, TransactionServiceVerifyNotFinalizedOutcome,
+    append_prepared_dag_transactions, prepare_dag_transaction_publication,
+    prepare_dag_transactions, publish_dag_transactions,
     remove_non_finalized_sidecars_after_dag_commit,
 };
 use anyhow::{Context, Result, ensure};
@@ -516,6 +518,40 @@ impl DagTransactionService {
     /// Applies finalized-block expiry to native non-proposable queue state.
     pub fn transaction_queue_block_finalized(&self, block_number: u64) -> Result<Vec<H256>> {
         self.transaction.queue_block_finalized(block_number)
+    }
+
+    /// Filters finalized hashes entirely inside the native transaction owner.
+    ///
+    /// The root forwards owned indices/hashes and returns ordered native
+    /// actions. Zero hashes or durable lookup failures propagate without a
+    /// transaction guard escaping the call.
+    pub fn transaction_filter_non_finalized(
+        &self,
+        requests: Vec<TransactionServiceFinalizedFilterRequest>,
+    ) -> Result<crate::transaction_manager::FinalizedTransactionFilterPlan> {
+        self.transaction.filter_non_finalized(requests)
+    }
+
+    /// Verifies finalized status with externally supplied sender nonce facts.
+    ///
+    /// The first recent-sidecar or nonce-gated durable hit is returned with its
+    /// source tag. Empty/all-passing input returns the native none outcome;
+    /// malformed hashes and storage failures propagate.
+    pub fn transaction_verify_not_finalized(
+        &self,
+        facts: Vec<TransactionServiceVerifyNotFinalizedFact>,
+    ) -> Result<TransactionServiceVerifyNotFinalizedOutcome> {
+        self.transaction.verify_not_finalized(facts)
+    }
+
+    /// Restores non-finalized sidecars from native durable storage.
+    ///
+    /// The transaction owner removes stale finalized rows, validates every
+    /// survivor envelope, and publishes live sidecar state atomically. The
+    /// returned count is the number of recovered survivors; validation or
+    /// storage errors leave prior live sidecar state intact.
+    pub fn transaction_recover_non_finalized(&self) -> Result<u64> {
+        self.transaction.recover_non_finalized()
     }
 
     /// Validates a candidate level against pivot and tip metadata.
