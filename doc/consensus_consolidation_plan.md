@@ -143,6 +143,9 @@ The native DAG application root also owns the proposer transaction-pack task:
 it validates and advances the DAG cursor, snapshots and applies transaction
 queue/cache effects, retains owner-bound estimate cursors across the unlocked
 EVM interval, and cleans both matching cursors on failure. The bridge
+retains conversion and external-executor wiring but no proposer-pack protocol
+test; native tests own estimate/finalize, cache reuse, cursor cleanup, poison,
+compatibility-owner, and malformed-payload behavior. The bridge
 also routes the complete verifier task through the native root: Rust owns
 transaction-source resolution, authorization/VDF cursor revalidation, native
 VDF proof verification, and gas decisions, while C++ retains transaction

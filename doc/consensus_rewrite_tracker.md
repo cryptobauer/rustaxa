@@ -799,6 +799,16 @@ functions, carriers, handles, shim lines and directories, granular flags,
 partial factories, compatibility constructors, production C++ consumers, and
 public signatures are unchanged.
 
+The next bounded `CRW-12` DAG cleanup deletes the last bridge-local proposer
+packing behavioral test. Native `DagTransactionService` tests already cover
+the unlocked estimate interval, native finalize and cache reuse, terminal and
+failure cleanup, DAG poison isolation, compatibility ownership, and malformed
+queue payloads. The bridge retains only conversion and external-executor
+wiring coverage for this family. The checked bridge budget falls by 116 lines
+to 34,775; CXX functions, carriers, handles, shim lines and directories,
+granular flags, partial factories, compatibility constructors, production C++
+consumers, and public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

@@ -1696,14 +1696,6 @@ mod tests {
         period_data.out().to_vec()
     }
 
-    fn sign_hash(hash: [u8; 32]) -> Vec<u8> {
-        let key = SigningKey::from_slice(&[0x44; 32]).unwrap();
-        let (signature, recovery_id) = key.sign_prehash_recoverable(&hash).unwrap();
-        let mut bytes = signature.to_bytes().to_vec();
-        bytes.push(recovery_id.to_byte());
-        bytes
-    }
-
     fn proposer_begin_input() -> DagProposerSessionBeginInput {
         let vrf_key = public_key_from_secret(&SECRET_KEY).expect("VRF key");
         DagProposerSessionBeginInput {
@@ -3146,114 +3138,6 @@ mod tests {
         assert!(wrong_action
             .to_string()
             .contains("DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_COMPLETION"));
-
-        drop(service);
-        drop(storage);
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn proposer_pack_estimate_finalize_retains_payload_and_cache_only_reuses_it() {
-        let dir = unique_temp_dir("rustaxa_dag_transaction_service_pack_estimate");
-        let storage = create_storage(dir.to_str().unwrap()).unwrap();
-        let service = create_dag_transaction_service_from_storage(
-            &storage,
-            &[1; 32],
-            32,
-            100,
-            sortition_config(),
-            queue_config(),
-            gas_config(),
-            u64::MAX,
-        )
-        .unwrap();
-        let key = SigningKey::from_slice(&[0x47; 32]).unwrap();
-        let tx_rlp = signed_legacy_transaction_rlp(&key);
-        let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
-        service
-            .insert_test_queue_transaction(TransactionQueueInsertInput {
-                hash: envelope.hash.0,
-                sender: address_from_signing_key(&key),
-                nonce: envelope.nonce.to_big_endian(),
-                gas_price: envelope.gas_price.to_big_endian(),
-                gas: envelope.gas,
-                data_size: envelope.data.len(),
-                tx_rlp: tx_rlp.clone(),
-                proposable: true,
-                last_block_number: 0,
-            })
-            .unwrap();
-        let session_id = open_proposer_pack(&service);
-        let prepare = service
-            .dag_transaction_service_proposer_pack_prepare(session_id, false, 21_000, 0, 10)
-            .expect("estimate prepare");
-        assert_eq!(prepare.action, 1);
-        assert_eq!(prepare.transaction_estimate_requests.len(), 1);
-        assert!(prepare.selected_transactions.is_empty());
-        let estimate = &prepare.transaction_estimate_requests[0];
-        let start_vdf = service
-            .dag_transaction_service_proposer_pack_finalize(
-                session_id,
-                vec![TransactionPackSessionEstimateInput {
-                    hash: estimate.hash,
-                    gas_used: 21_000,
-                    last_block_number: 10,
-                    result_rlp: vec![0xC0],
-                }],
-            )
-            .expect("estimate finalize");
-        assert_eq!(start_vdf.action, 2);
-        assert!(start_vdf.transaction_estimate_requests.is_empty());
-        assert!(start_vdf.selected_transactions.is_empty());
-
-        let sign = service_dag_manager_runtime_proposer_session_report_vdf_proof(
-            &service,
-            session_id,
-            DagProposerVdfProofReport {
-                proof_ok: true,
-                vdf_rlp: vec![0xC0],
-            },
-        )
-        .expect("VDF proof");
-        let add = service_dag_manager_runtime_proposer_session_report_signing(
-            &service,
-            session_id,
-            DagProposerSigningReport {
-                signature: sign_hash(sign.signing_hash),
-            },
-        )
-        .expect("signing");
-        assert_eq!(add.action, 6);
-        assert_eq!(add.selected_transactions.len(), 1);
-        assert_eq!(add.selected_transactions[0].hash, envelope.hash.0);
-        assert_eq!(add.selected_transactions[0].gas_used, 21_000);
-        assert_eq!(add.selected_transactions[0].tx_rlp, tx_rlp);
-        service_dag_manager_runtime_proposer_session_report_add_block(
-            &service,
-            session_id,
-            DagProposerAddBlockReport {
-                accepted: true,
-                duplicate: false,
-                expired: false,
-                missing_references: Vec::new(),
-            },
-        )
-        .expect("add report");
-
-        let cache_id = open_proposer_pack(&service);
-        let cache_only = service
-            .dag_transaction_service_proposer_pack_prepare(cache_id, false, 21_000, 0, 10)
-            .expect("cache-only prepare");
-        assert_eq!(cache_only.action, 2);
-        assert!(cache_only.transaction_estimate_requests.is_empty());
-        assert!(!service
-            .transaction()
-            .transaction_packing
-            .is_active()
-            .unwrap());
-        assert!(service
-            .dag_transaction_service_proposer_pack_abort(cache_id)
-            .unwrap());
 
         drop(service);
         drop(storage);
