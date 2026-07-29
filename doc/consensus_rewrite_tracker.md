@@ -989,6 +989,23 @@ constructors, production C++ consumers, and public signatures are unchanged.
 The portable full-state fingerprint and native generic drain/outcome shaping
 remain explicit CRW-12 debt.
 
+The following bounded `CRW-12` PBFT finalization contraction moves reward-vote
+reset advancement from bridge-owned cursor/report behavior onto
+`PbftManagerGuard`. Native consensus now owns missing-session/current-action
+classification, stale-cursor handling, stored-plan lookup, exact nonzero
+manager/storage reset-generation provenance, the complete reward live report,
+validation, and runtime reporting. The bridge keeps the existing CXX report
+conversion plus domain-step mapping, generic drain, and terminal cleanup.
+Native tests cover successful advancement, invalid provenance, and metadata
+mismatch; duplicate bridge rejection transcripts are deleted while one success
+CXX sentinel and next-cycle admission/resume integration remain. The checked
+bridge budget falls by 91 lines to 32,642; CXX functions, carriers, handles,
+shim lines and directories, granular flags, partial factories, compatibility
+constructors, production C++ consumers, and public signatures are unchanged.
+A future direct `PbftService`-to-verified-votes task should delete the
+remaining C++ `VoteManager` reset-report/cursor relay rather than preserve it
+as compatibility.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

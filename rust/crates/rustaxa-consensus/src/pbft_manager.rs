@@ -45,6 +45,19 @@ const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 const PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE: u8 = 2;
 const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
 
+/// Native facts reported after applying one reward-vote reset.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PbftFinalizationRewardVotesResetReport {
+    /// Certified-vote period published by the reward-vote runtime.
+    pub period: u64,
+    /// Certified-vote round published by the reward-vote runtime.
+    pub round: u64,
+    /// Certified block identity published by the reward-vote runtime.
+    pub block_hash: H256,
+    /// Process-local storage reset generation returned by the reset write.
+    pub reward_votes_reset_generation: u64,
+}
+
 /// Prepares and publishes the sortition portion of one PBFT finalization write set.
 ///
 /// The caller must already hold the manager serialization guard. The task
@@ -325,6 +338,112 @@ impl PbftManagerGuard<'_> {
             report.sortition_change_threshold_upper = change.threshold_upper;
         }
         let validation = validate_pbft_finalization_live_mutation_report(&plan, report);
+        let session = self
+            .finalization_runtime_session
+            .as_mut()
+            .expect("finalization session checked above");
+        *session = report_pbft_finalization_runtime_action(
+            session.clone(),
+            PbftFinalizationRuntimeActionResult {
+                action: validation.action,
+                success: validation.accepted,
+                status: validation.status.as_u8(),
+                error_code: validation.error_code,
+            },
+        );
+        Ok(next_pbft_finalization_runtime_action(session))
+    }
+
+    /// Validates one reward-vote reset report and advances its finalization cursor.
+    ///
+    /// The task owns cursor/action classification, verifies that the nonzero
+    /// reset generation matches both this finalization session and the current
+    /// shared-storage generation, builds the complete live-mutation report, and
+    /// reports validation through the manager-owned runtime. Metadata or
+    /// provenance mismatches return the same terminal action-failed step and
+    /// stable error code used by the CXX boundary.
+    pub fn advance_finalization_reward_votes_reset(
+        &mut self,
+        cursor: u32,
+        report: PbftFinalizationRewardVotesResetReport,
+    ) -> Result<crate::pbft_finalize::PbftFinalizationRuntimeStep> {
+        use crate::pbft_finalize::{
+            PbftFinalizationLiveMutationReport, PbftFinalizationRuntimeActionResult,
+            PbftFinalizationRuntimeStatus, PbftFinalizationRuntimeStep,
+            next_pbft_finalization_runtime_action, report_pbft_finalization_runtime_action,
+            validate_pbft_finalization_live_mutation_report,
+        };
+
+        let Some(session) = self.finalization_runtime_session.as_ref() else {
+            return Ok(PbftFinalizationRuntimeStep {
+                runtime_status: PbftFinalizationRuntimeStatus::ActionMismatch,
+                has_action: false,
+                action: None,
+                action_index: 0,
+                complete: false,
+                error_code: "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED".to_string(),
+            });
+        };
+        let current_step = next_pbft_finalization_runtime_action(session);
+        if current_step.runtime_status != PbftFinalizationRuntimeStatus::Active
+            || !current_step.has_action
+        {
+            return Ok(current_step);
+        }
+        if cursor != current_step.action_index {
+            let session = self
+                .finalization_runtime_session
+                .as_mut()
+                .expect("finalization session checked above");
+            session.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
+            session.error_code = "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH".to_string();
+            return Ok(next_pbft_finalization_runtime_action(session));
+        }
+
+        let action = current_step
+            .action
+            .expect("active finalization step must carry an action");
+        let plan = self
+            .finalization_runtime_plan
+            .clone()
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_RUNTIME_PLAN_NOT_STARTED"))?;
+        let reset_provenance_valid = report.reward_votes_reset_generation != 0
+            && report.reward_votes_reset_generation
+                == self.finalization_reward_votes_reset_generation
+            && report.reward_votes_reset_generation
+                == self.storage.extra_reward_votes_reset_generation();
+        let live_report = PbftFinalizationLiveMutationReport {
+            action,
+            block_period: plan.storage_write_intent.block_period,
+            pbft_block_hash: plan.storage_write_intent.pbft_block_hash,
+            anchor_hash: plan.storage_write_intent.anchor_hash,
+            dag_finalized_count: 0,
+            finalized_transaction_count: 0,
+            pbft_chain_size: 0,
+            pbft_chain_head_hash: H256::zero(),
+            pbft_chain_last_anchor_hash: H256::zero(),
+            reward_votes_period: report.period,
+            reward_votes_round: report.round,
+            reward_votes_block_hash: report.block_hash,
+            reward_votes_reset_provenance_valid: reset_provenance_valid,
+            sortition_changed: false,
+            sortition_change_period: 0,
+            sortition_change_interval_efficiency: 0,
+            sortition_change_threshold_upper: 0,
+            sortition_current_threshold_upper: 0,
+            sortition_params_changes_count: 0,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            executed_pbft_block: false,
+            manager_period: 0,
+            pillar_processed_period: 0,
+            pillar_request_period: 0,
+            anchor_dag_cache_count: 0,
+            final_chain_dispatched: false,
+            final_chain_blocks_per_year: 0,
+            final_chain_last_block: 0,
+        };
+        let validation = validate_pbft_finalization_live_mutation_report(&plan, live_report);
         let session = self
             .finalization_runtime_session
             .as_mut()
@@ -6907,6 +7026,52 @@ mod tests {
         ));
     }
 
+    fn install_reward_votes_reset_runtime(
+        runtime: &mut PbftManagerRuntimeState,
+        write_set: PbftFinalizationStorageWriteIntent,
+    ) {
+        runtime.finalization_runtime_plan = Some(PbftFinalizationPlan {
+            finalize_block: true,
+            anchor: PbftFinalizationAnchor::Anchored,
+            executed_pbft_block: true,
+            cleanup: PbftFinalizationCleanupIntent {
+                persist_pbft_block_metadata: true,
+                reset_reward_votes: true,
+                set_dag_block_order: true,
+                update_sortition_params: true,
+                update_finalized_transactions_status: true,
+                update_pbft_chain: true,
+                clear_anchor_dag_cache: true,
+                finalize_final_chain: true,
+                maybe_update_dynamic_lambda: false,
+                advance_period: true,
+                process_pillar_block: false,
+            },
+            storage_write_intent: write_set,
+            status: PbftFinalizationStatus::Accepted,
+        });
+        runtime.finalization_runtime_session = Some(start_pbft_finalization_runtime(
+            &PbftFinalizationRuntimePlan {
+                finalize_block: true,
+                status: PbftFinalizationStatus::Accepted,
+                actions: vec![
+                    PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+                    PbftFinalizationRuntimeAction::SetDagBlockOrder,
+                ],
+            },
+        ));
+    }
+
+    fn commit_reward_votes_reset_generation(runtime: &PbftManagerRuntimeState) -> u64 {
+        let guard = runtime
+            .storage
+            .lock_extra_reward_votes()
+            .expect("reward-vote storage lock remains healthy");
+        guard
+            .commit_reset_batch(runtime.storage.create_write_batch(), false)
+            .expect("reward-vote reset commits")
+    }
+
     fn finalization_period_data(
         pivot: H256,
         unique_transactions: usize,
@@ -7195,6 +7360,123 @@ mod tests {
                 .starts_with("PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT")
         );
         assert!(runtime.finalization_sortition_commit_request.is_some());
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_reward_votes_reset_advances_with_matching_generation() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_reward_reset_advance");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        install_reward_votes_reset_runtime(&mut runtime, write_set);
+        let generation = commit_reward_votes_reset_generation(&runtime);
+        runtime.finalization_reward_votes_reset_generation = generation;
+
+        let step = runtime
+            .advance_finalization_reward_votes_reset(
+                0,
+                PbftFinalizationRewardVotesResetReport {
+                    period: 0,
+                    round: 0,
+                    block_hash: H256::zero(),
+                    reward_votes_reset_generation: generation,
+                },
+            )
+            .expect("matching reset report advances");
+
+        assert_eq!(step.runtime_status, PbftFinalizationRuntimeStatus::Active);
+        assert_eq!(
+            step.action,
+            Some(PbftFinalizationRuntimeAction::SetDagBlockOrder)
+        );
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_reward_votes_reset_rejects_invalid_provenance() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_reward_reset_provenance");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        install_reward_votes_reset_runtime(&mut runtime, write_set);
+        let generation = commit_reward_votes_reset_generation(&runtime);
+        runtime.finalization_reward_votes_reset_generation = generation;
+
+        let step = runtime
+            .advance_finalization_reward_votes_reset(
+                0,
+                PbftFinalizationRewardVotesResetReport {
+                    period: 0,
+                    round: 0,
+                    block_hash: H256::zero(),
+                    reward_votes_reset_generation: generation.wrapping_add(1),
+                },
+            )
+            .expect("invalid provenance returns failed step");
+
+        assert_eq!(
+            step.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionFailed
+        );
+        assert_eq!(
+            step.error_code,
+            "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_RESET_PROVENANCE_MISMATCH"
+        );
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_reward_votes_reset_rejects_metadata_mismatch() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_reward_reset_metadata");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        install_reward_votes_reset_runtime(&mut runtime, write_set);
+        let generation = commit_reward_votes_reset_generation(&runtime);
+        runtime.finalization_reward_votes_reset_generation = generation;
+
+        let step = runtime
+            .advance_finalization_reward_votes_reset(
+                0,
+                PbftFinalizationRewardVotesResetReport {
+                    period: 0,
+                    round: 0,
+                    block_hash: H256::repeat_byte(9),
+                    reward_votes_reset_generation: generation,
+                },
+            )
+            .expect("metadata mismatch returns failed step");
+
+        assert_eq!(
+            step.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionFailed
+        );
+        assert_eq!(
+            step.error_code,
+            "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_METADATA_MISMATCH"
+        );
         drop(runtime);
         drop(manager);
         drop(dag);
