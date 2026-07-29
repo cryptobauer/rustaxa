@@ -22,6 +22,8 @@ use rustaxa_consensus::dag_service::{
     DagVerifyBlockSessionInput as NativeDagVerifyBlockSessionInput,
     DagVerifyBlockSessionStep as NativeDagVerifyBlockSessionStep,
 };
+#[cfg(test)]
+use rustaxa_consensus::dag_transaction_service::DagTransactionSortitionFinalizationRequest;
 use rustaxa_consensus::dag_transaction_service::{
     DagAddBlockAccountNonceFact as NativeDagAddBlockAccountNonceFact,
     DagAddBlockCompletion as NativeDagAddBlockCompletion,
@@ -31,10 +33,16 @@ use rustaxa_consensus::dag_transaction_service::{
     DagProposerFinalChainRequestOrStep as NativeDagProposerFinalChainRequestOrStep,
     DagProposerPackPrepareRequest, DagProposerPackStep, DagTransactionService,
     DagTransactionServiceConfig, DagTransactionSortitionFinalizationCommitRequest,
-    DagTransactionSortitionFinalizationCommitResult, DagTransactionSortitionFinalizationRequest,
+    DagTransactionSortitionFinalizationCommitResult,
     DagVerifyBlockAuthorizationRequestOrStep as NativeDagVerifyBlockAuthorizationRequestOrStep,
     DagVerifyBlockTransactionCompletionReport as NativeDagVerifyBlockTransactionCompletionReport,
     DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
+};
+use rustaxa_consensus::pbft_finalize::{
+    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
+};
+use rustaxa_consensus::pbft_manager::{
+    prepare_pbft_finalization_sortition, PbftManagerRuntimeState,
 };
 #[cfg(test)]
 use rustaxa_consensus::sortition::SortitionServiceGuard;
@@ -93,12 +101,23 @@ impl BridgeDagTransactionService {
         self.root.lock_sortition()
     }
 
-    /// Delegates finalized-period sortition preview to the native application owner.
+    /// Delegates test-only finalized-period preview to the native application owner.
+    #[cfg(test)]
     pub(crate) fn preview_finalized_period(
         &self,
         request: DagTransactionSortitionFinalizationRequest,
     ) -> Result<Option<rustaxa_consensus::sortition::SortitionParamsChange>> {
         self.root.preview_finalized_period(request)
+    }
+
+    /// Delegates the complete finalization-sortition preparation task to native consensus.
+    pub(crate) fn prepare_finalization_sortition(
+        &self,
+        runtime: &mut PbftManagerRuntimeState,
+        write_set: &PbftFinalizationStorageWriteIntent,
+        stages: &mut Vec<PbftFinalizationStorageWriteStage>,
+    ) -> Result<()> {
+        prepare_pbft_finalization_sortition(runtime, &self.root, write_set, stages)
     }
 
     /// Delegates atomic sortition commit and live snapshot capture to the native owner.

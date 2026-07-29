@@ -168,9 +168,15 @@ lock-coherent threshold/history snapshot. The bridge no longer owns sortition
 protocol behavior or exposes production guard access; it forwards native
 requests and projects the result into the PBFT executor report. The two
 bridge-only change carriers and the helper behavioral test are deleted. PBFT
-chain-head/period-data preparation remains explicit cross-root CRW-12 debt in
-`pbft_manager.rs`, as does replacing the expected-change/at-most-once contract
-with a portable full-state preview fingerprint.
+chain-head/period-data preparation now also runs as one native PBFT-manager
+task while the manager serialization domain is held. Native consensus rejects
+caller-owned sortition stages, validates the chain successor and non-empty
+size, decodes canonical period data, checks pivot/null-anchor consistency,
+appends the exact storage stage, and retains the native DAG commit request
+without bridge-side reconstruction. The bridge keeps only an
+operation-specific delegate plus the finalization executor's conversion and
+error mapping. Replacing the expected-change/at-most-once contract with a
+portable full-state preview fingerprint remains explicit CRW-12 debt.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The

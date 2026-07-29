@@ -948,6 +948,27 @@ to 348; CXX functions, handles, shim lines and directories, granular flags,
 partial factories, compatibility constructors, production C++ consumers, and
 public signatures are unchanged.
 
+The following bounded `CRW-12` cross-root contraction moves finalized-period
+sortition preparation from `rustaxa-bridge` into the lock-held native PBFT
+manager task. Native consensus now rejects caller-owned sortition stages,
+validates the manager-owned chain successor and non-empty size, decodes
+canonical period-data counts, checks pivot/null-anchor consistency, previews
+through the native DAG/transaction owner, appends the exact storage stage, and
+retains the existing native commit request for direct post-storage publication.
+The duplicate preparation type and bridge-side request reconstruction are
+deleted; the DAG bridge exposes only an operation-specific delegate around its
+private native root. Native tests cover canonical publication and malformed
+RLP, head mismatch/overflow, and pivot mismatch without state or stage
+publication, while the retained bridge suite covers CXX start/commit,
+caller-stage rejection, storage failure cleanup, fatal drift projection, and
+stale-cursor mapping. The compatible separately restored DAG-service C++ test
+remains because the portable expected-change contract is still supported. The
+checked bridge budget falls by 170 lines to 33,005; CXX functions, carriers,
+handles, shim lines and directories, granular flags, partial factories,
+compatibility constructors, production C++ consumers, and public signatures
+are unchanged. The full-state preview fingerprint and at-most-once retry
+constraint remain explicit CRW-12 debt.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

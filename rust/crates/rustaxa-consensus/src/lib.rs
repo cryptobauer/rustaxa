@@ -186,10 +186,9 @@ pub use pbft_leader_selection::{
     PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot, PbftLeaderSelectionStatus,
 };
 pub use pbft_manager::{
-    PbftFinalizationSortitionPreparation, PbftManagerBlockValidationSession,
-    PbftManagerBroadcastAction, PbftManagerBroadcastFact, PbftManagerBroadcastPlan,
-    PbftManagerBroadcastReport, PbftManagerBroadcastReportResult, PbftManagerBroadcastStatus,
-    PbftManagerEffectKind, PbftManagerGuard, PbftManagerProposalAction,
+    PbftManagerBlockValidationSession, PbftManagerBroadcastAction, PbftManagerBroadcastFact,
+    PbftManagerBroadcastPlan, PbftManagerBroadcastReport, PbftManagerBroadcastReportResult,
+    PbftManagerBroadcastStatus, PbftManagerEffectKind, PbftManagerGuard, PbftManagerProposalAction,
     PbftManagerProposalDagBlockFact, PbftManagerProposalDagOrderReport,
     PbftManagerProposalInitialFact, PbftManagerProposalSession, PbftManagerProposalSessionStep,
     PbftManagerProposalStatus, PbftManagerProposalWalletFact, PbftManagerRuntimeAction,

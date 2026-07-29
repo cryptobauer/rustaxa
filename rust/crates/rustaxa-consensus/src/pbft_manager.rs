@@ -45,21 +45,85 @@ const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 const PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE: u8 = 2;
 const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
 
-/// Exact sortition preview retained across primary storage and live commit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PbftFinalizationSortitionPreparation {
-    /// PBFT period whose finalization sampled the sortition inputs.
-    pub period: u64,
-    /// Whether the finalized period contains a non-null DAG pivot.
-    pub has_pivot: bool,
-    /// Number of unique transactions in the finalized DAG order.
-    pub unique_transactions: u64,
-    /// Total transaction references before duplicate elimination.
-    pub total_dag_transaction_refs: u64,
-    /// Non-empty PBFT chain size sampled before finalization publication.
-    pub non_empty_pbft_chain_size: u64,
-    /// Exact optional sortition change expected from the external commit.
-    pub expected_change: Option<crate::sortition::SortitionParamsChange>,
+/// Prepares and publishes the sortition portion of one PBFT finalization write set.
+///
+/// The caller must already hold the manager serialization guard. The task
+/// rejects caller-supplied sortition stages, validates the accepted period and
+/// canonical period-data payload against the manager-owned chain head, previews
+/// the change through the supplied native DAG/transaction service, appends the
+/// exact storage stage when needed, and retains the preview for the later live
+/// commit. PBFT and DAG roots may be distinct compatible instances.
+///
+/// Manager, chain, then sortition lock order is preserved. Validation failures
+/// do not append a stage or publish a preparation and retain the stable
+/// `PBFT_FINALIZE_SORTITION_*` error codes used by the CXX boundary.
+pub fn prepare_pbft_finalization_sortition(
+    runtime: &mut PbftManagerRuntimeState,
+    dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+    write_set: &crate::pbft_finalize::PbftFinalizationStorageWriteIntent,
+    stages: &mut Vec<crate::pbft_finalize::PbftFinalizationStorageWriteStage>,
+) -> Result<()> {
+    const SORTITION_STAGE: u8 = 3;
+
+    anyhow::ensure!(
+        stages.iter().all(|stage| {
+            stage.stage != SORTITION_STAGE
+                && !stage.has_sortition_params_change
+                && stage.sortition_params_change_period == 0
+                && stage.sortition_params_change_interval_efficiency == 0
+                && stage.sortition_params_change_threshold_upper == 0
+        }),
+        "PBFT_FINALIZE_SORTITION_STAGE_CALLER_OWNED"
+    );
+    if !write_set.update_sortition_params {
+        return Ok(());
+    }
+
+    let non_empty_pbft_chain_size = {
+        let chain = runtime.chain.read().expect("PBFT chain lock poisoned");
+        let head = chain.state.head();
+        let expected_period = head
+            .size
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_SORTITION_CHAIN_SIZE_OVERFLOW"))?;
+        anyhow::ensure!(
+            expected_period == write_set.block_period,
+            "PBFT_FINALIZE_SORTITION_CHAIN_HEAD_PERIOD_MISMATCH"
+        );
+        head.non_empty_size
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_SORTITION_NON_EMPTY_SIZE_OVERFLOW"))?
+    };
+
+    let counts = crate::sortition::decode_period_efficiency_counts(&write_set.period_data_rlp)
+        .context("PBFT_FINALIZE_SORTITION_PERIOD_DATA")?;
+    anyhow::ensure!(
+        counts.has_pivot == !write_set.null_anchor,
+        "PBFT_FINALIZE_SORTITION_PIVOT_MISMATCH"
+    );
+    let finalized_period =
+        crate::dag_transaction_service::DagTransactionSortitionFinalizationRequest {
+            period: write_set.block_period,
+            efficiency_counts: counts,
+            non_empty_pbft_chain_size,
+        };
+    let commit_request =
+        crate::dag_transaction_service::DagTransactionSortitionFinalizationCommitRequest {
+            finalized_period,
+            expected_change: dag_transaction_service.preview_finalized_period(finalized_period)?,
+        };
+    if let Some(change) = commit_request.expected_change {
+        stages.push(crate::pbft_finalize::PbftFinalizationStorageWriteStage {
+            stage: SORTITION_STAGE,
+            has_sortition_params_change: true,
+            sortition_params_change_period: change.period,
+            sortition_params_change_interval_efficiency: change.interval_efficiency,
+            sortition_params_change_threshold_upper: change.threshold_upper,
+            ..Default::default()
+        });
+    }
+    runtime.finalization_sortition_commit_request = Some(commit_request);
+    Ok(())
 }
 
 /// Lock-protected mutable state owned by the native PBFT manager service.
@@ -90,8 +154,9 @@ pub struct PbftManagerRuntimeState {
     pub finalization_runtime_session: Option<crate::pbft_finalize::PbftFinalizationRuntimeState>,
     /// Optional immutable plan paired with the active finalization executor.
     pub finalization_runtime_plan: Option<crate::pbft_finalize::PbftFinalizationPlan>,
-    /// Optional sortition preview retained until finalization commits.
-    pub finalization_sortition_preparation: Option<PbftFinalizationSortitionPreparation>,
+    /// Exact native sortition commit request retained until finalization commits.
+    pub finalization_sortition_commit_request:
+        Option<crate::dag_transaction_service::DagTransactionSortitionFinalizationCommitRequest>,
     /// Process-local reset proof bound to the active finalization session.
     pub finalization_reward_votes_reset_generation: u64,
     /// Native PBFT chain owner used by manager operations in the same lock domain.
@@ -154,7 +219,7 @@ impl PbftManagerService {
                 proposal_session: None,
                 finalization_runtime_session: None,
                 finalization_runtime_plan: None,
-                finalization_sortition_preparation: None,
+                finalization_sortition_commit_request: None,
                 finalization_reward_votes_reset_generation: 0,
                 chain,
             }),
@@ -6570,6 +6635,19 @@ pub fn abort_pbft_manager_runtime_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag_service::DagServiceConfig;
+    use crate::dag_transaction_service::{
+        DagTransactionService, DagTransactionServiceConfig,
+        DagTransactionSortitionFinalizationCommitRequest,
+    };
+    use crate::gas_pricer::GasPricerConfig;
+    use crate::pbft_finalize::{
+        PbftFinalizationPositionedHash, PbftFinalizationStorageWriteIntent,
+        PbftFinalizationStorageWriteStage,
+    };
+    use crate::sortition::{SortitionConfig, SortitionParams, VdfParams, VrfParams};
+    use crate::transaction_service::TransactionServiceConfig;
+    use ethereum_types::U256;
     use rustaxa_storage::{Config, Storage};
     use std::fs;
     use std::path::PathBuf;
@@ -6581,6 +6659,243 @@ mod tests {
             .expect("time should be available")
             .as_nanos();
         std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
+
+    fn finalization_sortition_services(
+        name: &str,
+    ) -> (PathBuf, PbftManagerService, DagTransactionService) {
+        let path = unique_temp_dir(name);
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).expect("storage opens"));
+        let runtime =
+            create_pbft_manager_runtime_from_storage(storage.as_ref(), storage_startup_fact())
+                .expect("manager runtime restores");
+        let chain = crate::pbft_chain::PbftChainService::restore(storage.clone())
+            .expect("PBFT chain restores");
+        let manager = PbftManagerService::new(runtime, storage.clone(), chain);
+        let dag = DagTransactionService::restore(
+            storage,
+            DagTransactionServiceConfig {
+                transaction: TransactionServiceConfig {
+                    queue_max_size: 16,
+                    gas_pricer_config: GasPricerConfig {
+                        percentile: 50,
+                        minimum_price: U256::one(),
+                        history_blocks: 0,
+                        is_light_node: false,
+                        blocks_gas_pricer: false,
+                    },
+                    proposal_dag_gas_limit: 1_000_000,
+                },
+                dag: DagServiceConfig {
+                    genesis_hash: H256::repeat_byte(1),
+                    dag_expiry_limit: 32,
+                    max_levels_per_period: 100,
+                },
+                sortition: SortitionConfig {
+                    params: SortitionParams {
+                        vrf: VrfParams {
+                            threshold_upper: 0x100,
+                        },
+                        vdf: VdfParams {
+                            difficulty_min: 1,
+                            difficulty_max: 10,
+                            difficulty_stale: 5,
+                            lambda_bound: 100,
+                        },
+                    },
+                    changes_count_for_average: 8,
+                    dag_efficiency_targets: (5_000, 10_000),
+                    changing_interval: 10,
+                    computation_interval: 5,
+                },
+            },
+        )
+        .expect("DAG transaction service restores");
+        (path, manager, dag)
+    }
+
+    fn finalization_period_data(
+        pivot: H256,
+        unique_transactions: usize,
+        dag_transaction_ref_counts: &[usize],
+    ) -> Vec<u8> {
+        let mut pbft_block = RlpStream::new_list(8);
+        pbft_block.append(&H256::from_low_u64_be(1));
+        pbft_block.append(&pivot);
+        pbft_block.append(&H256::from_low_u64_be(2));
+        pbft_block.append(&H256::from_low_u64_be(3));
+        pbft_block.append(&1_u64);
+        pbft_block.append(&123_u64);
+        pbft_block.begin_list(0);
+        pbft_block.append(&vec![0_u8; 65]);
+
+        let ordered_transaction_hashes = RlpStream::new_list(0);
+        let mut transaction_indexes = RlpStream::new_list(dag_transaction_ref_counts.len());
+        for count in dag_transaction_ref_counts {
+            transaction_indexes.begin_list(*count);
+            for index in 0..*count {
+                transaction_indexes.append(&index);
+            }
+        }
+        let compact_blocks = RlpStream::new_list(0);
+        let mut bundle = RlpStream::new_list(3);
+        bundle.append_raw(&ordered_transaction_hashes.out(), 1);
+        bundle.append_raw(&transaction_indexes.out(), 1);
+        bundle.append_raw(&compact_blocks.out(), 1);
+
+        let mut period_data = RlpStream::new_list(4);
+        period_data.append_raw(&pbft_block.out(), 1);
+        period_data.append_empty_data();
+        period_data.append_raw(&bundle.out(), 1);
+        period_data.begin_list(unique_transactions);
+        for _ in 0..unique_transactions {
+            period_data.append_empty_data();
+        }
+        period_data.out().to_vec()
+    }
+
+    fn finalization_sortition_write_set(
+        block_period: u64,
+        null_anchor: bool,
+        period_data_rlp: Vec<u8>,
+    ) -> PbftFinalizationStorageWriteIntent {
+        PbftFinalizationStorageWriteIntent {
+            persist_pbft_head: true,
+            persist_period_data: true,
+            reset_reward_votes: false,
+            update_sortition_params: true,
+            apply_dynamic_lambda_update: false,
+            persist_period_lambda: false,
+            persist_executed_pbft_status: false,
+            process_pillar_block: false,
+            pbft_block_hash: H256::repeat_byte(7),
+            pbft_head_hash: H256::repeat_byte(8),
+            block_period,
+            null_anchor,
+            anchor_hash: if null_anchor {
+                H256::zero()
+            } else {
+                H256::repeat_byte(4)
+            },
+            reward_vote_period: 0,
+            reward_vote_round: 0,
+            reward_vote_step: 0,
+            reward_vote_block_hash: H256::zero(),
+            period_lambda: 0,
+            blocks_per_year: 0,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            executed_pbft_status: false,
+            pbft_head_payload: Vec::new(),
+            period_data_rlp,
+            dag_block_period_writes: Vec::<PbftFinalizationPositionedHash>::new(),
+            transaction_location_writes: Vec::<PbftFinalizationPositionedHash>::new(),
+        }
+    }
+
+    #[test]
+    fn finalization_sortition_preparation_publishes_canonical_commit_request() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_sortition_prepare");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 3, &[2, 4]),
+        );
+        let mut stages = vec![PbftFinalizationStorageWriteStage::default()];
+        let mut runtime = manager.lock();
+
+        prepare_pbft_finalization_sortition(&mut runtime, &dag, &write_set, &mut stages)
+            .expect("canonical preparation succeeds");
+
+        let request = runtime
+            .finalization_sortition_commit_request
+            .expect("commit request is published");
+        assert_eq!(
+            request,
+            DagTransactionSortitionFinalizationCommitRequest {
+                finalized_period:
+                    crate::dag_transaction_service::DagTransactionSortitionFinalizationRequest {
+                        period: 1,
+                        efficiency_counts: crate::sortition::PeriodEfficiencyCounts {
+                            has_pivot: true,
+                            unique_transactions: 3,
+                            total_dag_transaction_refs: 6,
+                        },
+                        non_empty_pbft_chain_size: 1,
+                    },
+                expected_change: None,
+            }
+        );
+        assert_eq!(stages, vec![PbftFinalizationStorageWriteStage::default()]);
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_sortition_preparation_rejects_invalid_facts_without_publication() {
+        for (case, mutate, expected) in [
+            ("malformed", 0_u8, "PBFT_FINALIZE_SORTITION_PERIOD_DATA"),
+            (
+                "head_mismatch",
+                1,
+                "PBFT_FINALIZE_SORTITION_CHAIN_HEAD_PERIOD_MISMATCH",
+            ),
+            (
+                "pivot_mismatch",
+                2,
+                "PBFT_FINALIZE_SORTITION_PIVOT_MISMATCH",
+            ),
+            (
+                "head_overflow",
+                3,
+                "PBFT_FINALIZE_SORTITION_CHAIN_SIZE_OVERFLOW",
+            ),
+        ] {
+            let (path, manager, dag) =
+                finalization_sortition_services(&format!("pbft_manager_sortition_{case}"));
+            let mut write_set = finalization_sortition_write_set(
+                1,
+                false,
+                finalization_period_data(H256::repeat_byte(4), 0, &[]),
+            );
+            let mut runtime = manager.lock();
+            match mutate {
+                0 => write_set.period_data_rlp = vec![0xc0],
+                1 => write_set.block_period = 2,
+                2 => write_set.null_anchor = true,
+                3 => {
+                    runtime
+                        .chain
+                        .write()
+                        .expect("PBFT chain lock remains healthy")
+                        .state =
+                        crate::pbft_chain::PbftChain::new(crate::pbft_chain::PbftChainHead {
+                            head_hash: H256::repeat_byte(8),
+                            size: u64::MAX,
+                            non_empty_size: u64::MAX,
+                            last_pbft_block_hash: H256::repeat_byte(3),
+                            last_non_null_pbft_dag_anchor_hash: H256::repeat_byte(2),
+                        })
+                        .expect("maximum head is structurally valid");
+                }
+                _ => unreachable!(),
+            }
+            let mut stages = vec![PbftFinalizationStorageWriteStage::default()];
+
+            let error =
+                prepare_pbft_finalization_sortition(&mut runtime, &dag, &write_set, &mut stages)
+                    .expect_err("invalid preparation facts reject");
+            assert!(error.to_string().contains(expected), "{case}: {error}");
+            assert!(runtime.finalization_sortition_commit_request.is_none());
+            assert_eq!(stages, vec![PbftFinalizationStorageWriteStage::default()]);
+            drop(runtime);
+            drop(manager);
+            drop(dag);
+            let _ = fs::remove_dir_all(path);
+        }
     }
 
     fn fact(state: PbftManagerRuntimeStateCode) -> PbftManagerRuntimeTickFact {
