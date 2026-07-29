@@ -846,6 +846,24 @@ and unknown-enum conversion. The checked bridge budget falls by 226 lines to
 granular flags, partial factories, compatibility constructors, production C++
 consumers, and public signatures are unchanged.
 
+The following bounded `CRW-12` PBFT test-ownership cleanup deletes five more
+bridge-local happy-path planner transcripts for finalization readiness,
+eligible-wallet period readiness, block validation, candidate admission, and
+leader-candidate selection. Native tests
+`finalization_wait_planner_waits_until_delegation_delay_is_covered`,
+`eligible_wallet_period_wait_planner_waits_until_period_matches_chain_size`,
+`block_validation_planner_drives_live_checks_in_legacy_order`,
+`block_validation_planner_handles_final_chain_wait_and_rejections`,
+`candidate_admission_plans_lookup_validation_and_mark_valid`, and
+`leader_candidate_planner_derives_statuses_and_mark_valid_commands` own the
+stronger domain behavior. The bridge retains the unknown validation-status
+mapping test, one compact normal-path carrier sentinel, plus bootstrap,
+persistence, external-leaf, and CXX conversion coverage. The checked bridge
+budget falls by 50 lines to 34,123; CXX
+functions, carriers, handles, shim lines and directories, granular flags,
+partial factories, compatibility constructors, production C++ consumers, and
+public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

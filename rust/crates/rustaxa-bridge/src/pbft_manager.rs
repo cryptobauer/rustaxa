@@ -4044,29 +4044,6 @@ mod tests {
     const ACTION_TRY_ROUND: u8 = 3;
     const ACTION_SLEEP_INELIGIBLE: u8 = 4;
     const RESULT_CONTINUE: u8 = 0;
-    const LEADER_STATUS_SELECTED: u8 = 0;
-    const LEADER_BLOCK_VALIDATION_ALREADY_VALID: u8 = 0;
-    const LEADER_BLOCK_VALIDATION_VALIDATED: u8 = 1;
-    const BLOCK_VALIDATION_FACT_NOT_CHECKED: u8 = 0;
-    const BLOCK_VALIDATION_FACT_VALID: u8 = 1;
-    const BLOCK_VALIDATION_FACT_MISSING: u8 = 3;
-    const BLOCK_VALIDATION_FACT_NOT_REQUIRED: u8 = 4;
-    const BLOCK_VALIDATION_ACTION_RUN_CHECK: u8 = 0;
-    const BLOCK_VALIDATION_ACTION_WAIT_FOR_FINALIZATION: u8 = 3;
-    const BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING: u8 = 3;
-    const BLOCK_VALIDATION_CHECK_PBFT_CHAIN: u8 = 0;
-    const BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH: u8 = 1;
-    const BLOCK_VALIDATION_CHECK_REWARD_VOTES: u8 = 2;
-    const CANDIDATE_ADMISSION_VALIDATION_NOT_CHECKED: u8 = 0;
-    const CANDIDATE_ADMISSION_VALIDATION_VALID: u8 = 1;
-    const CANDIDATE_ADMISSION_ACTION_REQUEST_LOOKUP: u8 = 0;
-    const CANDIDATE_ADMISSION_ACTION_REQUEST_VALIDATION: u8 = 1;
-    const CANDIDATE_ADMISSION_ACTION_ACCEPT: u8 = 2;
-    const CANDIDATE_ADMISSION_ACTION_DEFER_MISSING_BLOCK: u8 = 4;
-    const CANDIDATE_ADMISSION_STATUS_LOOKUP_REQUIRED: u8 = 0;
-    const CANDIDATE_ADMISSION_STATUS_VALIDATION_REQUIRED: u8 = 1;
-    const CANDIDATE_ADMISSION_STATUS_ACCEPTED_NEWLY_VALIDATED: u8 = 3;
-    const CANDIDATE_ADMISSION_STATUS_BLOCK_MISSING: u8 = 4;
     const RESULT_STATE_DONE: u8 = 2;
     const STATE_ACTION_NEXT_VOTE_NULL_BLOCK: u8 = 8;
     const STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE: u8 = 10;
@@ -6446,54 +6423,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_plans_finalization_wait_readiness() {
-        let wait = plan_pbft_manager_finalization_wait(FfiPbftManagerFinalizationWaitFact {
-            pbft_chain_size: 20,
-            final_chain_last_block: 14,
-            delegation_delay: 5,
-            polling_interval_ms: 100,
-        });
-        assert!(wait.accepted);
-        assert!(wait.should_wait);
-        assert_eq!(wait.sleep_ms, 100);
-        assert!(wait.error_code.is_empty());
-
-        let ready = plan_pbft_manager_finalization_wait(FfiPbftManagerFinalizationWaitFact {
-            pbft_chain_size: 19,
-            final_chain_last_block: 14,
-            delegation_delay: 5,
-            polling_interval_ms: 100,
-        });
-        assert!(ready.accepted);
-        assert!(!ready.should_wait);
-        assert_eq!(ready.sleep_ms, 0);
-        assert!(ready.error_code.is_empty());
-    }
-
-    #[test]
-    fn bridge_plans_eligible_wallet_period_wait_readiness() {
-        let wait = plan_pbft_manager_eligible_wallet_period_wait(
-            FfiPbftManagerEligibleWalletPeriodWaitFact {
-                eligible_wallet_period: 8,
-                pbft_chain_size: 10,
-                polling_interval_ms: 10,
-            },
-        );
-        assert!(wait.should_wait);
-        assert_eq!(wait.sleep_ms, 10);
-
-        let ready = plan_pbft_manager_eligible_wallet_period_wait(
-            FfiPbftManagerEligibleWalletPeriodWaitFact {
-                eligible_wallet_period: 10,
-                pbft_chain_size: 10,
-                polling_interval_ms: 10,
-            },
-        );
-        assert!(!ready.should_wait);
-        assert_eq!(ready.sleep_ms, 0);
-    }
-
-    #[test]
     fn bridge_runtime_executes_lifecycle_transition_from_owned_cursor() {
         let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_transition");
         let before = runtime.manager_state().state.snapshot();
@@ -7488,116 +7417,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_plans_pbft_block_validation_checks_and_retry() {
-        let fact = block_validation_fact();
-        let plan = plan_pbft_manager_block_validation(fact);
-        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
-        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_PBFT_CHAIN);
-
-        let mut fact = block_validation_fact();
-        fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
-        let plan = plan_pbft_manager_block_validation(fact);
-        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
-        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
-
-        let mut fact = block_validation_fact();
-        fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
-        fact.final_chain_hash_status = BLOCK_VALIDATION_FACT_MISSING;
-        let plan = plan_pbft_manager_block_validation(fact);
-        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_WAIT_FOR_FINALIZATION);
-        assert_eq!(plan.status, BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING);
-
-        let mut fact = block_validation_fact();
-        fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
-        fact.final_chain_hash_status = BLOCK_VALIDATION_FACT_NOT_CHECKED;
-        let plan = plan_pbft_manager_block_validation(fact);
-        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
-        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
-
-        let mut fact = block_validation_fact();
-        fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
-        fact.final_chain_hash_status = BLOCK_VALIDATION_FACT_VALID;
-        let plan = plan_pbft_manager_block_validation(fact);
-        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
-        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_REWARD_VOTES);
-    }
-
-    #[test]
-    fn bridge_plans_pbft_candidate_admission() {
-        let plan = plan_pbft_manager_candidate_admission(candidate_admission_fact());
-        assert_eq!(plan.action, CANDIDATE_ADMISSION_ACTION_REQUEST_LOOKUP);
-        assert_eq!(plan.status, CANDIDATE_ADMISSION_STATUS_LOOKUP_REQUIRED);
-        assert!(!plan.mark_valid);
-
-        let plan = plan_pbft_manager_candidate_admission(FfiPbftManagerCandidateAdmissionFact {
-            lookup_performed: true,
-            proposed_block_found: true,
-            ..candidate_admission_fact()
-        });
-        assert_eq!(plan.action, CANDIDATE_ADMISSION_ACTION_REQUEST_VALIDATION);
-        assert_eq!(plan.status, CANDIDATE_ADMISSION_STATUS_VALIDATION_REQUIRED);
-
-        let plan = plan_pbft_manager_candidate_admission(FfiPbftManagerCandidateAdmissionFact {
-            lookup_performed: true,
-            proposed_block_found: true,
-            validation_status: CANDIDATE_ADMISSION_VALIDATION_VALID,
-            ..candidate_admission_fact()
-        });
-        assert_eq!(plan.action, CANDIDATE_ADMISSION_ACTION_ACCEPT);
-        assert_eq!(
-            plan.status,
-            CANDIDATE_ADMISSION_STATUS_ACCEPTED_NEWLY_VALIDATED
-        );
-        assert!(plan.mark_valid);
-
-        let plan = plan_pbft_manager_candidate_admission(FfiPbftManagerCandidateAdmissionFact {
-            lookup_performed: true,
-            proposed_block_found: false,
-            ..candidate_admission_fact()
-        });
-        assert_eq!(plan.action, CANDIDATE_ADMISSION_ACTION_DEFER_MISSING_BLOCK);
-        assert_eq!(plan.status, CANDIDATE_ADMISSION_STATUS_BLOCK_MISSING);
-        assert!(!plan.mark_valid);
-    }
-
-    #[test]
-    fn bridge_plans_pbft_leader_candidates_and_mark_valid_commands() {
-        let missing_weight = leader_candidate_input(1, 1, LEADER_BLOCK_VALIDATION_VALIDATED);
-        let in_chain = FfiPbftManagerLeaderCandidateInputFact {
-            block_in_chain: true,
-            ..leader_candidate_input(2, 2, LEADER_BLOCK_VALIDATION_VALIDATED)
-        };
-        let already_valid = FfiPbftManagerLeaderCandidateInputFact {
-            block_validation_status: LEADER_BLOCK_VALIDATION_ALREADY_VALID,
-            pivot_hash: [8; 32],
-            ..leader_candidate_input(3, 3, LEADER_BLOCK_VALIDATION_VALIDATED)
-        };
-        let validated = FfiPbftManagerLeaderCandidateInputFact {
-            pivot_hash: [9; 32],
-            ..leader_candidate_input(4, 4, LEADER_BLOCK_VALIDATION_VALIDATED)
-        };
-        let mut missing_weight = missing_weight;
-        missing_weight.weight_found = false;
-        let expected_vote_hash = validated.vote_hash;
-        let expected_block_hash = validated.block_hash;
-
-        let plan = plan_pbft_manager_leader_candidates(vec![
-            missing_weight,
-            in_chain,
-            already_valid,
-            validated,
-        ]);
-
-        assert_eq!(plan.status, LEADER_STATUS_SELECTED);
-        assert!(plan.selected);
-        assert_eq!(plan.selected_vote_hash, expected_vote_hash);
-        assert_eq!(plan.selected_block_hash, expected_block_hash);
-        assert_eq!(plan.valid_blocks.len(), 1);
-        assert_eq!(plan.valid_blocks[0].period, 11);
-        assert_eq!(plan.valid_blocks[0].block_hash, expected_block_hash);
-    }
-
-    #[test]
     fn bridge_pbft_leader_candidates_reject_unknown_validation_status() {
         let plan = plan_pbft_manager_leader_candidates(vec![leader_candidate_input(1, 1, 99)]);
 
@@ -7606,6 +7425,168 @@ mod tests {
             plan.error_code,
             "PBFT_MANAGER_LEADER_UNKNOWN_BLOCK_VALIDATION_STATUS"
         );
+    }
+
+    #[test]
+    fn bridge_planner_carriers_preserve_normal_path_sentinels() {
+        let finalization_wait_fact: PbftManagerFinalizationWaitFact =
+            FfiPbftManagerFinalizationWaitFact {
+                pbft_chain_size: 21,
+                final_chain_last_block: 15,
+                delegation_delay: 5,
+                polling_interval_ms: 123,
+            }
+            .into();
+        assert_eq!(
+            (
+                finalization_wait_fact.pbft_chain_size,
+                finalization_wait_fact.final_chain_last_block,
+                finalization_wait_fact.delegation_delay,
+                finalization_wait_fact.polling_interval_ms,
+            ),
+            (21, 15, 5, 123)
+        );
+        let finalization_wait_plan: FfiPbftManagerFinalizationWaitPlan =
+            PbftManagerFinalizationWaitPlan {
+                accepted: true,
+                should_wait: true,
+                sleep_ms: 123,
+                error_code: "WAIT_SENTINEL".to_string(),
+            }
+            .into();
+        assert!(finalization_wait_plan.accepted);
+        assert!(finalization_wait_plan.should_wait);
+        assert_eq!(finalization_wait_plan.sleep_ms, 123);
+        assert_eq!(finalization_wait_plan.error_code, "WAIT_SENTINEL");
+
+        let eligible_wait_fact: PbftManagerEligibleWalletPeriodWaitFact =
+            FfiPbftManagerEligibleWalletPeriodWaitFact {
+                eligible_wallet_period: 31,
+                pbft_chain_size: 32,
+                polling_interval_ms: 456,
+            }
+            .into();
+        assert_eq!(
+            (
+                eligible_wait_fact.eligible_wallet_period,
+                eligible_wait_fact.pbft_chain_size,
+                eligible_wait_fact.polling_interval_ms,
+            ),
+            (31, 32, 456)
+        );
+        let eligible_wait_plan: FfiPbftManagerEligibleWalletPeriodWaitPlan =
+            PbftManagerEligibleWalletPeriodWaitPlan {
+                should_wait: true,
+                sleep_ms: 456,
+            }
+            .into();
+        assert!(eligible_wait_plan.should_wait);
+        assert_eq!(eligible_wait_plan.sleep_ms, 456);
+
+        let block_fact: PbftManagerBlockValidationFact = FfiPbftManagerBlockValidationFact {
+            block_hash: [0x11; 32],
+            period: 12,
+            pivot_hash: [0x22; 32],
+            pivot_is_null: false,
+            dag_order_cached: true,
+            dag_order_required: true,
+            pillar_block_required: false,
+            dag_weight_check_required: true,
+            pbft_chain_status: 1,
+            final_chain_hash_status: 3,
+            reward_votes_status: 4,
+            extra_data_status: 2,
+            pillar_block_status: 4,
+            dag_order_status: 1,
+            dag_weight_status: 0,
+        }
+        .into();
+        assert_eq!(block_fact.block_hash, ethereum_types::H256([0x11; 32]));
+        assert_eq!(block_fact.pivot_hash, ethereum_types::H256([0x22; 32]));
+        assert_eq!(
+            block_fact.final_chain_hash_status,
+            PbftManagerBlockValidationFactStatus::Missing
+        );
+
+        let candidate_fact: PbftManagerCandidateAdmissionFact =
+            FfiPbftManagerCandidateAdmissionFact {
+                period: 13,
+                block_hash: [0x33; 32],
+                lookup_performed: true,
+                proposed_block_found: true,
+                proposed_block_already_valid: false,
+                validation_status: 1,
+            }
+            .into();
+        assert_eq!(candidate_fact.period, 13);
+        assert_eq!(
+            candidate_fact.validation_status,
+            PbftManagerCandidateAdmissionValidationStatus::Valid
+        );
+
+        let leader_fact: PbftManagerLeaderCandidateInputFact =
+            leader_candidate_input(0x44, 0x55, 1).into();
+        assert_eq!(leader_fact.vote_hash, ethereum_types::H256([0x44; 32]));
+        assert_eq!(
+            leader_fact.block_validation_status,
+            PbftManagerLeaderBlockValidationStatus::Validated
+        );
+
+        let block_plan: FfiPbftManagerBlockValidationPlan =
+            PbftManagerBlockValidationPlan {
+                action:
+                    rustaxa_consensus::pbft_manager::PbftManagerBlockValidationAction::WaitForFinalization,
+                status:
+                    rustaxa_consensus::pbft_manager::PbftManagerBlockValidationStatus::FinalChainHashMissing,
+                next_check:
+                    rustaxa_consensus::pbft_manager::PbftManagerBlockValidationNextCheck::ValidateFinalChainHash,
+                error_code: "BLOCK_SENTINEL",
+            }
+            .into();
+        assert_eq!(
+            (block_plan.action, block_plan.status, block_plan.next_check),
+            (3, 3, 1)
+        );
+        assert_eq!(block_plan.error_code, "BLOCK_SENTINEL");
+
+        let candidate_plan: FfiPbftManagerCandidateAdmissionPlan =
+            PbftManagerCandidateAdmissionPlan {
+                action:
+                    rustaxa_consensus::pbft_manager::PbftManagerCandidateAdmissionAction::Accept,
+                status:
+                    rustaxa_consensus::pbft_manager::PbftManagerCandidateAdmissionStatus::AcceptedNewlyValidated,
+                mark_valid: true,
+                error_code: "CANDIDATE_SENTINEL",
+            }
+            .into();
+        assert_eq!((candidate_plan.action, candidate_plan.status), (2, 3));
+        assert!(candidate_plan.mark_valid);
+        assert_eq!(candidate_plan.error_code, "CANDIDATE_SENTINEL");
+
+        let leader_plan: FfiPbftManagerLeaderCandidatePlan = PbftManagerLeaderCandidatePlan {
+            status: rustaxa_consensus::pbft_manager::PbftManagerLeaderSelectionStatus::Selected,
+            selected: true,
+            selected_vote_hash: ethereum_types::H256([0x66; 32]),
+            selected_block_hash: ethereum_types::H256([0x77; 32]),
+            selected_period: 14,
+            selected_from_null_anchor: false,
+            valid_blocks: vec![PbftManagerLeaderValidBlockCommand {
+                period: 14,
+                block_hash: ethereum_types::H256([0x88; 32]),
+            }],
+            error_code: "LEADER_SENTINEL",
+        }
+        .into();
+        assert_eq!(leader_plan.status, 0);
+        assert!(leader_plan.selected);
+        assert_eq!(leader_plan.selected_vote_hash, [0x66; 32]);
+        assert_eq!(leader_plan.selected_block_hash, [0x77; 32]);
+        assert_eq!(leader_plan.selected_period, 14);
+        assert!(!leader_plan.selected_from_null_anchor);
+        assert_eq!(leader_plan.valid_blocks.len(), 1);
+        assert_eq!(leader_plan.valid_blocks[0].period, 14);
+        assert_eq!(leader_plan.valid_blocks[0].block_hash, [0x88; 32]);
+        assert_eq!(leader_plan.error_code, "LEADER_SENTINEL");
     }
 
     fn leader_candidate_input(
@@ -7625,37 +7606,6 @@ mod tests {
             proposed_block_found: true,
             block_validation_status,
             pivot_hash: [block.wrapping_add(20); 32],
-        }
-    }
-
-    fn candidate_admission_fact() -> FfiPbftManagerCandidateAdmissionFact {
-        FfiPbftManagerCandidateAdmissionFact {
-            period: 11,
-            block_hash: [1; 32],
-            lookup_performed: false,
-            proposed_block_found: false,
-            proposed_block_already_valid: false,
-            validation_status: CANDIDATE_ADMISSION_VALIDATION_NOT_CHECKED,
-        }
-    }
-
-    fn block_validation_fact() -> FfiPbftManagerBlockValidationFact {
-        FfiPbftManagerBlockValidationFact {
-            block_hash: [1; 32],
-            period: 11,
-            pivot_hash: [2; 32],
-            pivot_is_null: false,
-            dag_order_cached: false,
-            dag_order_required: true,
-            pillar_block_required: false,
-            dag_weight_check_required: false,
-            pbft_chain_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
-            final_chain_hash_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
-            reward_votes_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
-            extra_data_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
-            pillar_block_status: BLOCK_VALIDATION_FACT_NOT_REQUIRED,
-            dag_order_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
-            dag_weight_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
         }
     }
 }

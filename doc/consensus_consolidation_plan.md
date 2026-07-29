@@ -115,7 +115,12 @@ deleted because native owner tests and `rust_consensus_tests` cover both
 protocol behavior and the CXX boundary. Focused bootstrap gating, period-data
 queue conversion, invalid-stage non-publication, ineligible-sleep mapping,
 queue-drain mapping, and unknown-enum tests remain at the bridge; remaining
-cross-domain orchestration/conversion tests stay in this workstream.
+cross-domain orchestration/conversion tests stay in this workstream. Five
+additional happy-path readiness, block-validation, candidate-admission, and
+leader-selection planner transcripts are deleted from the bridge because the
+native PBFT manager suite owns stronger behavior; the bridge retains only the
+compact normal-path carrier sentinel and unknown-status error-mapping case for
+that planner family.
 The native pillar mutex guard, mutable state, state snapshot, and snapshot decoder are crate-private and no longer
 re-exported. Bridge tests use public task behavior rather than pointer, generation, or token introspection; snapshot
 relationship characterization now lives beside the native decoder.
