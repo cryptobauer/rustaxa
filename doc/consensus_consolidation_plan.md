@@ -194,6 +194,8 @@ reporting. The bridge retains only the reportless manager call, domain-step
 mapping, generic drain, and boundary cleanup. The former C++ `VoteManager`
 reset-report/cursor relay and its CXX carriers/export are deleted. The manager
 executor state no longer exposes the internal reset generation to C++.
+It also no longer exports bridge-only drain counts, storage status, or
+per-action completion telemetry; C++ receives only state it actively consumes.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The

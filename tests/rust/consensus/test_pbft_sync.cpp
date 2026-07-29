@@ -807,7 +807,6 @@ TEST(RustPbftSyncTest, FinalizationResumeBoundaryOwnsManagerTailDrain) {
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive);
   EXPECT_TRUE(boundary.has_action);
   EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionFinalizeFinalChain);
-  EXPECT_FALSE(boundary.applied_dynamic_lambda);
 }
 
 TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {

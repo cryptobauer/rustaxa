@@ -1758,14 +1758,9 @@ pub mod rustaxa_ffi {
         has_action: bool,
         complete: bool,
         can_continue: bool,
-        drained_actions: u32,
-        applied_dynamic_lambda: bool,
-        persisted_executed_status: bool,
-        set_executed_flag: bool,
         cleared_anchor_dag_cache: bool,
         has_snapshot: bool,
         snapshot: PbftManagerRuntimeSnapshot,
-        last_storage_status: u8,
         error_code: String,
     }
 

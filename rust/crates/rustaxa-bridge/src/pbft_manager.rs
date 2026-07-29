@@ -1949,26 +1949,16 @@ struct FinalizationRuntimeSessionStep {
 
 struct FinalizationOwnedActionDrainResult {
     status: u8,
-    drained_actions: u32,
-    applied_dynamic_lambda: bool,
-    persisted_executed_status: bool,
-    set_executed_flag: bool,
     cleared_anchor_dag_cache: bool,
     has_snapshot: bool,
     snapshot: FfiPbftManagerRuntimeSnapshot,
-    last_storage_status: u8,
     next_step: FinalizationRuntimeSessionStep,
     error_code: String,
 }
 
 struct FinalizationOwnedActionDrainState {
-    drained_actions: u32,
-    applied_dynamic_lambda: bool,
-    persisted_executed_status: bool,
-    set_executed_flag: bool,
     cleared_anchor_dag_cache: bool,
     has_snapshot: bool,
-    last_storage_status: u8,
 }
 
 struct FinalizationRuntimeActionReport {
@@ -1982,13 +1972,8 @@ struct FinalizationRuntimeActionReport {
 impl FinalizationOwnedActionDrainState {
     fn new() -> Self {
         Self {
-            drained_actions: 0,
-            applied_dynamic_lambda: false,
-            persisted_executed_status: false,
-            set_executed_flag: false,
             cleared_anchor_dag_cache: false,
             has_snapshot: false,
-            last_storage_status: 0,
         }
     }
 }
@@ -2021,14 +2006,9 @@ fn finalization_drain_result(
 ) -> FinalizationOwnedActionDrainResult {
     FinalizationOwnedActionDrainResult {
         status: next_step.status,
-        drained_actions: drain.drained_actions,
-        applied_dynamic_lambda: drain.applied_dynamic_lambda,
-        persisted_executed_status: drain.persisted_executed_status,
-        set_executed_flag: drain.set_executed_flag,
         cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
         has_snapshot: drain.has_snapshot,
         snapshot: runtime.state.snapshot().into(),
-        last_storage_status: drain.last_storage_status,
         next_step,
         error_code,
     }
@@ -2046,14 +2026,9 @@ fn finalization_executor_state_from_step(
         has_action: step.has_action,
         complete: step.complete,
         can_continue: step.can_continue,
-        drained_actions: 0,
-        applied_dynamic_lambda: false,
-        persisted_executed_status: false,
-        set_executed_flag: false,
         cleared_anchor_dag_cache: false,
         has_snapshot: false,
         snapshot: runtime.state.snapshot().into(),
-        last_storage_status: 0,
         error_code: if error_code.is_empty() {
             step.error_code
         } else {
@@ -2073,14 +2048,9 @@ fn finalization_executor_state_from_drain(
         has_action: drain.next_step.has_action,
         complete: drain.next_step.complete,
         can_continue: drain.next_step.can_continue,
-        drained_actions: drain.drained_actions,
-        applied_dynamic_lambda: drain.applied_dynamic_lambda,
-        persisted_executed_status: drain.persisted_executed_status,
-        set_executed_flag: drain.set_executed_flag,
         cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
         has_snapshot: drain.has_snapshot,
         snapshot: drain.snapshot,
-        last_storage_status: drain.last_storage_status,
         error_code: if drain.error_code.is_empty() {
             drain.next_step.error_code
         } else {
@@ -3042,7 +3012,6 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                         "PBFT_FINALIZE_CHAIN_LIVE_REJECTED".to_string(),
                     ));
                 }
-                drain.drained_actions += 1;
             }
             PbftFinalizationRuntimeAction::ApplyDynamicLambda => {
                 let mut stage = empty_finalization_stage(FINALIZATION_STAGE_DYNAMIC_LAMBDA);
@@ -3055,7 +3024,6 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                     vec![stage],
                     false,
                 )?;
-                drain.last_storage_status = apply_result.status.as_u8();
                 if !apply_result.status.is_success() {
                     let next_step = pbft_manager_runtime_finalization_session_report_action(
                         runtime,
@@ -3114,8 +3082,6 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                         "PBFT_FINALIZE_DYNAMIC_LAMBDA_LIVE_REJECTED".to_string(),
                     ));
                 }
-                drain.drained_actions += 1;
-                drain.applied_dynamic_lambda = true;
             }
             PbftFinalizationRuntimeAction::PersistExecutedStatus => {
                 let apply_result = apply_domain_pbft_finalization_storage_writes(
@@ -3124,7 +3090,6 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                     vec![empty_finalization_stage(FINALIZATION_STAGE_EXECUTED_STATUS)],
                     false,
                 )?;
-                drain.last_storage_status = apply_result.status.as_u8();
                 let accepted = apply_result.status.is_success();
                 let next_step = pbft_manager_runtime_finalization_session_report_action(
                     runtime,
@@ -3144,8 +3109,6 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                         "PBFT_FINALIZE_EXECUTED_STATUS_STORAGE_REJECTED".to_string(),
                     ));
                 }
-                drain.drained_actions += 1;
-                drain.persisted_executed_status = true;
             }
             PbftFinalizationRuntimeAction::SetExecutedFlag => {
                 runtime.state.apply_committed_finalization_executed_status(
@@ -3181,8 +3144,6 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                         "PBFT_FINALIZE_EXECUTED_FLAG_LIVE_REJECTED".to_string(),
                     ));
                 }
-                drain.drained_actions += 1;
-                drain.set_executed_flag = true;
             }
             PbftFinalizationRuntimeAction::ClearAnchorDagCache => {
                 runtime.state.clear_cached_anchor_dag_order();
@@ -3215,7 +3176,6 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                         "PBFT_FINALIZE_ANCHOR_DAG_CACHE_LIVE_REJECTED".to_string(),
                     ));
                 }
-                drain.drained_actions += 1;
                 drain.cleared_anchor_dag_cache = true;
             }
             _ => {
@@ -4915,7 +4875,6 @@ mod tests {
             state.action,
             PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
         );
-        assert!(state.drained_actions >= 1);
         assert!(state.cleared_anchor_dag_cache);
         assert_eq!(
             runtime
@@ -5053,8 +5012,6 @@ mod tests {
                 &mut *runtime.manager_state(),
             )
             .expect("dynamic-lambda drain should run");
-            assert_eq!(dynamic.drained_actions, 1);
-            assert!(dynamic.applied_dynamic_lambda);
             assert!(dynamic.has_snapshot);
             assert_eq!(dynamic.snapshot.rounds_count_dynamic_lambda, 0);
             assert_eq!(dynamic.snapshot.dynamic_lambda_ms, 1_490);
@@ -5090,9 +5047,6 @@ mod tests {
                 &mut *runtime.manager_state(),
             )
             .expect("executed-status drain should run");
-            assert_eq!(executed.drained_actions, 2);
-            assert!(executed.persisted_executed_status);
-            assert!(executed.set_executed_flag);
             assert!(executed.snapshot.executed_pbft_block);
             assert_eq!(
                 executed.next_step.action,
@@ -5235,7 +5189,6 @@ mod tests {
         );
         assert!(state.complete);
         assert!(!state.has_action);
-        assert_eq!(state.drained_actions, 0);
         assert!(state.can_continue);
     }
 
@@ -5274,9 +5227,6 @@ mod tests {
             )
             .expect("resume owned-action drain should run");
 
-            assert_eq!(drained.drained_actions, 2);
-            assert!(drained.persisted_executed_status);
-            assert!(drained.set_executed_flag);
             assert!(drained.has_snapshot);
             assert!(drained.snapshot.executed_pbft_block);
             assert!(drained.next_step.complete);
@@ -5315,7 +5265,6 @@ mod tests {
             pbft_manager_runtime_drain_owned_finalization_actions(&mut *runtime.manager_state())
                 .expect("rejected owned-action drain should report through result");
 
-        assert_eq!(rejected.drained_actions, 0);
         assert!(!rejected.next_step.can_continue);
         assert_eq!(
             rejected.next_step.status,

@@ -1026,6 +1026,14 @@ verified-vote tests. This removes another 100 bridge lines, lowering the exact
 budget to 32,313 without changing functions, carriers, handles, shims, flags,
 factories, constructors, or consumers.
 
+Five drain telemetry fields with no production C++ reader are removed from the
+finalization executor carrier together with their bridge-only accumulation
+state. Native drain tests remain authoritative for owned-action execution; the
+CXX boundary retains only cursor/control state, the cache-clear effect, and the
+manager snapshot consumed by the overlay. This deletes 56 bridge lines and
+lowers the exact budget to 32,257. Functions, carrier count, handles, shims,
+flags, factories, constructors, and consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
