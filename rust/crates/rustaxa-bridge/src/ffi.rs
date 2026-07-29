@@ -1766,7 +1766,6 @@ pub mod rustaxa_ffi {
         has_snapshot: bool,
         snapshot: PbftManagerRuntimeSnapshot,
         last_storage_status: u8,
-        reward_votes_reset_generation: u64,
         error_code: String,
     }
 

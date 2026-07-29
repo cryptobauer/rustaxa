@@ -1018,6 +1018,14 @@ functions fall by one to 397, and carriers fall by two to 346. Handles, shim
 directories, flags, partial factories, compatibility constructors, and
 production consumers are unchanged.
 
+The obsolete reset-generation field is also removed from the manager executor
+CXX state after its last C++ reader disappeared. The bridge-only fresh,
+duplicate, and resume propagation transcript is deleted; equivalent generation
+and resume semantics remain covered by native manager, finalization, and
+verified-vote tests. This removes another 100 bridge lines, lowering the exact
+budget to 32,313 without changing functions, carriers, handles, shims, flags,
+factories, constructors, or consumers.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

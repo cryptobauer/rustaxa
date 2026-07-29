@@ -2054,7 +2054,6 @@ fn finalization_executor_state_from_step(
         has_snapshot: false,
         snapshot: runtime.state.snapshot().into(),
         last_storage_status: 0,
-        reward_votes_reset_generation: runtime.finalization_reward_votes_reset_generation,
         error_code: if error_code.is_empty() {
             step.error_code
         } else {
@@ -2064,7 +2063,7 @@ fn finalization_executor_state_from_step(
 }
 
 fn finalization_executor_state_from_drain(
-    runtime: &mut PbftManagerRuntimeState,
+    _runtime: &mut PbftManagerRuntimeState,
     drain: FinalizationOwnedActionDrainResult,
 ) -> FfiPbftManagerFinalizationExecutorState {
     FfiPbftManagerFinalizationExecutorState {
@@ -2082,7 +2081,6 @@ fn finalization_executor_state_from_drain(
         has_snapshot: drain.has_snapshot,
         snapshot: drain.snapshot,
         last_storage_status: drain.last_storage_status,
-        reward_votes_reset_generation: runtime.finalization_reward_votes_reset_generation,
         error_code: if drain.error_code.is_empty() {
             drain.next_step.error_code
         } else {
@@ -3821,10 +3819,7 @@ mod tests {
     use ethereum_types::H256;
     use rustaxa_consensus::pbft_finalize::{PbftFinalizationResumeStatus, PbftFinalizationStatus};
     use rustaxa_consensus::pbft_manager::save_cert_voted_block_in_round_storage;
-    use rustaxa_consensus::{
-        persist_pbft_vote_progress, save_own_verified_vote, PbftVoteProgressPersistenceWrite,
-        PbftVoteStorageRecord,
-    };
+    use rustaxa_consensus::{save_own_verified_vote, PbftVoteStorageRecord};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -5242,100 +5237,6 @@ mod tests {
         assert!(!state.has_action);
         assert_eq!(state.drained_actions, 0);
         assert!(state.can_continue);
-    }
-
-    #[test]
-    fn manager_executor_propagates_reset_generation_through_fresh_duplicate_and_resume() {
-        let (_temp_dir, mut runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_executor_reset_generation");
-
-        let dag_service = dag_service_from_runtime(&runtime);
-        let start_fresh = |runtime: &BridgePbftService| {
-            let plan = pbft_manager_runtime_plan_finalization_intent(runtime, finalization_fact());
-            let ffi_stage = |stage, reward_votes_bundle_rlp: Vec<u8>| {
-                crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage {
-                    stage,
-                    rounds_count_dynamic_lambda: 0,
-                    dynamic_lambda: 0,
-                    has_sortition_params_change: false,
-                    sortition_params_change_period: 0,
-                    sortition_params_change_interval_efficiency: 0,
-                    sortition_params_change_threshold_upper: 0,
-                    has_reward_votes_reset: stage == FINALIZATION_STAGE_REWARD_VOTES_RESET,
-                    reward_votes_bundle_rlp,
-                    has_prepared_pillar_block: false,
-                    prepared_pillar_block_period: 0,
-                    prepared_pillar_block_rlp: Vec::new(),
-                }
-            };
-            pbft_manager_runtime_start_finalization_executor(
-                runtime,
-                &dag_service,
-                FfiPbftFinalizationExecutorStartRequest {
-                    mode: FINALIZATION_EXECUTOR_MODE_FRESH,
-                    plan,
-                    primary_stages: vec![
-                        ffi_stage(0, Vec::new()),
-                        ffi_stage(FINALIZATION_STAGE_REWARD_VOTES_RESET, vec![0xc1, 0x01]),
-                    ],
-                    sync: false,
-                    final_chain_last_block: 9,
-                },
-            )
-            .unwrap()
-        };
-
-        let first = start_fresh(&mut runtime);
-        assert!(first.can_continue);
-        assert_ne!(first.reward_votes_reset_generation, 0);
-        assert_eq!(
-            first.action,
-            PbftFinalizationRuntimeAction::CommitSortitionRuntime.as_u8()
-        );
-        let reward_boundary = pbft_manager_runtime_advance_finalization_sortition_commit(
-            &mut runtime,
-            &dag_service,
-            first.cursor,
-        )
-        .unwrap();
-        assert_eq!(
-            reward_boundary.action,
-            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime.as_u8()
-        );
-        assert_eq!(
-            reward_boundary.reward_votes_reset_generation,
-            first.reward_votes_reset_generation
-        );
-
-        let duplicate = start_fresh(&mut runtime);
-        assert!(duplicate.can_continue);
-        assert!(
-            duplicate.reward_votes_reset_generation > first.reward_votes_reset_generation,
-            "idempotent primary apply must return a fresh authenticated generation"
-        );
-
-        let resume_plan =
-            pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        let resumed = pbft_manager_runtime_start_finalization_executor(
-            &mut runtime,
-            &dag_service,
-            FfiPbftFinalizationExecutorStartRequest {
-                mode: FINALIZATION_EXECUTOR_MODE_RESUME,
-                plan: resume_plan,
-                primary_stages: Vec::new(),
-                sync: false,
-                final_chain_last_block: 9,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            resumed.reward_votes_reset_generation,
-            duplicate.reward_votes_reset_generation
-        );
-        assert_eq!(
-            resumed.reward_votes_reset_generation,
-            native_service_storage(&runtime).extra_reward_votes_reset_generation()
-        );
     }
 
     #[test]
