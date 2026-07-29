@@ -821,6 +821,20 @@ bridge budget falls by 376 lines to 34,399; CXX functions, carriers, handles,
 shim lines and directories, granular flags, partial factories, compatibility
 constructors, production C++ consumers, and public signatures are unchanged.
 
+The next bounded `CRW-12` PBFT cleanup deletes seven bridge-local transcripts
+that duplicate both native owner coverage and exact CXX boundary tests:
+daemon-session action ordering, certify progression, cert-progress restart,
+round-reset effects, cursor mismatch, startup restoration/normalization, and
+structured finalization failure propagation. Native `pbft_manager` and
+finalization tests remain the protocol authority, while
+`rust_consensus_tests` exercises the corresponding CXX calls. Focused bridge
+tests remain for unique bootstrap gating, period-data queue conversion,
+invalid-stage non-publication, ineligible-sleep mapping, queue-drain mapping,
+and unknown-enum conversion. The checked bridge budget falls by 226 lines to
+34,173; CXX functions, carriers, handles, shim lines and directories,
+granular flags, partial factories, compatibility constructors, production C++
+consumers, and public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

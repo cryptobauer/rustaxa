@@ -110,7 +110,12 @@ The service also exposes native task APIs for current-data publication, own-vote
 current-anchor decisions, consensus threshold, block creation/linkage planning, and latest-finalized lookup; the bridge
 only maps those results to CXX carriers. Pillar protocol/state tests are native, while the bridge retains only FFI
 conversion and FinalChain-unwrapping coverage. PBFT root restoration, shared-owner, failure, and readiness behavior is
-native; remaining bridge orchestration/conversion tests remain in this workstream.
+native. Seven duplicated bridge session/startup/finalization transcripts are
+deleted because native owner tests and `rust_consensus_tests` cover both
+protocol behavior and the CXX boundary. Focused bootstrap gating, period-data
+queue conversion, invalid-stage non-publication, ineligible-sleep mapping,
+queue-drain mapping, and unknown-enum tests remain at the bridge; remaining
+cross-domain orchestration/conversion tests stay in this workstream.
 The native pillar mutex guard, mutable state, state snapshot, and snapshot decoder are crate-private and no longer
 re-exported. Bridge tests use public task behavior rather than pointer, generation, or token introspection; snapshot
 relationship characterization now lives beside the native decoder.

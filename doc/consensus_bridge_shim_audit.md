@@ -44,7 +44,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 34399 |
+| `bridge_lines` | 34173 |
 | `shim_lines` | 17629 |
 | `cxx_functions` | 398 |
 | `cxx_carriers` | 350 |
@@ -113,7 +113,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | FinalChain and execution APIs | FinalChain shim, execution adapters | External boundary | Split native ownership, public query, and a narrow external-EVM executor API. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | ingress, planning, effects | tarcap handlers | External boundary | Complete `CRW-N01`; retain transport-only execution API. |
 | `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | Thin DTO adapters over native `PbftChainService` | PBFT chain/manager shims | Internal bridge route | Native storage, restoration, lock ownership, transitions, validation, and lookup live in `rustaxa-consensus`; migrate named C++ readers and delete the facade. |
-| `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | Thin `BridgePbftService` adapter plus manager DTO/effect adapters | App, PBFT/vote/pillar shims | Native service wrapper | Native `PbftService` owns coherent sibling restoration, composition, and bootstrap readiness; move the remaining cross-domain executor orchestration and conversion-only tests out of the bridge. |
+| `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | Thin `BridgePbftService` adapter plus manager DTO/effect adapters | App, PBFT/vote/pillar shims | Native service wrapper | Native `PbftService` owns coherent sibling restoration, composition, bootstrap readiness, and session behavior; retain focused FFI/external-effect tests while moving remaining cross-domain executor orchestration out of the bridge. |
 | `rust/crates/rustaxa-bridge/src/pbft_period_cleanup.rs` | combined cleanup operation | PBFT manager shim | Internal bridge route | Native PBFT service owns operation without CXX-shaped API. |
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | sync admission/runtime methods | PBFT manager and tarcap | Internal bridge route | Fold into native PBFT/network pipeline APIs. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_generation.rs` | vote generation adapters | Vote/PBFT shims | Internal bridge route | Signing becomes a leaf port and vote behavior remains native. |

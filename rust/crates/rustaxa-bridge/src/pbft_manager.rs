@@ -4038,21 +4038,12 @@ mod tests {
     }
 
     const STATE_VALUE_PROPOSAL: u8 = 0;
-    const STATE_CERTIFY: u8 = 2;
-    const STATE_FINISH: u8 = 3;
     const ACTION_PROCESS_SYNCED: u8 = 0;
     const ACTION_BROADCAST: u8 = 1;
     const ACTION_TRY_CERT: u8 = 2;
     const ACTION_TRY_ROUND: u8 = 3;
     const ACTION_SLEEP_INELIGIBLE: u8 = 4;
-    const ACTION_RESET_CONSENSUS: u8 = 18;
-    const ACTION_RUN_CERTIFY: u8 = 9;
-    const ACTION_TRANSITION_FINISH: u8 = 10;
-    const ACTION_RUN_VALUE_PROPOSAL: u8 = 5;
-    const ACTION_RUN_FILTER: u8 = 7;
-    const ACTION_RUN_FIRST_FINISH: u8 = 12;
     const RESULT_CONTINUE: u8 = 0;
-    const RESULT_PROGRESS_RESTART: u8 = 1;
     const LEADER_STATUS_SELECTED: u8 = 0;
     const LEADER_BLOCK_VALIDATION_ALREADY_VALID: u8 = 0;
     const LEADER_BLOCK_VALIDATION_VALIDATED: u8 = 1;
@@ -4077,8 +4068,6 @@ mod tests {
     const CANDIDATE_ADMISSION_STATUS_ACCEPTED_NEWLY_VALIDATED: u8 = 3;
     const CANDIDATE_ADMISSION_STATUS_BLOCK_MISSING: u8 = 4;
     const RESULT_STATE_DONE: u8 = 2;
-    const RESULT_TRANSITION: u8 = 3;
-    const RESULT_SLEEP: u8 = 4;
     const STATE_ACTION_NEXT_VOTE_NULL_BLOCK: u8 = 8;
     const STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE: u8 = 10;
     const STATE_ACTION_SESSION_ACTIVE: u8 = 0;
@@ -4220,131 +4209,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_session_maps_tick_fact_into_stable_action_order() {
-        let mut runtime = runtime_for_tick(fact(STATE_VALUE_PROPOSAL));
-
-        let mut seen = Vec::new();
-        loop {
-            let step = pbft_manager_runtime_session_next(&mut runtime);
-            if !step.has_action {
-                break;
-            }
-            seen.push(step.action);
-            let result = match step.action {
-                ACTION_TRY_CERT | ACTION_TRY_ROUND => RESULT_CONTINUE,
-                ACTION_PROCESS_SYNCED
-                | ACTION_BROADCAST
-                | ACTION_RUN_VALUE_PROPOSAL
-                | ACTION_RUN_FILTER
-                | ACTION_RUN_CERTIFY
-                | ACTION_RUN_FIRST_FINISH => RESULT_STATE_DONE,
-                17 => RESULT_SLEEP,
-                _ => RESULT_TRANSITION,
-            };
-            let _ = pbft_manager_runtime_session_report(
-                &mut runtime,
-                report(step.cursor, step.action, result),
-            );
-        }
-
-        assert_eq!(
-            seen,
-            vec![
-                ACTION_PROCESS_SYNCED,
-                ACTION_BROADCAST,
-                ACTION_TRY_CERT,
-                ACTION_TRY_ROUND,
-                ACTION_RUN_VALUE_PROPOSAL,
-                6,
-                17
-            ]
-        );
-    }
-
-    #[test]
-    fn bridge_session_uses_certify_report_flag_for_next_action() {
-        let mut runtime = runtime_for_tick(fact(STATE_CERTIFY));
-        loop {
-            let step = pbft_manager_runtime_session_next(&mut runtime);
-            if step.action == ACTION_RUN_CERTIFY {
-                let mut action_report = report(step.cursor, step.action, RESULT_STATE_DONE);
-                action_report.go_finish_state = true;
-                let next = pbft_manager_runtime_session_report(&mut runtime, action_report);
-                assert_eq!(next.action, ACTION_TRANSITION_FINISH);
-                break;
-            }
-            let result = if step.action == ACTION_TRY_CERT || step.action == ACTION_TRY_ROUND {
-                RESULT_CONTINUE
-            } else {
-                RESULT_STATE_DONE
-            };
-            let _ = pbft_manager_runtime_session_report(
-                &mut runtime,
-                report(step.cursor, step.action, result),
-            );
-        }
-    }
-
-    #[test]
-    fn bridge_session_completes_with_restart_loop_on_cert_progress() {
-        let mut runtime = runtime_for_tick(fact(STATE_VALUE_PROPOSAL));
-        for expected in [ACTION_PROCESS_SYNCED, ACTION_BROADCAST] {
-            let step = pbft_manager_runtime_session_next(&mut runtime);
-            assert_eq!(step.action, expected);
-            let _ = pbft_manager_runtime_session_report(
-                &mut runtime,
-                report(step.cursor, expected, RESULT_STATE_DONE),
-            );
-        }
-
-        let step = pbft_manager_runtime_session_next(&mut runtime);
-        assert_eq!(step.action, ACTION_TRY_CERT);
-        let complete = pbft_manager_runtime_session_report(
-            &mut runtime,
-            report(step.cursor, ACTION_TRY_CERT, RESULT_PROGRESS_RESTART),
-        );
-
-        assert!(complete.complete);
-        assert!(complete.restart_loop);
-    }
-
-    #[test]
-    fn bridge_session_emits_reset_effect_for_round_advance_candidate() {
-        let mut runtime = runtime_for_tick(fact(STATE_VALUE_PROPOSAL));
-        for expected in [ACTION_PROCESS_SYNCED, ACTION_BROADCAST, ACTION_TRY_CERT] {
-            let step = pbft_manager_runtime_session_next(&mut runtime);
-            assert_eq!(step.action, expected);
-            let result = if expected == ACTION_TRY_CERT {
-                RESULT_CONTINUE
-            } else {
-                RESULT_STATE_DONE
-            };
-            let _ = pbft_manager_runtime_session_report(
-                &mut runtime,
-                report(step.cursor, expected, result),
-            );
-        }
-
-        let step = pbft_manager_runtime_session_next(&mut runtime);
-        assert_eq!(step.action, ACTION_TRY_ROUND);
-        let mut action_report = report(step.cursor, ACTION_TRY_ROUND, RESULT_CONTINUE);
-        action_report.has_new_round = true;
-        action_report.new_round = 6;
-        let reset = pbft_manager_runtime_session_report(&mut runtime, action_report);
-
-        assert_eq!(reset.action, ACTION_RESET_CONSENSUS);
-        assert!(reset.has_target_round);
-        assert_eq!(reset.target_round, 6);
-
-        let complete = pbft_manager_runtime_session_report(
-            &mut runtime,
-            report(reset.cursor, ACTION_RESET_CONSENSUS, RESULT_TRANSITION),
-        );
-        assert!(complete.complete);
-        assert!(complete.restart_loop);
-    }
-
-    #[test]
     fn bridge_session_returns_ineligible_polling_sleep_ms() {
         let mut tick = fact(STATE_VALUE_PROPOSAL);
         tick.polling_interval_ms = 250;
@@ -4370,19 +4234,6 @@ mod tests {
 
         assert_eq!(sleep.action, ACTION_SLEEP_INELIGIBLE);
         assert_eq!(sleep.sleep_ms, 250);
-    }
-
-    #[test]
-    fn bridge_session_detects_cursor_mismatch() {
-        let mut runtime = runtime_for_tick(fact(STATE_VALUE_PROPOSAL));
-        let step = pbft_manager_runtime_session_next(&mut runtime);
-        let failed = pbft_manager_runtime_session_report(
-            &mut runtime,
-            report(step.cursor + 1, step.action, RESULT_STATE_DONE),
-        );
-
-        assert_eq!(failed.status, 3);
-        assert!(!failed.can_continue);
     }
 
     fn state_fact(state: u8) -> FfiPbftManagerStateActionFact {
@@ -6017,31 +5868,6 @@ mod tests {
     }
 
     #[test]
-    fn manager_runtime_finalization_cursor_preserves_structured_error_codes() {
-        let (_temp_dir, runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_error_code");
-        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
-
-        let failed = pbft_manager_runtime_finalization_session_report_action(
-            &mut *runtime.manager_state(),
-            FinalizationRuntimeActionReport {
-                cursor: 0,
-                action: 0,
-                success: false,
-                status: 7,
-                error_code: "PBFT_FINALIZE_DAG_ORDER_APPLY_FAILED".to_string(),
-            },
-        );
-
-        assert_eq!(
-            failed.status,
-            PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
-        );
-        assert_eq!(failed.error_code, "PBFT_FINALIZE_DAG_ORDER_APPLY_FAILED");
-    }
-
-    #[test]
     fn manager_runtime_finalization_resume_cursor_replays_tail_actions() {
         let (_temp_dir, runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_resume");
@@ -6756,58 +6582,6 @@ mod tests {
             result.error_code,
             "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH"
         );
-    }
-
-    #[test]
-    fn bridge_runtime_restores_startup_snapshot_and_persists_normalized_step() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_startup");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(0, 2)
-                .expect("round seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(1, 2)
-                .expect("step seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_status(0, true)
-                .expect("executed status should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_status(2, true)
-                .expect("next value status should persist");
-
-            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-            let snapshot = pbft_manager_runtime_snapshot(&runtime);
-
-            assert_eq!(snapshot.status, STARTUP_STATUS_READY);
-            assert_eq!(snapshot.state, STATE_FINISH);
-            assert_eq!(snapshot.period, 10);
-            assert_eq!(snapshot.round, 2);
-            assert_eq!(snapshot.step, 4);
-            assert_eq!(snapshot.current_round_lambda_ms, 500);
-            assert_eq!(snapshot.dynamic_lambda_ms, 1_500);
-            assert!(snapshot.executed_pbft_block);
-            assert!(snapshot.already_next_voted_value);
-            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(1).unwrap(), 4);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
