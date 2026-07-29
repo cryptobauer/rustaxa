@@ -136,7 +136,9 @@ three-service application root: it constructs and restores transaction, DAG, and
 owner, publishes only after all three succeed, and owns access to the canonical lock domains plus composed
 DAG-then-transaction acquisition. It also owns the complete add-block cursor, canonical transaction validation,
 single shared DAG/transaction persistence batch, post-commit live publication, finalized-order storage application,
-and sibling transaction-sidecar cleanup.
+and sibling transaction-sidecar cleanup. Its duplicated RocksDB-backed bridge add-block behavioral suite is deleted;
+native tests cover durable commit/restart, failure-before-publication, cursor concurrency and retry safety, compatibility
+object identity, supplied-transaction persistence, finalized-nonce filtering, and nonce-fact validation.
 The native DAG application root also owns the proposer transaction-pack task:
 it validates and advances the DAG cursor, snapshots and applies transaction
 queue/cache effects, retains owner-bound estimate cursors across the unlocked

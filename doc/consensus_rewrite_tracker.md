@@ -785,6 +785,20 @@ falls by 507 lines to 35,480; CXX functions, carriers, handles, shim lines and
 directories, granular flags, partial factories, compatibility constructors,
 production C++ consumers, and public signatures are unchanged.
 
+The following bounded `CRW-12` DAG cleanup deletes seven RocksDB-backed
+add-block behavioral tests and their bridge-only block/request fixtures.
+Existing native root tests already cover atomic commit and restart, injected
+commit failure, terminal and save-false outcomes, stale-safe abort, and
+concurrent cursor publication. Native coverage now also owns compatibility
+object identity with supplied-only transaction persistence, finalized-nonce
+filtering, active-cursor preservation across terminal and malformed retries,
+and duplicate/count-mismatched nonce facts. `rustaxa-bridge` retains the
+unchanged CXX conversion and focused external-leaf/ABI tests but no add-block
+protocol suite. The checked bridge budget falls by 589 lines to 34,891; CXX
+functions, carriers, handles, shim lines and directories, granular flags,
+partial factories, compatibility constructors, production C++ consumers, and
+public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

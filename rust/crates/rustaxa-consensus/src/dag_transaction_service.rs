@@ -1782,6 +1782,20 @@ mod tests {
         }
     }
 
+    fn period_data_with_transaction_rlps(transactions: &[Vec<u8>]) -> Vec<u8> {
+        let mut txs = RlpStream::new_list(transactions.len());
+        for tx in transactions {
+            txs.append_raw(tx, 1);
+        }
+        let mut period_data = RlpStream::new_list(5);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&txs.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.out().to_vec()
+    }
+
     fn install_pack_session(root: &DagTransactionService, session_id: u64) -> Result<()> {
         let sortition_params = service_config().sortition.params;
         let frontier = DagFrontier {
@@ -2224,6 +2238,36 @@ mod tests {
                 .to_string()
                 .contains("DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE")
         );
+        let terminal = root
+            .prepare_add_block(DagAddBlockPrepareRequest {
+                expected_hash: H256::repeat_byte(0x77),
+                block_rlp: composed_add_block_rlp(H256::repeat_byte(0x77), 1, &[]),
+                validate_hash: true,
+                save: true,
+                proposed: false,
+                transactions: Vec::new(),
+            })
+            .expect_err("a terminal second prepare must preserve the active cursor");
+        assert!(
+            terminal
+                .to_string()
+                .contains("DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE")
+        );
+        let malformed = root
+            .prepare_add_block(DagAddBlockPrepareRequest {
+                expected_hash: H256::zero(),
+                block_rlp: vec![0x80],
+                validate_hash: true,
+                save: true,
+                proposed: false,
+                transactions: Vec::new(),
+            })
+            .expect_err("malformed second prepare must preserve the active cursor");
+        assert!(
+            malformed
+                .to_string()
+                .contains("DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE")
+        );
         assert!(!root.abort_add_block(first.cursor_id + 1)?);
         assert!(root.abort_add_block(first.cursor_id)?);
         assert!(!root.abort_add_block(first.cursor_id)?);
@@ -2242,6 +2286,236 @@ mod tests {
                 .contains("DAG_ADD_BLOCK_SESSION_CURSOR_MISMATCH")
         );
         assert!(root.abort_add_block(second.cursor_id)?);
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn add_block_object_identity_persists_only_supplied_transactions() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_add_block_object_identity");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let omitted_transaction_hash = H256::repeat_byte(0xBD);
+        let canonical_block_rlp = composed_add_block_rlp(
+            H256::repeat_byte(1),
+            1,
+            std::slice::from_ref(&omitted_transaction_hash),
+        );
+        let canonical_hash = H256::from(keccak256(&canonical_block_rlp));
+        let object_hash = H256::repeat_byte(0xBE);
+        let preparation = root.prepare_add_block(DagAddBlockPrepareRequest {
+            expected_hash: object_hash,
+            validate_hash: false,
+            block_rlp: canonical_block_rlp.clone(),
+            save: true,
+            proposed: false,
+            transactions: Vec::new(),
+        })?;
+        assert!(preparation.accepted);
+        let report = root.complete_add_block(DagAddBlockCompletion {
+            cursor_id: preparation.cursor_id,
+            account_nonce_facts: Vec::new(),
+        })?;
+        assert_eq!(report.counters.dag_blocks, 1);
+        assert!(root.dag_is_block_known(object_hash)?);
+        assert!(!root.dag_is_block_known(canonical_hash)?);
+        assert!(root.dag_load_block(object_hash)?.block_rlp == canonical_block_rlp);
+        assert!(!root.dag_load_block(canonical_hash)?.found);
+        assert_eq!(root.lock_transaction()?.sidecar.transaction_count(), 0);
+        assert!(
+            storage
+                .transaction()
+                .rlp(omitted_transaction_hash)?
+                .is_none()
+        );
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn add_block_completion_rejects_duplicate_nonce_facts() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_add_block_nonce_duplicates");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let key_0 = SigningKey::from_slice(&[0x70; 32]).expect("test signing key");
+        let key_1 = SigningKey::from_slice(&[0x71; 32]).expect("test signing key");
+        let transaction_0 = signed_legacy_transaction_rlp(&key_0);
+        let transaction_1 = signed_legacy_transaction_rlp(&key_1);
+        let envelope_0 = LegacyTransactionEnvelope::decode(&transaction_0)?;
+        let envelope_1 = LegacyTransactionEnvelope::decode(&transaction_1)?;
+        let block_rlp =
+            composed_add_block_rlp(H256::repeat_byte(1), 1, &[envelope_0.hash, envelope_1.hash]);
+        let block_hash = keccak256(&block_rlp);
+        let preparation = root.prepare_add_block(DagAddBlockPrepareRequest {
+            expected_hash: block_hash,
+            block_rlp,
+            validate_hash: true,
+            save: true,
+            proposed: false,
+            transactions: vec![
+                DagAddBlockTransactionPayload {
+                    hash: envelope_0.hash,
+                    transaction_rlp: transaction_0,
+                },
+                DagAddBlockTransactionPayload {
+                    hash: envelope_1.hash,
+                    transaction_rlp: transaction_1,
+                },
+            ],
+        })?;
+        assert!(preparation.accepted);
+        let error = root
+            .complete_add_block(DagAddBlockCompletion {
+                cursor_id: preparation.cursor_id,
+                account_nonce_facts: vec![
+                    DagAddBlockAccountNonceFact {
+                        input_index: 0,
+                        account_nonce: U256::zero(),
+                    },
+                    DagAddBlockAccountNonceFact {
+                        input_index: 0,
+                        account_nonce: U256::zero(),
+                    },
+                ],
+            })
+            .expect_err("duplicate nonce facts must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("DAG_ADD_BLOCK_ACCOUNT_NONCE_FACT_DUPLICATE")
+        );
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn add_block_completion_rejects_nonce_fact_count_mismatch() -> Result<()> {
+        let path =
+            unique_temp_dir("rustaxa_consensus_dag_transaction_add_block_nonce_count_mismatch");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let key_0 = SigningKey::from_slice(&[0x72; 32]).expect("test signing key");
+        let key_1 = SigningKey::from_slice(&[0x73; 32]).expect("test signing key");
+        let transaction_0 = signed_legacy_transaction_rlp(&key_0);
+        let transaction_1 = signed_legacy_transaction_rlp(&key_1);
+        let envelope_0 = LegacyTransactionEnvelope::decode(&transaction_0)?;
+        let envelope_1 = LegacyTransactionEnvelope::decode(&transaction_1)?;
+        let block_rlp =
+            composed_add_block_rlp(H256::repeat_byte(1), 1, &[envelope_0.hash, envelope_1.hash]);
+        let block_hash = keccak256(&block_rlp);
+        let preparation = root.prepare_add_block(DagAddBlockPrepareRequest {
+            expected_hash: block_hash,
+            block_rlp,
+            validate_hash: true,
+            save: true,
+            proposed: false,
+            transactions: vec![
+                DagAddBlockTransactionPayload {
+                    hash: envelope_0.hash,
+                    transaction_rlp: transaction_0,
+                },
+                DagAddBlockTransactionPayload {
+                    hash: envelope_1.hash,
+                    transaction_rlp: transaction_1,
+                },
+            ],
+        })?;
+        assert!(preparation.accepted);
+        let error = root
+            .complete_add_block(DagAddBlockCompletion {
+                cursor_id: preparation.cursor_id,
+                account_nonce_facts: vec![DagAddBlockAccountNonceFact {
+                    input_index: 0,
+                    account_nonce: U256::zero(),
+                }],
+            })
+            .expect_err("mismatched nonce fact counts must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("DAG_ADD_BLOCK_ACCOUNT_NONCE_FACT_COUNT_MISMATCH")
+        );
+        assert_eq!(root.lock_dag()?.state.vertex_count(), 1);
+        assert_eq!(root.lock_transaction()?.sidecar.transaction_count(), 0);
+        assert!(!root.dag_load_block(block_hash)?.found);
+        assert!(storage.transaction().rlp(envelope_0.hash)?.is_none());
+        assert!(storage.transaction().rlp(envelope_1.hash)?.is_none());
+        let report = root.complete_add_block(DagAddBlockCompletion {
+            cursor_id: preparation.cursor_id,
+            account_nonce_facts: vec![
+                DagAddBlockAccountNonceFact {
+                    input_index: 0,
+                    account_nonce: U256::zero(),
+                },
+                DagAddBlockAccountNonceFact {
+                    input_index: 1,
+                    account_nonce: U256::zero(),
+                },
+            ],
+        })?;
+        assert_eq!(report.counters.dag_blocks, 1);
+        assert_eq!(root.lock_dag()?.state.vertex_count(), 2);
+        assert_eq!(root.lock_transaction()?.sidecar.transaction_count(), 2);
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn add_block_finalized_sender_nonce_skips_transaction_publication() -> Result<()> {
+        let path =
+            unique_temp_dir("rustaxa_consensus_dag_transaction_finalized_sender_nonce_filter");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let key = SigningKey::from_slice(&[0x62; 32]).expect("test signing key");
+        let transaction_rlp = signed_legacy_transaction_rlp(&key);
+        let envelope = LegacyTransactionEnvelope::decode(&transaction_rlp)?;
+        storage
+            .transaction()
+            .write_location(envelope.hash, 1, 0, false)?;
+        storage.period().write(
+            1,
+            &period_data_with_transaction_rlps(std::slice::from_ref(&transaction_rlp)),
+        )?;
+        let block_rlp = composed_add_block_rlp(
+            H256::repeat_byte(1),
+            1,
+            std::slice::from_ref(&envelope.hash),
+        );
+        let preparation = root.prepare_add_block(DagAddBlockPrepareRequest {
+            expected_hash: keccak256(&block_rlp),
+            block_rlp,
+            validate_hash: true,
+            save: true,
+            proposed: false,
+            transactions: vec![DagAddBlockTransactionPayload {
+                hash: envelope.hash,
+                transaction_rlp: transaction_rlp.clone(),
+            }],
+        })?;
+        let report = root.complete_add_block(DagAddBlockCompletion {
+            cursor_id: preparation.cursor_id,
+            account_nonce_facts: vec![DagAddBlockAccountNonceFact {
+                input_index: 0,
+                account_nonce: U256::from(2_u64),
+            }],
+        })?;
+        assert!(report.accepted);
+        assert_eq!(report.queue_erased.len(), 0);
+        assert_eq!(root.lock_dag()?.state.vertex_count(), 2);
+        {
+            let transaction = root.lock_transaction()?;
+            assert!(!transaction.queue.contains(envelope.hash));
+            assert!(!transaction.sidecar.contains_non_finalized(envelope.hash));
+        }
+        assert!(storage.transaction().rlp(envelope.hash)?.is_none());
         drop(root);
         drop(storage);
         std::fs::remove_dir_all(path)?;
