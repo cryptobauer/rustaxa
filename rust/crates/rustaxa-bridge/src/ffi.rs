@@ -3265,8 +3265,8 @@ pub mod rustaxa_ffi {
 
     /// Input transaction fact for runtime-owned DAG transaction persistence.
     ///
-    /// Rust computes sidecar membership from `TransactionRuntimeState`
-    /// instead of accepting C++ membership booleans.
+    /// Native `TransactionService` computes sidecar membership instead of
+    /// accepting C++ membership booleans.
     struct DagTransactionSaveSidecarFact {
         input_index: u64,
         hash: [u8; 32],

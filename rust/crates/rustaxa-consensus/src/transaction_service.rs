@@ -3567,6 +3567,59 @@ mod tests {
     }
 
     #[test]
+    fn native_admission_records_queue_overflow_drop_window() -> Result<()> {
+        let (service, path) = build_service_with_defaults(
+            None,
+            1,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        assert!(!service.queue_transactions_dropped()?);
+
+        for identity in 1_u64..=2 {
+            let hash = H256::from_low_u64_be(identity);
+            service.execute_admission(
+                TransactionServiceValidatedAdmissionFact {
+                    tx_hash: hash,
+                    transaction_nonce: U256::zero(),
+                    transaction_cost: U256::one(),
+                    gas_limit: 21_000,
+                    proposal_dag_gas_limit: 30_000,
+                    insert_non_proposable: false,
+                },
+                TransactionServiceFinalChainAdmissionFact {
+                    account_found: true,
+                    account_nonce: U256::zero(),
+                    account_balance: U256::from(100),
+                    finalized_period: None,
+                },
+                TransactionQueueEntry {
+                    hash,
+                    sender: H160::from_low_u64_be(identity),
+                    nonce: U256::zero(),
+                    gas_price: U256::from(identity + 1),
+                    gas: 21_000,
+                    data_size: 0,
+                    rlp: vec![0xc0],
+                    last_block_number: 0,
+                },
+            )?;
+        }
+
+        assert_eq!(service.queue_size()?, 1);
+        assert!(service.queue_transactions_dropped()?);
+
+        drop(service);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
     fn public_verification_rejection_does_not_mutate_native_queue() -> Result<()> {
         let (service, path) = build_service_with_defaults(
             None,

@@ -773,6 +773,18 @@ guard escape hatch remains. The checked bridge budget falls by 275 lines to
 flags, partial factories, compatibility constructors, production C++ consumers,
 and public signatures are unchanged.
 
+The following bounded `CRW-12` transaction cleanup deletes the remaining
+RocksDB-backed bridge runtime fixture and six bridge-local behavioral tests.
+Native transaction-service and queue tests already own count restoration,
+replacement payload retention, overflow eviction, and account cleanup; a new
+native service test adds the missing admission-overflow drop-window assertion.
+`rustaxa-bridge` retains one focused verification status-mapping test and owns
+no transaction runtime fixture, cleanup planner, queue mutator, storage
+lifetime, or drop-observation state even under tests. The checked bridge budget
+falls by 507 lines to 35,480; CXX functions, carriers, handles, shim lines and
+directories, granular flags, partial factories, compatibility constructors,
+production C++ consumers, and public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

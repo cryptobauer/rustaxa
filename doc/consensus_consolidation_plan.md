@@ -124,9 +124,11 @@ snapshot, shard cursor, planner, pending-estimate ordering, selected output, sto
 native `rustaxa-consensus::transaction_service::TransactionService` now owns that packing service together with the
 complete transaction queue, sidecar/count/gas cache, gas oracle, proposal gas limit, durable storage handle, drop
 observation, restoration, serialization mutex, and stable poison policy. Production publication follows successful
-count/config/history restoration; the bridge borrows a short-lived native guard only for FFI-shaped task adapters.
-The bridge snapshots queue/cache facts under the native transaction lock, releases every lock for external EVM work,
-then applies typed demotion/cache effects and transfers selected payloads under the established DAG-then-transaction
+count/config/history restoration. Lock-owning native tasks cover reads, admission, packing, cache/queue mutation,
+finalization, recovery, and DAG transaction persistence; no production transaction guard escapes into the bridge.
+The bridge supplies owned facts, executes retained FinalChain/EVM leaves only while native locks are released, and
+converts native reports. Its former RocksDB-backed behavioral fixture is deleted, leaving one focused status-mapping
+ABI test. Native publication preserves the established DAG-then-transaction
 order. Native `rustaxa-consensus::dag_service::DagService` owns DAG graph/storage state,
 proposer/verifier/add-block cursors, retry state, restoration, initial proposal-period mapping, serialization mutex,
 and poison policy. Native `rustaxa-consensus::dag_transaction_service::DagTransactionService` is the complete
