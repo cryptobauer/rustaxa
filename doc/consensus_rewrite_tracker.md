@@ -809,6 +809,18 @@ to 34,775; CXX functions, carriers, handles, shim lines and directories,
 granular flags, partial factories, compatibility constructors, production C++
 consumers, and public signatures are unchanged.
 
+The next bounded `CRW-12` DAG cleanup moves the complete verifier-transaction
+behavioral suite beside native `DagTransactionService`. Native tests now cover
+all-supplied completion without advancement, canonical queue/sidecar
+resolution and deduplication, missing-transaction rejection, strict finalized
+account-nonce facts and old-finalized rejection, plus stale cursor, proposal
+period, and stage handling. Five RocksDB-backed bridge tests and three
+bridge-only PBFT/period-data fixtures are deleted; the bridge retains only
+conversion and external-leaf wiring coverage for this family. The checked
+bridge budget falls by 376 lines to 34,399; CXX functions, carriers, handles,
+shim lines and directories, granular flags, partial factories, compatibility
+constructors, production C++ consumers, and public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

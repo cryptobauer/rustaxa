@@ -1644,8 +1644,9 @@ fn keccak256_bytes(bytes: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
     use crate::dag::{
-        DAG_PROPOSER_ACTION_CONTINUE, DagFrontier, DagManagerBlock, DagProposerAttemptPlan,
-        DagProposerFrontierFacts, ensure_proposal_period_mapping, save_dag_block_to_storage,
+        DAG_PROPOSER_ACTION_CONTINUE, DAG_VERIFY_REJECT_MISSING_TRANSACTION, DagFrontier,
+        DagManagerBlock, DagProposerAttemptPlan, DagProposerFrontierFacts,
+        ensure_proposal_period_mapping, save_dag_block_to_storage,
     };
     use crate::dag_service::{
         DagProposerObservation, DagProposerRetryState, DagProposerSession,
@@ -1655,6 +1656,9 @@ mod tests {
     use crate::gas_pricer::GasPricerConfig;
     use crate::sortition::{HUNDRED_PERCENT, SortitionParams, VdfParams, VrfParams};
     use crate::transaction_queue::TransactionQueueEntry;
+    use crate::transaction_service::{
+        TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR, TM_TRANSACTION_VIEW_SOURCE_QUEUE,
+    };
     use anyhow::{Result, anyhow};
     use ethereum_types::{H256, U256};
     use k256::ecdsa::SigningKey;
@@ -2528,6 +2532,14 @@ mod tests {
         let path = unique_temp_dir("rustaxa_consensus_dag_transaction_verify_completion_stale");
         let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
         let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let not_started = root
+            .prepare_verify_block_transactions()
+            .expect_err("transaction preparation must require a verifier session");
+        assert!(
+            not_started
+                .to_string()
+                .contains("DAG_VERIFY_SESSION_NOT_STARTED")
+        );
         let envelope = insert_verify_transaction(
             &root,
             &SigningKey::from_slice(&[0x11; 32]).expect("valid test signing key"),
@@ -2545,6 +2557,11 @@ mod tests {
         let initial_step = root.next_verify_block_session()?;
         assert_eq!(initial_step.complete, false);
         let plan = root.prepare_verify_block_transactions()?;
+        assert!(plan.transactions.is_empty());
+        assert_eq!(
+            root.next_verify_block_session()?.action,
+            initial_step.action
+        );
         let stale_step = root
             .complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
                 cursor_id: plan.cursor_id + 1,
@@ -2560,6 +2577,23 @@ mod tests {
         let replacement = root.next_verify_block_session()?;
         assert_eq!(replacement.action, initial_step.action);
 
+        let wrong_period = root
+            .complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
+                cursor_id: plan.cursor_id,
+                proposal_period: plan.proposal_period + 1,
+                account_nonce_facts: Vec::new(),
+            })
+            .expect_err("wrong proposal period must fail without advancing");
+        assert!(
+            wrong_period
+                .to_string()
+                .contains("DAG_VERIFY_SESSION_TRANSACTION_PERIOD_MISMATCH")
+        );
+        assert_eq!(
+            root.next_verify_block_session()?.action,
+            initial_step.action
+        );
+
         let resolved =
             root.complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
                 cursor_id: plan.cursor_id,
@@ -2569,13 +2603,163 @@ mod tests {
         assert_eq!(resolved.complete, false);
         assert_eq!(resolved.action, 2);
 
-        let incomplete =
+        let wrong_stage = root
+            .prepare_verify_block_transactions()
+            .expect_err("transaction preparation must reject the authorization stage");
+        assert!(
+            wrong_stage
+                .to_string()
+                .contains("DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_COMPLETION")
+        );
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_block_transactions_resolve_queue_sidecar_and_missing_in_canonical_order() -> Result<()>
+    {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_verify_sources");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let queue_key =
+            SigningKey::from_slice(&[0x49; 32]).expect("valid queue transaction signing key");
+        let queue_rlp = signed_legacy_transaction_rlp(&queue_key);
+        let queue_envelope = insert_verify_transaction(&root, &queue_key)?;
+        let sidecar_rlp = signed_legacy_transaction_rlp(
+            &SigningKey::from_slice(&[0x4c; 32]).expect("valid sidecar transaction signing key"),
+        );
+        let sidecar_hash = keccak256(&sidecar_rlp);
+        root.lock_transaction()?
+            .sidecar
+            .insert_non_finalized(sidecar_hash, sidecar_rlp.clone())?;
+        let supplied_hash = H256::repeat_byte(0x08);
+        root.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: keccak256(&[2_u8]).to_fixed_bytes(),
+            block_level: 1,
+            pivot: [1; 32],
+            tips: Vec::new(),
+            block_transaction_hashes: vec![
+                supplied_hash,
+                queue_envelope.hash,
+                sidecar_hash,
+                queue_envelope.hash,
+            ],
+            supplied_transaction_hashes: vec![supplied_hash],
+            block_rlp: Vec::new(),
+        })?;
+
+        let preparation = root.prepare_verify_block_transactions()?;
+        assert_eq!(preparation.transactions.len(), 2);
+        assert_eq!(preparation.transactions[0].input_index, 0);
+        assert_eq!(preparation.transactions[0].hash, queue_envelope.hash.0);
+        assert_eq!(
+            preparation.transactions[0].source,
+            TM_TRANSACTION_VIEW_SOURCE_QUEUE
+        );
+        assert_eq!(preparation.transactions[0].tx_rlp, queue_rlp);
+        assert_eq!(preparation.transactions[1].input_index, 1);
+        assert_eq!(preparation.transactions[1].hash, sidecar_hash.0);
+        assert_eq!(
+            preparation.transactions[1].source,
+            TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR
+        );
+        assert_eq!(preparation.transactions[1].tx_rlp, sidecar_rlp);
+        let resolved =
             root.complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
-                cursor_id: resolved.cursor_id + 1,
-                proposal_period: resolved.proposal_period,
+                cursor_id: preparation.cursor_id,
+                proposal_period: preparation.proposal_period,
                 account_nonce_facts: Vec::new(),
-            });
-        assert!(incomplete.is_err());
+            })?;
+        assert!(!resolved.complete);
+        assert_eq!(resolved.action, 2);
+
+        let missing_hash = H256::repeat_byte(0x0a);
+        root.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: keccak256(&[3_u8]).to_fixed_bytes(),
+            block_level: 1,
+            pivot: [1; 32],
+            tips: Vec::new(),
+            block_transaction_hashes: vec![missing_hash],
+            supplied_transaction_hashes: Vec::new(),
+            block_rlp: Vec::new(),
+        })?;
+        let missing = root.prepare_verify_block_transactions()?;
+        assert_eq!(missing.transactions.len(), 1);
+        assert_eq!(missing.transactions[0].hash, missing_hash.0);
+        assert!(!missing.transactions[0].found);
+        let rejected =
+            root.complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
+                cursor_id: missing.cursor_id,
+                proposal_period: missing.proposal_period,
+                account_nonce_facts: Vec::new(),
+            })?;
+        assert!(rejected.complete);
+        assert_eq!(rejected.reject_code, DAG_VERIFY_REJECT_MISSING_TRANSACTION);
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_block_transactions_require_nonce_facts_and_reject_old_finalized() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_verify_finalized_nonce");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let signing_key =
+            SigningKey::from_slice(&[0x4a; 32]).expect("valid finalized transaction signing key");
+        let transaction_rlp = signed_legacy_transaction_rlp(&signing_key);
+        let envelope = LegacyTransactionEnvelope::decode(&transaction_rlp)?;
+        let sender = envelope.sender.context("finalized transaction sender")?;
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        storage
+            .transaction()
+            .write_location(envelope.hash, 1, 0, false)?;
+        storage
+            .period()
+            .write(1, &period_data_with_transaction_rlps(&[transaction_rlp]))?;
+        root.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: keccak256(&[4_u8]).to_fixed_bytes(),
+            block_level: 1,
+            pivot: [1; 32],
+            tips: Vec::new(),
+            block_transaction_hashes: vec![envelope.hash],
+            supplied_transaction_hashes: Vec::new(),
+            block_rlp: Vec::new(),
+        })?;
+
+        let preparation = root.prepare_verify_block_transactions()?;
+        assert_eq!(preparation.transactions.len(), 1);
+        assert!(preparation.transactions[0].found);
+        let missing_fact = root
+            .complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
+                cursor_id: preparation.cursor_id,
+                proposal_period: preparation.proposal_period,
+                account_nonce_facts: Vec::new(),
+            })
+            .expect_err("finalized transaction must require an account nonce fact");
+        assert!(
+            missing_fact
+                .to_string()
+                .contains("TM_PROPOSAL_FINALIZED_ACCOUNT_NONCE_FACT_MISSING")
+        );
+        assert_eq!(root.next_verify_block_session()?.action, 1);
+
+        let rejected =
+            root.complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
+                cursor_id: preparation.cursor_id,
+                proposal_period: preparation.proposal_period,
+                account_nonce_facts: vec![TransactionServiceAccountNonceFact {
+                    sender: sender.0,
+                    account_found: true,
+                    account_nonce: (envelope.nonce + U256::one()).to_big_endian(),
+                }],
+            })?;
+        assert!(rejected.complete);
+        assert_eq!(rejected.reject_code, DAG_VERIFY_REJECT_MISSING_TRANSACTION);
 
         drop(root);
         drop(storage);

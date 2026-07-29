@@ -150,6 +150,10 @@ also routes the complete verifier task through the native root: Rust owns
 transaction-source resolution, authorization/VDF cursor revalidation, native
 VDF proof verification, and gas decisions, while C++ retains transaction
 materialization, FinalChain lookup, and EVM estimation as unlocked leaves. The
+duplicated bridge verifier-transaction behavioral suite is deleted; native
+tests own all-supplied completion, canonical queue/sidecar resolution, missing
+transaction rejection, finalized-nonce validation, and stale period/stage
+cursor behavior. The
 native root also owns the remaining DAG manager query, storage-lookup,
 graph-status, and non-finalized-sync tasks and returns only owned domain
 snapshots. Superseded direct proposer/verifier/query adapters and their bridge
