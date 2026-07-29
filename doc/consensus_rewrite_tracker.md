@@ -1034,6 +1034,12 @@ manager snapshot consumed by the overlay. This deletes 56 bridge lines and
 lowers the exact budget to 32,257. Functions, carrier count, handles, shims,
 flags, factories, constructors, and consumers are unchanged.
 
+The drain adapter now also stops materializing a duplicate status and manager
+snapshot inside its intermediate result. CXX conversion reads the native next
+step and manager snapshot directly, while native and focused bridge tests cover
+the unchanged mutation and cursor behavior. This removes 18 more bridge lines,
+setting the exact budget to 32,239 with every other inventory metric unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
