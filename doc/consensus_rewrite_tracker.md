@@ -911,6 +911,25 @@ checked bridge budget falls by 148 lines to 33,351; CXX functions, carriers, han
 shim lines and directories, granular flags, partial factories, compatibility
 constructors, production C++ consumers, and public signatures are unchanged.
 
+The following bounded `CRW-12` ownership slice moves the live reward-vote
+finalization workflow behind native `PbftVerifiedVotesService`. Native
+consensus now owns coherent cursor/payload snapshots, ordered reward
+selection, exact cert-identity reset-stage preparation, the runtime-before-
+storage lock order, standalone reset persistence plus live cursor publication,
+combined-finalization generation acknowledgement, and restart restoration.
+The standalone task holds the vote-runtime lock through canonical bundle
+derivation and the storage-owned reset batch, then publishes the
+generation-bound cursor only for a successful durable result. Native tests
+cover identity rejection, authoritative stale-row deletion, publication,
+idempotent replay, pre-commit stale/conflicting-cursor rejection,
+combined-batch acknowledgement, and restart. The unchanged
+CXX functions are conversion-only adapters for temporary C++ consumers, and
+their compact sentinel preserves payload ordering and legacy status codes. The
+checked bridge budget falls by 15 lines to 33,336; CXX functions, carriers,
+handles, shim lines and directories, granular flags, partial factories,
+compatibility constructors, production C++ consumers, and public signatures
+are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

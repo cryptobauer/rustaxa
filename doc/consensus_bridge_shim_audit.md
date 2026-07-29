@@ -44,7 +44,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 33351 |
+| `bridge_lines` | 33336 |
 | `shim_lines` | 17516 |
 | `cxx_functions` | 398 |
 | `cxx_carriers` | 350 |
@@ -131,7 +131,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | legacy transaction inspection | PBFT/transaction materializers | Internal bridge route | Use native codec internally; retain only if a named C++ client remains. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | DTO and report conversion over native transaction ownership; DAG-save, finalized-status, admission, read, packing, finalized filtering/verification, recovery, cache, sidecar-removal, and queue-finalization tasks call lock-owning native services directly | transaction/DAG/PBFT shims | Internal bridge route | Retain only submission/materialization conversion, the focused status-mapping ABI test, and unlocked EVM leaf adapters. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF operations/cancellation | VDF and proposer C++ | External boundary | Keep until VDF execution is a native or dedicated external API. |
-| `rust/crates/rustaxa-bridge/src/verified_votes.rs` | DTO/effect adapters over native `PbftVerifiedVotesService`, plus cross-domain FinalChain and finalization composition | vote and PBFT adapters | Internal bridge route | Native storage lifetime, restoration, vote-runtime lock ownership, leader-selection orchestration, and all former facade operations live in `rustaxa-consensus`; move the remaining cross-domain workflows into the native PBFT owner and keep only carrier conversion at retained executor boundaries. |
+| `rust/crates/rustaxa-bridge/src/verified_votes.rs` | DTO/effect adapters over native `PbftVerifiedVotesService`, plus cross-domain FinalChain composition | vote and PBFT adapters | Internal bridge route | Native storage lifetime, restoration, vote-runtime lock ownership, reward-finalization selection/reset/publication, leader-selection orchestration, and all former facade operations live in `rustaxa-consensus`; move the remaining cross-domain workflows into the native PBFT owner and keep only carrier conversion at retained executor boundaries. |
 
 ## Exported CXX Bridge Handles
 

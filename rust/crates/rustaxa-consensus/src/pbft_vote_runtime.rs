@@ -14,10 +14,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::H256;
 use rlp::Rlp;
-use rustaxa_storage::{Column, Storage, StoredFinalizedRewardVoteCursor};
+use rustaxa_storage::{Column, ExtraRewardVotesGuard, Storage, StoredFinalizedRewardVoteCursor};
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::pbft::PbftBlockLink;
 
+use crate::pbft_finalize::apply_pbft_reward_votes_reset_storage_locked;
+use crate::pbft_finalize::{
+    PbftFinalizationStorageWriteStage, PbftFinalizedPeriodApplyResult,
+    PbftRewardVotesResetStorageRequest,
+};
 use crate::pbft_reward_votes::{
     PbftRewardVoteRoundCandidate, PbftRewardVoteSelectionFact, PbftRewardVoteSelectionPlan,
     PbftRewardVotesStatus, plan_pbft_reward_votes,
@@ -81,9 +86,90 @@ pub struct RewardVoteCursorCommitResult {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RewardVoteCursorCommitStatus {
+    /// A newer durable cursor was published to live state.
     Applied,
+    /// The exact durable cursor was already current.
     AlreadyCurrent,
+    /// Identity, generation, durability, or monotonicity validation failed.
     Rejected,
+}
+
+impl RewardVoteCursorCommitStatus {
+    /// Returns the stable CXX status code.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Applied => 0,
+            Self::AlreadyCurrent => 1,
+            Self::Rejected => 2,
+        }
+    }
+}
+
+/// Reward-vote cursor snapshot used by Rust-native service code paths.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct RewardVoteCursorSnapshot {
+    /// Whether a persisted reward cursor exists.
+    pub found: bool,
+    /// Reward cursor period when present.
+    pub period: u64,
+    /// Reward cursor round when present.
+    pub round: u64,
+    /// Reward cursor step when present.
+    pub step: u64,
+    /// Reward cursor block hash when present.
+    pub block_hash: H256,
+}
+
+/// Payload snapshot for the current reward-vote cursor and matching records.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct RewardVotePayloadSnapshot {
+    /// Reward cursor snapshot.
+    pub cursor: RewardVoteCursorSnapshot,
+    /// Canonical weighted payloads selected by the active cursor.
+    pub records: Vec<PbftVotePayloadRecord>,
+}
+
+/// Service input for one native reward-vote reset transaction.
+///
+/// The identity must match the retained cert `2t+1` mapping exactly. `sync`
+/// controls only RocksDB durability; it does not change validation, ordering,
+/// or live cursor publication.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct RewardVoteResetApplyRequest {
+    /// Reward-vote period.
+    pub period: u64,
+    /// Reward-vote round.
+    pub round: u64,
+    /// Reward-vote step.
+    pub step: u64,
+    /// Reward-vote block hash.
+    pub block_hash: H256,
+    /// Storage sync flag forwarded to storage write-set apply.
+    pub sync: bool,
+}
+
+/// Narrow native request for constructing a reward-vote reset stage.
+///
+/// `requested` preserves the finalization-plan gate while [`RewardVoteCursor`]
+/// carries the exact cert identity that must match native verified-vote state.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct RewardVoteResetPrepareRequest {
+    /// Whether the accepted PBFT finalization plan requested a reward reset.
+    pub requested: bool,
+    /// Exact certified-vote identity whose weighted bundle must be retained.
+    pub cursor: RewardVoteCursor,
+}
+
+/// Service input for publishing a cursor after a broader finalization batch.
+///
+/// The generation must be the active storage-authenticated reset generation.
+/// The durable cursor and canonical bundle must match `cursor` byte-for-byte.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct RewardVoteCursorCommitRequest {
+    /// Reward-vote cursor to publish.
+    pub cursor: RewardVoteCursor,
+    /// Reward reset generation returned by reset storage apply.
+    pub reset_generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -445,6 +531,189 @@ impl PbftVerifiedVotesService {
     /// publishing guarded memory changes.
     pub fn storage(&self) -> &Storage {
         self.storage.as_ref()
+    }
+
+    /// Returns the current reward-vote cursor as an owned domain snapshot.
+    ///
+    /// No inputs or storage reads are required. Before the first reset, the
+    /// result has `found == false` and zero identity fields. Lock poison is
+    /// returned without exposing partial state.
+    pub fn reward_vote_cursor_snapshot(&self) -> Result<RewardVoteCursorSnapshot> {
+        let runtime = self.lock()?;
+        Ok(runtime
+            .reward_vote_cursor()
+            .map(|cursor| RewardVoteCursorSnapshot {
+                found: true,
+                period: cursor.period,
+                round: cursor.round,
+                step: cursor.step,
+                block_hash: cursor.block_hash,
+            })
+            .unwrap_or_else(|| RewardVoteCursorSnapshot {
+                found: false,
+                period: 0,
+                round: 0,
+                step: 0,
+                block_hash: H256::zero(),
+            }))
+    }
+
+    /// Returns the finalized reward-vote period, or zero before the first reset.
+    ///
+    /// The value is read under the service mutex so clones observe the same
+    /// cursor epoch. Lock poison is returned as an operational error.
+    pub fn reward_vote_period(&self) -> Result<u64> {
+        let runtime = self.lock()?;
+        Ok(runtime.reward_vote_period())
+    }
+
+    /// Returns the cursor and its exact retained weighted payloads coherently.
+    ///
+    /// Cursor metadata and payloads are copied during one runtime lock epoch.
+    /// An absent cursor yields an empty record list; a present cursor with a
+    /// missing mapping or payload is an invariant error. Lock poison is
+    /// reported without returning a partial snapshot.
+    pub fn current_reward_vote_snapshot(&self) -> Result<RewardVotePayloadSnapshot> {
+        let runtime = self.lock()?;
+        let cursor = runtime
+            .reward_vote_cursor()
+            .map(|cursor| RewardVoteCursorSnapshot {
+                found: true,
+                period: cursor.period,
+                round: cursor.round,
+                step: cursor.step,
+                block_hash: cursor.block_hash,
+            })
+            .unwrap_or_else(|| RewardVoteCursorSnapshot {
+                found: false,
+                period: 0,
+                round: 0,
+                step: 0,
+                block_hash: H256::zero(),
+            });
+        let records = runtime
+            .current_reward_vote_payloads()?
+            .into_iter()
+            .collect();
+        Ok(RewardVotePayloadSnapshot { cursor, records })
+    }
+
+    /// Selects reward-vote payloads in caller-requested hash order.
+    ///
+    /// The native runtime owns preferred/reverse-round selection and payload
+    /// resolution. Rejected protocol outcomes are returned as typed selection
+    /// statuses; missing retained bytes and lock poison are hard errors.
+    pub fn select_reward_vote_payloads(
+        &self,
+        block_period: u64,
+        requested_vote_hashes: Vec<H256>,
+    ) -> Result<PbftRewardVotePayloadSelection> {
+        let runtime = self.lock()?;
+        runtime.select_reward_vote_payloads(block_period, requested_vote_hashes)
+    }
+
+    /// Builds a canonical reward-reset stage from an exact cert identity.
+    ///
+    /// The request gate must be set, the native cert mapping must match period,
+    /// round, step, and block hash, and every weighted payload must be retained.
+    /// The returned stage contains no caller-selected delete keys. Validation
+    /// and lock failures leave runtime and storage unchanged.
+    pub fn prepare_reward_votes_reset_stage(
+        &self,
+        request: RewardVoteResetPrepareRequest,
+    ) -> Result<PbftFinalizationStorageWriteStage> {
+        anyhow::ensure!(request.requested, "PBFT_REWARD_VOTES_RESET_NOT_REQUESTED");
+        let runtime = self.lock()?;
+        let reward_votes_bundle_rlp = runtime.reward_votes_reset_bundle(
+            request.cursor.period,
+            request.cursor.round,
+            request.cursor.step,
+            request.cursor.block_hash,
+        )?;
+        Ok(PbftFinalizationStorageWriteStage {
+            stage: 4,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            has_sortition_params_change: false,
+            sortition_params_change_period: 0,
+            sortition_params_change_interval_efficiency: 0,
+            sortition_params_change_threshold_upper: 0,
+            has_reward_votes_reset: true,
+            reward_votes_bundle_rlp,
+            has_prepared_pillar_block: false,
+            prepared_pillar_block_period: 0,
+            prepared_pillar_block_rlp: Vec::new(),
+            extra_reward_vote_hashes: Vec::new(),
+        })
+    }
+
+    /// Applies and publishes one complete native reward-vote reset.
+    ///
+    /// The service holds its runtime mutex while deriving the canonical bundle,
+    /// applying the Rust-owned storage reset, and publishing the generation-
+    /// bound live cursor. Storage owns authoritative stale-row enumeration and
+    /// its atomic batch. Rejected storage statuses do not publish the cursor;
+    /// lock, storage, or post-commit invariant failures are returned as errors
+    /// and remain restart-safe because durable cursor restoration is native.
+    pub fn apply_reward_votes_reset(
+        &self,
+        request: RewardVoteResetApplyRequest,
+    ) -> Result<PbftFinalizedPeriodApplyResult> {
+        let mut runtime = self.lock()?;
+        let reward_votes_bundle_rlp = runtime.reward_votes_reset_bundle(
+            request.period,
+            request.round,
+            request.step,
+            request.block_hash,
+        )?;
+        let storage_request = PbftRewardVotesResetStorageRequest {
+            period: request.period,
+            round: request.round,
+            step: request.step,
+            block_hash: request.block_hash,
+            reward_votes_bundle_rlp,
+        };
+        let cursor = RewardVoteCursor {
+            period: request.period,
+            round: request.round,
+            step: request.step,
+            block_hash: request.block_hash,
+        };
+        runtime.ensure_reward_vote_cursor_monotonic(cursor)?;
+        let storage_guard = self.storage.lock_extra_reward_votes()?;
+        let result = apply_pbft_reward_votes_reset_storage_locked(
+            &self.storage,
+            &storage_guard,
+            storage_request,
+            request.sync,
+        )?;
+        if result.status.is_success() {
+            let cursor_result = runtime.commit_reward_vote_cursor_locked(
+                &self.storage,
+                &storage_guard,
+                cursor,
+                result.reward_votes_reset_generation,
+            )?;
+            ensure!(
+                cursor_result.status != RewardVoteCursorCommitStatus::Rejected,
+                cursor_result.error_code
+            );
+        }
+        Ok(result)
+    }
+
+    /// Publishes a cursor already committed by a broader finalization batch.
+    ///
+    /// Rust revalidates the active reset generation, exact cert mapping,
+    /// retained canonical bundle, durable cursor bytes, and monotonicity while
+    /// holding the service mutex. Exact replay is `AlreadyCurrent`; every
+    /// rejected result leaves live state unchanged.
+    pub fn commit_reward_vote_cursor(
+        &self,
+        request: RewardVoteCursorCommitRequest,
+    ) -> Result<RewardVoteCursorCommitResult> {
+        let mut runtime = self.lock()?;
+        runtime.commit_reward_vote_cursor(&self.storage, request.cursor, request.reset_generation)
     }
 }
 
@@ -883,6 +1152,28 @@ impl PbftVoteAdmissionRuntime {
         .ok_or_else(|| anyhow!("PBFT_REWARD_CURSOR_CERT_MAPPING_MISSING"))
     }
 
+    fn reward_votes_reset_bundle(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: H256,
+    ) -> Result<Vec<u8>> {
+        let kind = TwoTPlusOneVotedBlockType::CertVotedBlock;
+        let mapping = self
+            .verified_votes
+            .get_two_t_plus_one_voted_block(period, round, kind)
+            .ok_or_else(|| anyhow!("PBFT_REWARD_VOTES_RESET_CERT_MAPPING_MISSING"))?;
+        ensure!(
+            mapping.hash == block_hash && mapping.step == step,
+            "PBFT_REWARD_VOTES_RESET_CERT_IDENTITY_MISMATCH"
+        );
+        let records = self
+            .two_t_plus_one_weighted_payloads(period, round, kind)?
+            .ok_or_else(|| anyhow!("PBFT_REWARD_VOTES_RESET_CERT_MAPPING_MISSING"))?;
+        build_weighted_pbft_vote_bundle(&records)
+    }
+
     /// Commits a post-storage reward cursor without performing durable writes.
     ///
     /// The supplied generation must be the active storage reset generation.
@@ -895,13 +1186,33 @@ impl PbftVoteAdmissionRuntime {
         cursor: RewardVoteCursor,
         reset_generation: u64,
     ) -> Result<RewardVoteCursorCommitResult> {
+        let guard = storage.lock_extra_reward_votes()?;
+        self.commit_reward_vote_cursor_locked(storage, &guard, cursor, reset_generation)
+    }
+
+    fn ensure_reward_vote_cursor_monotonic(&self, cursor: RewardVoteCursor) -> Result<()> {
+        ensure!(
+            !self
+                .reward_vote_cursor
+                .is_some_and(|current| current != cursor && cursor.period <= current.period),
+            "PBFT_REWARD_CURSOR_NOT_MONOTONIC"
+        );
+        Ok(())
+    }
+
+    fn commit_reward_vote_cursor_locked(
+        &mut self,
+        storage: &Storage,
+        _guard: &ExtraRewardVotesGuard<'_>,
+        cursor: RewardVoteCursor,
+        reset_generation: u64,
+    ) -> Result<RewardVoteCursorCommitResult> {
         let rejected = |error_code| RewardVoteCursorCommitResult {
             status: RewardVoteCursorCommitStatus::Rejected,
             cursor,
             reset_generation,
             error_code,
         };
-        let _guard = storage.lock_extra_reward_votes()?;
         if reset_generation == 0
             || reset_generation != storage.extra_reward_votes_reset_generation()
         {
@@ -1592,6 +1903,7 @@ impl RuntimePrecheckExt for PbftVoteAdmissionPrecheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pbft_finalize::PbftFinalizedPeriodApplyStatus;
     use crate::pbft_vote_event::PbftVoteEventFactFlags;
     use crate::pbft_vote_generation::{PbftVoteGenerationInput, generate_pbft_vote};
     use crate::pbft_vote_validation::{
@@ -3007,6 +3319,231 @@ mod tests {
         );
         assert_eq!(runtime.reward_vote_cursor(), Some(second));
 
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn verified_votes_service_owns_reward_reset_storage_and_live_publication() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rustaxa_reward_reset_service_{nonce}"));
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let block_hash = [0x61; 32];
+        let first = vote_rlp_from_secret(block_hash, 3, NODE_SECRET);
+        let second = vote_rlp_from_secret(block_hash, 3, NODE_SECRET_TWO);
+        let first_validation = validation(&first);
+        let second_validation = validation(&second);
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+        runtime
+            .admit_validated_vote(&first, &first_validation, flags(), context(Some(80)))
+            .unwrap();
+        runtime
+            .admit_validated_vote(&second, &second_validation, flags(), context(Some(80)))
+            .unwrap();
+        storage
+            .pbft()
+            .write_extra_reward_vote(H256::from_low_u64_be(701), &[0x01])
+            .unwrap();
+        let service = PbftVerifiedVotesService::from_runtime(storage.clone(), runtime);
+        let cursor = RewardVoteCursor {
+            period: 12,
+            round: 2,
+            step: 3,
+            block_hash: H256::from(block_hash),
+        };
+        let prepare_request = RewardVoteResetPrepareRequest {
+            requested: true,
+            cursor,
+        };
+
+        let stage = service
+            .prepare_reward_votes_reset_stage(prepare_request)
+            .unwrap();
+        assert_eq!(stage.stage, 4);
+        assert!(stage.has_reward_votes_reset);
+        assert!(!stage.reward_votes_bundle_rlp.is_empty());
+        let mismatched = RewardVoteResetPrepareRequest {
+            cursor: RewardVoteCursor {
+                block_hash: H256::from([0x62; 32]),
+                ..cursor
+            },
+            ..prepare_request
+        };
+        assert!(
+            service
+                .prepare_reward_votes_reset_stage(mismatched)
+                .unwrap_err()
+                .to_string()
+                .contains("PBFT_REWARD_VOTES_RESET_CERT_IDENTITY_MISMATCH")
+        );
+
+        let applied = service
+            .apply_reward_votes_reset(RewardVoteResetApplyRequest {
+                period: cursor.period,
+                round: cursor.round,
+                step: cursor.step,
+                block_hash: cursor.block_hash,
+                sync: false,
+            })
+            .unwrap();
+        assert_eq!(applied.status, PbftFinalizedPeriodApplyStatus::Applied);
+        assert_ne!(applied.reward_votes_reset_generation, 0);
+        assert!(
+            storage
+                .pbft()
+                .extra_reward_vote_hashes()
+                .unwrap()
+                .is_empty()
+        );
+
+        let snapshot = service.current_reward_vote_snapshot().unwrap();
+        assert!(snapshot.cursor.found);
+        assert_eq!(snapshot.cursor.period, cursor.period);
+        assert_eq!(snapshot.cursor.round, cursor.round);
+        assert_eq!(snapshot.cursor.step, cursor.step);
+        assert_eq!(snapshot.cursor.block_hash, cursor.block_hash);
+        assert_eq!(snapshot.records.len(), 2);
+        assert_eq!(
+            service
+                .commit_reward_vote_cursor(RewardVoteCursorCommitRequest {
+                    cursor,
+                    reset_generation: applied.reward_votes_reset_generation,
+                })
+                .unwrap()
+                .status,
+            RewardVoteCursorCommitStatus::AlreadyCurrent
+        );
+        let repeated = service
+            .apply_reward_votes_reset(RewardVoteResetApplyRequest {
+                period: cursor.period,
+                round: cursor.round,
+                step: cursor.step,
+                block_hash: cursor.block_hash,
+                sync: false,
+            })
+            .unwrap();
+        assert_eq!(
+            repeated.status,
+            PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+        );
+        assert!(repeated.reward_votes_reset_generation > applied.reward_votes_reset_generation);
+
+        {
+            let mut runtime = service.lock().unwrap();
+            for (period, round, alternative_hash, secret) in [
+                (11, 1, [0x51; 32], NODE_SECRET),
+                (12, 1, [0x52; 32], NODE_SECRET_TWO),
+            ] {
+                let canonical = vote_rlp_for(alternative_hash, period, round, 3, secret);
+                let inspection = validation(&canonical);
+                let weighted =
+                    build_weighted_pbft_vote_payload(&canonical, inspection.calculated_weight)
+                        .unwrap();
+                runtime
+                    .verified_votes_mut()
+                    .add_verified_vote(
+                        VerifiedVote::new(
+                            inspection.vote_hash,
+                            inspection.block_hash,
+                            inspection.recovered_voter,
+                            inspection.period,
+                            inspection.round,
+                            inspection.step,
+                            inspection.vote_type,
+                            inspection.calculated_weight,
+                        )
+                        .unwrap(),
+                        None,
+                    )
+                    .unwrap();
+                runtime.payloads.insert(
+                    weighted.hash,
+                    PbftVoteRuntimePayload {
+                        slashing: build_slashing_pbft_vote_payload(&canonical).unwrap(),
+                        weighted,
+                    },
+                );
+                assert!(
+                    runtime
+                        .verified_votes_mut()
+                        .insert_two_t_plus_one_voted_block(
+                            period,
+                            round,
+                            TwoTPlusOneVotedBlockType::CertVotedBlock,
+                            H256::from(alternative_hash),
+                            3,
+                        )
+                        .round_found
+                );
+            }
+        }
+        let durable_before_rejections = storage.pbft().finalized_reward_vote_cursor().unwrap();
+        let bundle_before_rejections = storage
+            .get_raw(Column::LatestRoundTwoTPlusOneVotes, &[1])
+            .unwrap();
+        let generation_before_rejections = storage.extra_reward_votes_reset_generation();
+        for rejected_cursor in [
+            RewardVoteCursor {
+                period: 11,
+                round: 1,
+                step: 3,
+                block_hash: H256::from([0x51; 32]),
+            },
+            RewardVoteCursor {
+                period: 12,
+                round: 1,
+                step: 3,
+                block_hash: H256::from([0x52; 32]),
+            },
+        ] {
+            assert!(
+                service
+                    .apply_reward_votes_reset(RewardVoteResetApplyRequest {
+                        period: rejected_cursor.period,
+                        round: rejected_cursor.round,
+                        step: rejected_cursor.step,
+                        block_hash: rejected_cursor.block_hash,
+                        sync: false,
+                    })
+                    .unwrap_err()
+                    .to_string()
+                    .contains("PBFT_REWARD_CURSOR_NOT_MONOTONIC")
+            );
+            assert_eq!(
+                storage.extra_reward_votes_reset_generation(),
+                generation_before_rejections
+            );
+            assert_eq!(
+                storage.pbft().finalized_reward_vote_cursor().unwrap(),
+                durable_before_rejections
+            );
+            assert_eq!(
+                storage
+                    .get_raw(Column::LatestRoundTwoTPlusOneVotes, &[1],)
+                    .unwrap(),
+                bundle_before_rejections
+            );
+            assert_eq!(
+                service.reward_vote_cursor_snapshot().unwrap(),
+                snapshot.cursor
+            );
+        }
+
+        drop(service);
+        let restarted = PbftVerifiedVotesService::restore(storage.clone()).unwrap();
+        assert_eq!(
+            restarted.reward_vote_cursor_snapshot().unwrap(),
+            snapshot.cursor
+        );
+        assert_eq!(
+            restarted.current_reward_vote_snapshot().unwrap().records,
+            snapshot.records
+        );
+
+        drop(restarted);
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
     }

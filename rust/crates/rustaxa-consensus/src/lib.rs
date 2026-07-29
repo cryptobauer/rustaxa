@@ -177,7 +177,7 @@ pub use pbft_chain::{
 pub use pbft_finalize::{
     PbftFinalizationAnchor, PbftFinalizationCleanupIntent, PbftFinalizationIntentFact,
     PbftFinalizationPeriodLambdaLookup, PbftFinalizationPlan, PbftFinalizationPositionedHash,
-    PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
+    PbftFinalizationStatus, PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
     load_pbft_finalization_last_period_lambda, plan_pbft_finalization_intent,
 };
 pub use pbft_leader_selection::{
@@ -270,8 +270,9 @@ pub use pbft_vote_runtime::{
     PbftRewardVotePayloadSelection, PbftVerifiedVotesService, PbftVoteAdmissionPersistenceStatus,
     PbftVoteAdmissionRuntime, PbftVoteAdmissionTransactionResult, PbftVoteRuntimeAdmissionOutcome,
     PbftVoteRuntimeBundle, PbftVoteRuntimeCleanupPlan, PbftVoteRuntimePayload,
-    PbftVoteRuntimeSlashingPayloads, RewardVoteCursor, RewardVoteCursorCommitResult,
-    RewardVoteCursorCommitStatus,
+    PbftVoteRuntimeSlashingPayloads, RewardVoteCursor, RewardVoteCursorCommitRequest,
+    RewardVoteCursorCommitResult, RewardVoteCursorCommitStatus, RewardVoteCursorSnapshot,
+    RewardVotePayloadSnapshot, RewardVoteResetApplyRequest, RewardVoteResetPrepareRequest,
 };
 pub use pbft_vote_storage::{
     PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,

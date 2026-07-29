@@ -30,7 +30,9 @@
 use anyhow::{Context, Result};
 use ethereum_types::H256;
 use rlp::{Rlp, RlpStream};
-use rustaxa_storage::{Column, Storage, StorageWriteBatch, StoredFinalizedRewardVoteCursor};
+use rustaxa_storage::{
+    Column, ExtraRewardVotesGuard, Storage, StorageWriteBatch, StoredFinalizedRewardVoteCursor,
+};
 use rustaxa_types::pillar::PillarBlock;
 use std::collections::HashSet;
 
@@ -1233,6 +1235,22 @@ pub fn apply_pbft_reward_votes_reset_storage(
     request: PbftRewardVotesResetStorageRequest,
     sync: bool,
 ) -> Result<PbftFinalizedPeriodApplyResult> {
+    let guard = storage.lock_extra_reward_votes()?;
+    apply_pbft_reward_votes_reset_storage_locked(storage, &guard, request, sync)
+}
+
+/// Applies a reward-vote reset while the caller retains reset serialization.
+///
+/// The caller-provided guard must remain alive through any related in-memory
+/// publication. This variant lets a lock-owning native service keep admission,
+/// durable reset replacement, provenance generation, and live cursor
+/// publication in one continuous runtime-then-storage critical section.
+pub(crate) fn apply_pbft_reward_votes_reset_storage_locked(
+    storage: &Storage,
+    guard: &ExtraRewardVotesGuard<'_>,
+    request: PbftRewardVotesResetStorageRequest,
+    sync: bool,
+) -> Result<PbftFinalizedPeriodApplyResult> {
     let write_set = PbftFinalizationStorageWriteIntent {
         reset_reward_votes: true,
         block_period: request.period,
@@ -1247,10 +1265,27 @@ pub fn apply_pbft_reward_votes_reset_storage(
         stage: APPEND_STAGE_REWARD_VOTES_RESET,
         has_reward_votes_reset: true,
         reward_votes_bundle_rlp: request.reward_votes_bundle_rlp,
-        extra_reward_vote_hashes: Vec::new(),
+        extra_reward_vote_hashes: storage
+            .pbft()
+            .extra_reward_vote_records()?
+            .into_iter()
+            .map(|record| record.vote_hash)
+            .collect(),
         ..PbftFinalizationStorageWriteStage::default()
     };
-    apply_pbft_finalization_storage_writes(storage, &write_set, vec![stage], sync)
+    let mut batch = storage.create_write_batch();
+    let mut result = apply_pbft_finalization_storage_writes_to_batch(
+        storage,
+        &mut batch,
+        &write_set,
+        vec![stage],
+    )?;
+    if result.status.is_success() {
+        result.reward_votes_reset_generation = guard
+            .commit_reset_batch(batch, sync)
+            .context("PBFT_FINALIZE_COMMIT_REWARD_RESET_BATCH")?;
+    }
+    Ok(result)
 }
 
 /// Appends primary finalized-period writes to a Rust-owned batch.

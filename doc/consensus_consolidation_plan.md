@@ -146,6 +146,14 @@ authoritative stale-row deletion, serialization against in-flight admission,
 and rejected write-set statuses. The bridge retains the unchanged production
 DTO adapters plus one compact identity/payload/status conversion sentinel, but
 no parallel reward-reset storage executor or protocol test suite.
+Native `PbftVerifiedVotesService` now owns that production reward-finalization
+task as well. It takes the single vote-runtime lock before deriving the exact
+cert bundle, applies the storage-owned reset batch while admission is excluded,
+and publishes the generation-bound live cursor only after a successful durable
+result. It also owns coherent cursor/payload snapshots, ordered reward
+selection, reset-stage preparation, combined-batch cursor acknowledgement, and
+restart restoration. The unchanged CXX calls now perform only carrier
+conversion for the temporary C++ finalization and vote materializers.
 The native pillar mutex guard, mutable state, state snapshot, and snapshot decoder are crate-private and no longer
 re-exported. Bridge tests use public task behavior rather than pointer, generation, or token introspection; snapshot
 relationship characterization now lives beside the native decoder.

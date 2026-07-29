@@ -48,6 +48,20 @@ impl PbftRewardVotesStatus {
             Self::MissingRetainedPayload => 7,
         }
     }
+
+    /// Returns the stable legacy VoteManager diagnostic code.
+    #[must_use]
+    pub const fn legacy_error_code(self) -> &'static str {
+        match self {
+            Self::FirstPeriod | Self::Accepted => "",
+            Self::MissingPreferredRound => "PBFT_REWARD_VOTES_MISSING_PREFERRED_ROUND",
+            Self::MissingRewardPeriod => "PBFT_REWARD_VOTES_MISSING_REWARD_PERIOD",
+            Self::MissingCertStep => "PBFT_REWARD_VOTES_MISSING_CERT_STEP",
+            Self::MissingRewardBlock => "PBFT_REWARD_VOTES_MISSING_REWARD_BLOCK",
+            Self::MissingRewardVote => "PBFT_REWARD_VOTES_MISSING_REWARD_VOTE",
+            Self::MissingRetainedPayload => "PBFT_REWARD_VOTES_MISSING_RETAINED_PAYLOAD",
+        }
+    }
 }
 
 /// Compact membership facts for one reward-vote candidate round.
@@ -355,5 +369,47 @@ mod tests {
 
         assert!(!plan.accepted);
         assert_eq!(plan.status, PbftRewardVotesStatus::MissingPreferredRound);
+    }
+
+    #[test]
+    fn selection_codes_and_diagnostics_remain_stable() {
+        let cases = [
+            (PbftRewardVotesStatus::FirstPeriod, 0, ""),
+            (PbftRewardVotesStatus::Accepted, 1, ""),
+            (
+                PbftRewardVotesStatus::MissingPreferredRound,
+                2,
+                "PBFT_REWARD_VOTES_MISSING_PREFERRED_ROUND",
+            ),
+            (
+                PbftRewardVotesStatus::MissingRewardPeriod,
+                3,
+                "PBFT_REWARD_VOTES_MISSING_REWARD_PERIOD",
+            ),
+            (
+                PbftRewardVotesStatus::MissingCertStep,
+                4,
+                "PBFT_REWARD_VOTES_MISSING_CERT_STEP",
+            ),
+            (
+                PbftRewardVotesStatus::MissingRewardBlock,
+                5,
+                "PBFT_REWARD_VOTES_MISSING_REWARD_BLOCK",
+            ),
+            (
+                PbftRewardVotesStatus::MissingRewardVote,
+                6,
+                "PBFT_REWARD_VOTES_MISSING_REWARD_VOTE",
+            ),
+            (
+                PbftRewardVotesStatus::MissingRetainedPayload,
+                7,
+                "PBFT_REWARD_VOTES_MISSING_RETAINED_PAYLOAD",
+            ),
+        ];
+        for (status, code, error) in cases {
+            assert_eq!(status.as_u8(), code);
+            assert_eq!(status.legacy_error_code(), error);
+        }
     }
 }
