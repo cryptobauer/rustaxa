@@ -85,7 +85,7 @@ head transitions, validation, and block lookup; the bridge chain-state struct an
 operations still borrow both native sibling guards. CXX-free
 `rustaxa-consensus::pbft_vote_runtime::PbftVerifiedVotesService` now also owns verified-vote storage lifetime,
 atomic restoration, and the shared admission-runtime mutex. The bridge owns neither the verified-vote runtime nor its
-lock; it temporarily borrows the native guard for FinalChain, leader-selection, finalization, and DTO/effect
+lock; it temporarily borrows the native guard for FinalChain, finalization, and DTO/effect
 composition. Native `rustaxa-consensus::pbft_service::PbftService` now owns slashing configuration validation, coherent
 restoration of every storage-backed PBFT sibling from one handle, complete root publication, and bootstrap readiness.
 `BridgePbftService` is a one-field
@@ -127,6 +127,17 @@ validation, one Rust proposal-deletion batch, commit-before-memory publication,
 typed counts, and retry-safe rejection. Its behavioral and failure-injection
 tests are native; the bridge retains only exhaustive result conversion for the
 temporary C++ advance-period executor.
+Native `PbftService` also owns the complete leader-selection task across
+verified votes, proposed blocks, and finalized-chain membership. It prepares
+deterministically ordered owned candidates under the manager-before-siblings
+lock order, using the manager serialization domain to exclude finalized
+membership storage writes while sibling locks protect live state. It
+fingerprints the complete V1 snapshot, releases every native lock for retained
+C++ block validation, then revalidates the exact snapshot and external report
+set before atomically publishing planner-approved validity. Workflow,
+multi-publication, and serialization tests are native; the bridge retains one
+focused end-to-end prepare/finish and exhaustive status/payload conversion test
+around the unchanged CXX boundary.
 The native pillar mutex guard, mutable state, state snapshot, and snapshot decoder are crate-private and no longer
 re-exported. Bridge tests use public task behavior rather than pointer, generation, or token introspection; snapshot
 relationship characterization now lives beside the native decoder.

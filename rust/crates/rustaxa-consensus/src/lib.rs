@@ -9,6 +9,7 @@ pub mod gas_pricer;
 pub mod network_api;
 pub mod pbft_chain;
 pub mod pbft_finalize;
+pub mod pbft_leader_selection;
 pub mod pbft_manager;
 pub mod pbft_period_cleanup;
 pub mod pbft_readiness;
@@ -178,6 +179,11 @@ pub use pbft_finalize::{
     PbftFinalizationPeriodLambdaLookup, PbftFinalizationPlan, PbftFinalizationPositionedHash,
     PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
     load_pbft_finalization_last_period_lambda, plan_pbft_finalization_intent,
+};
+pub use pbft_leader_selection::{
+    PbftLeaderCandidateSnapshot, PbftLeaderCandidateValidation,
+    PbftLeaderCandidateValidationStatus, PbftLeaderSelectionFinishRequest,
+    PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot, PbftLeaderSelectionStatus,
 };
 pub use pbft_manager::{
     PbftFinalizationSortitionPreparation, PbftManagerBlockValidationSession,

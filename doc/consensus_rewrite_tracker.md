@@ -877,6 +877,23 @@ lines to 33,829; CXX functions, carriers, handles, shim lines and directories,
 granular flags, partial factories, compatibility constructors, production C++
 consumers, and public signatures are unchanged.
 
+The following bounded `CRW-12` PBFT ownership contraction moves the complete
+leader-selection prepare/revalidate/finish workflow from `rustaxa-bridge` onto
+native `PbftService`. Native consensus now owns the verified-votes,
+proposed-blocks, and chain snapshot under the manager-before-siblings lock
+order, deterministic candidate snapshot and V1 fingerprint, unlocked
+external-validation contract, exact report-set and stale snapshot rejection,
+planner invocation, whole-command-set prevalidation, and validity publication.
+Five bridge protocol tests move beside the native owner and native regression
+coverage adds multi-command publication plus manager-serialized finalized
+membership. The bridge retains one focused end-to-end prepare/finish and
+exhaustive status/payload conversion test around the unchanged two CXX
+entrypoints and five carriers used by the temporary C++ block validator
+executor. The checked bridge budget falls by 330 lines to 33,499;
+CXX functions, carriers, handles, shim lines and directories, granular flags,
+partial factories, compatibility constructors, production C++ consumers, and
+public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
