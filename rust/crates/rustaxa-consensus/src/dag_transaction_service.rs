@@ -22,7 +22,10 @@ use crate::dag_service::{
     DagVerifyBlockAuthorizationPreparation, DagVerifyBlockAuthorizationSnapshot,
     DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
 };
-use crate::sortition::{SortitionConfig, SortitionService, SortitionServiceGuard};
+use crate::sortition::{
+    PeriodEfficiencyCounts, SortitionConfig, SortitionParamsChange, SortitionService,
+    SortitionServiceGuard, calculate_dag_efficiency,
+};
 use crate::transaction_manager::TransactionManagerVerifyTransactionFact;
 use crate::transaction_packing_service::{TransactionPackingEstimate, TransactionPackingOwner};
 use crate::transaction_queue::TransactionQueueEntry;
@@ -174,6 +177,37 @@ pub struct DagFinalizationReport {
     pub finalized_count: usize,
     /// Expired DAG identities for temporary external seen-block cleanup.
     pub expired_hashes: Vec<H256>,
+}
+
+/// Normalized finalization sortition request decoded from period data facts.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct DagTransactionSortitionFinalizationRequest {
+    /// PBFT period of the just-finalized block.
+    pub period: u64,
+    /// Canonical pivot and transaction counts decoded from period data.
+    pub efficiency_counts: PeriodEfficiencyCounts,
+    /// Non-empty PBFT chain size, including the newly-finalized block.
+    pub non_empty_pbft_chain_size: u64,
+}
+
+/// Sortition-locking commit request carrying the previewed transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DagTransactionSortitionFinalizationCommitRequest {
+    /// Exact finalized-period facts used for the preceding preview.
+    pub finalized_period: DagTransactionSortitionFinalizationRequest,
+    /// Expected emitted change; exact mismatch rejects publication.
+    pub expected_change: Option<SortitionParamsChange>,
+}
+
+/// Lock-coherent live sortition facts returned after a successful commit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DagTransactionSortitionFinalizationCommitResult {
+    /// Change emitted and published for the finalized period, when any.
+    pub change: Option<SortitionParamsChange>,
+    /// Current live VRF upper threshold after publication.
+    pub current_threshold_upper: u16,
+    /// Number of retained parameter changes after publication.
+    pub params_changes_count: u64,
 }
 
 /// Complete native request for one proposer transaction-pack preparation.
@@ -1617,6 +1651,87 @@ impl DagTransactionService {
             expired_hashes: committed.expired_hashes,
         })
     }
+
+    /// Previews one finalized PBFT period sortition transition without publishing.
+    ///
+    /// The preview is computed from period-data counts and returned as a typed
+    /// optional change. Any malformed counts are rejected before locking or
+    /// returning. PBFT manager serialization must keep the previewed sortition
+    /// state stable until the matching commit.
+    pub fn preview_finalized_period(
+        &self,
+        request: DagTransactionSortitionFinalizationRequest,
+    ) -> Result<Option<SortitionParamsChange>> {
+        let dag_efficiency = dag_efficiency_for_period(
+            request.efficiency_counts.has_pivot,
+            request.efficiency_counts.unique_transactions,
+            request.efficiency_counts.total_dag_transaction_refs,
+        )?;
+        let sortition = self.lock_sortition()?;
+        sortition.preview_finalized_period(
+            request.period,
+            dag_efficiency,
+            request.non_empty_pbft_chain_size,
+        )
+    }
+
+    /// Commits one finalized PBFT period sortition transition and publishes live state.
+    ///
+    /// The method acquires the sortition lock once, clones live state for
+    /// validation, and publishes to live state only after matching the expected
+    /// change. A mismatch leaves state untouched and returns
+    /// `PBFT_FINALIZE_SORTITION_CHANGE_MISMATCH`. The PBFT finalization cursor
+    /// must invoke a successful commit at most once: a no-change retry could
+    /// otherwise advance hidden efficiency-window state while still producing
+    /// `None`, matching the legacy preview/commit contract.
+    pub fn commit_finalized_period_with_live_snapshot(
+        &self,
+        request: DagTransactionSortitionFinalizationCommitRequest,
+    ) -> Result<DagTransactionSortitionFinalizationCommitResult> {
+        let finalized_period = request.finalized_period;
+        let dag_efficiency = dag_efficiency_for_period(
+            finalized_period.efficiency_counts.has_pivot,
+            finalized_period.efficiency_counts.unique_transactions,
+            finalized_period
+                .efficiency_counts
+                .total_dag_transaction_refs,
+        )?;
+        let mut sortition = self.lock_sortition()?;
+        let mut updated = sortition.clone();
+        let actual = updated.record_finalized_period(
+            finalized_period.period,
+            dag_efficiency,
+            finalized_period.non_empty_pbft_chain_size,
+        )?;
+        ensure!(
+            actual == request.expected_change,
+            "PBFT_FINALIZE_SORTITION_CHANGE_MISMATCH"
+        );
+        let params = updated.current_params();
+        let params_changes_count = updated.params_changes().len() as u64;
+        *sortition = updated;
+        Ok(DagTransactionSortitionFinalizationCommitResult {
+            change: actual,
+            current_threshold_upper: params.vrf.threshold_upper,
+            params_changes_count,
+        })
+    }
+}
+
+fn dag_efficiency_for_period(
+    has_pivot: bool,
+    unique_transactions: u64,
+    total_dag_transaction_refs: u64,
+) -> Result<Option<u16>> {
+    if has_pivot {
+        let unique_transactions = usize::try_from(unique_transactions)
+            .context("unique transaction count does not fit usize")?;
+        let total_dag_transaction_refs = usize::try_from(total_dag_transaction_refs)
+            .context("total DAG transaction reference count does not fit usize")?;
+        calculate_dag_efficiency(unique_transactions, total_dag_transaction_refs).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 fn stored_add_block_plan(plan: &crate::dag::DagAddBlockEffectPlan) -> DagAddBlockStoredPlan {
@@ -1713,6 +1828,14 @@ mod tests {
                 computation_interval: 5,
             },
         }
+    }
+
+    fn sortition_snapshot(root: &DagTransactionService) -> Result<(u16, u64)> {
+        let sortition = root.lock_sortition()?;
+        Ok((
+            sortition.current_params().vrf.threshold_upper,
+            sortition.params_changes().len() as u64,
+        ))
     }
 
     fn keccak256(bytes: &[u8]) -> H256 {
@@ -3512,6 +3635,162 @@ mod tests {
                 .unwrap_or_default()
                 .is_empty()
         );
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sortition_preview_and_commit_apply_and_return_live_sortition_facts() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_sortition_commit");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let mut config = service_config();
+        config.sortition.changing_interval = 2;
+        config.sortition.computation_interval = 2;
+        let root = DagTransactionService::restore(storage.clone(), config)?;
+
+        let finalized_period = DagTransactionSortitionFinalizationRequest {
+            period: 2,
+            efficiency_counts: PeriodEfficiencyCounts {
+                has_pivot: true,
+                unique_transactions: 1,
+                total_dag_transaction_refs: 2,
+            },
+            non_empty_pbft_chain_size: 2,
+        };
+        let preview = root.preview_finalized_period(finalized_period)?;
+        assert!(preview.is_some());
+        let commit = root.commit_finalized_period_with_live_snapshot(
+            DagTransactionSortitionFinalizationCommitRequest {
+                finalized_period,
+                expected_change: preview,
+            },
+        )?;
+        assert_eq!(preview, commit.change);
+        assert_eq!(
+            commit.params_changes_count, 2,
+            "genesis and one generated update"
+        );
+        assert_eq!(
+            commit.current_threshold_upper,
+            commit
+                .change
+                .expect("commit must emit change")
+                .threshold_upper
+        );
+        assert_eq!(sortition_snapshot(&root)?.0, commit.current_threshold_upper);
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sortition_preview_and_commit_without_pivot_preserves_live_state() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_sortition_no_pivot");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let mut config = service_config();
+        config.sortition.changing_interval = 2;
+        config.sortition.computation_interval = 2;
+        let root = DagTransactionService::restore(storage.clone(), config)?;
+
+        let snapshot = sortition_snapshot(&root)?;
+        let finalized_period = DagTransactionSortitionFinalizationRequest {
+            period: 1,
+            efficiency_counts: PeriodEfficiencyCounts {
+                has_pivot: false,
+                unique_transactions: 10,
+                total_dag_transaction_refs: 0,
+            },
+            non_empty_pbft_chain_size: 1,
+        };
+        let preview = root.preview_finalized_period(finalized_period)?;
+        assert!(preview.is_none());
+        let commit = root.commit_finalized_period_with_live_snapshot(
+            DagTransactionSortitionFinalizationCommitRequest {
+                finalized_period,
+                expected_change: preview,
+            },
+        )?;
+        assert_eq!(preview, commit.change);
+        assert_eq!(sortition_snapshot(&root)?, snapshot);
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sortition_commit_rejects_change_mismatch_and_keeps_state() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_sortition_mismatch");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let mut config = service_config();
+        config.sortition.changing_interval = 2;
+        config.sortition.computation_interval = 2;
+        let root = DagTransactionService::restore(storage.clone(), config)?;
+
+        let finalized_period = DagTransactionSortitionFinalizationRequest {
+            period: 2,
+            efficiency_counts: PeriodEfficiencyCounts {
+                has_pivot: true,
+                unique_transactions: 1,
+                total_dag_transaction_refs: 2,
+            },
+            non_empty_pbft_chain_size: 2,
+        };
+        let preview = root.preview_finalized_period(finalized_period)?;
+        let mut malformed_expected = preview.expect("preview must change");
+        malformed_expected.threshold_upper = malformed_expected.threshold_upper.saturating_add(1);
+        let snapshot = sortition_snapshot(&root)?;
+        let mismatch_error = root
+            .commit_finalized_period_with_live_snapshot(
+                DagTransactionSortitionFinalizationCommitRequest {
+                    finalized_period,
+                    expected_change: Some(malformed_expected),
+                },
+            )
+            .expect_err("changed sortition should reject malformed expected transition");
+        assert!(
+            mismatch_error
+                .to_string()
+                .contains("PBFT_FINALIZE_SORTITION_CHANGE_MISMATCH")
+        );
+        assert_eq!(sortition_snapshot(&root)?, snapshot);
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sortition_preview_rejects_malformed_counts_without_mutation() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_transaction_sortition_counts");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let snapshot = sortition_snapshot(&root)?;
+
+        let error = root
+            .preview_finalized_period(DagTransactionSortitionFinalizationRequest {
+                period: 1,
+                efficiency_counts: PeriodEfficiencyCounts {
+                    has_pivot: true,
+                    unique_transactions: 4,
+                    total_dag_transaction_refs: 3,
+                },
+                non_empty_pbft_chain_size: 1,
+            })
+            .expect_err("malformed counts must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("unique transactions (4) exceed total DAG transaction references (3)")
+        );
+        assert_eq!(sortition_snapshot(&root)?, snapshot);
+
         drop(root);
         drop(storage);
         std::fs::remove_dir_all(path)?;

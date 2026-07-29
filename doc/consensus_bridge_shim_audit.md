@@ -44,10 +44,10 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 33336 |
+| `bridge_lines` | 33175 |
 | `shim_lines` | 17516 |
 | `cxx_functions` | 398 |
-| `cxx_carriers` | 350 |
+| `cxx_carriers` | 348 |
 | `cxx_handles` | 20 |
 | `shim_directories` | 11 |
 | `granular_flags` | 8 |
@@ -126,7 +126,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | PBFT DTO adapters plus stateless storage and temporary-candidate compatibility helpers over native `ProposedBlocksService` | PBFT manager, storage, and vote shims | Internal bridge route | Native state, storage, restoration, lock ownership, and standalone behavior live in `rustaxa-consensus`; the C++ proposed-block facade is deleted, and the remaining three storage/vote helpers retire with their named compatibility clients. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi` | RPC, GraphQL, light plugin | External boundary | Keep a client-oriented read API; remove manager/storage construction elsewhere. |
 | `rust/crates/rustaxa-bridge/src/slashing.rs` | DTO adapters over native `SlashingProofService` | slashing/vote shims | Internal bridge route | Native service owns planner configuration, duplicate cache, and mutex; retain only the transaction-executor conversion boundary until the C++ slashing facade contracts to signing/submission effects. |
-| `rust/crates/rustaxa-bridge/src/sortition.rs` | PBFT finalization preview/commit conversion over native `SortitionService` | PBFT bridge runtime | Internal bridge route | Move the remaining finalization composition into the native PBFT/DAG owner; the C++ sortition facade and its direct CXX operations are deleted. |
+| `rust/crates/rustaxa-bridge/src/sortition.rs` | CXX configuration conversion for native `SortitionService` construction | DAG application bootstrap | Bootstrap adapter | Delete or inline the conversion when native application construction no longer accepts the legacy CXX configuration carrier. |
 | `rust/crates/rustaxa-bridge/src/storage.rs` | storage facade, queries, batch | storage shim, conformance, bootstrap | Compatibility facade | Native bootstrap/query/test fixtures replace broad storage handles. |
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | legacy transaction inspection | PBFT/transaction materializers | Internal bridge route | Use native codec internally; retain only if a named C++ client remains. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | DTO and report conversion over native transaction ownership; DAG-save, finalized-status, admission, read, packing, finalized filtering/verification, recovery, cache, sidecar-removal, and queue-finalization tasks call lock-owning native services directly | transaction/DAG/PBFT shims | Internal bridge route | Retain only submission/materialization conversion, the focused status-mapping ABI test, and unlocked EVM leaf adapters. |

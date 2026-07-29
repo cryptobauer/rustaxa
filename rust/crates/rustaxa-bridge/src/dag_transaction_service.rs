@@ -30,11 +30,13 @@ use rustaxa_consensus::dag_transaction_service::{
     DagGraphView, DagProposerFinalChainFacts as NativeDagProposerFinalChainFacts,
     DagProposerFinalChainRequestOrStep as NativeDagProposerFinalChainRequestOrStep,
     DagProposerPackPrepareRequest, DagProposerPackStep, DagTransactionService,
-    DagTransactionServiceConfig,
+    DagTransactionServiceConfig, DagTransactionSortitionFinalizationCommitRequest,
+    DagTransactionSortitionFinalizationCommitResult, DagTransactionSortitionFinalizationRequest,
     DagVerifyBlockAuthorizationRequestOrStep as NativeDagVerifyBlockAuthorizationRequestOrStep,
     DagVerifyBlockTransactionCompletionReport as NativeDagVerifyBlockTransactionCompletionReport,
     DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
 };
+#[cfg(test)]
 use rustaxa_consensus::sortition::SortitionServiceGuard;
 use rustaxa_consensus::transaction_packing_service::{
     TransactionPackingEstimate, TransactionPackingSelection,
@@ -86,8 +88,26 @@ impl BridgeDagTransactionService {
     /// The temporary guard preserves the canonical DAG-then-sortition lock
     /// order for coupled cursor revalidation. It must not cross an external
     /// executor call.
+    #[cfg(test)]
     pub(crate) fn sortition(&self) -> Result<SortitionServiceGuard<'_>> {
         self.root.lock_sortition()
+    }
+
+    /// Delegates finalized-period sortition preview to the native application owner.
+    pub(crate) fn preview_finalized_period(
+        &self,
+        request: DagTransactionSortitionFinalizationRequest,
+    ) -> Result<Option<rustaxa_consensus::sortition::SortitionParamsChange>> {
+        self.root.preview_finalized_period(request)
+    }
+
+    /// Delegates atomic sortition commit and live snapshot capture to the native owner.
+    pub(crate) fn commit_finalized_period_with_live_snapshot(
+        &self,
+        request: DagTransactionSortitionFinalizationCommitRequest,
+    ) -> Result<DagTransactionSortitionFinalizationCommitResult> {
+        self.root
+            .commit_finalized_period_with_live_snapshot(request)
     }
 }
 

@@ -930,6 +930,24 @@ handles, shim lines and directories, granular flags, partial factories,
 compatibility constructors, production C++ consumers, and public signatures
 are unchanged.
 
+The next bounded `CRW-12` DAG sibling slice moves finalized-period sortition
+preview and commit composition from `rustaxa-bridge` into native
+`DagTransactionService`. Native consensus now owns canonical period-efficiency
+count conversion, no-pivot handling, preview, exact expected-change
+validation, clone-before-publication mutation, and the current threshold plus
+history-count snapshot under one sortition mutex epoch. Calculation, poison,
+and mismatch failures publish no state. Native tests replace the deleted
+bridge helper test and cover changed/unchanged commit, mismatch non-publication,
+and malformed-count rejection; the retained bridge tests exercise PBFT
+executor integration and fatal error projection. The two bridge-only
+sortition-change carriers are deleted, and production bridge guard access is
+gone. PBFT chain-head/period-data preparation and the temporary
+expected-change/at-most-once retry contract remain tracked CRW-12 debt. The
+checked bridge budget falls by 161 lines to 33,175 and CXX carriers fall by two
+to 348; CXX functions, handles, shim lines and directories, granular flags,
+partial factories, compatibility constructors, production C++ consumers, and
+public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

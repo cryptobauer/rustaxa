@@ -3774,19 +3774,6 @@ pub mod rustaxa_ffi {
         computation_interval: u16,
     }
 
-    struct SortitionParamsChangePayload {
-        period: u64,
-        interval_efficiency: u16,
-        threshold_upper: u16,
-    }
-
-    struct SortitionParamsChangeResult {
-        changed: bool,
-        period: u64,
-        interval_efficiency: u16,
-        threshold_upper: u16,
-    }
-
     struct LegacySortitionParams {
         vrf_threshold_upper: u16,
         vdf_difficulty_min: u16,

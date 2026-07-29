@@ -77,6 +77,9 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::{BridgePbftService, BridgeStorage};
 use anyhow::{anyhow, Context};
 use rustaxa_consensus::dag::dag_block_period_from_storage;
+use rustaxa_consensus::dag_transaction_service::{
+    DagTransactionSortitionFinalizationCommitRequest, DagTransactionSortitionFinalizationRequest,
+};
 use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
 #[cfg(test)]
 use rustaxa_consensus::pbft_chain::PbftChain;
@@ -160,7 +163,7 @@ use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainStatus, PbftSyncQueueDrainStep,
 };
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
-use rustaxa_consensus::sortition::SortitionParamsChange;
+use rustaxa_consensus::sortition::PeriodEfficiencyCounts;
 use rustaxa_consensus::{PbftService, PbftServiceConfig};
 
 impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
@@ -2515,24 +2518,19 @@ fn prepare_finalization_sortition(
         "PBFT_FINALIZE_SORTITION_PIVOT_MISMATCH"
     );
     let preview = dag_transaction_service.preview_finalized_period(
-        write_set.block_period,
-        counts.has_pivot,
-        counts.unique_transactions,
-        counts.total_dag_transaction_refs,
-        non_empty_pbft_chain_size,
+        DagTransactionSortitionFinalizationRequest {
+            period: write_set.block_period,
+            efficiency_counts: counts,
+            non_empty_pbft_chain_size,
+        },
     )?;
-    let expected_change = preview.changed.then_some(SortitionParamsChange {
-        period: preview.period,
-        interval_efficiency: preview.interval_efficiency,
-        threshold_upper: preview.threshold_upper,
-    });
     Ok(PbftFinalizationSortitionPreparation {
         period: write_set.block_period,
         has_pivot: counts.has_pivot,
         unique_transactions: counts.unique_transactions,
         total_dag_transaction_refs: counts.total_dag_transaction_refs,
         non_empty_pbft_chain_size,
-        expected_change,
+        expected_change: preview,
     })
 }
 
@@ -2931,49 +2929,39 @@ fn pbft_manager_runtime_advance_finalization_sortition_commit_inner(
             "PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT:PREPARATION_PLAN_MISMATCH"
         ));
     }
-    let expected_changed = preparation.expected_change.is_some();
-    let expected_change = preparation
-        .expected_change
-        .map(
-            |change| crate::ffi::rustaxa_ffi::SortitionParamsChangePayload {
-                period: change.period,
-                interval_efficiency: change.interval_efficiency,
-                threshold_upper: change.threshold_upper,
+    let committed = match dag_transaction_service.commit_finalized_period_with_live_snapshot(
+        DagTransactionSortitionFinalizationCommitRequest {
+            finalized_period: DagTransactionSortitionFinalizationRequest {
+                period: plan.storage_write_intent.block_period,
+                efficiency_counts: PeriodEfficiencyCounts {
+                    has_pivot: preparation.has_pivot,
+                    unique_transactions: preparation.unique_transactions,
+                    total_dag_transaction_refs: preparation.total_dag_transaction_refs,
+                },
+                non_empty_pbft_chain_size: preparation.non_empty_pbft_chain_size,
             },
-        )
-        .unwrap_or_else(|| crate::ffi::rustaxa_ffi::SortitionParamsChangePayload {
-            period: 0,
-            interval_efficiency: 0,
-            threshold_upper: 0,
-        });
-
-    let (change, sortition_current_threshold_upper, params_changes_count) =
-        match dag_transaction_service.commit_finalized_period_with_live_snapshot(
-            plan.storage_write_intent.block_period,
-            preparation.has_pivot,
-            preparation.unique_transactions,
-            preparation.total_dag_transaction_refs,
-            preparation.non_empty_pbft_chain_size,
-            expected_changed,
-            expected_change,
-        ) {
-            Ok(change) => change,
-            Err(err) => {
-                return Err(anyhow!(
-                    "PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT:{err}"
-                ));
-            }
-        };
+            expected_change: preparation.expected_change,
+        },
+    ) {
+        Ok(change) => change,
+        Err(err) => {
+            return Err(anyhow!(
+                "PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT:{err}"
+            ));
+        }
+    };
     runtime.finalization_sortition_preparation = None;
 
     let live_report = {
         let mut live_report = base_finalization_live_report(action, &plan.storage_write_intent);
-        live_report.sortition_changed = change.changed;
-        live_report.sortition_change_period = change.period;
-        live_report.sortition_change_interval_efficiency = change.interval_efficiency;
-        live_report.sortition_change_threshold_upper = change.threshold_upper;
-        live_report.sortition_current_threshold_upper = sortition_current_threshold_upper;
-        live_report.sortition_params_changes_count = params_changes_count;
+        if let Some(change) = committed.change {
+            live_report.sortition_changed = true;
+            live_report.sortition_change_period = change.period;
+            live_report.sortition_change_interval_efficiency = change.interval_efficiency;
+            live_report.sortition_change_threshold_upper = change.threshold_upper;
+        }
+        live_report.sortition_current_threshold_upper = committed.current_threshold_upper;
+        live_report.sortition_params_changes_count = committed.params_changes_count;
         live_report
     };
 
@@ -5230,21 +5218,23 @@ mod tests {
             },
         )
         .expect("fresh start should retain the changed preview");
+        let finalized_period = DagTransactionSortitionFinalizationRequest {
+            period: 10,
+            efficiency_counts: PeriodEfficiencyCounts {
+                has_pivot: true,
+                unique_transactions: 0,
+                total_dag_transaction_refs: 0,
+            },
+            non_empty_pbft_chain_size: 6,
+        };
         let preview = dag_service
-            .preview_finalized_period(10, true, 0, 0, 6)
+            .preview_finalized_period(finalized_period)
             .expect("drift setup preview should succeed");
         dag_service
             .commit_finalized_period_with_live_snapshot(
-                10,
-                true,
-                0,
-                0,
-                6,
-                preview.changed,
-                rustaxa_ffi::SortitionParamsChangePayload {
-                    period: preview.period,
-                    interval_efficiency: preview.interval_efficiency,
-                    threshold_upper: preview.threshold_upper,
+                DagTransactionSortitionFinalizationCommitRequest {
+                    finalized_period,
+                    expected_change: preview,
                 },
             )
             .expect("drift setup should publish the retained preview first");
@@ -5267,33 +5257,6 @@ mod tests {
             .manager_state()
             .finalization_sortition_preparation
             .is_none());
-    }
-
-    #[test]
-    fn sortition_commit_helper_rejects_change_mismatch_without_mutation() {
-        let (_temp_dir, runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_reject");
-        let dag_service = dag_service_from_runtime_with_interval(&runtime, 1);
-        let snapshot_before = sortition_snapshot(&dag_service);
-        let error = match dag_service.commit_finalized_period_with_live_snapshot(
-            10,
-            true,
-            0,
-            0,
-            1,
-            false,
-            rustaxa_ffi::SortitionParamsChangePayload {
-                period: 0,
-                interval_efficiency: 0,
-                threshold_upper: 0,
-            },
-        ) {
-            Ok(_) => panic!("sortition preview mismatch should reject before publication"),
-            Err(error) => error,
-        };
-
-        assert_eq!(error.to_string(), "PBFT_FINALIZE_SORTITION_CHANGE_MISMATCH");
-        assert_eq!(sortition_snapshot(&dag_service), snapshot_before);
     }
 
     #[test]

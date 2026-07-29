@@ -161,6 +161,16 @@ Native `rustaxa-consensus::sortition::SortitionService` now owns restored sortit
 and poison policy. The DAG/transaction bridge root contains this service as a required capability, so optional
 sortition state, capability probes, and unavailable-domain branches are gone. A temporary native guard preserves the
 DAG-then-sortition order for coupled cursor revalidation.
+Native `DagTransactionService` now also owns the finalized-period sortition
+preview/commit task: canonical efficiency-count normalization, preview,
+expected-change validation, clone-before-publish mutation, and the
+lock-coherent threshold/history snapshot. The bridge no longer owns sortition
+protocol behavior or exposes production guard access; it forwards native
+requests and projects the result into the PBFT executor report. The two
+bridge-only change carriers and the helper behavioral test are deleted. PBFT
+chain-head/period-data preparation remains explicit cross-root CRW-12 debt in
+`pbft_manager.rs`, as does replacing the expected-change/at-most-once contract
+with a portable full-state preview fingerprint.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The
