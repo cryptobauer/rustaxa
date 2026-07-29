@@ -1,0 +1,503 @@
+//! Native PBFT period-state cleanup for verified-vote/proposed-block siblings.
+//!
+//! This boundary owns one atomic transition step: plan stale verified-vote and
+//! proposed-block candidate rows, persist proposal-row deletions when required,
+//! and only then publish sibling in-memory cleanup. Rejected transitions do
+//! not publish mutable cleanup state.
+
+use crate::{
+    pbft_vote_runtime::PbftVerifiedVotesService,
+    proposed_blocks::{
+        ProposedBlockPeriodHashes, ProposedBlocksService, append_proposed_blocks_cleanup_to_batch,
+    },
+};
+use anyhow::Result;
+use rustaxa_storage::{Storage, StorageWriteBatch};
+
+/// Typed PBFT period-state cleanup status emitted by Rust-owned cleanup calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PbftPeriodStateCleanupStatus {
+    /// The cleanup request was valid but no stale data existed for persistence or
+    /// in-memory cleanup.
+    NotRequired,
+    /// Cleanup persisted/staged required state and applied in-memory removals.
+    Applied,
+    /// Cleanup request was rejected due to validation or durable-write failure.
+    Rejected,
+}
+
+impl PbftPeriodStateCleanupStatus {
+    /// Returns the stable CXX status code used by the temporary manager adapter.
+    #[must_use]
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::NotRequired => 0,
+            Self::Applied => 1,
+            Self::Rejected => 2,
+        }
+    }
+}
+
+/// Result of one period-state cleanup attempt.
+///
+/// Counts describe only the mutation published by this call. Rejected results
+/// always report zero mutations and `transition_published == false`; valid
+/// no-op results publish the transition with zero counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PbftPeriodStateCleanupResult {
+    /// Typed cleanup outcome.
+    pub status: PbftPeriodStateCleanupStatus,
+    /// Stable diagnostic code for rejected calls, otherwise empty.
+    pub error_code: String,
+    /// Whether the cleanup transition was durably accepted and published.
+    pub transition_published: bool,
+    /// Finalized PBFT-chain size supplied by the caller.
+    pub finalized_chain_size: u64,
+    /// New PBFT period supplied by the caller.
+    pub new_period: u64,
+    /// Complete verified-vote period maps removed from memory.
+    pub verified_vote_periods_removed: u64,
+    /// Individual verified votes removed from memory.
+    pub verified_votes_removed: u64,
+    /// Canonical verified-vote payloads removed from memory.
+    pub vote_payloads_removed: u64,
+    /// Proposed-block period maps removed from memory.
+    pub proposed_block_periods_removed: u64,
+    /// Individual proposed blocks removed from memory and storage.
+    pub proposed_blocks_removed: u64,
+    /// Whether durable proposed-block deletion was required.
+    pub persistence_required: bool,
+    /// Number of durable proposed-block deletes committed by the batch.
+    pub persistence_applied_deletes: u64,
+}
+
+const CLEANUP_EMPTY_FINALIZED_CHAIN: &str = "PBFT_PERIOD_STATE_CLEANUP_EMPTY_FINALIZED_CHAIN";
+const CLEANUP_INVALID_SUCCESSOR: &str = "PBFT_PERIOD_STATE_CLEANUP_INVALID_SUCCESSOR";
+const CLEANUP_STORAGE_DELETE: &str = "PBFT_PERIOD_STATE_CLEANUP_STORAGE_DELETE";
+const CLEANUP_STORAGE_COMMIT: &str = "PBFT_PERIOD_STATE_CLEANUP_STORAGE_COMMIT";
+
+/// Plans, persists, and publishes one cross-sibling PBFT period cleanup.
+///
+/// `finalized_chain_size` and `new_period` identify the exact checked period
+/// transition. `commit` owns the single durable proposal-deletion batch and is
+/// injectable only so native tests can prove failure-before-publication.
+/// Successful results report exact vote, payload, and proposal removals;
+/// validation or commit failures return typed rejected results with zero
+/// published counts.
+///
+/// Locks are intentionally ordered as verified votes then proposed blocks and
+/// remain held through commit. The order must not be inverted by adjacent
+/// operations that borrow both siblings.
+pub(crate) fn cleanup_period_state_with_commit<F>(
+    verified_votes: &PbftVerifiedVotesService,
+    proposed_blocks: &ProposedBlocksService,
+    finalized_chain_size: u64,
+    new_period: u64,
+    commit: F,
+) -> Result<PbftPeriodStateCleanupResult>
+where
+    F: FnOnce(&Storage, StorageWriteBatch) -> Result<()>,
+{
+    if finalized_chain_size == 0 {
+        return Ok(rejected(
+            finalized_chain_size,
+            new_period,
+            CLEANUP_EMPTY_FINALIZED_CHAIN,
+        ));
+    }
+
+    if finalized_chain_size.checked_add(1) != Some(new_period) {
+        return Ok(rejected(
+            finalized_chain_size,
+            new_period,
+            CLEANUP_INVALID_SUCCESSOR,
+        ));
+    }
+
+    let mut runtime = verified_votes
+        .lock()
+        .map_err(|_| anyhow::Error::msg("PBFT_VERIFIED_VOTES_SERVICE_LOCK_POISONED"))?;
+    let mut proposed_blocks = proposed_blocks
+        .write()
+        .map_err(|_| anyhow::Error::msg("PBFT_PROPOSED_BLOCKS_SERVICE_LOCK_POISONED"))?;
+
+    let vote_plan = runtime.plan_cleanup_votes_by_period(finalized_chain_size);
+    let proposed_plan = proposed_blocks.cleanup_candidates(new_period);
+    let proposed_blocks_removed = proposed_block_count(&proposed_plan);
+    let any_memory_cleanup = vote_plan.periods_removed() != 0
+        || vote_plan.payloads_removed() != 0
+        || !proposed_plan.is_empty();
+
+    if !any_memory_cleanup {
+        return Ok(PbftPeriodStateCleanupResult {
+            status: PbftPeriodStateCleanupStatus::NotRequired,
+            error_code: String::new(),
+            transition_published: true,
+            finalized_chain_size,
+            new_period,
+            verified_vote_periods_removed: 0,
+            verified_votes_removed: 0,
+            vote_payloads_removed: 0,
+            proposed_block_periods_removed: 0,
+            proposed_blocks_removed: 0,
+            persistence_required: false,
+            persistence_applied_deletes: 0,
+        });
+    }
+
+    if proposed_blocks_removed != 0 {
+        let storage = verified_votes.storage();
+        let mut batch = storage.create_write_batch();
+        let appended =
+            match append_proposed_blocks_cleanup_to_batch(storage, &mut batch, &proposed_plan) {
+                Ok(appended) => appended,
+                Err(_) => {
+                    return Ok(rejected(
+                        finalized_chain_size,
+                        new_period,
+                        CLEANUP_STORAGE_DELETE,
+                    ));
+                }
+            };
+        if commit(storage, batch).is_err() {
+            return Ok(rejected(
+                finalized_chain_size,
+                new_period,
+                CLEANUP_STORAGE_COMMIT,
+            ));
+        }
+        debug_assert_eq!(appended, proposed_blocks_removed);
+    }
+
+    let result = PbftPeriodStateCleanupResult {
+        status: PbftPeriodStateCleanupStatus::Applied,
+        error_code: String::new(),
+        transition_published: true,
+        finalized_chain_size,
+        new_period,
+        verified_vote_periods_removed: vote_plan.periods_removed(),
+        verified_votes_removed: vote_plan.votes_removed(),
+        vote_payloads_removed: vote_plan.payloads_removed(),
+        proposed_block_periods_removed: proposed_plan.len() as u64,
+        proposed_blocks_removed,
+        persistence_required: proposed_blocks_removed != 0,
+        persistence_applied_deletes: proposed_blocks_removed,
+    };
+
+    runtime.apply_cleanup_votes_by_period(&vote_plan);
+    for plan in &proposed_plan {
+        proposed_blocks.remove_period(plan.period);
+    }
+    Ok(result)
+}
+
+fn proposed_block_count(plan: &[ProposedBlockPeriodHashes]) -> u64 {
+    plan.iter()
+        .map(|entry| entry.block_hashes.len() as u64)
+        .sum()
+}
+
+fn rejected(
+    finalized_chain_size: u64,
+    new_period: u64,
+    error_code: &str,
+) -> PbftPeriodStateCleanupResult {
+    PbftPeriodStateCleanupResult {
+        status: PbftPeriodStateCleanupStatus::Rejected,
+        error_code: error_code.to_owned(),
+        transition_published: false,
+        finalized_chain_size,
+        new_period,
+        verified_vote_periods_removed: 0,
+        verified_votes_removed: 0,
+        vote_payloads_removed: 0,
+        proposed_block_periods_removed: 0,
+        proposed_blocks_removed: 0,
+        persistence_required: false,
+        persistence_applied_deletes: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        PbftService,
+        pbft_service::PbftServiceConfig,
+        pbft_vote_runtime::PbftVoteAdmissionRuntime,
+        verified_votes::{PbftVoteType, VerifiedVote},
+    };
+    use ethereum_types::{H160, H256};
+    use rustaxa_storage::{Column, Config};
+    use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+    use rustaxa_types::pbft::PbftBlockLink;
+    use std::convert::TryFrom;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_storage(name: &str) -> (Arc<Storage>, PathBuf) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{name}_{nonce}"));
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        (storage, path)
+    }
+
+    fn test_service(
+        storage: Option<Arc<Storage>>,
+        runtime: PbftVoteAdmissionRuntime,
+    ) -> (PbftService, Option<PathBuf>) {
+        let (storage, path) = match storage {
+            Some(storage) => (storage, None),
+            None => {
+                let (storage, path) = test_storage("pbft_period_cleanup_service");
+                (storage, Some(path))
+            }
+        };
+        let service = PbftService::restore(
+            storage,
+            PbftServiceConfig {
+                genesis_lambda_ms: 100,
+                cacti_lambda_max_ms: 100,
+                cacti_lambda_default_ms: 100,
+                cacti_block: u64::MAX,
+                max_exponential_lambda_ms: 60_000,
+                max_steps: 13,
+                deadline_ms: 400,
+                polling_interval_ms: 100,
+                report_malicious_behaviour: true,
+                magnolia_activation_period: 0,
+            },
+        )
+        .unwrap();
+        *service.verified_votes().lock().unwrap() = runtime;
+        (service, path)
+    }
+
+    fn vote(hash: u64, period: u64) -> VerifiedVote {
+        VerifiedVote::new(
+            H256::from_low_u64_be(hash),
+            H256::from_low_u64_be(hash + 100),
+            H160::from_low_u64_be(hash),
+            period,
+            1,
+            3,
+            PbftVoteType::Cert,
+            1,
+        )
+        .unwrap()
+    }
+
+    fn proposed_block(period: u64, timestamp: u64) -> (Vec<u8>, PbftBlockLink) {
+        let mut stream = rlp::RlpStream::new_list(8);
+        stream.append(&H256::from_low_u64_be(period));
+        stream.append(&H256::from_low_u64_be(period + 1));
+        stream.append(&H256::from_low_u64_be(period + 2));
+        stream.append(&H256::from_low_u64_be(period + 3));
+        stream.append(&period);
+        stream.append(&timestamp);
+        stream.append(&H256::from_low_u64_be(period + 4));
+        stream.append(&vec![0_u8; 65]);
+        let block_rlp = stream.out().to_vec();
+        let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block_rlp))
+            .expect("test PBFT block should decode");
+        (block_rlp, link)
+    }
+
+    #[test]
+    fn cleanup_rejects_commit_without_mutation_then_retries_with_exact_counts() {
+        let (storage, path) = test_storage("rustaxa_consensus_period_cleanup_retry");
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+        runtime
+            .verified_votes_mut()
+            .add_verified_vote(vote(1, 11), None)
+            .unwrap();
+        runtime
+            .verified_votes_mut()
+            .add_verified_vote(vote(2, 12), None)
+            .unwrap();
+        let service = test_service(Some(storage.clone()), runtime).0;
+        let (old_rlp, old_link) = proposed_block(11, 900);
+        let (kept_rlp, kept_link) = proposed_block(13, 901);
+        let old_hash = old_link.block_hash;
+        let kept_hash = kept_link.block_hash;
+        {
+            let mut proposed = service.proposed_blocks().write().unwrap();
+            proposed.push(11, old_hash, old_link.pivot_dag_block_hash, old_rlp.clone());
+            proposed.push(
+                13,
+                kept_hash,
+                kept_link.pivot_dag_block_hash,
+                kept_rlp.clone(),
+            );
+        }
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::ProposedPbftBlocks,
+                old_hash.as_bytes(),
+                &old_rlp,
+            )
+            .unwrap();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::ProposedPbftBlocks,
+                kept_hash.as_bytes(),
+                &kept_rlp,
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+
+        let rejected = cleanup_period_state_with_commit(
+            service.verified_votes(),
+            service.proposed_blocks(),
+            12,
+            13,
+            |_, _| Err(anyhow::anyhow!("injected commit failure")),
+        )
+        .unwrap();
+        assert_eq!(rejected.status, PbftPeriodStateCleanupStatus::Rejected);
+        assert_eq!(rejected.error_code, CLEANUP_STORAGE_COMMIT);
+        assert!(!rejected.transition_published);
+        assert_eq!(rejected.verified_votes_removed, 0);
+        assert_eq!(rejected.proposed_blocks_removed, 0);
+        assert_eq!(
+            service
+                .verified_votes()
+                .lock()
+                .unwrap()
+                .verified_votes()
+                .size(),
+            2
+        );
+        assert!(
+            service
+                .proposed_blocks()
+                .read()
+                .unwrap()
+                .contains(11, old_hash)
+        );
+        assert!(
+            storage
+                .get_raw(Column::ProposedPbftBlocks, old_hash.as_bytes())
+                .unwrap()
+                .is_some()
+        );
+
+        let applied = service
+            .cleanup_period_state(12, 13)
+            .expect("cleanup should recover on retry");
+        assert_eq!(applied.status, PbftPeriodStateCleanupStatus::Applied);
+        assert!(applied.transition_published);
+        assert_eq!(applied.verified_vote_periods_removed, 1);
+        assert_eq!(applied.verified_votes_removed, 1);
+        assert_eq!(applied.vote_payloads_removed, 0);
+        assert_eq!(applied.proposed_block_periods_removed, 1);
+        assert_eq!(applied.proposed_blocks_removed, 1);
+        assert!(applied.persistence_required);
+        assert_eq!(applied.persistence_applied_deletes, 1);
+        assert_eq!(
+            service
+                .verified_votes()
+                .lock()
+                .unwrap()
+                .verified_votes()
+                .size(),
+            1
+        );
+        assert!(
+            !service
+                .proposed_blocks()
+                .read()
+                .unwrap()
+                .contains(11, old_hash)
+        );
+        assert!(
+            service
+                .proposed_blocks()
+                .read()
+                .unwrap()
+                .contains(13, kept_hash)
+        );
+        assert!(
+            storage
+                .get_raw(Column::ProposedPbftBlocks, old_hash.as_bytes())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            storage
+                .get_raw(Column::ProposedPbftBlocks, kept_hash.as_bytes())
+                .unwrap()
+                .is_some()
+        );
+
+        drop(service);
+        let restarted = test_service(Some(storage.clone()), PbftVoteAdmissionRuntime::new()).0;
+        assert!(
+            !restarted
+                .proposed_blocks()
+                .read()
+                .unwrap()
+                .contains(11, old_hash)
+        );
+        assert!(
+            restarted
+                .proposed_blocks()
+                .read()
+                .unwrap()
+                .contains(13, kept_hash)
+        );
+        drop(restarted);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn cleanup_noop_and_invalid_relation_are_typed() {
+        let (service, path) = test_service(None, PbftVoteAdmissionRuntime::new());
+        let no_op = service.cleanup_period_state(12, 13).unwrap();
+        assert_eq!(no_op.status, PbftPeriodStateCleanupStatus::NotRequired);
+        assert!(no_op.transition_published);
+        assert!(!no_op.persistence_required);
+
+        service
+            .verified_votes()
+            .lock()
+            .unwrap()
+            .verified_votes_mut()
+            .add_verified_vote(vote(3, 11), None)
+            .unwrap();
+        let vote_only = service.cleanup_period_state(12, 13).unwrap();
+        assert_eq!(vote_only.status, PbftPeriodStateCleanupStatus::Applied);
+        assert_eq!(vote_only.verified_votes_removed, 1);
+        assert_eq!(vote_only.proposed_blocks_removed, 0);
+        assert!(!vote_only.persistence_required);
+        assert_eq!(vote_only.persistence_applied_deletes, 0);
+
+        let empty_chain = service.cleanup_period_state(0, 1).unwrap();
+        assert_eq!(empty_chain.status, PbftPeriodStateCleanupStatus::Rejected);
+        assert_eq!(empty_chain.error_code, CLEANUP_EMPTY_FINALIZED_CHAIN);
+
+        let invalid = service.cleanup_period_state(12, 14).unwrap();
+        assert_eq!(invalid.status, PbftPeriodStateCleanupStatus::Rejected);
+        assert!(!invalid.transition_published);
+        assert_eq!(invalid.error_code, CLEANUP_INVALID_SUCCESSOR);
+
+        let overflow = service.cleanup_period_state(u64::MAX, u64::MAX).unwrap();
+        assert_eq!(overflow.status, PbftPeriodStateCleanupStatus::Rejected);
+        assert_eq!(overflow.error_code, CLEANUP_INVALID_SUCCESSOR);
+
+        drop(service);
+        if let Some(path) = path {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}

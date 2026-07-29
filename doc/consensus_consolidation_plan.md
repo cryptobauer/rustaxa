@@ -121,6 +121,12 @@ leader-selection planner transcripts are deleted from the bridge because the
 native PBFT manager suite owns stronger behavior; the bridge retains only the
 compact normal-path carrier sentinel and unknown-status error-mapping case for
 that planner family.
+Native `PbftService` now also owns the complete period-state cleanup task across
+verified votes and proposed blocks: fixed sibling lock order, successor
+validation, one Rust proposal-deletion batch, commit-before-memory publication,
+typed counts, and retry-safe rejection. Its behavioral and failure-injection
+tests are native; the bridge retains only exhaustive result conversion for the
+temporary C++ advance-period executor.
 The native pillar mutex guard, mutable state, state snapshot, and snapshot decoder are crate-private and no longer
 re-exported. Bridge tests use public task behavior rather than pointer, generation, or token introspection; snapshot
 relationship characterization now lives beside the native decoder.

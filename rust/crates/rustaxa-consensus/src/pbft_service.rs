@@ -10,12 +10,13 @@ use crate::pbft_manager::{
     PbftManagerGuard, PbftManagerService, PbftManagerStorageStartupFact,
     create_pbft_manager_runtime_from_storage,
 };
+use crate::pbft_period_cleanup::{PbftPeriodStateCleanupResult, cleanup_period_state_with_commit};
 use crate::pbft_readiness::PbftServiceReadiness;
 use crate::pbft_vote_runtime::PbftVerifiedVotesService;
 use crate::pillar_chain_service::PillarChainService;
 use crate::proposed_blocks::ProposedBlocksService;
 use crate::slashing::SlashingProofService;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rustaxa_storage::Storage;
 use std::sync::Arc;
 
@@ -108,6 +109,33 @@ impl PbftService {
     /// Publishes completion of PBFT startup replay.
     pub fn complete_bootstrap(&self) {
         self.readiness.mark_ready();
+    }
+
+    /// Atomically cleans service-owned period state after PBFT finalization.
+    ///
+    /// `finalized_chain_size` must be nonzero and `new_period` must be its exact
+    /// checked successor. The operation acquires verified votes before proposed
+    /// blocks, plans both cleanups, commits all durable proposed-block deletes
+    /// in one Rust storage batch, and only then publishes exact in-memory
+    /// removals. Valid no-op transitions are published with zero counts.
+    /// Validation or storage failures return a typed rejected result without
+    /// memory publication; lock poison remains an operational error.
+    pub fn cleanup_period_state(
+        &self,
+        finalized_chain_size: u64,
+        new_period: u64,
+    ) -> Result<PbftPeriodStateCleanupResult> {
+        cleanup_period_state_with_commit(
+            self.verified_votes(),
+            self.proposed_blocks(),
+            finalized_chain_size,
+            new_period,
+            |storage, batch| {
+                storage
+                    .commit_write_batch_with_sync(batch, false)
+                    .context("PBFT_PERIOD_STATE_CLEANUP_COMMIT")
+            },
+        )
     }
 
     /// Returns whether PBFT startup replay has been published complete.

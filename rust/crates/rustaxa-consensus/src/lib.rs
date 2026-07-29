@@ -10,6 +10,7 @@ pub mod network_api;
 pub mod pbft_chain;
 pub mod pbft_finalize;
 pub mod pbft_manager;
+pub mod pbft_period_cleanup;
 pub mod pbft_readiness;
 pub mod pbft_reward_votes;
 pub mod pbft_service;
@@ -210,6 +211,7 @@ pub use pbft_manager::{
     report_pbft_manager_proposal_dag_order, report_pbft_manager_runtime_action,
     report_pbft_manager_state_action_effect_session,
 };
+pub use pbft_period_cleanup::{PbftPeriodStateCleanupResult, PbftPeriodStateCleanupStatus};
 pub use pbft_readiness::PbftServiceReadiness;
 pub use pbft_reward_votes::{
     PbftRewardVoteRoundCandidate, PbftRewardVoteSelectionFact, PbftRewardVoteSelectionPlan,
