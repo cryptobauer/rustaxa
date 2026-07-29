@@ -894,6 +894,23 @@ CXX functions, carriers, handles, shim lines and directories, granular flags,
 partial factories, compatibility constructors, production C++ consumers, and
 public signatures are unchanged.
 
+The next bounded `CRW-12` PBFT test-ownership cleanup deletes three
+bridge-local reward-vote finalization transcripts and their test-only generic
+finalization storage executor, replacing them with one compact boundary-only
+sentinel. Native `pbft_vote_runtime` coverage already owns
+ordered payload selection, durable generation-bound cursor publication,
+idempotence, conflicts, and restart behavior. Native `pbft_finalize` coverage
+owns reward-reset bundle persistence, authoritative stale-row deletion,
+serialization against in-flight admission writes, and rejected write-set
+statuses. The unchanged production CXX methods remain DTO adapters for the
+temporary VoteManager/finalization executor, while `rustaxa-bridge` no longer
+executes a parallel generic finalization write path under tests. The retained
+sentinel covers reset identity/bundle conversion, ordered selected records,
+cursor Applied/AlreadyCurrent/Rejected codes, and rejected-result mapping. The
+checked bridge budget falls by 148 lines to 33,351; CXX functions, carriers, handles,
+shim lines and directories, granular flags, partial factories, compatibility
+constructors, production C++ consumers, and public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

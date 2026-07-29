@@ -44,7 +44,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 33499 |
+| `bridge_lines` | 33351 |
 | `shim_lines` | 17516 |
 | `cxx_functions` | 398 |
 | `cxx_carriers` | 350 |

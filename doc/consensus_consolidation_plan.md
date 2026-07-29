@@ -138,6 +138,14 @@ set before atomically publishing planner-approved validity. Workflow,
 multi-publication, and serialization tests are native; the bridge retains one
 focused end-to-end prepare/finish and exhaustive status/payload conversion test
 around the unchanged CXX boundary.
+The remaining bridge-local reward-vote finalization transcripts are also
+deleted. Native vote-runtime tests own ordered reward selection, durable
+generation-bound cursor publication, idempotence, conflict rejection, and
+restart behavior; native finalization tests own reset-bundle persistence,
+authoritative stale-row deletion, serialization against in-flight admission,
+and rejected write-set statuses. The bridge retains the unchanged production
+DTO adapters plus one compact identity/payload/status conversion sentinel, but
+no parallel reward-reset storage executor or protocol test suite.
 The native pillar mutex guard, mutable state, state snapshot, and snapshot decoder are crate-private and no longer
 re-exported. Bridge tests use public task behavior rather than pointer, generation, or token introspection; snapshot
 relationship characterization now lives beside the native decoder.

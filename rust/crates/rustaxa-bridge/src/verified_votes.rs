@@ -50,11 +50,6 @@ use crate::pbft_vote_validation::threshold_plan_to_ffi;
 #[cfg(test)]
 use ethereum_types::H160;
 use ethereum_types::H256;
-#[cfg(test)]
-use rustaxa_consensus::pbft_finalize::{
-    apply_pbft_finalization_storage_writes, PbftFinalizationStorageWriteIntent,
-    PbftFinalizationStorageWriteStage as DomainPbftFinalizationStorageWriteStage,
-};
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_reward_votes_reset_storage, PbftFinalizedPeriodApplyResult,
     PbftRewardVotesResetStorageRequest,
@@ -982,31 +977,6 @@ impl VerifiedVotesAccess<'_> {
             vote_progress_write_to_domain(write),
         )
         .map(pbft_vote_persistence_to_ffi)
-    }
-
-    /// Applies PBFT finalization storage stages through attached Rust storage.
-    ///
-    /// Reward-reset stages never trust caller-provided delete keys. The Rust
-    /// storage executor locks and enumerates authoritative extra-reward rows
-    /// immediately before constructing and committing its batch.
-    #[cfg(test)]
-    fn verified_votes_apply_pbft_finalization_storage_writes(
-        &self,
-        write_intent: &crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan,
-        stages: Vec<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>,
-        sync: bool,
-    ) -> Result<crate::ffi::rustaxa_ffi::PbftFinalizedPeriodApplyResult, anyhow::Error> {
-        let domain_intent = PbftFinalizationStorageWriteIntent::from(write_intent);
-        apply_pbft_finalization_storage_writes(
-            verified_votes_storage(self)?,
-            &domain_intent,
-            stages
-                .into_iter()
-                .map(DomainPbftFinalizationStorageWriteStage::from)
-                .collect(),
-            sync,
-        )
-        .map(pbft_finalization_apply_result_to_ffi)
     }
 
     /// Builds the canonical cert-vote bundle for a reward-vote reset stage.
@@ -3452,99 +3422,113 @@ mod tests {
     }
 
     #[test]
-    fn bridge_selects_reward_vote_payloads_in_requested_order() {
-        let storage = temp_bridge_storage("reward_selection_cursor");
+    fn reward_finalization_boundary_maps_identity_payload_order_and_statuses() {
+        let storage = temp_bridge_storage("reward_finalization_boundary");
         let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
-        let first = generated_vote([0x33; 32], NODE_SECRET);
-        let second = generated_vote([0x33; 32], NODE_SECRET_TWO);
-        let first_hash: [u8; 32] = first.vote_hash.into();
-        let second_hash: [u8; 32] = second.vote_hash.into();
+        let mut vote_hashes = Vec::new();
+        for secret in [NODE_SECRET, NODE_SECRET_TWO] {
+            let vote = generated_vote([0x35; 32], secret);
+            vote_hashes.push(<[u8; 32]>::from(vote.vote_hash));
+            votes
+                .pbft_service_verified_votes_admit_and_persist(
+                    &vote.vote_rlp,
+                    validation_facts(),
+                    runtime_flags(),
+                    runtime_context(80),
+                )
+                .unwrap();
+        }
 
-        votes
-            .pbft_service_verified_votes_admit_and_persist(
-                &first.vote_rlp,
-                validation_facts(),
-                runtime_flags(),
-                runtime_context(80),
-            )
-            .expect("first generated vote is admitted");
-        votes
-            .pbft_service_verified_votes_admit_and_persist(
-                &second.vote_rlp,
-                validation_facts(),
-                runtime_flags(),
-                runtime_context(80),
-            )
-            .expect("second generated vote is admitted");
+        let intent = reward_reset_intent([0x35; 32]);
+        let stage = votes
+            .pbft_service_verified_votes_prepare_reward_votes_reset_stage(&intent)
+            .unwrap();
+        assert!(stage.has_reward_votes_reset);
+        assert!(!stage.reward_votes_bundle_rlp.is_empty());
+        assert!(votes
+            .pbft_service_verified_votes_prepare_reward_votes_reset_stage(&reward_reset_intent(
+                [0x36; 32]
+            ))
+            .is_err());
 
         let applied = votes
             .pbft_service_verified_votes_apply_reward_votes_reset(FfiPbftRewardVotesResetRequest {
                 period: 12,
                 round: 2,
                 step: 3,
-                block_hash: [0x33; 32],
+                block_hash: [0x35; 32],
                 sync: false,
             })
             .unwrap();
+        assert_eq!(
+            applied.status,
+            PbftFinalizedPeriodApplyStatus::Applied.as_u8()
+        );
         let committed = votes
             .pbft_service_verified_votes_commit_reward_vote_cursor(
-                &reward_reset_intent([0x33; 32]),
+                &intent,
                 applied.reward_votes_reset_generation,
             )
             .unwrap();
         assert_eq!(committed.status, 0);
         assert_eq!(
             votes
-                .pbft_service_verified_votes_reward_vote_period()
-                .unwrap(),
-            12
+                .pbft_service_verified_votes_commit_reward_vote_cursor(
+                    &intent,
+                    applied.reward_votes_reset_generation,
+                )
+                .unwrap()
+                .status,
+            1
         );
-        let cursor = votes
-            .pbft_service_verified_votes_reward_vote_cursor()
-            .unwrap();
-        assert!(cursor.found);
-        assert_eq!(cursor.round, 2);
-        assert_eq!(cursor.step, 3);
-        let reward_snapshot = votes
-            .pbft_service_verified_votes_current_reward_snapshot()
-            .unwrap();
-        assert_eq!(reward_snapshot.cursor.period, cursor.period);
-        assert_eq!(reward_snapshot.cursor.round, cursor.round);
-        assert_eq!(reward_snapshot.cursor.step, cursor.step);
-        assert_eq!(reward_snapshot.cursor.block_hash, cursor.block_hash);
-        assert_eq!(reward_snapshot.records.len(), 2);
-        let repeated = votes
-            .pbft_service_verified_votes_commit_reward_vote_cursor(
-                &reward_reset_intent([0x33; 32]),
-                applied.reward_votes_reset_generation,
-            )
-            .unwrap();
-        assert_eq!(repeated.status, 1);
+        assert_eq!(
+            votes
+                .pbft_service_verified_votes_commit_reward_vote_cursor(
+                    &reward_reset_intent([0x36; 32]),
+                    applied.reward_votes_reset_generation,
+                )
+                .unwrap()
+                .status,
+            2
+        );
 
+        vote_hashes.reverse();
         let selection = votes
             .pbft_service_verified_votes_select_reward_vote_payloads(
                 13,
-                vec![
-                    PbftFinalizationHash { hash: second_hash },
-                    PbftFinalizationHash { hash: first_hash },
-                ],
+                vote_hashes
+                    .iter()
+                    .copied()
+                    .map(|hash| PbftFinalizationHash { hash })
+                    .collect(),
             )
-            .expect("reward payload selection succeeds");
-
+            .unwrap();
         assert!(selection.accepted);
-        assert_eq!(selection.selected_round, 2);
         assert_eq!(
             selection
-                .selected_vote_hashes
+                .selected_records
                 .iter()
-                .map(|hash| hash.hash)
+                .map(|record| record.hash)
                 .collect::<Vec<_>>(),
-            vec![second_hash, first_hash]
+            vote_hashes
         );
-        assert_eq!(selection.selected_records.len(), 2);
-        assert_eq!(selection.selected_records[0].hash, second_hash);
-        assert_eq!(selection.selected_records[1].hash, first_hash);
-        assert!(selection.error_code.is_empty());
+
+        let mapped = pbft_finalization_apply_result_to_ffi(PbftFinalizedPeriodApplyResult {
+            status: PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+            wrote_pbft_head: false,
+            wrote_period_data: false,
+            dag_index_writes: 0,
+            transaction_location_writes: 0,
+            block_period: 12,
+            pbft_block_hash: H256::from([0x35; 32]),
+            reward_votes_reset_generation: 0,
+            error_code: "PBFT_FINALIZE_REJECTED_WRITE_SET".to_owned(),
+        });
+        assert_eq!(
+            mapped.status,
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet.as_u8()
+        );
+        assert_eq!(mapped.error_code, "PBFT_FINALIZE_REJECTED_WRITE_SET");
     }
 
     #[test]
@@ -3711,137 +3695,5 @@ mod tests {
         assert!(result.drive_pbft_progress);
         assert_eq!(result.progress_period, 3);
         assert_eq!(result.progress_round, 2);
-    }
-
-    #[test]
-    fn bridge_applies_reward_votes_reset_storage_request() {
-        let storage = temp_bridge_storage("reward_reset");
-        let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
-        for secret in [NODE_SECRET, NODE_SECRET_TWO] {
-            let vote = generated_vote([0x35; 32], secret);
-            votes
-                .pbft_service_verified_votes_admit_and_persist(
-                    &vote.vote_rlp,
-                    validation_facts(),
-                    runtime_flags(),
-                    runtime_context(80),
-                )
-                .unwrap();
-        }
-        storage
-            .0
-            .pbft()
-            .write_extra_reward_vote(H256::from_low_u64_be(701), &[0x01])
-            .unwrap();
-
-        let stage = votes
-            .pbft_service_verified_votes_prepare_reward_votes_reset_stage(&reward_reset_intent(
-                [0x35; 32],
-            ))
-            .unwrap();
-        assert!(stage.has_reward_votes_reset);
-        assert!(!stage.reward_votes_bundle_rlp.is_empty());
-        assert!(votes
-            .pbft_service_verified_votes_prepare_reward_votes_reset_stage(&reward_reset_intent(
-                [0x36; 32]
-            ))
-            .is_err());
-
-        let result = votes
-            .pbft_service_verified_votes_apply_reward_votes_reset(FfiPbftRewardVotesResetRequest {
-                period: 12,
-                round: 2,
-                step: 3,
-                block_hash: [0x35; 32],
-                sync: true,
-            })
-            .expect("reward-vote reset storage request applies");
-
-        assert_eq!(
-            result.status,
-            PbftFinalizedPeriodApplyStatus::Applied.as_u8()
-        );
-        assert_eq!(result.block_period, 12);
-        assert_eq!(result.pbft_block_hash, [0x35; 32]);
-        assert_ne!(result.reward_votes_reset_generation, 0);
-        assert!(storage
-            .0
-            .pbft()
-            .extra_reward_vote_hashes()
-            .unwrap()
-            .is_empty());
-        assert!(!result.wrote_pbft_head);
-        assert!(!result.wrote_period_data);
-        assert_eq!(result.dag_index_writes, 0);
-        assert_eq!(result.transaction_location_writes, 0);
-        assert!(result.error_code.is_empty());
-    }
-
-    #[test]
-    fn bridge_maps_finalization_storage_apply_rejection_status() {
-        let storage = temp_bridge_storage("rejected_storage_write");
-        let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
-        let write_intent = crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan {
-            persist_pbft_head: false,
-            persist_period_data: false,
-            reset_reward_votes: false,
-            update_sortition_params: false,
-            apply_dynamic_lambda_update: false,
-            persist_period_lambda: false,
-            persist_executed_pbft_status: false,
-            process_pillar_block: false,
-            pbft_block_hash: hash(800),
-            pbft_head_hash: hash(801),
-            block_period: 11,
-            null_anchor: true,
-            anchor_hash: [0; 32],
-            reward_vote_period: 0,
-            reward_vote_round: 0,
-            reward_vote_step: 0,
-            reward_vote_block_hash: [0; 32],
-            period_lambda: 0,
-            blocks_per_year: 0,
-            rounds_count_dynamic_lambda: 0,
-            dynamic_lambda: 0,
-            executed_pbft_status: false,
-            pbft_head_payload: Vec::new(),
-            period_data_rlp: Vec::new(),
-            dag_block_period_writes: Vec::new(),
-            transaction_location_writes: Vec::new(),
-        };
-        let primary_stage = crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage {
-            stage: 0,
-            rounds_count_dynamic_lambda: 0,
-            dynamic_lambda: 0,
-            has_sortition_params_change: false,
-            sortition_params_change_period: 0,
-            sortition_params_change_interval_efficiency: 0,
-            sortition_params_change_threshold_upper: 0,
-            has_reward_votes_reset: false,
-            reward_votes_bundle_rlp: Vec::new(),
-            has_prepared_pillar_block: false,
-            prepared_pillar_block_period: 0,
-            prepared_pillar_block_rlp: Vec::new(),
-        };
-
-        let result = votes
-            .with_verified_votes(|runtime| {
-                runtime.verified_votes_apply_pbft_finalization_storage_writes(
-                    &write_intent,
-                    vec![primary_stage],
-                    false,
-                )
-            })
-            .expect("rejected write-set reports through bridge");
-
-        assert_eq!(
-            result.status,
-            PbftFinalizedPeriodApplyStatus::RejectedWriteSet.as_u8()
-        );
-        assert_eq!(result.block_period, 11);
-        assert_eq!(result.pbft_block_hash, hash(800));
-        assert!(!result.wrote_pbft_head);
-        assert!(!result.wrote_period_data);
-        assert_eq!(result.error_code, "PBFT_FINALIZE_REJECTED_WRITE_SET");
     }
 }
