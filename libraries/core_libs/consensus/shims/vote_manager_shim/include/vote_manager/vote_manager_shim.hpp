@@ -28,20 +28,6 @@ class SlashingManager;
 struct SlashingDoubleVoteEvidence;
 
 /**
- * Reward-vote-owned result after applying live metadata for a PBFT-finalization reset.
- *
- * Inputs are the Rust-planned reset identity after the finalization storage batch has committed. Outputs carry only
- * reward-vote facts: the accepted period, round, block hash, and storage-authenticated reset generation. PBFT manager
- * code passes these facts through the typed reward-reset bridge at the manager boundary.
- */
-struct RewardVotesFinalizationResetReport {
-  PbftPeriod period = 0;
-  PbftRound round = 0;
-  blk_hash_t block_hash;
-  uint64_t reward_votes_reset_generation = 0;
-};
-
-/**
  * Rust-mode VoteManager overlay.
  *
  * Purpose:
@@ -866,8 +852,8 @@ class VoteManager {
    * Invariants:
    * - Rust validates the requested identity against authoritative runtime and
    *   storage state before returning the stage.
-   * - Live reward metadata is unchanged; callers must invoke
-   *   `commitRewardVotesResetForFinalization` after Rust commits the stage.
+   * - Live reward metadata is unchanged; the native PBFT manager publishes the
+   *   durable cursor after Rust commits the stage.
    */
   rustaxa::PbftFinalizationStorageWriteStage rewardVotesResetStageForFinalization(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
@@ -879,27 +865,6 @@ class VoteManager {
    */
   rustaxa::PbftRewardVotesResetRequest rewardVotesResetRequestForFinalization(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
-
-  /**
-   * Applies live reward-vote metadata after a Rust-owned finalization batch has
-   * committed the reward-vote reset stage.
-   *
-   * Inputs:
-   * - `write_intent`: same Rust-planned intent used to build and commit the
-   *   reward-vote reset stage.
-   * - `reward_votes_reset_generation`: non-zero proof returned by the Rust
-   *   storage apply that committed the reset.
-   *
-   * Invariants:
-   * - Must be called only after Rust reports `Applied` or `AlreadyApplied` for
-   *   the corresponding reward-vote reset stage.
-   * - The manager validates the generation before accepting the executor report.
-   *
-   * Outputs:
-   * - Reward-vote-owned cursor facts proving live metadata matches the accepted finalization plan.
-   */
-  RewardVotesFinalizationResetReport commitRewardVotesResetForFinalization(
-      const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t reward_votes_reset_generation);
 
  private:
   /** Selects from isolated tentative wallet candidates without mutating authoritative service state. */

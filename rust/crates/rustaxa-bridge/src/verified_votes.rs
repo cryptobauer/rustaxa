@@ -14,8 +14,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneVoteBundle,
     PbftVoteAdmissionRuntimeResult, PbftVoteAdmissionValidationRequest, PbftVoteEventFactFlags,
     PbftVoteProgressContext as FfiPbftVoteProgressContext, PbftVoteRuntimeValidationResult,
-    PbftVoteStorageRecord, RewardVoteCursorCommitResult as FfiRewardVoteCursorCommitResult,
-    RewardVoteCursorSnapshot as FfiRewardVoteCursorSnapshot,
+    PbftVoteStorageRecord, RewardVoteCursorSnapshot as FfiRewardVoteCursorSnapshot,
     RewardVotePayloadSnapshot as FfiRewardVotePayloadSnapshot, RoundMarkerSnapshot,
     TwoTPlusOneSnapshotEntry, TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup,
     VerifiedStepVotePayloadEntry, VerifiedStepVotePayloadsLookup,
@@ -92,7 +91,7 @@ use rustaxa_consensus::{
     PbftVotePersistenceResult as DomainPbftVotePersistenceResult,
     PbftVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
     PbftVoteStorageRecord as DomainPbftVoteStorageRecord, RewardVoteCursor,
-    RewardVoteCursorCommitRequest, RewardVoteCursorSnapshot as DomainRewardVoteCursorSnapshot,
+    RewardVoteCursorSnapshot as DomainRewardVoteCursorSnapshot,
     RewardVotePayloadSnapshot as DomainRewardVotePayloadSnapshot, RewardVoteResetApplyRequest,
     RewardVoteResetPrepareRequest,
 };
@@ -1414,20 +1413,6 @@ impl BridgePbftService {
             .map(pbft_finalization_apply_result_to_ffi)
     }
 
-    /// Converts and delegates generation-bound cursor publication after combined finalization.
-    pub fn pbft_service_verified_votes_commit_reward_vote_cursor(
-        &self,
-        write_intent: &FfiPbftFinalizationStorageWritePlan,
-        reset_generation: u64,
-    ) -> Result<FfiRewardVoteCursorCommitResult, anyhow::Error> {
-        self.verified_votes()
-            .commit_reward_vote_cursor(reward_vote_cursor_commit_request_from_plan(
-                write_intent,
-                reset_generation,
-            ))
-            .map(reward_vote_cursor_commit_result_to_ffi)
-    }
-
     /// Maps one coherent native cursor-and-payload snapshot into stable CXX carriers.
     pub fn pbft_service_verified_votes_current_reward_snapshot(
         &self,
@@ -1721,35 +1706,6 @@ fn reward_vote_payload_selection_to_ffi(
             })
             .collect(),
         missing_vote_hash: value.missing_vote_hash.unwrap_or_default().0,
-    }
-}
-
-fn reward_vote_cursor_commit_request_from_plan(
-    write_intent: &FfiPbftFinalizationStorageWritePlan,
-    reset_generation: u64,
-) -> RewardVoteCursorCommitRequest {
-    RewardVoteCursorCommitRequest {
-        cursor: RewardVoteCursor {
-            period: write_intent.reward_vote_period,
-            round: write_intent.reward_vote_round,
-            step: write_intent.reward_vote_step,
-            block_hash: H256::from(write_intent.reward_vote_block_hash),
-        },
-        reset_generation,
-    }
-}
-
-fn reward_vote_cursor_commit_result_to_ffi(
-    value: rustaxa_consensus::RewardVoteCursorCommitResult,
-) -> FfiRewardVoteCursorCommitResult {
-    FfiRewardVoteCursorCommitResult {
-        status: value.status.as_u8(),
-        period: value.cursor.period,
-        round: value.cursor.round,
-        step: value.cursor.step,
-        block_hash: value.cursor.block_hash.0,
-        reset_generation: value.reset_generation,
-        error_code: value.error_code.to_owned(),
     }
 }
 
@@ -3433,34 +3389,6 @@ mod tests {
             applied.status,
             PbftFinalizedPeriodApplyStatus::Applied.as_u8()
         );
-        let committed = votes
-            .pbft_service_verified_votes_commit_reward_vote_cursor(
-                &intent,
-                applied.reward_votes_reset_generation,
-            )
-            .unwrap();
-        assert_eq!(committed.status, 1);
-        assert_eq!(
-            votes
-                .pbft_service_verified_votes_commit_reward_vote_cursor(
-                    &intent,
-                    applied.reward_votes_reset_generation,
-                )
-                .unwrap()
-                .status,
-            1
-        );
-        assert_eq!(
-            votes
-                .pbft_service_verified_votes_commit_reward_vote_cursor(
-                    &reward_reset_intent([0x36; 32]),
-                    applied.reward_votes_reset_generation,
-                )
-                .unwrap()
-                .status,
-            2
-        );
-
         vote_hashes.reverse();
         let selection = votes
             .pbft_service_verified_votes_select_reward_vote_payloads(
@@ -3499,21 +3427,6 @@ mod tests {
             PbftFinalizedPeriodApplyStatus::RejectedWriteSet.as_u8()
         );
         assert_eq!(mapped.error_code, "PBFT_FINALIZE_REJECTED_WRITE_SET");
-
-        let mapped_cursor = reward_vote_cursor_commit_result_to_ffi(
-            rustaxa_consensus::RewardVoteCursorCommitResult {
-                status: rustaxa_consensus::RewardVoteCursorCommitStatus::Applied,
-                cursor: RewardVoteCursor {
-                    period: 12,
-                    round: 2,
-                    step: 3,
-                    block_hash: H256::from([0x35; 32]),
-                },
-                reset_generation: applied.reward_votes_reset_generation,
-                error_code: "",
-            },
-        );
-        assert_eq!(mapped_cursor.status, 0);
     }
 
     #[test]

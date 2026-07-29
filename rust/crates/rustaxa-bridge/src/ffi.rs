@@ -817,16 +817,6 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
     }
 
-    struct RewardVoteCursorCommitResult {
-        status: u8,
-        period: u64,
-        round: u64,
-        step: u64,
-        block_hash: [u8; 32],
-        reset_generation: u64,
-        error_code: String,
-    }
-
     /// Per-family optimized PBFT vote-bundle egress plan.
     ///
     /// Status values are stable bridge codes:
@@ -1778,14 +1768,6 @@ pub mod rustaxa_ffi {
         last_storage_status: u8,
         reward_votes_reset_generation: u64,
         error_code: String,
-    }
-
-    /// Reward-vote reset finalization facts reported to the PBFT manager executor.
-    struct PbftManagerFinalizationRewardVotesResetReport {
-        period: u64,
-        round: u64,
-        block_hash: [u8; 32],
-        reward_votes_reset_generation: u64,
     }
 
     /// FinalChain dispatch/replay finalization facts reported to the PBFT manager executor.
@@ -4550,7 +4532,6 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
             runtime: &BridgePbftService,
             cursor: u32,
-            report: PbftManagerFinalizationRewardVotesResetReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
             runtime: &BridgePbftService,
@@ -4901,11 +4882,6 @@ pub mod rustaxa_ffi {
         pub fn pbft_service_verified_votes_reward_vote_period(
             self: &BridgePbftService,
         ) -> Result<u64>;
-        pub fn pbft_service_verified_votes_commit_reward_vote_cursor(
-            self: &BridgePbftService,
-            write_intent: &PbftFinalizationStorageWritePlan,
-            reset_generation: u64,
-        ) -> Result<RewardVoteCursorCommitResult>;
         pub fn pbft_service_verified_votes_state_snapshot(
             self: &BridgePbftService,
         ) -> Result<VerifiedVotesStateSnapshot>;

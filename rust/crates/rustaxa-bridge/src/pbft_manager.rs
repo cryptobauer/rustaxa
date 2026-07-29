@@ -35,7 +35,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
     PbftManagerFinalizationFinalChainDispatchReport as FfiPbftManagerFinalizationFinalChainDispatchReport,
     PbftManagerFinalizationPillarPostProcessingReport as FfiPbftManagerFinalizationPillarPostProcessingReport,
-    PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
@@ -2804,39 +2803,26 @@ fn pbft_manager_runtime_advance_finalization_sortition_commit_inner(
 /// Inputs:
 /// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
 /// - `cursor`: executor cursor previously returned to C++.
-/// - `report`: reward-vote metadata facts after the vote manager applies the
-///   Rust-planned reward-vote reset.
-///
 /// Outputs:
 /// - The next PBFT finalization executor state.
 ///
 /// Invariants and edge behavior:
 /// - C++ does not construct a generic PBFT finalization external-effect report
 ///   for the reward-vote reset client.
-/// - Rust derives the PBFT finalization action from the cursor and maps only
-///   reward-vote period/round/block-hash facts needed for live-mutation
-///   validation. The relayed reset generation must match the current generation
-///   minted by the shared Rust storage handle; later admission does not
-///   invalidate that proof.
+/// - Rust derives the PBFT finalization action and reward-vote identity from the
+///   accepted plan, then commits the cursor through the native verified-vote
+///   owner. No C++ report participates in the operation.
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
     runtime: &BridgePbftService,
     cursor: u32,
-    report: FfiPbftManagerFinalizationRewardVotesResetReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let bridge_service = runtime;
     let mut runtime = runtime.manager_state();
     let result = (|| {
         let next_step: FinalizationRuntimeSessionStep = runtime
-            .advance_finalization_reward_votes_reset(
-                cursor,
-                rustaxa_consensus::pbft_manager::PbftFinalizationRewardVotesResetReport {
-                    period: report.period,
-                    round: report.round,
-                    block_hash: report.block_hash.into(),
-                    reward_votes_reset_generation: report.reward_votes_reset_generation,
-                },
-            )?
+            .advance_finalization_reward_votes_reset(bridge_service.verified_votes(), cursor)?
             .into();
         if next_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
             || !next_step.can_continue
@@ -3826,7 +3812,6 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationFinalChainDispatchReport as FfiPbftManagerFinalizationFinalChainDispatchReport;
-    use crate::ffi::rustaxa_ffi::PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport;
     use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_test_service_from_storage;
     use crate::storage::{
@@ -4866,109 +4851,6 @@ mod tests {
                 .is_none());
             assert_finalization_session_cleared(&runtime);
         }
-    }
-
-    #[test]
-    fn manager_runtime_advances_finalization_with_reward_votes_reset_report() {
-        let (_temp_dir, mut runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_reward_votes_reset_report");
-        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
-        advance_finalization_cursor_to_action(
-            &mut runtime,
-            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
-        );
-        let reset_generation = {
-            let storage = native_service_storage(&runtime);
-            let guard = storage.lock_extra_reward_votes().unwrap();
-            guard
-                .commit_reset_batch(storage.create_write_batch(), false)
-                .unwrap()
-        };
-        runtime
-            .manager_state()
-            .finalization_reward_votes_reset_generation = reset_generation;
-
-        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
-        let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
-            &mut runtime,
-            step.cursor,
-            FfiPbftManagerFinalizationRewardVotesResetReport {
-                period: 10,
-                round: 2,
-                block_hash: [7; 32],
-                reward_votes_reset_generation: reset_generation,
-            },
-        )
-        .expect("typed reward-vote reset report should advance finalization");
-
-        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
-        assert_eq!(
-            state.action,
-            PbftFinalizationRuntimeAction::SetDagBlockOrder.as_u8()
-        );
-    }
-
-    #[test]
-    fn manager_runtime_accepts_reset_proof_after_next_cycle_admission() {
-        let (_temp_dir, mut runtime) = runtime_for_finalization_test(
-            "rustaxa_bridge_pbft_manager_reward_votes_reset_provenance_after_admission",
-        );
-        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
-        advance_finalization_cursor_to_action(
-            &mut runtime,
-            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
-        );
-
-        let reset_generation = {
-            let storage = native_service_storage(&runtime);
-            let guard = storage.lock_extra_reward_votes().unwrap();
-            guard
-                .commit_reset_batch(storage.create_write_batch(), false)
-                .unwrap()
-        };
-        runtime
-            .manager_state()
-            .finalization_reward_votes_reset_generation = reset_generation;
-        let admission = persist_pbft_vote_progress(
-            &native_service_storage(&runtime),
-            PbftVoteProgressPersistenceWrite {
-                extra_reward_vote: Some(PbftVoteStorageRecord {
-                    hash: H256::from_low_u64_be(88),
-                    vote_rlp: vec![0x01],
-                }),
-                two_t_plus_one_bundle: None,
-            },
-        )
-        .unwrap();
-        assert_eq!(admission.applied_writes, 1);
-        assert_eq!(
-            native_service_storage(&runtime).extra_reward_votes_reset_generation(),
-            reset_generation
-        );
-
-        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
-        let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
-            &mut runtime,
-            step.cursor,
-            FfiPbftManagerFinalizationRewardVotesResetReport {
-                period: 10,
-                round: 2,
-                block_hash: [7; 32],
-                reward_votes_reset_generation: reset_generation,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
-        assert_eq!(
-            native_service_storage(&runtime)
-                .pbft()
-                .extra_reward_vote_hashes()
-                .unwrap(),
-            vec![H256::from_low_u64_be(88)]
-        );
     }
 
     #[test]

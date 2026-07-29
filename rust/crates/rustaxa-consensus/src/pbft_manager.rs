@@ -45,17 +45,26 @@ const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 const PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE: u8 = 2;
 const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
 
-/// Native facts reported after applying one reward-vote reset.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PbftFinalizationRewardVotesResetReport {
-    /// Certified-vote period published by the reward-vote runtime.
-    pub period: u64,
-    /// Certified-vote round published by the reward-vote runtime.
-    pub round: u64,
-    /// Certified block identity published by the reward-vote runtime.
-    pub block_hash: H256,
-    /// Process-local storage reset generation returned by the reset write.
-    pub reward_votes_reset_generation: u64,
+/// Task-oriented port for publishing the reward-vote cursor retained by PBFT finalization.
+///
+/// The production implementation is [`crate::pbft_vote_runtime::PbftVerifiedVotesService`].
+/// Tests may supply a deterministic implementation to exercise manager cursor
+/// and error semantics without recreating verified-vote admission state.
+pub trait PbftRewardVoteCursorCommitPort {
+    /// Publishes or revalidates the exact durable reward-vote cursor.
+    fn commit_reward_vote_cursor(
+        &self,
+        request: crate::pbft_vote_runtime::RewardVoteCursorCommitRequest,
+    ) -> Result<crate::pbft_vote_runtime::RewardVoteCursorCommitResult>;
+}
+
+impl PbftRewardVoteCursorCommitPort for crate::pbft_vote_runtime::PbftVerifiedVotesService {
+    fn commit_reward_vote_cursor(
+        &self,
+        request: crate::pbft_vote_runtime::RewardVoteCursorCommitRequest,
+    ) -> Result<crate::pbft_vote_runtime::RewardVoteCursorCommitResult> {
+        self.commit_reward_vote_cursor(request)
+    }
 }
 
 /// Prepares and publishes the sortition portion of one PBFT finalization write set.
@@ -354,18 +363,19 @@ impl PbftManagerGuard<'_> {
         Ok(next_pbft_finalization_runtime_action(session))
     }
 
-    /// Validates one reward-vote reset report and advances its finalization cursor.
+    /// Commits the retained reward-vote cursor and advances its finalization cursor.
     ///
-    /// The task owns cursor/action classification, verifies that the nonzero
-    /// reset generation matches both this finalization session and the current
-    /// shared-storage generation, builds the complete live-mutation report, and
-    /// reports validation through the manager-owned runtime. Metadata or
-    /// provenance mismatches return the same terminal action-failed step and
-    /// stable error code used by the CXX boundary.
-    pub fn advance_finalization_reward_votes_reset(
+    /// The task owns cursor/action classification, derives the exact certified
+    /// vote identity from the accepted finalization plan, publishes that cursor
+    /// through the native verified-vote owner, verifies the nonzero reset
+    /// generation against both this session and shared storage, then builds and
+    /// validates the complete live-mutation report. Rejected cursor publication
+    /// is a fatal post-storage invariant; no C++ vote-manager report participates
+    /// in the operation.
+    pub fn advance_finalization_reward_votes_reset<V: PbftRewardVoteCursorCommitPort>(
         &mut self,
+        verified_votes: &V,
         cursor: u32,
-        report: PbftFinalizationRewardVotesResetReport,
     ) -> Result<crate::pbft_finalize::PbftFinalizationRuntimeStep> {
         use crate::pbft_finalize::{
             PbftFinalizationLiveMutationReport, PbftFinalizationRuntimeActionResult,
@@ -407,11 +417,29 @@ impl PbftManagerGuard<'_> {
             .finalization_runtime_plan
             .clone()
             .ok_or_else(|| anyhow!("PBFT_FINALIZE_RUNTIME_PLAN_NOT_STARTED"))?;
-        let reset_provenance_valid = report.reward_votes_reset_generation != 0
-            && report.reward_votes_reset_generation
-                == self.finalization_reward_votes_reset_generation
-            && report.reward_votes_reset_generation
-                == self.storage.extra_reward_votes_reset_generation();
+        let reset_generation = self.finalization_reward_votes_reset_generation;
+        let committed = verified_votes
+            .commit_reward_vote_cursor(crate::pbft_vote_runtime::RewardVoteCursorCommitRequest {
+                cursor: crate::pbft_vote_runtime::RewardVoteCursor {
+                    period: plan.storage_write_intent.reward_vote_period,
+                    round: plan.storage_write_intent.reward_vote_round,
+                    step: plan.storage_write_intent.reward_vote_step,
+                    block_hash: plan.storage_write_intent.reward_vote_block_hash,
+                },
+                reset_generation,
+            })
+            .map_err(|error| {
+                anyhow!("PBFT_FINALIZE_POST_STORAGE_REWARD_VOTES_INVARIANT:{error}")
+            })?;
+        if committed.status == crate::pbft_vote_runtime::RewardVoteCursorCommitStatus::Rejected {
+            return Err(anyhow!(
+                "PBFT_FINALIZE_POST_STORAGE_REWARD_VOTES_INVARIANT:{}",
+                committed.error_code
+            ));
+        }
+        let reset_provenance_valid = committed.reset_generation != 0
+            && committed.reset_generation == reset_generation
+            && committed.reset_generation == self.storage.extra_reward_votes_reset_generation();
         let live_report = PbftFinalizationLiveMutationReport {
             action,
             block_period: plan.storage_write_intent.block_period,
@@ -422,9 +450,9 @@ impl PbftManagerGuard<'_> {
             pbft_chain_size: 0,
             pbft_chain_head_hash: H256::zero(),
             pbft_chain_last_anchor_hash: H256::zero(),
-            reward_votes_period: report.period,
-            reward_votes_round: report.round,
-            reward_votes_block_hash: report.block_hash,
+            reward_votes_period: committed.cursor.period,
+            reward_votes_round: committed.cursor.round,
+            reward_votes_block_hash: committed.cursor.block_hash,
             reward_votes_reset_provenance_valid: reset_provenance_valid,
             sortition_changed: false,
             sortition_change_period: 0,
@@ -6920,7 +6948,38 @@ mod tests {
     use rustaxa_storage::{Config, Storage};
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct RewardVoteCursorCommitStub {
+        result: crate::pbft_vote_runtime::RewardVoteCursorCommitResult,
+        request: Mutex<Option<crate::pbft_vote_runtime::RewardVoteCursorCommitRequest>>,
+    }
+
+    impl PbftRewardVoteCursorCommitPort for RewardVoteCursorCommitStub {
+        fn commit_reward_vote_cursor(
+            &self,
+            request: crate::pbft_vote_runtime::RewardVoteCursorCommitRequest,
+        ) -> Result<crate::pbft_vote_runtime::RewardVoteCursorCommitResult> {
+            *self.request.lock().expect("request lock") = Some(request);
+            Ok(self.result.clone())
+        }
+    }
+
+    fn reward_vote_cursor_commit_stub(
+        cursor: crate::pbft_vote_runtime::RewardVoteCursor,
+        reset_generation: u64,
+    ) -> RewardVoteCursorCommitStub {
+        RewardVoteCursorCommitStub {
+            result: crate::pbft_vote_runtime::RewardVoteCursorCommitResult {
+                status: crate::pbft_vote_runtime::RewardVoteCursorCommitStatus::Applied,
+                cursor,
+                reset_generation,
+                error_code: "",
+            },
+            request: Mutex::new(None),
+        }
+    }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -7379,17 +7438,18 @@ mod tests {
         install_reward_votes_reset_runtime(&mut runtime, write_set);
         let generation = commit_reward_votes_reset_generation(&runtime);
         runtime.finalization_reward_votes_reset_generation = generation;
+        let verified_votes = reward_vote_cursor_commit_stub(
+            crate::pbft_vote_runtime::RewardVoteCursor {
+                period: 0,
+                round: 0,
+                step: 0,
+                block_hash: H256::zero(),
+            },
+            generation,
+        );
 
         let step = runtime
-            .advance_finalization_reward_votes_reset(
-                0,
-                PbftFinalizationRewardVotesResetReport {
-                    period: 0,
-                    round: 0,
-                    block_hash: H256::zero(),
-                    reward_votes_reset_generation: generation,
-                },
-            )
+            .advance_finalization_reward_votes_reset(&verified_votes, 0)
             .expect("matching reset report advances");
 
         assert_eq!(step.runtime_status, PbftFinalizationRuntimeStatus::Active);
@@ -7416,17 +7476,18 @@ mod tests {
         install_reward_votes_reset_runtime(&mut runtime, write_set);
         let generation = commit_reward_votes_reset_generation(&runtime);
         runtime.finalization_reward_votes_reset_generation = generation;
+        let verified_votes = reward_vote_cursor_commit_stub(
+            crate::pbft_vote_runtime::RewardVoteCursor {
+                period: 0,
+                round: 0,
+                step: 0,
+                block_hash: H256::zero(),
+            },
+            generation.wrapping_add(1),
+        );
 
         let step = runtime
-            .advance_finalization_reward_votes_reset(
-                0,
-                PbftFinalizationRewardVotesResetReport {
-                    period: 0,
-                    round: 0,
-                    block_hash: H256::zero(),
-                    reward_votes_reset_generation: generation.wrapping_add(1),
-                },
-            )
+            .advance_finalization_reward_votes_reset(&verified_votes, 0)
             .expect("invalid provenance returns failed step");
 
         assert_eq!(
@@ -7456,17 +7517,18 @@ mod tests {
         install_reward_votes_reset_runtime(&mut runtime, write_set);
         let generation = commit_reward_votes_reset_generation(&runtime);
         runtime.finalization_reward_votes_reset_generation = generation;
+        let verified_votes = reward_vote_cursor_commit_stub(
+            crate::pbft_vote_runtime::RewardVoteCursor {
+                period: 0,
+                round: 0,
+                step: 0,
+                block_hash: H256::repeat_byte(9),
+            },
+            generation,
+        );
 
         let step = runtime
-            .advance_finalization_reward_votes_reset(
-                0,
-                PbftFinalizationRewardVotesResetReport {
-                    period: 0,
-                    round: 0,
-                    block_hash: H256::repeat_byte(9),
-                    reward_votes_reset_generation: generation,
-                },
-            )
+            .advance_finalization_reward_votes_reset(&verified_votes, 0)
             .expect("metadata mismatch returns failed step");
 
         assert_eq!(

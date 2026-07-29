@@ -3509,16 +3509,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
-  auto report_reward_votes_reset = [&](const RewardVotesFinalizationResetReport &report,
-                                       rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    rustaxa::PbftManagerFinalizationRewardVotesResetReport bridge_report{};
-    bridge_report.period = report.period;
-    bridge_report.round = report.round;
-    bridge_report.block_hash = toBridgeHash(report.block_hash);
-    bridge_report.reward_votes_reset_generation = report.reward_votes_reset_generation;
+  auto report_reward_votes_reset = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary) {
     try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_reward_votes_reset(pbft_service_->service(),
-                                                                                       boundary.cursor, bridge_report);
+      boundary =
+          rustaxa::pbft_manager_runtime_advance_finalization_reward_votes_reset(pbft_service_->service(), boundary.cursor);
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context reward-vote reset: " << e.what();
@@ -3612,16 +3606,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return fail_action("reward-vote reset", "PBFT_FINALIZE_REWARD_RESET_PAYLOAD_UNAVAILABLE");
           }
           reward_votes_reset_prepared = false;
-          try {
-            const auto report = vote_mgr_->commitRewardVotesResetForFinalization(
-                finalization_plan.storage_write_intent, boundary.reward_votes_reset_generation);
-            if (!report_reward_votes_reset(report, boundary)) {
-              return FinalizationDispatchResult::kFailed;
-            }
-          } catch (const std::exception &e) {
-            LOG(log_er_) << "Rust reward-vote cursor commit failed for block " << pbft_block_hash << ", period "
-                         << block_pbft_period << ": " << e.what();
-            return fail_action("reward-vote cursor commit", "PBFT_FINALIZE_REWARD_CURSOR_COMMIT_FAILED");
+          if (!report_reward_votes_reset(boundary)) {
+            return FinalizationDispatchResult::kFailed;
           }
           break;
         }

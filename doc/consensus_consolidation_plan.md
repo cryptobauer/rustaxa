@@ -189,11 +189,10 @@ changed-commit CXX sentinel remains.
 Reward-vote reset advancement now follows the same native cursor pattern.
 `PbftManagerGuard` owns session/action/cursor checks, exact nonzero manager and
 storage reset-generation provenance, the complete reward live report,
-validation, and native runtime reporting. The bridge retains the current CXX
-report conversion, domain-step mapping, generic drain, and boundary cleanup;
-duplicate rejection transcripts moved to native tests. Eliminating the C++
-`VoteManager` reset-report/cursor relay entirely through a direct
-`PbftService`-to-verified-votes task remains the next stronger ownership cut.
+validation, native verified-vote cursor publication, and native runtime
+reporting. The bridge retains only the reportless manager call, domain-step
+mapping, generic drain, and boundary cleanup. The former C++ `VoteManager`
+reset-report/cursor relay and its CXX carriers/export are deleted.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The

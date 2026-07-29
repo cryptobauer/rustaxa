@@ -217,17 +217,6 @@ rustaxa::PbftFinalizedPeriodApplyResult rewardResetResult(uint8_t status, PbftPe
   return result;
 }
 
-RewardVotesFinalizationResetReport makeRewardVotesResetLiveReport(PbftPeriod period, PbftRound round,
-                                                                  const blk_hash_t& block_hash,
-                                                                  uint64_t reward_votes_reset_generation) {
-  RewardVotesFinalizationResetReport report{};
-  report.period = period;
-  report.round = round;
-  report.block_hash = block_hash;
-  report.reward_votes_reset_generation = reward_votes_reset_generation;
-  return report;
-}
-
 rustaxa::PbftFinalizationStorageWritePlan makeRewardResetWritePlan(PbftPeriod period, PbftRound round, PbftStep step,
                                                                    const blk_hash_t& block_hash) {
   rustaxa::PbftFinalizationStorageWritePlan write_plan{};
@@ -1835,19 +1824,6 @@ rustaxa::PbftRewardVotesResetRequest VoteManager::rewardVotesResetRequestForFina
   return makeRewardResetRequest(period, round, step, block_hash, false);
 }
 
-RewardVotesFinalizationResetReport VoteManager::commitRewardVotesResetForFinalization(
-    const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t reward_votes_reset_generation) {
-  const auto result = pbft_service_->service().pbft_service_verified_votes_commit_reward_vote_cursor(
-      write_intent, reward_votes_reset_generation);
-  if (result.status > 1) {
-    throw std::runtime_error("Rust reward-vote cursor commit rejected: " + static_cast<std::string>(result.error_code));
-  }
-  const auto block_hash = fromBridgeHash(result.block_hash);
-  LOG(log_dg_) << "Reward votes info reset to: block_hash: " << block_hash << ", period: " << result.period
-               << ", round: " << result.round;
-  return makeRewardVotesResetLiveReport(result.period, result.round, block_hash, result.reset_generation);
-}
-
 rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent, Batch& batch) {
   const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
@@ -1867,11 +1843,6 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
     return result;
   }
 
-  try {
-    commitRewardVotesResetForFinalization(write_intent, result.reward_votes_reset_generation);
-  } catch (const std::exception& e) {
-    return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash, e.what());
-  }
   return result;
 }
 

@@ -1006,6 +1006,18 @@ A future direct `PbftService`-to-verified-votes task should delete the
 remaining C++ `VoteManager` reset-report/cursor relay rather than preserve it
 as compatibility.
 
+That direct native composition is now complete. `PbftManagerGuard` derives the
+accepted reward cursor from its retained finalization plan and commits it
+through the native verified-vote owner under manager-before-vote lock order.
+The C++ `VoteManager` commit method and report carrier, the manager report
+carrier, and the CXX verified-vote cursor-commit export/carrier are deleted;
+the manager CXX entrypoint is now reportless. Native tests retain success,
+generation-provenance, and metadata-mismatch coverage. The checked bridge
+budget falls by 229 lines to 32,413, shim lines fall by 78 to 17,438, CXX
+functions fall by one to 397, and carriers fall by two to 346. Handles, shim
+directories, flags, partial factories, compatibility constructors, and
+production consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
