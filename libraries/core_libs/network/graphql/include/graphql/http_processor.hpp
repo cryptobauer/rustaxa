@@ -8,7 +8,6 @@
 #include "network/network.hpp"
 #include "query.hpp"
 #include "subscription.hpp"
-#include "transaction/gas_pricer.hpp"
 namespace taraxa::net {
 
 // GraphQlOperations is the external HTTP processor's minimal GraphQL boundary.
@@ -28,8 +27,13 @@ class GraphQlHttpProcessor final : public HttpProcessor {
                        std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                        std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                        std::shared_ptr<::taraxa::DbStorage> db,
-                       std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
-                       uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status = {});
+#ifdef RUSTAXA_ENABLE
+                       graphql::taraxa::QueryGasPriceReader gas_price_reader,
+#else
+                       std::shared_ptr<::taraxa::GasPricer> gas_pricer,
+#endif
+                       std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
+                       ::taraxa::net::LiveStatusReader live_status = {});
   Response process(const Request& request) override;
 
  private:

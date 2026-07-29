@@ -208,7 +208,8 @@ Start with surfaces whose audit already says they own no production state:
 2. ~~`proposed_blocks_shim`~~ — retired after PBFT manager callers moved to the native service
 3. ~~`verified_votes_shim`~~ — retired after VoteManager moved every Rust-mode operation to the shared native service
 4. ~~`sortition_params_manager_shim`~~ — retired after native `SortitionService` ownership landed
-5. `gas_pricer_shim`
+5. ~~`gas_pricer_shim`~~ — retired after App, RPC/GraphQL, metrics, finalization, and slashing callers moved to
+   `TransactionManager`
 6. `pbft_chain_shim`, after its named network/RPC readers use narrow APIs
 
 For each facade:

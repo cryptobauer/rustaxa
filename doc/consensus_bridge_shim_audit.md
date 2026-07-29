@@ -45,15 +45,15 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 | Metric | Exact budget |
 | --- | ---: |
 | `bridge_lines` | 34173 |
-| `shim_lines` | 17629 |
+| `shim_lines` | 17516 |
 | `cxx_functions` | 398 |
 | `cxx_carriers` | 350 |
 | `cxx_handles` | 20 |
-| `shim_directories` | 12 |
-| `granular_flags` | 9 |
+| `shim_directories` | 11 |
+| `granular_flags` | 8 |
 | `partial_service_factories` | 0 |
 | `compatibility_constructor_calls` | 0 |
-| `non_test_cpp_consumers` | 40 |
+| `non_test_cpp_consumers` | 39 |
 
 ## CXX Box Factory Inventory
 
@@ -162,7 +162,6 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `dag_block_proposer_shim` | worker/VDF/signing/network executor facade | App/DAG lifecycle | Compatibility facade | Native DAG API owns orchestration; C++ leaf executors replace class. |
 | `dag_manager_shim` | DAG manager/materialization facade | App, PBFT, network, tests | Compatibility facade | Callers use native service/query/transport APIs. |
 | `final_chain_shim` | FinalChain public/EVM executor facade | App, RPC, PBFT, transaction | External boundary | Split public query and narrow EVM executor; delete manager class when clients migrate. |
-| `gas_pricer_shim` | gas-price compatibility view | transaction/RPC | Compatibility facade | Clients use native transaction query API. |
 | `key_manager_shim` | signing-key fact adapter | proposer/vote/pillar paths | External boundary | Signing/key ownership receives a dedicated port. |
 | `pbft_chain_shim` | PBFT chain view/materializer | network, RPC, PBFT/DAG/vote | Compatibility facade | Clients use PBFT application/query APIs. |
 | `pbft_manager_shim` | lifecycle and multi-effect executor facade | App consensus loop | Internal bridge route | Native app owns orchestration; transport/EVM/timer/signing remain leaf adapters. |

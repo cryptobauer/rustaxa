@@ -79,6 +79,41 @@ TEST_F(TransactionManagerShimFixture, sharedIdentityBelongsToStandaloneFacade) {
   EXPECT_EQ(trx_mgr->shared_from_this(), trx_mgr);
 }
 
+TEST_F(TransactionManagerShimFixture, gasPriceBidAndFinalizedUpdatesUseNativeBlockOracle) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  cfg.blocks_gas_pricer = true;
+  cfg.genesis.gas_price.percentile = 50;
+  cfg.genesis.gas_price.blocks = 10;
+  cfg.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price = 1;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t{});
+  const auto secret = dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                  dev::Secret::ConstructFromStringType::FromHex);
+  const auto transaction = [&secret](uint64_t nonce, uint64_t gas_price) {
+    return std::make_shared<Transaction>(nonce, 0, gas_price, 21000, dev::bytes(), secret, addr_t::random());
+  };
+
+  EXPECT_EQ(trx_mgr.gasPriceBid(), 1);
+  trx_mgr.updateGasPrice({});
+  EXPECT_EQ(trx_mgr.gasPriceBid(), 1);
+  trx_mgr.updateGasPrice({transaction(0, 3)});
+  trx_mgr.updateGasPrice({transaction(1, 7)});
+  trx_mgr.updateGasPrice({transaction(2, 5)});
+  EXPECT_EQ(trx_mgr.gasPriceBid(), 5);
+}
+
+TEST_F(TransactionManagerShimFixture, gasPriceBidUsesNativePoolModeFloor) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  cfg.blocks_gas_pricer = false;
+  cfg.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price = 10;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t{});
+
+  EXPECT_EQ(trx_mgr.gasPriceBid(), 10);
+}
+
 TEST_F(TransactionManagerShimFixture, rustPlannerPreservesPackTrxsSelectionAndEstimations) {
   auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();

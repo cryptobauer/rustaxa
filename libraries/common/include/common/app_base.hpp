@@ -17,7 +17,9 @@ class PbftManager;
 class VoteManager;
 class PbftChain;
 class DagBlockProposer;
+#ifndef RUSTAXA_ENABLE
 class GasPricer;
+#endif
 class Plugin;
 
 namespace final_chain {
@@ -50,7 +52,9 @@ class AppBase {
   virtual std::shared_ptr<metrics::MetricsService> getMetrics() const = 0;
   // used only in tests
   virtual std::shared_ptr<DagBlockProposer> getDagBlockProposer() const = 0;
+#ifndef RUSTAXA_ENABLE
   virtual std::shared_ptr<GasPricer> getGasPricer() const = 0;
+#endif
 
   const dev::Address &getAddress() const { return conf_.getFirstWallet().node_addr; }
   const Secret &getSecretKey() const { return conf_.getFirstWallet().node_secret; }

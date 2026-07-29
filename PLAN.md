@@ -972,9 +972,10 @@ The current Rust consensus footprint is broad but still incomplete:
   known-vote marking at the network boundary. The crate also contains a Rust-backed
   `GasPricer` oracle for finalized-block history, minimum-price
   flooring, and percentile bid selection.
-  The standalone Rust-mode `GasPricer` facade no longer imports or compiles `GasPricerOld`; module-disabled and pure-C++
-  configurations retain the untouched original implementation. The facade and its feature flag remain live for
-  transaction-pool, RPC/GraphQL, finalized-block update, and SlashingManager gas-bid boundaries.
+  Rust mode no longer exposes a standalone `GasPricer` facade or feature flag. App finalization and metrics, Eth RPC,
+  GraphQL, and SlashingManager use the App-owned `TransactionManager` gas-price query/update operations directly.
+  Module-disabled and pure-C++ configurations retain the untouched original implementation only where the untouched
+  legacy SlashingManager or pure-C++ tests require it.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
   cache decisions, unweighted vote evidence payload normalization, submitter selection, and slashing contract calldata
   construction through Rust; the PBFT vote admission route now passes Rust-normalized unweighted payload records, while
@@ -1369,10 +1370,10 @@ The current Rust consensus footprint is broad but still incomplete:
    `DagManager::setDagBlockOrder()` now calls one Rust apply operation that resolves the anchor level from Rust storage,
    computes the candidate finalization state, applies finalized-block counter updates, expired DAG deletes, and expired
    non-finalized transaction deletes through one Rust storage batch, commits Rust state, then returns only local cache
-   and live transaction-manager sidecar cleanup facts to the shim. The Rust-mode `GasPricer` overlay now routes
-   finalized-block history restoration through Rust storage, live finalized-block gas-price updates through Rust, and
-   pool-mode minimum-price flooring through Rust. Pool mode requires the Rust-backed transaction queue so
-   `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than legacy queue state.
+   and live transaction-manager sidecar cleanup facts to the shim. The native gas oracle inside the App-owned
+   `TransactionManager` restores finalized-block history from Rust storage, applies live finalized-block gas-price
+   updates, and enforces pool-mode minimum-price flooring. Pool mode reads the Rust-backed queue directly, without a
+   standalone Rust-mode `GasPricer` facade or a C++ scalar echo.
 10. Port deterministic rewards, remaining slashing-manager/runtime behavior, and pillar calculations after DPoS and final-chain query
     ports are real. Native Rust rewards code accepts finalized-period facts, computes legacy-compatible `BlockStats`
     RLP, and tracks interval cache/distribution boundaries. The active Rust `FinalChain` native finalization path owns a long-lived

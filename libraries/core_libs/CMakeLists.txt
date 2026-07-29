@@ -31,18 +31,6 @@ if(RUSTAXA_ENABLE)
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_queue\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/sortition_params_manager\\.cpp$")
 endif()
-if(RUSTAXA_ENABLE_GAS_PRICER)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_GAS_PRICER requires RUSTAXA_ENABLE")
-    endif()
-    if(NOT RUSTAXA_ENABLE_STORAGE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_GAS_PRICER requires RUSTAXA_ENABLE_STORAGE")
-    endif()
-
-    # The Rust-mode GasPricer overlay is fully standalone. Keep the untouched
-    # legacy implementation in module-disabled and pure C++ reference builds.
-    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/gas_pricer\\.cpp$")
-endif()
 if(RUSTAXA_ENABLE_SLASHING_MANAGER)
     if(NOT RUSTAXA_ENABLE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_SLASHING_MANAGER requires RUSTAXA_ENABLE")
@@ -50,12 +38,10 @@ if(RUSTAXA_ENABLE_SLASHING_MANAGER)
     if(NOT RUSTAXA_ENABLE_FINAL_CHAIN)
         message(FATAL_ERROR "RUSTAXA_ENABLE_SLASHING_MANAGER requires RUSTAXA_ENABLE_FINAL_CHAIN")
     endif()
-    if(NOT RUSTAXA_ENABLE_GAS_PRICER)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_SLASHING_MANAGER requires RUSTAXA_ENABLE_GAS_PRICER")
-    endif()
 
     # The Rust-mode SlashingManager overlay is fully standalone. Keep the
     # untouched legacy implementation in module-disabled and pure C++ builds.
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/gas_pricer\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/slashing_manager/slashing_manager\\.cpp$")
 endif()
 if(RUSTAXA_ENABLE_FINAL_CHAIN)
@@ -218,12 +204,6 @@ if(RUSTAXA_ENABLE_STORAGE)
         PROPERTIES
         COMPILE_DEFINITIONS "DbStorage=DbStorageOld"
     )
-endif()
-
-if(RUSTAXA_ENABLE_GAS_PRICER)
-    # In Rust GasPricer mode, inject the standalone Rust-backed GasPricer facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/gas_pricer_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/gas_pricer_shim/src/gas_pricer_shim.cpp)
 endif()
 
 if(RUSTAXA_ENABLE_SLASHING_MANAGER)

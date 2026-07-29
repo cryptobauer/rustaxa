@@ -93,7 +93,11 @@ void Rpc::start() {
     eth_rpc_params.chain_id = conf.genesis.chain_id;
     eth_rpc_params.gas_limit = conf.genesis.dag.gas_limit;
     eth_rpc_params.final_chain = app()->getFinalChain();
+#ifdef RUSTAXA_ENABLE
+    eth_rpc_params.gas_pricer = [trx_manager = app()->getTransactionManager()]() { return trx_manager->gasPriceBid(); };
+#else
     eth_rpc_params.gas_pricer = [gas_pricer = app()->getGasPricer()]() { return gas_pricer->bid(); };
+#endif
     eth_rpc_params.get_earliest_block = [db = app()->getDB()]() { return db->getEarliestBlockNumber(); };
     eth_rpc_params.get_trx = [db = app()->getDB()](auto const &trx_hash) { return db->getTransaction(trx_hash); };
 #ifdef RUSTAXA_ENABLE
@@ -280,6 +284,7 @@ void Rpc::start() {
     }
 
     if (conf.network.graphql->http_port) {
+#ifndef RUSTAXA_ENABLE
       auto graphql_query = std::make_shared<graphql::taraxa::Query>(
           app()->getFinalChain(), app()->getDagManager(), app()->getPbftManager(), app()->getTransactionManager(),
           app()->getDB(), app()->getGasPricer(), as_weak(app()->getNetwork()), conf.genesis.chain_id, live_status_reader
@@ -288,6 +293,19 @@ void Rpc::start() {
           consensus_query_api
 #endif
       );
+#else
+      auto gas_price_reader = graphql::taraxa::QueryGasPriceReader{
+          [trx_mgr = app()->getTransactionManager()]() { return trx_mgr ? trx_mgr->gasPriceBid() : dev::u256(0); }};
+      auto graphql_query = std::make_shared<graphql::taraxa::Query>(
+          app()->getFinalChain(), app()->getDagManager(), app()->getPbftManager(), app()->getTransactionManager(),
+          app()->getDB(), std::move(gas_price_reader), as_weak(app()->getNetwork()), conf.genesis.chain_id,
+          live_status_reader
+#ifdef RUSTAXA_ENABLE
+          ,
+          consensus_query_api
+#endif
+      );
+#endif
       auto graphql_mutation = std::make_shared<graphql::taraxa::Mutation>(app()->getTransactionManager());
       graphql_http_ = std::make_shared<net::HttpServer>(
           graphql_thread_pool_->unsafe_get_io_context(),

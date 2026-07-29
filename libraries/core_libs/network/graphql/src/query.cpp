@@ -246,6 +246,24 @@ void fillMissingQueryTransactionReceiptReaderCallbacks(
   }
 }
 
+#ifdef RUSTAXA_ENABLE
+QueryGasPriceReader makeQueryGasPriceReader(const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
+  QueryGasPriceReader reader;
+  reader.bid = [transaction_manager] {
+    return transaction_manager ? transaction_manager->gasPriceBid() : dev::u256(0);
+  };
+  return reader;
+}
+
+void fillMissingQueryGasPriceReaderCallbacks(QueryGasPriceReader& reader,
+                                             const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
+  auto defaults = makeQueryGasPriceReader(transaction_manager);
+  if (!reader.bid) {
+    reader.bid = std::move(defaults.bid);
+  }
+}
+
+#else
 QueryGasPriceReader makeQueryGasPriceReader(const std::shared_ptr<::taraxa::GasPricer>& gas_pricer) {
   QueryGasPriceReader reader;
   reader.bid = [gas_pricer] { return gas_pricer ? gas_pricer->bid() : dev::u256(0); };
@@ -259,6 +277,7 @@ void fillMissingQueryGasPriceReaderCallbacks(QueryGasPriceReader& reader,
     reader.bid = std::move(defaults.bid);
   }
 }
+#endif
 
 QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
                                             const std::shared_ptr<::taraxa::DagManager>& dag_manager,
@@ -516,8 +535,12 @@ std::shared_ptr<::taraxa::final_chain::BlockHeader> blockHeaderFromView(const ru
 Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
              std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
              std::shared_ptr<::taraxa::TransactionManager> transaction_manager, std::shared_ptr<::taraxa::DbStorage> db,
-             std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
-             uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status
+#ifdef RUSTAXA_ENABLE
+             QueryGasPriceReader gas_price_reader,
+#else
+             std::shared_ptr<::taraxa::GasPricer> gas_pricer,
+#endif
+             std::weak_ptr<::taraxa::Network> network, uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status
 #ifdef RUSTAXA_ENABLE
              ,
              ::taraxa::net::ConsensusQueryApiPtr consensus_query_api
@@ -534,7 +557,11 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
       block_transaction_reader_(makeQueryBlockTransactionReader(final_chain)),
       transaction_reader_(makeQueryTransactionReader(transaction_manager)),
       transaction_receipt_reader_(makeQueryTransactionReceiptReader(final_chain)),
+#ifdef RUSTAXA_ENABLE
+      gas_price_reader_(std::move(gas_price_reader)),
+#else
       gas_price_reader_(makeQueryGasPriceReader(gas_pricer)),
+#endif
       dag_block_reader_(makeQueryDagBlockReader(final_chain, dag_manager, db
 #ifdef RUSTAXA_ENABLE
                                                 ,

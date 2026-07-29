@@ -1,5 +1,3 @@
-#include "slashing_manager/slashing_manager.hpp"
-
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -7,7 +5,7 @@
 
 #include "config/config.hpp"
 #include "final_chain/final_chain.hpp"
-#include "transaction/gas_pricer.hpp"
+#include "slashing_manager/slashing_manager.hpp"
 #include "transaction/transaction_manager.hpp"
 #include "vote/pbft_vote.hpp"
 
@@ -95,11 +93,9 @@ rust::Vec<rustaxa::SlashingSubmitterFact> submitter_facts(const FullNodeConfig& 
 
 SlashingManager::SlashingManager(const FullNodeConfig& config, SharedPbftService pbft_service,
                                  std::shared_ptr<final_chain::FinalChain> final_chain,
-                                 std::shared_ptr<TransactionManager> trx_manager,
-                                 std::shared_ptr<GasPricer> gas_pricer)
+                                 std::shared_ptr<TransactionManager> trx_manager)
     : final_chain_(std::move(final_chain)),
       trx_manager_(std::move(trx_manager)),
-      gas_pricer_(std::move(gas_pricer)),
       pbft_service_(std::move(pbft_service)),
       kConfig(config) {
   if (!pbft_service_) {
@@ -115,8 +111,8 @@ bool SlashingManager::submitDoubleVotingProof(const std::shared_ptr<PbftVote>& v
   if (!same_pbft_slot(vote_a, vote_b)) {
     return false;
   }
-  if (!final_chain_ || !trx_manager_ || !gas_pricer_) {
-    throw std::logic_error("SlashingManager requires FinalChain, TransactionManager, and GasPricer");
+  if (!final_chain_ || !trx_manager_) {
+    throw std::logic_error("SlashingManager requires FinalChain and TransactionManager");
   }
 
   SlashingDoubleVoteEvidence evidence;
@@ -133,8 +129,8 @@ bool SlashingManager::submitDoubleVotingProof(const SlashingDoubleVoteEvidence& 
   if (evidence.incoming_vote.vote_rlp.empty() || evidence.conflicting_vote.vote_rlp.empty()) {
     return false;
   }
-  if (!final_chain_ || !trx_manager_ || !gas_pricer_) {
-    throw std::logic_error("SlashingManager requires FinalChain, TransactionManager, and GasPricer");
+  if (!final_chain_ || !trx_manager_) {
+    throw std::logic_error("SlashingManager requires FinalChain and TransactionManager");
   }
 
   return submitDoubleVotingProofInput(makeDoubleVotingProofInput(evidence));
@@ -168,9 +164,9 @@ bool SlashingManager::submitDoubleVotingProofInput(rustaxa::DoubleVotingProofInp
 
   const auto& wallet = kConfig.wallets[plan.wallet_index];
   auto call_data = bytes(plan.call_data.begin(), plan.call_data.end());
-  auto trx = std::make_shared<Transaction>(from_bridge_u256(plan.nonce), from_bridge_u256(plan.value),
-                                           gas_pricer_->bid(), plan.gas_limit, std::move(call_data), wallet.node_secret,
-                                           from_bridge_address(plan.contract_address), kConfig.genesis.chain_id);
+  auto trx = std::make_shared<Transaction>(
+      from_bridge_u256(plan.nonce), from_bridge_u256(plan.value), trx_manager_->gasPriceBid(), plan.gas_limit,
+      std::move(call_data), wallet.node_secret, from_bridge_address(plan.contract_address), kConfig.genesis.chain_id);
 
   rustaxa::DoubleVotingProofSubmissionReport report;
   report.proof_hash = plan.proof_hash;

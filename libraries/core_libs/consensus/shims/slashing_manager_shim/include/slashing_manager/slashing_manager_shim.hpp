@@ -9,7 +9,6 @@
 namespace taraxa {
 
 struct FullNodeConfig;
-class GasPricer;
 class PbftVote;
 class PillarVote;
 class TransactionManager;
@@ -38,7 +37,7 @@ struct SlashingDoubleVoteEvidence {
  * The public `SlashingManager` API is preserved while deterministic
  * double-voting proof planning is routed through the application-owned Rust
  * PBFT service. Submitter nonce and balance facts are read through the Rust
- * FinalChain runtime; C++ still owns gas-price lookup, transaction
+ * FinalChain runtime; C++ still owns transaction
  * construction, signing, and transaction-pool insertion. The facade has no
  * legacy implementation dependency.
  */
@@ -55,7 +54,7 @@ class SlashingManager {
    */
   SlashingManager(const FullNodeConfig& config, SharedPbftService pbft_service,
                   std::shared_ptr<final_chain::FinalChain> final_chain,
-                  std::shared_ptr<TransactionManager> trx_manager, std::shared_ptr<GasPricer> gas_pricer);
+                  std::shared_ptr<TransactionManager> trx_manager);
 
   SlashingManager(const SlashingManager&) = delete;
   SlashingManager(SlashingManager&&) = delete;
@@ -100,7 +99,6 @@ class SlashingManager {
 
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::shared_ptr<TransactionManager> trx_manager_;
-  std::shared_ptr<GasPricer> gas_pricer_;
   SharedPbftService pbft_service_;
   const FullNodeConfig& kConfig;
 };

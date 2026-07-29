@@ -47,15 +47,25 @@ GraphQlHttpProcessor::GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain
                                            std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                                            std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                                            std::shared_ptr<::taraxa::DbStorage> db,
+#ifdef RUSTAXA_ENABLE
+                                           graphql::taraxa::QueryGasPriceReader gas_price_reader,
+#else
                                            std::shared_ptr<::taraxa::GasPricer> gas_pricer,
+#endif
                                            std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
                                            ::taraxa::net::LiveStatusReader live_status)
     : GraphQlHttpProcessor(GraphQlOperations{
-          std::make_shared<graphql::taraxa::Query>(
-              std::move(final_chain), std::move(dag_manager), std::move(pbft_manager), transaction_manager,
-              std::move(db), std::move(gas_pricer), std::move(network), chain_id, std::move(live_status)),
+          std::make_shared<graphql::taraxa::Query>(std::move(final_chain), std::move(dag_manager),
+                                                   std::move(pbft_manager), transaction_manager, std::move(db),
+#ifdef RUSTAXA_ENABLE
+                                                   std::move(gas_price_reader),
+#else
+                                                   std::move(gas_pricer),
+#endif
+                                                   std::move(network), chain_id, std::move(live_status)),
           std::make_shared<graphql::taraxa::Mutation>(std::move(transaction_manager)),
-          std::make_shared<graphql::taraxa::Subscription>()}) {}
+          std::make_shared<graphql::taraxa::Subscription>()}) {
+}
 
 HttpProcessor::Response GraphQlHttpProcessor::process(const Request& request) {
   try {

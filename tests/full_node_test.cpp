@@ -1698,10 +1698,19 @@ TEST_F(FullNodeTest, graphql_test) {
   }
 
   // Objects needed to run the query
+#ifdef RUSTAXA_ENABLE
+  auto gas_price_reader = graphql::taraxa::QueryGasPriceReader{
+      [trx_mgr = nodes[0]->getTransactionManager()]() { return trx_mgr ? trx_mgr->gasPriceBid() : dev::u256(0); }};
+  auto q = std::make_shared<graphql::taraxa::Query>(nodes[0]->getFinalChain(), nodes[0]->getDagManager(),
+                                                    nodes[0]->getPbftManager(), nodes[0]->getTransactionManager(),
+                                                    nodes[0]->getDB(), std::move(gas_price_reader),
+                                                    nodes[0]->getNetwork(), nodes[0]->getConfig().genesis.chain_id);
+#else
   auto q = std::make_shared<graphql::taraxa::Query>(nodes[0]->getFinalChain(), nodes[0]->getDagManager(),
                                                     nodes[0]->getPbftManager(), nodes[0]->getTransactionManager(),
                                                     nodes[0]->getDB(), nodes[0]->getGasPricer(), nodes[0]->getNetwork(),
                                                     nodes[0]->getConfig().genesis.chain_id);
+#endif
   auto mutation = std::make_shared<graphql::taraxa::Mutation>(nodes[0]->getTransactionManager());
   auto subscription = std::make_shared<graphql::taraxa::Subscription>();
   auto _service = std::make_shared<graphql::taraxa::Operations>(q, mutation, subscription);

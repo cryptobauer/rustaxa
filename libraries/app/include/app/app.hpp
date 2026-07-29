@@ -16,6 +16,9 @@
 namespace taraxa {
 
 class Plugin;
+#ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
+class GasPricer;
+#endif
 #ifdef RUSTAXA_ENABLE
 class DagTransactionService;
 class PbftService;
@@ -45,7 +48,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<metrics::MetricsService> getMetrics() const { return metrics_; }
   // used only in tests
   std::shared_ptr<DagBlockProposer> getDagBlockProposer() const { return dag_block_proposer_; }
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<GasPricer> getGasPricer() const { return gas_pricer_; }
+#endif
   std::shared_ptr<pillar_chain::PillarChainManager> getPillarChainManager() const { return pillar_chain_mgr_; }
 
   void rebuildDb();
@@ -101,9 +106,11 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
 #ifdef RUSTAXA_ENABLE
   std::shared_ptr<DagTransactionService> dag_transaction_service_;
 #endif
-  std::shared_ptr<GasPricer> gas_pricer_;
   std::shared_ptr<DagManager> dag_mgr_;
   std::shared_ptr<TransactionManager> trx_mgr_;
+#ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
+  std::shared_ptr<GasPricer> gas_pricer_;
+#endif
   std::shared_ptr<Network> network_;
   std::shared_ptr<DagBlockProposer> dag_block_proposer_;
   std::shared_ptr<VoteManager> vote_mgr_;

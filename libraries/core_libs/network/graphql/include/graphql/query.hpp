@@ -13,7 +13,9 @@
 #include "network/live_status.hpp"
 #include "network/network.hpp"
 #include "pbft/pbft_manager.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "transaction/gas_pricer.hpp"
+#endif
 #include "transaction/transaction_manager.hpp"
 
 #ifdef RUSTAXA_ENABLE
@@ -42,8 +44,8 @@ struct QueryTransactionReader {
 };
 
 // QueryGasPriceReader is GraphQL Query's gas-price acquisition boundary. It
-// supplies the current node gas-price bid without exposing GasPricer to public
-// GraphQL query methods.
+// supplies the current node gas-price bid without exposing TransactionManager
+// or the legacy GasPricer to public GraphQL query methods.
 struct QueryGasPriceReader {
   std::function<dev::u256()> bid;
 };
@@ -108,7 +110,12 @@ class Query {
   explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                  std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                  std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
-                 std::shared_ptr<::taraxa::DbStorage> db, std::shared_ptr<::taraxa::GasPricer> gas_pricer,
+                 std::shared_ptr<::taraxa::DbStorage> db,
+#ifdef RUSTAXA_ENABLE
+                 QueryGasPriceReader gas_price_reader,
+#else
+                 std::shared_ptr<::taraxa::GasPricer> gas_pricer,
+#endif
                  std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
                  ::taraxa::net::LiveStatusReader live_status = {}
 #ifdef RUSTAXA_ENABLE

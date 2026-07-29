@@ -10,6 +10,9 @@
 #include "pbft/pbft_manager.hpp"
 #include "slashing_manager/slashing_manager.hpp"
 #include "test_util/test_util.hpp"
+#ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
+#include "transaction/gas_pricer.hpp"
+#endif
 #include "vote_manager/vote_manager.hpp"
 
 namespace taraxa::state_api {
@@ -232,12 +235,12 @@ TEST_F(StateAPITest, slashing) {
   // slashing planner must not create a transaction before Magnolia.
   const auto [preactivation_round, preactivation_period] = node->getPbftManager()->getPbftRoundAndPeriod();
   ASSERT_LT(preactivation_period, node_cfg->genesis.state.hardforks.magnolia_hf.block_num);
-  auto preactivation_vote_a = node->getVoteManager()->generateVote(
-      blk_hash_t{3}, PbftVoteTypes::cert_vote, preactivation_period, preactivation_round, 3,
-      node_cfg->getFirstWallet());
-  auto preactivation_vote_b = node->getVoteManager()->generateVote(
-      blk_hash_t{4}, PbftVoteTypes::cert_vote, preactivation_period, preactivation_round, 3,
-      node_cfg->getFirstWallet());
+  auto preactivation_vote_a =
+      node->getVoteManager()->generateVote(blk_hash_t{3}, PbftVoteTypes::cert_vote, preactivation_period,
+                                           preactivation_round, 3, node_cfg->getFirstWallet());
+  auto preactivation_vote_b =
+      node->getVoteManager()->generateVote(blk_hash_t{4}, PbftVoteTypes::cert_vote, preactivation_period,
+                                           preactivation_round, 3, node_cfg->getFirstWallet());
   ASSERT_TRUE(node->getVoteManager()->addVerifiedVote(preactivation_vote_a));
   ASSERT_FALSE(node->getVoteManager()->addVerifiedVote(preactivation_vote_b));
 #endif
@@ -248,8 +251,15 @@ TEST_F(StateAPITest, slashing) {
   });
 
 #ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
+#ifdef RUSTAXA_ENABLE
+  auto gas_pricer = std::make_shared<GasPricer>(node_cfg->genesis, node_cfg->is_light_node, node_cfg->blocks_gas_pricer,
+                                                node->getTransactionManager(), node->getDB());
+  auto slashing_manager =
+      std::make_shared<SlashingManager>(*node_cfg, node->getFinalChain(), node->getTransactionManager(), gas_pricer);
+#else
   auto slashing_manager = std::make_shared<SlashingManager>(*node_cfg, node->getFinalChain(),
                                                             node->getTransactionManager(), node->getGasPricer());
+#endif
   auto preactivation_vote_a = node->getVoteManager()->generateVote(blk_hash_t{3}, PbftVoteTypes::cert_vote, 5, 1, 3,
                                                                    node_cfg->getFirstWallet());
   auto preactivation_vote_b = node->getVoteManager()->generateVote(blk_hash_t{4}, PbftVoteTypes::cert_vote, 5, 1, 3,

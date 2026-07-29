@@ -24,7 +24,9 @@
 #include "slashing_manager/slashing_manager.hpp"
 #include "storage/migration/block_stats.hpp"
 #include "storage/migration/migration_manager.hpp"
+#ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
 #include "transaction/gas_pricer.hpp"
+#endif
 #include "transaction/transaction_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
 
@@ -147,7 +149,9 @@ void App::init(const cli::Config &cli_conf) {
 #else
   trx_mgr_ = std::make_shared<TransactionManager>(conf_, db_, final_chain_, node_addr);
 #endif
+#ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
   gas_pricer_ = std::make_shared<GasPricer>(conf_.genesis, conf_.is_light_node, conf_.blocks_gas_pricer, trx_mgr_, db_);
+#endif
 
   auto genesis_hash = conf_.genesis.genesisHash();
   auto genesis_hash_from_db = db_->getGenesisHash();
@@ -186,7 +190,7 @@ void App::init(const cli::Config &cli_conf) {
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
 #endif
 #ifdef RUSTAXA_ENABLE_SLASHING_MANAGER
-  auto slashing_manager = std::make_shared<SlashingManager>(conf_, pbft_service_, final_chain_, trx_mgr_, gas_pricer_);
+  auto slashing_manager = std::make_shared<SlashingManager>(conf_, pbft_service_, final_chain_, trx_mgr_);
 #else
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
 #endif
@@ -236,7 +240,8 @@ void App::start() {
   scheduleLoggingConfigUpdate();
 
   if (!conf_.db_config.rebuild_db) {
-    // GasPricer updater
+    // Gas-price oracle updater
+#ifndef RUSTAXA_ENABLE
     final_chain_->block_finalized_.subscribe(
         [gas_pricer = as_weak(gas_pricer_)](const auto &res) {
           if (auto gp = gas_pricer.lock()) {
@@ -244,6 +249,24 @@ void App::start() {
           }
         },
         subscription_pool_);
+#else
+    final_chain_->block_finalized_.subscribe(
+        [trx_manager = as_weak(trx_mgr_)](const auto &res) {
+          if (auto manager = trx_manager.lock()) {
+            manager->updateGasPrice(res->trxs);
+          }
+        },
+        subscription_pool_);
+#ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
+    final_chain_->block_finalized_.subscribe(
+        [legacy_gas_pricer = as_weak(gas_pricer_)](const auto &res) {
+          if (auto gas_pricer = legacy_gas_pricer.lock()) {
+            gas_pricer->update(res->trxs);
+          }
+        },
+        subscription_pool_);
+#endif
+#endif
 
     final_chain_->block_finalized_.subscribe(
         [trx_manager = as_weak(trx_mgr_)](const auto &res) {
@@ -330,8 +353,13 @@ void App::setupMetricsUpdaters() {
   auto transaction_queue_metrics = metrics_->getMetrics<metrics::TransactionQueueMetrics>();
   transaction_queue_metrics->setTransactionsCountUpdater(
       [trx_mgr = trx_mgr_]() { return trx_mgr->getTransactionPoolSize(); });
+#ifndef RUSTAXA_ENABLE
   transaction_queue_metrics->setGasPriceUpdater(
       [gas_pricer = gas_pricer_]() { return gas_pricer->bid().convert_to<double>(); });
+#else
+  transaction_queue_metrics->setGasPriceUpdater(
+      [trx_manager = trx_mgr_]() { return trx_manager->gasPriceBid().convert_to<double>(); });
+#endif
 
   auto pbft_metrics = metrics_->getMetrics<metrics::PbftMetrics>();
   pbft_metrics->setPeriodUpdater([pbft_mgr = pbft_mgr_]() { return pbft_mgr->getPbftPeriod(); });
