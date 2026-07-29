@@ -969,6 +969,26 @@ compatibility constructors, production C++ consumers, and public signatures
 are unchanged. The full-state preview fingerprint and at-most-once retry
 constraint remain explicit CRW-12 debt.
 
+The next bounded `CRW-12` sortition contraction moves the complete
+post-storage commit workflow from `rustaxa-bridge` onto the lock-held native
+PBFT manager owner. Native consensus now derives the current action, validates
+cursor/action and retained plan/request consistency, commits through the
+native DAG/transaction owner in manager-before-sortition order, preserves the
+stable post-storage invariant prefix, consumes the retained request exactly
+once after successful publication, constructs and validates all live facts,
+and reports the result to the native finalization cursor. The bridge retains
+only an operation-specific delegate, domain-step conversion, and the generic
+owned-action drain used by remaining finalization families. Native tests cover
+successful advancement/request consumption, stale-cursor non-publication, and
+preview-drift fatal rejection; the superseded unchanged, drift, and stale
+bridge transcripts are deleted while one changed-commit CXX sentinel and the
+preparation/storage/caller-stage boundary tests remain. The checked bridge
+budget falls by 272 lines to 32,733; CXX functions, carriers, handles, shim
+lines and directories, granular flags, partial factories, compatibility
+constructors, production C++ consumers, and public signatures are unchanged.
+The portable full-state fingerprint and native generic drain/outcome shaping
+remain explicit CRW-12 debt.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

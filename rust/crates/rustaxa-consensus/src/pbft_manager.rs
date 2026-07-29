@@ -194,6 +194,154 @@ impl DerefMut for PbftManagerGuard<'_> {
     }
 }
 
+impl PbftManagerGuard<'_> {
+    /// Commits the retained finalization sortition request and advances its runtime cursor.
+    ///
+    /// The lock-held task validates the current cursor and required
+    /// `CommitSortitionRuntime` action, checks the retained native commit request
+    /// against the accepted finalization plan, commits through the supplied
+    /// DAG/transaction service, validates the resulting live facts, and reports
+    /// the result to the manager-owned finalization runtime. Cursor and action
+    /// failures return terminal runtime steps; missing or inconsistent retained
+    /// state and sortition commit failures retain the stable
+    /// `PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT` fatal prefix.
+    ///
+    /// The manager guard remains held while the DAG service acquires sortition,
+    /// preserving manager-before-sortition lock order. A successful commit
+    /// clears the retained request exactly once before runtime reporting.
+    pub fn advance_finalization_sortition_commit(
+        &mut self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        cursor: u32,
+    ) -> Result<crate::pbft_finalize::PbftFinalizationRuntimeStep> {
+        use crate::pbft_finalize::{
+            PbftFinalizationLiveMutationReport, PbftFinalizationRuntimeAction,
+            PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus,
+            PbftFinalizationRuntimeStep, next_pbft_finalization_runtime_action,
+            report_pbft_finalization_runtime_action,
+            validate_pbft_finalization_live_mutation_report,
+        };
+
+        let Some(session) = self.finalization_runtime_session.as_ref() else {
+            return Ok(PbftFinalizationRuntimeStep {
+                runtime_status: PbftFinalizationRuntimeStatus::ActionMismatch,
+                has_action: false,
+                action: None,
+                action_index: 0,
+                complete: false,
+                error_code: "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED".to_string(),
+            });
+        };
+        let current_step = next_pbft_finalization_runtime_action(session);
+        if current_step.runtime_status != PbftFinalizationRuntimeStatus::Active
+            || !current_step.has_action
+        {
+            return Ok(current_step);
+        }
+        if cursor != current_step.action_index {
+            let session = self
+                .finalization_runtime_session
+                .as_mut()
+                .expect("finalization session checked above");
+            session.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
+            session.error_code = "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH".to_string();
+            return Ok(next_pbft_finalization_runtime_action(session));
+        }
+        if current_step.action != Some(PbftFinalizationRuntimeAction::CommitSortitionRuntime) {
+            let action = current_step
+                .action
+                .expect("active finalization step must carry an action");
+            let session = self
+                .finalization_runtime_session
+                .as_mut()
+                .expect("finalization session checked above");
+            *session = report_pbft_finalization_runtime_action(
+                session.clone(),
+                PbftFinalizationRuntimeActionResult {
+                    action,
+                    success: false,
+                    status: PbftFinalizationRuntimeStatus::ActionMismatch.as_u8(),
+                    error_code: "PBFT_FINALIZE_RUNTIME_ACTION_MISMATCH".to_string(),
+                },
+            );
+            return Ok(next_pbft_finalization_runtime_action(session));
+        }
+
+        let plan = self
+            .finalization_runtime_plan
+            .clone()
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_RUNTIME_PLAN_NOT_STARTED"))?;
+        let commit_request = self.finalization_sortition_commit_request.ok_or_else(|| {
+            anyhow!("PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT:MISSING_PREPARATION")
+        })?;
+        if commit_request.finalized_period.period != plan.storage_write_intent.block_period
+            || commit_request.finalized_period.efficiency_counts.has_pivot
+                != !plan.storage_write_intent.null_anchor
+        {
+            return Err(anyhow!(
+                "PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT:PREPARATION_PLAN_MISMATCH"
+            ));
+        }
+        let committed = dag_transaction_service
+            .commit_finalized_period_with_live_snapshot(commit_request)
+            .map_err(|err| anyhow!("PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT:{err}"))?;
+        self.finalization_sortition_commit_request = None;
+
+        let mut report = PbftFinalizationLiveMutationReport {
+            action: PbftFinalizationRuntimeAction::CommitSortitionRuntime,
+            block_period: plan.storage_write_intent.block_period,
+            pbft_block_hash: plan.storage_write_intent.pbft_block_hash,
+            anchor_hash: plan.storage_write_intent.anchor_hash,
+            dag_finalized_count: 0,
+            finalized_transaction_count: 0,
+            pbft_chain_size: 0,
+            pbft_chain_head_hash: H256::zero(),
+            pbft_chain_last_anchor_hash: H256::zero(),
+            reward_votes_period: 0,
+            reward_votes_round: 0,
+            reward_votes_block_hash: H256::zero(),
+            reward_votes_reset_provenance_valid: false,
+            sortition_changed: false,
+            sortition_change_period: 0,
+            sortition_change_interval_efficiency: 0,
+            sortition_change_threshold_upper: 0,
+            sortition_current_threshold_upper: committed.current_threshold_upper,
+            sortition_params_changes_count: committed.params_changes_count,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            executed_pbft_block: false,
+            manager_period: 0,
+            pillar_processed_period: 0,
+            pillar_request_period: 0,
+            anchor_dag_cache_count: 0,
+            final_chain_dispatched: false,
+            final_chain_blocks_per_year: 0,
+            final_chain_last_block: 0,
+        };
+        if let Some(change) = committed.change {
+            report.sortition_changed = true;
+            report.sortition_change_period = change.period;
+            report.sortition_change_interval_efficiency = change.interval_efficiency;
+            report.sortition_change_threshold_upper = change.threshold_upper;
+        }
+        let validation = validate_pbft_finalization_live_mutation_report(&plan, report);
+        let session = self
+            .finalization_runtime_session
+            .as_mut()
+            .expect("finalization session checked above");
+        *session = report_pbft_finalization_runtime_action(
+            session.clone(),
+            PbftFinalizationRuntimeActionResult {
+                action: validation.action,
+                success: validation.accepted,
+                status: validation.status.as_u8(),
+                error_code: validation.error_code,
+            },
+        );
+        Ok(next_pbft_finalization_runtime_action(session))
+    }
+}
+
 impl PbftManagerService {
     /// Creates the native PBFT manager owner.
     ///
@@ -6642,8 +6790,10 @@ mod tests {
     };
     use crate::gas_pricer::GasPricerConfig;
     use crate::pbft_finalize::{
-        PbftFinalizationPositionedHash, PbftFinalizationStorageWriteIntent,
-        PbftFinalizationStorageWriteStage,
+        PbftFinalizationAnchor, PbftFinalizationCleanupIntent, PbftFinalizationPlan,
+        PbftFinalizationPositionedHash, PbftFinalizationRuntimeAction, PbftFinalizationRuntimePlan,
+        PbftFinalizationRuntimeStatus, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
+        PbftFinalizationStorageWriteStage, start_pbft_finalization_runtime,
     };
     use crate::sortition::{SortitionConfig, SortitionParams, VdfParams, VrfParams};
     use crate::transaction_service::TransactionServiceConfig;
@@ -6663,6 +6813,13 @@ mod tests {
 
     fn finalization_sortition_services(
         name: &str,
+    ) -> (PathBuf, PbftManagerService, DagTransactionService) {
+        finalization_sortition_services_with_interval(name, 10)
+    }
+
+    fn finalization_sortition_services_with_interval(
+        name: &str,
+        changing_interval: u16,
     ) -> (PathBuf, PbftManagerService, DagTransactionService) {
         let path = unique_temp_dir(name);
         let storage = Arc::new(Storage::new(Config::new(path.clone())).expect("storage opens"));
@@ -6705,13 +6862,49 @@ mod tests {
                     },
                     changes_count_for_average: 8,
                     dag_efficiency_targets: (5_000, 10_000),
-                    changing_interval: 10,
-                    computation_interval: 5,
+                    changing_interval,
+                    computation_interval: changing_interval.min(5),
                 },
             },
         )
         .expect("DAG transaction service restores");
         (path, manager, dag)
+    }
+
+    fn install_sortition_commit_runtime(
+        runtime: &mut PbftManagerRuntimeState,
+        write_set: PbftFinalizationStorageWriteIntent,
+    ) {
+        runtime.finalization_runtime_plan = Some(PbftFinalizationPlan {
+            finalize_block: true,
+            anchor: PbftFinalizationAnchor::Anchored,
+            executed_pbft_block: true,
+            cleanup: PbftFinalizationCleanupIntent {
+                persist_pbft_block_metadata: true,
+                reset_reward_votes: true,
+                set_dag_block_order: true,
+                update_sortition_params: true,
+                update_finalized_transactions_status: true,
+                update_pbft_chain: true,
+                clear_anchor_dag_cache: true,
+                finalize_final_chain: true,
+                maybe_update_dynamic_lambda: false,
+                advance_period: true,
+                process_pillar_block: false,
+            },
+            storage_write_intent: write_set,
+            status: PbftFinalizationStatus::Accepted,
+        });
+        runtime.finalization_runtime_session = Some(start_pbft_finalization_runtime(
+            &PbftFinalizationRuntimePlan {
+                finalize_block: true,
+                status: PbftFinalizationStatus::Accepted,
+                actions: vec![
+                    PbftFinalizationRuntimeAction::CommitSortitionRuntime,
+                    PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+                ],
+            },
+        ));
     }
 
     fn finalization_period_data(
@@ -6896,6 +7089,116 @@ mod tests {
             drop(dag);
             let _ = fs::remove_dir_all(path);
         }
+    }
+
+    #[test]
+    fn finalization_sortition_commit_advances_native_runtime_and_clears_request() {
+        let (path, manager, dag) = finalization_sortition_services("pbft_manager_sortition_commit");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 3, &[2, 4]),
+        );
+        let mut runtime = manager.lock();
+        prepare_pbft_finalization_sortition(
+            &mut runtime,
+            &dag,
+            &write_set,
+            &mut vec![PbftFinalizationStorageWriteStage::default()],
+        )
+        .expect("preparation succeeds");
+        install_sortition_commit_runtime(&mut runtime, write_set);
+
+        let step = runtime
+            .advance_finalization_sortition_commit(&dag, 0)
+            .expect("native commit advances");
+
+        assert_eq!(step.runtime_status, PbftFinalizationRuntimeStatus::Active);
+        assert_eq!(
+            step.action,
+            Some(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime)
+        );
+        assert!(runtime.finalization_sortition_commit_request.is_none());
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_sortition_commit_rejects_stale_cursor_before_publication() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_sortition_commit_stale");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        prepare_pbft_finalization_sortition(
+            &mut runtime,
+            &dag,
+            &write_set,
+            &mut vec![PbftFinalizationStorageWriteStage::default()],
+        )
+        .expect("preparation succeeds");
+        install_sortition_commit_runtime(&mut runtime, write_set);
+
+        let step = runtime
+            .advance_finalization_sortition_commit(&dag, 1)
+            .expect("stale cursor returns a runtime step");
+
+        assert_eq!(
+            step.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionMismatch
+        );
+        assert_eq!(step.error_code, "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
+        assert!(runtime.finalization_sortition_commit_request.is_some());
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_sortition_commit_preserves_fatal_prefix_on_preview_drift() {
+        let (path, manager, dag) =
+            finalization_sortition_services_with_interval("pbft_manager_sortition_commit_drift", 1);
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        prepare_pbft_finalization_sortition(
+            &mut runtime,
+            &dag,
+            &write_set,
+            &mut vec![PbftFinalizationStorageWriteStage::default()],
+        )
+        .expect("preparation succeeds");
+        let mut retained = runtime
+            .finalization_sortition_commit_request
+            .expect("commit request retained");
+        assert!(retained.expected_change.is_some());
+        retained.expected_change = None;
+        runtime.finalization_sortition_commit_request = Some(retained);
+        install_sortition_commit_runtime(&mut runtime, write_set);
+
+        let error = runtime
+            .advance_finalization_sortition_commit(&dag, 0)
+            .expect_err("drift is a fatal invariant");
+
+        assert!(
+            error
+                .to_string()
+                .starts_with("PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT")
+        );
+        assert!(runtime.finalization_sortition_commit_request.is_some());
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
     }
 
     fn fact(state: PbftManagerRuntimeStateCode) -> PbftManagerRuntimeTickFact {

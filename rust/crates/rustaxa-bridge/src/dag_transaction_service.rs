@@ -22,8 +22,6 @@ use rustaxa_consensus::dag_service::{
     DagVerifyBlockSessionInput as NativeDagVerifyBlockSessionInput,
     DagVerifyBlockSessionStep as NativeDagVerifyBlockSessionStep,
 };
-#[cfg(test)]
-use rustaxa_consensus::dag_transaction_service::DagTransactionSortitionFinalizationRequest;
 use rustaxa_consensus::dag_transaction_service::{
     DagAddBlockAccountNonceFact as NativeDagAddBlockAccountNonceFact,
     DagAddBlockCompletion as NativeDagAddBlockCompletion,
@@ -32,8 +30,7 @@ use rustaxa_consensus::dag_transaction_service::{
     DagGraphView, DagProposerFinalChainFacts as NativeDagProposerFinalChainFacts,
     DagProposerFinalChainRequestOrStep as NativeDagProposerFinalChainRequestOrStep,
     DagProposerPackPrepareRequest, DagProposerPackStep, DagTransactionService,
-    DagTransactionServiceConfig, DagTransactionSortitionFinalizationCommitRequest,
-    DagTransactionSortitionFinalizationCommitResult,
+    DagTransactionServiceConfig,
     DagVerifyBlockAuthorizationRequestOrStep as NativeDagVerifyBlockAuthorizationRequestOrStep,
     DagVerifyBlockTransactionCompletionReport as NativeDagVerifyBlockTransactionCompletionReport,
     DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
@@ -42,7 +39,7 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
 };
 use rustaxa_consensus::pbft_manager::{
-    prepare_pbft_finalization_sortition, PbftManagerRuntimeState,
+    prepare_pbft_finalization_sortition, PbftManagerGuard, PbftManagerRuntimeState,
 };
 #[cfg(test)]
 use rustaxa_consensus::sortition::SortitionServiceGuard;
@@ -101,15 +98,6 @@ impl BridgeDagTransactionService {
         self.root.lock_sortition()
     }
 
-    /// Delegates test-only finalized-period preview to the native application owner.
-    #[cfg(test)]
-    pub(crate) fn preview_finalized_period(
-        &self,
-        request: DagTransactionSortitionFinalizationRequest,
-    ) -> Result<Option<rustaxa_consensus::sortition::SortitionParamsChange>> {
-        self.root.preview_finalized_period(request)
-    }
-
     /// Delegates the complete finalization-sortition preparation task to native consensus.
     pub(crate) fn prepare_finalization_sortition(
         &self,
@@ -120,13 +108,13 @@ impl BridgeDagTransactionService {
         prepare_pbft_finalization_sortition(runtime, &self.root, write_set, stages)
     }
 
-    /// Delegates atomic sortition commit and live snapshot capture to the native owner.
-    pub(crate) fn commit_finalized_period_with_live_snapshot(
+    /// Delegates the complete lock-held sortition commit task to native consensus.
+    pub(crate) fn advance_finalization_sortition_commit(
         &self,
-        request: DagTransactionSortitionFinalizationCommitRequest,
-    ) -> Result<DagTransactionSortitionFinalizationCommitResult> {
-        self.root
-            .commit_finalized_period_with_live_snapshot(request)
+        runtime: &mut PbftManagerGuard<'_>,
+        cursor: u32,
+    ) -> Result<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep> {
+        runtime.advance_finalization_sortition_commit(&self.root, cursor)
     }
 }
 

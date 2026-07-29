@@ -177,6 +177,15 @@ without bridge-side reconstruction. The bridge keeps only an
 operation-specific delegate plus the finalization executor's conversion and
 error mapping. Replacing the expected-change/at-most-once contract with a
 portable full-state preview fingerprint remains explicit CRW-12 debt.
+The post-storage sortition commit workflow is native as well. The lock-held
+PBFT manager task owns current-step, cursor, and action validation; retained
+plan/request consistency; manager-before-sortition commit; stable fatal error
+projection; complete live-fact construction and validation; request
+consumption; and runtime reporting. The bridge retains only an
+operation-specific call, domain-step conversion, and the generic executor
+drain shared with still-unmigrated finalization actions. Superseded unchanged,
+drift, and stale-cursor bridge transcripts moved to native coverage; one
+changed-commit CXX sentinel remains.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The
