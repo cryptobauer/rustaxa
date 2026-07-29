@@ -2,71 +2,62 @@
 //!
 //! The bridge exposes:
 //! - a short-lived planner used while one DAG proposal is being packed
-//! - a storage-complete planner for `TransactionManager::saveTransactionsFromDagBlock`
-//! - an opaque runtime handle that owns non-finalized and recently-finalized payload sidecars
+//! - owned carrier conversion for transaction commands and reports
 //!
-//! C++ supplies transaction metadata, RLP payloads, and queue-known facts. Rust owns
-//! deterministic planning, latest-state FinalChain account fact sourcing, storage
-//! mutations routed through Rust storage, live transaction count authority, admission
-//! status mapping, and sidecar membership/RLP bytes, but not C++ `Transaction`
-//! pointers or gas estimation.
+//! C++ supplies transaction metadata, canonical RLP payloads, and retained
+//! FinalChain/EVM facts. Native Rust services own transaction state, locking,
+//! deterministic planning, storage mutation, count authority, admission, and
+//! sidecar/queue publication. This module owns no production runtime or guard.
 
-#[cfg(test)]
-use crate::ffi::rustaxa_ffi::TransactionManagerSidecarInsertInput;
 #[cfg(test)]
 use crate::ffi::rustaxa_ffi::TransactionQueueConfig;
 #[cfg(test)]
 use crate::ffi::rustaxa_ffi::TransactionQueueHash;
 use crate::ffi::rustaxa_ffi::{
-    DagTransactionSaveSidecarFact, GasPricerConfig, TransactionManagerAdmissionCommandReport,
-    TransactionManagerAdmissionResult, TransactionManagerAdmissionShellIntent,
-    TransactionManagerDagSaveCommandReport, TransactionManagerFinalChainAdmissionFact,
-    TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
-    TransactionManagerHashCommand, TransactionManagerPublicAdmissionCommandReport,
-    TransactionManagerPublicInsertResult, TransactionManagerTransactionView,
-    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
-    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyTransactionFact,
-    TransactionManagerVerifyTransactionOutcome,
+    GasPricerConfig, TransactionManagerAdmissionCommandReport, TransactionManagerAdmissionResult,
+    TransactionManagerAdmissionShellIntent, TransactionManagerDagSaveCommandReport,
+    TransactionManagerFinalChainAdmissionFact, TransactionManagerGasEstimationFact,
+    TransactionManagerGasEstimationPlan, TransactionManagerHashCommand,
+    TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
+    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
+    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
+    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
     TransactionQueueInsertInput, TransactionQueueStoredTransaction,
     TransactionQueueTransactionGroup,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::gas_pricer::GasPricerConfig as DomainGasPricerConfig;
 use rustaxa_consensus::transaction_manager::{
-    plan_transactions_from_dag_block, plan_verify_transaction,
-    DagTransactionSaveFact as ConsensusDagTransactionSaveFact,
-    TransactionManagerInsertTransactionStatus,
+    plan_verify_transaction, TransactionManagerInsertTransactionStatus,
     TransactionManagerVerifyTransactionFact as ConsensusTransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionStatus,
-};
-use rustaxa_consensus::transaction_queue::{
-    TransactionQueue, TransactionQueueEntry, TransactionQueueInsertStatus,
 };
 #[cfg(test)]
 use rustaxa_consensus::transaction_queue::{
     TransactionQueueAccountNonceFact, TransactionQueuePurgeOutcome,
 };
+use rustaxa_consensus::transaction_queue::{TransactionQueueEntry, TransactionQueueInsertStatus};
 #[cfg(test)]
 use rustaxa_consensus::transaction_service::TransactionServiceConfig;
+#[cfg(test)]
+use rustaxa_consensus::transaction_service::TransactionServiceState;
 use rustaxa_consensus::transaction_service::{
-    TransactionServiceAccountNonceFact, TransactionServiceAdmissionReport,
-    TransactionServiceFinalChainAdmissionFact, TransactionServiceGasEstimationPlan,
-    TransactionServiceGasEstimationRequest, TransactionServiceGuard,
-    TransactionServicePublicAdmissionReport, TransactionServiceState,
-    TransactionServiceTransactionView, TransactionServiceTransactionViewPlan,
-    TransactionServiceTransactionViewRequest, TransactionServiceValidatedAdmissionFact,
-};
-use rustaxa_consensus::transaction_storage::{
-    append_non_finalized_transactions_to_batch, transaction_finalized,
-    NonFinalizedTransactionStoragePayload,
+    DagTransactionSaveOutcome, TransactionServiceAccountNonceFact,
+    TransactionServiceAdmissionReport, TransactionServiceFinalChainAdmissionFact,
+    TransactionServiceGasEstimationPlan, TransactionServiceGasEstimationRequest,
+    TransactionServicePublicAdmissionReport, TransactionServiceTransactionView,
+    TransactionServiceTransactionViewPlan, TransactionServiceTransactionViewRequest,
+    TransactionServiceValidatedAdmissionFact,
 };
 #[cfg(test)]
 use rustaxa_storage::StatusField;
-use rustaxa_storage::{Storage, StorageWriteBatch};
+#[cfg(test)]
+use rustaxa_storage::Storage;
 #[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::ops::{Deref, DerefMut};
 #[cfg(test)]
 use std::time::{Duration, Instant};
@@ -82,51 +73,8 @@ struct TransactionManagerRuntimeQueuePurgePlan {
     removed_hashes: Vec<TransactionQueueHash>,
 }
 
-/// Prepared DAG transaction persistence held until a shared DAG/transaction
-/// storage batch commits.
-pub(crate) struct PreparedDagTransactionSave {
-    accepted: Vec<DagTransactionSaveAccepted>,
-    accepted_payloads: Vec<NonFinalizedTransactionStoragePayload>,
-    target_transaction_count: u64,
-}
-
-/// Fully prevalidated live-state publication for a committed DAG transaction save.
-pub(crate) struct PreparedDagTransactionPublication {
-    queue: TransactionQueue,
-    sidecar: rustaxa_consensus::transaction_manager::TransactionManagerSidecar,
-    pub(crate) outcome: DagTransactionSaveOutcome,
-}
-
-/// Temporary FFI adapter over native transaction state.
-///
-/// Production wraps a short-lived [`TransactionServiceGuard`]; focused bridge
-/// tests wrap an owned state. Both paths keep FFI-shaped behavior in this crate
-/// without returning or storing a native guard across CXX.
-pub(crate) struct TransactionRuntimeAccess<T>(pub(crate) T);
-
-impl<T> Deref for TransactionRuntimeAccess<T>
-where
-    T: Deref<Target = TransactionServiceState>,
-{
-    type Target = TransactionServiceState;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> DerefMut for TransactionRuntimeAccess<T>
-where
-    T: DerefMut<Target = TransactionServiceState>,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-pub(crate) type TransactionRuntimeGuard<'a> = TransactionRuntimeAccess<TransactionServiceGuard<'a>>;
 #[cfg(test)]
-type TransactionRuntimeState = TransactionRuntimeAccess<TestTransactionServiceState>;
+type TransactionRuntimeState = TestTransactionServiceState;
 
 /// Owned transaction state used by bridge tests.
 ///
@@ -176,16 +124,8 @@ impl Drop for TestTransactionServiceState {
 
 #[cfg(test)]
 pub(crate) struct TransactionManagerRuntimeQueueInsertOutcome {
-    status: u8,
-    inserted_hash_found: bool,
-    inserted_hash: [u8; 32],
     demoted_hashes: Vec<TransactionQueueHash>,
     overflow_removed_hashes: Vec<TransactionQueueHash>,
-}
-
-struct DagTransactionSaveAccepted {
-    hash: [u8; 32],
-    erased_from_queue: bool,
 }
 
 fn bridge_to_service_transaction_view_request(
@@ -387,10 +327,6 @@ pub(crate) fn service_to_bridge_gas_estimation_plan(
     }
 }
 
-pub(crate) struct DagTransactionSaveOutcome {
-    accepted: Vec<DagTransactionSaveAccepted>,
-}
-
 const TM_VERIFY_TRANSACTION_STATUS_ACCEPTED: u8 =
     TransactionManagerVerifyTransactionStatus::Accepted as u8;
 const TM_VERIFY_TRANSACTION_STATUS_CHAIN_ID_MISMATCH: u8 =
@@ -421,7 +357,7 @@ pub(crate) fn dag_save_command_report(
     let mut queue_erased = Vec::new();
     for entry in &outcome.accepted {
         if entry.erased_from_queue {
-            queue_erased.push(hash_command(entry.hash));
+            queue_erased.push(hash_command(entry.hash.0));
         }
     }
     TransactionManagerDagSaveCommandReport { queue_erased }
@@ -525,139 +461,6 @@ fn runtime_queue_account_nonce_facts_from_bridge(
         .collect()
 }
 
-fn transaction_manager_runtime_storage(runtime: &TransactionServiceState) -> Result<&Storage> {
-    Ok(runtime.storage.as_ref())
-}
-
-/// Plans and persists accepted DAG-block transactions through the Rust manager runtime.
-fn save_transactions_from_dag_block_with_runtime(
-    runtime: &mut TransactionServiceState,
-    facts: Vec<DagTransactionSaveSidecarFact>,
-) -> Result<DagTransactionSaveOutcome> {
-    let storage = transaction_manager_runtime_storage(runtime)?;
-    let prepared = prepare_transactions_from_dag_block_with_runtime(runtime, facts)?;
-    let publication = prepare_dag_transaction_publication(runtime, &prepared)?;
-    if !prepared.accepted_payloads.is_empty() {
-        let mut batch = storage.create_write_batch();
-        append_prepared_dag_transactions_to_batch(storage, &mut batch, &prepared)?;
-        storage
-            .commit_write_batch_with_sync(batch, false)
-            .context("TM_DAG_TX_BATCH_COMMIT")?;
-    }
-    Ok(publish_prepared_dag_transactions(runtime, publication))
-}
-
-/// Plans DAG transaction persistence without mutating storage or live runtime state.
-pub(crate) fn prepare_transactions_from_dag_block_with_runtime(
-    runtime: &TransactionServiceState,
-    facts: Vec<DagTransactionSaveSidecarFact>,
-) -> Result<PreparedDagTransactionSave> {
-    let storage = transaction_manager_runtime_storage(runtime)?;
-    let plan = plan_transactions_from_dag_block(
-        facts
-            .into_iter()
-            .map(|fact| {
-                let hash = H256::from(fact.hash);
-                ConsensusDagTransactionSaveFact {
-                    input_index: fact.input_index,
-                    hash,
-                    trx_rlp: fact.trx_rlp,
-                    transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
-                    sender_account_nonce: U256::from_big_endian(&fact.sender_account_nonce),
-                    in_non_finalized_cache: runtime.sidecar.contains_non_finalized(hash),
-                    in_recently_finalized_cache: runtime.sidecar.contains_recently_finalized(hash),
-                }
-            })
-            .collect(),
-        runtime.sidecar.transaction_count(),
-        |hash| transaction_finalized(storage, hash).context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED"),
-    )?;
-
-    let mut accepted = Vec::with_capacity(plan.accepted_transactions.len());
-    let mut accepted_payloads = Vec::with_capacity(plan.accepted_transactions.len());
-
-    for payload in &plan.accepted_transactions {
-        accepted.push(DagTransactionSaveAccepted {
-            hash: payload.hash.0,
-            erased_from_queue: false,
-        });
-        accepted_payloads.push(NonFinalizedTransactionStoragePayload {
-            hash: payload.hash,
-            trx_rlp: payload.trx_rlp.clone(),
-        });
-    }
-
-    Ok(PreparedDagTransactionSave {
-        accepted,
-        accepted_payloads,
-        target_transaction_count: plan.target_transaction_count,
-    })
-}
-
-/// Appends a prepared DAG transaction save to a caller-owned shared batch.
-pub(crate) fn append_prepared_dag_transactions_to_batch(
-    storage: &Storage,
-    batch: &mut StorageWriteBatch,
-    prepared: &PreparedDagTransactionSave,
-) -> Result<()> {
-    if prepared.accepted_payloads.is_empty() {
-        return Ok(());
-    }
-    append_non_finalized_transactions_to_batch(
-        storage,
-        batch,
-        prepared.accepted_payloads.clone(),
-        prepared.target_transaction_count,
-    )
-}
-
-/// Preapplies a DAG transaction save to cloned queue and sidecar state.
-pub(crate) fn prepare_dag_transaction_publication(
-    runtime: &TransactionServiceState,
-    prepared: &PreparedDagTransactionSave,
-) -> Result<PreparedDagTransactionPublication> {
-    let mut queue = runtime.queue.clone();
-    let mut sidecar = runtime.sidecar.clone();
-    let mut accepted = prepared
-        .accepted
-        .iter()
-        .map(|entry| DagTransactionSaveAccepted {
-            hash: entry.hash,
-            erased_from_queue: false,
-        })
-        .collect::<Vec<_>>();
-    for (accepted_entry, payload) in accepted.iter_mut().zip(prepared.accepted_payloads.iter()) {
-        accepted_entry.erased_from_queue = queue.erase(payload.hash);
-        sidecar.insert_non_finalized(payload.hash, payload.trx_rlp.clone())?;
-    }
-    sidecar.set_transaction_count(prepared.target_transaction_count);
-
-    Ok(PreparedDagTransactionPublication {
-        queue,
-        sidecar,
-        outcome: DagTransactionSaveOutcome { accepted },
-    })
-}
-
-/// Publishes a fully prevalidated DAG transaction live-state transition.
-pub(crate) fn publish_prepared_dag_transactions(
-    runtime: &mut TransactionServiceState,
-    publication: PreparedDagTransactionPublication,
-) -> DagTransactionSaveOutcome {
-    runtime.queue = publication.queue;
-    runtime.sidecar = publication.sidecar;
-    publication.outcome
-}
-
-/// Applies DAG transaction persistence and returns a typed command report.
-pub fn save_transactions_from_dag_block_command_report_with_runtime(
-    runtime: &mut TransactionServiceState,
-    facts: Vec<DagTransactionSaveSidecarFact>,
-) -> Result<TransactionManagerDagSaveCommandReport> {
-    let outcome = save_transactions_from_dag_block_with_runtime(runtime, facts)?;
-    Ok(dag_save_command_report(&outcome))
-}
-
 /// Builds a deterministic admission plan for C++ pre-admission verification.
 pub fn transaction_manager_verify_transaction(
     fact: TransactionManagerVerifyTransactionFact,
@@ -724,10 +527,10 @@ fn build_transaction_state_for_test(
         },
     )
     .expect("test transaction state should restore");
-    Box::new(TransactionRuntimeAccess(TestTransactionServiceState {
+    Box::new(TestTransactionServiceState {
         state: Some(Box::new(state)),
         cleanup_path: Some(path),
-    }))
+    })
 }
 
 /// Converts the flat CXX gas-pricer configuration into the native policy type.
@@ -755,33 +558,8 @@ fn test_gas_pricer_config() -> DomainGasPricerConfig {
     }
 }
 
-impl<T> TransactionRuntimeAccess<T>
-where
-    T: DerefMut<Target = TransactionServiceState>,
-{
-    /// Inserts or updates one live non-finalized sidecar payload.
-    #[cfg(test)]
-    fn transaction_manager_runtime_insert_non_finalized(
-        &mut self,
-        input: TransactionManagerSidecarInsertInput,
-    ) -> Result<()> {
-        self.sidecar
-            .insert_non_finalized(H256::from(input.hash), input.trx_rlp)
-            .context("TM_RUNTIME_INSERT_NON_FINALIZED")
-    }
-
-    /// True when hash exists in non-finalized sidecar state.
-    #[cfg(test)]
-    fn transaction_manager_runtime_contains_non_finalized(&self, hash: &[u8; 32]) -> bool {
-        self.sidecar.contains_non_finalized(H256::from(*hash))
-    }
-
-    /// True when hash exists in recently-finalized sidecar state.
-    #[cfg(test)]
-    fn transaction_manager_runtime_contains_recently_finalized(&self, hash: &[u8; 32]) -> bool {
-        self.sidecar.contains_recently_finalized(H256::from(*hash))
-    }
-
+#[cfg(test)]
+impl TestTransactionServiceState {
     /// Inserts transaction metadata and canonical bytes into the Rust-owned queue.
     #[cfg(test)]
     pub(crate) fn transaction_manager_runtime_queue_insert(
@@ -790,7 +568,6 @@ where
     ) -> Result<TransactionManagerRuntimeQueueInsertOutcome> {
         let proposable = input.proposable;
         let outcome = self
-            .0
             .queue
             .insert(runtime_queue_entry_from_insert_input(&input), proposable)?;
         if matches!(outcome.status, TransactionQueueInsertStatus::Overflow)
@@ -799,9 +576,6 @@ where
             self.last_drop_observed = Some(Instant::now());
         }
         Ok(TransactionManagerRuntimeQueueInsertOutcome {
-            status: queue_status_to_ffi(outcome.status),
-            inserted_hash_found: outcome.inserted_hash.is_some(),
-            inserted_hash: outcome.inserted_hash.unwrap_or_default().0,
             demoted_hashes: runtime_hashes_to_bridge(outcome.demoted_hashes),
             overflow_removed_hashes: runtime_hashes_to_bridge(outcome.overflow_removed_hashes),
         })
@@ -837,10 +611,7 @@ where
             ),
         })
     }
-}
 
-#[cfg(test)]
-impl TransactionRuntimeAccess<TestTransactionServiceState> {
     fn transaction_manager_runtime_transaction_count(&self) -> u64 {
         self.sidecar.transaction_count()
     }
@@ -887,8 +658,7 @@ fn queue_status_to_ffi(status: TransactionQueueInsertStatus) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::{BridgeMetadataStorageQueries, BridgeStorage};
-    use crate::storage::create_metadata_storage_queries;
+    use crate::ffi::BridgeStorage;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -914,12 +684,10 @@ mod tests {
                 proposal_dag_gas_limit: 1_000_000,
             },
         )?;
-        Ok(Box::new(TransactionRuntimeAccess(
-            TestTransactionServiceState {
-                state: Some(Box::new(state)),
-                cleanup_path: None,
-            },
-        )))
+        Ok(Box::new(TestTransactionServiceState {
+            state: Some(Box::new(state)),
+            cleanup_path: None,
+        }))
     }
 
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
@@ -928,10 +696,6 @@ mod tests {
             .expect("time should be available")
             .as_nanos();
         std::env::temp_dir().join(format!("{name}_{nonce}"))
-    }
-
-    fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
-        create_metadata_storage_queries(storage)
     }
 
     #[test]
@@ -969,22 +733,6 @@ mod tests {
 
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 73);
         let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    fn dag_tx_sidecar_fact(
-        input_index: u64,
-        hash: u8,
-        tx_nonce: u64,
-        sender_nonce: u64,
-        rlp: u8,
-    ) -> DagTransactionSaveSidecarFact {
-        DagTransactionSaveSidecarFact {
-            input_index,
-            hash: [hash; 32],
-            trx_rlp: vec![rlp],
-            transaction_nonce: u256_bytes(tx_nonce),
-            sender_account_nonce: u256_bytes(sender_nonce),
-        }
     }
 
     fn u256_bytes(value: u64) -> [u8; 32] {
@@ -1078,45 +826,6 @@ mod tests {
             .status,
             TM_VERIFY_TRANSACTION_STATUS_INTRINSIC_GAS
         );
-    }
-
-    #[test]
-    fn bridge_save_transactions_from_dag_block_command_report_uses_admission_commit_path() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_wrapper");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        storage
-            .0
-            .metadata()
-            .write_status_field(StatusField::TrxCount as u8, 7)
-            .expect("status field seed should persist");
-        let mut runtime =
-            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
-                .expect("runtime should restore from storage");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
-            .expect("queue seed should succeed");
-
-        let report = save_transactions_from_dag_block_command_report_with_runtime(
-            &mut runtime,
-            vec![dag_tx_sidecar_fact(0, 1, 5, 4, 0x33)],
-        )
-        .expect("runtime wrapper should succeed");
-
-        assert_eq!(report.queue_erased.len(), 1);
-        assert_eq!(report.queue_erased[0].hash, [1; 32]);
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        assert!(runtime.transaction_manager_runtime_contains_non_finalized(&[1; 32]));
-        assert_eq!(
-            metadata_queries(&storage)
-                .get_status_field(StatusField::TrxCount as u8)
-                .expect("status field should persist"),
-            8
-        );
-
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

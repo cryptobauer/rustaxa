@@ -926,6 +926,18 @@ impl DagTransactionService {
         self.transaction.lock()
     }
 
+    /// Persists and publishes one standalone DAG-block transaction set.
+    ///
+    /// The transaction sibling owns locking, durable batching, and post-commit
+    /// publication. Facts are owned native values, so no guard or state
+    /// reference crosses the application-root boundary.
+    pub fn transaction_save_dag_transactions(
+        &self,
+        facts: Vec<crate::transaction_service::DagTransactionSaveInput>,
+    ) -> Result<crate::transaction_service::DagTransactionSaveOutcome> {
+        self.transaction.save_dag_transactions(facts)
+    }
+
     /// Locks the DAG sibling for one short-lived native task.
     ///
     /// This is the first lock in every coupled operation. The guard must not

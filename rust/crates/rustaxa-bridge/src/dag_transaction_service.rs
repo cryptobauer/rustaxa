@@ -7,7 +7,7 @@ use crate::transaction_manager::{
     consensus_verify_transaction_fact_from_ffi_fact, domain_gas_pricer_config,
     service_public_admission_to_bridge, service_to_bridge_gas_estimation_plan,
     service_to_bridge_transaction_view, service_to_bridge_transaction_view_plan,
-    service_transaction_groups_to_bridge, TransactionRuntimeAccess, TransactionRuntimeGuard,
+    service_transaction_groups_to_bridge,
 };
 use anyhow::{Context, Result};
 use ethereum_types::{H256, U256};
@@ -39,13 +39,15 @@ use rustaxa_consensus::sortition::SortitionServiceGuard;
 use rustaxa_consensus::transaction_packing_service::{
     TransactionPackingEstimate, TransactionPackingSelection,
 };
+#[cfg(test)]
+use rustaxa_consensus::transaction_service::TransactionServiceGuard;
 use rustaxa_consensus::transaction_service::{
-    TransactionServiceAccountNonceFact, TransactionServiceCompatibilityPackFinalized,
-    TransactionServiceCompatibilityPackPrepared, TransactionServiceCompatibilityPackRequest,
-    TransactionServiceConfig, TransactionServiceEstimateRequest,
-    TransactionServiceFinalizedFilterRequest, TransactionServiceFinalizedStatusFact,
-    TransactionServiceGasEstimationResult, TransactionServicePackEstimate,
-    TransactionServicePayload, TransactionServiceTransactionView,
+    DagTransactionSaveInput, TransactionServiceAccountNonceFact,
+    TransactionServiceCompatibilityPackFinalized, TransactionServiceCompatibilityPackPrepared,
+    TransactionServiceCompatibilityPackRequest, TransactionServiceConfig,
+    TransactionServiceEstimateRequest, TransactionServiceFinalizedFilterRequest,
+    TransactionServiceFinalizedStatusFact, TransactionServiceGasEstimationResult,
+    TransactionServicePackEstimate, TransactionServicePayload, TransactionServiceTransactionView,
     TransactionServiceVerifyNotFinalizedFact,
 };
 
@@ -63,13 +65,20 @@ pub struct BridgeDagTransactionService {
 
 impl BridgeDagTransactionService {
     #[cfg(test)]
-    fn transaction(&self) -> TransactionRuntimeGuard<'_> {
-        self.try_transaction()
+    fn transaction(&self) -> TransactionServiceGuard<'_> {
+        self.root
+            .lock_transaction()
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
     }
 
-    fn try_transaction(&self) -> Result<TransactionRuntimeGuard<'_>> {
-        self.root.lock_transaction().map(TransactionRuntimeAccess)
+    #[cfg(test)]
+    fn insert_test_queue_transaction(&self, input: TransactionQueueInsertInput) -> Result<()> {
+        let proposable = input.proposable;
+        self.root
+            .lock_transaction()?
+            .queue
+            .insert(bridge_to_service_queue_entry(&input), proposable)?;
+        Ok(())
     }
 
     /// Acquires the native sortition owner after any required DAG lock.
@@ -779,11 +788,21 @@ pub fn service_save_transactions_from_dag_block_command_report_with_runtime(
     service: &BridgeDagTransactionService,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<TransactionManagerDagSaveCommandReport> {
-    let mut transaction = service.try_transaction()?;
-    crate::transaction_manager::save_transactions_from_dag_block_command_report_with_runtime(
-        &mut transaction,
-        facts,
-    )
+    let outcome = service.root.transaction_save_dag_transactions(
+        facts
+            .into_iter()
+            .map(|fact| DagTransactionSaveInput {
+                input_index: fact.input_index,
+                hash: H256::from(fact.hash),
+                transaction_rlp: fact.trx_rlp,
+                transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
+                sender_account_nonce: U256::from_big_endian(&fact.sender_account_nonce),
+            })
+            .collect(),
+    )?;
+    Ok(crate::transaction_manager::dag_save_command_report(
+        &outcome,
+    ))
 }
 
 pub fn service_update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
@@ -1879,8 +1898,7 @@ mod tests {
         let tx_rlp = signed_legacy_transaction_rlp(&key);
         let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
         service
-            .transaction()
-            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+            .insert_test_queue_transaction(TransactionQueueInsertInput {
                 hash: envelope.hash.0,
                 sender: address_from_signing_key(&key),
                 nonce: envelope.nonce.to_big_endian(),
@@ -3452,8 +3470,7 @@ mod tests {
         let queued_rlp = signed_legacy_transaction_rlp(&key);
         let queued = LegacyTransactionEnvelope::decode(&queued_rlp).unwrap();
         service
-            .transaction()
-            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+            .insert_test_queue_transaction(TransactionQueueInsertInput {
                 hash: queued.hash.0,
                 sender: address_from_signing_key(&key),
                 nonce: queued.nonce.to_big_endian(),
@@ -3743,8 +3760,7 @@ mod tests {
         let tx_rlp = signed_legacy_transaction_rlp(&key);
         let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
         service
-            .transaction()
-            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+            .insert_test_queue_transaction(TransactionQueueInsertInput {
                 hash: envelope.hash.0,
                 sender: address_from_signing_key(&key),
                 nonce: envelope.nonce.to_big_endian(),

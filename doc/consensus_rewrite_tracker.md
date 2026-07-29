@@ -758,6 +758,21 @@ transaction guard escape hatch. The checked bridge budget falls by 269 lines to
 flags, partial factories, compatibility constructors, production C++ consumers,
 and public signatures are unchanged.
 
+The next bounded `CRW-12` transaction contraction moves standalone DAG
+transaction persistence behind lock-owning native `TransactionService` and
+`DagTransactionService` tasks. Rust now owns finalized filtering, count
+planning, cloned queue/sidecar prepublication, the durable batch,
+commit-before-publish ordering, and the typed accepted outcome. The bridge
+converts only owned CXX facts and the unchanged queue-erasure report. Its
+DAG-save state machine, prepared persistence/publication carriers, storage
+helpers, production guard/access wrappers, and duplicated behavioral test are
+deleted; native success and injected commit-failure tests now prove durable
+commit-before-publication behavior beside the owner. No production transaction
+guard escape hatch remains. The checked bridge budget falls by 275 lines to
+35,987; CXX functions, carriers, handles, shim lines and directories, granular
+flags, partial factories, compatibility constructors, production C++ consumers,
+and public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

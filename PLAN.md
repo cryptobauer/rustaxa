@@ -1123,13 +1123,14 @@ The current Rust consensus footprint is broad but still incomplete:
    API has been removed because pack demotion mutates the Rust runtime queue directly.
    Native `TransactionService` now owns live queue metadata/payloads, known-cache state, non-finalized and
    recently-finalized transaction sidecars, authoritative transaction count, storage, restoration, and locking.
-   The TransactionManager shim borrows that owner only through short-lived FFI-shaped adapters. DAG
+   TransactionManager bridge routes call lock-owning native tasks and retain only owned carrier conversion. DAG
    transaction persistence now derives transaction hashes, senders, nonces, gas facts, costs, and canonical RLP payloads
    through the shared Rust legacy transaction envelope before sending facts to the Rust runtime. Rust sources latest
    account nonces from the Rust FinalChain runtime and owns sidecar membership checks, duplicate filtering,
    nonce-gated finalized-storage
    lookup, accepted ordering, count planning, the storage batch, accepted non-finalized sidecar insertion, and accepted
-   queue erasure before returning a typed DAG-save command report that C++ consumes only for logging.
+   queue erasure in one lock-owning native task before returning a typed DAG-save command report that C++ consumes only
+   for logging. The bridge no longer exposes or wraps native transaction state or guards for this route.
    Proposed DAG blocks that already carry canonical transaction RLP payloads now use a payload-based
    TransactionManager shim entry point, so C++ does not materialize `Transaction` objects before Rust-owned DAG
    transaction persistence; materialization remains only for network/public compatibility paths.

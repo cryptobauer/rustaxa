@@ -398,16 +398,21 @@ pub struct TransactionServiceState {
 
 /// Native fact for one transaction considered during DAG-block persistence.
 #[derive(Clone)]
-pub(crate) struct DagTransactionSaveInput {
+pub struct DagTransactionSaveInput {
+    /// Stable position in the caller's canonical DAG-block transaction order.
     pub input_index: u64,
+    /// Canonical transaction identity.
     pub hash: H256,
+    /// Canonical encoded transaction bytes persisted for later finalization.
     pub transaction_rlp: Vec<u8>,
+    /// Transaction nonce used to gate finalized-storage lookup.
     pub transaction_nonce: U256,
+    /// Latest sender-account nonce supplied by the retained FinalChain boundary.
     pub sender_account_nonce: U256,
 }
 
 /// Native accepted-transaction publication result.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DagTransactionSaveAccepted {
     /// Canonical transaction identity.
     pub hash: H256,
@@ -416,6 +421,7 @@ pub struct DagTransactionSaveAccepted {
 }
 
 /// Native live-state result for a committed DAG transaction save.
+#[derive(Debug, Eq, PartialEq)]
 pub struct DagTransactionSaveOutcome {
     /// Accepted transactions in canonical input order.
     pub accepted: Vec<DagTransactionSaveAccepted>,
@@ -621,6 +627,39 @@ impl TransactionService {
     /// Returns the durable transaction count from one native lock epoch.
     pub fn transaction_count(&self) -> Result<u64> {
         Ok(self.lock()?.transaction_count())
+    }
+
+    /// Persists and publishes transactions accepted from one DAG block.
+    ///
+    /// Filtering, finalized-storage lookup, transaction-count authority, the
+    /// durable write batch, and live queue/sidecar publication execute under
+    /// one native transaction lock. Live state is prevalidated on clones and
+    /// is published only after a successful storage commit. Empty or fully
+    /// filtered input performs no write. Any planning, validation, storage, or
+    /// lock error leaves live state unpublished.
+    pub fn save_dag_transactions(
+        &self,
+        facts: Vec<DagTransactionSaveInput>,
+    ) -> Result<DagTransactionSaveOutcome> {
+        self.save_dag_transactions_with_committer(facts, |storage, batch| {
+            storage.commit_write_batch_with_sync(batch, false)
+        })
+    }
+
+    fn save_dag_transactions_with_committer(
+        &self,
+        facts: Vec<DagTransactionSaveInput>,
+        commit: impl FnOnce(&Storage, StorageWriteBatch) -> Result<()>,
+    ) -> Result<DagTransactionSaveOutcome> {
+        let mut runtime = self.lock()?;
+        let prepared = prepare_dag_transactions(&runtime, facts)?;
+        let publication = prepare_dag_transaction_publication(&runtime, &prepared)?;
+        if !prepared.accepted_payloads.is_empty() {
+            let mut batch = runtime.storage.create_write_batch();
+            append_prepared_dag_transactions(&runtime.storage, &mut batch, &prepared)?;
+            commit(&runtime.storage, batch).context("TM_DAG_TX_BATCH_COMMIT")?;
+        }
+        Ok(publish_dag_transactions(&mut runtime, publication))
     }
 
     /// Returns whether the queue or sidecar knows `hash`.
@@ -2220,6 +2259,138 @@ mod tests {
             },
         )?;
         Ok((service, temp_dir))
+    }
+
+    #[test]
+    fn save_dag_transactions_commits_before_publishing_queue_and_sidecar() -> Result<()> {
+        let (service, temp_dir) = build_service_with_defaults(
+            Some(7),
+            16,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 10,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let hash = H256::repeat_byte(0x31);
+        let transaction_rlp = vec![0xC1, 0x80];
+        {
+            let mut runtime = service.lock()?;
+            runtime.queue.insert(
+                TransactionQueueEntry {
+                    hash,
+                    sender: H160::repeat_byte(0x22),
+                    nonce: U256::from(5),
+                    gas_price: U256::from(2),
+                    gas: 21_000,
+                    data_size: 0,
+                    rlp: transaction_rlp.clone(),
+                    last_block_number: 0,
+                },
+                true,
+            )?;
+        }
+
+        let outcome = service.save_dag_transactions(vec![DagTransactionSaveInput {
+            input_index: 0,
+            hash,
+            transaction_rlp: transaction_rlp.clone(),
+            transaction_nonce: U256::from(5),
+            sender_account_nonce: U256::from(4),
+        }])?;
+
+        assert_eq!(outcome.accepted.len(), 1);
+        assert_eq!(outcome.accepted[0].hash, hash);
+        assert!(outcome.accepted[0].erased_from_queue);
+        {
+            let runtime = service.lock()?;
+            assert!(!runtime.queue.contains(hash));
+            assert!(runtime.sidecar.contains_non_finalized(hash));
+            assert_eq!(runtime.sidecar.transaction_count(), 8);
+            assert_eq!(
+                runtime.storage.transaction().rlp(hash)?,
+                Some(transaction_rlp)
+            );
+            assert_eq!(
+                runtime
+                    .storage
+                    .metadata()
+                    .status_field(StatusField::TrxCount as u8)?,
+                8
+            );
+        }
+
+        drop(service);
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn save_dag_transactions_commit_failure_publishes_nothing() -> Result<()> {
+        let (service, temp_dir) = build_service_with_defaults(
+            Some(7),
+            16,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 10,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let hash = H256::repeat_byte(0x32);
+        let transaction_rlp = vec![0xC1, 0x80];
+        {
+            let mut runtime = service.lock()?;
+            runtime.queue.insert(
+                TransactionQueueEntry {
+                    hash,
+                    sender: H160::repeat_byte(0x23),
+                    nonce: U256::from(5),
+                    gas_price: U256::from(2),
+                    gas: 21_000,
+                    data_size: 0,
+                    rlp: transaction_rlp.clone(),
+                    last_block_number: 0,
+                },
+                true,
+            )?;
+        }
+
+        let error = service
+            .save_dag_transactions_with_committer(
+                vec![DagTransactionSaveInput {
+                    input_index: 0,
+                    hash,
+                    transaction_rlp,
+                    transaction_nonce: U256::from(5),
+                    sender_account_nonce: U256::from(4),
+                }],
+                |_storage, _batch| Err(anyhow!("injected commit failure")),
+            )
+            .expect_err("injected commit failure must be returned");
+        assert!(format!("{error:#}").contains("TM_DAG_TX_BATCH_COMMIT"));
+
+        {
+            let runtime = service.lock()?;
+            assert!(runtime.queue.contains(hash));
+            assert!(!runtime.sidecar.contains_non_finalized(hash));
+            assert_eq!(runtime.sidecar.transaction_count(), 7);
+            assert_eq!(runtime.storage.transaction().rlp(hash)?, None);
+            assert_eq!(
+                runtime
+                    .storage
+                    .metadata()
+                    .status_field(StatusField::TrxCount as u8)?,
+                7
+            );
+        }
+
+        drop(service);
+        std::fs::remove_dir_all(temp_dir)?;
+        Ok(())
     }
 
     fn append_gas_price_transaction(stream: &mut RlpStream, gas_price: u64) {

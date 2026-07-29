@@ -152,9 +152,9 @@ complete read-task family, including queue/sidecar/storage views, status and gas
 facts, and gas-estimation planning; those paths no longer borrow a bridge
 transaction guard. Native transaction services additionally own compatibility
 packing, gas-oracle/cache mutation, recently-finalized initialization,
-non-finalized durable removal, and finalized-block queue expiry. The
-transaction state/guard remains an explicit bridge escape hatch only for the
-unmigrated DAG-save adapter and may not cross CXX or external callbacks. Native
+non-finalized durable removal, and finalized-block queue expiry. Standalone DAG
+transaction saving is also a lock-owning native task: the bridge converts owned
+facts and the typed report but cannot borrow transaction state or a guard. Native
 transaction services also own finalized-status persistence, recently-finalized
 sidecar publication, queue-known/erasure mutation, and periodic account-nonce
 purge as one lock-owning task. Native transaction services also own validated and public admission
