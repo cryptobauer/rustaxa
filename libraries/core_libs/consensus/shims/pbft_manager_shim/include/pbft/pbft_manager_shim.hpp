@@ -84,19 +84,6 @@ static_assert(static_cast<uint8_t>(PbftStateRootValidation::Missing) == 1);
 static_assert(static_cast<uint8_t>(PbftStateRootValidation::Invalid) == 2);
 
 /**
- * FinalChain dispatch facts returned to PBFT finalization after a finalized PBFT block is sent to FinalChain.
- *
- * Inputs are the finalized PBFT period data, finalized DAG block hashes, and the expected blocks-per-year value used by
- * FinalChain rewards execution. Outputs carry only FinalChain facts needed by the PBFT manager finalization executor:
- * the blocks-per-year value used for dispatch and the observed FinalChain last block after the dispatch call. Success,
- * status, error, PBFT identity, and action identity remain owned by the PBFT manager executor boundary.
- */
-struct FinalChainPbftFinalizationDispatchReport {
-  uint32_t blocks_per_year = 0;
-  uint64_t last_block = 0;
-};
-
-/**
  * @brief PbftManager class is a daemon that is used to finalize a bench of directed acyclic graph (DAG) blocks by using
  * Practical Byzantine Fault Tolerance (PBFT) protocol
  *
@@ -655,10 +642,10 @@ class PbftManager {
    * @param finalized_dag_blk_hashes DAG blocks hashes
    * @param blocks_per_year - expected number of blocks generated per year based on pbft block dynamic lambda
    * @param synchronous_processing wait for block finalization to finish
+   * @return observed FinalChain last block after dispatch
    */
-  FinalChainPbftFinalizationDispatchReport finalize_(PeriodData &&period_data,
-                                                     std::vector<h256> &&finalized_dag_blk_hashes,
-                                                     uint32_t blocks_per_year, bool synchronous_processing = false);
+  uint64_t finalize_(PeriodData &&period_data, std::vector<h256> &&finalized_dag_blk_hashes, uint32_t blocks_per_year,
+                     bool synchronous_processing = false);
 
   /**
    * @brief Push a new PBFT block into the PBFT chain

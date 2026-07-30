@@ -1764,34 +1764,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// FinalChain dispatch/replay finalization facts reported to the PBFT manager executor.
-    struct PbftManagerFinalizationFinalChainDispatchReport {
-        blocks_per_year: u32,
-        last_block: u64,
-    }
-
-    /// Typed PBFT finalization pillar post-processing report from the C++
-    /// executor.
-    ///
-    /// C++ supplies only the post-processing facts produced after executing
-    /// `processPillarBlock`: the finalized PBFT period and the FinalChain
-    /// request period used to build pillar inputs. Success/status, manager
-    /// period, action identity, and cursor identity are derived by the manager
-    /// finalization executor.
-    struct PbftManagerFinalizationPillarPostProcessingReport {
-        processed_period: u64,
-        request_period: u64,
-    }
-
-    /// Typed PBFT finalization advance-period report from the C++ executor.
-    ///
-    /// C++ supplies only the manager period observed after executing the
-    /// Rust-planned period advance. Success/status, action identity, and cursor
-    /// identity are derived by the manager finalization executor.
-    struct PbftManagerFinalizationAdvancePeriodReport {
-        manager_period: u64,
-    }
-
     /// Result from appending Rust-owned finalized-period storage writes to an existing batch.
     struct PbftFinalizedPeriodApplyResult {
         status: u8,
@@ -4511,17 +4483,16 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
             runtime: &BridgePbftService,
             cursor: u32,
-            report: PbftManagerFinalizationFinalChainDispatchReport,
+            last_block: u64,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
             runtime: &BridgePbftService,
             cursor: u32,
-            report: PbftManagerFinalizationPillarPostProcessingReport,
+            request_period: u64,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_advance_period(
             runtime: &BridgePbftService,
             cursor: u32,
-            report: PbftManagerFinalizationAdvancePeriodReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_begin_session(
             runtime: &BridgePbftService,

@@ -278,12 +278,11 @@ impl PbftService {
 
     /// Reports successful FinalChain/EVM dispatch and advances finalization.
     ///
-    /// Only the two externally observed FinalChain facts cross this boundary;
-    /// Rust derives and validates every manager-owned identity and action.
+    /// Only the observed FinalChain height crosses this boundary. Rust derives
+    /// blocks-per-year and every manager-owned identity from the retained plan.
     pub fn advance_finalization_final_chain_dispatch(
         &self,
         cursor: u32,
-        blocks_per_year: u32,
         last_block: u64,
     ) -> Result<PbftFinalizationExecutorBoundary> {
         self.run_finalization_executor_task(|manager| {
@@ -291,7 +290,7 @@ impl PbftService {
                 manager.advance_finalization_live_mutation(cursor, |action, write_set| {
                     let mut report = base_owned_finalization_live_report(action, write_set);
                     report.final_chain_dispatched = true;
-                    report.final_chain_blocks_per_year = blocks_per_year;
+                    report.final_chain_blocks_per_year = write_set.blocks_per_year;
                     report.final_chain_last_block = last_block;
                     report
                 })?;
@@ -302,12 +301,11 @@ impl PbftService {
     /// Reports pillar post-processing facts and advances finalization.
     ///
     /// The manager period is sampled under the same serialization lock as
-    /// cursor validation; callers supply only the processed/request periods
-    /// observed at the retained pillar executor leaf.
+    /// cursor validation. Rust derives the processed period from its retained
+    /// plan; callers supply only the request period observed at the pillar leaf.
     pub fn advance_finalization_pillar_post_processing(
         &self,
         cursor: u32,
-        processed_period: u64,
         request_period: u64,
     ) -> Result<PbftFinalizationExecutorBoundary> {
         self.run_finalization_executor_task(|manager| {
@@ -316,7 +314,7 @@ impl PbftService {
                 manager.advance_finalization_live_mutation(cursor, |action, write_set| {
                     let mut report = base_owned_finalization_live_report(action, write_set);
                     report.manager_period = manager_period;
-                    report.pillar_processed_period = processed_period;
+                    report.pillar_processed_period = write_set.block_period;
                     report.pillar_request_period = request_period;
                     report
                 })?;
@@ -326,15 +324,15 @@ impl PbftService {
 
     /// Reports the native period-cleanup result and advances finalization.
     ///
-    /// The supplied period is the only leaf fact; action identity, plan
-    /// identity, cursor validation, owned draining, cleanup, and snapshot
-    /// capture remain native.
+    /// The resulting manager period is read from the lock-held native snapshot;
+    /// action identity, cursor validation, owned draining, cleanup, and
+    /// boundary capture remain native.
     pub fn advance_finalization_advance_period(
         &self,
         cursor: u32,
-        manager_period: u64,
     ) -> Result<PbftFinalizationExecutorBoundary> {
         self.run_finalization_executor_task(|manager| {
+            let manager_period = manager.state.snapshot().period;
             let step =
                 manager.advance_finalization_live_mutation(cursor, |action, write_set| {
                     let mut report = base_owned_finalization_live_report(action, write_set);
@@ -460,7 +458,7 @@ mod tests {
                 reward_vote_step: 3,
                 reward_vote_block_hash: H256::repeat_byte(7),
                 period_lambda: 0,
-                blocks_per_year: 0,
+                blocks_per_year: 777,
                 rounds_count_dynamic_lambda: 0,
                 dynamic_lambda: 0,
                 executed_pbft_status: false,
@@ -679,7 +677,7 @@ mod tests {
         );
 
         let period = service
-            .advance_finalization_advance_period(0, 3)
+            .advance_finalization_advance_period(0)
             .expect("period advancement reaches pillar leaf");
         assert_eq!(
             period.next_step.action,
@@ -694,13 +692,61 @@ mod tests {
         );
 
         let pillar = service
-            .advance_finalization_pillar_post_processing(1, 2, 1)
+            .advance_finalization_pillar_post_processing(1, 1)
             .expect("pillar acknowledgement completes finalization");
         assert_eq!(
             pillar.next_step.runtime_status,
             PbftFinalizationRuntimeStatus::Complete
         );
         assert!(pillar.next_step.complete);
+        assert!(
+            service
+                .manager_state()
+                .finalization_runtime_session
+                .is_none()
+        );
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn final_chain_advancement_derives_retained_blocks_per_year() {
+        use crate::pbft_finalize::{
+            PbftFinalizationCleanupIntent, PbftFinalizationRuntimeAction,
+            PbftFinalizationRuntimeStatus,
+        };
+
+        let (path, storage) =
+            temp_storage("rustaxa_consensus_pbft_service_finalization_final_chain");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        install_finalization_executor(
+            &service,
+            2,
+            PbftFinalizationCleanupIntent {
+                persist_pbft_block_metadata: false,
+                reset_reward_votes: false,
+                set_dag_block_order: false,
+                update_sortition_params: false,
+                update_finalized_transactions_status: false,
+                update_pbft_chain: false,
+                clear_anchor_dag_cache: false,
+                finalize_final_chain: true,
+                maybe_update_dynamic_lambda: false,
+                advance_period: false,
+                process_pillar_block: false,
+            },
+            vec![PbftFinalizationRuntimeAction::FinalizeFinalChain],
+        );
+
+        let boundary = service
+            .advance_finalization_final_chain_dispatch(0, 2)
+            .expect("retained blocks-per-year validates FinalChain dispatch");
+        assert_eq!(
+            boundary.next_step.runtime_status,
+            PbftFinalizationRuntimeStatus::Complete
+        );
+        assert!(boundary.next_step.complete);
         assert!(
             service
                 .manager_state()

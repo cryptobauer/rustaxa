@@ -30,11 +30,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerCandidateAdmissionPlan as FfiPbftManagerCandidateAdmissionPlan,
     PbftManagerEligibleWalletPeriodWaitFact as FfiPbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
-    PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
-    PbftManagerFinalizationFinalChainDispatchReport as FfiPbftManagerFinalizationFinalChainDispatchReport,
-    PbftManagerFinalizationPillarPostProcessingReport as FfiPbftManagerFinalizationPillarPostProcessingReport,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
@@ -2159,8 +2156,7 @@ pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
 /// Inputs:
 /// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
 /// - `cursor`: executor cursor previously returned to C++.
-/// - `report`: FinalChain post-dispatch facts after C++ executes the external
-///   FinalChain/EVM boundary.
+/// - `last_block`: FinalChain height observed after the external dispatch.
 ///
 /// Outputs:
 /// - The next PBFT finalization executor state.
@@ -2169,22 +2165,18 @@ pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
 /// - C++ does not construct a generic PBFT finalization external-effect report
 ///   for the FinalChain dispatch/replay client.
 /// - Rust derives the PBFT finalization action from the cursor, marks the
-///   FinalChain dispatch as observed, and maps only the blocks-per-year and
-///   last-block facts needed for live-mutation validation.
+///   FinalChain dispatch as observed, derives blocks-per-year from its retained
+///   plan, and maps only the observed height into live-mutation validation.
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
     runtime: &BridgePbftService,
     cursor: u32,
-    report: FfiPbftManagerFinalizationFinalChainDispatchReport,
+    last_block: u64,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     runtime
         .0
-        .advance_finalization_final_chain_dispatch(
-            cursor,
-            report.blocks_per_year,
-            report.last_block,
-        )
+        .advance_finalization_final_chain_dispatch(cursor, last_block)
         .map(finalization_executor_state_from_boundary)
 }
 
@@ -2194,8 +2186,7 @@ pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
 /// - `runtime`: PBFT manager runtime that owns the current finalization cursor
 ///   and live manager snapshot.
 /// - `cursor`: executor cursor previously returned to C++.
-/// - `report`: pillar post-processing facts after C++ executes
-///   `processPillarBlock`.
+/// - `request_period`: FinalChain request period used by the pillar leaf.
 ///
 /// Outputs:
 /// - The next PBFT finalization executor state.
@@ -2204,22 +2195,18 @@ pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
 /// - C++ does not construct a generic PBFT finalization external-effect report
 ///   for the pillar post-processing client.
 /// - Rust derives the PBFT finalization action from the cursor, injects the
-///   manager period from the runtime snapshot, and maps only the
-///   processed/request period facts needed for live-mutation validation.
+///   manager period from the runtime snapshot, derives the processed period
+///   from its retained plan, and maps only the request period into validation.
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
     runtime: &BridgePbftService,
     cursor: u32,
-    report: FfiPbftManagerFinalizationPillarPostProcessingReport,
+    request_period: u64,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     runtime
         .0
-        .advance_finalization_pillar_post_processing(
-            cursor,
-            report.processed_period,
-            report.request_period,
-        )
+        .advance_finalization_pillar_post_processing(cursor, request_period)
         .map(finalization_executor_state_from_boundary)
 }
 
@@ -2228,8 +2215,6 @@ pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
 /// Inputs:
 /// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
 /// - `cursor`: executor cursor previously returned to C++.
-/// - `report`: typed manager period fact after C++ executes the Rust-planned
-///   advance-period operation.
 ///
 /// Outputs:
 /// - The next PBFT finalization executor state.
@@ -2237,18 +2222,17 @@ pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
 /// Invariants and edge behavior:
 /// - C++ does not construct a generic PBFT finalization external-effect report
 ///   for the advance-period client.
-/// - Rust derives the PBFT finalization action from the cursor and maps only the
-///   post-advance manager period needed for live-mutation validation.
+/// - Rust derives the PBFT finalization action and post-advance manager period
+///   from its lock-held native state.
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_advance_period(
     runtime: &BridgePbftService,
     cursor: u32,
-    report: FfiPbftManagerFinalizationAdvancePeriodReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     runtime
         .0
-        .advance_finalization_advance_period(cursor, report.manager_period)
+        .advance_finalization_advance_period(cursor)
         .map(finalization_executor_state_from_boundary)
 }
 

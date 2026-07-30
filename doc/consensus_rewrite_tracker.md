@@ -1113,6 +1113,20 @@ handles, shim lines and directories, granular
 flags, partial factories, compatibility constructors, and production consumers
 are unchanged.
 
+The following `CRW-12` boundary contraction deletes the three redundant
+FinalChain, pillar, and advance-period CXX report carriers. The retained C++
+FinalChain/EVM and pillar leaves now return only facts that Rust cannot observe:
+the post-dispatch FinalChain height and the pillar request period. Native
+`PbftService` derives blocks-per-year and the processed PBFT period from its
+retained finalization plan, and samples the post-advance manager period under
+the manager serialization lock. A native application-root test proves
+FinalChain advancement validates a nonzero retained blocks-per-year value;
+existing native period/pillar coverage proves the other two derivations. This
+deletes 45 bridge lines and 61 shim lines, lowering the exact budgets to 30,208
+and 17,342, and lowers CXX carriers from 344 to 341. CXX functions, handles,
+shim directories, granular flags, partial factories, compatibility
+constructors, and production consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

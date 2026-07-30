@@ -140,30 +140,6 @@ constexpr uint8_t kPbftManagerAdvancePeriodActionResetCurrentRoundTimer = 3;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetRewardVoteCounters = 4;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetPeriodTimer = 5;
 
-/**
- * Manager-owned result after advancing the PBFT manager period during PBFT finalization.
- *
- * Inputs are the accepted finalized-chain size and the Rust-planned period-advance operation. Outputs carry only the
- * manager fact needed by the finalization executor: the manager period observed after the advance succeeds. Success,
- * status, error, PBFT identity, and action identity remain owned by the PBFT manager executor boundary.
- */
-struct PbftManagerFinalizationAdvancePeriodReport {
-  uint64_t manager_period = 0;
-};
-
-/**
- * Manager-owned result after PBFT finalization pillar post-processing.
- *
- * Inputs are the finalized PBFT period, the FinalChain delegation-delay read, and the C++ pillar post-processing
- * executor. Outputs carry only the pillar post-processing facts needed by the finalization executor: the pillar
- * processed/request periods. Success, status, error, manager-period validation, PBFT identity, and action identity
- * remain owned by the PBFT manager executor boundary.
- */
-struct PbftManagerFinalizationPillarPostProcessingReport {
-  uint64_t processed_period = 0;
-  uint64_t request_period = 0;
-};
-
 constexpr uint8_t kPbftManagerAdvancePeriodActionUpdateWalletEligibility = 6;
 constexpr uint8_t kPbftManagerAdvancePeriodActionCleanupPeriodState = 7;
 constexpr uint8_t kPbftPeriodStateCleanupStatusNotRequired = 0;
@@ -3282,9 +3258,8 @@ void PbftManager::reorderTransactions(SharedTransactions &transactions) {
   }
 }
 
-FinalChainPbftFinalizationDispatchReport PbftManager::finalize_(PeriodData &&period_data,
-                                                                std::vector<h256> &&finalized_dag_blk_hashes,
-                                                                uint32_t blocks_per_year, bool synchronous_processing) {
+uint64_t PbftManager::finalize_(PeriodData &&period_data, std::vector<h256> &&finalized_dag_blk_hashes,
+                                uint32_t blocks_per_year, bool synchronous_processing) {
   std::shared_ptr<DagBlock> anchor_block = nullptr;
 
   if (const auto anchor = period_data.pbft_blk->getPivotDagBlockHash()) {
@@ -3302,10 +3277,7 @@ FinalChainPbftFinalizationDispatchReport PbftManager::finalize_(PeriodData &&per
     result.wait();
   }
 
-  FinalChainPbftFinalizationDispatchReport report{};
-  report.blocks_per_year = blocks_per_year;
-  report.last_block = rustFinalChainLastBlockNumber(final_chain_);
-  return report;
+  return rustFinalChainLastBlockNumber(final_chain_);
 }
 
 bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shared_ptr<PbftVote>> &&cert_votes) {
@@ -3442,14 +3414,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     apply_boundary_snapshot(boundary);
     return boundary;
   };
-  auto report_pillar_post_processing = [&](const PbftManagerFinalizationPillarPostProcessingReport &report,
+  auto report_pillar_post_processing = [&](uint64_t request_period,
                                            rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    rustaxa::PbftManagerFinalizationPillarPostProcessingReport bridge_report{};
-    bridge_report.processed_period = report.processed_period;
-    bridge_report.request_period = report.request_period;
     try {
       boundary = rustaxa::pbft_manager_runtime_advance_finalization_pillar_post_processing(
-          pbft_service_->service(), boundary.cursor, bridge_report);
+          pbft_service_->service(), boundary.cursor, request_period);
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context pillar post-processing: " << e.what();
@@ -3461,13 +3430,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
-  auto report_advance_period = [&](const PbftManagerFinalizationAdvancePeriodReport &report,
-                                   rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    rustaxa::PbftManagerFinalizationAdvancePeriodReport bridge_report{};
-    bridge_report.manager_period = report.manager_period;
+  auto report_advance_period = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary) {
     try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_advance_period(pbft_service_->service(),
-                                                                                   boundary.cursor, bridge_report);
+      boundary =
+          rustaxa::pbft_manager_runtime_advance_finalization_advance_period(pbft_service_->service(), boundary.cursor);
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context advance period: " << e.what();
@@ -3524,14 +3490,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
-  auto report_final_chain_dispatch = [&](const FinalChainPbftFinalizationDispatchReport &report,
-                                         rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    rustaxa::PbftManagerFinalizationFinalChainDispatchReport bridge_report{};
-    bridge_report.blocks_per_year = report.blocks_per_year;
-    bridge_report.last_block = report.last_block;
+  auto report_final_chain_dispatch = [&](uint64_t last_block, rustaxa::PbftManagerFinalizationExecutorState &boundary) {
     try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_final_chain_dispatch(
-          pbft_service_->service(), boundary.cursor, bridge_report);
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_final_chain_dispatch(pbft_service_->service(),
+                                                                                         boundary.cursor, last_block);
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context FinalChain dispatch: " << e.what();
@@ -3543,16 +3505,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
-  auto apply_advance_period_for_finalization = [&]() -> std::optional<PbftManagerFinalizationAdvancePeriodReport> {
-    if (!applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period)) {
-      return std::nullopt;
-    }
-    PbftManagerFinalizationAdvancePeriodReport report{};
-    report.manager_period = rustaxa::pbft_manager_runtime_snapshot(pbft_service_->service()).period;
-    return report;
+  auto apply_advance_period_for_finalization = [&]() {
+    return applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period);
   };
-  auto process_pillar_block_for_finalization =
-      [&]() -> std::optional<PbftManagerFinalizationPillarPostProcessingReport> {
+  auto process_pillar_block_for_finalization = [&]() -> std::optional<uint64_t> {
     assert(block_pbft_period == pbft_chain_->getPbftChainSize());
     const auto delegation_delay = final_chain_->delegationDelay();
     if (delegation_delay >= block_pbft_period) {
@@ -3560,10 +3516,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     const auto pillar_request_period = block_pbft_period - delegation_delay;
     processPillarBlock(block_pbft_period);
-    PbftManagerFinalizationPillarPostProcessingReport report{};
-    report.processed_period = block_pbft_period;
-    report.request_period = pillar_request_period;
-    return report;
+    return pillar_request_period;
   };
 
   bool reward_votes_reset_prepared = false;
@@ -3665,12 +3618,12 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return fail_action("FinalChain dispatch", "PBFT_FINALIZE_NON_SEQUENTIAL_FINAL_CHAIN");
           }
           final_chain_payload_available = false;
-          const auto report = finalize_(std::move(period_data), std::move(dag_blocks_order),
-                                        finalization_plan.storage_write_intent.blocks_per_year);
-          if (report.last_block < block_pbft_period) {
+          const auto last_block = finalize_(std::move(period_data), std::move(dag_blocks_order),
+                                            finalization_plan.storage_write_intent.blocks_per_year);
+          if (last_block < block_pbft_period) {
             return fail_action("FinalChain dispatch", "PBFT_FINALIZE_FINAL_CHAIN_ACTION_FAILED");
           }
-          if (!report_final_chain_dispatch(report, boundary)) {
+          if (!report_final_chain_dispatch(last_block, boundary)) {
             return FinalizationDispatchResult::kFailed;
           }
           break;
@@ -3683,11 +3636,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return fail_action("advance period", "PBFT_FINALIZE_ADVANCE_PERIOD_PAYLOAD_UNAVAILABLE");
           }
           advance_period_payload_available = false;
-          const auto report = apply_advance_period_for_finalization();
-          if (!report.has_value()) {
+          if (!apply_advance_period_for_finalization()) {
             return fail_action("advance period", "PBFT_FINALIZE_ADVANCE_PERIOD_ACTION_FAILED");
           }
-          if (!report_advance_period(*report, boundary)) {
+          if (!report_advance_period(boundary)) {
             return FinalizationDispatchResult::kFailed;
           }
           break;
