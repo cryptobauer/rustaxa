@@ -399,6 +399,84 @@ impl PbftService {
         })
     }
 
+    /// Starts a manager-owned synced-period admission cursor when bootstrap is ready.
+    ///
+    /// The immutable candidate facts move directly into the native manager
+    /// owner. A pending bootstrap rejects the command without allocating or
+    /// replacing a session.
+    pub fn begin_pbft_sync_admission(
+        &self,
+        fact: crate::pbft_sync::PbftSyncAdmissionInitialFact,
+    ) -> bool {
+        if !self.is_ready() {
+            return false;
+        }
+        self.manager.begin_pbft_sync_admission(fact);
+        true
+    }
+
+    /// Returns the current native synced-period admission step.
+    ///
+    /// `None` denotes either an incomplete bootstrap or no active cursor.
+    /// Terminal/error steps are returned once and consumed by the manager.
+    pub fn pbft_sync_admission_next(
+        &self,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        self.is_ready()
+            .then(|| self.manager.pbft_sync_admission_next())
+            .flatten()
+    }
+
+    /// Reports one non-transaction validation fact to the native admission cursor.
+    ///
+    /// Unknown or stale reports are converted by the native session into a
+    /// terminal contract error and consume the cursor.
+    pub fn report_pbft_sync_admission_status(
+        &self,
+        cursor: u32,
+        check: crate::pbft_sync::PbftSyncProcessRuntimeNextCheck,
+        final_chain_status: crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus,
+        fact_status: crate::pbft_sync::PbftSyncFactStatus,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        self.manager.report_pbft_sync_admission_status(
+            cursor,
+            check,
+            final_chain_status,
+            fact_status,
+        )
+    }
+
+    /// Reports the requested transaction lookup result to the native cursor.
+    ///
+    /// The manager owns cursor validation, state mutation, terminal cleanup,
+    /// and the complete resulting admission plan.
+    pub fn report_pbft_sync_admission_transactions(
+        &self,
+        cursor: u32,
+        report: crate::pbft_sync::PbftSyncAdmissionTransactionReport,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        self.manager
+            .report_pbft_sync_admission_transactions(cursor, report)
+    }
+
+    /// Aborts and consumes the current synced-period admission cursor.
+    pub fn abort_pbft_sync_admission(
+        &self,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        self.manager.abort_pbft_sync_admission()
+    }
+
+    /// Loads canonical PBFT sync egress bytes through manager-owned storage.
+    ///
+    /// Rust also decides whether the temporary reward-vote sidecar belongs on
+    /// the last packet. C++ retains only packet wrapping and transport.
+    pub fn load_pbft_sync_egress_payload(
+        &self,
+        fact: crate::pbft_sync::PbftSyncRewardVoteAttachmentFact,
+    ) -> Result<crate::pbft_sync::PbftSyncEgressPayload> {
+        self.manager.load_pbft_sync_egress_payload(fact)
+    }
+
     /// Returns whether PBFT startup replay has been published complete.
     pub fn is_ready(&self) -> bool {
         self.readiness.is_ready()
@@ -767,6 +845,113 @@ mod tests {
         assert!(service.is_ready());
         service.complete_bootstrap();
         assert!(service.is_ready());
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sync_admission_and_egress_are_owned_by_native_pbft_service() {
+        use crate::pbft_sync::{
+            PbftSyncAdmissionInitialFact, PbftSyncAdmissionTransactionReport, PbftSyncFactStatus,
+            PbftSyncRewardVoteAttachmentFact, PbftSyncRuntimeFinalChainHashStatus,
+        };
+
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_sync_owner");
+        storage
+            .period()
+            .write(9, &[0xc8, 0xc0, 0xc1])
+            .expect("period data persists");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        let initial = PbftSyncAdmissionInitialFact {
+            block_period: 10,
+            block_prev_hash: H256::repeat_byte(9),
+            chain_last_hash: H256::repeat_byte(9),
+            chain_last_period: 9,
+            block_in_chain: false,
+            dag_transaction_hashes: vec![H256::repeat_byte(1)],
+            period_data_transaction_hashes: Vec::new(),
+            extra_data_required: false,
+            extra_data_present: false,
+            extra_data_pillar_block_hash_present: false,
+            pillar_votes_required: false,
+            pillar_votes_present: false,
+            previous_cert_votes_present: true,
+            previous_cert_first_vote_has_weight: false,
+        };
+
+        assert!(!service.begin_pbft_sync_admission(initial.clone()));
+        assert!(service.pbft_sync_admission_next().is_none());
+        service.complete_bootstrap();
+        assert!(service.begin_pbft_sync_admission(initial.clone()));
+
+        let final_chain = service.pbft_sync_admission_next().expect("session starts");
+        let reward = service
+            .report_pbft_sync_admission_status(
+                final_chain.cursor,
+                final_chain.next_check,
+                PbftSyncRuntimeFinalChainHashStatus::Valid,
+                PbftSyncFactStatus::Valid,
+            )
+            .expect("FinalChain report advances");
+        let cert = service
+            .report_pbft_sync_admission_status(
+                reward.cursor,
+                reward.next_check,
+                PbftSyncRuntimeFinalChainHashStatus::Valid,
+                PbftSyncFactStatus::Valid,
+            )
+            .expect("reward report advances");
+        let transactions = service
+            .report_pbft_sync_admission_status(
+                cert.cursor,
+                cert.next_check,
+                PbftSyncRuntimeFinalChainHashStatus::Valid,
+                PbftSyncFactStatus::Valid,
+            )
+            .expect("cert report advances");
+        let accepted = service
+            .report_pbft_sync_admission_transactions(
+                transactions.cursor,
+                PbftSyncAdmissionTransactionReport {
+                    missing_transaction_hashes: vec![H256::repeat_byte(1)],
+                    finalized_transaction_hashes: vec![H256::repeat_byte(2)],
+                    contains_finalized_transactions: true,
+                },
+            )
+            .expect("transaction report completes");
+        assert!(accepted.complete);
+        assert!(accepted.plan.accept_period_data);
+        assert_eq!(accepted.plan.warnings.len(), 2);
+        assert!(service.pbft_sync_admission_next().is_none());
+
+        assert!(service.begin_pbft_sync_admission(initial));
+        let step = service
+            .pbft_sync_admission_next()
+            .expect("replacement starts");
+        let mismatch = service
+            .report_pbft_sync_admission_status(
+                step.cursor + 1,
+                step.next_check,
+                PbftSyncRuntimeFinalChainHashStatus::Valid,
+                PbftSyncFactStatus::Valid,
+            )
+            .expect("mismatch returns terminal step");
+        assert!(mismatch.complete);
+        assert!(!mismatch.can_continue);
+        assert!(service.pbft_sync_admission_next().is_none());
+
+        let payload = service
+            .load_pbft_sync_egress_payload(PbftSyncRewardVoteAttachmentFact {
+                block_period: 9,
+                last_block: true,
+                pbft_chain_synced: true,
+                reward_votes_present: true,
+                reward_votes_period: 9,
+            })
+            .expect("egress payload loads");
+        assert_eq!(payload.period_data_rlp, vec![0xc8, 0xc0, 0xc1]);
+        assert!(payload.attach_reward_votes);
 
         drop(service);
         let _ = fs::remove_dir_all(path);

@@ -1797,6 +1797,113 @@ impl PbftManagerService {
     pub fn lock(&self) -> PbftManagerGuard<'_> {
         PbftManagerGuard(self.runtime.lock().expect("PBFT manager lock poisoned"))
     }
+
+    /// Starts a synced-period admission session under the manager lock.
+    ///
+    /// The supplied immutable candidate facts replace any stale admission
+    /// cursor. Subsequent checks and reports must enter through the task
+    /// methods below; callers never receive mutable session state.
+    pub fn begin_pbft_sync_admission(&self, fact: crate::pbft_sync::PbftSyncAdmissionInitialFact) {
+        self.lock().pbft_sync_admission_session =
+            Some(crate::pbft_sync::create_pbft_sync_admission_session(fact));
+    }
+
+    /// Returns the current synced-period admission step without advancing it.
+    ///
+    /// Terminal or failed steps consume the manager-owned session. `None`
+    /// means no admission cursor is active.
+    pub fn pbft_sync_admission_next(
+        &self,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        let mut runtime = self.lock();
+        let step = runtime
+            .pbft_sync_admission_session
+            .as_ref()
+            .map(crate::pbft_sync::next_pbft_sync_admission_session)?;
+        clear_terminal_pbft_sync_admission(&mut runtime, &step);
+        Some(step)
+    }
+
+    /// Reports one non-transaction synced-period validation result.
+    ///
+    /// Cursor/check mismatches become terminal contract errors and consume the
+    /// session. `None` means no admission cursor is active.
+    pub fn report_pbft_sync_admission_status(
+        &self,
+        cursor: u32,
+        check: crate::pbft_sync::PbftSyncProcessRuntimeNextCheck,
+        final_chain_status: crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus,
+        fact_status: crate::pbft_sync::PbftSyncFactStatus,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        let mut runtime = self.lock();
+        let step = crate::pbft_sync::report_pbft_sync_admission_status(
+            runtime.pbft_sync_admission_session.as_mut()?,
+            cursor,
+            check,
+            final_chain_status,
+            fact_status,
+        );
+        clear_terminal_pbft_sync_admission(&mut runtime, &step);
+        Some(step)
+    }
+
+    /// Reports the transaction lookup result requested by the active cursor.
+    ///
+    /// The manager validates the expected transaction-check stage and consumes
+    /// every terminal or failed session before returning.
+    pub fn report_pbft_sync_admission_transactions(
+        &self,
+        cursor: u32,
+        report: crate::pbft_sync::PbftSyncAdmissionTransactionReport,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        let mut runtime = self.lock();
+        let step = crate::pbft_sync::report_pbft_sync_admission_transactions(
+            runtime.pbft_sync_admission_session.as_mut()?,
+            cursor,
+            report,
+        );
+        clear_terminal_pbft_sync_admission(&mut runtime, &step);
+        Some(step)
+    }
+
+    /// Aborts and consumes the current synced-period admission cursor.
+    ///
+    /// The returned terminal step preserves the native abort diagnostic.
+    /// `None` means no session was active.
+    pub fn abort_pbft_sync_admission(
+        &self,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        let mut runtime = self.lock();
+        let step = crate::pbft_sync::abort_pbft_sync_admission_session(
+            runtime.pbft_sync_admission_session.as_mut()?,
+        );
+        runtime.pbft_sync_admission_session = None;
+        Some(step)
+    }
+
+    /// Loads one PBFT sync egress payload from manager-owned storage.
+    ///
+    /// Canonical period bytes and reward-vote attachment selection are
+    /// evaluated through a cloned manager-owned storage handle. The manager
+    /// lock is held only long enough to acquire that handle, so durable reads
+    /// cannot block unrelated manager transitions. Missing or malformed data
+    /// returns the storage error without changing manager state.
+    pub fn load_pbft_sync_egress_payload(
+        &self,
+        fact: crate::pbft_sync::PbftSyncRewardVoteAttachmentFact,
+    ) -> Result<crate::pbft_sync::PbftSyncEgressPayload> {
+        let storage = self.lock().storage.clone();
+        crate::pbft_sync::load_pbft_sync_egress_payload(storage.as_ref(), fact)
+    }
+}
+
+fn clear_terminal_pbft_sync_admission(
+    runtime: &mut PbftManagerRuntimeState,
+    step: &crate::pbft_sync::PbftSyncAdmissionSessionStep,
+) {
+    if step.complete || !step.can_continue {
+        runtime.pbft_sync_admission_session = None;
+    }
 }
 
 /// Stable PBFT manager state codes used by the CXX bridge.

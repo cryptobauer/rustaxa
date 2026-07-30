@@ -275,6 +275,13 @@ entrypoint; Rust decodes the action and routes to the existing typed native
 leaf, while action-specific payloads remain ignored outside their matching
 leaf. Six duplicated per-action exports and their bridge/shim wrappers are
 deleted.
+PBFT synced-period admission is now a native application task as well.
+`PbftService` gates session creation on bootstrap readiness, while
+`PbftManagerService` owns cursor allocation/replacement, check/report
+validation, terminal cleanup, abort, and storage-backed sync egress loading.
+The bridge module retains only CXX carrier/status conversion plus focused
+cert-vote and end-to-end sync projection sentinels; its broad RocksDB-backed
+session and egress behavioral tests are replaced by native service coverage.
 The remaining direct `VoteManager::resetRewardVotes` compatibility method no
 longer materializes a broad finalization storage plan or exposes two
 PBFT-finalization helper methods. It builds the existing narrow identity

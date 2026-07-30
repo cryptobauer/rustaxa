@@ -1218,6 +1218,26 @@ unlocked resume through sortition to FinalChain. The checked budgets fall to 29,
 granular flags, partial factories, compatibility constructors, and production
 consumers remain at 341, 20, 11, eight, zero, zero, and 39.
 
+The next bounded `CRW-12` sync-owner contraction moves the complete
+synced-period admission cursor lifecycle and storage-backed sync egress task
+out of `rustaxa-bridge`. Native `PbftService` gates session creation on
+bootstrap readiness, and `PbftManagerService` owns session replacement,
+cursor/check report validation, transaction-result application, terminal
+cleanup, abort, and the storage handle used to load canonical period bytes and
+select reward-vote attachment. The bridge keeps unchanged CXX functions as
+plain request/result conversion and retains focused cert-vote and end-to-end
+sync projection sentinels. Two RocksDB-backed admission tests and one egress test
+move to a native application-root test covering readiness, ordered acceptance,
+warnings, mismatch cleanup, and durable payload loading, while one compact
+bridge test preserves end-to-end carrier/status projection coverage. The
+checked bridge budget falls by 136 lines to 29,788; shim lines, CXX functions, carriers,
+handles, shim directories, granular flags, partial factories, compatibility
+constructors, and production consumers remain at 17,132, 390, 341, 20, 11,
+eight, zero, zero, and 39. Tier 1 validation is `rewrite-validate-fast`; Tier 2
+is the native application-root sync test, the bridge projection test, and all
+56 `rust_consensus_tests`; Tier 3 is the Rust-enabled `taraxad` smoke build. No
+upstream-owned C++ file changes.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
