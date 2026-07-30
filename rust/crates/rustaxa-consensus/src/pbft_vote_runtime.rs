@@ -622,29 +622,8 @@ impl PbftVerifiedVotesService {
         &self,
         request: RewardVoteResetPrepareRequest,
     ) -> Result<PbftFinalizationStorageWriteStage> {
-        anyhow::ensure!(request.requested, "PBFT_REWARD_VOTES_RESET_NOT_REQUESTED");
         let runtime = self.lock()?;
-        let reward_votes_bundle_rlp = runtime.reward_votes_reset_bundle(
-            request.cursor.period,
-            request.cursor.round,
-            request.cursor.step,
-            request.cursor.block_hash,
-        )?;
-        Ok(PbftFinalizationStorageWriteStage {
-            stage: 4,
-            rounds_count_dynamic_lambda: 0,
-            dynamic_lambda: 0,
-            has_sortition_params_change: false,
-            sortition_params_change_period: 0,
-            sortition_params_change_interval_efficiency: 0,
-            sortition_params_change_threshold_upper: 0,
-            has_reward_votes_reset: true,
-            reward_votes_bundle_rlp,
-            has_prepared_pillar_block: false,
-            prepared_pillar_block_period: 0,
-            prepared_pillar_block_rlp: Vec::new(),
-            extra_reward_vote_hashes: Vec::new(),
-        })
+        runtime.prepare_reward_votes_reset_stage(request)
     }
 
     /// Applies and publishes one complete native reward-vote reset.
@@ -724,6 +703,41 @@ impl Default for PbftVoteAdmissionRuntime {
 }
 
 impl PbftVoteAdmissionRuntime {
+    /// Builds the canonical reward-reset stage while the caller retains the
+    /// verified-vote guard.
+    ///
+    /// The request must identify the exact retained cert mapping and all
+    /// weighted payloads must remain available. This lock-held form lets a
+    /// composed finalization task keep admission serialized until the returned
+    /// bytes are durably committed.
+    pub(crate) fn prepare_reward_votes_reset_stage(
+        &self,
+        request: RewardVoteResetPrepareRequest,
+    ) -> Result<PbftFinalizationStorageWriteStage> {
+        anyhow::ensure!(request.requested, "PBFT_REWARD_VOTES_RESET_NOT_REQUESTED");
+        let reward_votes_bundle_rlp = self.reward_votes_reset_bundle(
+            request.cursor.period,
+            request.cursor.round,
+            request.cursor.step,
+            request.cursor.block_hash,
+        )?;
+        Ok(PbftFinalizationStorageWriteStage {
+            stage: 4,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            has_sortition_params_change: false,
+            sortition_params_change_period: 0,
+            sortition_params_change_interval_efficiency: 0,
+            sortition_params_change_threshold_upper: 0,
+            has_reward_votes_reset: true,
+            reward_votes_bundle_rlp,
+            has_prepared_pillar_block: false,
+            prepared_pillar_block_period: 0,
+            prepared_pillar_block_rlp: Vec::new(),
+            extra_reward_vote_hashes: Vec::new(),
+        })
+    }
+
     /// Creates an empty PBFT vote admission runtime.
     #[must_use]
     pub fn new() -> Self {

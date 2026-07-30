@@ -248,12 +248,15 @@ anchor, period, and ordered hashes from the retained plan, commits through
 The PBFT-specific `DagManager` mutation/report facade and CXX `finalized_count`
 relay are deleted; C++ retains only an explicit adapter that refreshes public
 counter mirrors and evicts expired hashes from its temporary seen-block cache.
-Reward-vote reset preparation no longer routes PBFT finalization through the
-C++ `VoteManager` facade. The PBFT shim calls its application-owned service's
-verified-vote leaf directly and passes the returned stage into native executor
-startup; the duplicate C++ prepared-state protocol flag is gone. The narrow
-bridge leaf remains temporary `CRW-12` debt until startup owns preparation
-without a C++ storage-stage relay.
+Reward-vote reset preparation is fully native inside PBFT executor startup.
+`PbftService` passes its existing verified-vote sibling into the manager task;
+fresh start rejects caller-owned reward stages, derives the exact certified
+identity from the accepted write intent, prepares the canonical bundle under
+manager-before-verified-votes lock order, and retains that vote guard through
+sortition preparation and the atomic primary storage commit so concurrent
+admission cannot invalidate the durable bundle. Preparation failures use the
+executor's normal cleanup path. The PBFT shim, CXX preparation export, bridge conversions, and
+reward-specific CXX storage-stage fields are deleted.
 The remaining direct `VoteManager::resetRewardVotes` compatibility method no
 longer materializes a broad finalization storage plan or exposes two
 PBFT-finalization helper methods. It builds the existing narrow identity

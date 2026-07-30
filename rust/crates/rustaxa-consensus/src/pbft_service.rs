@@ -175,7 +175,11 @@ impl PbftService {
         request: PbftFinalizationExecutorStartRequest,
     ) -> Result<PbftFinalizationExecutorBoundary> {
         let mut manager = self.manager_state();
-        let drain = manager.start_finalization_executor(dag_transaction_service, request)?;
+        let drain = manager.start_finalization_executor(
+            dag_transaction_service,
+            self.verified_votes(),
+            request,
+        )?;
         Ok(PbftFinalizationExecutorBoundary {
             next_step: drain.next_step,
             cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
@@ -393,16 +397,35 @@ mod tests {
     use crate::dag_service::DagServiceConfig;
     use crate::dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig};
     use crate::gas_pricer::GasPricerConfig;
+    use crate::pbft_vote_event::PbftVoteEventFactFlags;
+    use crate::pbft_vote_generation::{PbftVoteGenerationInput, generate_pbft_vote};
+    use crate::pbft_vote_progress::PbftVoteProgressContext;
+    use crate::pbft_vote_validation::{
+        PbftVoteValidationExternalFacts, validate_canonical_pbft_vote,
+    };
     use crate::sortition::{SortitionConfig, SortitionParams, VdfParams, VrfParams};
     use crate::transaction_service::TransactionServiceConfig;
+    use crate::verified_votes::PbftVoteType;
     use ethereum_types::{H160, H256, U256};
+    use k256::ecdsa::SigningKey;
     use rustaxa_storage::Config;
     use rustaxa_types::pillar::{CurrentPillarBlockDataDb, PillarBlock, ValidatorVoteCount};
+    use rustaxa_vdf::vrf;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tiny_keccak::{Hasher, Keccak};
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    const NODE_SECRET: [u8; 32] = [0x35; 32];
+    const NODE_SECRET_TWO: [u8; 32] = [0x42; 32];
+    const VRF_SECRET: [u8; 64] = [
+        0x90, 0xf5, 0x9a, 0x7e, 0xe7, 0xa3, 0x92, 0xc8, 0x11, 0xc5, 0xd2, 0x99, 0xb5, 0x57, 0xa4,
+        0xe0, 0x9e, 0x61, 0x0d, 0xe7, 0xd1, 0x09, 0xd6, 0xb3, 0xfc, 0xb1, 0x9a, 0xb8, 0xd5, 0x1c,
+        0x9a, 0x0d, 0x93, 0x1f, 0x5e, 0x7d, 0xb0, 0x7c, 0x99, 0x69, 0xe4, 0x38, 0xdb, 0x7e, 0x28,
+        0x7e, 0xab, 0xba, 0xac, 0xa4, 0x9c, 0xa4, 0x14, 0xf5, 0xf3, 0xa4, 0x02, 0xea, 0x69, 0x97,
+        0xad, 0xe4, 0x00, 0x81,
+    ];
 
     fn temp_storage(name: &str) -> (PathBuf, Arc<Storage>) {
         let path = std::env::temp_dir().join(format!(
@@ -470,6 +493,143 @@ mod tests {
             },
         )
         .expect("DAG transaction service restores")
+    }
+
+    fn voter_from_secret(secret: &[u8; 32]) -> [u8; 20] {
+        let key = SigningKey::from_slice(secret).unwrap();
+        let public_key = key.verifying_key().to_encoded_point(false);
+        let mut output = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&public_key.as_bytes()[1..]);
+        hasher.finalize(&mut output);
+        output[12..].try_into().unwrap()
+    }
+
+    fn cert_vote_rlp(block_hash: H256, secret: [u8; 32]) -> Vec<u8> {
+        generate_pbft_vote(PbftVoteGenerationInput {
+            block_hash,
+            vote_type: PbftVoteType::Cert,
+            period: 12,
+            round: 2,
+            step: 3,
+            node_secret: secret,
+            vrf_secret: VRF_SECRET,
+            expected_voter: voter_from_secret(&secret).into(),
+            expected_vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+        })
+        .unwrap()
+        .vote_rlp
+    }
+
+    fn seed_reward_cert_votes(service: &PbftService, block_hash: H256) {
+        for secret in [NODE_SECRET, NODE_SECRET_TWO] {
+            let vote_rlp = cert_vote_rlp(block_hash, secret);
+            let validation = validate_canonical_pbft_vote(
+                &vote_rlp,
+                PbftVoteValidationExternalFacts {
+                    voter_dpos_ready: true,
+                    voter_dpos_vote_count: 40,
+                    total_dpos_ready: true,
+                    total_dpos_vote_count: 100,
+                    future_dpos_state: false,
+                    unknown_error: false,
+                    vrf_key_ready: true,
+                    has_vrf_key: true,
+                    vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+                    strict_vrf: true,
+                    committee_size: 100,
+                    number_of_proposers: 20,
+                    has_preverified_weight: false,
+                    preverified_weight: 0,
+                },
+            )
+            .unwrap();
+            service
+                .verified_votes()
+                .lock()
+                .unwrap()
+                .admit_validated_vote(
+                    &vote_rlp,
+                    &validation,
+                    PbftVoteEventFactFlags {
+                        vote_already_known: false,
+                        carries_proposed_block: true,
+                        valid_stale_reward_vote: false,
+                    },
+                    PbftVoteProgressContext {
+                        current_period: 12,
+                        current_round: 2,
+                        max_future_period_delta: 0,
+                        two_t_plus_one_threshold: Some(80),
+                        require_proposed_block_sidecar: false,
+                        slashing_enabled: true,
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    fn reward_finalization_start_request(block_hash: H256) -> PbftFinalizationExecutorStartRequest {
+        use crate::pbft_finalize::{
+            PbftFinalizationAnchor, PbftFinalizationCleanupIntent, PbftFinalizationPlan,
+            PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
+            PbftFinalizationStorageWriteStage,
+        };
+        use crate::pbft_manager::PbftFinalizationExecutorStartMode;
+
+        PbftFinalizationExecutorStartRequest {
+            plan: PbftFinalizationPlan {
+                finalize_block: true,
+                anchor: PbftFinalizationAnchor::Anchored,
+                executed_pbft_block: false,
+                cleanup: PbftFinalizationCleanupIntent {
+                    persist_pbft_block_metadata: true,
+                    reset_reward_votes: true,
+                    set_dag_block_order: false,
+                    update_sortition_params: false,
+                    update_finalized_transactions_status: false,
+                    update_pbft_chain: false,
+                    clear_anchor_dag_cache: false,
+                    finalize_final_chain: false,
+                    maybe_update_dynamic_lambda: false,
+                    advance_period: false,
+                    process_pillar_block: false,
+                },
+                storage_write_intent: PbftFinalizationStorageWriteIntent {
+                    persist_pbft_head: true,
+                    persist_period_data: false,
+                    reset_reward_votes: true,
+                    update_sortition_params: false,
+                    apply_dynamic_lambda_update: false,
+                    persist_period_lambda: false,
+                    persist_executed_pbft_status: false,
+                    process_pillar_block: false,
+                    pbft_block_hash: block_hash,
+                    pbft_head_hash: block_hash,
+                    block_period: 12,
+                    null_anchor: false,
+                    anchor_hash: H256::zero(),
+                    reward_vote_period: 12,
+                    reward_vote_round: 2,
+                    reward_vote_step: 3,
+                    reward_vote_block_hash: block_hash,
+                    period_lambda: 0,
+                    blocks_per_year: 0,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    executed_pbft_status: false,
+                    pbft_head_payload: vec![0xde, 0xad, 0xbe, 0xef],
+                    period_data_rlp: Vec::new(),
+                    dag_block_period_writes: Vec::new(),
+                    transaction_location_writes: Vec::new(),
+                },
+                status: PbftFinalizationStatus::Accepted,
+            },
+            mode: PbftFinalizationExecutorStartMode::Fresh {
+                primary_stages: vec![PbftFinalizationStorageWriteStage::default()],
+                sync: false,
+            },
+        }
     }
 
     fn install_finalization_executor(
@@ -586,6 +746,116 @@ mod tests {
         assert_eq!(public_head, manager_head);
 
         drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn fresh_finalization_prepares_and_publishes_reward_votes_through_native_root() {
+        use crate::pbft_finalize::PbftFinalizationRuntimeAction;
+
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_reward_start");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let dag = dag_service(storage.clone());
+        let block_hash = H256::repeat_byte(0x61);
+        seed_reward_cert_votes(&service, block_hash);
+
+        let boundary = service
+            .start_finalization_executor(&dag, reward_finalization_start_request(block_hash))
+            .expect("native reward stage prepares and persists");
+        assert_eq!(
+            boundary.next_step.action,
+            Some(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime)
+        );
+        assert!(storage.extra_reward_votes_reset_generation() > 0);
+        let durable = storage
+            .pbft()
+            .finalized_reward_vote_cursor()
+            .unwrap()
+            .expect("reward cursor persisted with primary storage");
+        assert_eq!(durable.period, 12);
+        assert_eq!(durable.round, 2);
+        assert_eq!(durable.step, 3);
+        assert_eq!(durable.block_hash, block_hash);
+        assert!(!durable.votes_bundle_rlp.is_empty());
+
+        let completed = service
+            .advance_finalization_reward_votes_reset(boundary.next_step.action_index)
+            .expect("native reward cursor publishes");
+        assert!(completed.next_step.complete);
+        let snapshot = service
+            .verified_votes()
+            .reward_vote_cursor_snapshot()
+            .unwrap();
+        assert!(snapshot.found);
+        assert_eq!(snapshot.period, 12);
+        assert_eq!(snapshot.round, 2);
+        assert_eq!(snapshot.step, 3);
+        assert_eq!(snapshot.block_hash, block_hash);
+
+        drop(service);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn fresh_finalization_reward_identity_failure_clears_stale_manager_state() {
+        use crate::pbft_finalize::{PbftFinalizationCleanupIntent, PbftFinalizationRuntimeAction};
+
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_reward_start_reject");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let dag = dag_service(storage.clone());
+        seed_reward_cert_votes(&service, H256::repeat_byte(0x61));
+        install_finalization_executor(
+            &service,
+            11,
+            PbftFinalizationCleanupIntent {
+                persist_pbft_block_metadata: false,
+                reset_reward_votes: false,
+                set_dag_block_order: false,
+                update_sortition_params: false,
+                update_finalized_transactions_status: false,
+                update_pbft_chain: true,
+                clear_anchor_dag_cache: false,
+                finalize_final_chain: false,
+                maybe_update_dynamic_lambda: false,
+                advance_period: false,
+                process_pillar_block: false,
+            },
+            vec![PbftFinalizationRuntimeAction::UpdatePbftChain],
+        );
+        {
+            let mut manager = service.manager_state();
+            manager.finalization_reward_votes_reset_generation = 99;
+        }
+
+        let error = service
+            .start_finalization_executor(
+                &dag,
+                reward_finalization_start_request(H256::repeat_byte(0x62)),
+            )
+            .expect_err("mismatched reward identity rejects fresh start");
+        assert!(
+            error
+                .to_string()
+                .contains("PBFT_REWARD_VOTES_RESET_CERT_IDENTITY_MISMATCH")
+        );
+        assert_eq!(storage.extra_reward_votes_reset_generation(), 0);
+        assert!(
+            storage
+                .pbft()
+                .finalized_reward_vote_cursor()
+                .unwrap()
+                .is_none()
+        );
+        let manager = service.manager_state();
+        assert!(manager.finalization_runtime_session.is_none());
+        assert!(manager.finalization_runtime_plan.is_none());
+        assert!(manager.finalization_sortition_commit_request.is_none());
+        assert_eq!(manager.finalization_reward_votes_reset_generation, 0);
+        drop(manager);
+
+        drop(service);
+        drop(dag);
         let _ = fs::remove_dir_all(path);
     }
 

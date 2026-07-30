@@ -67,6 +67,49 @@ impl PbftRewardVoteCursorCommitPort for crate::pbft_vote_runtime::PbftVerifiedVo
     }
 }
 
+/// Locked task port for preparing the reward-vote stage of PBFT finalization.
+///
+/// The production implementation is [`crate::pbft_vote_runtime::PbftVerifiedVotesService`].
+/// The guard remains held from canonical bundle derivation through the primary
+/// storage commit so concurrent admission cannot invalidate durable bytes.
+pub(crate) trait PbftRewardVoteResetStageGuard {
+    /// Builds the canonical reward-reset stage for one accepted finalization.
+    fn prepare_reward_votes_reset_stage(
+        &self,
+        request: crate::pbft_vote_runtime::RewardVoteResetPrepareRequest,
+    ) -> Result<crate::pbft_finalize::PbftFinalizationStorageWriteStage>;
+}
+
+impl PbftRewardVoteResetStageGuard for crate::pbft_vote_runtime::PbftVerifiedVotesServiceGuard<'_> {
+    fn prepare_reward_votes_reset_stage(
+        &self,
+        request: crate::pbft_vote_runtime::RewardVoteResetPrepareRequest,
+    ) -> Result<crate::pbft_finalize::PbftFinalizationStorageWriteStage> {
+        crate::pbft_vote_runtime::PbftVoteAdmissionRuntime::prepare_reward_votes_reset_stage(
+            self, request,
+        )
+    }
+}
+
+/// Task-oriented owner that locks verified votes for finalization preparation.
+pub(crate) trait PbftRewardVoteResetStagePort {
+    /// Guard held across canonical stage derivation and the primary commit.
+    type Guard<'a>: PbftRewardVoteResetStageGuard
+    where
+        Self: 'a;
+
+    /// Acquires the verified-vote serialization domain.
+    fn lock_reward_votes(&self) -> Result<Self::Guard<'_>>;
+}
+
+impl PbftRewardVoteResetStagePort for crate::pbft_vote_runtime::PbftVerifiedVotesService {
+    type Guard<'a> = crate::pbft_vote_runtime::PbftVerifiedVotesServiceGuard<'a>;
+
+    fn lock_reward_votes(&self) -> Result<Self::Guard<'_>> {
+        self.lock()
+    }
+}
+
 /// Native port for applying the finalized transaction set retained by PBFT finalization.
 ///
 /// The production implementation is
@@ -322,6 +365,49 @@ pub fn prepare_pbft_finalization_sortition(
     Ok(())
 }
 
+/// Rejects caller-owned reward-vote stages before fresh finalization.
+///
+/// The caller already holds the manager serialization guard. Any stage code,
+/// payload gate, payload bytes, or delete keys associated with reward reset are
+/// rejected. After this check, fresh start acquires verified votes, derives the
+/// canonical stage, and retains that guard through sortition preparation and
+/// the primary storage commit.
+pub(crate) fn reject_caller_owned_reward_vote_stages(
+    stages: &[crate::pbft_finalize::PbftFinalizationStorageWriteStage],
+) -> Result<()> {
+    const REWARD_VOTES_RESET_STAGE: u8 = 4;
+
+    anyhow::ensure!(
+        stages.iter().all(|stage| {
+            stage.stage != REWARD_VOTES_RESET_STAGE
+                && !stage.has_reward_votes_reset
+                && stage.reward_votes_bundle_rlp.is_empty()
+                && stage.extra_reward_vote_hashes.is_empty()
+        }),
+        "PBFT_FINALIZE_REWARD_VOTES_STAGE_CALLER_OWNED"
+    );
+    Ok(())
+}
+
+fn prepare_pbft_finalization_reward_votes<G: PbftRewardVoteResetStageGuard>(
+    verified_votes: &G,
+    write_set: &crate::pbft_finalize::PbftFinalizationStorageWriteIntent,
+    stages: &mut Vec<crate::pbft_finalize::PbftFinalizationStorageWriteStage>,
+) -> Result<()> {
+    stages.push(verified_votes.prepare_reward_votes_reset_stage(
+        crate::pbft_vote_runtime::RewardVoteResetPrepareRequest {
+            requested: true,
+            cursor: crate::pbft_vote_runtime::RewardVoteCursor {
+                period: write_set.reward_vote_period,
+                round: write_set.reward_vote_round,
+                step: write_set.reward_vote_step,
+                block_hash: write_set.reward_vote_block_hash,
+            },
+        },
+    )?);
+    Ok(())
+}
+
 /// Lock-protected mutable state owned by the native PBFT manager service.
 ///
 /// The state groups the deterministic manager runtime, its in-flight sessions,
@@ -439,9 +525,10 @@ impl PbftManagerGuard<'_> {
     /// active external boundaries retain the plan and cursor. Unknown mode,
     /// storage failures, malformed preparation, and invalid retained invariants
     /// fail closed without publishing sortition state.
-    pub(crate) fn start_finalization_executor(
+    pub(crate) fn start_finalization_executor<V: PbftRewardVoteResetStagePort>(
         &mut self,
         dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        verified_votes: &V,
         request: PbftFinalizationExecutorStartRequest,
     ) -> Result<PbftFinalizationOwnedActionDrain> {
         let resume_mode = matches!(
@@ -462,7 +549,11 @@ impl PbftManagerGuard<'_> {
             self.finalization_reward_votes_reset_generation = resume_generation;
         }
 
-        let result = self.start_finalization_executor_inner(dag_transaction_service, request);
+        let result = self.start_finalization_executor_inner(
+            dag_transaction_service,
+            verified_votes,
+            request,
+        );
         self.finish_finalization_executor(result)
     }
 
@@ -634,9 +725,10 @@ impl PbftManagerGuard<'_> {
         Ok(next_pbft_finalization_runtime_action(session))
     }
 
-    fn start_finalization_executor_inner(
+    fn start_finalization_executor_inner<V: PbftRewardVoteResetStagePort>(
         &mut self,
         dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        verified_votes: &V,
         request: PbftFinalizationExecutorStartRequest,
     ) -> Result<PbftFinalizationOwnedActionDrain> {
         use crate::pbft_finalize::{
@@ -662,6 +754,7 @@ impl PbftManagerGuard<'_> {
                 sync,
             } => self.start_fresh_finalization_executor(
                 dag_transaction_service,
+                verified_votes,
                 request.plan,
                 primary_stages,
                 sync,
@@ -672,9 +765,10 @@ impl PbftManagerGuard<'_> {
         }
     }
 
-    fn start_fresh_finalization_executor(
+    fn start_fresh_finalization_executor<V: PbftRewardVoteResetStagePort>(
         &mut self,
         dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        verified_votes: &V,
         plan: crate::pbft_finalize::PbftFinalizationPlan,
         mut primary_stages: Vec<crate::pbft_finalize::PbftFinalizationStorageWriteStage>,
         sync: bool,
@@ -711,6 +805,19 @@ impl PbftManagerGuard<'_> {
             .expect("fresh finalization plan installed")
             .storage_write_intent
             .clone();
+        reject_caller_owned_reward_vote_stages(&primary_stages)?;
+        let reward_votes_guard = if write_set.reset_reward_votes {
+            Some(verified_votes.lock_reward_votes()?)
+        } else {
+            None
+        };
+        if let Some(reward_votes_guard) = reward_votes_guard.as_ref() {
+            prepare_pbft_finalization_reward_votes(
+                reward_votes_guard,
+                &write_set,
+                &mut primary_stages,
+            )?;
+        }
         prepare_pbft_finalization_sortition(
             self,
             dag_transaction_service,
@@ -723,6 +830,7 @@ impl PbftManagerGuard<'_> {
             primary_stages,
             sync,
         )?;
+        drop(reward_votes_guard);
         let accepted = apply_result.status.is_success();
         self.finalization_reward_votes_reset_generation =
             apply_result.reward_votes_reset_generation;
@@ -8020,6 +8128,24 @@ mod tests {
         request: Mutex<Option<crate::pbft_vote_runtime::RewardVoteCursorCommitRequest>>,
     }
 
+    struct RewardVoteResetStageStub;
+
+    struct BlockingRewardVoteResetStagePort {
+        prepared: std::sync::mpsc::Sender<()>,
+        dropped: std::sync::mpsc::Sender<()>,
+    }
+
+    struct BlockingRewardVoteResetStageGuard {
+        prepared: std::sync::mpsc::Sender<()>,
+        dropped: std::sync::mpsc::Sender<()>,
+    }
+
+    impl Drop for BlockingRewardVoteResetStageGuard {
+        fn drop(&mut self) {
+            let _ = self.dropped.send(());
+        }
+    }
+
     type FinalizedTransactionRequest = (
         u64,
         u64,
@@ -8070,6 +8196,49 @@ mod tests {
         ) -> Result<crate::pbft_vote_runtime::RewardVoteCursorCommitResult> {
             *self.request.lock().expect("request lock") = Some(request);
             Ok(self.result.clone())
+        }
+    }
+
+    impl PbftRewardVoteResetStageGuard for RewardVoteResetStageStub {
+        fn prepare_reward_votes_reset_stage(
+            &self,
+            _request: crate::pbft_vote_runtime::RewardVoteResetPrepareRequest,
+        ) -> Result<PbftFinalizationStorageWriteStage> {
+            Err(anyhow!("PBFT_TEST_UNEXPECTED_REWARD_VOTE_STAGE_REQUEST"))
+        }
+    }
+
+    impl PbftRewardVoteResetStagePort for RewardVoteResetStageStub {
+        type Guard<'a> = RewardVoteResetStageStub;
+
+        fn lock_reward_votes(&self) -> Result<Self::Guard<'_>> {
+            Ok(RewardVoteResetStageStub)
+        }
+    }
+
+    impl PbftRewardVoteResetStageGuard for BlockingRewardVoteResetStageGuard {
+        fn prepare_reward_votes_reset_stage(
+            &self,
+            _request: crate::pbft_vote_runtime::RewardVoteResetPrepareRequest,
+        ) -> Result<PbftFinalizationStorageWriteStage> {
+            self.prepared.send(()).expect("preparation signal sends");
+            Ok(PbftFinalizationStorageWriteStage {
+                stage: 4,
+                has_reward_votes_reset: true,
+                reward_votes_bundle_rlp: vec![0xc1, 0x01],
+                ..Default::default()
+            })
+        }
+    }
+
+    impl PbftRewardVoteResetStagePort for BlockingRewardVoteResetStagePort {
+        type Guard<'a> = BlockingRewardVoteResetStageGuard;
+
+        fn lock_reward_votes(&self) -> Result<Self::Guard<'_>> {
+            Ok(BlockingRewardVoteResetStageGuard {
+                prepared: self.prepared.clone(),
+                dropped: self.dropped.clone(),
+            })
         }
     }
 
@@ -8453,6 +8622,7 @@ mod tests {
         let boundary = runtime
             .start_finalization_executor(
                 &dag,
+                &RewardVoteResetStageStub,
                 PbftFinalizationExecutorStartRequest {
                     plan: finalization_start_plan(write_set),
                     mode: PbftFinalizationExecutorStartMode::Fresh {
@@ -8498,6 +8668,7 @@ mod tests {
         let error = runtime
             .start_finalization_executor(
                 &dag,
+                &RewardVoteResetStageStub,
                 PbftFinalizationExecutorStartRequest {
                     plan: finalization_start_plan(write_set),
                     mode: PbftFinalizationExecutorStartMode::Fresh {
@@ -8539,6 +8710,126 @@ mod tests {
     }
 
     #[test]
+    fn finalization_start_rejects_caller_reward_stage_and_clears_runtime() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_finalization_start_reward_reject");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        let error = runtime
+            .start_finalization_executor(
+                &dag,
+                &RewardVoteResetStageStub,
+                PbftFinalizationExecutorStartRequest {
+                    plan: finalization_start_plan(write_set),
+                    mode: PbftFinalizationExecutorStartMode::Fresh {
+                        primary_stages: vec![PbftFinalizationStorageWriteStage {
+                            stage: 4,
+                            has_reward_votes_reset: true,
+                            reward_votes_bundle_rlp: vec![0xc1, 0x01],
+                            ..Default::default()
+                        }],
+                        sync: false,
+                    },
+                },
+            )
+            .expect_err("caller-owned reward stage rejects");
+
+        assert_eq!(
+            error.to_string(),
+            "PBFT_FINALIZE_REWARD_VOTES_STAGE_CALLER_OWNED"
+        );
+        assert!(runtime.finalization_runtime_session.is_none());
+        assert!(runtime.finalization_runtime_plan.is_none());
+        assert!(runtime.finalization_sortition_commit_request.is_none());
+        assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
+        assert!(
+            runtime
+                .storage
+                .period()
+                .data_raw(1)
+                .expect("rejected period data reads")
+                .is_empty()
+        );
+
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_start_holds_reward_guard_through_primary_commit() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_finalization_reward_guard_commit");
+        let storage = manager.lock().storage.clone();
+        let storage_guard = storage.lock_extra_reward_votes().unwrap();
+        let mut write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        write_set.pbft_head_payload = vec![0xde, 0xad, 0xbe, 0xef];
+        write_set.reset_reward_votes = true;
+        write_set.reward_vote_period = 1;
+        write_set.reward_vote_round = 2;
+        write_set.reward_vote_step = 3;
+        write_set.reward_vote_block_hash = H256::repeat_byte(7);
+        let mut plan = finalization_start_plan(write_set);
+        plan.cleanup.reset_reward_votes = true;
+        let (prepared_tx, prepared_rx) = std::sync::mpsc::channel();
+        let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
+        let port = BlockingRewardVoteResetStagePort {
+            prepared: prepared_tx,
+            dropped: dropped_tx,
+        };
+        let manager = Arc::new(manager);
+        let dag = Arc::new(dag);
+        let worker_manager = manager.clone();
+        let worker_dag = dag.clone();
+        let worker = std::thread::spawn(move || {
+            let mut runtime = worker_manager.lock();
+            runtime.start_finalization_executor(
+                worker_dag.as_ref(),
+                &port,
+                PbftFinalizationExecutorStartRequest {
+                    plan,
+                    mode: PbftFinalizationExecutorStartMode::Fresh {
+                        primary_stages: vec![PbftFinalizationStorageWriteStage::default()],
+                        sync: false,
+                    },
+                },
+            )
+        });
+
+        prepared_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("reward stage prepares before storage lock");
+        assert!(
+            dropped_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "reward guard must remain held while primary storage is blocked"
+        );
+        drop(storage_guard);
+        worker
+            .join()
+            .expect("finalization worker joins")
+            .expect("primary storage commits");
+        dropped_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("reward guard drops after primary storage commit");
+
+        drop(manager);
+        drop(dag);
+        drop(storage);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn finalization_start_primary_rejection_discards_prepared_sortition() {
         let (path, manager, dag) =
             finalization_sortition_services("pbft_manager_finalization_start_primary_reject");
@@ -8559,6 +8850,7 @@ mod tests {
         let boundary = runtime
             .start_finalization_executor(
                 &dag,
+                &RewardVoteResetStageStub,
                 PbftFinalizationExecutorStartRequest {
                     plan: finalization_start_plan(write_set),
                     mode: PbftFinalizationExecutorStartMode::Fresh {
@@ -8626,6 +8918,7 @@ mod tests {
         let error = runtime
             .start_finalization_executor(
                 &dag,
+                &RewardVoteResetStageStub,
                 PbftFinalizationExecutorStartRequest {
                     plan: finalization_start_plan(write_set),
                     mode: PbftFinalizationExecutorStartMode::Unknown,
@@ -8659,6 +8952,7 @@ mod tests {
         let boundary = runtime
             .start_finalization_executor(
                 &dag,
+                &RewardVoteResetStageStub,
                 PbftFinalizationExecutorStartRequest {
                     plan: finalization_start_plan(write_set),
                     mode: PbftFinalizationExecutorStartMode::Resume {
@@ -8702,6 +8996,7 @@ mod tests {
         runtime
             .start_finalization_executor(
                 &dag,
+                &RewardVoteResetStageStub,
                 PbftFinalizationExecutorStartRequest {
                     plan: plan.clone(),
                     mode: PbftFinalizationExecutorStartMode::Fresh {
@@ -8717,6 +9012,7 @@ mod tests {
         let matching = runtime
             .start_finalization_executor(
                 &dag,
+                &RewardVoteResetStageStub,
                 PbftFinalizationExecutorStartRequest {
                     plan: plan.clone(),
                     mode: PbftFinalizationExecutorStartMode::Resume {
@@ -8738,6 +9034,7 @@ mod tests {
         let stale = runtime
             .start_finalization_executor(
                 &dag,
+                &RewardVoteResetStageStub,
                 PbftFinalizationExecutorStartRequest {
                     plan,
                     mode: PbftFinalizationExecutorStartMode::Resume {

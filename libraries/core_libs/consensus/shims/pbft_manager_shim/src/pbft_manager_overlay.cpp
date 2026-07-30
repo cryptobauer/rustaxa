@@ -490,7 +490,6 @@ rustaxa::PbftFinalizationStorageWriteStage makeFinalizationStorageStage(uint8_t 
   write_stage.sortition_params_change_period = 0;
   write_stage.sortition_params_change_interval_efficiency = 0;
   write_stage.sortition_params_change_threshold_upper = 0;
-  write_stage.has_reward_votes_reset = false;
   write_stage.has_prepared_pillar_block = false;
   write_stage.prepared_pillar_block_period = 0;
   write_stage.prepared_pillar_block_rlp = rust::Vec<uint8_t>{};
@@ -3731,20 +3730,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
   }
   first_persistence_stages.push_back(std::move(primary_storage_stage));
-
-  // The PBFT application service owns verified-vote state directly; do not
-  // route this internal finalization preparation through VoteManager.
-  if (finalization_plan.storage_write_intent.reset_reward_votes) {
-    try {
-      first_persistence_stages.push_back(
-          pbft_service_->service().pbft_service_verified_votes_prepare_reward_votes_reset_stage(
-              finalization_plan.storage_write_intent));
-    } catch (const std::exception &e) {
-      LOG(log_er_) << "Rust PBFT finalized-period reward-vote reset facts failed for block " << pbft_block_hash
-                   << ", period " << block_pbft_period << ": " << e.what();
-      return false;
-    }
-  }
 
   rustaxa::PbftManagerFinalizationExecutorState boundary{};
   bool dispatch_complete = false;

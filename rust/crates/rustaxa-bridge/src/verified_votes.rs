@@ -1,13 +1,10 @@
 #[cfg(test)]
 use crate::ffi::rustaxa_ffi::PbftLeaderCandidateValidation;
 use crate::ffi::rustaxa_ffi::{
-    DetermineNewRoundOutcome, PbftFinalizationHash,
-    PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
-    PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
-    PbftLeaderCandidateSnapshot, PbftLeaderSelectionFinishRequest, PbftLeaderSelectionResult,
-    PbftLeaderSelectionSnapshot, PbftNextVotesBundleEgressPlan,
-    PbftOptimizedVoteBundleBuildRequest, PbftOptimizedVoteBundleBuildResult,
-    PbftOptimizedVoteBundlePlan,
+    DetermineNewRoundOutcome, PbftFinalizationHash, PbftLeaderCandidateSnapshot,
+    PbftLeaderSelectionFinishRequest, PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot,
+    PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
+    PbftOptimizedVoteBundleBuildResult, PbftOptimizedVoteBundlePlan,
     PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
     PbftRewardVotesResetRequest as FfiPbftRewardVotesResetRequest,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
@@ -90,10 +87,9 @@ use rustaxa_consensus::{
     PbftVoteAdmissionRuntime, PbftVoteAdmissionTransactionResult,
     PbftVotePersistenceResult as DomainPbftVotePersistenceResult,
     PbftVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
-    PbftVoteStorageRecord as DomainPbftVoteStorageRecord, RewardVoteCursor,
+    PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
     RewardVoteCursorSnapshot as DomainRewardVoteCursorSnapshot,
     RewardVotePayloadSnapshot as DomainRewardVotePayloadSnapshot, RewardVoteResetApplyRequest,
-    RewardVoteResetPrepareRequest,
 };
 use rustaxa_storage::Storage;
 
@@ -1391,18 +1387,6 @@ impl BridgePbftService {
             .map(reward_vote_payload_selection_to_ffi)
     }
 
-    /// Converts the finalization identity, delegates native stage preparation, and maps bytes.
-    pub fn pbft_service_verified_votes_prepare_reward_votes_reset_stage(
-        &self,
-        write_intent: &FfiPbftFinalizationStorageWritePlan,
-    ) -> Result<FfiPbftFinalizationStorageWriteStage, anyhow::Error> {
-        self.verified_votes()
-            .prepare_reward_votes_reset_stage(reward_votes_reset_prepare_request_from_plan(
-                write_intent,
-            ))
-            .map(reward_votes_reset_stage_to_ffi)
-    }
-
     /// Converts and delegates the complete native reset/storage/live-publication task.
     pub fn pbft_service_verified_votes_apply_reward_votes_reset(
         &self,
@@ -1640,20 +1624,6 @@ fn admission_validation_request_to_facts(
     }
 }
 
-fn reward_votes_reset_prepare_request_from_plan(
-    write_intent: &FfiPbftFinalizationStorageWritePlan,
-) -> RewardVoteResetPrepareRequest {
-    RewardVoteResetPrepareRequest {
-        requested: write_intent.reset_reward_votes,
-        cursor: RewardVoteCursor {
-            period: write_intent.reward_vote_period,
-            round: write_intent.reward_vote_round,
-            step: write_intent.reward_vote_step,
-            block_hash: H256::from(write_intent.reward_vote_block_hash),
-        },
-    }
-}
-
 fn reward_vote_cursor_snapshot_to_ffi(
     value: DomainRewardVoteCursorSnapshot,
 ) -> FfiRewardVoteCursorSnapshot {
@@ -1718,26 +1688,6 @@ fn reward_votes_reset_apply_request_to_domain(
         step: request.step,
         block_hash: H256::from(request.block_hash),
         sync: request.sync,
-    }
-}
-
-fn reward_votes_reset_stage_to_ffi(
-    value: rustaxa_consensus::PbftFinalizationStorageWriteStage,
-) -> FfiPbftFinalizationStorageWriteStage {
-    FfiPbftFinalizationStorageWriteStage {
-        stage: value.stage,
-        rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
-        dynamic_lambda: value.dynamic_lambda,
-        has_sortition_params_change: value.has_sortition_params_change,
-        sortition_params_change_period: value.sortition_params_change_period,
-        sortition_params_change_interval_efficiency: value
-            .sortition_params_change_interval_efficiency,
-        sortition_params_change_threshold_upper: value.sortition_params_change_threshold_upper,
-        has_reward_votes_reset: value.has_reward_votes_reset,
-        reward_votes_bundle_rlp: value.reward_votes_bundle_rlp,
-        has_prepared_pillar_block: value.has_prepared_pillar_block,
-        prepared_pillar_block_period: value.prepared_pillar_block_period,
-        prepared_pillar_block_rlp: value.prepared_pillar_block_rlp,
     }
 }
 
@@ -2877,39 +2827,6 @@ mod tests {
         }
     }
 
-    fn reward_reset_intent(
-        block_hash: [u8; 32],
-    ) -> crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan {
-        crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan {
-            persist_pbft_head: false,
-            persist_period_data: false,
-            reset_reward_votes: true,
-            update_sortition_params: false,
-            apply_dynamic_lambda_update: false,
-            persist_period_lambda: false,
-            persist_executed_pbft_status: false,
-            process_pillar_block: false,
-            pbft_block_hash: block_hash,
-            pbft_head_hash: [0; 32],
-            block_period: 12,
-            null_anchor: false,
-            anchor_hash: [0; 32],
-            reward_vote_period: 12,
-            reward_vote_round: 2,
-            reward_vote_step: 3,
-            reward_vote_block_hash: block_hash,
-            period_lambda: 0,
-            blocks_per_year: 0,
-            rounds_count_dynamic_lambda: 0,
-            dynamic_lambda: 0,
-            executed_pbft_status: false,
-            pbft_head_payload: Vec::new(),
-            period_data_rlp: Vec::new(),
-            dag_block_period_writes: Vec::new(),
-            transaction_location_writes: Vec::new(),
-        }
-    }
-
     fn threshold_fact(has_total_dpos_votes_count: bool) -> PbftTwoTPlusOneThresholdFact {
         PbftTwoTPlusOneThresholdFact {
             pbft_period: 3,
@@ -3347,7 +3264,7 @@ mod tests {
     }
 
     #[test]
-    fn reward_finalization_boundary_maps_identity_payload_order_and_statuses() {
+    fn reward_reset_boundary_maps_payload_order_and_statuses() {
         let storage = temp_bridge_storage("reward_finalization_boundary");
         let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
         let mut vote_hashes = Vec::new();
@@ -3363,18 +3280,6 @@ mod tests {
                 )
                 .unwrap();
         }
-
-        let intent = reward_reset_intent([0x35; 32]);
-        let stage = votes
-            .pbft_service_verified_votes_prepare_reward_votes_reset_stage(&intent)
-            .unwrap();
-        assert!(stage.has_reward_votes_reset);
-        assert!(!stage.reward_votes_bundle_rlp.is_empty());
-        assert!(votes
-            .pbft_service_verified_votes_prepare_reward_votes_reset_stage(&reward_reset_intent(
-                [0x36; 32]
-            ))
-            .is_err());
 
         let applied = votes
             .pbft_service_verified_votes_apply_reward_votes_reset(FfiPbftRewardVotesResetRequest {

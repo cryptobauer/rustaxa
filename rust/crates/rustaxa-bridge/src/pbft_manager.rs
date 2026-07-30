@@ -162,8 +162,8 @@ impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
             sortition_params_change_interval_efficiency: value
                 .sortition_params_change_interval_efficiency,
             sortition_params_change_threshold_upper: value.sortition_params_change_threshold_upper,
-            has_reward_votes_reset: value.has_reward_votes_reset,
-            reward_votes_bundle_rlp: value.reward_votes_bundle_rlp,
+            has_reward_votes_reset: false,
+            reward_votes_bundle_rlp: Vec::new(),
             extra_reward_vote_hashes: Vec::new(),
             has_prepared_pillar_block: value.has_prepared_pillar_block,
             prepared_pillar_block_period: value.prepared_pillar_block_period,

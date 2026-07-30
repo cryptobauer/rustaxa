@@ -1163,6 +1163,29 @@ fabricator, and two public PBFT-finalization helper methods are deleted. This
 deletes another 82 shim lines and lowers the exact shim budget to 17,224;
 all other inventory metrics are unchanged.
 
+The following `CRW-12` contraction moves reward-vote reset stage preparation
+into native executor startup. `PbftService` composes its existing
+verified-vote sibling into the manager task; fresh start rejects
+caller-supplied reward stages, derives the exact certificate identity from the
+accepted write intent, prepares the canonical bundle under the established
+manager-before-verified-votes lock order, and retains that vote guard across
+sortition preparation and the atomic primary storage commit so concurrent
+admission cannot invalidate the durable bundle. Preparation errors clear stale sessions, plans, sortition
+requests, and reset generations through the normal executor finish policy.
+The PBFT shim preparation block, CXX preparation export, bridge conversion
+helpers, reward-specific CXX stage fields, and bridge-only preparation
+assertions are deleted. Native application-root tests use genuine signed,
+weighted cert votes to prove atomic persistence and exact cursor publication;
+identity mismatch, caller-stage, and blocked-storage concurrency tests prove
+fail-closed cleanup and continuous serialization. The CXX boundary suite uses a
+genuine signed cert admission to cover start through reward advancement and
+stale-cursor rejection, retains missing-native-vote rejection, and isolates
+unrelated cursor transcripts from reward fixture construction. The checked budgets fall
+to 30,106 bridge lines, 17,209 shim lines, and 396 CXX functions. Carriers,
+handles, shim directories, granular flags, partial factories, compatibility
+constructors, and production consumers remain at 341, 20, 11, eight, zero,
+zero, and 39.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

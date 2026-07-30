@@ -1169,8 +1169,6 @@ pub mod rustaxa_ffi {
         sortition_params_change_period: u64,
         sortition_params_change_interval_efficiency: u16,
         sortition_params_change_threshold_upper: u16,
-        has_reward_votes_reset: bool,
-        reward_votes_bundle_rlp: Vec<u8>,
         has_prepared_pillar_block: bool,
         prepared_pillar_block_period: u64,
         prepared_pillar_block_rlp: Vec<u8>,
@@ -4851,10 +4849,6 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             write: PbftVoteProgressPersistenceWrite,
         ) -> Result<PbftVotePersistenceResult>;
-        pub fn pbft_service_verified_votes_prepare_reward_votes_reset_stage(
-            self: &BridgePbftService,
-            write_intent: &PbftFinalizationStorageWritePlan,
-        ) -> Result<PbftFinalizationStorageWriteStage>;
         pub fn pbft_service_verified_votes_apply_reward_votes_reset(
             self: &BridgePbftService,
             request: PbftRewardVotesResetRequest,
