@@ -3511,8 +3511,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   };
   auto report_reward_votes_reset = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary) {
     try {
-      boundary =
-          rustaxa::pbft_manager_runtime_advance_finalization_reward_votes_reset(pbft_service_->service(), boundary.cursor);
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_reward_votes_reset(pbft_service_->service(),
+                                                                                       boundary.cursor);
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context reward-vote reset: " << e.what();
@@ -3568,7 +3568,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
   bool reward_votes_reset_prepared = false;
   bool dag_order_payload_available = true;
-  bool transaction_status_payload_available = true;
+  bool transaction_status_action_available = true;
   bool final_chain_payload_available = true;
   bool advance_period_payload_available = true;
   bool pillar_payload_available = true;
@@ -3631,15 +3631,16 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (!protected_locks_held) {
             return fail_action("transaction finalized-status update", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
           }
-          if (!transaction_status_payload_available) {
+          if (!transaction_status_action_available) {
             return fail_action("transaction finalized-status update",
-                               "PBFT_FINALIZE_TRANSACTION_STATUS_PAYLOAD_UNAVAILABLE");
+                               "PBFT_FINALIZE_TRANSACTION_STATUS_ALREADY_CALLED");
           }
-          transaction_status_payload_available = false;
-          const auto report = trx_mgr_->updateFinalizedTransactionsStatusForPbftFinalization(period_data);
+          transaction_status_action_available = false;
           try {
-            boundary = rustaxa::pbft_manager_runtime_advance_finalization_transaction_status(pbft_service_->service(),
-                                                                                             boundary.cursor, report);
+            boundary = rustaxa::pbft_manager_runtime_advance_finalization_transaction_status(
+                pbft_service_->service(), dag_transaction_service_->service(), boundary.cursor,
+                kRecentlyFinalizedTransactionsFactor * final_chain_->delegationDelay(),
+                trx_mgr_->finalizedStatusAccountNonceFacts());
           } catch (const std::exception &e) {
             LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                          << block_pbft_period << ", context transaction finalized-status update: " << e.what();

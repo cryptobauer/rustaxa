@@ -198,6 +198,18 @@ It also no longer exports bridge-only drain counts, storage status, or
 per-action completion telemetry; C++ receives only state it actively consumes.
 The drain adapter derives that retained state directly from the native manager
 and next step rather than storing an intermediate bridge snapshot/status copy.
+Finalized-transaction advancement now follows the same native cursor pattern.
+The PBFT manager reads canonical `PeriodData` from its accepted plan, composes
+directly with the native DAG/transaction owner under manager-before-transaction
+lock order, applies storage/sidecar/queue/purge mutation, validates the accepted
+count, and reports its runtime action without a C++ mutation relay. C++ supplies
+only the recently-finalized retention window and account nonce facts from the
+retained EVM query boundary. The per-transaction CXX payload carrier, mutation
+report carrier, C++ hash/RLP inspection loop, and manager report relay are
+deleted. The stable non-PBFT `TransactionManager` API remains a compatibility
+client and sends one opaque canonical transaction-list RLP because partially
+populated legacy `PeriodData` objects cannot always serialize a certificate
+bundle; Rust still derives every transaction identity and owns all mutation.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The

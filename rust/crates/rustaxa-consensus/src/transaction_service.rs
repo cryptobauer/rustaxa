@@ -29,6 +29,7 @@ use crate::transaction_storage::{
 };
 use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::{H160, H256, U256};
+use rlp::Rlp;
 use rustaxa_storage::StorageWriteBatch;
 use rustaxa_storage::{StatusField, Storage};
 use rustaxa_types::LegacyTransactionEnvelope;
@@ -38,6 +39,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
+const TRANSACTIONS_POS_IN_PERIOD_DATA: usize = 3;
 
 /// Stable failure identifier returned when the native transaction lock is poisoned.
 pub const DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED: &str =
@@ -249,6 +251,59 @@ pub struct TransactionServiceFinalizedStatusReport {
     pub finalized_account_purged: Vec<H256>,
     /// Number of accepted finalized payloads.
     pub accepted_count: u64,
+}
+
+/// Decodes canonical finalized transaction facts from one legacy `PeriodData` payload.
+///
+/// The transaction list is read from the canonical period-data position and
+/// each raw transaction item is inspected with the shared legacy envelope
+/// decoder. Outputs preserve input order and canonical bytes while deriving
+/// hashes natively. Malformed period data or transaction RLP returns an error
+/// before transaction state is locked or mutated.
+pub fn finalized_status_facts_from_period_data(
+    period_data_rlp: &[u8],
+) -> Result<Vec<TransactionServiceFinalizedStatusFact>> {
+    let period_data = Rlp::new(period_data_rlp);
+    let transactions = period_data
+        .at(TRANSACTIONS_POS_IN_PERIOD_DATA)
+        .context("TM_FINALIZED_STATUS_PERIOD_DATA_TRANSACTIONS")?;
+    finalized_status_facts_from_rlp_list(transactions)
+}
+
+/// Decodes canonical finalized transaction facts from one RLP transaction list.
+///
+/// This supports the retained non-PBFT C++ compatibility method when its
+/// caller owns only a partially populated `PeriodData` object that cannot be
+/// canonically serialized. Each transaction is still decoded and hashed in
+/// Rust; malformed list or transaction RLP fails before state mutation.
+pub fn finalized_status_facts_from_transaction_list_rlp(
+    transaction_list_rlp: &[u8],
+) -> Result<Vec<TransactionServiceFinalizedStatusFact>> {
+    finalized_status_facts_from_rlp_list(Rlp::new(transaction_list_rlp))
+}
+
+fn finalized_status_facts_from_rlp_list(
+    transactions: Rlp<'_>,
+) -> Result<Vec<TransactionServiceFinalizedStatusFact>> {
+    let count = transactions
+        .item_count()
+        .context("TM_FINALIZED_STATUS_PERIOD_DATA_TRANSACTION_COUNT")?;
+    (0..count)
+        .map(|index| {
+            let tx_rlp = transactions
+                .at(index)
+                .with_context(|| format!("TM_FINALIZED_STATUS_TRANSACTION_AT_{index}"))?
+                .as_raw()
+                .to_vec();
+            let envelope = LegacyTransactionEnvelope::decode(&tx_rlp)
+                .with_context(|| format!("TM_FINALIZED_STATUS_TRANSACTION_DECODE_{index}"))?;
+            Ok(TransactionServiceFinalizedStatusFact {
+                input_index: index as u64,
+                hash: envelope.hash,
+                tx_rlp,
+            })
+        })
+        .collect()
 }
 
 fn public_verification_result(
@@ -928,6 +983,23 @@ impl TransactionService {
     ) -> Result<TransactionServiceFinalizedStatusReport> {
         self.lock()?
             .update_finalized_status(period, retention_window, account_nonce_facts, facts)
+    }
+
+    /// Applies finalized status directly from canonical legacy `PeriodData`.
+    ///
+    /// Canonical transaction facts are decoded before acquiring the native
+    /// transaction lock. The mutation then uses the same storage-first,
+    /// sidecar, queue, account-purge, and count semantics as
+    /// [`Self::update_finalized_status`].
+    pub fn update_finalized_status_from_period_data(
+        &self,
+        period: u64,
+        retention_window: u64,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+        period_data_rlp: &[u8],
+    ) -> Result<TransactionServiceFinalizedStatusReport> {
+        let facts = finalized_status_facts_from_period_data(period_data_rlp)?;
+        self.update_finalized_status(period, retention_window, account_nonce_facts, facts)
     }
 }
 
@@ -3744,6 +3816,76 @@ mod tests {
         );
         drop(state);
 
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn finalized_status_decodes_canonical_period_transactions_in_order() -> Result<()> {
+        let first = signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x61; 32])?);
+        let second = signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x62; 32])?);
+        let period_data = period_data_with_transaction_rlps(&[first.clone(), second.clone()]);
+
+        let facts = finalized_status_facts_from_period_data(&period_data)?;
+        let transaction_list = Rlp::new(&period_data)
+            .at(TRANSACTIONS_POS_IN_PERIOD_DATA)?
+            .as_raw()
+            .to_vec();
+        let compatibility_facts =
+            finalized_status_facts_from_transaction_list_rlp(&transaction_list)?;
+
+        assert_eq!(
+            facts,
+            vec![
+                TransactionServiceFinalizedStatusFact {
+                    input_index: 0,
+                    hash: keccak256(&first),
+                    tx_rlp: first,
+                },
+                TransactionServiceFinalizedStatusFact {
+                    input_index: 1,
+                    hash: keccak256(&second),
+                    tx_rlp: second,
+                },
+            ]
+        );
+        assert_eq!(compatibility_facts, facts);
+        Ok(())
+    }
+
+    #[test]
+    fn finalized_status_rejects_malformed_period_before_count_persistence() -> Result<()> {
+        let (service, path) = build_service_with_defaults(
+            Some(7),
+            8,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+
+        let error = service
+            .update_finalized_status_from_period_data(11, 10, Vec::new(), &[0xc0])
+            .expect_err("malformed period data must reject before mutation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("TM_FINALIZED_STATUS_PERIOD_DATA_TRANSACTIONS")
+        );
+        let state = service.lock()?;
+        assert_eq!(state.sidecar.transaction_count(), 7);
+        assert_eq!(
+            state
+                .storage
+                .metadata()
+                .status_field(StatusField::TrxCount as u8)?,
+            7
+        );
+        drop(state);
         std::fs::remove_dir_all(path)?;
         Ok(())
     }

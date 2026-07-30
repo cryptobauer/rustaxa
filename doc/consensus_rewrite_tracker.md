@@ -1040,6 +1040,25 @@ step and manager snapshot directly, while native and focused bridge tests cover
 the unchanged mutation and cursor behavior. This removes 18 more bridge lines,
 setting the exact budget to 32,239 with every other inventory metric unchanged.
 
+The next bounded `CRW-12` finalization contraction moves finalized-transaction
+advancement onto `PbftManagerGuard` and the native `DagTransactionService`.
+Rust owns current-action/cursor validation, canonical transaction decoding and
+hashing from the accepted `PeriodData`, storage-first count persistence,
+sidecar/queue/account-nonce purge mutation, accepted-count validation, stable
+fatal error projection, and runtime reporting. The C++ PBFT overlay supplies
+only the retention window and narrow FinalChain account nonce facts. The
+per-transaction payload carrier, mutation-report carrier, C++ payload
+inspection/report logging loop, and manager report relay are deleted. Native
+tests cover canonical decoding, malformed pre-mutation rejection, advancement,
+count mismatch, and fatal failure retention; focused transaction-shim,
+PBFT-manager, and CXX PBFT transcript tests preserve production parity. The
+non-PBFT stable `TransactionManager` method remains a compatibility client and
+passes one opaque transaction-list RLP for partially populated legacy objects.
+The checked bridge budget falls by 40 lines to 32,199, shim lines fall by 35 to
+17,403, and carriers fall by two to 344. Functions, handles, shim directories,
+flags, partial factories, compatibility constructors, and production consumers
+are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

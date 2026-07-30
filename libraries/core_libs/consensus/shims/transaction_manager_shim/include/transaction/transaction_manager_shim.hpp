@@ -250,14 +250,13 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
   void updateFinalizedTransactionsStatus(const PeriodData &period_data);
 
   /**
-   * Apply finalized-status transitions and return the Rust-owned command report.
+   * Read account nonce facts required by native finalized-status queue purge.
    *
-   * This is the same Rust-backed mutation as `updateFinalizedTransactionsStatus`,
-   * but exposes the typed report so PBFT finalization can prove the live mutation
-   * back to its Rust runtime cursor before advancing.
+   * This is the retained external-EVM query boundary. Rust owns the sender set;
+   * C++ reads only the latest account presence/nonce for those senders and does
+   * not materialize finalized transaction payloads or mutation reports.
    */
-  rustaxa::TransactionManagerFinalizedStatusCommandReport updateFinalizedTransactionsStatusForPbftFinalization(
-      const PeriodData &period_data);
+  rust::Vec<rustaxa::TransactionQueueAccountNonceFact> finalizedStatusAccountNonceFacts() const;
 
   /**
    * Warm Rust-owned recently-finalized sidecars from canonical period-data RLP payloads.

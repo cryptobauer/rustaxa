@@ -552,6 +552,27 @@ impl DagTransactionService {
         )
     }
 
+    /// Applies finalized transaction status from canonical legacy `PeriodData`.
+    ///
+    /// The composed transaction owner decodes ordered canonical transaction
+    /// facts, persists the status/count updates, mutates sidecars and queue
+    /// state, and performs periodic account-nonce purge. Decode or mutation
+    /// errors leave PBFT cursor advancement to the caller.
+    pub fn transaction_update_finalized_status_from_period_data(
+        &self,
+        period: u64,
+        retention_window: u64,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+        period_data_rlp: &[u8],
+    ) -> Result<TransactionServiceFinalizedStatusReport> {
+        self.transaction.update_finalized_status_from_period_data(
+            period,
+            retention_window,
+            account_nonce_facts,
+            period_data_rlp,
+        )
+    }
+
     /// Starts one compatibility packing cursor and returns unlocked EVM requests.
     pub fn transaction_prepare_compatibility_pack(
         &self,

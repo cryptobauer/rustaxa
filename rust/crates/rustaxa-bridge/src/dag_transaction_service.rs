@@ -49,12 +49,13 @@ use rustaxa_consensus::transaction_packing_service::{
 #[cfg(test)]
 use rustaxa_consensus::transaction_service::TransactionServiceGuard;
 use rustaxa_consensus::transaction_service::{
-    DagTransactionSaveInput, TransactionServiceAccountNonceFact,
-    TransactionServiceCompatibilityPackFinalized, TransactionServiceCompatibilityPackPrepared,
-    TransactionServiceCompatibilityPackRequest, TransactionServiceConfig,
-    TransactionServiceEstimateRequest, TransactionServiceFinalizedFilterRequest,
-    TransactionServiceFinalizedStatusFact, TransactionServiceGasEstimationResult,
-    TransactionServicePackEstimate, TransactionServicePayload, TransactionServiceTransactionView,
+    finalized_status_facts_from_transaction_list_rlp, DagTransactionSaveInput,
+    TransactionServiceAccountNonceFact, TransactionServiceCompatibilityPackFinalized,
+    TransactionServiceCompatibilityPackPrepared, TransactionServiceCompatibilityPackRequest,
+    TransactionServiceConfig, TransactionServiceEstimateRequest,
+    TransactionServiceFinalizedFilterRequest, TransactionServiceFinalizedStatusFact,
+    TransactionServiceGasEstimationResult, TransactionServicePackEstimate,
+    TransactionServicePayload, TransactionServiceTransactionView,
     TransactionServiceVerifyNotFinalizedFact,
 };
 
@@ -115,6 +116,22 @@ impl BridgeDagTransactionService {
         cursor: u32,
     ) -> Result<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep> {
         runtime.advance_finalization_sortition_commit(&self.root, cursor)
+    }
+
+    /// Delegates finalized transaction mutation and cursor advancement to native owners.
+    pub(crate) fn advance_finalization_transaction_status(
+        &self,
+        runtime: &mut PbftManagerGuard<'_>,
+        cursor: u32,
+        retention_window: u64,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+    ) -> Result<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep> {
+        runtime.advance_finalization_transaction_status(
+            &self.root,
+            cursor,
+            retention_window,
+            account_nonce_facts,
+        )
     }
 }
 
@@ -832,45 +849,28 @@ pub fn service_save_transactions_from_dag_block_command_report_with_runtime(
     ))
 }
 
-pub fn service_update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
+/// Applies finalized status from a canonical RLP transaction list.
+///
+/// This is the retained non-PBFT compatibility API for partially populated
+/// legacy `PeriodData` objects. C++ supplies one opaque transaction-list RLP
+/// plus external-EVM account nonce facts; Rust derives hashes and owns all
+/// mutation. No per-transaction fact or mutation report crosses CXX.
+pub fn service_update_finalized_transactions_status_from_transaction_list(
     service: &BridgeDagTransactionService,
     period: u64,
     retention_window: u64,
     account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
-    facts: Vec<FinalizedTransactionStatusSidecarFact>,
-) -> Result<TransactionManagerFinalizedStatusCommandReport> {
-    let report = service.root.transaction_update_finalized_status(
+    transaction_list_rlp: Vec<u8>,
+) -> Result<()> {
+    let facts: Vec<TransactionServiceFinalizedStatusFact> =
+        finalized_status_facts_from_transaction_list_rlp(&transaction_list_rlp)?;
+    service.root.transaction_update_finalized_status(
         period,
         retention_window,
         bridge_to_service_account_nonce_facts(account_nonce_facts),
-        facts
-            .into_iter()
-            .map(|fact| TransactionServiceFinalizedStatusFact {
-                input_index: fact.input_index,
-                hash: H256::from(fact.hash),
-                tx_rlp: fact.trx_rlp,
-            })
-            .collect(),
+        facts,
     )?;
-    Ok(TransactionManagerFinalizedStatusCommandReport {
-        removed_non_finalized: report
-            .removed_non_finalized
-            .into_iter()
-            .map(|hash| TransactionManagerHashCommand { hash: hash.0 })
-            .collect(),
-        queue_erased: report
-            .queue_erased
-            .into_iter()
-            .map(|hash| TransactionManagerHashCommand { hash: hash.0 })
-            .collect(),
-        finalized_account_purged: report
-            .finalized_account_purged
-            .into_iter()
-            .map(|hash| TransactionManagerHashCommand { hash: hash.0 })
-            .collect(),
-        accepted_count: report.accepted_count,
-        purge_transaction_queue: false,
-    })
+    Ok(())
 }
 
 pub fn service_transaction_manager_filter_non_finalized_with_runtime(

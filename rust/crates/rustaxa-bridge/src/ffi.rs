@@ -3251,13 +3251,6 @@ pub mod rustaxa_ffi {
         sender_account_nonce: [u8; 32],
     }
 
-    /// Input finalized transaction payload for sidecar-aware status updates.
-    struct FinalizedTransactionStatusSidecarFact {
-        input_index: u64,
-        hash: [u8; 32],
-        trx_rlp: Vec<u8>,
-    }
-
     /// Filtered finalized transaction action with preserved index mapping.
     struct TransactionManagerFilterAction {
         input_index: u64,
@@ -3356,20 +3349,6 @@ pub mod rustaxa_ffi {
     /// this report only for logging.
     struct TransactionManagerDagSaveCommandReport {
         queue_erased: Vec<TransactionManagerHashCommand>,
-    }
-
-    /// Typed command report for finalized transaction status updates.
-    ///
-    /// Rust has already applied storage updates, live sidecar transitions,
-    /// queue erasure, optional finalized-account queue purge, and runtime count
-    /// changes. C++ consumes the buckets for existing logs only and reads the
-    /// authoritative count from the runtime when callers ask for it.
-    struct TransactionManagerFinalizedStatusCommandReport {
-        removed_non_finalized: Vec<TransactionManagerHashCommand>,
-        queue_erased: Vec<TransactionManagerHashCommand>,
-        finalized_account_purged: Vec<TransactionManagerHashCommand>,
-        accepted_count: u64,
-        purge_transaction_queue: bool,
     }
 
     /// Typed admission result attached to admission command reports.
@@ -4510,8 +4489,10 @@ pub mod rustaxa_ffi {
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_transaction_status(
             runtime: &BridgePbftService,
+            dag_transaction_service: &BridgeDagTransactionService,
             cursor: u32,
-            report: TransactionManagerFinalizedStatusCommandReport,
+            retention_window: u64,
+            account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_dag_order(
             runtime: &BridgePbftService,
@@ -4771,15 +4752,13 @@ pub mod rustaxa_ffi {
             runtime: &BridgeDagTransactionService,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<TransactionManagerDagSaveCommandReport>;
-        /// Applies finalized status updates plus periodic purge and returns a typed command report.
-        #[rust_name = "service_update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts"]
-        pub fn update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
-            runtime: &BridgeDagTransactionService,
+        pub fn service_update_finalized_transactions_status_from_transaction_list(
+            service: &BridgeDagTransactionService,
             period: u64,
             retention_window: u64,
             account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
-            facts: Vec<FinalizedTransactionStatusSidecarFact>,
-        ) -> Result<TransactionManagerFinalizedStatusCommandReport>;
+            transaction_list_rlp: Vec<u8>,
+        ) -> Result<()>;
         /// Builds deterministic TransactionManager::verifyTransaction admission plan.
         pub fn transaction_manager_verify_transaction(
             fact: TransactionManagerVerifyTransactionFact,

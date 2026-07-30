@@ -67,6 +67,40 @@ impl PbftRewardVoteCursorCommitPort for crate::pbft_vote_runtime::PbftVerifiedVo
     }
 }
 
+/// Native port for applying the finalized transaction set retained by PBFT finalization.
+///
+/// The production implementation is
+/// [`crate::dag_transaction_service::DagTransactionService`]. The port accepts
+/// only canonical period bytes plus narrow external account-nonce facts; it
+/// returns native mutation facts and never exposes queue/sidecar effects to C++.
+pub trait PbftFinalizedTransactionStatusPort {
+    /// Applies storage, sidecar, queue, and account-purge effects for one finalized period.
+    fn update_finalized_transactions_from_period_data(
+        &self,
+        period: u64,
+        retention_window: u64,
+        account_nonce_facts: Vec<crate::transaction_service::TransactionServiceAccountNonceFact>,
+        period_data_rlp: &[u8],
+    ) -> Result<crate::transaction_service::TransactionServiceFinalizedStatusReport>;
+}
+
+impl PbftFinalizedTransactionStatusPort for crate::dag_transaction_service::DagTransactionService {
+    fn update_finalized_transactions_from_period_data(
+        &self,
+        period: u64,
+        retention_window: u64,
+        account_nonce_facts: Vec<crate::transaction_service::TransactionServiceAccountNonceFact>,
+        period_data_rlp: &[u8],
+    ) -> Result<crate::transaction_service::TransactionServiceFinalizedStatusReport> {
+        self.transaction_update_finalized_status_from_period_data(
+            period,
+            retention_window,
+            account_nonce_facts,
+            period_data_rlp,
+        )
+    }
+}
+
 /// Prepares and publishes the sortition portion of one PBFT finalization write set.
 ///
 /// The caller must already hold the manager serialization guard. The task
@@ -472,6 +506,140 @@ impl PbftManagerGuard<'_> {
             final_chain_last_block: 0,
         };
         let validation = validate_pbft_finalization_live_mutation_report(&plan, live_report);
+        let session = self
+            .finalization_runtime_session
+            .as_mut()
+            .expect("finalization session checked above");
+        *session = report_pbft_finalization_runtime_action(
+            session.clone(),
+            PbftFinalizationRuntimeActionResult {
+                action: validation.action,
+                success: validation.accepted,
+                status: validation.status.as_u8(),
+                error_code: validation.error_code,
+            },
+        );
+        Ok(next_pbft_finalization_runtime_action(session))
+    }
+
+    /// Applies finalized transaction status and advances its finalization cursor.
+    ///
+    /// The manager derives the finalized period and canonical transaction bytes
+    /// from its accepted plan, calls the native transaction owner while holding
+    /// manager-before-transaction lock order, validates the accepted count, and
+    /// reports the action through the native runtime. C++ supplies only account
+    /// nonce facts read through the retained external EVM query boundary.
+    /// Decode, storage, or transaction-state failures are fatal post-storage
+    /// invariants and do not advance the cursor.
+    pub fn advance_finalization_transaction_status<V: PbftFinalizedTransactionStatusPort>(
+        &mut self,
+        transactions: &V,
+        cursor: u32,
+        retention_window: u64,
+        account_nonce_facts: Vec<crate::transaction_service::TransactionServiceAccountNonceFact>,
+    ) -> Result<crate::pbft_finalize::PbftFinalizationRuntimeStep> {
+        use crate::pbft_finalize::{
+            PbftFinalizationLiveMutationReport, PbftFinalizationRuntimeAction,
+            PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus,
+            PbftFinalizationRuntimeStep, next_pbft_finalization_runtime_action,
+            report_pbft_finalization_runtime_action,
+            validate_pbft_finalization_live_mutation_report,
+        };
+
+        let Some(session) = self.finalization_runtime_session.as_ref() else {
+            return Ok(PbftFinalizationRuntimeStep {
+                runtime_status: PbftFinalizationRuntimeStatus::ActionMismatch,
+                has_action: false,
+                action: None,
+                action_index: 0,
+                complete: false,
+                error_code: "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED".to_string(),
+            });
+        };
+        let current_step = next_pbft_finalization_runtime_action(session);
+        if current_step.runtime_status != PbftFinalizationRuntimeStatus::Active
+            || !current_step.has_action
+        {
+            return Ok(current_step);
+        }
+        if cursor != current_step.action_index {
+            let session = self
+                .finalization_runtime_session
+                .as_mut()
+                .expect("finalization session checked above");
+            session.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
+            session.error_code = "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH".to_string();
+            return Ok(next_pbft_finalization_runtime_action(session));
+        }
+
+        let action = current_step
+            .action
+            .expect("active finalization step must carry an action");
+        if action != PbftFinalizationRuntimeAction::UpdateFinalizedTransactions {
+            let session = self
+                .finalization_runtime_session
+                .as_mut()
+                .expect("finalization session checked above");
+            *session = report_pbft_finalization_runtime_action(
+                session.clone(),
+                PbftFinalizationRuntimeActionResult {
+                    action,
+                    success: false,
+                    status: PbftFinalizationRuntimeStatus::ActionMismatch.as_u8(),
+                    error_code: "PBFT_FINALIZE_RUNTIME_ACTION_MISMATCH".to_string(),
+                },
+            );
+            return Ok(next_pbft_finalization_runtime_action(session));
+        }
+
+        let plan = self
+            .finalization_runtime_plan
+            .clone()
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_RUNTIME_PLAN_NOT_STARTED"))?;
+        let report = transactions
+            .update_finalized_transactions_from_period_data(
+                plan.storage_write_intent.block_period,
+                retention_window,
+                account_nonce_facts,
+                &plan.storage_write_intent.period_data_rlp,
+            )
+            .map_err(|error| {
+                anyhow!("PBFT_FINALIZE_POST_STORAGE_TRANSACTION_STATUS_INVARIANT:{error}")
+            })?;
+        let validation = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                action,
+                block_period: plan.storage_write_intent.block_period,
+                pbft_block_hash: plan.storage_write_intent.pbft_block_hash,
+                anchor_hash: plan.storage_write_intent.anchor_hash,
+                dag_finalized_count: 0,
+                finalized_transaction_count: report.accepted_count,
+                pbft_chain_size: 0,
+                pbft_chain_head_hash: H256::zero(),
+                pbft_chain_last_anchor_hash: H256::zero(),
+                reward_votes_period: 0,
+                reward_votes_round: 0,
+                reward_votes_block_hash: H256::zero(),
+                reward_votes_reset_provenance_valid: false,
+                sortition_changed: false,
+                sortition_change_period: 0,
+                sortition_change_interval_efficiency: 0,
+                sortition_change_threshold_upper: 0,
+                sortition_current_threshold_upper: 0,
+                sortition_params_changes_count: 0,
+                rounds_count_dynamic_lambda: 0,
+                dynamic_lambda: 0,
+                executed_pbft_block: false,
+                manager_period: 0,
+                pillar_processed_period: 0,
+                pillar_request_period: 0,
+                anchor_dag_cache_count: 0,
+                final_chain_dispatched: false,
+                final_chain_blocks_per_year: 0,
+                final_chain_last_block: 0,
+            },
+        );
         let session = self
             .finalization_runtime_session
             .as_mut()
@@ -6956,6 +7124,49 @@ mod tests {
         request: Mutex<Option<crate::pbft_vote_runtime::RewardVoteCursorCommitRequest>>,
     }
 
+    type FinalizedTransactionRequest = (
+        u64,
+        u64,
+        Vec<crate::transaction_service::TransactionServiceAccountNonceFact>,
+        Vec<u8>,
+    );
+
+    struct FinalizedTransactionStatusStub {
+        accepted_count: u64,
+        error: Option<&'static str>,
+        request: Mutex<Option<FinalizedTransactionRequest>>,
+    }
+
+    impl PbftFinalizedTransactionStatusPort for FinalizedTransactionStatusStub {
+        fn update_finalized_transactions_from_period_data(
+            &self,
+            period: u64,
+            retention_window: u64,
+            account_nonce_facts: Vec<
+                crate::transaction_service::TransactionServiceAccountNonceFact,
+            >,
+            period_data_rlp: &[u8],
+        ) -> Result<crate::transaction_service::TransactionServiceFinalizedStatusReport> {
+            *self.request.lock().expect("request lock") = Some((
+                period,
+                retention_window,
+                account_nonce_facts,
+                period_data_rlp.to_vec(),
+            ));
+            if let Some(error) = self.error {
+                return Err(anyhow!(error));
+            }
+            Ok(
+                crate::transaction_service::TransactionServiceFinalizedStatusReport {
+                    removed_non_finalized: Vec::new(),
+                    queue_erased: Vec::new(),
+                    finalized_account_purged: Vec::new(),
+                    accepted_count: self.accepted_count,
+                },
+            )
+        }
+    }
+
     impl PbftRewardVoteCursorCommitPort for RewardVoteCursorCommitStub {
         fn commit_reward_vote_cursor(
             &self,
@@ -7116,6 +7327,42 @@ mod tests {
                 actions: vec![
                     PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
                     PbftFinalizationRuntimeAction::SetDagBlockOrder,
+                ],
+            },
+        ));
+    }
+
+    fn install_transaction_status_runtime(
+        runtime: &mut PbftManagerRuntimeState,
+        write_set: PbftFinalizationStorageWriteIntent,
+    ) {
+        runtime.finalization_runtime_plan = Some(PbftFinalizationPlan {
+            finalize_block: true,
+            anchor: PbftFinalizationAnchor::Anchored,
+            executed_pbft_block: true,
+            cleanup: PbftFinalizationCleanupIntent {
+                persist_pbft_block_metadata: true,
+                reset_reward_votes: true,
+                set_dag_block_order: true,
+                update_sortition_params: true,
+                update_finalized_transactions_status: true,
+                update_pbft_chain: true,
+                clear_anchor_dag_cache: true,
+                finalize_final_chain: true,
+                maybe_update_dynamic_lambda: false,
+                advance_period: true,
+                process_pillar_block: false,
+            },
+            storage_write_intent: write_set,
+            status: PbftFinalizationStatus::Accepted,
+        });
+        runtime.finalization_runtime_session = Some(start_pbft_finalization_runtime(
+            &PbftFinalizationRuntimePlan {
+                finalize_block: true,
+                status: PbftFinalizationStatus::Accepted,
+                actions: vec![
+                    PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
+                    PbftFinalizationRuntimeAction::UpdatePbftChain,
                 ],
             },
         ));
@@ -7538,6 +7785,135 @@ mod tests {
         assert_eq!(
             step.error_code,
             "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_METADATA_MISMATCH"
+        );
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_transaction_status_advances_from_retained_period_data() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_transaction_status_advance");
+        let mut write_set = finalization_sortition_write_set(
+            7,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 1, &[]),
+        );
+        write_set.transaction_location_writes = vec![PbftFinalizationPositionedHash {
+            hash: H256::repeat_byte(9),
+            position: 0,
+        }];
+        let retained_period_data = write_set.period_data_rlp.clone();
+        let mut runtime = manager.lock();
+        install_transaction_status_runtime(&mut runtime, write_set);
+        let account_facts = vec![
+            crate::transaction_service::TransactionServiceAccountNonceFact {
+                sender: ethereum_types::H160::repeat_byte(3).0,
+                account_found: true,
+                account_nonce: [4; 32],
+            },
+        ];
+        let transactions = FinalizedTransactionStatusStub {
+            accepted_count: 1,
+            error: None,
+            request: Mutex::new(None),
+        };
+
+        let step = runtime
+            .advance_finalization_transaction_status(&transactions, 0, 42, account_facts.clone())
+            .expect("native transaction status advances");
+
+        assert_eq!(step.runtime_status, PbftFinalizationRuntimeStatus::Active);
+        assert_eq!(
+            step.action,
+            Some(PbftFinalizationRuntimeAction::UpdatePbftChain)
+        );
+        assert_eq!(
+            *transactions.request.lock().expect("request lock"),
+            Some((7, 42, account_facts, retained_period_data))
+        );
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_transaction_status_rejects_count_mismatch() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_transaction_status_count");
+        let mut write_set = finalization_sortition_write_set(
+            7,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 1, &[]),
+        );
+        write_set.transaction_location_writes = vec![PbftFinalizationPositionedHash {
+            hash: H256::repeat_byte(9),
+            position: 0,
+        }];
+        let mut runtime = manager.lock();
+        install_transaction_status_runtime(&mut runtime, write_set);
+        let transactions = FinalizedTransactionStatusStub {
+            accepted_count: 0,
+            error: None,
+            request: Mutex::new(None),
+        };
+
+        let step = runtime
+            .advance_finalization_transaction_status(&transactions, 0, 42, Vec::new())
+            .expect("count mismatch returns a failed runtime step");
+
+        assert_eq!(
+            step.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionFailed
+        );
+        assert_eq!(
+            step.error_code,
+            "PBFT_FINALIZE_LIVE_MUTATION_TRANSACTION_COUNT_MISMATCH"
+        );
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_transaction_status_preserves_fatal_native_error_prefix() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_transaction_status_error");
+        let write_set = finalization_sortition_write_set(
+            7,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        install_transaction_status_runtime(&mut runtime, write_set);
+        let transactions = FinalizedTransactionStatusStub {
+            accepted_count: 0,
+            error: Some("decode failed"),
+            request: Mutex::new(None),
+        };
+
+        let error = runtime
+            .advance_finalization_transaction_status(&transactions, 0, 42, Vec::new())
+            .expect_err("native status failure is a fatal post-storage invariant");
+
+        assert_eq!(
+            error.to_string(),
+            "PBFT_FINALIZE_POST_STORAGE_TRANSACTION_STATUS_INVARIANT:decode failed"
+        );
+        let step = crate::pbft_finalize::next_pbft_finalization_runtime_action(
+            runtime
+                .finalization_runtime_session
+                .as_ref()
+                .expect("session remains retained"),
+        );
+        assert_eq!(step.action_index, 0);
+        assert_eq!(
+            step.action,
+            Some(PbftFinalizationRuntimeAction::UpdateFinalizedTransactions)
         );
         drop(runtime);
         drop(manager);

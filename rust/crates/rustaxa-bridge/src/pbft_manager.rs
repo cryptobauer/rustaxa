@@ -71,9 +71,10 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueueSnapshot as FfiPeriodDataQueueSnapshot,
     PeriodDataQueueTransactionIdentity as FfiPeriodDataQueueTransactionIdentity,
     PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
-    TransactionManagerFinalizedStatusCommandReport as FfiTransactionManagerFinalizedStatusCommandReport,
+    TransactionQueueAccountNonceFact as FfiTransactionQueueAccountNonceFact,
 };
 use crate::ffi::{BridgePbftService, BridgeStorage};
+use crate::transaction_manager::bridge_to_service_account_nonce_facts;
 use anyhow::anyhow;
 use rustaxa_consensus::dag::dag_block_period_from_storage;
 use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
@@ -2626,40 +2627,52 @@ fn pbft_manager_runtime_fail_finalization_external_effect_inner(
     ))
 }
 
-/// Reports a transaction-manager finalized-status command result to the
-/// manager-owned PBFT finalization executor.
+/// Applies finalized transaction status and advances the manager-owned executor.
 ///
 /// Inputs:
-/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
+/// - `runtime`: PBFT manager runtime that owns the accepted canonical period data.
+/// - `dag_transaction_service`: native transaction owner.
 /// - `cursor`: executor cursor previously returned to C++.
-/// - `report`: transaction-manager command report after finalized-status side
-///   effects have executed.
+/// - `retention_window`: configured recently-finalized sidecar window.
+/// - `account_nonce_facts`: narrow facts read through the external EVM boundary.
 ///
 /// Outputs:
 /// - The next PBFT finalization executor state.
 ///
 /// Invariants and edge behavior:
-/// - C++ does not construct a generic PBFT finalization external-effect report
-///   for the transaction-manager client.
-/// - Rust derives the PBFT finalization action from the cursor and maps only the
-///   transaction facts needed for live-mutation validation.
-/// - Cursor mismatch and validation failure use the same executor-state
-///   contract as every typed finalization advancement API.
+/// - Rust decodes canonical period transactions, applies native storage,
+///   sidecar, queue, and purge effects, then validates the accepted count.
+/// - C++ never materializes transaction payload facts or receives mutation
+///   buckets. Cursor mismatch does not call the transaction owner.
 pub fn pbft_manager_runtime_advance_finalization_transaction_status(
     runtime: &BridgePbftService,
+    dag_transaction_service: &BridgeDagTransactionService,
     cursor: u32,
-    report: FfiTransactionManagerFinalizedStatusCommandReport,
+    retention_window: u64,
+    account_nonce_facts: Vec<FfiTransactionQueueAccountNonceFact>,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     let mut runtime = runtime.manager_state();
-    pbft_manager_runtime_advance_finalization_live_mutation(
-        &mut runtime,
-        cursor,
-        |action, write_set| {
-            let mut live_report = base_finalization_live_report(action, write_set);
-            live_report.finalized_transaction_count = report.accepted_count;
-            live_report
-        },
-    )
+    let result = (|| {
+        let next_step: FinalizationRuntimeSessionStep = dag_transaction_service
+            .advance_finalization_transaction_status(
+                &mut runtime,
+                cursor,
+                retention_window,
+                bridge_to_service_account_nonce_facts(account_nonce_facts),
+            )?
+            .into();
+        if next_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
+            || !next_step.can_continue
+        {
+            return Ok(finalization_executor_state_from_step(
+                &mut runtime,
+                next_step,
+                String::new(),
+            ));
+        }
+        drain_finalization_executor_state(&mut runtime)
+    })();
+    finish_finalization_executor_boundary(&mut runtime, result)
 }
 
 /// Reports PBFT-chain finalized-head update facts to the manager-owned PBFT
@@ -4516,38 +4529,6 @@ mod tests {
         assert_eq!(
             rejected.error_code,
             "PBFT_FINALIZE_LIVE_MUTATION_TRANSACTION_COUNT_MISMATCH"
-        );
-    }
-
-    #[test]
-    fn manager_runtime_advances_finalization_with_transaction_status_report() {
-        let (_temp_dir, mut runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_transaction_status_report");
-        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
-        advance_finalization_cursor_to_action(
-            &mut runtime,
-            PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
-        );
-
-        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
-        let state = pbft_manager_runtime_advance_finalization_transaction_status(
-            &mut runtime,
-            step.cursor,
-            FfiTransactionManagerFinalizedStatusCommandReport {
-                removed_non_finalized: Vec::new(),
-                queue_erased: Vec::new(),
-                finalized_account_purged: Vec::new(),
-                accepted_count: 1,
-                purge_transaction_queue: false,
-            },
-        )
-        .expect("typed transaction status report should advance finalization");
-
-        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
-        assert_eq!(
-            state.action,
-            PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
         );
     }
 
