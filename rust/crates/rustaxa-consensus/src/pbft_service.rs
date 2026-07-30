@@ -7,8 +7,8 @@
 
 use crate::pbft_chain::PbftChainService;
 use crate::pbft_manager::{
-    PbftManagerGuard, PbftManagerService, PbftManagerStorageStartupFact,
-    create_pbft_manager_runtime_from_storage,
+    PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest, PbftManagerGuard,
+    PbftManagerService, PbftManagerStorageStartupFact, create_pbft_manager_runtime_from_storage,
 };
 use crate::pbft_period_cleanup::{PbftPeriodStateCleanupResult, cleanup_period_state_with_commit};
 use crate::pbft_readiness::PbftServiceReadiness;
@@ -136,6 +136,33 @@ impl PbftService {
                     .context("PBFT_PERIOD_STATE_CLEANUP_COMMIT")
             },
         )
+    }
+
+    /// Starts or resumes one PBFT finalization executor under native ownership.
+    ///
+    /// The application root acquires the manager serialization domain, invokes
+    /// the complete lock-held start/resume task against the supplied native
+    /// DAG/transaction sibling, and captures the compatibility snapshot before
+    /// releasing the manager lock. The first external action is returned as a
+    /// typed boundary; no C++ callback occurs while native locks are held.
+    ///
+    /// Operational errors and terminal outcomes clear retained executor state
+    /// inside the manager task. Active boundaries retain their plan, cursor,
+    /// authenticated reward-reset generation, and prepared sortition request.
+    pub fn start_finalization_executor(
+        &self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        request: PbftFinalizationExecutorStartRequest,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        let mut manager = self.manager_state();
+        let drain = manager.start_finalization_executor(dag_transaction_service, request)?;
+        Ok(PbftFinalizationExecutorBoundary {
+            next_step: drain.next_step,
+            cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
+            has_snapshot: drain.has_snapshot,
+            snapshot: manager.state.snapshot(),
+            error_code: drain.error_code,
+        })
     }
 
     /// Returns whether PBFT startup replay has been published complete.

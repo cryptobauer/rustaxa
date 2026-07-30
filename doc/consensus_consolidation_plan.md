@@ -220,6 +220,15 @@ before live publication; storage precedes the corresponding manager snapshot.
 The bridge retains one argument-free delegate, next-step/snapshot compatibility
 projection, and terminal session cleanup. The duplicate bridge drain state,
 stage construction, behavioral loop, and behavioral transcripts are deleted.
+Finalization executor start and resume now join that native ownership boundary.
+`PbftService` holds the manager serialization domain while Rust clears stale
+state, authenticates a resumable reward-reset generation, derives durable
+resume state, installs the fresh cursor, prepares sortition through the native
+DAG/transaction owner, applies primary storage, reports the result, drains the
+first manager-owned action sequence, captures the manager snapshot, and clears
+terminal or failed sessions. The bridge converts the start request and returned
+boundary only; its duplicate workflow and behavioral transcripts are deleted,
+with one CXX conversion/integration sentinel retained.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The

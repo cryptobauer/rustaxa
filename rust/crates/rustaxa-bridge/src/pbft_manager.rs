@@ -81,22 +81,23 @@ use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
 #[cfg(test)]
 use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::pbft_finalize::{
-    apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
-    inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
     load_pbft_finalization_last_period_lambda as load_domain_pbft_finalization_last_period_lambda,
     next_pbft_finalization_runtime_action,
     plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
-    plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
-    report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
-    start_pbft_finalization_runtime,
+    report_pbft_finalization_runtime_action,
     validate_pbft_finalization_live_mutation_report as validate_domain_pbft_finalization_live_mutation_report,
     PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationLiveMutationReport,
-    PbftFinalizationPlan, PbftFinalizationPositionedHash, PbftFinalizationResumePlan,
-    PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
-    PbftFinalizationRuntimeStatus, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
-    PbftFinalizationStorageWriteStage,
+    PbftFinalizationPlan, PbftFinalizationPositionedHash, PbftFinalizationRuntimeAction,
+    PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus, PbftFinalizationStatus,
+    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
+};
+#[cfg(test)]
+use rustaxa_consensus::pbft_finalize::{
+    plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
+    start_pbft_finalization_resume_runtime, start_pbft_finalization_runtime,
+    PbftFinalizationResumePlan,
 };
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
@@ -1912,8 +1913,6 @@ fn pbft_finalization_session_missing_step() -> FinalizationRuntimeSessionStep {
 }
 
 #[cfg(test)]
-const FINALIZATION_STAGE_SORTITION_PARAMS_CHANGE: u8 = 3;
-#[cfg(test)]
 const FINALIZATION_STAGE_REWARD_VOTES_RESET: u8 = 4;
 const FINALIZATION_EXECUTOR_MODE_FRESH: u8 = 0;
 const FINALIZATION_EXECUTOR_MODE_RESUME: u8 = 1;
@@ -1998,6 +1997,28 @@ fn finalization_executor_state_from_drain(
             next_step.error_code
         } else {
             drain.error_code
+        },
+    }
+}
+
+fn finalization_executor_state_from_boundary(
+    boundary: rustaxa_consensus::pbft_manager::PbftFinalizationExecutorBoundary,
+) -> FfiPbftManagerFinalizationExecutorState {
+    let next_step: FinalizationRuntimeSessionStep = boundary.next_step.into();
+    FfiPbftManagerFinalizationExecutorState {
+        status: next_step.status,
+        cursor: next_step.cursor,
+        action: next_step.action,
+        has_action: next_step.has_action,
+        complete: next_step.complete,
+        can_continue: next_step.can_continue,
+        cleared_anchor_dag_cache: boundary.cleared_anchor_dag_cache,
+        has_snapshot: boundary.has_snapshot,
+        snapshot: boundary.snapshot.into(),
+        error_code: if boundary.error_code.is_empty() {
+            next_step.error_code
+        } else {
+            boundary.error_code
         },
     }
 }
@@ -2095,6 +2116,7 @@ fn base_finalization_live_report(
 /// longer owns a standalone bridge session handle; subsequent next/report calls
 /// operate on this manager-owned session. Starting a new session replaces any
 /// incomplete prior finalization cursor.
+#[cfg(test)]
 fn pbft_manager_runtime_begin_finalization_session(
     runtime: &mut PbftManagerRuntimeState,
     plan: &FfiPbftFinalizationIntentPlan,
@@ -2113,6 +2135,7 @@ fn pbft_manager_runtime_begin_finalization_session(
 /// durable storage facts. C++ still executes live FinalChain, manager, and
 /// pillar side effects, but the action cursor and terminal status stay on the
 /// existing manager runtime.
+#[cfg(test)]
 fn pbft_manager_runtime_begin_finalization_resume_session(
     runtime: &mut PbftManagerRuntimeState,
     plan: PbftFinalizationResumePlan,
@@ -2289,90 +2312,28 @@ pub fn pbft_manager_runtime_start_finalization_executor(
     dag_transaction_service: &BridgeDagTransactionService,
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let mut runtime = runtime.manager_state();
-    let resume_generation = (request.mode == FINALIZATION_EXECUTOR_MODE_RESUME
-        && runtime.finalization_reward_votes_reset_generation != 0
-        && runtime.finalization_reward_votes_reset_generation
-            == runtime.storage.extra_reward_votes_reset_generation())
-    .then_some(runtime.finalization_reward_votes_reset_generation)
-    .unwrap_or(0);
-    clear_finalization_runtime(&mut runtime);
-    if request.mode == FINALIZATION_EXECUTOR_MODE_RESUME {
-        runtime.finalization_reward_votes_reset_generation = resume_generation;
-    }
-    let result = pbft_manager_runtime_start_finalization_executor_inner(
-        &mut runtime,
-        dag_transaction_service,
-        request,
-    );
-    finish_finalization_executor_boundary(&mut runtime, result)
-}
-
-fn pbft_manager_runtime_start_finalization_executor_inner(
-    runtime: &mut rustaxa_consensus::pbft_manager::PbftManagerGuard<'_>,
-    dag_transaction_service: &BridgeDagTransactionService,
-    request: FfiPbftFinalizationExecutorStartRequest,
-) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    if request.mode == FINALIZATION_EXECUTOR_MODE_RESUME {
-        let plan = PbftFinalizationPlan::from(&request.plan);
-        let write_set =
-            PbftFinalizationStorageWriteIntent::from(&request.plan.storage_write_intent);
-        let resume = inspect_domain_pbft_finalization_resume(
-            runtime.storage.as_ref(),
-            &write_set,
-            request.final_chain_last_block,
-        )?;
-        runtime.finalization_runtime_plan = Some(plan);
-        pbft_manager_runtime_begin_finalization_resume_session(runtime, resume);
-        return drain_finalization_executor_state(runtime);
-    }
-    if request.mode != FINALIZATION_EXECUTOR_MODE_FRESH {
-        return Err(anyhow!("PBFT_FINALIZE_EXECUTOR_UNKNOWN_MODE"));
-    }
-
-    pbft_manager_runtime_begin_finalization_session(runtime, &request.plan);
-    let current_step = pbft_manager_runtime_finalization_session_next(runtime);
-    if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
-        || current_step.action != PbftFinalizationRuntimeAction::ApplyPrimaryStorage.as_u8()
-    {
-        return Ok(finalization_executor_state_from_step(
-            runtime,
-            current_step,
-            "PBFT_FINALIZE_PRIMARY_STORAGE_ACTION_MISSING".to_string(),
-        ));
-    }
-
-    let write_set = PbftFinalizationStorageWriteIntent::from(&request.plan.storage_write_intent);
-    let mut stages: Vec<PbftFinalizationStorageWriteStage> =
-        request.primary_stages.into_iter().map(Into::into).collect();
-    dag_transaction_service.prepare_finalization_sortition(runtime, &write_set, &mut stages)?;
-    let apply_result = apply_domain_pbft_finalization_storage_writes(
-        runtime.storage.as_ref(),
-        &write_set,
-        stages,
-        request.sync,
-    )?;
-    let accepted = apply_result.status.is_success();
-    runtime.finalization_reward_votes_reset_generation = apply_result.reward_votes_reset_generation;
-    let next_step = pbft_manager_runtime_finalization_session_report_action(
-        runtime,
-        FinalizationRuntimeActionReport {
-            cursor: current_step.cursor,
-            action: current_step.action,
-            success: accepted,
-            status: apply_result.status.as_u8(),
-            error_code: apply_result.error_code,
+    let mode = match request.mode {
+        FINALIZATION_EXECUTOR_MODE_FRESH => {
+            rustaxa_consensus::pbft_manager::PbftFinalizationExecutorStartMode::Fresh {
+                primary_stages: request.primary_stages.into_iter().map(Into::into).collect(),
+                sync: request.sync,
+            }
+        }
+        FINALIZATION_EXECUTOR_MODE_RESUME => {
+            rustaxa_consensus::pbft_manager::PbftFinalizationExecutorStartMode::Resume {
+                final_chain_last_block: request.final_chain_last_block,
+            }
+        }
+        _ => rustaxa_consensus::pbft_manager::PbftFinalizationExecutorStartMode::Unknown,
+    };
+    let boundary = runtime.0.start_finalization_executor(
+        dag_transaction_service.native(),
+        rustaxa_consensus::pbft_manager::PbftFinalizationExecutorStartRequest {
+            plan: PbftFinalizationPlan::from(&request.plan),
+            mode,
         },
-    );
-    if !accepted {
-        return Ok(finalization_executor_state_from_step(
-            runtime,
-            next_step,
-            "PBFT_FINALIZE_PRIMARY_STORAGE_REJECTED".to_string(),
-        ));
-    }
-
-    drain_finalization_executor_state(runtime)
+    )?;
+    Ok(finalization_executor_state_from_boundary(boundary))
 }
 
 /// Advances one successful external finalization action with native live-mutation facts.
@@ -3946,18 +3907,6 @@ mod tests {
         .expect("sortition service should initialize")
     }
 
-    fn dag_service_from_runtime(runtime: &BridgePbftService) -> Box<BridgeDagTransactionService> {
-        dag_service_from_runtime_with_interval(runtime, 0)
-    }
-
-    fn sortition_snapshot(service: &BridgeDagTransactionService) -> (u16, usize) {
-        let sortition = service.sortition().expect("sortition state should lock");
-        (
-            sortition.current_params().vrf.threshold_upper,
-            sortition.params_changes().len(),
-        )
-    }
-
     fn finalized_dag_period_data_rlp_with_counts(
         pivot: H256,
         unique_transactions: usize,
@@ -4004,23 +3953,6 @@ mod tests {
 
     fn empty_finalized_dag_period_data_rlp() -> Vec<u8> {
         finalized_dag_period_data_rlp(H256::zero())
-    }
-
-    fn ffi_primary_finalization_stage() -> rustaxa_ffi::PbftFinalizationStorageWriteStage {
-        rustaxa_ffi::PbftFinalizationStorageWriteStage {
-            stage: 0,
-            rounds_count_dynamic_lambda: 0,
-            dynamic_lambda: 0,
-            has_sortition_params_change: false,
-            sortition_params_change_period: 0,
-            sortition_params_change_interval_efficiency: 0,
-            sortition_params_change_threshold_upper: 0,
-            has_reward_votes_reset: false,
-            reward_votes_bundle_rlp: Vec::new(),
-            has_prepared_pillar_block: false,
-            prepared_pillar_block_period: 0,
-            prepared_pillar_block_rlp: Vec::new(),
-        }
     }
 
     fn finalization_live_report(
@@ -4314,143 +4246,6 @@ mod tests {
             state.action,
             PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime.as_u8()
         );
-    }
-
-    #[test]
-    fn manager_runtime_retains_canonical_sortition_preparation_counts() {
-        let (_temp_dir, runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_counts");
-        let mut fact = finalization_fact();
-        fact.period_data_rlp =
-            finalized_dag_period_data_rlp_with_counts(H256::from([4; 32]), 3, &[2, 4]);
-        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, fact);
-        let dag_service = dag_service_from_runtime(&runtime);
-
-        pbft_manager_runtime_start_finalization_executor(
-            &runtime,
-            &dag_service,
-            FfiPbftFinalizationExecutorStartRequest {
-                mode: FINALIZATION_EXECUTOR_MODE_FRESH,
-                plan,
-                primary_stages: vec![ffi_primary_finalization_stage()],
-                sync: false,
-                final_chain_last_block: 9,
-            },
-        )
-        .expect("canonical period facts should prepare sortition");
-
-        let preparation = runtime
-            .manager_state()
-            .finalization_sortition_commit_request
-            .expect("fresh start should retain sortition preparation");
-        assert!(preparation.finalized_period.efficiency_counts.has_pivot);
-        assert_eq!(
-            preparation
-                .finalized_period
-                .efficiency_counts
-                .unique_transactions,
-            3
-        );
-        assert_eq!(
-            preparation
-                .finalized_period
-                .efficiency_counts
-                .total_dag_transaction_refs,
-            6
-        );
-        assert_eq!(preparation.finalized_period.non_empty_pbft_chain_size, 6);
-    }
-
-    #[test]
-    fn manager_runtime_primary_storage_error_does_not_publish_sortition() {
-        let (_temp_dir, runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_storage_error");
-        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        let dag_service = dag_service_from_runtime_with_interval(&runtime, 1);
-        let snapshot_before = sortition_snapshot(&dag_service);
-        let mut invalid_stage = ffi_primary_finalization_stage();
-        invalid_stage.stage = u8::MAX;
-
-        let result = pbft_manager_runtime_start_finalization_executor(
-            &runtime,
-            &dag_service,
-            FfiPbftFinalizationExecutorStartRequest {
-                mode: FINALIZATION_EXECUTOR_MODE_FRESH,
-                plan,
-                primary_stages: vec![invalid_stage],
-                sync: false,
-                final_chain_last_block: 9,
-            },
-        );
-
-        assert!(result.is_err() || !result.expect("checked above").can_continue);
-        assert_eq!(sortition_snapshot(&dag_service), snapshot_before);
-        assert!(runtime
-            .manager_state()
-            .finalization_sortition_commit_request
-            .is_none());
-    }
-
-    #[test]
-    fn manager_runtime_rejects_caller_owned_sortition_stages_before_persistence() {
-        for (case, mut injected_stage) in [
-            (
-                "changed_stage",
-                rustaxa_ffi::PbftFinalizationStorageWriteStage {
-                    stage: FINALIZATION_STAGE_SORTITION_PARAMS_CHANGE,
-                    rounds_count_dynamic_lambda: 0,
-                    dynamic_lambda: 0,
-                    has_sortition_params_change: true,
-                    sortition_params_change_period: 10,
-                    sortition_params_change_interval_efficiency: 5_000,
-                    sortition_params_change_threshold_upper: 1_100,
-                    has_reward_votes_reset: false,
-                    reward_votes_bundle_rlp: Vec::new(),
-                    has_prepared_pillar_block: false,
-                    prepared_pillar_block_period: 0,
-                    prepared_pillar_block_rlp: Vec::new(),
-                },
-            ),
-            ("payload_on_primary_stage", ffi_primary_finalization_stage()),
-        ] {
-            if case == "payload_on_primary_stage" {
-                injected_stage.sortition_params_change_period = 10;
-            }
-            let (_temp_dir, runtime) = runtime_for_finalization_test(&format!(
-                "rustaxa_bridge_pbft_manager_caller_sortition_{case}"
-            ));
-            let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-            let dag_service = dag_service_from_runtime_with_interval(&runtime, 1);
-            let snapshot_before = sortition_snapshot(&dag_service);
-
-            let error = match pbft_manager_runtime_start_finalization_executor(
-                &runtime,
-                &dag_service,
-                FfiPbftFinalizationExecutorStartRequest {
-                    mode: FINALIZATION_EXECUTOR_MODE_FRESH,
-                    plan,
-                    primary_stages: vec![injected_stage],
-                    sync: false,
-                    final_chain_last_block: 9,
-                },
-            ) {
-                Ok(_) => panic!("caller-owned sortition stage must reject before persistence"),
-                Err(error) => error,
-            };
-
-            assert_eq!(
-                error.to_string(),
-                "PBFT_FINALIZE_SORTITION_STAGE_CALLER_OWNED"
-            );
-            assert_eq!(sortition_snapshot(&dag_service), snapshot_before);
-            let restored_service = dag_service_from_runtime_with_interval(&runtime, 1);
-            assert_eq!(sortition_snapshot(&restored_service), snapshot_before);
-            assert!(runtime
-                .manager_state()
-                .finalization_sortition_commit_request
-                .is_none());
-            assert_finalization_session_cleared(&runtime);
-        }
     }
 
     #[test]

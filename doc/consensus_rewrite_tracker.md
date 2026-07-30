@@ -1079,6 +1079,21 @@ functions, carriers, handles, shim lines and directories, granular flags,
 partial factories, compatibility constructors, and production consumers are
 unchanged.
 
+The following `CRW-12` finalization contraction moves the complete executor
+start/resume workflow from `rustaxa-bridge` into native `PbftService` and
+`PbftManagerGuard`. Under the manager serialization domain Rust now clears
+stale state, preserves only a storage-authenticated resume generation, inspects
+durable resume state, installs the fresh cursor, composes sortition preparation
+through native `DagTransactionService`, applies primary storage, reports the
+result, drains owned actions, captures the manager snapshot, and clears every
+terminal/error session. The bridge retains request/result conversion and one
+CXX integration sentinel; three superseded bridge behavior tests are replaced
+by native fresh, pre-/post-preparation rejection, unknown-mode,
+resume-cleanup, and reset-generation authentication coverage. This deletes 215
+bridge lines and lowers the exact budget to 31,417. CXX functions,
+carriers, handles, shim lines and directories, granular flags, partial
+factories, compatibility constructors, and production consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

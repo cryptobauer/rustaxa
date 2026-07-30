@@ -122,6 +122,64 @@ pub struct PbftFinalizationOwnedActionDrain {
     pub error_code: String,
 }
 
+/// Native start mode for one PBFT finalization executor session.
+///
+/// Fresh mode applies the primary storage transaction before exposing an
+/// external action. Resume mode derives the bounded replay tail from durable
+/// storage without reapplying primary writes. Unknown mode preserves the
+/// fail-closed CXX boundary behavior while keeping numeric FFI decoding out of
+/// the manager task itself.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PbftFinalizationExecutorStartMode {
+    /// Start a newly accepted plan with its complete primary storage batch.
+    Fresh {
+        /// Caller-prepared primary stages; native sortition preparation may
+        /// append its exact stage before the atomic commit.
+        primary_stages: Vec<crate::pbft_finalize::PbftFinalizationStorageWriteStage>,
+        /// Whether primary persistence must use a synchronous commit.
+        sync: bool,
+    },
+    /// Resume an already-persisted plan from the current FinalChain height.
+    Resume {
+        /// FinalChain height used only for durable replay classification.
+        final_chain_last_block: u64,
+    },
+    /// Reject an unrecognized boundary mode after clearing stale session state.
+    Unknown,
+}
+
+/// Complete native input for starting or resuming PBFT finalization.
+///
+/// The accepted plan and typed mode are domain values converted once by the
+/// bridge. Impossible fresh/resume field mixtures cannot reach the manager.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PbftFinalizationExecutorStartRequest {
+    /// Accepted finalization intent retained for validation and replay.
+    pub plan: crate::pbft_finalize::PbftFinalizationPlan,
+    /// Typed fresh, resume, or fail-closed unknown operation.
+    pub mode: PbftFinalizationExecutorStartMode,
+}
+
+/// Native executor boundary returned after starting or resuming finalization.
+///
+/// The step is the first remaining external action or a terminal runtime
+/// outcome. Compatibility cache and snapshot effects are captured while the
+/// manager lock is still held, so the bridge never reacquires native state to
+/// materialize a potentially incoherent result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PbftFinalizationExecutorBoundary {
+    /// First external action or terminal finalization step.
+    pub next_step: crate::pbft_finalize::PbftFinalizationRuntimeStep,
+    /// Whether C++ must mirror-clear its temporary anchor DAG cache.
+    pub cleared_anchor_dag_cache: bool,
+    /// Whether scalar compatibility state changed during native draining.
+    pub has_snapshot: bool,
+    /// Lock-coherent manager snapshot captured before returning the boundary.
+    pub snapshot: PbftManagerRuntimeSnapshot,
+    /// Stable operation-level error label, empty on success.
+    pub error_code: String,
+}
+
 fn base_owned_finalization_live_report(
     action: crate::pbft_finalize::PbftFinalizationRuntimeAction,
     write_set: &crate::pbft_finalize::PbftFinalizationStorageWriteIntent,
@@ -323,6 +381,198 @@ impl DerefMut for PbftManagerGuard<'_> {
 }
 
 impl PbftManagerGuard<'_> {
+    fn clear_finalization_executor_runtime(&mut self) {
+        self.finalization_runtime_session = None;
+        self.finalization_runtime_plan = None;
+        self.finalization_reward_votes_reset_generation = 0;
+        self.finalization_sortition_commit_request = None;
+    }
+
+    fn finish_finalization_executor_start(
+        &mut self,
+        result: Result<PbftFinalizationOwnedActionDrain>,
+    ) -> Result<PbftFinalizationOwnedActionDrain> {
+        match result {
+            Ok(drain) => {
+                if drain.next_step.complete
+                    || drain.next_step.runtime_status
+                        != crate::pbft_finalize::PbftFinalizationRuntimeStatus::Active
+                {
+                    self.clear_finalization_executor_runtime();
+                }
+                Ok(drain)
+            }
+            Err(error) => {
+                self.clear_finalization_executor_runtime();
+                Err(error)
+            }
+        }
+    }
+
+    /// Starts or resumes finalization and advances to the first external action.
+    ///
+    /// The task clears any stale executor, preserves only a storage-proven
+    /// reward-reset generation for resume, derives the native cursor, prepares
+    /// sortition under manager-before-sortition lock order, atomically applies
+    /// fresh primary storage, reports that action, and drains consecutive
+    /// manager-owned actions. Resume derives its replay transcript from native
+    /// storage and never reapplies primary writes.
+    ///
+    /// The returned drain contains the first DAG, transaction, vote, FinalChain,
+    /// pillar, period-advance, or network action for the C++ leaf executor.
+    /// Rejected/complete sessions and all errors clear retained executor state;
+    /// active external boundaries retain the plan and cursor. Unknown mode,
+    /// storage failures, malformed preparation, and invalid retained invariants
+    /// fail closed without publishing sortition state.
+    pub(crate) fn start_finalization_executor(
+        &mut self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        request: PbftFinalizationExecutorStartRequest,
+    ) -> Result<PbftFinalizationOwnedActionDrain> {
+        let resume_mode = matches!(
+            request.mode,
+            PbftFinalizationExecutorStartMode::Resume { .. }
+        );
+        let resume_generation = if resume_mode
+            && self.finalization_reward_votes_reset_generation != 0
+            && self.finalization_reward_votes_reset_generation
+                == self.storage.extra_reward_votes_reset_generation()
+        {
+            self.finalization_reward_votes_reset_generation
+        } else {
+            0
+        };
+        self.clear_finalization_executor_runtime();
+        if resume_mode {
+            self.finalization_reward_votes_reset_generation = resume_generation;
+        }
+
+        let result = self.start_finalization_executor_inner(dag_transaction_service, request);
+        self.finish_finalization_executor_start(result)
+    }
+
+    fn start_finalization_executor_inner(
+        &mut self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        request: PbftFinalizationExecutorStartRequest,
+    ) -> Result<PbftFinalizationOwnedActionDrain> {
+        use crate::pbft_finalize::{
+            inspect_pbft_finalization_resume, start_pbft_finalization_resume_runtime,
+        };
+
+        match request.mode {
+            PbftFinalizationExecutorStartMode::Resume {
+                final_chain_last_block,
+            } => {
+                let resume = inspect_pbft_finalization_resume(
+                    self.storage.as_ref(),
+                    &request.plan.storage_write_intent,
+                    final_chain_last_block,
+                )?;
+                self.finalization_runtime_plan = Some(request.plan);
+                self.finalization_runtime_session =
+                    Some(start_pbft_finalization_resume_runtime(&resume));
+                self.drain_finalization_owned_actions()
+            }
+            PbftFinalizationExecutorStartMode::Fresh {
+                primary_stages,
+                sync,
+            } => self.start_fresh_finalization_executor(
+                dag_transaction_service,
+                request.plan,
+                primary_stages,
+                sync,
+            ),
+            PbftFinalizationExecutorStartMode::Unknown => {
+                Err(anyhow!("PBFT_FINALIZE_EXECUTOR_UNKNOWN_MODE"))
+            }
+        }
+    }
+
+    fn start_fresh_finalization_executor(
+        &mut self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        plan: crate::pbft_finalize::PbftFinalizationPlan,
+        mut primary_stages: Vec<crate::pbft_finalize::PbftFinalizationStorageWriteStage>,
+        sync: bool,
+    ) -> Result<PbftFinalizationOwnedActionDrain> {
+        use crate::pbft_finalize::{
+            PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
+            PbftFinalizationRuntimeStatus, apply_pbft_finalization_storage_writes,
+            next_pbft_finalization_runtime_action, plan_pbft_finalization_runtime,
+            report_pbft_finalization_runtime_action, start_pbft_finalization_runtime,
+        };
+
+        let runtime_plan = plan_pbft_finalization_runtime(&plan);
+        self.finalization_runtime_session = Some(start_pbft_finalization_runtime(&runtime_plan));
+        self.finalization_runtime_plan = Some(plan);
+        let current_step = next_pbft_finalization_runtime_action(
+            self.finalization_runtime_session
+                .as_ref()
+                .expect("fresh finalization session installed"),
+        );
+        if current_step.runtime_status != PbftFinalizationRuntimeStatus::Active
+            || current_step.action != Some(PbftFinalizationRuntimeAction::ApplyPrimaryStorage)
+        {
+            return Ok(owned_finalization_drain_outcome(
+                false,
+                false,
+                current_step,
+                "PBFT_FINALIZE_PRIMARY_STORAGE_ACTION_MISSING",
+            ));
+        }
+
+        let write_set = self
+            .finalization_runtime_plan
+            .as_ref()
+            .expect("fresh finalization plan installed")
+            .storage_write_intent
+            .clone();
+        prepare_pbft_finalization_sortition(
+            self,
+            dag_transaction_service,
+            &write_set,
+            &mut primary_stages,
+        )?;
+        let apply_result = apply_pbft_finalization_storage_writes(
+            self.storage.as_ref(),
+            &write_set,
+            primary_stages,
+            sync,
+        )?;
+        let accepted = apply_result.status.is_success();
+        self.finalization_reward_votes_reset_generation =
+            apply_result.reward_votes_reset_generation;
+        let session = self
+            .finalization_runtime_session
+            .take()
+            .expect("fresh finalization session installed");
+        self.finalization_runtime_session = Some(report_pbft_finalization_runtime_action(
+            session,
+            PbftFinalizationRuntimeActionResult {
+                action: PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
+                success: accepted,
+                status: apply_result.status.as_u8(),
+                error_code: apply_result.error_code,
+            },
+        ));
+        if !accepted {
+            let next_step = next_pbft_finalization_runtime_action(
+                self.finalization_runtime_session
+                    .as_ref()
+                    .expect("fresh finalization session retained"),
+            );
+            return Ok(owned_finalization_drain_outcome(
+                false,
+                false,
+                next_step,
+                "PBFT_FINALIZE_PRIMARY_STORAGE_REJECTED",
+            ));
+        }
+
+        self.drain_finalization_owned_actions()
+    }
+
     /// Commits the retained finalization sortition request and advances its runtime cursor.
     ///
     /// The lock-held task validates the current cursor and required
@@ -7788,6 +8038,26 @@ mod tests {
         runtime.finalization_runtime_plan = Some(plan);
     }
 
+    fn finalization_start_plan(
+        write_set: PbftFinalizationStorageWriteIntent,
+    ) -> PbftFinalizationPlan {
+        PbftFinalizationPlan {
+            finalize_block: true,
+            anchor: if write_set.null_anchor {
+                PbftFinalizationAnchor::Null
+            } else {
+                PbftFinalizationAnchor::Anchored
+            },
+            executed_pbft_block: false,
+            cleanup: PbftFinalizationCleanupIntent {
+                update_sortition_params: true,
+                ..empty_finalization_cleanup()
+            },
+            storage_write_intent: write_set,
+            status: PbftFinalizationStatus::Accepted,
+        }
+    }
+
     fn empty_finalization_cleanup() -> PbftFinalizationCleanupIntent {
         PbftFinalizationCleanupIntent {
             persist_pbft_block_metadata: false,
@@ -7802,6 +8072,327 @@ mod tests {
             advance_period: false,
             process_pillar_block: false,
         }
+    }
+
+    #[test]
+    fn finalization_start_fresh_applies_primary_and_retains_external_boundary() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_finalization_start_fresh");
+        let mut write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 3, &[2, 4]),
+        );
+        write_set.pbft_head_payload = vec![0xde, 0xad, 0xbe, 0xef];
+        let expected_period_data = write_set.period_data_rlp.clone();
+        let mut runtime = manager.lock();
+
+        let boundary = runtime
+            .start_finalization_executor(
+                &dag,
+                PbftFinalizationExecutorStartRequest {
+                    plan: finalization_start_plan(write_set),
+                    mode: PbftFinalizationExecutorStartMode::Fresh {
+                        primary_stages: vec![PbftFinalizationStorageWriteStage::default()],
+                        sync: false,
+                    },
+                },
+            )
+            .expect("fresh finalization start succeeds");
+
+        assert_eq!(
+            boundary.next_step.action,
+            Some(PbftFinalizationRuntimeAction::CommitSortitionRuntime)
+        );
+        assert!(runtime.finalization_runtime_session.is_some());
+        assert!(runtime.finalization_runtime_plan.is_some());
+        assert!(runtime.finalization_sortition_commit_request.is_some());
+        assert_eq!(
+            runtime
+                .storage
+                .period()
+                .data_raw(1)
+                .expect("primary period data reads"),
+            expected_period_data
+        );
+
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_start_rejects_caller_sortition_and_clears_runtime() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_finalization_start_sortition_reject");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        let error = runtime
+            .start_finalization_executor(
+                &dag,
+                PbftFinalizationExecutorStartRequest {
+                    plan: finalization_start_plan(write_set),
+                    mode: PbftFinalizationExecutorStartMode::Fresh {
+                        primary_stages: vec![PbftFinalizationStorageWriteStage {
+                            stage: 3,
+                            has_sortition_params_change: true,
+                            sortition_params_change_period: 1,
+                            sortition_params_change_interval_efficiency: 5_000,
+                            sortition_params_change_threshold_upper: 1_100,
+                            ..Default::default()
+                        }],
+                        sync: false,
+                    },
+                },
+            )
+            .expect_err("caller-owned sortition stage rejects");
+
+        assert_eq!(
+            error.to_string(),
+            "PBFT_FINALIZE_SORTITION_STAGE_CALLER_OWNED"
+        );
+        assert!(runtime.finalization_runtime_session.is_none());
+        assert!(runtime.finalization_runtime_plan.is_none());
+        assert!(runtime.finalization_sortition_commit_request.is_none());
+        assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
+        assert!(
+            runtime
+                .storage
+                .period()
+                .data_raw(1)
+                .expect("rejected period data reads")
+                .is_empty()
+        );
+
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_start_primary_rejection_discards_prepared_sortition() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_finalization_start_primary_reject");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let sortition_before = {
+            let sortition = dag.lock_sortition().expect("sortition locks");
+            (
+                sortition.current_params(),
+                sortition.params_changes().clone(),
+            )
+        };
+        let mut runtime = manager.lock();
+
+        let boundary = runtime
+            .start_finalization_executor(
+                &dag,
+                PbftFinalizationExecutorStartRequest {
+                    plan: finalization_start_plan(write_set),
+                    mode: PbftFinalizationExecutorStartMode::Fresh {
+                        primary_stages: vec![PbftFinalizationStorageWriteStage::default()],
+                        sync: false,
+                    },
+                },
+            )
+            .expect("primary rejection returns a terminal boundary");
+
+        assert_eq!(
+            boundary.next_step.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionFailed
+        );
+        assert_eq!(
+            boundary.error_code,
+            "PBFT_FINALIZE_PRIMARY_STORAGE_REJECTED"
+        );
+        assert!(runtime.finalization_runtime_session.is_none());
+        assert!(runtime.finalization_runtime_plan.is_none());
+        assert!(runtime.finalization_sortition_commit_request.is_none());
+        assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
+        assert!(
+            runtime
+                .storage
+                .period()
+                .data_raw(1)
+                .expect("rejected period data reads")
+                .is_empty()
+        );
+        drop(runtime);
+
+        let sortition_after = {
+            let sortition = dag.lock_sortition().expect("sortition locks");
+            (
+                sortition.current_params(),
+                sortition.params_changes().clone(),
+            )
+        };
+        assert_eq!(sortition_after, sortition_before);
+
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_start_unknown_mode_clears_stale_runtime() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_finalization_start_unknown");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set.clone(),
+            empty_finalization_cleanup(),
+            false,
+            Some(vec![PbftFinalizationRuntimeAction::UpdatePbftChain]),
+        );
+        runtime.finalization_reward_votes_reset_generation = 99;
+        let error = runtime
+            .start_finalization_executor(
+                &dag,
+                PbftFinalizationExecutorStartRequest {
+                    plan: finalization_start_plan(write_set),
+                    mode: PbftFinalizationExecutorStartMode::Unknown,
+                },
+            )
+            .expect_err("unknown start mode fails closed");
+
+        assert_eq!(error.to_string(), "PBFT_FINALIZE_EXECUTOR_UNKNOWN_MODE");
+        assert!(runtime.finalization_runtime_session.is_none());
+        assert!(runtime.finalization_runtime_plan.is_none());
+        assert!(runtime.finalization_sortition_commit_request.is_none());
+        assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
+
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_start_resume_missing_primary_clears_runtime() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_finalization_start_resume_missing");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+
+        let boundary = runtime
+            .start_finalization_executor(
+                &dag,
+                PbftFinalizationExecutorStartRequest {
+                    plan: finalization_start_plan(write_set),
+                    mode: PbftFinalizationExecutorStartMode::Resume {
+                        final_chain_last_block: 0,
+                    },
+                },
+            )
+            .expect("missing durable facts produce a rejected resume boundary");
+
+        assert_eq!(
+            boundary.next_step.runtime_status,
+            PbftFinalizationRuntimeStatus::RejectedPlan
+        );
+        assert_eq!(
+            boundary.next_step.error_code,
+            "PBFT_FINALIZE_RESUME_NOT_PERSISTED"
+        );
+        assert!(runtime.finalization_runtime_session.is_none());
+        assert!(runtime.finalization_runtime_plan.is_none());
+        assert!(runtime.finalization_sortition_commit_request.is_none());
+        assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
+
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_start_resume_authenticates_reset_generation() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_finalization_start_resume_generation");
+        let mut write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        write_set.pbft_head_payload = vec![0xde, 0xad, 0xbe, 0xef];
+        let plan = finalization_start_plan(write_set);
+        let mut runtime = manager.lock();
+        runtime
+            .start_finalization_executor(
+                &dag,
+                PbftFinalizationExecutorStartRequest {
+                    plan: plan.clone(),
+                    mode: PbftFinalizationExecutorStartMode::Fresh {
+                        primary_stages: vec![PbftFinalizationStorageWriteStage::default()],
+                        sync: false,
+                    },
+                },
+            )
+            .expect("fresh primary storage persists");
+
+        let generation = commit_reward_votes_reset_generation(&runtime);
+        runtime.finalization_reward_votes_reset_generation = generation;
+        let matching = runtime
+            .start_finalization_executor(
+                &dag,
+                PbftFinalizationExecutorStartRequest {
+                    plan: plan.clone(),
+                    mode: PbftFinalizationExecutorStartMode::Resume {
+                        final_chain_last_block: 0,
+                    },
+                },
+            )
+            .expect("matching generation resumes");
+        assert_eq!(
+            matching.next_step.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+        assert_eq!(
+            runtime.finalization_reward_votes_reset_generation,
+            generation
+        );
+
+        runtime.finalization_reward_votes_reset_generation = generation + 1;
+        let stale = runtime
+            .start_finalization_executor(
+                &dag,
+                PbftFinalizationExecutorStartRequest {
+                    plan,
+                    mode: PbftFinalizationExecutorStartMode::Resume {
+                        final_chain_last_block: 0,
+                    },
+                },
+            )
+            .expect("stale generation still resumes without reset authority");
+        assert_eq!(
+            stale.next_step.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+        assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
+
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
     }
 
     #[test]

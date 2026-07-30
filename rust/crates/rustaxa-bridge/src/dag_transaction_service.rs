@@ -35,12 +35,7 @@ use rustaxa_consensus::dag_transaction_service::{
     DagVerifyBlockTransactionCompletionReport as NativeDagVerifyBlockTransactionCompletionReport,
     DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
 };
-use rustaxa_consensus::pbft_finalize::{
-    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
-};
-use rustaxa_consensus::pbft_manager::{
-    prepare_pbft_finalization_sortition, PbftManagerGuard, PbftManagerRuntimeState,
-};
+use rustaxa_consensus::pbft_manager::PbftManagerGuard;
 #[cfg(test)]
 use rustaxa_consensus::sortition::SortitionServiceGuard;
 use rustaxa_consensus::transaction_packing_service::{
@@ -72,6 +67,11 @@ pub struct BridgeDagTransactionService {
 }
 
 impl BridgeDagTransactionService {
+    /// Returns the CXX-free application root for task-oriented native composition.
+    pub(crate) fn native(&self) -> &DagTransactionService {
+        &self.root
+    }
+
     #[cfg(test)]
     fn transaction(&self) -> TransactionServiceGuard<'_> {
         self.root
@@ -97,16 +97,6 @@ impl BridgeDagTransactionService {
     #[cfg(test)]
     pub(crate) fn sortition(&self) -> Result<SortitionServiceGuard<'_>> {
         self.root.lock_sortition()
-    }
-
-    /// Delegates the complete finalization-sortition preparation task to native consensus.
-    pub(crate) fn prepare_finalization_sortition(
-        &self,
-        runtime: &mut PbftManagerRuntimeState,
-        write_set: &PbftFinalizationStorageWriteIntent,
-        stages: &mut Vec<PbftFinalizationStorageWriteStage>,
-    ) -> Result<()> {
-        prepare_pbft_finalization_sortition(runtime, &self.root, write_set, stages)
     }
 
     /// Delegates the complete lock-held sortition commit task to native consensus.
