@@ -2670,24 +2670,11 @@ mod tests {
     }
 
     const STATE_VALUE_PROPOSAL: u8 = 0;
-    const ACTION_PROCESS_SYNCED: u8 = 0;
-    const ACTION_BROADCAST: u8 = 1;
-    const ACTION_TRY_CERT: u8 = 2;
-    const ACTION_TRY_ROUND: u8 = 3;
-    const ACTION_SLEEP_INELIGIBLE: u8 = 4;
-    const RESULT_CONTINUE: u8 = 0;
-    const RESULT_STATE_DONE: u8 = 2;
     const STATE_ACTION_NEXT_VOTE_NULL_BLOCK: u8 = 8;
     const STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE: u8 = 10;
     const STATE_ACTION_SESSION_ACTIVE: u8 = 0;
     const STATE_ACTION_SESSION_COMPLETE: u8 = 1;
     const STATE_ACTION_EFFECT_APPLIED: u8 = 0;
-    const PROPOSAL_ACTION_REQUEST_DAG_ORDER: u8 = 0;
-    const PROPOSAL_ACTION_BUILD: u8 = 1;
-    const PROPOSAL_STATUS_ACTIVE: u8 = 0;
-    const PROPOSAL_STATUS_BUILD_READY: u8 = 1;
-    const BROADCAST_ACTION_ROUND_VOTES: u8 = 2;
-    const BROADCAST_STATUS_READY: u8 = 0;
     const STARTUP_STATUS_READY: u8 = 0;
     const TRANSITION_RESET: u8 = 0;
     const TRANSITION_FILTER: u8 = 1;
@@ -2783,21 +2770,6 @@ mod tests {
         }
     }
 
-    fn report(cursor: u32, action: u8, result: u8) -> FfiPbftManagerRuntimeActionReport {
-        FfiPbftManagerRuntimeActionReport {
-            cursor,
-            action,
-            success: true,
-            result,
-            go_finish_state: false,
-            loop_back_finish_state: false,
-            has_eligible_wallet: true,
-            has_new_round: false,
-            new_round: 0,
-            error_code: String::new(),
-        }
-    }
-
     fn runtime_for_startup(name: &str) -> Box<BridgePbftService> {
         let temp_path = unique_temp_dir(name);
         let storage =
@@ -2805,40 +2777,6 @@ mod tests {
         let mut startup = startup_fact();
         startup.cacti_active_at_chain_size = false;
         create_pbft_manager_runtime_from_storage(&storage, startup).unwrap()
-    }
-
-    fn runtime_for_tick(tick: FfiPbftManagerRuntimeTickFact) -> Box<BridgePbftService> {
-        let mut runtime = runtime_for_startup("rustaxa_bridge_pbft_manager_runtime_session");
-        pbft_manager_runtime_begin_session(&mut runtime, tick);
-        runtime
-    }
-
-    #[test]
-    fn bridge_session_returns_ineligible_polling_sleep_ms() {
-        let mut tick = fact(STATE_VALUE_PROPOSAL);
-        tick.polling_interval_ms = 250;
-        let mut runtime = runtime_for_tick(tick);
-        for expected in [ACTION_PROCESS_SYNCED, ACTION_BROADCAST, ACTION_TRY_CERT] {
-            let step = pbft_manager_runtime_session_next(&mut runtime);
-            let result = if expected == ACTION_TRY_CERT {
-                RESULT_CONTINUE
-            } else {
-                RESULT_STATE_DONE
-            };
-            let _ = pbft_manager_runtime_session_report(
-                &mut runtime,
-                report(step.cursor, expected, result),
-            );
-        }
-
-        let step = pbft_manager_runtime_session_next(&mut runtime);
-        assert_eq!(step.action, ACTION_TRY_ROUND);
-        let mut action_report = report(step.cursor, ACTION_TRY_ROUND, RESULT_CONTINUE);
-        action_report.has_eligible_wallet = false;
-        let sleep = pbft_manager_runtime_session_report(&mut runtime, action_report);
-
-        assert_eq!(sleep.action, ACTION_SLEEP_INELIGIBLE);
-        assert_eq!(sleep.sleep_ms, 250);
     }
 
     fn state_fact(state: u8) -> FfiPbftManagerStateActionFact {
@@ -3342,116 +3280,6 @@ mod tests {
         assert_eq!(done.status, STATE_ACTION_SESSION_COMPLETE);
         assert!(done.complete);
         assert!(done.can_continue);
-    }
-
-    #[test]
-    fn bridge_proposal_session_requests_order_and_builds_command() {
-        let mut runtime = runtime_for_startup("rustaxa_bridge_pbft_manager_proposal_session");
-        pbft_manager_runtime_begin_proposal_session_with_hash(
-            &runtime,
-            proposal_fact(),
-            Some([0x22; 32]),
-        );
-
-        let request = pbft_manager_proposal_session_next(&mut runtime);
-        assert_eq!(request.action, PROPOSAL_ACTION_REQUEST_DAG_ORDER);
-        assert_eq!(request.status, PROPOSAL_STATUS_ACTIVE);
-        assert_eq!(request.requested_anchor_hash, [0x03; 32]);
-
-        let build = pbft_manager_proposal_session_report_dag_order(
-            &mut runtime,
-            FfiPbftManagerProposalDagOrderReport {
-                anchor_hash: request.requested_anchor_hash,
-                dag_blocks: vec![
-                    FfiPbftManagerProposalDagBlockFact {
-                        hash: [0x02; 32],
-                        gas_estimation: 10,
-                    },
-                    FfiPbftManagerProposalDagBlockFact {
-                        hash: [0x03; 32],
-                        gas_estimation: 10,
-                    },
-                ],
-                order_available: true,
-            },
-        );
-
-        assert_eq!(build.action, PROPOSAL_ACTION_BUILD);
-        assert_eq!(build.status, PROPOSAL_STATUS_BUILD_READY);
-        assert_eq!(build.anchor_hash, [0x03; 32]);
-        assert_eq!(build.final_chain_hash, [0x22; 32]);
-        assert_eq!(build.eligible_wallet_indices, vec![1]);
-        assert_eq!(build.dag_blocks_included, 2);
-        assert_ne!(build.order_hash, [0; 32]);
-    }
-
-    #[test]
-    fn bridge_broadcast_plan_reports_before_counter_apply() {
-        let plan = plan_pbft_manager_broadcast(FfiPbftManagerBroadcastFact {
-            round_elapsed_ms: 2_100,
-            period_elapsed_ms: 0,
-            current_round_lambda_ms: 100,
-            broadcast_lambda_threshold: 20,
-            rebroadcast_lambda_threshold: 60,
-            broadcast_votes_counter: 1,
-            rebroadcast_votes_counter: 1,
-            broadcast_reward_votes_counter: 1,
-            rebroadcast_reward_votes_counter: 1,
-        });
-
-        assert_eq!(plan.status, BROADCAST_STATUS_READY);
-        assert_eq!(plan.action, BROADCAST_ACTION_ROUND_VOTES);
-        assert!(!plan.rebroadcast);
-        assert_eq!(plan.next_broadcast_votes_counter, 2);
-
-        let result = report_pbft_manager_broadcast(
-            plan,
-            FfiPbftManagerBroadcastReport {
-                action: BROADCAST_ACTION_ROUND_VOTES,
-                rebroadcast: false,
-                success: true,
-                error_code: String::new(),
-            },
-        );
-
-        assert_eq!(result.status, BROADCAST_STATUS_READY);
-        assert!(result.apply_counters);
-        assert_eq!(result.broadcast_votes_counter, 2);
-        assert_eq!(result.rebroadcast_votes_counter, 1);
-    }
-
-    #[test]
-    fn bridge_plans_sleep_wait_and_deadline_reached() {
-        let mut runtime = runtime_for_startup("rustaxa_bridge_pbft_manager_runtime_sleep");
-        let applied = pbft_manager_runtime_execute_lifecycle_transition(
-            &mut runtime,
-            lifecycle_transition_request(TRANSITION_FILTER),
-        )
-        .expect("runtime transition should apply");
-        assert_eq!(applied.status, TRANSITION_STORAGE_STATUS_APPLIED);
-
-        let snapshot = pbft_manager_runtime_snapshot(&runtime);
-        assert_eq!(snapshot.next_step_time_ms, 200);
-        let near_elapsed_ms = (snapshot.next_step_time_ms - 1)
-            .try_into()
-            .expect("snapshot value should fit i64");
-        let wait = plan_pbft_manager_runtime_sleep_until_next_step(&runtime, near_elapsed_ms);
-        assert!(wait.accepted);
-        assert!(wait.should_sleep);
-        assert_eq!(wait.sleep_ms, 1);
-        assert!(wait.error_code.is_empty());
-        assert_eq!(wait.step, snapshot.step);
-
-        let reached_elapsed_ms = snapshot
-            .next_step_time_ms
-            .try_into()
-            .expect("snapshot value should fit i64");
-        let reached = plan_pbft_manager_runtime_sleep_until_next_step(&runtime, reached_elapsed_ms);
-        assert!(reached.accepted);
-        assert!(!reached.should_sleep);
-        assert_eq!(reached.sleep_ms, 0);
-        assert!(reached.error_code.is_empty());
-        assert_eq!(reached.step, snapshot.step);
     }
 
     #[test]
@@ -4457,6 +4285,148 @@ mod tests {
             plan.error_code,
             "PBFT_MANAGER_LEADER_UNKNOWN_BLOCK_VALIDATION_STATUS"
         );
+    }
+
+    #[test]
+    fn bridge_manager_action_conversions_preserve_boundary_codes() {
+        let session: FfiPbftManagerRuntimeSessionStep = PbftManagerRuntimeSessionStep {
+            status: PbftManagerRuntimeStatus::Active,
+            cursor: 7,
+            action: Some(PbftManagerRuntimeAction::SleepIneligiblePollingInterval),
+            has_action: true,
+            complete: false,
+            restart_loop: false,
+            has_target_round: false,
+            target_round: 0,
+            sleep_ms: 250,
+            tick_id: 9,
+            error_code: String::new(),
+        }
+        .into();
+        assert_eq!((session.action, session.sleep_ms), (4, 250));
+
+        let sleep: FfiPbftManagerSleepPlan = PbftManagerSleepPlan {
+            accepted: true,
+            should_sleep: true,
+            sleep_ms: 1,
+            step: 3,
+            error_code: String::new(),
+        }
+        .into();
+        assert_eq!(
+            (
+                sleep.accepted,
+                sleep.should_sleep,
+                sleep.sleep_ms,
+                sleep.step,
+                sleep.error_code.as_str(),
+            ),
+            (true, true, 1, 3, "")
+        );
+
+        let proposal: FfiPbftManagerProposalSessionStep = PbftManagerProposalSessionStep {
+            action: PbftManagerProposalAction::RequestDagOrder,
+            status: PbftManagerProposalStatus::Active,
+            requested_anchor_hash: H256::repeat_byte(3),
+            previous_pbft_block_hash: H256::zero(),
+            anchor_hash: H256::repeat_byte(4),
+            order_hash: H256::repeat_byte(5),
+            final_chain_hash: H256::zero(),
+            eligible_wallet_indices: vec![6],
+            dag_blocks_included: 7,
+            selected_null_anchor: false,
+            error_code: String::new(),
+        }
+        .into();
+        assert_eq!((proposal.action, proposal.status), (0, 0));
+        assert_eq!(proposal.requested_anchor_hash, [3; 32]);
+        assert_eq!(proposal.anchor_hash, [4; 32]);
+        assert_eq!(proposal.order_hash, [5; 32]);
+        assert_eq!(proposal.eligible_wallet_indices, vec![6]);
+        assert_eq!(proposal.dag_blocks_included, 7);
+        let proposal_report: PbftManagerProposalDagOrderReport =
+            FfiPbftManagerProposalDagOrderReport {
+                anchor_hash: [3; 32],
+                dag_blocks: vec![FfiPbftManagerProposalDagBlockFact {
+                    hash: [4; 32],
+                    gas_estimation: 5,
+                }],
+                order_available: true,
+            }
+            .into();
+        assert_eq!(proposal_report.anchor_hash, H256::repeat_byte(3));
+        assert_eq!(proposal_report.dag_blocks[0].hash, H256::repeat_byte(4));
+        assert_eq!(proposal_report.dag_blocks[0].gas_estimation, 5);
+        assert!(proposal_report.order_available);
+
+        let broadcast_fact: PbftManagerBroadcastFact = FfiPbftManagerBroadcastFact {
+            round_elapsed_ms: 1,
+            period_elapsed_ms: 2,
+            current_round_lambda_ms: 3,
+            broadcast_lambda_threshold: 4,
+            rebroadcast_lambda_threshold: 5,
+            broadcast_votes_counter: 6,
+            rebroadcast_votes_counter: 7,
+            broadcast_reward_votes_counter: 8,
+            rebroadcast_reward_votes_counter: 9,
+        }
+        .into();
+        assert_eq!(
+            (
+                broadcast_fact.round_elapsed_ms,
+                broadcast_fact.period_elapsed_ms,
+                broadcast_fact.current_round_lambda_ms,
+                broadcast_fact.broadcast_lambda_threshold,
+                broadcast_fact.rebroadcast_lambda_threshold,
+                broadcast_fact.broadcast_votes_counter,
+                broadcast_fact.rebroadcast_votes_counter,
+                broadcast_fact.broadcast_reward_votes_counter,
+                broadcast_fact.rebroadcast_reward_votes_counter,
+            ),
+            (1, 2, 3, 4, 5, 6, 7, 8, 9)
+        );
+        let broadcast: FfiPbftManagerBroadcastPlan = PbftManagerBroadcastPlan {
+            status: PbftManagerBroadcastStatus::Ready,
+            action: PbftManagerBroadcastAction::RoundVotes,
+            rebroadcast: false,
+            next_broadcast_votes_counter: 2,
+            next_rebroadcast_votes_counter: 1,
+            next_broadcast_reward_votes_counter: 1,
+            next_rebroadcast_reward_votes_counter: 1,
+            error_code: String::new(),
+        }
+        .into();
+        assert_eq!((broadcast.status, broadcast.action), (0, 2));
+        assert!(!broadcast.rebroadcast);
+        assert_eq!(broadcast.next_broadcast_votes_counter, 2);
+        let broadcast_report: PbftManagerBroadcastReport = FfiPbftManagerBroadcastReport {
+            action: 2,
+            rebroadcast: false,
+            success: true,
+            error_code: String::new(),
+        }
+        .into();
+        assert_eq!(
+            broadcast_report.action,
+            PbftManagerBroadcastAction::RoundVotes
+        );
+        let broadcast_result: FfiPbftManagerBroadcastReportResult =
+            PbftManagerBroadcastReportResult {
+                status: PbftManagerBroadcastStatus::Ready,
+                apply_counters: true,
+                broadcast_votes_counter: 2,
+                rebroadcast_votes_counter: 1,
+                broadcast_reward_votes_counter: 1,
+                rebroadcast_reward_votes_counter: 1,
+                error_code: String::new(),
+            }
+            .into();
+        assert_eq!(
+            (broadcast_result.status, broadcast_result.apply_counters),
+            (0, true)
+        );
+        assert_eq!(broadcast_result.broadcast_votes_counter, 2);
+        assert_eq!(broadcast_result.rebroadcast_votes_counter, 1);
     }
 
     #[test]

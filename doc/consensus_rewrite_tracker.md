@@ -1238,6 +1238,15 @@ is the native application-root sync test, the bridge projection test, and all
 56 `rust_consensus_tests`; Tier 3 is the Rust-enabled `taraxad` smoke build. No
 upstream-owned C++ file changes.
 
+The following bounded `CRW-12` test-ownership contraction deletes four PBFT
+manager bridge behavior transcripts for daemon ineligible sleep, proposal
+ordering/build, broadcast counter application, and deadline waiting. Native
+manager tests already cover each rule directly; the bridge retains focused
+carrier, persistence, bootstrap, and external-executor boundary sentinels. This
+deletes a net 30 bridge lines and lowers the checked budget to 29,758. CXX
+functions, carriers, handles, shim lines/directories, granular flags, partial
+factories, compatibility constructors, and production consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

@@ -282,6 +282,10 @@ validation, terminal cleanup, abort, and storage-backed sync egress loading.
 The bridge module retains only CXX carrier/status conversion plus focused
 cert-vote and end-to-end sync projection sentinels; its broad RocksDB-backed
 session and egress behavioral tests are replaced by native service coverage.
+The PBFT manager bridge suite likewise no longer repeats daemon ineligible
+sleep, proposal ordering/build, broadcast-counter, or deadline-wait behavior.
+Those rules remain covered by native manager tests; bridge coverage stays
+focused on CXX projection, persistence, and external-executor boundaries.
 The remaining direct `VoteManager::resetRewardVotes` compatibility method no
 longer materializes a broad finalization storage plan or exposes two
 PBFT-finalization helper methods. It builds the existing narrow identity
