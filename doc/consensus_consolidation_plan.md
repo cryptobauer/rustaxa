@@ -210,6 +210,16 @@ deleted. The stable non-PBFT `TransactionManager` API remains a compatibility
 client and sends one opaque canonical transaction-list RLP because partially
 populated legacy `PeriodData` objects cannot always serialize a certificate
 bundle; Rust still derives every transaction identity and owns all mutation.
+The remaining generic owned-finalization drain is now native
+`PbftManagerGuard` behavior. Under the manager serialization domain it drains
+PBFT-chain publication, anchor-cache clearing, dynamic-lambda persistence and
+live publication, and executed-status persistence/live publication, stopping
+unchanged at DAG, transaction, sortition, vote, FinalChain/EVM, pillar,
+period-advance, or network actions. Chain updates are projected and validated
+before live publication; storage precedes the corresponding manager snapshot.
+The bridge retains one argument-free delegate, next-step/snapshot compatibility
+projection, and terminal session cleanup. The duplicate bridge drain state,
+stage construction, behavioral loop, and behavioral transcripts are deleted.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The

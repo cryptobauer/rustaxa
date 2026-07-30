@@ -1911,32 +1911,12 @@ fn pbft_finalization_session_missing_step() -> FinalizationRuntimeSessionStep {
     }
 }
 
-const FINALIZATION_STAGE_DYNAMIC_LAMBDA: u8 = 1;
-const FINALIZATION_STAGE_EXECUTED_STATUS: u8 = 2;
 #[cfg(test)]
 const FINALIZATION_STAGE_SORTITION_PARAMS_CHANGE: u8 = 3;
 #[cfg(test)]
 const FINALIZATION_STAGE_REWARD_VOTES_RESET: u8 = 4;
 const FINALIZATION_EXECUTOR_MODE_FRESH: u8 = 0;
 const FINALIZATION_EXECUTOR_MODE_RESUME: u8 = 1;
-
-fn empty_finalization_stage(stage: u8) -> PbftFinalizationStorageWriteStage {
-    PbftFinalizationStorageWriteStage {
-        stage,
-        rounds_count_dynamic_lambda: 0,
-        dynamic_lambda: 0,
-        has_sortition_params_change: false,
-        sortition_params_change_period: 0,
-        sortition_params_change_interval_efficiency: 0,
-        sortition_params_change_threshold_upper: 0,
-        has_reward_votes_reset: false,
-        reward_votes_bundle_rlp: Vec::new(),
-        extra_reward_vote_hashes: Vec::new(),
-        has_prepared_pillar_block: false,
-        prepared_pillar_block_period: 0,
-        prepared_pillar_block_rlp: Vec::new(),
-    }
-}
 
 struct FinalizationRuntimeSessionStep {
     status: u8,
@@ -1948,33 +1928,12 @@ struct FinalizationRuntimeSessionStep {
     error_code: String,
 }
 
-struct FinalizationOwnedActionDrainResult {
-    cleared_anchor_dag_cache: bool,
-    has_snapshot: bool,
-    next_step: FinalizationRuntimeSessionStep,
-    error_code: String,
-}
-
-struct FinalizationOwnedActionDrainState {
-    cleared_anchor_dag_cache: bool,
-    has_snapshot: bool,
-}
-
 struct FinalizationRuntimeActionReport {
     cursor: u32,
     action: u8,
     success: bool,
     status: u8,
     error_code: String,
-}
-
-impl FinalizationOwnedActionDrainState {
-    fn new() -> Self {
-        Self {
-            cleared_anchor_dag_cache: false,
-            has_snapshot: false,
-        }
-    }
 }
 
 impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep>
@@ -1994,19 +1953,6 @@ impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep>
             can_continue: status == RUNTIME_STATUS_ACTIVE || status == RUNTIME_STATUS_COMPLETE,
             error_code: value.error_code,
         }
-    }
-}
-
-fn finalization_drain_result(
-    drain: &FinalizationOwnedActionDrainState,
-    next_step: FinalizationRuntimeSessionStep,
-    error_code: String,
-) -> FinalizationOwnedActionDrainResult {
-    FinalizationOwnedActionDrainResult {
-        cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
-        has_snapshot: drain.has_snapshot,
-        next_step,
-        error_code,
     }
 }
 
@@ -2035,20 +1981,21 @@ fn finalization_executor_state_from_step(
 
 fn finalization_executor_state_from_drain(
     runtime: &mut PbftManagerRuntimeState,
-    drain: FinalizationOwnedActionDrainResult,
+    drain: rustaxa_consensus::pbft_manager::PbftFinalizationOwnedActionDrain,
 ) -> FfiPbftManagerFinalizationExecutorState {
+    let next_step: FinalizationRuntimeSessionStep = drain.next_step.into();
     FfiPbftManagerFinalizationExecutorState {
-        status: drain.next_step.status,
-        cursor: drain.next_step.cursor,
-        action: drain.next_step.action,
-        has_action: drain.next_step.has_action,
-        complete: drain.next_step.complete,
-        can_continue: drain.next_step.can_continue,
+        status: next_step.status,
+        cursor: next_step.cursor,
+        action: next_step.action,
+        has_action: next_step.has_action,
+        complete: next_step.complete,
+        can_continue: next_step.can_continue,
         cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
         has_snapshot: drain.has_snapshot,
         snapshot: runtime.state.snapshot().into(),
         error_code: if drain.error_code.is_empty() {
-            drain.next_step.error_code
+            next_step.error_code
         } else {
             drain.error_code
         },
@@ -2056,9 +2003,9 @@ fn finalization_executor_state_from_drain(
 }
 
 fn drain_finalization_executor_state(
-    runtime: &mut PbftManagerRuntimeState,
+    runtime: &mut rustaxa_consensus::pbft_manager::PbftManagerGuard<'_>,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let drain = pbft_manager_runtime_drain_owned_finalization_actions(runtime)?;
+    let drain = runtime.drain_finalization_owned_actions()?;
     Ok(finalization_executor_state_from_drain(runtime, drain))
 }
 
@@ -2266,8 +2213,8 @@ fn pbft_manager_runtime_finalization_session_report_action(
 /// - `plan`: accepted finalization intent that defines the valid action
 ///   transcript and expected post-state facts.
 /// - `report`: C++ executor facts for one external live mutation, such as
-///   FinalChain, DAG, transaction-manager, PBFT-chain, sortition, vote-manager,
-///   period advance, or pillar side effects.
+///   FinalChain, DAG, transaction-manager, sortition, vote-manager, period
+///   advance, or pillar side effects.
 ///
 /// Outputs:
 /// - Returns the next cursor step after validation and report submission.
@@ -2326,8 +2273,10 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
 ///
 /// Invariants and edge behavior:
 /// - This never executes external FinalChain/EVM, DAG, transaction-manager,
-///   PBFT-chain, sortition, vote-manager, advance-period, pillar, or network
-///   work.
+///   sortition, vote-manager, advance-period, pillar, or network work.
+/// - PBFT-chain publication, dynamic-lambda persistence/publication, executed
+///   status persistence/publication, and anchor-cache clearing are native
+///   manager actions drained before returning.
 /// - Fresh mode requires the first Rust action to be primary storage and reports
 ///   storage apply success or failure to the same cursor before returning.
 /// - Resume mode derives the durable replay transcript from runtime-owned
@@ -2360,7 +2309,7 @@ pub fn pbft_manager_runtime_start_finalization_executor(
 }
 
 fn pbft_manager_runtime_start_finalization_executor_inner(
-    runtime: &mut PbftManagerRuntimeState,
+    runtime: &mut rustaxa_consensus::pbft_manager::PbftManagerGuard<'_>,
     dag_transaction_service: &BridgeDagTransactionService,
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
@@ -2445,7 +2394,7 @@ fn pbft_manager_runtime_start_finalization_executor_inner(
 ///   manager-owned finalization cursor.
 /// - External side effects are never executed here.
 fn pbft_manager_runtime_advance_finalization_live_mutation(
-    runtime: &mut PbftManagerRuntimeState,
+    runtime: &mut rustaxa_consensus::pbft_manager::PbftManagerGuard<'_>,
     cursor: u32,
     build_report: impl FnOnce(
         PbftFinalizationRuntimeAction,
@@ -2461,7 +2410,7 @@ fn pbft_manager_runtime_advance_finalization_live_mutation(
 }
 
 fn pbft_manager_runtime_advance_finalization_live_mutation_inner(
-    runtime: &mut PbftManagerRuntimeState,
+    runtime: &mut rustaxa_consensus::pbft_manager::PbftManagerGuard<'_>,
     cursor: u32,
     build_report: impl FnOnce(
         PbftFinalizationRuntimeAction,
@@ -2675,16 +2624,6 @@ pub fn pbft_manager_runtime_advance_finalization_transaction_status(
     finish_finalization_executor_boundary(&mut runtime, result)
 }
 
-/// Reports PBFT-chain finalized-head update facts to the manager-owned PBFT
-/// finalization executor.
-///
-/// Inputs:
-/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
-/// - `cursor`: executor cursor previously returned to C++.
-/// - `report`: PBFT-chain head facts after the PBFT-chain facade applies the
-///   finalized head update.
-///
-/// Outputs:
 /// Reports finalized DAG-order facts to the manager-owned PBFT finalization executor.
 ///
 /// Inputs:
@@ -2779,6 +2718,7 @@ fn pbft_manager_runtime_advance_finalization_sortition_commit_inner(
 /// Inputs:
 /// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
 /// - `cursor`: executor cursor previously returned to C++.
+///
 /// Outputs:
 /// - The next PBFT finalization executor state.
 ///
@@ -2926,267 +2866,6 @@ pub fn pbft_manager_runtime_advance_finalization_advance_period(
             live_report
         },
     )
-}
-
-/// Drains PBFT-manager-owned actions from the current finalization cursor.
-///
-/// Inputs:
-/// - `runtime`: long-lived PBFT manager runtime that owns the finalization cursor,
-///   Rust storage handle, and live scalar manager snapshot.
-/// - `plan`: accepted finalization intent whose storage-write intent and live
-///   mutation invariants describe the current finalization cursor.
-///
-/// Outputs:
-/// - Applies only manager-owned actions currently at the cursor:
-///   dynamic-lambda storage/live state, executed-status persistence, and the
-///   executed-block flag.
-/// - Stops before all external or subsystem actions and returns the next
-///   cursor step for the C++ executor.
-///
-/// Invariants and edge behavior:
-/// - This helper never executes FinalChain/EVM, DAG, transaction-manager,
-///   sortition, vote-manager, pillar, or network side effects. The PBFT-chain
-///   update is service-owned and executes while the manager lock is held,
-///   following the documented manager-before-chain lock order.
-/// - Storage commits happen before live Rust snapshot mutation.
-/// - Cursor reports are submitted through the same runtime session contract used
-///   by C++ for external actions, so cursor mismatch/failure semantics stay
-///   centralized.
-fn pbft_manager_runtime_drain_owned_finalization_actions(
-    runtime: &mut PbftManagerRuntimeState,
-) -> anyhow::Result<FinalizationOwnedActionDrainResult> {
-    let domain_plan = stored_finalization_plan(runtime)?;
-    let write_set = domain_plan.storage_write_intent.clone();
-    let mut drain = FinalizationOwnedActionDrainState::new();
-
-    loop {
-        let current_step = pbft_manager_runtime_finalization_session_next(runtime);
-        if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
-            || !current_step.has_action
-        {
-            return Ok(finalization_drain_result(
-                &drain,
-                current_step,
-                String::new(),
-            ));
-        }
-
-        let Some(action) = PbftFinalizationRuntimeAction::from_u8(current_step.action) else {
-            return Ok(finalization_drain_result(
-                &drain,
-                current_step,
-                "PBFT_FINALIZE_RUNTIME_UNKNOWN_ACTION".to_string(),
-            ));
-        };
-
-        match action {
-            PbftFinalizationRuntimeAction::UpdatePbftChain => {
-                let head = runtime
-                    .chain
-                    .write()
-                    .expect("PBFT chain lock poisoned")
-                    .state
-                    .update(
-                        domain_plan.storage_write_intent.pbft_block_hash,
-                        domain_plan.storage_write_intent.anchor_hash,
-                    )?;
-                let validation = validate_domain_pbft_finalization_live_mutation_report(
-                    &domain_plan,
-                    PbftFinalizationLiveMutationReport {
-                        pbft_chain_size: head.size,
-                        pbft_chain_head_hash: head.last_pbft_block_hash,
-                        pbft_chain_last_anchor_hash: head.last_non_null_pbft_dag_anchor_hash,
-                        ..base_finalization_live_report(action, &write_set)
-                    },
-                );
-                let accepted = validation.accepted;
-                let next_step = pbft_manager_runtime_finalization_session_report_action(
-                    runtime,
-                    FinalizationRuntimeActionReport {
-                        cursor: current_step.cursor,
-                        action: current_step.action,
-                        success: accepted,
-                        status: validation.status.as_u8(),
-                        error_code: validation.error_code,
-                    },
-                );
-                if !accepted {
-                    return Ok(finalization_drain_result(
-                        &drain,
-                        next_step,
-                        "PBFT_FINALIZE_CHAIN_LIVE_REJECTED".to_string(),
-                    ));
-                }
-            }
-            PbftFinalizationRuntimeAction::ApplyDynamicLambda => {
-                let mut stage = empty_finalization_stage(FINALIZATION_STAGE_DYNAMIC_LAMBDA);
-                stage.rounds_count_dynamic_lambda =
-                    domain_plan.storage_write_intent.rounds_count_dynamic_lambda;
-                stage.dynamic_lambda = domain_plan.storage_write_intent.dynamic_lambda;
-                let apply_result = apply_domain_pbft_finalization_storage_writes(
-                    runtime.storage.as_ref(),
-                    &write_set,
-                    vec![stage],
-                    false,
-                )?;
-                if !apply_result.status.is_success() {
-                    let next_step = pbft_manager_runtime_finalization_session_report_action(
-                        runtime,
-                        FinalizationRuntimeActionReport {
-                            cursor: current_step.cursor,
-                            action: current_step.action,
-                            success: false,
-                            status: apply_result.status.as_u8(),
-                            error_code: apply_result.error_code,
-                        },
-                    );
-                    return Ok(finalization_drain_result(
-                        &drain,
-                        next_step,
-                        "PBFT_FINALIZE_DYNAMIC_LAMBDA_STORAGE_REJECTED".to_string(),
-                    ));
-                }
-
-                runtime.state.apply_committed_dynamic_lambda(
-                    domain_plan.storage_write_intent.rounds_count_dynamic_lambda,
-                    domain_plan.storage_write_intent.dynamic_lambda,
-                );
-                drain.has_snapshot = true;
-                let validation =
-                    validate_domain_pbft_finalization_live_mutation_report(&domain_plan, {
-                        let snapshot = runtime.state.snapshot();
-                        PbftFinalizationLiveMutationReport {
-                            rounds_count_dynamic_lambda: snapshot.rounds_count_dynamic_lambda,
-                            dynamic_lambda: snapshot.dynamic_lambda_ms,
-                            ..base_finalization_live_report(action, &write_set)
-                        }
-                    });
-                let accepted = validation.accepted;
-                let status = if accepted {
-                    apply_result.status.as_u8()
-                } else {
-                    validation.status.as_u8()
-                };
-                let error_code = validation.error_code;
-                let next_step = pbft_manager_runtime_finalization_session_report_action(
-                    runtime,
-                    FinalizationRuntimeActionReport {
-                        cursor: current_step.cursor,
-                        action: current_step.action,
-                        success: accepted,
-                        status,
-                        error_code,
-                    },
-                );
-                if !accepted {
-                    return Ok(finalization_drain_result(
-                        &drain,
-                        next_step,
-                        "PBFT_FINALIZE_DYNAMIC_LAMBDA_LIVE_REJECTED".to_string(),
-                    ));
-                }
-            }
-            PbftFinalizationRuntimeAction::PersistExecutedStatus => {
-                let apply_result = apply_domain_pbft_finalization_storage_writes(
-                    runtime.storage.as_ref(),
-                    &write_set,
-                    vec![empty_finalization_stage(FINALIZATION_STAGE_EXECUTED_STATUS)],
-                    false,
-                )?;
-                let accepted = apply_result.status.is_success();
-                let next_step = pbft_manager_runtime_finalization_session_report_action(
-                    runtime,
-                    FinalizationRuntimeActionReport {
-                        cursor: current_step.cursor,
-                        action: current_step.action,
-                        success: accepted,
-                        status: apply_result.status.as_u8(),
-                        error_code: apply_result.error_code,
-                    },
-                );
-                if !accepted {
-                    return Ok(finalization_drain_result(
-                        &drain,
-                        next_step,
-                        "PBFT_FINALIZE_EXECUTED_STATUS_STORAGE_REJECTED".to_string(),
-                    ));
-                }
-            }
-            PbftFinalizationRuntimeAction::SetExecutedFlag => {
-                runtime.state.apply_committed_finalization_executed_status(
-                    domain_plan.storage_write_intent.executed_pbft_status,
-                );
-                drain.has_snapshot = true;
-                let validation =
-                    validate_domain_pbft_finalization_live_mutation_report(&domain_plan, {
-                        let snapshot = runtime.state.snapshot();
-                        PbftFinalizationLiveMutationReport {
-                            executed_pbft_block: snapshot.executed_pbft_block,
-                            ..base_finalization_live_report(action, &write_set)
-                        }
-                    });
-                let accepted = validation.accepted;
-                let status = validation.status.as_u8();
-                let error_code = validation.error_code;
-                let next_step = pbft_manager_runtime_finalization_session_report_action(
-                    runtime,
-                    FinalizationRuntimeActionReport {
-                        cursor: current_step.cursor,
-                        action: current_step.action,
-                        success: accepted,
-                        status,
-                        error_code,
-                    },
-                );
-                if !accepted {
-                    return Ok(finalization_drain_result(
-                        &drain,
-                        next_step,
-                        "PBFT_FINALIZE_EXECUTED_FLAG_LIVE_REJECTED".to_string(),
-                    ));
-                }
-            }
-            PbftFinalizationRuntimeAction::ClearAnchorDagCache => {
-                runtime.state.clear_cached_anchor_dag_order();
-                drain.has_snapshot = true;
-                let validation =
-                    validate_domain_pbft_finalization_live_mutation_report(&domain_plan, {
-                        PbftFinalizationLiveMutationReport {
-                            anchor_dag_cache_count: runtime.state.cached_anchor_dag_order_count(),
-                            ..base_finalization_live_report(action, &write_set)
-                        }
-                    });
-                let accepted = validation.accepted;
-                let status = validation.status.as_u8();
-                let error_code = validation.error_code;
-                let next_step = pbft_manager_runtime_finalization_session_report_action(
-                    runtime,
-                    FinalizationRuntimeActionReport {
-                        cursor: current_step.cursor,
-                        action: current_step.action,
-                        success: accepted,
-                        status,
-                        error_code,
-                    },
-                );
-                if !accepted {
-                    return Ok(finalization_drain_result(
-                        &drain,
-                        next_step,
-                        "PBFT_FINALIZE_ANCHOR_DAG_CACHE_LIVE_REJECTED".to_string(),
-                    ));
-                }
-                drain.cleared_anchor_dag_cache = true;
-            }
-            _ => {
-                return Ok(finalization_drain_result(
-                    &drain,
-                    current_step,
-                    String::new(),
-                ));
-            }
-        }
-    }
 }
 
 impl From<(PbftDynamicLambdaPlan, bool, u32)> for FfiPbftManagerFinalizationDynamicLambdaPlan {
@@ -3769,11 +3448,10 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationFinalChainDispatchReport as FfiPbftManagerFinalizationFinalChainDispatchReport;
-    use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
+    use crate::ffi::{BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_test_service_from_storage;
     use crate::storage::{
-        create_metadata_storage_queries, create_pbft_storage_queries,
-        create_pbft_vote_storage_queries, create_storage,
+        create_pbft_storage_queries, create_pbft_vote_storage_queries, create_storage,
     };
     use ethereum_types::H256;
     use rustaxa_consensus::pbft_finalize::{PbftFinalizationResumeStatus, PbftFinalizationStatus};
@@ -3890,10 +3568,6 @@ mod tests {
 
     fn pbft_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
         create_pbft_storage_queries(storage)
-    }
-
-    fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
-        create_metadata_storage_queries(storage)
     }
 
     fn fact(state: u8) -> FfiPbftManagerRuntimeTickFact {
@@ -4533,32 +4207,6 @@ mod tests {
     }
 
     #[test]
-    fn manager_runtime_internalizes_pbft_chain_update() {
-        let (_temp_dir, mut runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_pbft_chain_report");
-        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
-        advance_finalization_cursor_to_action(
-            &mut runtime,
-            PbftFinalizationRuntimeAction::UpdatePbftChain,
-        );
-
-        let state = drain_finalization_executor_state(&mut *runtime.manager_state())
-            .expect("service-owned PBFT-chain update should drain");
-
-        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
-        assert_eq!(
-            state.action,
-            PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
-        );
-        assert!(state.cleared_anchor_dag_cache);
-        let head = runtime.pbft_chain_head();
-        assert_eq!(head.size, 10);
-        assert_eq!(head.last_pbft_block_hash, [7; 32]);
-        assert_eq!(head.last_non_null_anchor_hash, [4; 32]);
-    }
-
-    #[test]
     fn manager_runtime_advances_finalization_with_dag_order_report() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_dag_order_report");
@@ -4578,6 +4226,36 @@ mod tests {
         assert_eq!(
             state.action,
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions.as_u8()
+        );
+    }
+
+    #[test]
+    fn manager_runtime_projects_native_owned_drain_compatibility_flags() {
+        let (_temp_dir, runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_owned_drain_projection");
+        let state = finalization_executor_state_from_drain(
+            &mut *runtime.manager_state(),
+            rustaxa_consensus::pbft_manager::PbftFinalizationOwnedActionDrain {
+                cleared_anchor_dag_cache: true,
+                has_snapshot: true,
+                next_step: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep {
+                    runtime_status: PbftFinalizationRuntimeStatus::Active,
+                    has_action: true,
+                    action: Some(PbftFinalizationRuntimeAction::FinalizeFinalChain),
+                    action_index: 7,
+                    complete: false,
+                    error_code: String::new(),
+                },
+                error_code: String::new(),
+            },
+        );
+
+        assert!(state.cleared_anchor_dag_cache);
+        assert!(state.has_snapshot);
+        assert_eq!(state.cursor, 7);
+        assert_eq!(
+            state.action,
+            PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
         );
     }
 
@@ -4815,44 +4493,6 @@ mod tests {
     }
 
     #[test]
-    fn manager_runtime_drains_anchor_cache_clear_as_owned_finalization_action() {
-        let (_temp_dir, mut runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_anchor_cache_owned_drain");
-        pbft_manager_runtime_record_cached_anchor_dag_order(&mut runtime, [42; 32]);
-        assert_eq!(
-            runtime
-                .manager_state()
-                .state
-                .cached_anchor_dag_order_count(),
-            1
-        );
-
-        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
-        advance_finalization_cursor_to_action(
-            &mut runtime,
-            PbftFinalizationRuntimeAction::ClearAnchorDagCache,
-        );
-
-        let state = drain_finalization_executor_state(&mut *runtime.manager_state())
-            .expect("owned anchor cache clear should drain");
-
-        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
-        assert_eq!(
-            state.action,
-            PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
-        );
-        assert!(state.cleared_anchor_dag_cache);
-        assert_eq!(
-            runtime
-                .manager_state()
-                .state
-                .cached_anchor_dag_order_count(),
-            0
-        );
-    }
-
-    #[test]
     fn manager_runtime_advances_finalization_with_final_chain_dispatch_report() {
         let (_temp_dir, mut runtime) = runtime_for_finalization_test(
             "rustaxa_bridge_pbft_manager_final_chain_dispatch_report",
@@ -4945,86 +4585,6 @@ mod tests {
     }
 
     #[test]
-    fn manager_runtime_drains_owned_finalization_actions() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_finalization_owned_drain");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let mut startup = startup_fact();
-            startup.cacti_active_at_chain_size = false;
-            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
-                .expect("runtime should initialize");
-            let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-            pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
-
-            loop {
-                let step =
-                    pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
-                if step.action == PbftFinalizationRuntimeAction::ApplyDynamicLambda.as_u8() {
-                    break;
-                }
-                assert!(step.has_action);
-                let next = pbft_manager_runtime_finalization_session_report(
-                    &mut *runtime.manager_state(),
-                    step.cursor,
-                    step.action,
-                    true,
-                    0,
-                );
-                assert!(next.can_continue);
-            }
-
-            let dynamic = pbft_manager_runtime_drain_owned_finalization_actions(
-                &mut *runtime.manager_state(),
-            )
-            .expect("dynamic-lambda drain should run");
-            assert!(dynamic.has_snapshot);
-            assert_eq!(
-                dynamic.next_step.action,
-                PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
-            );
-            let period_lambda = metadata_queries(&storage)
-                .get_period_lambda(10, false)
-                .expect("period lambda should persist");
-            assert!(period_lambda.found);
-            assert_eq!(period_lambda.value, 1_500);
-            assert_eq!(
-                metadata_queries(&storage)
-                    .get_rounds_count_dynamic_lambda()
-                    .expect("round count should persist"),
-                0
-            );
-
-            let final_chain = pbft_manager_runtime_finalization_session_report(
-                &mut *runtime.manager_state(),
-                dynamic.next_step.cursor,
-                dynamic.next_step.action,
-                true,
-                0,
-            );
-            assert_eq!(
-                final_chain.action,
-                PbftFinalizationRuntimeAction::PersistExecutedStatus.as_u8()
-            );
-
-            let executed = pbft_manager_runtime_drain_owned_finalization_actions(
-                &mut *runtime.manager_state(),
-            )
-            .expect("executed-status drain should run");
-            assert_eq!(
-                executed.next_step.action,
-                PbftFinalizationRuntimeAction::AdvancePeriod.as_u8()
-            );
-            assert!(pbft_queries(&storage)
-                .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
-                .expect("executed status should persist"));
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
     fn manager_runtime_finalization_cursor_stops_on_failure_or_mismatch() {
         let (_temp_dir, runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_failure");
@@ -5110,133 +4670,6 @@ mod tests {
         .contains(action)));
         assert!(step.complete);
         assert_eq!(step.status, PbftFinalizationRuntimeStatus::Complete.as_u8());
-    }
-
-    #[test]
-    fn manager_runtime_start_resume_executor_classifies_complete_duplicate() {
-        let (_temp_dir, mut runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_start_resume_complete");
-        let mut plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        plan.storage_write_intent.period_data_rlp = vec![0xc0];
-        let write_set = PbftFinalizationStorageWriteIntent::from(&plan.storage_write_intent);
-        let mut dynamic = empty_finalization_stage(FINALIZATION_STAGE_DYNAMIC_LAMBDA);
-        dynamic.rounds_count_dynamic_lambda = plan.storage_write_intent.rounds_count_dynamic_lambda;
-        dynamic.dynamic_lambda = plan.storage_write_intent.dynamic_lambda;
-        apply_domain_pbft_finalization_storage_writes(
-            native_service_storage(&runtime).as_ref(),
-            &write_set,
-            vec![
-                empty_finalization_stage(0),
-                dynamic,
-                empty_finalization_stage(FINALIZATION_STAGE_EXECUTED_STATUS),
-            ],
-            false,
-        )
-        .expect("complete duplicate storage state should seed");
-        let dag_service = dag_service_from_runtime(&runtime);
-        let state = pbft_manager_runtime_start_finalization_executor(
-            &mut runtime,
-            &dag_service,
-            FfiPbftFinalizationExecutorStartRequest {
-                mode: FINALIZATION_EXECUTOR_MODE_RESUME,
-                plan,
-                primary_stages: Vec::new(),
-                sync: false,
-                final_chain_last_block: 10,
-            },
-        )
-        .expect("resume executor should inspect storage-backed duplicate");
-
-        assert_eq!(
-            state.status,
-            PbftFinalizationRuntimeStatus::Complete.as_u8()
-        );
-        assert!(state.complete);
-        assert!(!state.has_action);
-        assert!(state.can_continue);
-    }
-
-    #[test]
-    fn manager_runtime_drain_replays_executed_status_resume_tail() {
-        let temp_dir =
-            unique_temp_dir("rustaxa_bridge_pbft_manager_finalization_resume_executed_drain");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let mut startup = startup_fact();
-            startup.cacti_active_at_chain_size = false;
-            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
-                .expect("runtime should initialize");
-            let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-            let resume = PbftFinalizationResumePlan {
-                status: PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence,
-                duplicate_classified: true,
-                complete: false,
-                replay_actions: vec![
-                    PbftFinalizationRuntimeAction::PersistExecutedStatus,
-                    PbftFinalizationRuntimeAction::SetExecutedFlag,
-                ],
-                error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
-            };
-            runtime.manager_state().finalization_runtime_plan =
-                Some(PbftFinalizationPlan::from(&plan));
-            pbft_manager_runtime_begin_finalization_resume_session(
-                &mut *runtime.manager_state(),
-                resume,
-            );
-
-            let drained = pbft_manager_runtime_drain_owned_finalization_actions(
-                &mut *runtime.manager_state(),
-            )
-            .expect("resume owned-action drain should run");
-
-            assert!(drained.has_snapshot);
-            assert!(drained.next_step.complete);
-            assert_eq!(
-                drained.next_step.status,
-                PbftFinalizationRuntimeStatus::Complete.as_u8()
-            );
-            assert!(pbft_queries(&storage)
-                .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
-                .expect("executed status should persist"));
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn manager_runtime_drain_reports_rejected_owned_storage_action() {
-        let (_temp_dir, runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_drain_reject");
-        let mut plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        plan.storage_write_intent.persist_executed_pbft_status = false;
-        let resume = PbftFinalizationResumePlan {
-            status: PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence,
-            duplicate_classified: true,
-            complete: false,
-            replay_actions: vec![PbftFinalizationRuntimeAction::PersistExecutedStatus],
-            error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
-        };
-        runtime.manager_state().finalization_runtime_plan = Some(PbftFinalizationPlan::from(&plan));
-        pbft_manager_runtime_begin_finalization_resume_session(
-            &mut *runtime.manager_state(),
-            resume,
-        );
-
-        let rejected =
-            pbft_manager_runtime_drain_owned_finalization_actions(&mut *runtime.manager_state())
-                .expect("rejected owned-action drain should report through result");
-
-        assert!(!rejected.next_step.can_continue);
-        assert_eq!(
-            rejected.next_step.status,
-            PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
-        );
-        assert_eq!(
-            rejected.error_code,
-            "PBFT_FINALIZE_EXECUTED_STATUS_STORAGE_REJECTED"
-        );
     }
 
     #[test]

@@ -2447,9 +2447,9 @@ pub fn plan_pbft_finalization_runtime(plan: &PbftFinalizationPlan) -> PbftFinali
 
 /// Starts a stateful PBFT finalization runtime executor from a runtime plan.
 ///
-/// The executor owns only ordering state. It never mutates storage or live
-/// consensus objects; C++ must call `next_pbft_finalization_runtime_action`,
-/// execute the returned action, and report the result through
+/// The executor owns only ordering state. A manager-owned drain or an external
+/// subsystem executor must call `next_pbft_finalization_runtime_action`,
+/// perform the current action, and report the result through
 /// `report_pbft_finalization_runtime_action`.
 pub fn start_pbft_finalization_runtime(
     plan: &PbftFinalizationRuntimePlan,

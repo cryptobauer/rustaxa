@@ -1059,6 +1059,26 @@ The checked bridge budget falls by 40 lines to 32,199, shim lines fall by 35 to
 flags, partial factories, compatibility constructors, and production consumers
 are unchanged.
 
+The next bounded `CRW-12` finalization contraction moves the complete
+manager-owned action drain from `rustaxa-bridge` onto `PbftManagerGuard`.
+Native consensus now derives the retained plan, storage intent, current action,
+chain, and scalar state under the manager serialization domain; drains
+PBFT-chain publication, anchor-cache clearing, dynamic-lambda storage/live
+publication, and executed-status storage/live publication; validates and
+reports each action; and stops unchanged at every external or sibling-service
+boundary. Chain state is projected and validated before publication, while
+dynamic-lambda and executed-status storage commits precede live publication.
+The bridge keeps only one argument-free native call, executor-state projection,
+and terminal cleanup. Its duplicate drain state/result, stage constructors,
+behavioral loop, and six superseded behavioral transcripts are deleted; one
+conversion sentinel remains. Seven native tests cover pre-/post-FinalChain
+ordering, chain/cache publication, dynamic-lambda persistence and idempotent
+replay, executed-status completion, missing-session projection, and rejection
+without invalid chain publication. The checked bridge budget falls by 567 lines to 31,632. CXX
+functions, carriers, handles, shim lines and directories, granular flags,
+partial factories, compatibility constructors, and production consumers are
+unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

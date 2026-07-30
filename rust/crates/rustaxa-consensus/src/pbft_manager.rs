@@ -101,6 +101,78 @@ impl PbftFinalizedTransactionStatusPort for crate::dag_transaction_service::DagT
     }
 }
 
+/// Native outcome after draining PBFT-manager-owned finalization actions.
+///
+/// The manager executes every consecutive action whose state and persistence
+/// it owns, then returns the first external/subsystem action or terminal step.
+/// The two booleans are leaf effects consumed by the temporary C++ shell:
+/// whether its anchor compatibility cache must be mirrored clear and whether
+/// its scalar snapshot must be refreshed. `error_code` carries a stable
+/// operation-level rejection label when the runtime step contains the more
+/// specific validation or storage status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PbftFinalizationOwnedActionDrain {
+    /// Whether the retained C++ anchor-order compatibility cache must be cleared.
+    pub cleared_anchor_dag_cache: bool,
+    /// Whether native scalar manager state changed during this drain.
+    pub has_snapshot: bool,
+    /// First action not owned by this drain, or its terminal runtime step.
+    pub next_step: crate::pbft_finalize::PbftFinalizationRuntimeStep,
+    /// Stable high-level rejection label, empty on success.
+    pub error_code: String,
+}
+
+fn base_owned_finalization_live_report(
+    action: crate::pbft_finalize::PbftFinalizationRuntimeAction,
+    write_set: &crate::pbft_finalize::PbftFinalizationStorageWriteIntent,
+) -> crate::pbft_finalize::PbftFinalizationLiveMutationReport {
+    crate::pbft_finalize::PbftFinalizationLiveMutationReport {
+        action,
+        block_period: write_set.block_period,
+        pbft_block_hash: write_set.pbft_block_hash,
+        anchor_hash: write_set.anchor_hash,
+        dag_finalized_count: 0,
+        finalized_transaction_count: 0,
+        pbft_chain_size: 0,
+        pbft_chain_head_hash: H256::zero(),
+        pbft_chain_last_anchor_hash: H256::zero(),
+        reward_votes_period: 0,
+        reward_votes_round: 0,
+        reward_votes_block_hash: H256::zero(),
+        reward_votes_reset_provenance_valid: false,
+        sortition_changed: false,
+        sortition_change_period: 0,
+        sortition_change_interval_efficiency: 0,
+        sortition_change_threshold_upper: 0,
+        sortition_current_threshold_upper: 0,
+        sortition_params_changes_count: 0,
+        rounds_count_dynamic_lambda: 0,
+        dynamic_lambda: 0,
+        executed_pbft_block: false,
+        manager_period: 0,
+        pillar_processed_period: 0,
+        pillar_request_period: 0,
+        anchor_dag_cache_count: 0,
+        final_chain_dispatched: false,
+        final_chain_blocks_per_year: 0,
+        final_chain_last_block: 0,
+    }
+}
+
+fn owned_finalization_drain_outcome(
+    cleared_anchor_dag_cache: bool,
+    has_snapshot: bool,
+    next_step: crate::pbft_finalize::PbftFinalizationRuntimeStep,
+    error_code: &str,
+) -> PbftFinalizationOwnedActionDrain {
+    PbftFinalizationOwnedActionDrain {
+        cleared_anchor_dag_cache,
+        has_snapshot,
+        next_step,
+        error_code: error_code.to_string(),
+    }
+}
+
 /// Prepares and publishes the sortition portion of one PBFT finalization write set.
 ///
 /// The caller must already hold the manager serialization guard. The task
@@ -654,6 +726,235 @@ impl PbftManagerGuard<'_> {
             },
         );
         Ok(next_pbft_finalization_runtime_action(session))
+    }
+
+    /// Drains every consecutive PBFT-manager-owned finalization action.
+    ///
+    /// This task owns PBFT-chain publication, dynamic-lambda persistence and
+    /// live publication, executed-status persistence/live publication, anchor
+    /// cache clearing, validation, and cursor reporting. It stops before DAG,
+    /// transaction, sortition, vote, FinalChain/EVM, pillar, period-advance, or
+    /// network work. Storage commits precede corresponding live-state updates,
+    /// and manager-before-chain lock order is preserved.
+    ///
+    /// Missing plans and storage/chain failures return `Err`. A missing runtime
+    /// session preserves the executor contract by returning an `ActionMismatch`
+    /// step. Deterministic storage or live-state rejections are reported to the
+    /// runtime and returned as a terminal drain outcome with a stable high-level
+    /// error label.
+    pub fn drain_finalization_owned_actions(&mut self) -> Result<PbftFinalizationOwnedActionDrain> {
+        use crate::pbft_finalize::{
+            PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
+            PbftFinalizationRuntimeStatus, PbftFinalizationStorageWriteStage,
+            apply_pbft_finalization_storage_writes, next_pbft_finalization_runtime_action,
+            report_pbft_finalization_runtime_action,
+            validate_pbft_finalization_live_mutation_report,
+        };
+
+        const DYNAMIC_LAMBDA_STAGE: u8 = 1;
+        const EXECUTED_STATUS_STAGE: u8 = 2;
+
+        let plan = self
+            .finalization_runtime_plan
+            .clone()
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_RUNTIME_PLAN_NOT_STARTED"))?;
+        let write_set = plan.storage_write_intent.clone();
+        let mut cleared_anchor_dag_cache = false;
+        let mut has_snapshot = false;
+
+        loop {
+            let Some(session) = self.finalization_runtime_session.as_ref() else {
+                return Ok(owned_finalization_drain_outcome(
+                    cleared_anchor_dag_cache,
+                    has_snapshot,
+                    crate::pbft_finalize::PbftFinalizationRuntimeStep {
+                        runtime_status: PbftFinalizationRuntimeStatus::ActionMismatch,
+                        has_action: false,
+                        action: None,
+                        action_index: 0,
+                        complete: false,
+                        error_code: "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED".to_string(),
+                    },
+                    "",
+                ));
+            };
+            let current_step = next_pbft_finalization_runtime_action(session);
+            if current_step.runtime_status != PbftFinalizationRuntimeStatus::Active
+                || !current_step.has_action
+            {
+                return Ok(owned_finalization_drain_outcome(
+                    cleared_anchor_dag_cache,
+                    has_snapshot,
+                    current_step,
+                    "",
+                ));
+            }
+            let action = current_step
+                .action
+                .expect("active finalization step must carry an action");
+
+            let (success, status, error_code, rejection_code) = match action {
+                PbftFinalizationRuntimeAction::UpdatePbftChain => {
+                    let mut chain = self.chain.write().expect("PBFT chain lock poisoned");
+                    let head = chain
+                        .state
+                        .project_update(write_set.pbft_block_hash, write_set.anchor_hash)?;
+                    let validation = validate_pbft_finalization_live_mutation_report(
+                        &plan,
+                        crate::pbft_finalize::PbftFinalizationLiveMutationReport {
+                            pbft_chain_size: head.size,
+                            pbft_chain_head_hash: head.last_pbft_block_hash,
+                            pbft_chain_last_anchor_hash: head.last_non_null_pbft_dag_anchor_hash,
+                            ..base_owned_finalization_live_report(action, &write_set)
+                        },
+                    );
+                    if validation.accepted {
+                        chain
+                            .state
+                            .update(write_set.pbft_block_hash, write_set.anchor_hash)?;
+                    }
+                    (
+                        validation.accepted,
+                        validation.status.as_u8(),
+                        validation.error_code,
+                        "PBFT_FINALIZE_CHAIN_LIVE_REJECTED",
+                    )
+                }
+                PbftFinalizationRuntimeAction::ApplyDynamicLambda => {
+                    let apply_result = apply_pbft_finalization_storage_writes(
+                        self.storage.as_ref(),
+                        &write_set,
+                        vec![PbftFinalizationStorageWriteStage {
+                            stage: DYNAMIC_LAMBDA_STAGE,
+                            rounds_count_dynamic_lambda: write_set.rounds_count_dynamic_lambda,
+                            dynamic_lambda: write_set.dynamic_lambda,
+                            ..Default::default()
+                        }],
+                        false,
+                    )?;
+                    if !apply_result.status.is_success() {
+                        (
+                            false,
+                            apply_result.status.as_u8(),
+                            apply_result.error_code,
+                            "PBFT_FINALIZE_DYNAMIC_LAMBDA_STORAGE_REJECTED",
+                        )
+                    } else {
+                        self.state.apply_committed_dynamic_lambda(
+                            write_set.rounds_count_dynamic_lambda,
+                            write_set.dynamic_lambda,
+                        );
+                        has_snapshot = true;
+                        let snapshot = self.state.snapshot();
+                        let validation = validate_pbft_finalization_live_mutation_report(
+                            &plan,
+                            crate::pbft_finalize::PbftFinalizationLiveMutationReport {
+                                rounds_count_dynamic_lambda: snapshot.rounds_count_dynamic_lambda,
+                                dynamic_lambda: snapshot.dynamic_lambda_ms,
+                                ..base_owned_finalization_live_report(action, &write_set)
+                            },
+                        );
+                        (
+                            validation.accepted,
+                            if validation.accepted {
+                                apply_result.status.as_u8()
+                            } else {
+                                validation.status.as_u8()
+                            },
+                            validation.error_code,
+                            "PBFT_FINALIZE_DYNAMIC_LAMBDA_LIVE_REJECTED",
+                        )
+                    }
+                }
+                PbftFinalizationRuntimeAction::PersistExecutedStatus => {
+                    let apply_result = apply_pbft_finalization_storage_writes(
+                        self.storage.as_ref(),
+                        &write_set,
+                        vec![PbftFinalizationStorageWriteStage {
+                            stage: EXECUTED_STATUS_STAGE,
+                            ..Default::default()
+                        }],
+                        false,
+                    )?;
+                    (
+                        apply_result.status.is_success(),
+                        apply_result.status.as_u8(),
+                        apply_result.error_code,
+                        "PBFT_FINALIZE_EXECUTED_STATUS_STORAGE_REJECTED",
+                    )
+                }
+                PbftFinalizationRuntimeAction::SetExecutedFlag => {
+                    self.state.apply_committed_finalization_executed_status(
+                        write_set.executed_pbft_status,
+                    );
+                    has_snapshot = true;
+                    let validation = validate_pbft_finalization_live_mutation_report(
+                        &plan,
+                        crate::pbft_finalize::PbftFinalizationLiveMutationReport {
+                            executed_pbft_block: self.state.snapshot().executed_pbft_block,
+                            ..base_owned_finalization_live_report(action, &write_set)
+                        },
+                    );
+                    (
+                        validation.accepted,
+                        validation.status.as_u8(),
+                        validation.error_code,
+                        "PBFT_FINALIZE_EXECUTED_FLAG_LIVE_REJECTED",
+                    )
+                }
+                PbftFinalizationRuntimeAction::ClearAnchorDagCache => {
+                    self.state.clear_cached_anchor_dag_order();
+                    has_snapshot = true;
+                    let validation = validate_pbft_finalization_live_mutation_report(
+                        &plan,
+                        crate::pbft_finalize::PbftFinalizationLiveMutationReport {
+                            anchor_dag_cache_count: self.state.cached_anchor_dag_order_count(),
+                            ..base_owned_finalization_live_report(action, &write_set)
+                        },
+                    );
+                    if validation.accepted {
+                        cleared_anchor_dag_cache = true;
+                    }
+                    (
+                        validation.accepted,
+                        validation.status.as_u8(),
+                        validation.error_code,
+                        "PBFT_FINALIZE_ANCHOR_DAG_CACHE_LIVE_REJECTED",
+                    )
+                }
+                _ => {
+                    return Ok(owned_finalization_drain_outcome(
+                        cleared_anchor_dag_cache,
+                        has_snapshot,
+                        current_step,
+                        "",
+                    ));
+                }
+            };
+
+            let session = self
+                .finalization_runtime_session
+                .as_mut()
+                .expect("finalization session checked above");
+            *session = report_pbft_finalization_runtime_action(
+                session.clone(),
+                PbftFinalizationRuntimeActionResult {
+                    action,
+                    success,
+                    status,
+                    error_code,
+                },
+            );
+            let next_step = next_pbft_finalization_runtime_action(session);
+            if !success {
+                return Ok(owned_finalization_drain_outcome(
+                    cleared_anchor_dag_cache,
+                    has_snapshot,
+                    next_step,
+                    rejection_code,
+                ));
+            }
+        }
     }
 }
 
@@ -7455,6 +7756,461 @@ mod tests {
             dag_block_period_writes: Vec::<PbftFinalizationPositionedHash>::new(),
             transaction_location_writes: Vec::<PbftFinalizationPositionedHash>::new(),
         }
+    }
+
+    fn install_owned_finalization_runtime(
+        runtime: &mut PbftManagerRuntimeState,
+        write_set: PbftFinalizationStorageWriteIntent,
+        cleanup: PbftFinalizationCleanupIntent,
+        executed_pbft_block: bool,
+        actions: Option<Vec<PbftFinalizationRuntimeAction>>,
+    ) {
+        let plan = PbftFinalizationPlan {
+            finalize_block: true,
+            anchor: if write_set.null_anchor {
+                PbftFinalizationAnchor::Null
+            } else {
+                PbftFinalizationAnchor::Anchored
+            },
+            executed_pbft_block,
+            cleanup,
+            storage_write_intent: write_set,
+            status: PbftFinalizationStatus::Accepted,
+        };
+        let runtime_plan = actions
+            .map(|actions| PbftFinalizationRuntimePlan {
+                finalize_block: true,
+                status: PbftFinalizationStatus::Accepted,
+                actions,
+            })
+            .unwrap_or_else(|| crate::pbft_finalize::plan_pbft_finalization_runtime(&plan));
+        runtime.finalization_runtime_session = Some(start_pbft_finalization_runtime(&runtime_plan));
+        runtime.finalization_runtime_plan = Some(plan);
+    }
+
+    fn empty_finalization_cleanup() -> PbftFinalizationCleanupIntent {
+        PbftFinalizationCleanupIntent {
+            persist_pbft_block_metadata: false,
+            reset_reward_votes: false,
+            set_dag_block_order: false,
+            update_sortition_params: false,
+            update_finalized_transactions_status: false,
+            update_pbft_chain: false,
+            clear_anchor_dag_cache: false,
+            finalize_final_chain: false,
+            maybe_update_dynamic_lambda: false,
+            advance_period: false,
+            process_pillar_block: false,
+        }
+    }
+
+    #[test]
+    fn finalization_owned_drain_updates_chain_and_clears_anchor_cache() {
+        let (path, manager, _dag) =
+            finalization_sortition_services("pbft_manager_owned_drain_chain");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        runtime
+            .state
+            .record_cached_anchor_dag_order(H256::repeat_byte(42));
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set.clone(),
+            PbftFinalizationCleanupIntent {
+                update_pbft_chain: true,
+                clear_anchor_dag_cache: true,
+                finalize_final_chain: true,
+                ..empty_finalization_cleanup()
+            },
+            false,
+            Some(vec![
+                PbftFinalizationRuntimeAction::UpdatePbftChain,
+                PbftFinalizationRuntimeAction::ClearAnchorDagCache,
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+            ]),
+        );
+
+        let drained = runtime
+            .drain_finalization_owned_actions()
+            .expect("owned chain/cache drain succeeds");
+
+        assert!(drained.cleared_anchor_dag_cache);
+        assert!(drained.has_snapshot);
+        assert_eq!(
+            drained.next_step.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+        assert_eq!(runtime.state.cached_anchor_dag_order_count(), 0);
+        let head = runtime
+            .chain
+            .read()
+            .expect("PBFT chain lock remains healthy")
+            .state
+            .head();
+        assert_eq!(head.size, 1);
+        assert_eq!(head.last_pbft_block_hash, write_set.pbft_block_hash);
+        assert_eq!(
+            head.last_non_null_pbft_dag_anchor_hash,
+            write_set.anchor_hash
+        );
+
+        drop(runtime);
+        drop(manager);
+        drop(_dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_owned_drain_persists_and_publishes_dynamic_lambda() {
+        let (path, manager, _dag) =
+            finalization_sortition_services("pbft_manager_owned_drain_dynamic_lambda");
+        let mut write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        write_set.apply_dynamic_lambda_update = true;
+        write_set.persist_period_lambda = true;
+        write_set.period_lambda = 1_500;
+        write_set.rounds_count_dynamic_lambda = 12;
+        write_set.dynamic_lambda = 1_250;
+        let mut runtime = manager.lock();
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set.clone(),
+            PbftFinalizationCleanupIntent {
+                finalize_final_chain: true,
+                ..empty_finalization_cleanup()
+            },
+            false,
+            Some(vec![
+                PbftFinalizationRuntimeAction::ApplyDynamicLambda,
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+            ]),
+        );
+
+        let drained = runtime
+            .drain_finalization_owned_actions()
+            .expect("owned dynamic-lambda drain succeeds");
+
+        assert!(drained.has_snapshot);
+        assert_eq!(
+            drained.next_step.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+        assert_eq!(
+            runtime
+                .storage
+                .metadata()
+                .period_lambda(1, false)
+                .expect("period lambda reads"),
+            Some(1_500)
+        );
+        assert_eq!(
+            runtime
+                .storage
+                .metadata()
+                .rounds_count_dynamic_lambda()
+                .expect("dynamic-lambda rounds read"),
+            12
+        );
+        let snapshot = runtime.state.snapshot();
+        assert_eq!(snapshot.rounds_count_dynamic_lambda, 12);
+        assert_eq!(snapshot.dynamic_lambda_ms, 1_250);
+
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set,
+            PbftFinalizationCleanupIntent {
+                finalize_final_chain: true,
+                ..empty_finalization_cleanup()
+            },
+            false,
+            Some(vec![
+                PbftFinalizationRuntimeAction::ApplyDynamicLambda,
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+            ]),
+        );
+        let replay = runtime
+            .drain_finalization_owned_actions()
+            .expect("idempotent dynamic-lambda replay succeeds");
+        assert_eq!(
+            replay.next_step.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+
+        drop(runtime);
+        drop(manager);
+        drop(_dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_owned_drain_replays_executed_status_tail() {
+        let (path, manager, _dag) =
+            finalization_sortition_services("pbft_manager_owned_drain_executed");
+        let mut write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        write_set.persist_executed_pbft_status = true;
+        write_set.executed_pbft_status = true;
+        let mut runtime = manager.lock();
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set,
+            empty_finalization_cleanup(),
+            true,
+            Some(vec![
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
+            ]),
+        );
+
+        let drained = runtime
+            .drain_finalization_owned_actions()
+            .expect("owned executed-status tail succeeds");
+
+        assert!(drained.has_snapshot);
+        assert!(drained.next_step.complete);
+        assert_eq!(
+            drained.next_step.runtime_status,
+            PbftFinalizationRuntimeStatus::Complete
+        );
+        assert_eq!(
+            runtime
+                .storage
+                .pbft()
+                .manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                .expect("executed status reads"),
+            Some(true)
+        );
+        assert!(runtime.state.snapshot().executed_pbft_block);
+
+        drop(runtime);
+        drop(manager);
+        drop(_dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_owned_drain_stops_around_final_chain_boundary() {
+        let (path, manager, _dag) =
+            finalization_sortition_services("pbft_manager_owned_drain_final_chain_boundary");
+        let mut write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        write_set.persist_executed_pbft_status = true;
+        write_set.executed_pbft_status = true;
+        let mut runtime = manager.lock();
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set,
+            PbftFinalizationCleanupIntent {
+                clear_anchor_dag_cache: true,
+                finalize_final_chain: true,
+                advance_period: true,
+                ..empty_finalization_cleanup()
+            },
+            true,
+            Some(vec![
+                PbftFinalizationRuntimeAction::ClearAnchorDagCache,
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
+                PbftFinalizationRuntimeAction::AdvancePeriod,
+            ]),
+        );
+
+        let before_external = runtime
+            .drain_finalization_owned_actions()
+            .expect("pre-FinalChain owned actions drain");
+        assert_eq!(
+            before_external.next_step.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+        assert_eq!(
+            runtime
+                .storage
+                .pbft()
+                .manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                .expect("executed status reads"),
+            None
+        );
+
+        let session = runtime
+            .finalization_runtime_session
+            .take()
+            .expect("finalization session remains active");
+        runtime.finalization_runtime_session = Some(
+            crate::pbft_finalize::report_pbft_finalization_runtime_action(
+                session,
+                crate::pbft_finalize::PbftFinalizationRuntimeActionResult {
+                    action: PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                    success: true,
+                    status: 0,
+                    error_code: String::new(),
+                },
+            ),
+        );
+        let after_external = runtime
+            .drain_finalization_owned_actions()
+            .expect("post-FinalChain owned actions drain");
+        assert_eq!(
+            after_external.next_step.action,
+            Some(PbftFinalizationRuntimeAction::AdvancePeriod)
+        );
+        assert_eq!(
+            runtime
+                .storage
+                .pbft()
+                .manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                .expect("executed status reads"),
+            Some(true)
+        );
+        assert!(runtime.state.snapshot().executed_pbft_block);
+
+        drop(runtime);
+        drop(manager);
+        drop(_dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_owned_drain_reports_rejected_storage_action() {
+        let (path, manager, _dag) =
+            finalization_sortition_services("pbft_manager_owned_drain_rejected");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set,
+            empty_finalization_cleanup(),
+            false,
+            Some(vec![PbftFinalizationRuntimeAction::PersistExecutedStatus]),
+        );
+
+        let drained = runtime
+            .drain_finalization_owned_actions()
+            .expect("rejected owned storage action reports through the runtime");
+
+        assert_eq!(
+            drained.next_step.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionFailed
+        );
+        assert!(!drained.next_step.complete);
+        assert_eq!(
+            drained.error_code,
+            "PBFT_FINALIZE_EXECUTED_STATUS_STORAGE_REJECTED"
+        );
+
+        drop(runtime);
+        drop(manager);
+        drop(_dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_owned_drain_reports_missing_session() {
+        let (path, manager, _dag) =
+            finalization_sortition_services("pbft_manager_owned_drain_missing_session");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set,
+            empty_finalization_cleanup(),
+            false,
+            Some(vec![PbftFinalizationRuntimeAction::UpdatePbftChain]),
+        );
+        runtime.finalization_runtime_session = None;
+
+        let drained = runtime
+            .drain_finalization_owned_actions()
+            .expect("missing session reports through the runtime contract");
+
+        assert_eq!(
+            drained.next_step.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionMismatch
+        );
+        assert!(!drained.next_step.has_action);
+        assert_eq!(
+            drained.next_step.error_code,
+            "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED"
+        );
+        assert!(drained.error_code.is_empty());
+
+        drop(runtime);
+        drop(manager);
+        drop(_dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_owned_drain_rejects_chain_projection_without_publication() {
+        let (path, manager, _dag) =
+            finalization_sortition_services("pbft_manager_owned_drain_chain_rejected");
+        let write_set = finalization_sortition_write_set(
+            2,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        let original_head = runtime
+            .chain
+            .read()
+            .expect("PBFT chain lock remains healthy")
+            .state
+            .head();
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set,
+            PbftFinalizationCleanupIntent {
+                update_pbft_chain: true,
+                ..empty_finalization_cleanup()
+            },
+            false,
+            Some(vec![PbftFinalizationRuntimeAction::UpdatePbftChain]),
+        );
+
+        let drained = runtime
+            .drain_finalization_owned_actions()
+            .expect("invalid chain projection reports through the runtime");
+
+        assert_eq!(
+            drained.next_step.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionFailed
+        );
+        assert_eq!(drained.error_code, "PBFT_FINALIZE_CHAIN_LIVE_REJECTED");
+        assert_eq!(
+            runtime
+                .chain
+                .read()
+                .expect("PBFT chain lock remains healthy")
+                .state
+                .head(),
+            original_head
+        );
+
+        drop(runtime);
+        drop(manager);
+        drop(_dag);
+        let _ = fs::remove_dir_all(path);
     }
 
     #[test]
