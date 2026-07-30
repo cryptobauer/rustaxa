@@ -817,35 +817,6 @@ class VoteManager {
   void setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound pbft_round);
   PbftStep getNetworkTplusOneNextVotingStep(PbftPeriod period, PbftRound round) const;
 
-  /**
-   * Finalization-aware reward-vote reset handoff.
-   *
-   * Inputs:
-   * - `write_intent`: Rust-planned PBFT finalization storage intent carrying
-   *   reward vote period, round, step, and block hash facts.
-   * - `batch`: legacy API parameter retained for upstream signature
-   *   compatibility. Rust mode commits this isolated compatibility reset through
-   *   a Rust-owned batch instead of appending to the caller batch.
-   *
-   * Outputs:
-   * - Rust-owned apply status for the reward-vote reset stage.
-   *
-   * Invariants:
-   * - The certified-vote bundle and finalized reward cursor are selected and
-   *   durably committed by the Rust-owned verified-vote runtime.
-   * - Live Rust cursor state is published only after the atomic reset commit
-   *   returns `Applied` or `AlreadyApplied`.
-   */
-  rustaxa::PbftFinalizedPeriodApplyResult resetRewardVotesForFinalization(
-      const rustaxa::PbftFinalizationStorageWritePlan& write_intent, Batch& batch);
-  /**
-   * Builds the compact identity-only Rust reward-vote reset request used by
-   * direct compatibility callers outside a broader finalization batch. Rust
-   * prepares the certified bundle and enumerates extra-reward keys internally.
-   */
-  rustaxa::PbftRewardVotesResetRequest rewardVotesResetRequestForFinalization(
-      const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
-
  private:
   /** Selects from isolated tentative wallet candidates without mutating authoritative service state. */
   std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>

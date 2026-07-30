@@ -711,24 +711,6 @@ impl PbftManagerGuard<'_> {
             .expect("fresh finalization plan installed")
             .storage_write_intent
             .clone();
-        if write_set.reset_reward_votes {
-            let reward_votes_service = crate::pbft_vote_runtime::PbftVerifiedVotesService::restore(
-                self.storage.clone(),
-            )?;
-            primary_stages.push(
-                reward_votes_service.prepare_reward_votes_reset_stage(
-                    crate::pbft_vote_runtime::RewardVoteResetPrepareRequest {
-                        requested: true,
-                        cursor: crate::pbft_vote_runtime::RewardVoteCursor {
-                            period: write_set.reward_vote_period,
-                            round: write_set.reward_vote_round,
-                            step: write_set.reward_vote_step,
-                            block_hash: write_set.reward_vote_block_hash,
-                        },
-                    },
-                )?,
-            );
-        }
         prepare_pbft_finalization_sortition(
             self,
             dag_transaction_service,

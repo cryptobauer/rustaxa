@@ -1154,6 +1154,15 @@ Bridge lines, CXX functions, carriers, handles, shim directories, granular
 flags, partial factories, compatibility constructors, and production
 consumers are unchanged.
 
+The next `CRW-12`/`CRW-15` contraction removes broad finalization-plan
+materialization from the remaining direct `VoteManager::resetRewardVotes`
+compatibility method. C++ now builds only the existing period/round/step/hash
+identity request and delegates reset preparation, storage, and live publication
+to the native verified-vote owner. The callerless plan builder, rejected-result
+fabricator, and two public PBFT-finalization helper methods are deleted. This
+deletes another 82 shim lines and lowers the exact shim budget to 17,224;
+all other inventory metrics are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

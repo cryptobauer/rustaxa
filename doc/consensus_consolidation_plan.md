@@ -254,6 +254,11 @@ verified-vote leaf directly and passes the returned stage into native executor
 startup; the duplicate C++ prepared-state protocol flag is gone. The narrow
 bridge leaf remains temporary `CRW-12` debt until startup owns preparation
 without a C++ storage-stage relay.
+The remaining direct `VoteManager::resetRewardVotes` compatibility method no
+longer materializes a broad finalization storage plan or exposes two
+PBFT-finalization helper methods. It builds the existing narrow identity
+request and delegates the complete reset task to the native verified-vote
+owner; the legacy batch parameter remains inert for API compatibility.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The
