@@ -1186,6 +1186,21 @@ handles, shim directories, granular flags, partial factories, compatibility
 constructors, and production consumers remain at 341, 20, 11, eight, zero,
 zero, and 39.
 
+The next `CRW-12` recovery slice closes the same-process failure window between
+the atomic primary finalization commit and live reward-cursor publication.
+Resume now preserves only a nonzero reset generation that still matches the
+shared storage owner, requires both accepted reset intents, prepends the native
+reward publication action ahead of the storage-derived replay tail, and relies
+on the verified-vote owner to revalidate the exact durable cert cursor and
+bundle before publication. Stale generations continue directly to the durable
+FinalChain tail, while missing or conflicting durable reward facts fail closed.
+The C++ dispatcher permits this one native lock-owning resume action without
+DAG/transaction locks; every other protected action remains rejected outside
+the fresh-finalization critical section. Native and CXX tests prove matching
+generation replay, stale-generation exclusion, genuine signed-cert recovery,
+and continuation to FinalChain. This behavioral ownership slice changes no
+checked bridge/shim inventory budget.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

@@ -3556,7 +3556,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           break;
         }
         case kPbftFinalizationRuntimeActionCommitRewardVotesReset: {
-          if (!protected_locks_held) {
+          if (!protected_locks_held && !resume_mode) {
             return fail_action("reward-vote reset", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
           }
           if (!report_reward_votes_reset(boundary)) {

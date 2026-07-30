@@ -55,6 +55,13 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 | `compatibility_constructor_calls` | 0 |
 | `non_test_cpp_consumers` | 39 |
 
+PBFT finalization resume may dispatch `CommitRewardVotesResetRuntime` without
+the fresh DAG/transaction lock pair only when the native manager retained a
+nonzero reset generation matching the shared storage owner. The verified-vote
+service still owns durable cursor/bundle validation and live publication; no
+C++ reward mutation or report carrier is reintroduced. Other protected resume
+actions remain fail-closed.
+
 ## CXX Box Factory Inventory
 
 Every CXX function returning an owned opaque handle is classified here. `Supported boundary` is limited to the client

@@ -516,8 +516,10 @@ impl PbftManagerGuard<'_> {
     /// reward-reset generation for resume, derives the native cursor, prepares
     /// sortition under manager-before-sortition lock order, atomically applies
     /// fresh primary storage, reports that action, and drains consecutive
-    /// manager-owned actions. Resume derives its replay transcript from native
-    /// storage and never reapplies primary writes.
+    /// manager-owned actions. Resume derives its durable tail from native
+    /// storage, never reapplies primary writes, and prepends reward-cursor
+    /// publication only when both the accepted plan and the current storage
+    /// reset generation authenticate that post-commit recovery action.
     ///
     /// The returned drain contains the first DAG, transaction, vote, FinalChain,
     /// pillar, period-advance, or network action for the C++ leaf executor.
@@ -744,9 +746,31 @@ impl PbftManagerGuard<'_> {
                     &request.plan.storage_write_intent,
                     final_chain_last_block,
                 )?;
+                let replay_reward_cursor = request.plan.cleanup.reset_reward_votes
+                    && request.plan.storage_write_intent.reset_reward_votes
+                    && self.finalization_reward_votes_reset_generation != 0;
                 self.finalization_runtime_plan = Some(request.plan);
-                self.finalization_runtime_session =
-                    Some(start_pbft_finalization_resume_runtime(&resume));
+                let mut session = start_pbft_finalization_resume_runtime(&resume);
+                if replay_reward_cursor
+                    && matches!(
+                        session.runtime_status,
+                        crate::pbft_finalize::PbftFinalizationRuntimeStatus::Active
+                            | crate::pbft_finalize::PbftFinalizationRuntimeStatus::Complete
+                    )
+                    && !session.actions.contains(
+                        &crate::pbft_finalize::PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+                    )
+                {
+                    session.runtime_status =
+                        crate::pbft_finalize::PbftFinalizationRuntimeStatus::Active;
+                    session.actions.insert(
+                        0,
+                        crate::pbft_finalize::PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+                    );
+                    session.next_action_index = 0;
+                    session.last_action = None;
+                }
+                self.finalization_runtime_session = Some(session);
                 self.drain_finalization_owned_actions()
             }
             PbftFinalizationExecutorStartMode::Fresh {
@@ -1180,9 +1204,10 @@ impl PbftManagerGuard<'_> {
         cursor: u32,
     ) -> Result<crate::pbft_finalize::PbftFinalizationRuntimeStep> {
         use crate::pbft_finalize::{
-            PbftFinalizationLiveMutationReport, PbftFinalizationRuntimeActionResult,
-            PbftFinalizationRuntimeStatus, PbftFinalizationRuntimeStep,
-            next_pbft_finalization_runtime_action, report_pbft_finalization_runtime_action,
+            PbftFinalizationLiveMutationReport, PbftFinalizationRuntimeAction,
+            PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus,
+            PbftFinalizationRuntimeStep, next_pbft_finalization_runtime_action,
+            report_pbft_finalization_runtime_action,
             validate_pbft_finalization_live_mutation_report,
         };
 
@@ -1215,6 +1240,22 @@ impl PbftManagerGuard<'_> {
         let action = current_step
             .action
             .expect("active finalization step must carry an action");
+        if action != PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime {
+            let session = self
+                .finalization_runtime_session
+                .as_mut()
+                .expect("finalization session checked above");
+            *session = report_pbft_finalization_runtime_action(
+                session.clone(),
+                PbftFinalizationRuntimeActionResult {
+                    action,
+                    success: false,
+                    status: PbftFinalizationRuntimeStatus::ActionMismatch.as_u8(),
+                    error_code: "PBFT_FINALIZE_RUNTIME_ACTION_MISMATCH".to_string(),
+                },
+            );
+            return Ok(next_pbft_finalization_runtime_action(session));
+        }
         let plan = self
             .finalization_runtime_plan
             .clone()
@@ -9009,12 +9050,15 @@ mod tests {
 
         let generation = commit_reward_votes_reset_generation(&runtime);
         runtime.finalization_reward_votes_reset_generation = generation;
+        let mut resume_plan = plan.clone();
+        resume_plan.cleanup.reset_reward_votes = true;
+        resume_plan.storage_write_intent.reset_reward_votes = true;
         let matching = runtime
             .start_finalization_executor(
                 &dag,
                 &RewardVoteResetStageStub,
                 PbftFinalizationExecutorStartRequest {
-                    plan: plan.clone(),
+                    plan: resume_plan.clone(),
                     mode: PbftFinalizationExecutorStartMode::Resume {
                         final_chain_last_block: 0,
                     },
@@ -9023,7 +9067,7 @@ mod tests {
             .expect("matching generation resumes");
         assert_eq!(
             matching.next_step.action,
-            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+            Some(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime)
         );
         assert_eq!(
             runtime.finalization_reward_votes_reset_generation,
@@ -9036,7 +9080,7 @@ mod tests {
                 &dag,
                 &RewardVoteResetStageStub,
                 PbftFinalizationExecutorStartRequest {
-                    plan,
+                    plan: resume_plan,
                     mode: PbftFinalizationExecutorStartMode::Resume {
                         final_chain_last_block: 0,
                     },
@@ -10024,6 +10068,54 @@ mod tests {
         assert_eq!(
             step.error_code,
             "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_RESET_PROVENANCE_MISMATCH"
+        );
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_reward_votes_reset_rejects_wrong_action_before_publication() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_reward_reset_wrong_action");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        install_reward_votes_reset_runtime(&mut runtime, write_set);
+        runtime
+            .finalization_runtime_session
+            .as_mut()
+            .expect("reward runtime installed")
+            .actions[0] = PbftFinalizationRuntimeAction::SetDagBlockOrder;
+        let verified_votes = reward_vote_cursor_commit_stub(
+            crate::pbft_vote_runtime::RewardVoteCursor {
+                period: 0,
+                round: 0,
+                step: 0,
+                block_hash: H256::zero(),
+            },
+            1,
+        );
+
+        let step = runtime
+            .advance_finalization_reward_votes_reset(&verified_votes, 0)
+            .expect("wrong action returns a terminal step");
+
+        assert_eq!(
+            step.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionFailed
+        );
+        assert_eq!(step.error_code, "PBFT_FINALIZE_RUNTIME_ACTION_MISMATCH");
+        assert!(
+            verified_votes
+                .request
+                .lock()
+                .expect("request lock")
+                .is_none()
         );
         drop(runtime);
         drop(manager);

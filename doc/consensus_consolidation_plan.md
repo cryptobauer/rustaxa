@@ -257,6 +257,13 @@ sortition preparation and the atomic primary storage commit so concurrent
 admission cannot invalidate the durable bundle. Preparation failures use the
 executor's normal cleanup path. The PBFT shim, CXX preparation export, bridge conversions, and
 reward-specific CXX storage-stage fields are deleted.
+Same-process resume now also repairs the narrow post-primary-commit reward
+publication window. The manager retains only a reset generation authenticated
+against its shared storage owner, prepends the reward publication action only
+when both reset intents are present, and lets the verified-vote service
+revalidate the exact durable cert cursor and bundle before changing live state.
+The C++ dispatcher permits that native lock-owning action during resume without
+broadening replay for sortition, DAG, transaction, timer, or period mutations.
 The remaining direct `VoteManager::resetRewardVotes` compatibility method no
 longer materializes a broad finalization storage plan or exposes two
 PBFT-finalization helper methods. It builds the existing narrow identity

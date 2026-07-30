@@ -754,13 +754,40 @@ TEST(RustPbftSyncTest, FinalizationBoundaryAdvancesNativeRewardVotes) {
       pbft_manager_runtime_advance_finalization_sortition_commit(*runtime, *dag_transaction_service, boundary.cursor);
   ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitRewardVotesResetRuntime);
   boundary = pbft_manager_runtime_advance_finalization_reward_votes_reset(*runtime, boundary.cursor);
-  EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive);
+  EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive) << std::string(boundary.error_code);
   EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionSetDagBlockOrder);
   EXPECT_TRUE(boundary.can_continue);
 
   const auto stale = pbft_manager_runtime_advance_finalization_reward_votes_reset(*runtime, boundary.cursor - 1);
   EXPECT_EQ(stale.status, kPbftFinalizationRuntimeStatusActionMismatch);
   EXPECT_FALSE(stale.has_action);
+}
+
+TEST(RustPbftSyncTest, FinalizationResumeReplaysAuthenticatedRewardPublication) {
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_reward_resume");
+  auto storage = create_storage(test_dir.string());
+  auto runtime = create_pbft_service_from_storage(*storage, makePbftServiceConfig(false));
+  auto dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
+  seedRewardCertVote(*storage, *runtime);
+  auto fact = makeFinalizationFact();
+  fact.request_dynamic_lambda_update = false;
+  const auto plan = pbft_manager_runtime_plan_finalization_intent(*runtime, std::move(fact));
+
+  auto boundary =
+      startFreshFinalizationExecutor(*runtime, *dag_transaction_service, plan,
+                                     storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
+  boundary =
+      pbft_manager_runtime_advance_finalization_sortition_commit(*runtime, *dag_transaction_service, boundary.cursor);
+  ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitRewardVotesResetRuntime);
+
+  boundary = startResumeFinalizationExecutor(*runtime, *dag_transaction_service, plan, 0);
+  ASSERT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive);
+  ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitRewardVotesResetRuntime);
+
+  boundary = pbft_manager_runtime_advance_finalization_reward_votes_reset(*runtime, boundary.cursor);
+  EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive) << std::string(boundary.error_code);
+  EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionFinalizeFinalChain);
+  EXPECT_TRUE(boundary.can_continue);
 }
 
 TEST(RustPbftSyncTest, FinalizationIntentRejectsAlreadyPersistedBlock) {

@@ -1457,6 +1457,10 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
 
 1. Preserve the storage-boundary guard and current closure categories: no new production consensus `DbStorage`,
    `getDB()`, `rustBatchId`, C++ batch, or bridge-batch authority in Rust mode.
+   PBFT duplicate-finalization recovery now republishes a reward cursor only
+   from a current process-local reset generation plus exact native durable
+   cursor/bundle validation; broader live-action restart replay remains blocked
+   on durable Rust-owned proofs.
 2. Retire remaining storage-shim batch/query compatibility only when callers move to Rust-owned runtimes, query APIs,
    fixtures, or explicit unsupported Rust-mode behavior; keep conformance coverage for any behavior that changes.
 3. Continue FinalChain execution-runtime migration: native-supported finalization already routes through Rust, and
