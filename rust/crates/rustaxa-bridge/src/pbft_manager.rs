@@ -1933,6 +1933,12 @@ fn finalization_executor_state_from_boundary(
         can_continue: next_step.can_continue,
         cleared_anchor_dag_cache: boundary.cleared_anchor_dag_cache,
         has_snapshot: boundary.has_snapshot,
+        expired_dag_hashes: boundary
+            .expired_dag_hashes
+            .into_iter()
+            .map(|hash| FfiPbftFinalizationHash { hash: hash.0 })
+            .collect(),
+        refresh_dag_counters: boundary.refresh_dag_counters,
         snapshot: boundary.snapshot.into(),
         error_code: if boundary.error_code.is_empty() {
             next_step.error_code
@@ -2062,32 +2068,19 @@ pub fn pbft_manager_runtime_advance_finalization_transaction_status(
         .map(finalization_executor_state_from_boundary)
 }
 
-/// Reports finalized DAG-order facts to the manager-owned PBFT finalization executor.
-///
-/// Inputs:
-/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
-/// - `cursor`: executor cursor previously returned to C++.
-/// - `finalized_count`: count of DAG blocks finalized by the DAG manager
-///   external client.
-///
-/// Outputs:
-/// - The next PBFT finalization executor state.
-///
-/// Invariants and edge behavior:
-/// - C++ does not construct a generic PBFT finalization external-effect report
-///   for the DAG-order client.
-/// - Rust derives the PBFT finalization action from the cursor and maps only the
-///   finalized DAG-block count needed for live-mutation validation.
-/// - Cursor mismatch and validation failure use the same executor-state
-///   contract as every typed finalization advancement API.
+/// Applies the retained finalized DAG order and advances its native PBFT cursor.
+/// The borrowed PBFT and DAG/transaction services form one task: Rust rejects
+/// stale actions before mutation, derives all order inputs, validates the result,
+/// and returns the next state plus committed cache/counter compatibility effects.
+/// Operational failures propagate without fabricating effects.
 pub fn pbft_manager_runtime_advance_finalization_dag_order(
     runtime: &BridgePbftService,
+    dag_transaction_service: &BridgeDagTransactionService,
     cursor: u32,
-    finalized_count: u64,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     runtime
         .0
-        .advance_finalization_dag_order(cursor, finalized_count)
+        .advance_finalization_dag_order(dag_transaction_service.native(), cursor)
         .map(finalization_executor_state_from_boundary)
 }
 
@@ -3291,6 +3284,8 @@ mod tests {
             rustaxa_consensus::pbft_manager::PbftFinalizationExecutorBoundary {
                 cleared_anchor_dag_cache: true,
                 has_snapshot: true,
+                expired_dag_hashes: vec![H256::repeat_byte(9)],
+                refresh_dag_counters: true,
                 next_step: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep {
                     runtime_status: PbftFinalizationRuntimeStatus::Active,
                     has_action: true,
@@ -3306,6 +3301,8 @@ mod tests {
 
         assert!(state.cleared_anchor_dag_cache);
         assert!(state.has_snapshot);
+        assert_eq!(state.expired_dag_hashes[0].hash, [9; 32]);
+        assert!(state.refresh_dag_counters);
         assert_eq!(state.cursor, 7);
         assert_eq!(
             state.action,

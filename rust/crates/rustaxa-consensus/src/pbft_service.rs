@@ -75,6 +75,8 @@ impl PbftService {
             next_step: drain.next_step,
             cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
             has_snapshot: drain.has_snapshot,
+            expired_dag_hashes: drain.expired_dag_hashes,
+            refresh_dag_counters: drain.refresh_dag_counters,
             snapshot: manager.state.snapshot(),
             error_code: drain.error_code,
         })
@@ -178,6 +180,8 @@ impl PbftService {
             next_step: drain.next_step,
             cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
             has_snapshot: drain.has_snapshot,
+            expired_dag_hashes: drain.expired_dag_hashes,
+            refresh_dag_counters: drain.refresh_dag_counters,
             snapshot: manager.state.snapshot(),
             error_code: drain.error_code,
         })
@@ -202,22 +206,21 @@ impl PbftService {
 
     /// Advances the finalized DAG-order external leaf.
     ///
-    /// Rust derives the expected action and accepted write intent, validates the
-    /// finalized count, drains subsequent manager-owned actions, and returns the
-    /// next external boundary under one manager lock.
+    /// Rust derives the expected action and accepted write intent, performs
+    /// native finalized-order mutation, drains subsequent manager-owned actions,
+    /// and returns the next external boundary under one manager lock.
     pub fn advance_finalization_dag_order(
         &self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
         cursor: u32,
-        finalized_count: u64,
     ) -> Result<PbftFinalizationExecutorBoundary> {
         self.run_finalization_executor_task(|manager| {
-            let step =
-                manager.advance_finalization_live_mutation(cursor, |action, write_set| {
-                    let mut report = base_owned_finalization_live_report(action, write_set);
-                    report.dag_finalized_count = finalized_count;
-                    report
-                })?;
-            manager.continue_finalization_executor_from_step(step)
+            let (step, expired_dag_hashes, refresh_dag_counters) =
+                manager.advance_finalization_set_dag_order(dag_transaction_service, cursor)?;
+            let mut drain = manager.continue_finalization_executor_from_step(step)?;
+            drain.expired_dag_hashes = expired_dag_hashes;
+            drain.refresh_dag_counters = refresh_dag_counters;
+            Ok(drain)
         })
     }
 
@@ -387,7 +390,12 @@ impl PbftService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ethereum_types::{H160, H256};
+    use crate::dag_service::DagServiceConfig;
+    use crate::dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig};
+    use crate::gas_pricer::GasPricerConfig;
+    use crate::sortition::{SortitionConfig, SortitionParams, VdfParams, VrfParams};
+    use crate::transaction_service::TransactionServiceConfig;
+    use ethereum_types::{H160, H256, U256};
     use rustaxa_storage::Config;
     use rustaxa_types::pillar::{CurrentPillarBlockDataDb, PillarBlock, ValidatorVoteCount};
     use std::fs;
@@ -420,6 +428,48 @@ mod tests {
             report_malicious_behaviour: true,
             magnolia_activation_period: 0,
         }
+    }
+
+    fn dag_service(storage: Arc<Storage>) -> DagTransactionService {
+        DagTransactionService::restore(
+            storage,
+            DagTransactionServiceConfig {
+                transaction: TransactionServiceConfig {
+                    queue_max_size: 16,
+                    gas_pricer_config: GasPricerConfig {
+                        percentile: 50,
+                        minimum_price: U256::one(),
+                        history_blocks: 0,
+                        is_light_node: false,
+                        blocks_gas_pricer: false,
+                    },
+                    proposal_dag_gas_limit: 1_000_000,
+                },
+                dag: DagServiceConfig {
+                    genesis_hash: H256::repeat_byte(1),
+                    dag_expiry_limit: 32,
+                    max_levels_per_period: 100,
+                },
+                sortition: SortitionConfig {
+                    params: SortitionParams {
+                        vrf: VrfParams {
+                            threshold_upper: 0x100,
+                        },
+                        vdf: VdfParams {
+                            difficulty_min: 1,
+                            difficulty_max: 10,
+                            difficulty_stale: 5,
+                            lambda_bound: 100,
+                        },
+                    },
+                    changes_count_for_average: 8,
+                    dag_efficiency_targets: (5_000, 10_000),
+                    changing_interval: 10,
+                    computation_interval: 5,
+                },
+            },
+        )
+        .expect("DAG transaction service restores")
     }
 
     fn install_finalization_executor(
@@ -640,6 +690,96 @@ mod tests {
         drop(manager);
 
         drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_dag_advancement_rejects_wrong_action_before_mutation() {
+        use crate::pbft_finalize::{PbftFinalizationCleanupIntent, PbftFinalizationRuntimeAction};
+
+        let (path, storage) =
+            temp_storage("rustaxa_consensus_pbft_service_finalization_dag_wrong_action");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let dag = dag_service(storage);
+        let initial_period = dag.lock_dag().unwrap().state.period();
+        install_finalization_executor(
+            &service,
+            1,
+            PbftFinalizationCleanupIntent {
+                persist_pbft_block_metadata: false,
+                reset_reward_votes: false,
+                set_dag_block_order: false,
+                update_sortition_params: false,
+                update_finalized_transactions_status: false,
+                update_pbft_chain: false,
+                clear_anchor_dag_cache: false,
+                finalize_final_chain: true,
+                maybe_update_dynamic_lambda: false,
+                advance_period: false,
+                process_pillar_block: false,
+            },
+            vec![PbftFinalizationRuntimeAction::FinalizeFinalChain],
+        );
+
+        let boundary = service
+            .advance_finalization_dag_order(&dag, 0)
+            .expect("wrong action returns a terminal boundary");
+        assert!(!boundary.refresh_dag_counters);
+        assert!(boundary.expired_dag_hashes.is_empty());
+        assert_eq!(dag.lock_dag().unwrap().state.period(), initial_period);
+        assert!(
+            service
+                .manager_state()
+                .finalization_runtime_session
+                .is_none()
+        );
+
+        drop(service);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_dag_operational_error_clears_application_root_state() {
+        use crate::pbft_finalize::{PbftFinalizationCleanupIntent, PbftFinalizationRuntimeAction};
+
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_finalization_dag_error");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let dag = dag_service(storage);
+        install_finalization_executor(
+            &service,
+            1,
+            PbftFinalizationCleanupIntent {
+                persist_pbft_block_metadata: false,
+                reset_reward_votes: false,
+                set_dag_block_order: true,
+                update_sortition_params: false,
+                update_finalized_transactions_status: false,
+                update_pbft_chain: false,
+                clear_anchor_dag_cache: false,
+                finalize_final_chain: false,
+                maybe_update_dynamic_lambda: false,
+                advance_period: false,
+                process_pillar_block: false,
+            },
+            vec![PbftFinalizationRuntimeAction::SetDagBlockOrder],
+        );
+
+        let error = service
+            .advance_finalization_dag_order(&dag, 0)
+            .expect_err("missing retained anchor must reject native DAG application");
+        assert!(
+            error
+                .to_string()
+                .contains("DAG_RUNTIME_FINALIZATION_ANCHOR_BLOCK")
+        );
+        let manager = service.manager_state();
+        assert!(manager.finalization_runtime_session.is_none());
+        assert!(manager.finalization_runtime_plan.is_none());
+        drop(manager);
+
+        drop(service);
+        drop(dag);
         let _ = fs::remove_dir_all(path);
     }
 

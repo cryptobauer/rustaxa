@@ -26,17 +26,6 @@ class KeyManager;
 class Network;
 
 /**
- * DAG-owned result after applying finalized DAG order for PBFT finalization.
- *
- * Inputs are the finalized anchor, PBFT period, and ordered DAG blocks after the Rust DAG runtime applies the finalized
- * order. Outputs carry only DAG facts: the number of DAG blocks finalized by the mutation. PBFT manager code converts
- * this fact into its executor report at the manager boundary.
- */
-struct DagFinalizationOrderReport {
-  uint64_t finalized_count = 0;
-};
-
-/**
  * Rust-mode DagManager migration facade.
  *
  * This class preserves the public DagManager API while routing migrated behavior
@@ -130,13 +119,13 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
    */
   uint setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order);
   /**
-   * Apply finalized DAG ordering and return DAG-owned finalization facts.
+   * Apply C++-local compatibility effects for finalized DAG-order advancement.
    *
-   * Inputs are the finalized anchor, PBFT period, and ordered DAG blocks. The returned report carries post-mutation DAG
-   * facts that the PBFT manager forwards to Rust before the PBFT runtime cursor advances.
+   * Rust owns the finalized-order mutation and now returns only runtime-side boundary
+   * facts. The PBFT shim applies corresponding local compatibility side-effects:
+   * persisted DAG counter refresh and local seen-block cache eviction for expired blocks.
    */
-  DagFinalizationOrderReport setDagBlockOrderForPbftFinalization(blk_hash_t const &anchor, PbftPeriod period,
-                                                                 vec_blk_t const &dag_order);
+  void applyFinalizationDagOrderCompatibilityEffects(const vec_blk_t &expired_hashes, bool refresh_counters);
   std::optional<std::pair<blk_hash_t, std::vector<blk_hash_t>>> getLatestPivotAndTips() const;
   std::vector<blk_hash_t> getGhostPath(const blk_hash_t &source) const;
   std::vector<blk_hash_t> getGhostPath() const;

@@ -3445,16 +3445,22 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
-  auto report_dag_order = [&](uint64_t finalized_count, rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+  auto report_dag_order = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary) {
     try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_dag_order(pbft_service_->service(), boundary.cursor,
-                                                                              finalized_count);
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_dag_order(
+          pbft_service_->service(), dag_transaction_service_->service(), boundary.cursor);
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context DAG block order: " << e.what();
       return false;
     }
     apply_boundary_snapshot(boundary);
+    vec_blk_t expired_hashes;
+    expired_hashes.reserve(boundary.expired_dag_hashes.size());
+    for (const auto &hash : boundary.expired_dag_hashes) {
+      expired_hashes.push_back(fromBridgeHash(hash.hash));
+    }
+    dag_mgr_->applyFinalizationDagOrderCompatibilityEffects(expired_hashes, boundary.refresh_dag_counters);
     if (!boundary.can_continue) {
       return fail_boundary("DAG block order", boundary);
     }
@@ -3572,10 +3578,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return fail_action("DAG block order", "PBFT_FINALIZE_DAG_ORDER_PAYLOAD_UNAVAILABLE");
           }
           dag_order_payload_available = false;
-          const auto &anchor_hash = period_data.pbft_blk->getPivotDagBlockHash();
-          const auto report =
-              dag_mgr_->setDagBlockOrderForPbftFinalization(anchor_hash, block_pbft_period, dag_blocks_order);
-          if (!report_dag_order(report.finalized_count, boundary)) {
+          if (!report_dag_order(boundary)) {
             return FinalizationDispatchResult::kFailed;
           }
           break;

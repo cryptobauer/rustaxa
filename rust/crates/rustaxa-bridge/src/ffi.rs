@@ -1760,6 +1760,8 @@ pub mod rustaxa_ffi {
         can_continue: bool,
         cleared_anchor_dag_cache: bool,
         has_snapshot: bool,
+        expired_dag_hashes: Vec<PbftFinalizationHash>,
+        refresh_dag_counters: bool,
         snapshot: PbftManagerRuntimeSnapshot,
         error_code: String,
     }
@@ -4468,8 +4470,8 @@ pub mod rustaxa_ffi {
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_dag_order(
             runtime: &BridgePbftService,
+            dag_transaction_service: &BridgeDagTransactionService,
             cursor: u32,
-            finalized_count: u64,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
             runtime: &BridgePbftService,

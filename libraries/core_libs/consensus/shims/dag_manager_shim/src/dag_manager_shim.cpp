@@ -705,13 +705,14 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
   }
 }
 
-DagFinalizationOrderReport DagManager::setDagBlockOrderForPbftFinalization(blk_hash_t const &anchor, PbftPeriod period,
-                                                                           vec_blk_t const &dag_order) {
-  const auto finalized_count = setDagBlockOrder(anchor, period, dag_order);
-
-  DagFinalizationOrderReport report{};
-  report.finalized_count = finalized_count;
-  return report;
+void DagManager::applyFinalizationDagOrderCompatibilityEffects(const vec_blk_t &expired_hashes, bool refresh_counters) {
+  if (refresh_counters) {
+    std::unique_lock graph_lock(rust_graphs_mutex_);
+    mirrorDagCountersFromRuntime();
+  }
+  for (const auto &hash : expired_hashes) {
+    seen_blocks_.erase(hash);
+  }
 }
 
 std::optional<std::pair<blk_hash_t, std::vector<blk_hash_t>>> DagManager::getLatestPivotAndTips() const {

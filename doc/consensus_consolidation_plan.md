@@ -241,6 +241,13 @@ and pillar request period, while Rust derives blocks-per-year, processed period,
 and the post-advance manager period from retained native state. The bridge no
 longer owns a cursor protocol, generic mutation report, drain continuation,
 cleanup policy, or behavioral test suite.
+Finalized DAG-order advancement is now a composed native task rather than a C++
+manager round trip. Rust validates the PBFT cursor before mutation, derives the
+anchor, period, and ordered hashes from the retained plan, commits through
+`DagTransactionService`, validates its native count, and advances the executor.
+The PBFT-specific `DagManager` mutation/report facade and CXX `finalized_count`
+relay are deleted; C++ retains only an explicit adapter that refreshes public
+counter mirrors and evicts expired hashes from its temporary seen-block cache.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The

@@ -116,6 +116,10 @@ pub struct PbftFinalizationOwnedActionDrain {
     pub cleared_anchor_dag_cache: bool,
     /// Whether native scalar manager state changed during this drain.
     pub has_snapshot: bool,
+    /// Expired DAG hashes that should be removed from C++ compatibility state.
+    pub expired_dag_hashes: Vec<H256>,
+    /// Whether C++ should refresh its DAG counter mirrors from runtime state.
+    pub refresh_dag_counters: bool,
     /// First action not owned by this drain, or its terminal runtime step.
     pub next_step: crate::pbft_finalize::PbftFinalizationRuntimeStep,
     /// Stable high-level rejection label, empty on success.
@@ -174,6 +178,10 @@ pub struct PbftFinalizationExecutorBoundary {
     pub cleared_anchor_dag_cache: bool,
     /// Whether scalar compatibility state changed during native draining.
     pub has_snapshot: bool,
+    /// Expired DAG hashes from the native DAG finalization action.
+    pub expired_dag_hashes: Vec<H256>,
+    /// Whether C++ should refresh its DAG counter mirrors from runtime state.
+    pub refresh_dag_counters: bool,
     /// Lock-coherent manager snapshot captured before returning the boundary.
     pub snapshot: PbftManagerRuntimeSnapshot,
     /// Stable operation-level error label, empty on success.
@@ -226,6 +234,8 @@ fn owned_finalization_drain_outcome(
     PbftFinalizationOwnedActionDrain {
         cleared_anchor_dag_cache,
         has_snapshot,
+        expired_dag_hashes: Vec::new(),
+        refresh_dag_counters: false,
         next_step,
         error_code: error_code.to_string(),
     }
@@ -890,6 +900,161 @@ impl PbftManagerGuard<'_> {
             },
         );
         Ok(next_pbft_finalization_runtime_action(session))
+    }
+
+    /// Applies one finalized-DAG order update and advances finalization cursor.
+    ///
+    /// This validates the cursor and required `SetDagBlockOrder` action before
+    /// resolving the accepted finalization write-set into ordered hashes and
+    /// applying them through the DAG/transaction runtime. It then validates the
+    /// derived finalized-count fact and advances the local finalization cursor.
+    ///
+    /// The returned tuple includes Rust-side compatibility effects and is
+    /// populated only when the DAG mutation is attempted.
+    pub fn advance_finalization_set_dag_order(
+        &mut self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        cursor: u32,
+    ) -> Result<(
+        crate::pbft_finalize::PbftFinalizationRuntimeStep,
+        Vec<H256>,
+        bool,
+    )> {
+        use crate::pbft_finalize::{
+            PbftFinalizationLiveMutationReport, PbftFinalizationRuntimeAction,
+            PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus,
+            PbftFinalizationRuntimeStep, next_pbft_finalization_runtime_action,
+            report_pbft_finalization_runtime_action,
+            validate_pbft_finalization_live_mutation_report,
+        };
+
+        let Some(session) = self.finalization_runtime_session.as_ref() else {
+            return Ok((
+                PbftFinalizationRuntimeStep {
+                    runtime_status: PbftFinalizationRuntimeStatus::ActionMismatch,
+                    has_action: false,
+                    action: None,
+                    action_index: 0,
+                    complete: false,
+                    error_code: "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED".to_string(),
+                },
+                Vec::new(),
+                false,
+            ));
+        };
+
+        let current_step = next_pbft_finalization_runtime_action(session);
+        if current_step.runtime_status != PbftFinalizationRuntimeStatus::Active
+            || !current_step.has_action
+        {
+            return Ok((current_step, Vec::new(), false));
+        }
+
+        if cursor != current_step.action_index {
+            let session = self
+                .finalization_runtime_session
+                .as_mut()
+                .expect("finalization session checked above");
+            session.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
+            session.error_code = "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH".to_string();
+            return Ok((
+                next_pbft_finalization_runtime_action(session),
+                Vec::new(),
+                false,
+            ));
+        }
+
+        let action = current_step
+            .action
+            .expect("active finalization step must carry an action");
+        if action != PbftFinalizationRuntimeAction::SetDagBlockOrder {
+            let session = self
+                .finalization_runtime_session
+                .as_mut()
+                .expect("finalization session checked above");
+            *session = report_pbft_finalization_runtime_action(
+                session.clone(),
+                PbftFinalizationRuntimeActionResult {
+                    action,
+                    success: false,
+                    status: PbftFinalizationRuntimeStatus::ActionMismatch.as_u8(),
+                    error_code: "PBFT_FINALIZE_RUNTIME_ACTION_MISMATCH".to_string(),
+                },
+            );
+            return Ok((
+                next_pbft_finalization_runtime_action(session),
+                Vec::new(),
+                false,
+            ));
+        }
+
+        let plan = self
+            .finalization_runtime_plan
+            .clone()
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_RUNTIME_PLAN_NOT_STARTED"))?;
+        let finalized_order = plan
+            .storage_write_intent
+            .dag_block_period_writes
+            .iter()
+            .map(|entry| entry.hash)
+            .collect::<Vec<_>>();
+        let finalized = dag_transaction_service.apply_finalized_order(
+            plan.storage_write_intent.anchor_hash,
+            plan.storage_write_intent.block_period,
+            finalized_order,
+        )?;
+        let report = PbftFinalizationLiveMutationReport {
+            action,
+            block_period: plan.storage_write_intent.block_period,
+            pbft_block_hash: plan.storage_write_intent.pbft_block_hash,
+            anchor_hash: plan.storage_write_intent.anchor_hash,
+            dag_finalized_count: u64::try_from(finalized.finalized_count)
+                .context("PBFT_FINALIZE_DAG_FINALIZED_COUNT_OVERFLOW")?,
+            finalized_transaction_count: 0,
+            pbft_chain_size: 0,
+            pbft_chain_head_hash: H256::zero(),
+            pbft_chain_last_anchor_hash: H256::zero(),
+            reward_votes_period: 0,
+            reward_votes_round: 0,
+            reward_votes_block_hash: H256::zero(),
+            reward_votes_reset_provenance_valid: false,
+            sortition_changed: false,
+            sortition_change_period: 0,
+            sortition_change_interval_efficiency: 0,
+            sortition_change_threshold_upper: 0,
+            sortition_current_threshold_upper: 0,
+            sortition_params_changes_count: 0,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            executed_pbft_block: false,
+            manager_period: 0,
+            pillar_processed_period: 0,
+            pillar_request_period: 0,
+            anchor_dag_cache_count: 0,
+            final_chain_dispatched: false,
+            final_chain_blocks_per_year: 0,
+            final_chain_last_block: 0,
+        };
+        let validation = validate_pbft_finalization_live_mutation_report(&plan, report);
+        let session = self
+            .finalization_runtime_session
+            .as_mut()
+            .expect("finalization session checked above");
+        *session = report_pbft_finalization_runtime_action(
+            session.clone(),
+            PbftFinalizationRuntimeActionResult {
+                action: validation.action,
+                success: validation.accepted,
+                status: validation.status.as_u8(),
+                error_code: validation.error_code,
+            },
+        );
+
+        Ok((
+            next_pbft_finalization_runtime_action(session),
+            finalized.expired_hashes,
+            true,
+        ))
     }
 
     /// Commits the retained reward-vote cursor and advances its finalization cursor.
@@ -7828,6 +7993,7 @@ pub fn abort_pbft_manager_runtime_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag::{DagManagerBlock, save_dag_block_to_storage};
     use crate::dag_service::DagServiceConfig;
     use crate::dag_transaction_service::{
         DagTransactionService, DagTransactionServiceConfig,
@@ -8185,6 +8351,24 @@ mod tests {
             dag_block_period_writes: Vec::<PbftFinalizationPositionedHash>::new(),
             transaction_location_writes: Vec::<PbftFinalizationPositionedHash>::new(),
         }
+    }
+
+    fn finalization_dag_block_rlp(pivot: H256, level: u64) -> Vec<u8> {
+        let mut vdf = RlpStream::new_list(4);
+        vdf.append(&vec![0x11_u8; 80]);
+        vdf.append(&vec![0x22_u8]);
+        vdf.append(&vec![0x33_u8]);
+        vdf.append(&1_u16);
+        let mut block = RlpStream::new_list(8);
+        block.append(&pivot);
+        block.append(&level);
+        block.append(&0_u64);
+        block.append(&vdf.out().to_vec());
+        block.begin_list(0);
+        block.begin_list(0);
+        block.append(&&[0_u8; 65][..]);
+        block.append(&0_u64);
+        block.out().to_vec()
     }
 
     fn install_owned_finalization_runtime(
@@ -8576,13 +8760,66 @@ mod tests {
 
     #[test]
     fn finalization_advancement_validates_dag_and_reaches_next_leaf() {
-        let (path, manager, _dag) =
+        let (path, manager, dag) =
             finalization_sortition_services("pbft_manager_finalization_advance_dag");
-        let write_set = finalization_sortition_write_set(
+        let first_hash = H256::repeat_byte(2);
+        let anchor_hash = H256::repeat_byte(3);
+        {
+            let mut dag_state = dag.lock_dag().unwrap();
+            dag_state
+                .state
+                .add_block(DagManagerBlock {
+                    hash: first_hash,
+                    pivot: H256::repeat_byte(1),
+                    tips: Vec::new(),
+                    level: 1,
+                    difficulty: 90,
+                })
+                .unwrap();
+            dag_state
+                .state
+                .add_block(DagManagerBlock {
+                    hash: anchor_hash,
+                    pivot: first_hash,
+                    tips: Vec::new(),
+                    level: 2,
+                    difficulty: 90,
+                })
+                .unwrap();
+        }
+        let storage = manager.lock().storage.clone();
+        save_dag_block_to_storage(
+            storage.as_ref(),
+            first_hash,
+            1,
+            0,
+            &finalization_dag_block_rlp(H256::repeat_byte(1), 1),
+        )
+        .unwrap();
+        save_dag_block_to_storage(
+            storage.as_ref(),
+            anchor_hash,
+            2,
+            0,
+            &finalization_dag_block_rlp(first_hash, 2),
+        )
+        .unwrap();
+        let mut write_set = finalization_sortition_write_set(
             1,
             false,
             finalization_period_data(H256::repeat_byte(4), 0, &[]),
         );
+        write_set.anchor_hash = anchor_hash;
+        write_set.dag_block_period_writes = vec![
+            PbftFinalizationPositionedHash {
+                hash: first_hash,
+                position: 0,
+            },
+            PbftFinalizationPositionedHash {
+                hash: anchor_hash,
+                position: 1,
+            },
+        ];
         let mut runtime = manager.lock();
         install_owned_finalization_runtime(
             &mut runtime,
@@ -8599,13 +8836,14 @@ mod tests {
             ]),
         );
 
-        let step = runtime
-            .advance_finalization_live_mutation(0, |action, write_set| {
-                let mut report = base_owned_finalization_live_report(action, write_set);
-                report.dag_finalized_count = 0;
-                report
-            })
-            .expect("DAG report validates");
+        let (step, expired_hashes, refresh_counters) = runtime
+            .advance_finalization_set_dag_order(&dag, 0)
+            .expect("native DAG order validates");
+        assert!(expired_hashes.is_empty());
+        assert!(refresh_counters);
+        let dag_state = dag.lock_dag().unwrap();
+        assert_eq!(dag_state.state.period(), 1);
+        assert_eq!(dag_state.state.anchor(), anchor_hash);
         let drain = runtime
             .continue_finalization_executor_from_step(step)
             .expect("owned drain reaches the next external leaf");
@@ -8622,6 +8860,45 @@ mod tests {
 
         drop(runtime);
         drop(manager);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_dag_advancement_rejects_stale_cursor_before_mutation() {
+        let (path, manager, dag) =
+            finalization_sortition_services("pbft_manager_finalization_advance_dag_stale");
+        let write_set = finalization_sortition_write_set(
+            1,
+            true,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let initial_period = dag.lock_dag().unwrap().state.period();
+        let mut runtime = manager.lock();
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set,
+            PbftFinalizationCleanupIntent {
+                set_dag_block_order: true,
+                ..empty_finalization_cleanup()
+            },
+            false,
+            Some(vec![PbftFinalizationRuntimeAction::SetDagBlockOrder]),
+        );
+
+        let (step, expired_hashes, refresh_counters) = runtime
+            .advance_finalization_set_dag_order(&dag, 1)
+            .expect("stale cursor returns a terminal step");
+        assert_eq!(
+            step.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionMismatch
+        );
+        assert!(expired_hashes.is_empty());
+        assert!(!refresh_counters);
+        assert_eq!(dag.lock_dag().unwrap().state.period(), initial_period);
+
+        drop(runtime);
+        drop(manager);
+        drop(dag);
         let _ = fs::remove_dir_all(path);
     }
 

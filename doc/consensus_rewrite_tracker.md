@@ -1127,6 +1127,22 @@ and 17,342, and lowers CXX carriers from 344 to 341. CXX functions, handles,
 shim directories, granular flags, partial factories, compatibility
 constructors, and production consumers are unchanged.
 
+The next `CRW-12` contraction removes the PBFT-specific DAG-manager mutation
+facade and finalized-count relay. `PbftService` now validates
+`SetDagBlockOrder` cursor/action identity before mutation, derives the anchor,
+period, and ordered hashes from the retained finalization plan, invokes native
+`DagTransactionService`, validates its native count, drains owned actions, and
+returns only expired-hash and counter-refresh compatibility effects. C++ no
+longer calls `DagManager::setDagBlockOrderForPbftFinalization` or feeds a
+synthetic count back through CXX; the replacement DAG shim method only updates
+the public counter mirror and temporary seen-block cache. Native tests prove
+ordered non-empty anchor application reaches the next leaf, stale/wrong
+cursors cannot mutate DAG state, and operational failure clears the application
+root without compatibility effects. This deletes one bridge line and seven shim lines,
+lowering the exact budgets to 30,207 and 17,335. CXX functions, carriers,
+handles, shim directories, granular flags, partial factories, compatibility
+constructors, and production consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
