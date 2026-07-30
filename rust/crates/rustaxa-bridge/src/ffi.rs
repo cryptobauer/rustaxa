@@ -4459,40 +4459,15 @@ pub mod rustaxa_ffi {
             status: u8,
             error_code: String,
         ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_transaction_status(
+        pub fn pbft_manager_runtime_advance_finalization_action(
             runtime: &BridgePbftService,
             dag_transaction_service: &BridgeDagTransactionService,
             cursor: u32,
+            action: u8,
+            last_block: u64,
+            request_period: u64,
             retention_window: u64,
             account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_dag_order(
-            runtime: &BridgePbftService,
-            dag_transaction_service: &BridgeDagTransactionService,
-            cursor: u32,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
-            runtime: &BridgePbftService,
-            dag_transaction_service: &BridgeDagTransactionService,
-            cursor: u32,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
-            runtime: &BridgePbftService,
-            cursor: u32,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
-            runtime: &BridgePbftService,
-            cursor: u32,
-            last_block: u64,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
-            runtime: &BridgePbftService,
-            cursor: u32,
-            request_period: u64,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_advance_period(
-            runtime: &BridgePbftService,
-            cursor: u32,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_begin_session(
             runtime: &BridgePbftService,

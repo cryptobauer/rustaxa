@@ -44,9 +44,9 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 30106 |
-| `shim_lines` | 17209 |
-| `cxx_functions` | 396 |
+| `bridge_lines` | 29924 |
+| `shim_lines` | 17132 |
+| `cxx_functions` | 390 |
 | `cxx_carriers` | 341 |
 | `cxx_handles` | 20 |
 | `shim_directories` | 11 |
@@ -61,6 +61,13 @@ nonzero reset generation matching the shared storage owner. The verified-vote
 service still owns durable cursor/bundle validation and live publication; no
 C++ reward mutation or report carrier is reintroduced. Other protected resume
 actions remain fail-closed.
+
+The PBFT finalization adapter now advances all seven retained external actions
+through one cursor/action-gated CXX function. Rust dispatches to the typed
+native leaf and consumes only the matching leaf payload; C++ retains concrete
+FinalChain/pillar/period execution facts, transaction nonce facts, and DAG
+compatibility effects. Six per-action exports and their duplicated bridge/shim
+wrappers are deleted.
 
 ## CXX Box Factory Inventory
 

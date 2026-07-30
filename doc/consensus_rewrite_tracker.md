@@ -1201,6 +1201,23 @@ generation replay, stale-generation exclusion, genuine signed-cert recovery,
 and continuation to FinalChain. This behavioral ownership slice changes no
 checked bridge/shim inventory budget.
 
+The following `CRW-12` slice pairs bounded sortition recovery with complete
+finalization-advancement export contraction. Same-process resume preserves a
+sortition preview only when it emitted a concrete change and the exact change
+RLP exists at the durable period key; full primary resume classification still
+gates the transcript, and no-change previews remain explicitly non-replayable.
+The native manager then prepends sortition before reward publication and the
+storage-derived tail, preserving manager-to-sortition lock order without the
+C++ DAG/transaction lock pair. The seven retained external actions now advance
+through one action-gated CXX entrypoint that dispatches to typed native leaves
+and consumes only matching leaf payloads. Six per-action exports plus duplicated
+bridge and shim wrappers are deleted. Native tests cover durable match,
+mismatch, no-change exclusion, and full-restart non-replay; CXX coverage proves
+unlocked resume through sortition to FinalChain. The checked budgets fall to 29,924 bridge lines,
+17,132 shim lines, and 390 CXX functions. Carriers, handles, shim directories,
+granular flags, partial factories, compatibility constructors, and production
+consumers remain at 341, 20, 11, eight, zero, zero, and 39.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

@@ -264,6 +264,17 @@ when both reset intents are present, and lets the verified-vote service
 revalidate the exact durable cert cursor and bundle before changing live state.
 The C++ dispatcher permits that native lock-owning action during resume without
 broadening replay for sortition, DAG, transaction, timer, or period mutations.
+Concrete sortition parameter changes now have the same bounded recovery
+contract: only a retained process-local preview whose exact change RLP is
+present in durable storage can be prepended during same-process resume.
+No-change previews remain non-replayable because they can advance hidden
+efficiency-window state without a durable cursor. The C++ dispatcher releases
+its DAG/transaction locks for this native manager-to-sortition task.
+All seven remaining external finalization actions now share one CXX advancement
+entrypoint; Rust decodes the action and routes to the existing typed native
+leaf, while action-specific payloads remain ignored outside their matching
+leaf. Six duplicated per-action exports and their bridge/shim wrappers are
+deleted.
 The remaining direct `VoteManager::resetRewardVotes` compatibility method no
 longer materializes a broad finalization storage plan or exposes two
 PBFT-finalization helper methods. It builds the existing narrow identity

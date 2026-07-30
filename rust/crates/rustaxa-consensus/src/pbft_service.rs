@@ -6,6 +6,7 @@
 //! adds a root-wide lock.
 
 use crate::pbft_chain::PbftChainService;
+use crate::pbft_finalize::PbftFinalizationRuntimeAction;
 use crate::pbft_manager::{
     PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
     PbftFinalizationOwnedActionDrain, PbftManagerGuard, PbftManagerService,
@@ -226,6 +227,54 @@ impl PbftService {
             drain.refresh_dag_counters = refresh_dag_counters;
             Ok(drain)
         })
+    }
+
+    /// Advances a specific external finalization action reported by the boundary.
+    ///
+    /// The action is decoded from the canonical action code and mapped to the
+    /// corresponding Rust-owned external-effect leaf implementation. Leaf-specific
+    /// payloads are consumed only for matching actions.
+    pub fn advance_finalization_action(
+        &self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        cursor: u32,
+        action: u8,
+        last_block: u64,
+        request_period: u64,
+        retention_window: u64,
+        account_nonce_facts: Vec<crate::transaction_service::TransactionServiceAccountNonceFact>,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        let finalization_action = PbftFinalizationRuntimeAction::from_u8(action)
+            .ok_or_else(|| anyhow::anyhow!("PBFT_FINALIZE_UNKNOWN_ACTION"))?;
+
+        match finalization_action {
+            PbftFinalizationRuntimeAction::CommitSortitionRuntime => {
+                self.advance_finalization_sortition_commit(dag_transaction_service, cursor)
+            }
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime => {
+                self.advance_finalization_reward_votes_reset(cursor)
+            }
+            PbftFinalizationRuntimeAction::SetDagBlockOrder => {
+                self.advance_finalization_dag_order(dag_transaction_service, cursor)
+            }
+            PbftFinalizationRuntimeAction::UpdateFinalizedTransactions => self
+                .advance_finalization_transaction_status(
+                    dag_transaction_service,
+                    cursor,
+                    retention_window,
+                    account_nonce_facts,
+                ),
+            PbftFinalizationRuntimeAction::FinalizeFinalChain => {
+                self.advance_finalization_final_chain_dispatch(cursor, last_block)
+            }
+            PbftFinalizationRuntimeAction::AdvancePeriod => {
+                self.advance_finalization_advance_period(cursor)
+            }
+            PbftFinalizationRuntimeAction::ProcessPillarBlock => {
+                self.advance_finalization_pillar_post_processing(cursor, request_period)
+            }
+            _ => Err(anyhow::anyhow!("PBFT_FINALIZE_UNSUPPORTED_ACTION")),
+        }
     }
 
     /// Commits native sortition state and advances finalization.

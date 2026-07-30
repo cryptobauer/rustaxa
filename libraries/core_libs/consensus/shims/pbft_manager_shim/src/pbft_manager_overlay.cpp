@@ -3413,100 +3413,33 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     apply_boundary_snapshot(boundary);
     return boundary;
   };
-  auto report_pillar_post_processing = [&](uint64_t request_period,
-                                           rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+  auto report_finalization_action = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary, const char *context,
+                                        rust::Vec<rustaxa::TransactionQueueAccountNonceFact> nonce_facts,
+                                        uint64_t last_block, uint64_t request_period, uint64_t retention_window,
+                                        bool apply_dag_compatibility_effects = false, bool terminate_on_error = false) {
     try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_pillar_post_processing(
-          pbft_service_->service(), boundary.cursor, request_period);
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_action(
+          pbft_service_->service(), dag_transaction_service_->service(), boundary.cursor, boundary.action, last_block,
+          request_period, retention_window, std::move(nonce_facts));
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", context pillar post-processing: " << e.what();
+                   << block_pbft_period << ", context " << context << ": " << e.what();
+      if (terminate_on_error) {
+        std::terminate();
+      }
       return false;
     }
     apply_boundary_snapshot(boundary);
+    if (apply_dag_compatibility_effects) {
+      vec_blk_t expired_hashes;
+      expired_hashes.reserve(boundary.expired_dag_hashes.size());
+      for (const auto &hash : boundary.expired_dag_hashes) {
+        expired_hashes.push_back(fromBridgeHash(hash.hash));
+      }
+      dag_mgr_->applyFinalizationDagOrderCompatibilityEffects(expired_hashes, boundary.refresh_dag_counters);
+    }
     if (!boundary.can_continue) {
-      return fail_boundary("pillar post-processing", boundary);
-    }
-    return true;
-  };
-  auto report_advance_period = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    try {
-      boundary =
-          rustaxa::pbft_manager_runtime_advance_finalization_advance_period(pbft_service_->service(), boundary.cursor);
-    } catch (const std::exception &e) {
-      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", context advance period: " << e.what();
-      return false;
-    }
-    apply_boundary_snapshot(boundary);
-    if (!boundary.can_continue) {
-      return fail_boundary("advance period", boundary);
-    }
-    return true;
-  };
-  auto report_dag_order = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_dag_order(
-          pbft_service_->service(), dag_transaction_service_->service(), boundary.cursor);
-    } catch (const std::exception &e) {
-      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", context DAG block order: " << e.what();
-      return false;
-    }
-    apply_boundary_snapshot(boundary);
-    vec_blk_t expired_hashes;
-    expired_hashes.reserve(boundary.expired_dag_hashes.size());
-    for (const auto &hash : boundary.expired_dag_hashes) {
-      expired_hashes.push_back(fromBridgeHash(hash.hash));
-    }
-    dag_mgr_->applyFinalizationDagOrderCompatibilityEffects(expired_hashes, boundary.refresh_dag_counters);
-    if (!boundary.can_continue) {
-      return fail_boundary("DAG block order", boundary);
-    }
-    return true;
-  };
-  auto advance_sortition_finalization = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_sortition_commit(
-          pbft_service_->service(), dag_transaction_service_->service(), boundary.cursor);
-    } catch (const std::exception &e) {
-      LOG(log_er_) << "Fatal Rust PBFT finalization sortition invariant for block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ": " << e.what();
-      std::terminate();
-    }
-    apply_boundary_snapshot(boundary);
-    if (!boundary.can_continue) {
-      return fail_boundary("sortition runtime commit", boundary);
-    }
-    return true;
-  };
-  auto report_reward_votes_reset = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_reward_votes_reset(pbft_service_->service(),
-                                                                                       boundary.cursor);
-    } catch (const std::exception &e) {
-      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", context reward-vote reset: " << e.what();
-      return false;
-    }
-    apply_boundary_snapshot(boundary);
-    if (!boundary.can_continue) {
-      return fail_boundary("reward-vote reset", boundary);
-    }
-    return true;
-  };
-  auto report_final_chain_dispatch = [&](uint64_t last_block, rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_final_chain_dispatch(pbft_service_->service(),
-                                                                                         boundary.cursor, last_block);
-    } catch (const std::exception &e) {
-      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", context FinalChain dispatch: " << e.what();
-      return false;
-    }
-    apply_boundary_snapshot(boundary);
-    if (!boundary.can_continue) {
-      return fail_boundary("FinalChain dispatch", boundary);
+      return fail_boundary(context, boundary);
     }
     return true;
   };
@@ -3547,10 +3480,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
       switch (boundary.action) {
         case kPbftFinalizationRuntimeActionCommitSortitionRuntime: {
-          if (!protected_locks_held) {
+          if (!protected_locks_held && !resume_mode) {
             return fail_action("sortition runtime commit", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
           }
-          if (!advance_sortition_finalization(boundary)) {
+          if (!report_finalization_action(boundary, "sortition runtime commit", {}, 0, 0, 0, false, true)) {
             return FinalizationDispatchResult::kFailed;
           }
           break;
@@ -3559,7 +3492,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (!protected_locks_held && !resume_mode) {
             return fail_action("reward-vote reset", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
           }
-          if (!report_reward_votes_reset(boundary)) {
+          if (!report_finalization_action(boundary, "reward-vote reset", {}, 0, 0, 0)) {
             return FinalizationDispatchResult::kFailed;
           }
           break;
@@ -3572,7 +3505,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return fail_action("DAG block order", "PBFT_FINALIZE_DAG_ORDER_PAYLOAD_UNAVAILABLE");
           }
           dag_order_payload_available = false;
-          if (!report_dag_order(boundary)) {
+          if (!report_finalization_action(boundary, "DAG block order", {}, 0, 0, 0, true)) {
             return FinalizationDispatchResult::kFailed;
           }
           break;
@@ -3586,19 +3519,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                                "PBFT_FINALIZE_TRANSACTION_STATUS_ALREADY_CALLED");
           }
           transaction_status_action_available = false;
-          try {
-            boundary = rustaxa::pbft_manager_runtime_advance_finalization_transaction_status(
-                pbft_service_->service(), dag_transaction_service_->service(), boundary.cursor,
-                kRecentlyFinalizedTransactionsFactor * final_chain_->delegationDelay(),
-                trx_mgr_->finalizedStatusAccountNonceFacts());
-          } catch (const std::exception &e) {
-            LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
-                         << block_pbft_period << ", context transaction finalized-status update: " << e.what();
-            return FinalizationDispatchResult::kFailed;
-          }
-          apply_boundary_snapshot(boundary);
-          if (!boundary.can_continue) {
-            fail_boundary("transaction finalized-status update", boundary);
+          if (!report_finalization_action(boundary, "transaction finalized-status update",
+                                          trx_mgr_->finalizedStatusAccountNonceFacts(), 0, 0,
+                                          kRecentlyFinalizedTransactionsFactor * final_chain_->delegationDelay())) {
             return FinalizationDispatchResult::kFailed;
           }
           break;
@@ -3620,7 +3543,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (last_block < block_pbft_period) {
             return fail_action("FinalChain dispatch", "PBFT_FINALIZE_FINAL_CHAIN_ACTION_FAILED");
           }
-          if (!report_final_chain_dispatch(last_block, boundary)) {
+          if (!report_finalization_action(boundary, "FinalChain dispatch", {}, last_block, 0, 0)) {
             return FinalizationDispatchResult::kFailed;
           }
           break;
@@ -3636,7 +3559,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (!apply_advance_period_for_finalization()) {
             return fail_action("advance period", "PBFT_FINALIZE_ADVANCE_PERIOD_ACTION_FAILED");
           }
-          if (!report_advance_period(boundary)) {
+          if (!report_finalization_action(boundary, "advance period", {}, 0, 0, 0)) {
             return FinalizationDispatchResult::kFailed;
           }
           break;
@@ -3653,7 +3576,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (!report.has_value()) {
             return fail_action("pillar post-processing", "PBFT_FINALIZE_PILLAR_ACTION_FAILED");
           }
-          if (!report_pillar_post_processing(*report, boundary)) {
+          if (!report_finalization_action(boundary, "pillar post-processing", {}, 0, *report, 0)) {
             return FinalizationDispatchResult::kFailed;
           }
           break;

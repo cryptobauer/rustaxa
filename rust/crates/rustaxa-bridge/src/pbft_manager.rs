@@ -2033,199 +2033,42 @@ pub fn pbft_manager_runtime_fail_finalization_external_effect(
         .map(finalization_executor_state_from_boundary)
 }
 
-/// Applies finalized transaction status and advances the manager-owned executor.
+/// Advances one external finalization action selected by boundary action code.
 ///
 /// Inputs:
-/// - `runtime`: PBFT manager runtime that owns the accepted canonical period data.
-/// - `dag_transaction_service`: native transaction owner.
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
+/// - `dag_transaction_service`: Native DAG/transaction service for action-specific
+///   external work.
 /// - `cursor`: executor cursor previously returned to C++.
-/// - `retention_window`: configured recently-finalized sidecar window.
-/// - `account_nonce_facts`: narrow facts read through the external EVM boundary.
+/// - `action`: legacy boundary action code selected from the Rust session.
+/// - `last_block`: FinalChain last-block proof for finalization dispatch.
+/// - `request_period`: pillar request period for pillar post-processing.
+/// - `retention_window`: finalized transaction retention window.
+/// - `account_nonce_facts`: retained EVM nonce facts for transaction status.
 ///
 /// Outputs:
 /// - The next PBFT finalization executor state.
-///
-/// Invariants and edge behavior:
-/// - Rust decodes canonical period transactions, applies native storage,
-///   sidecar, queue, and purge effects, then validates the accepted count.
-/// - C++ never materializes transaction payload facts or receives mutation
-///   buckets. Cursor mismatch does not call the transaction owner.
-pub fn pbft_manager_runtime_advance_finalization_transaction_status(
+pub fn pbft_manager_runtime_advance_finalization_action(
     runtime: &BridgePbftService,
     dag_transaction_service: &BridgeDagTransactionService,
     cursor: u32,
+    action: u8,
+    last_block: u64,
+    request_period: u64,
     retention_window: u64,
     account_nonce_facts: Vec<FfiTransactionQueueAccountNonceFact>,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     runtime
         .0
-        .advance_finalization_transaction_status(
+        .advance_finalization_action(
             dag_transaction_service.native(),
             cursor,
+            action,
+            last_block,
+            request_period,
             retention_window,
             bridge_to_service_account_nonce_facts(account_nonce_facts),
         )
-        .map(finalization_executor_state_from_boundary)
-}
-
-/// Applies the retained finalized DAG order and advances its native PBFT cursor.
-/// The borrowed PBFT and DAG/transaction services form one task: Rust rejects
-/// stale actions before mutation, derives all order inputs, validates the result,
-/// and returns the next state plus committed cache/counter compatibility effects.
-/// Operational failures propagate without fabricating effects.
-pub fn pbft_manager_runtime_advance_finalization_dag_order(
-    runtime: &BridgePbftService,
-    dag_transaction_service: &BridgeDagTransactionService,
-    cursor: u32,
-) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    runtime
-        .0
-        .advance_finalization_dag_order(dag_transaction_service.native(), cursor)
-        .map(finalization_executor_state_from_boundary)
-}
-
-/// Reports sortition finalization commit facts to the manager-owned PBFT
-/// finalization executor.
-///
-/// Inputs:
-/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
-/// - `cursor`: executor cursor previously returned to C++.
-/// - Retained preparation: canonical facts and expected optional change captured
-///   before primary storage; C++ supplies no sortition facts.
-///
-/// Outputs:
-/// - The next PBFT finalization executor state.
-///
-/// Invariants and edge behavior:
-/// - C++ does not construct a generic PBFT finalization external-effect report
-///   for the sortition client.
-/// - Rust derives the PBFT finalization action from the cursor and maps only
-///   sortition change/current-threshold/cache-count facts needed for
-///   live-mutation validation.
-/// - Cursor mismatch and validation failure use the same executor-state
-///   contract as every typed finalization advancement API.
-pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
-    runtime: &BridgePbftService,
-    dag_transaction_service: &BridgeDagTransactionService,
-    cursor: u32,
-) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    runtime
-        .0
-        .advance_finalization_sortition_commit(dag_transaction_service.native(), cursor)
-        .map(finalization_executor_state_from_boundary)
-}
-
-/// Reports reward-vote reset finalization facts to the manager-owned PBFT
-/// finalization executor.
-///
-/// Inputs:
-/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
-/// - `cursor`: executor cursor previously returned to C++.
-///
-/// Outputs:
-/// - The next PBFT finalization executor state.
-///
-/// Invariants and edge behavior:
-/// - C++ does not construct a generic PBFT finalization external-effect report
-///   for the reward-vote reset client.
-/// - Rust derives the PBFT finalization action and reward-vote identity from the
-///   accepted plan, then commits the cursor through the native verified-vote
-///   owner. No C++ report participates in the operation.
-/// - Cursor mismatch and validation failure use the same executor-state
-///   contract as every typed finalization advancement API.
-pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
-    runtime: &BridgePbftService,
-    cursor: u32,
-) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    runtime
-        .0
-        .advance_finalization_reward_votes_reset(cursor)
-        .map(finalization_executor_state_from_boundary)
-}
-
-/// Reports FinalChain dispatch or replay facts to the manager-owned PBFT
-/// finalization executor.
-///
-/// Inputs:
-/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
-/// - `cursor`: executor cursor previously returned to C++.
-/// - `last_block`: FinalChain height observed after the external dispatch.
-///
-/// Outputs:
-/// - The next PBFT finalization executor state.
-///
-/// Invariants and edge behavior:
-/// - C++ does not construct a generic PBFT finalization external-effect report
-///   for the FinalChain dispatch/replay client.
-/// - Rust derives the PBFT finalization action from the cursor, marks the
-///   FinalChain dispatch as observed, derives blocks-per-year from its retained
-///   plan, and maps only the observed height into live-mutation validation.
-/// - Cursor mismatch and validation failure use the same executor-state
-///   contract as every typed finalization advancement API.
-pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
-    runtime: &BridgePbftService,
-    cursor: u32,
-    last_block: u64,
-) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    runtime
-        .0
-        .advance_finalization_final_chain_dispatch(cursor, last_block)
-        .map(finalization_executor_state_from_boundary)
-}
-
-/// Reports PBFT finalization pillar post-processing facts to the manager-owned executor.
-///
-/// Inputs:
-/// - `runtime`: PBFT manager runtime that owns the current finalization cursor
-///   and live manager snapshot.
-/// - `cursor`: executor cursor previously returned to C++.
-/// - `request_period`: FinalChain request period used by the pillar leaf.
-///
-/// Outputs:
-/// - The next PBFT finalization executor state.
-///
-/// Invariants and edge behavior:
-/// - C++ does not construct a generic PBFT finalization external-effect report
-///   for the pillar post-processing client.
-/// - Rust derives the PBFT finalization action from the cursor, injects the
-///   manager period from the runtime snapshot, derives the processed period
-///   from its retained plan, and maps only the request period into validation.
-/// - Cursor mismatch and validation failure use the same executor-state
-///   contract as every typed finalization advancement API.
-pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
-    runtime: &BridgePbftService,
-    cursor: u32,
-    request_period: u64,
-) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    runtime
-        .0
-        .advance_finalization_pillar_post_processing(cursor, request_period)
-        .map(finalization_executor_state_from_boundary)
-}
-
-/// Reports PBFT finalization advance-period facts to the manager-owned executor.
-///
-/// Inputs:
-/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
-/// - `cursor`: executor cursor previously returned to C++.
-///
-/// Outputs:
-/// - The next PBFT finalization executor state.
-///
-/// Invariants and edge behavior:
-/// - C++ does not construct a generic PBFT finalization external-effect report
-///   for the advance-period client.
-/// - Rust derives the PBFT finalization action and post-advance manager period
-///   from its lock-held native state.
-/// - Cursor mismatch and validation failure use the same executor-state
-///   contract as every typed finalization advancement API.
-pub fn pbft_manager_runtime_advance_finalization_advance_period(
-    runtime: &BridgePbftService,
-    cursor: u32,
-) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    runtime
-        .0
-        .advance_finalization_advance_period(cursor)
         .map(finalization_executor_state_from_boundary)
 }
 

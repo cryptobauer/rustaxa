@@ -31,7 +31,7 @@
 use anyhow::{Context, Result, anyhow};
 use ethereum_types::H256;
 use rlp::RlpStream;
-use rustaxa_storage::{Storage, StorageWriteBatch};
+use rustaxa_storage::{Column, Storage, StorageWriteBatch};
 use rustaxa_types::codec::rlp::dag::FinalizedDagBlockBundleRlp;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::{Deref, DerefMut};
@@ -484,6 +484,38 @@ impl PbftManagerGuard<'_> {
         self.finalization_sortition_commit_request = None;
     }
 
+    /// Authenticates a retained sortition preview against the committed primary batch.
+    ///
+    /// Only a preview that emitted a concrete parameter change is recoverable:
+    /// its exact RLP row supplies durable proof that primary storage committed.
+    /// No-change previews intentionally return `None` because replaying them
+    /// could advance hidden efficiency-window state without a durable cursor.
+    fn authenticated_resume_sortition_request(
+        &self,
+        plan: &crate::pbft_finalize::PbftFinalizationPlan,
+    ) -> Result<
+        Option<crate::dag_transaction_service::DagTransactionSortitionFinalizationCommitRequest>,
+    > {
+        let Some(request) = self.finalization_sortition_commit_request else {
+            return Ok(None);
+        };
+        if !plan.cleanup.update_sortition_params
+            || !plan.storage_write_intent.update_sortition_params
+            || request.finalized_period.period != plan.storage_write_intent.block_period
+            || request.finalized_period.efficiency_counts.has_pivot
+                != !plan.storage_write_intent.null_anchor
+        {
+            return Ok(None);
+        }
+        let Some(change) = request.expected_change else {
+            return Ok(None);
+        };
+        let durable = self
+            .storage
+            .get_raw(Column::SortitionParamsChange, &change.period.to_le_bytes())?;
+        Ok((durable.as_deref() == Some(change.to_rlp_bytes().as_slice())).then_some(request))
+    }
+
     /// Applies terminal/error cleanup to one complete executor operation.
     ///
     /// Active external boundaries retain their plan and cursor. Complete,
@@ -517,9 +549,11 @@ impl PbftManagerGuard<'_> {
     /// sortition under manager-before-sortition lock order, atomically applies
     /// fresh primary storage, reports that action, and drains consecutive
     /// manager-owned actions. Resume derives its durable tail from native
-    /// storage, never reapplies primary writes, and prepends reward-cursor
-    /// publication only when both the accepted plan and the current storage
-    /// reset generation authenticate that post-commit recovery action.
+    /// storage and never reapplies primary writes. It prepends a concrete
+    /// sortition change only when the retained preview matches its exact durable
+    /// row, then prepends reward-cursor publication only when both the accepted
+    /// plan and current storage reset generation authenticate that recovery
+    /// action. No-change sortition previews remain non-replayable.
     ///
     /// The returned drain contains the first DAG, transaction, vote, FinalChain,
     /// pillar, period-advance, or network action for the C++ leaf executor.
@@ -546,9 +580,16 @@ impl PbftManagerGuard<'_> {
         } else {
             0
         };
+        let resume_sortition_request = if resume_mode {
+            self.authenticated_resume_sortition_request(&request.plan)
+        } else {
+            Ok(None)
+        };
         self.clear_finalization_executor_runtime();
+        let resume_sortition_request = resume_sortition_request?;
         if resume_mode {
             self.finalization_reward_votes_reset_generation = resume_generation;
+            self.finalization_sortition_commit_request = resume_sortition_request;
         }
 
         let result = self.start_finalization_executor_inner(
@@ -749,6 +790,7 @@ impl PbftManagerGuard<'_> {
                 let replay_reward_cursor = request.plan.cleanup.reset_reward_votes
                     && request.plan.storage_write_intent.reset_reward_votes
                     && self.finalization_reward_votes_reset_generation != 0;
+                let replay_sortition = self.finalization_sortition_commit_request.is_some();
                 self.finalization_runtime_plan = Some(request.plan);
                 let mut session = start_pbft_finalization_resume_runtime(&resume);
                 if replay_reward_cursor
@@ -766,6 +808,25 @@ impl PbftManagerGuard<'_> {
                     session.actions.insert(
                         0,
                         crate::pbft_finalize::PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+                    );
+                    session.next_action_index = 0;
+                    session.last_action = None;
+                }
+                if replay_sortition
+                    && matches!(
+                        session.runtime_status,
+                        crate::pbft_finalize::PbftFinalizationRuntimeStatus::Active
+                            | crate::pbft_finalize::PbftFinalizationRuntimeStatus::Complete
+                    )
+                    && !session.actions.contains(
+                        &crate::pbft_finalize::PbftFinalizationRuntimeAction::CommitSortitionRuntime,
+                    )
+                {
+                    session.runtime_status =
+                        crate::pbft_finalize::PbftFinalizationRuntimeStatus::Active;
+                    session.actions.insert(
+                        0,
+                        crate::pbft_finalize::PbftFinalizationRuntimeAction::CommitSortitionRuntime,
                     );
                     session.next_action_index = 0;
                     session.last_action = None;
@@ -8318,6 +8379,15 @@ mod tests {
     ) -> (PathBuf, PbftManagerService, DagTransactionService) {
         let path = unique_temp_dir(name);
         let storage = Arc::new(Storage::new(Config::new(path.clone())).expect("storage opens"));
+        let (manager, dag) =
+            finalization_sortition_services_from_storage(storage, changing_interval);
+        (path, manager, dag)
+    }
+
+    fn finalization_sortition_services_from_storage(
+        storage: Arc<Storage>,
+        changing_interval: u16,
+    ) -> (PbftManagerService, DagTransactionService) {
         let runtime =
             create_pbft_manager_runtime_from_storage(storage.as_ref(), storage_startup_fact())
                 .expect("manager runtime restores");
@@ -8363,7 +8433,7 @@ mod tests {
             },
         )
         .expect("DAG transaction service restores");
-        (path, manager, dag)
+        (manager, dag)
     }
 
     fn install_sortition_commit_runtime(
@@ -9092,6 +9162,253 @@ mod tests {
             Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
         );
         assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
+
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_start_resume_replays_durable_sortition_change() {
+        let (path, manager, dag) = finalization_sortition_services_with_interval(
+            "pbft_manager_finalization_start_resume_sortition",
+            1,
+        );
+        let mut write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 3, &[2, 4]),
+        );
+        write_set.pbft_head_payload = vec![0xde, 0xad, 0xbe, 0xef];
+        let plan = finalization_start_plan(write_set);
+        let mut runtime = manager.lock();
+
+        let fresh = runtime
+            .start_finalization_executor(
+                &dag,
+                &RewardVoteResetStageStub,
+                PbftFinalizationExecutorStartRequest {
+                    plan: plan.clone(),
+                    mode: PbftFinalizationExecutorStartMode::Fresh {
+                        primary_stages: vec![PbftFinalizationStorageWriteStage::default()],
+                        sync: false,
+                    },
+                },
+            )
+            .expect("fresh primary storage persists sortition change");
+        assert_eq!(
+            fresh.next_step.action,
+            Some(PbftFinalizationRuntimeAction::CommitSortitionRuntime)
+        );
+        assert!(
+            runtime
+                .finalization_sortition_commit_request
+                .and_then(|request| request.expected_change)
+                .is_some()
+        );
+
+        let resumed = runtime
+            .start_finalization_executor(
+                &dag,
+                &RewardVoteResetStageStub,
+                PbftFinalizationExecutorStartRequest {
+                    plan,
+                    mode: PbftFinalizationExecutorStartMode::Resume {
+                        final_chain_last_block: 0,
+                    },
+                },
+            )
+            .expect("durable sortition change authenticates resume");
+        assert_eq!(
+            resumed.next_step.action,
+            Some(PbftFinalizationRuntimeAction::CommitSortitionRuntime)
+        );
+
+        let advanced = runtime
+            .advance_finalization_sortition_commit(&dag, resumed.next_step.action_index)
+            .expect("authenticated sortition request publishes");
+        assert_eq!(
+            advanced.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+        assert!(runtime.finalization_sortition_commit_request.is_none());
+
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_start_resume_rejects_sortition_preview_without_durable_match() {
+        let (path, manager, dag) = finalization_sortition_services_with_interval(
+            "pbft_manager_finalization_start_resume_sortition_mismatch",
+            1,
+        );
+        let mut write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 3, &[2, 4]),
+        );
+        write_set.pbft_head_payload = vec![0xde, 0xad, 0xbe, 0xef];
+        let plan = finalization_start_plan(write_set);
+        let mut runtime = manager.lock();
+        runtime
+            .start_finalization_executor(
+                &dag,
+                &RewardVoteResetStageStub,
+                PbftFinalizationExecutorStartRequest {
+                    plan: plan.clone(),
+                    mode: PbftFinalizationExecutorStartMode::Fresh {
+                        primary_stages: vec![PbftFinalizationStorageWriteStage::default()],
+                        sync: false,
+                    },
+                },
+            )
+            .expect("fresh primary storage persists sortition change");
+        let request = runtime
+            .finalization_sortition_commit_request
+            .as_mut()
+            .expect("sortition preview retained");
+        request
+            .expected_change
+            .as_mut()
+            .expect("interval emits change")
+            .threshold_upper ^= 1;
+
+        let resumed = runtime
+            .start_finalization_executor(
+                &dag,
+                &RewardVoteResetStageStub,
+                PbftFinalizationExecutorStartRequest {
+                    plan,
+                    mode: PbftFinalizationExecutorStartMode::Resume {
+                        final_chain_last_block: 0,
+                    },
+                },
+            )
+            .expect("mismatched preview resumes without sortition authority");
+        assert_eq!(
+            resumed.next_step.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+        assert!(runtime.finalization_sortition_commit_request.is_none());
+
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_start_full_restart_does_not_replay_sortition_change() {
+        let (path, manager, dag) = finalization_sortition_services_with_interval(
+            "pbft_manager_finalization_start_restart_sortition",
+            1,
+        );
+        let mut write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 3, &[2, 4]),
+        );
+        write_set.pbft_head_payload = vec![0xde, 0xad, 0xbe, 0xef];
+        let plan = finalization_start_plan(write_set);
+        let mut runtime = manager.lock();
+        runtime
+            .start_finalization_executor(
+                &dag,
+                &RewardVoteResetStageStub,
+                PbftFinalizationExecutorStartRequest {
+                    plan: plan.clone(),
+                    mode: PbftFinalizationExecutorStartMode::Fresh {
+                        primary_stages: vec![PbftFinalizationStorageWriteStage::default()],
+                        sync: false,
+                    },
+                },
+            )
+            .expect("fresh primary storage persists sortition change");
+        let storage = runtime.storage.clone();
+        drop(runtime);
+        drop(manager);
+        drop(dag);
+
+        let (restarted_manager, restarted_dag) =
+            finalization_sortition_services_from_storage(storage, 1);
+        let mut restarted = restarted_manager.lock();
+        let resumed = restarted
+            .start_finalization_executor(
+                &restarted_dag,
+                &RewardVoteResetStageStub,
+                PbftFinalizationExecutorStartRequest {
+                    plan,
+                    mode: PbftFinalizationExecutorStartMode::Resume {
+                        final_chain_last_block: 0,
+                    },
+                },
+            )
+            .expect("full restart resumes from durable tail only");
+        assert_eq!(
+            resumed.next_step.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+        assert!(restarted.finalization_sortition_commit_request.is_none());
+
+        drop(restarted);
+        drop(restarted_manager);
+        drop(restarted_dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_start_resume_excludes_sortition_preview_without_durable_change() {
+        let (path, manager, dag) = finalization_sortition_services(
+            "pbft_manager_finalization_start_resume_sortition_no_change",
+        );
+        let mut write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 3, &[2, 4]),
+        );
+        write_set.pbft_head_payload = vec![0xde, 0xad, 0xbe, 0xef];
+        let plan = finalization_start_plan(write_set);
+        let mut runtime = manager.lock();
+        runtime
+            .start_finalization_executor(
+                &dag,
+                &RewardVoteResetStageStub,
+                PbftFinalizationExecutorStartRequest {
+                    plan: plan.clone(),
+                    mode: PbftFinalizationExecutorStartMode::Fresh {
+                        primary_stages: vec![PbftFinalizationStorageWriteStage::default()],
+                        sync: false,
+                    },
+                },
+            )
+            .expect("fresh primary storage retains no-change preview");
+        assert!(
+            runtime
+                .finalization_sortition_commit_request
+                .is_some_and(|request| request.expected_change.is_none())
+        );
+
+        let resumed = runtime
+            .start_finalization_executor(
+                &dag,
+                &RewardVoteResetStageStub,
+                PbftFinalizationExecutorStartRequest {
+                    plan,
+                    mode: PbftFinalizationExecutorStartMode::Resume {
+                        final_chain_last_block: 0,
+                    },
+                },
+            )
+            .expect("no-change preview resumes without replay authority");
+        assert_eq!(
+            resumed.next_step.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+        assert!(runtime.finalization_sortition_commit_request.is_none());
 
         drop(runtime);
         drop(manager);
