@@ -7,8 +7,10 @@
 
 use crate::pbft_chain::PbftChainService;
 use crate::pbft_manager::{
-    PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest, PbftManagerGuard,
-    PbftManagerService, PbftManagerStorageStartupFact, create_pbft_manager_runtime_from_storage,
+    PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
+    PbftFinalizationOwnedActionDrain, PbftManagerGuard, PbftManagerService,
+    PbftManagerStorageStartupFact, base_owned_finalization_live_report,
+    create_pbft_manager_runtime_from_storage,
 };
 use crate::pbft_period_cleanup::{PbftPeriodStateCleanupResult, cleanup_period_state_with_commit};
 use crate::pbft_readiness::PbftServiceReadiness;
@@ -62,6 +64,22 @@ pub struct PbftService {
 }
 
 impl PbftService {
+    fn run_finalization_executor_task(
+        &self,
+        task: impl FnOnce(&mut PbftManagerGuard<'_>) -> Result<PbftFinalizationOwnedActionDrain>,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        let mut manager = self.manager_state();
+        let result = task(&mut manager);
+        let drain = manager.finish_finalization_executor(result)?;
+        Ok(PbftFinalizationExecutorBoundary {
+            next_step: drain.next_step,
+            cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
+            has_snapshot: drain.has_snapshot,
+            snapshot: manager.state.snapshot(),
+            error_code: drain.error_code,
+        })
+    }
+
     /// Restores the coherent native PBFT service graph from shared storage.
     ///
     /// Errors preserve construction order: slashing configuration is checked
@@ -165,6 +183,168 @@ impl PbftService {
         })
     }
 
+    /// Reports failure of the current external finalization leaf.
+    ///
+    /// The manager validates the echoed cursor, records the supplied external
+    /// status and error, clears the terminal session, and captures the coherent
+    /// compatibility snapshot before releasing its lock.
+    pub fn fail_finalization_external_effect(
+        &self,
+        cursor: u32,
+        status: u8,
+        error_code: String,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        self.run_finalization_executor_task(|manager| {
+            let step = manager.fail_finalization_external_effect(cursor, status, error_code)?;
+            manager.continue_finalization_executor_from_step(step)
+        })
+    }
+
+    /// Advances the finalized DAG-order external leaf.
+    ///
+    /// Rust derives the expected action and accepted write intent, validates the
+    /// finalized count, drains subsequent manager-owned actions, and returns the
+    /// next external boundary under one manager lock.
+    pub fn advance_finalization_dag_order(
+        &self,
+        cursor: u32,
+        finalized_count: u64,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        self.run_finalization_executor_task(|manager| {
+            let step =
+                manager.advance_finalization_live_mutation(cursor, |action, write_set| {
+                    let mut report = base_owned_finalization_live_report(action, write_set);
+                    report.dag_finalized_count = finalized_count;
+                    report
+                })?;
+            manager.continue_finalization_executor_from_step(step)
+        })
+    }
+
+    /// Commits native sortition state and advances finalization.
+    ///
+    /// Manager-before-sortition lock order is retained. The prepared request is
+    /// consumed exactly once, validated against live sortition facts, followed
+    /// by native owned-action draining and terminal cleanup.
+    pub fn advance_finalization_sortition_commit(
+        &self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        cursor: u32,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        self.run_finalization_executor_task(|manager| {
+            let step =
+                manager.advance_finalization_sortition_commit(dag_transaction_service, cursor)?;
+            manager.continue_finalization_executor_from_step(step)
+        })
+    }
+
+    /// Commits the native reward-vote cursor and advances finalization.
+    ///
+    /// The PBFT root composes its manager and verified-vote siblings in fixed
+    /// order, validates reset provenance, drains manager-owned actions, and
+    /// returns only the next external boundary.
+    pub fn advance_finalization_reward_votes_reset(
+        &self,
+        cursor: u32,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        self.run_finalization_executor_task(|manager| {
+            let step =
+                manager.advance_finalization_reward_votes_reset(self.verified_votes(), cursor)?;
+            manager.continue_finalization_executor_from_step(step)
+        })
+    }
+
+    /// Applies finalized transaction status and advances finalization.
+    ///
+    /// The PBFT root composes manager-before-DAG/transaction ownership while
+    /// C++ supplies only the retained external-EVM account nonce facts.
+    pub fn advance_finalization_transaction_status(
+        &self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        cursor: u32,
+        retention_window: u64,
+        account_nonce_facts: Vec<crate::transaction_service::TransactionServiceAccountNonceFact>,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        self.run_finalization_executor_task(|manager| {
+            let step = manager.advance_finalization_transaction_status(
+                dag_transaction_service,
+                cursor,
+                retention_window,
+                account_nonce_facts,
+            )?;
+            manager.continue_finalization_executor_from_step(step)
+        })
+    }
+
+    /// Reports successful FinalChain/EVM dispatch and advances finalization.
+    ///
+    /// Only the two externally observed FinalChain facts cross this boundary;
+    /// Rust derives and validates every manager-owned identity and action.
+    pub fn advance_finalization_final_chain_dispatch(
+        &self,
+        cursor: u32,
+        blocks_per_year: u32,
+        last_block: u64,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        self.run_finalization_executor_task(|manager| {
+            let step =
+                manager.advance_finalization_live_mutation(cursor, |action, write_set| {
+                    let mut report = base_owned_finalization_live_report(action, write_set);
+                    report.final_chain_dispatched = true;
+                    report.final_chain_blocks_per_year = blocks_per_year;
+                    report.final_chain_last_block = last_block;
+                    report
+                })?;
+            manager.continue_finalization_executor_from_step(step)
+        })
+    }
+
+    /// Reports pillar post-processing facts and advances finalization.
+    ///
+    /// The manager period is sampled under the same serialization lock as
+    /// cursor validation; callers supply only the processed/request periods
+    /// observed at the retained pillar executor leaf.
+    pub fn advance_finalization_pillar_post_processing(
+        &self,
+        cursor: u32,
+        processed_period: u64,
+        request_period: u64,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        self.run_finalization_executor_task(|manager| {
+            let manager_period = manager.state.snapshot().period;
+            let step =
+                manager.advance_finalization_live_mutation(cursor, |action, write_set| {
+                    let mut report = base_owned_finalization_live_report(action, write_set);
+                    report.manager_period = manager_period;
+                    report.pillar_processed_period = processed_period;
+                    report.pillar_request_period = request_period;
+                    report
+                })?;
+            manager.continue_finalization_executor_from_step(step)
+        })
+    }
+
+    /// Reports the native period-cleanup result and advances finalization.
+    ///
+    /// The supplied period is the only leaf fact; action identity, plan
+    /// identity, cursor validation, owned draining, cleanup, and snapshot
+    /// capture remain native.
+    pub fn advance_finalization_advance_period(
+        &self,
+        cursor: u32,
+        manager_period: u64,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        self.run_finalization_executor_task(|manager| {
+            let step =
+                manager.advance_finalization_live_mutation(cursor, |action, write_set| {
+                    let mut report = base_owned_finalization_live_report(action, write_set);
+                    report.manager_period = manager_period;
+                    report
+                })?;
+            manager.continue_finalization_executor_from_step(step)
+        })
+    }
+
     /// Returns whether PBFT startup replay has been published complete.
     pub fn is_ready(&self) -> bool {
         self.readiness.is_ready()
@@ -242,6 +422,63 @@ mod tests {
             report_malicious_behaviour: true,
             magnolia_activation_period: 0,
         }
+    }
+
+    fn install_finalization_executor(
+        service: &PbftService,
+        block_period: u64,
+        cleanup: crate::pbft_finalize::PbftFinalizationCleanupIntent,
+        actions: Vec<crate::pbft_finalize::PbftFinalizationRuntimeAction>,
+    ) {
+        use crate::pbft_finalize::{
+            PbftFinalizationAnchor, PbftFinalizationPlan, PbftFinalizationRuntimePlan,
+            PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
+            start_pbft_finalization_runtime,
+        };
+
+        let plan = PbftFinalizationPlan {
+            finalize_block: true,
+            anchor: PbftFinalizationAnchor::Anchored,
+            executed_pbft_block: false,
+            cleanup,
+            storage_write_intent: PbftFinalizationStorageWriteIntent {
+                persist_pbft_head: false,
+                persist_period_data: false,
+                reset_reward_votes: false,
+                update_sortition_params: false,
+                apply_dynamic_lambda_update: false,
+                persist_period_lambda: false,
+                persist_executed_pbft_status: false,
+                process_pillar_block: false,
+                pbft_block_hash: H256::repeat_byte(7),
+                pbft_head_hash: H256::repeat_byte(8),
+                block_period,
+                null_anchor: false,
+                anchor_hash: H256::repeat_byte(4),
+                reward_vote_period: block_period,
+                reward_vote_round: 2,
+                reward_vote_step: 3,
+                reward_vote_block_hash: H256::repeat_byte(7),
+                period_lambda: 0,
+                blocks_per_year: 0,
+                rounds_count_dynamic_lambda: 0,
+                dynamic_lambda: 0,
+                executed_pbft_status: false,
+                pbft_head_payload: Vec::new(),
+                period_data_rlp: Vec::new(),
+                dag_block_period_writes: Vec::new(),
+                transaction_location_writes: Vec::new(),
+            },
+            status: PbftFinalizationStatus::Accepted,
+        };
+        let runtime_plan = PbftFinalizationRuntimePlan {
+            finalize_block: true,
+            status: PbftFinalizationStatus::Accepted,
+            actions,
+        };
+        let mut manager = service.manager_state();
+        manager.finalization_runtime_session = Some(start_pbft_finalization_runtime(&runtime_plan));
+        manager.finalization_runtime_plan = Some(plan);
     }
 
     #[test]
@@ -360,6 +597,118 @@ mod tests {
                 .contains("PBFT_MANAGER_STARTUP_INVALID_LAMBDA_CONFIG")
         );
 
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_advancement_error_clears_application_root_state() {
+        use crate::pbft_finalize::{PbftFinalizationCleanupIntent, PbftFinalizationRuntimeAction};
+
+        let (path, storage) =
+            temp_storage("rustaxa_consensus_pbft_service_finalization_error_cleanup");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        install_finalization_executor(
+            &service,
+            1,
+            PbftFinalizationCleanupIntent {
+                persist_pbft_block_metadata: false,
+                reset_reward_votes: true,
+                set_dag_block_order: false,
+                update_sortition_params: false,
+                update_finalized_transactions_status: false,
+                update_pbft_chain: false,
+                clear_anchor_dag_cache: false,
+                finalize_final_chain: false,
+                maybe_update_dynamic_lambda: false,
+                advance_period: false,
+                process_pillar_block: false,
+            },
+            vec![PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime],
+        );
+
+        let error = service
+            .advance_finalization_reward_votes_reset(0)
+            .expect_err("missing reset generation must reject cursor publication");
+        assert!(
+            error
+                .to_string()
+                .contains("PBFT_FINALIZE_POST_STORAGE_REWARD_VOTES_INVARIANT")
+        );
+        let manager = service.manager_state();
+        assert!(manager.finalization_runtime_session.is_none());
+        assert!(manager.finalization_runtime_plan.is_none());
+        assert!(manager.finalization_sortition_commit_request.is_none());
+        assert_eq!(manager.finalization_reward_votes_reset_generation, 0);
+        drop(manager);
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_period_and_pillar_advancement_share_native_boundary() {
+        use crate::pbft_finalize::{
+            PbftFinalizationCleanupIntent, PbftFinalizationRuntimeAction,
+            PbftFinalizationRuntimeStatus,
+        };
+
+        let (path, storage) =
+            temp_storage("rustaxa_consensus_pbft_service_finalization_period_pillar");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        service.manager_state().state.set_period_for_test(3);
+        install_finalization_executor(
+            &service,
+            2,
+            PbftFinalizationCleanupIntent {
+                persist_pbft_block_metadata: false,
+                reset_reward_votes: false,
+                set_dag_block_order: false,
+                update_sortition_params: false,
+                update_finalized_transactions_status: false,
+                update_pbft_chain: false,
+                clear_anchor_dag_cache: false,
+                finalize_final_chain: false,
+                maybe_update_dynamic_lambda: false,
+                advance_period: true,
+                process_pillar_block: true,
+            },
+            vec![
+                PbftFinalizationRuntimeAction::AdvancePeriod,
+                PbftFinalizationRuntimeAction::ProcessPillarBlock,
+            ],
+        );
+
+        let period = service
+            .advance_finalization_advance_period(0, 3)
+            .expect("period advancement reaches pillar leaf");
+        assert_eq!(
+            period.next_step.action,
+            Some(PbftFinalizationRuntimeAction::ProcessPillarBlock)
+        );
+        assert_eq!(period.snapshot.period, 3);
+        assert!(
+            service
+                .manager_state()
+                .finalization_runtime_session
+                .is_some()
+        );
+
+        let pillar = service
+            .advance_finalization_pillar_post_processing(1, 2, 1)
+            .expect("pillar acknowledgement completes finalization");
+        assert_eq!(
+            pillar.next_step.runtime_status,
+            PbftFinalizationRuntimeStatus::Complete
+        );
+        assert!(pillar.next_step.complete);
+        assert!(
+            service
+                .manager_state()
+                .finalization_runtime_session
+                .is_none()
+        );
+
+        drop(service);
         let _ = fs::remove_dir_all(path);
     }
 }

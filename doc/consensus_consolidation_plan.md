@@ -229,6 +229,14 @@ first manager-owned action sequence, captures the manager snapshot, and clears
 terminal or failed sessions. The bridge converts the start request and returned
 boundary only; its duplicate workflow and behavioral transcripts are deleted,
 with one CXX conversion/integration sentinel retained.
+Every post-start executor advancement now uses the same native application
+boundary. `PbftService` owns cursor/action validation, typed DAG, transaction,
+sortition, reward-reset, FinalChain, pillar, and period report construction,
+subsystem composition, subsequent owned-action draining, terminal/error
+cleanup, and snapshot capture under one manager lock. External failure reports
+also terminate natively. The eight CXX functions remain stable leaf-result
+adapters, but the bridge no longer owns a cursor protocol, generic mutation
+report, drain continuation, cleanup policy, or behavioral test suite.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The

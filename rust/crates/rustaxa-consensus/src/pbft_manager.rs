@@ -180,7 +180,7 @@ pub struct PbftFinalizationExecutorBoundary {
     pub error_code: String,
 }
 
-fn base_owned_finalization_live_report(
+pub(crate) fn base_owned_finalization_live_report(
     action: crate::pbft_finalize::PbftFinalizationRuntimeAction,
     write_set: &crate::pbft_finalize::PbftFinalizationStorageWriteIntent,
 ) -> crate::pbft_finalize::PbftFinalizationLiveMutationReport {
@@ -388,7 +388,12 @@ impl PbftManagerGuard<'_> {
         self.finalization_sortition_commit_request = None;
     }
 
-    fn finish_finalization_executor_start(
+    /// Applies terminal/error cleanup to one complete executor operation.
+    ///
+    /// Active external boundaries retain their plan and cursor. Complete,
+    /// rejected, mismatched, failed, or operational-error outcomes clear every
+    /// retained session, sortition preparation, and reset-generation proof.
+    pub(crate) fn finish_finalization_executor(
         &mut self,
         result: Result<PbftFinalizationOwnedActionDrain>,
     ) -> Result<PbftFinalizationOwnedActionDrain> {
@@ -448,7 +453,175 @@ impl PbftManagerGuard<'_> {
         }
 
         let result = self.start_finalization_executor_inner(dag_transaction_service, request);
-        self.finish_finalization_executor_start(result)
+        self.finish_finalization_executor(result)
+    }
+
+    /// Drains native manager actions after one subsystem or leaf action.
+    ///
+    /// Active steps enter the owned drain; terminal steps are projected without
+    /// further mutation. Cleanup remains the caller's responsibility through
+    /// [`Self::finish_finalization_executor`].
+    pub(crate) fn continue_finalization_executor_from_step(
+        &mut self,
+        step: crate::pbft_finalize::PbftFinalizationRuntimeStep,
+    ) -> Result<PbftFinalizationOwnedActionDrain> {
+        if step.runtime_status == crate::pbft_finalize::PbftFinalizationRuntimeStatus::Active
+            && step.has_action
+        {
+            self.drain_finalization_owned_actions()
+        } else {
+            Ok(owned_finalization_drain_outcome(false, false, step, ""))
+        }
+    }
+
+    fn current_finalization_executor_step(
+        &self,
+    ) -> crate::pbft_finalize::PbftFinalizationRuntimeStep {
+        use crate::pbft_finalize::{
+            PbftFinalizationRuntimeStatus, PbftFinalizationRuntimeStep,
+            next_pbft_finalization_runtime_action,
+        };
+
+        self.finalization_runtime_session
+            .as_ref()
+            .map(next_pbft_finalization_runtime_action)
+            .unwrap_or_else(|| PbftFinalizationRuntimeStep {
+                runtime_status: PbftFinalizationRuntimeStatus::ActionMismatch,
+                has_action: false,
+                action: None,
+                action_index: 0,
+                complete: false,
+                error_code: "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED".to_string(),
+            })
+    }
+
+    fn reject_finalization_cursor(
+        &mut self,
+        error_code: &str,
+    ) -> crate::pbft_finalize::PbftFinalizationRuntimeStep {
+        use crate::pbft_finalize::{
+            PbftFinalizationRuntimeStatus, next_pbft_finalization_runtime_action,
+        };
+
+        let session = self
+            .finalization_runtime_session
+            .as_mut()
+            .expect("active finalization step requires a session");
+        session.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
+        session.error_code = error_code.to_string();
+        next_pbft_finalization_runtime_action(session)
+    }
+
+    fn report_finalization_live_mutation(
+        &mut self,
+        report: crate::pbft_finalize::PbftFinalizationLiveMutationReport,
+    ) -> Result<crate::pbft_finalize::PbftFinalizationRuntimeStep> {
+        use crate::pbft_finalize::{
+            PbftFinalizationRuntimeActionResult, next_pbft_finalization_runtime_action,
+            report_pbft_finalization_runtime_action,
+            validate_pbft_finalization_live_mutation_report,
+        };
+
+        let plan = self
+            .finalization_runtime_plan
+            .as_ref()
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_RUNTIME_PLAN_NOT_STARTED"))?;
+        let validation = validate_pbft_finalization_live_mutation_report(plan, report);
+        let session = self
+            .finalization_runtime_session
+            .as_mut()
+            .expect("active finalization step requires a session");
+        *session = report_pbft_finalization_runtime_action(
+            session.clone(),
+            PbftFinalizationRuntimeActionResult {
+                action: validation.action,
+                success: validation.accepted,
+                status: validation.status.as_u8(),
+                error_code: validation.error_code,
+            },
+        );
+        Ok(next_pbft_finalization_runtime_action(session))
+    }
+
+    /// Validates one typed external-leaf success against the retained plan.
+    ///
+    /// The echoed cursor must identify the current native action. The supplied
+    /// builder receives that typed action and immutable storage intent, returns
+    /// the narrow observed facts, and is never invoked for stale cursors or
+    /// terminal sessions. Validation reports through the native runtime cursor.
+    pub(crate) fn advance_finalization_live_mutation(
+        &mut self,
+        cursor: u32,
+        build_report: impl FnOnce(
+            crate::pbft_finalize::PbftFinalizationRuntimeAction,
+            &crate::pbft_finalize::PbftFinalizationStorageWriteIntent,
+        ) -> crate::pbft_finalize::PbftFinalizationLiveMutationReport,
+    ) -> Result<crate::pbft_finalize::PbftFinalizationRuntimeStep> {
+        use crate::pbft_finalize::PbftFinalizationRuntimeStatus;
+
+        let current_step = self.current_finalization_executor_step();
+        if current_step.runtime_status != PbftFinalizationRuntimeStatus::Active
+            || !current_step.has_action
+        {
+            return Ok(current_step);
+        }
+        if cursor != current_step.action_index {
+            return Ok(self.reject_finalization_cursor("PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH"));
+        }
+        let action = current_step
+            .action
+            .expect("active finalization step carries an action");
+        let plan = self
+            .finalization_runtime_plan
+            .as_ref()
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_RUNTIME_PLAN_NOT_STARTED"))?;
+        let report = build_report(action, &plan.storage_write_intent);
+        self.report_finalization_live_mutation(report)
+    }
+
+    /// Records failure of the current external finalization leaf.
+    ///
+    /// Cursor mismatch fails closed without accepting the external status.
+    /// Otherwise the current typed action is reported failed with the supplied
+    /// stable status and error. The returned terminal step is cleaned up by the
+    /// enclosing application-service operation.
+    pub(crate) fn fail_finalization_external_effect(
+        &mut self,
+        cursor: u32,
+        status: u8,
+        error_code: String,
+    ) -> Result<crate::pbft_finalize::PbftFinalizationRuntimeStep> {
+        use crate::pbft_finalize::{
+            PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus,
+            next_pbft_finalization_runtime_action, report_pbft_finalization_runtime_action,
+        };
+
+        let current_step = self.current_finalization_executor_step();
+        if current_step.runtime_status != PbftFinalizationRuntimeStatus::Active
+            || !current_step.has_action
+        {
+            return Ok(current_step);
+        }
+        if cursor != current_step.action_index {
+            return Ok(self.reject_finalization_cursor("PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH"));
+        }
+        let action = current_step
+            .action
+            .expect("active finalization step carries an action");
+        let session = self
+            .finalization_runtime_session
+            .as_mut()
+            .expect("active finalization step requires a session");
+        *session = report_pbft_finalization_runtime_action(
+            session.clone(),
+            PbftFinalizationRuntimeActionResult {
+                action,
+                success: false,
+                status,
+                error_code,
+            },
+        );
+        Ok(next_pbft_finalization_runtime_action(session))
     }
 
     fn start_finalization_executor_inner(
@@ -5162,6 +5335,12 @@ impl PbftManagerRuntime {
         self.snapshot.clone()
     }
 
+    #[cfg(test)]
+    /// Sets the scalar period for cross-module application-boundary fixtures.
+    pub(crate) fn set_period_for_test(&mut self, period: u64) {
+        self.snapshot.period = period;
+    }
+
     /// Plans a lifecycle transition from authoritative runtime cursor fields.
     pub fn plan_lifecycle_transition(
         &self,
@@ -8393,6 +8572,186 @@ mod tests {
         drop(manager);
         drop(dag);
         let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_advancement_validates_dag_and_reaches_next_leaf() {
+        let (path, manager, _dag) =
+            finalization_sortition_services("pbft_manager_finalization_advance_dag");
+        let write_set = finalization_sortition_write_set(
+            1,
+            false,
+            finalization_period_data(H256::repeat_byte(4), 0, &[]),
+        );
+        let mut runtime = manager.lock();
+        install_owned_finalization_runtime(
+            &mut runtime,
+            write_set,
+            PbftFinalizationCleanupIntent {
+                set_dag_block_order: true,
+                finalize_final_chain: true,
+                ..empty_finalization_cleanup()
+            },
+            false,
+            Some(vec![
+                PbftFinalizationRuntimeAction::SetDagBlockOrder,
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+            ]),
+        );
+
+        let step = runtime
+            .advance_finalization_live_mutation(0, |action, write_set| {
+                let mut report = base_owned_finalization_live_report(action, write_set);
+                report.dag_finalized_count = 0;
+                report
+            })
+            .expect("DAG report validates");
+        let drain = runtime
+            .continue_finalization_executor_from_step(step)
+            .expect("owned drain reaches the next external leaf");
+        let drain = runtime
+            .finish_finalization_executor(Ok(drain))
+            .expect("active boundary remains retained");
+
+        assert_eq!(
+            drain.next_step.action,
+            Some(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+        assert!(runtime.finalization_runtime_session.is_some());
+        assert!(runtime.finalization_runtime_plan.is_some());
+
+        drop(runtime);
+        drop(manager);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_advancement_failure_and_stale_cursor_clear_runtime() {
+        for (name, stale_cursor) in [("failure", false), ("stale", true)] {
+            let (path, manager, _dag) = finalization_sortition_services(&format!(
+                "pbft_manager_finalization_advance_{name}"
+            ));
+            let write_set = finalization_sortition_write_set(
+                1,
+                false,
+                finalization_period_data(H256::repeat_byte(4), 0, &[]),
+            );
+            let mut runtime = manager.lock();
+            install_owned_finalization_runtime(
+                &mut runtime,
+                write_set,
+                PbftFinalizationCleanupIntent {
+                    finalize_final_chain: true,
+                    ..empty_finalization_cleanup()
+                },
+                false,
+                Some(vec![PbftFinalizationRuntimeAction::FinalizeFinalChain]),
+            );
+
+            let step = runtime
+                .fail_finalization_external_effect(
+                    u32::from(stale_cursor),
+                    77,
+                    "PBFT_FINALIZE_TEST_EXTERNAL_FAILURE".to_string(),
+                )
+                .expect("failure report returns a terminal step");
+            let drain = runtime
+                .continue_finalization_executor_from_step(step)
+                .expect("terminal step projects");
+            let drain = runtime
+                .finish_finalization_executor(Ok(drain))
+                .expect("terminal boundary clears");
+
+            assert_eq!(
+                drain.next_step.runtime_status,
+                if stale_cursor {
+                    PbftFinalizationRuntimeStatus::ActionMismatch
+                } else {
+                    PbftFinalizationRuntimeStatus::ActionFailed
+                }
+            );
+            assert_eq!(
+                drain.next_step.error_code,
+                if stale_cursor {
+                    "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH"
+                } else {
+                    "PBFT_FINALIZE_TEST_EXTERNAL_FAILURE"
+                }
+            );
+            assert!(runtime.finalization_runtime_session.is_none());
+            assert!(runtime.finalization_runtime_plan.is_none());
+
+            drop(runtime);
+            drop(manager);
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+
+    #[test]
+    fn finalization_advancement_validates_final_chain_facts() {
+        for (name, last_block, accepted) in [("accepted", 1, true), ("mismatch", 0, false)] {
+            let (path, manager, _dag) = finalization_sortition_services(&format!(
+                "pbft_manager_finalization_advance_final_chain_{name}"
+            ));
+            let write_set = finalization_sortition_write_set(
+                1,
+                false,
+                finalization_period_data(H256::repeat_byte(4), 0, &[]),
+            );
+            let mut runtime = manager.lock();
+            install_owned_finalization_runtime(
+                &mut runtime,
+                write_set,
+                PbftFinalizationCleanupIntent {
+                    finalize_final_chain: true,
+                    advance_period: true,
+                    ..empty_finalization_cleanup()
+                },
+                false,
+                Some(vec![
+                    PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                    PbftFinalizationRuntimeAction::AdvancePeriod,
+                ]),
+            );
+
+            let step = runtime
+                .advance_finalization_live_mutation(0, |action, write_set| {
+                    let mut report = base_owned_finalization_live_report(action, write_set);
+                    report.final_chain_dispatched = true;
+                    report.final_chain_blocks_per_year = write_set.blocks_per_year;
+                    report.final_chain_last_block = last_block;
+                    report
+                })
+                .expect("FinalChain report validates");
+            let drain = runtime
+                .continue_finalization_executor_from_step(step)
+                .expect("FinalChain result projects");
+            let drain = runtime
+                .finish_finalization_executor(Ok(drain))
+                .expect("FinalChain boundary finishes");
+
+            if accepted {
+                assert_eq!(
+                    drain.next_step.action,
+                    Some(PbftFinalizationRuntimeAction::AdvancePeriod)
+                );
+                assert!(runtime.finalization_runtime_session.is_some());
+            } else {
+                assert_eq!(
+                    drain.next_step.runtime_status,
+                    PbftFinalizationRuntimeStatus::ActionFailed
+                );
+                assert_eq!(
+                    drain.next_step.error_code,
+                    "PBFT_FINALIZE_LIVE_MUTATION_FINAL_CHAIN_LAST_BLOCK_MISMATCH"
+                );
+                assert!(runtime.finalization_runtime_session.is_none());
+            }
+
+            drop(runtime);
+            drop(manager);
+            let _ = fs::remove_dir_all(path);
+        }
     }
 
     #[test]

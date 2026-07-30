@@ -35,7 +35,6 @@ use rustaxa_consensus::dag_transaction_service::{
     DagVerifyBlockTransactionCompletionReport as NativeDagVerifyBlockTransactionCompletionReport,
     DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
 };
-use rustaxa_consensus::pbft_manager::PbftManagerGuard;
 #[cfg(test)]
 use rustaxa_consensus::sortition::SortitionServiceGuard;
 use rustaxa_consensus::transaction_packing_service::{
@@ -97,31 +96,6 @@ impl BridgeDagTransactionService {
     #[cfg(test)]
     pub(crate) fn sortition(&self) -> Result<SortitionServiceGuard<'_>> {
         self.root.lock_sortition()
-    }
-
-    /// Delegates the complete lock-held sortition commit task to native consensus.
-    pub(crate) fn advance_finalization_sortition_commit(
-        &self,
-        runtime: &mut PbftManagerGuard<'_>,
-        cursor: u32,
-    ) -> Result<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep> {
-        runtime.advance_finalization_sortition_commit(&self.root, cursor)
-    }
-
-    /// Delegates finalized transaction mutation and cursor advancement to native owners.
-    pub(crate) fn advance_finalization_transaction_status(
-        &self,
-        runtime: &mut PbftManagerGuard<'_>,
-        cursor: u32,
-        retention_window: u64,
-        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
-    ) -> Result<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep> {
-        runtime.advance_finalization_transaction_status(
-            &self.root,
-            cursor,
-            retention_window,
-            account_nonce_facts,
-        )
     }
 }
 

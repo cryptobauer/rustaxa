@@ -1094,6 +1094,25 @@ bridge lines and lowers the exact budget to 31,417. CXX functions,
 carriers, handles, shim lines and directories, granular flags, partial
 factories, compatibility constructors, and production consumers are unchanged.
 
+The next `CRW-12` contraction moves the complete remaining finalization
+advancement envelope into native `PbftService` and `PbftManagerGuard`. All
+eight typed CXX entrypoints now delegate cursor/action validation, native
+sortition/reward/transaction composition, DAG/FinalChain/pillar/period fact
+construction and validation, owned-action continuation, terminal/error
+cleanup, and lock-coherent snapshot capture to the native application root.
+The bridge-owned generic mutation report, plan lookup, cursor-report protocol,
+drain continuation, cleanup policy, DAG-service delegates, and ten behavioral
+tests are deleted; one boundary-projection test and the CXX executor sentinels
+remain. Native manager tests replace DAG advancement, external failure and
+stale-cursor cleanup, and FinalChain success/mismatch behavior, while existing
+native suites retain sortition, reward-reset, transaction, resume, and owned
+drain coverage. Direct application-root tests prove advancement-error cleanup
+and advance-period-to-pillar completion/snapshot behavior. This deletes 1,164
+bridge lines and lowers the exact budget to 30,253. CXX functions, carriers,
+handles, shim lines and directories, granular
+flags, partial factories, compatibility constructors, and production consumers
+are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
