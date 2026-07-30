@@ -1143,6 +1143,17 @@ lowering the exact budgets to 30,207 and 17,335. CXX functions, carriers,
 handles, shim directories, granular flags, partial factories, compatibility
 constructors, and production consumers are unchanged.
 
+The following `CRW-12` contraction removes reward-vote reset preparation from
+the C++ `VoteManager` facade. PBFT finalization now calls the
+application-owned service's verified-vote preparation leaf directly, and the
+redundant C++ prepared-state protocol flag is deleted; existing native
+certificate validation, stage persistence, and error behavior are unchanged.
+The narrow CXX leaf and storage-stage relay remain explicit startup-migration
+debt. This deletes 29 shim lines, lowering the exact shim budget to 17,306.
+Bridge lines, CXX functions, carriers, handles, shim directories, granular
+flags, partial factories, compatibility constructors, and production
+consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

@@ -248,6 +248,12 @@ anchor, period, and ordered hashes from the retained plan, commits through
 The PBFT-specific `DagManager` mutation/report facade and CXX `finalized_count`
 relay are deleted; C++ retains only an explicit adapter that refreshes public
 counter mirrors and evicts expired hashes from its temporary seen-block cache.
+Reward-vote reset preparation no longer routes PBFT finalization through the
+C++ `VoteManager` facade. The PBFT shim calls its application-owned service's
+verified-vote leaf directly and passes the returned stage into native executor
+startup; the duplicate C++ prepared-state protocol flag is gone. The narrow
+bridge leaf remains temporary `CRW-12` debt until startup owns preparation
+without a C++ storage-stage relay.
 Native `rustaxa-consensus::transaction_packing_service::TransactionPackingService` now owns the complete transient
 proposal-packing protocol: its mutex and poison policy, compatibility/DAG owner identity, canonical candidate/RLP
 snapshot, shard cursor, planner, pending-estimate ordering, selected output, stop state, and selective abort. The

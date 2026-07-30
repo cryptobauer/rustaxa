@@ -45,12 +45,12 @@ struct SlashingDoubleVoteEvidence;
  * - PBFT replay protection and `2t+1` threshold cache ownership live in the
  *   same Rust runtime as verified-vote admission; C++ supplies only
  *   FinalChain/PBFT-chain scalar facts when Rust reports a cache miss.
- * - Reward-vote reset appends the stage-4 Rust finalization storage write to
- *   the caller-owned batch and mutates live reward metadata only after Rust
- *   accepts the durable write stage.
+ * - Direct compatibility reward-vote reset mutates live reward metadata only
+ *   after Rust accepts the durable write; PBFT finalization stage preparation
+ *   is owned by the application service and does not route through this class.
  *
  * Error and edge behavior:
- * - Missing certified-vote facts preserve upstream assert-and-return behavior.
+ * - Missing certified-vote facts reject the direct compatibility operation.
  * - Rust appender rejection returns a rejected result and leaves reward metadata unchanged.
  */
 class VoteManager {
@@ -838,26 +838,6 @@ class VoteManager {
    */
   rustaxa::PbftFinalizedPeriodApplyResult resetRewardVotesForFinalization(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent, Batch& batch);
-  /**
-   * Builds the Rust reward-vote reset storage stage without mutating live
-   * reward metadata.
-   *
-   * Inputs:
-   * - `write_intent`: Rust-planned finalization write intent carrying the
-   *   certified vote period, round, step, and block hash.
-   *
-   * Outputs:
-   * - A bridge stage containing the certified-vote bundle selected by Rust.
-   *
-   * Invariants:
-   * - Rust validates the requested identity against authoritative runtime and
-   *   storage state before returning the stage.
-   * - Live reward metadata is unchanged; the native PBFT manager publishes the
-   *   durable cursor after Rust commits the stage.
-   */
-  rustaxa::PbftFinalizationStorageWriteStage rewardVotesResetStageForFinalization(
-      const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
-
   /**
    * Builds the compact identity-only Rust reward-vote reset request used by
    * direct compatibility callers outside a broader finalization batch. Rust

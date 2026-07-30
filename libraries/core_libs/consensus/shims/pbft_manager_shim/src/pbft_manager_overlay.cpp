@@ -3525,7 +3525,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return pillar_request_period;
   };
 
-  bool reward_votes_reset_prepared = false;
   bool dag_order_payload_available = true;
   bool transaction_status_action_available = true;
   bool final_chain_payload_available = true;
@@ -3561,10 +3560,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (!protected_locks_held) {
             return fail_action("reward-vote reset", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
           }
-          if (!reward_votes_reset_prepared) {
-            return fail_action("reward-vote reset", "PBFT_FINALIZE_REWARD_RESET_PAYLOAD_UNAVAILABLE");
-          }
-          reward_votes_reset_prepared = false;
           if (!report_reward_votes_reset(boundary)) {
             return FinalizationDispatchResult::kFailed;
           }
@@ -3737,12 +3732,13 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   }
   first_persistence_stages.push_back(std::move(primary_storage_stage));
 
-  // Replace current reward votes
+  // The PBFT application service owns verified-vote state directly; do not
+  // route this internal finalization preparation through VoteManager.
   if (finalization_plan.storage_write_intent.reset_reward_votes) {
     try {
       first_persistence_stages.push_back(
-          vote_mgr_->rewardVotesResetStageForFinalization(finalization_plan.storage_write_intent));
-      reward_votes_reset_prepared = true;
+          pbft_service_->service().pbft_service_verified_votes_prepare_reward_votes_reset_stage(
+              finalization_plan.storage_write_intent));
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalized-period reward-vote reset facts failed for block " << pbft_block_hash
                    << ", period " << block_pbft_period << ": " << e.what();

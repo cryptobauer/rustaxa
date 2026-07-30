@@ -1810,11 +1810,6 @@ PbftStep VoteManager::getNetworkTplusOneNextVotingStep(PbftPeriod period, PbftRo
   return materializeRoundVotes(snapshot, period, round).network_t_plus_one_step;
 }
 
-rustaxa::PbftFinalizationStorageWriteStage VoteManager::rewardVotesResetStageForFinalization(
-    const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
-  return pbft_service_->service().pbft_service_verified_votes_prepare_reward_votes_reset_stage(write_intent);
-}
-
 rustaxa::PbftRewardVotesResetRequest VoteManager::rewardVotesResetRequestForFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
   const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
