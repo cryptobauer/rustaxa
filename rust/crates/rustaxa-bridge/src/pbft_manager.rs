@@ -3303,39 +3303,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_runtime_advance_requires_matching_committed_reset() {
-        let mut runtime = runtime_for_startup("rustaxa_bridge_runtime_advance_provenance");
-        let before = runtime.manager_state().state.snapshot();
-        assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 9).accepted);
-        assert_eq!(runtime.manager_state().state.snapshot(), before);
-
-        let mut request = lifecycle_transition_request(TRANSITION_RESET);
-        request.target_period = 10;
-        request.target_round = 1;
-        let reset =
-            pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, request).unwrap();
-        assert_eq!(reset.status, TRANSITION_STORAGE_STATUS_APPLIED);
-        assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 9).accepted);
-
-        let mut advance_request = lifecycle_transition_request(TRANSITION_RESET);
-        advance_request.target_period = 11;
-        advance_request.target_round = 1;
-        let advance_reset =
-            pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, advance_request)
-                .unwrap();
-        assert_eq!(advance_reset.status, TRANSITION_STORAGE_STATUS_APPLIED);
-        let committed = runtime.manager_state().state.snapshot();
-
-        assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 0).accepted);
-        assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 9).accepted);
-        assert_eq!(runtime.manager_state().state.snapshot(), committed);
-        assert!(pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 10).accepted);
-        let applied = pbft_manager_runtime_apply_period_advance(&mut runtime, 11).unwrap();
-        assert_eq!(applied.status, 0);
-        assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 10).accepted);
-    }
-
-    #[test]
     fn bridge_runtime_applies_transition_storage_before_cursor_update() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_transition_apply");
         {

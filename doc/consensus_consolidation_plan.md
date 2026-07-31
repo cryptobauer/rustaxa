@@ -308,6 +308,10 @@ The standalone bridge own-vote reset fixture is also deleted: native transition
 storage tests own exact deletion behavior, while the retained combined bridge
 lifecycle/storage sentinel already proves the live wrapper clears durable own
 votes.
+The bridge-local period-advance provenance transcript is deleted as well.
+Native manager/service tests own missing, mismatched, consumed, and retryable
+reset provenance, while the retained CXX transcript crosses the production
+reset, plan, successful commit, and duplicate-rejection boundary.
 PBFT period-state cleanup is no longer a separate C++ executor action.
 `PbftService` validates committed-reset provenance and owns the final
 cleanup-plus-period commit under manager, verified-vote, and proposed-block

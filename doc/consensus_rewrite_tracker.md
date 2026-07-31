@@ -1323,6 +1323,15 @@ lines and lowers the checked budget to 29,351; all other inventory metrics
 remain unchanged. The focused native transition test and remaining 19 bridge
 manager tests cover the slice; no production or C++ code changes.
 
+The final `CRW-12` work-window contraction deletes the bridge-local
+period-advance provenance behavior transcript. Native manager/service tests
+own missing, mismatched, consumed, and retryable reset provenance, while the
+retained CXX advance-period transcript covers production reset, planning,
+successful commit, and duplicate rejection. This removes 33 bridge lines and
+lowers the checked budget to 29,318; other inventory metrics remain unchanged.
+Focused native period-advance tests and the remaining 18 bridge-manager tests
+cover the deletion; no production or C++ code changes.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
