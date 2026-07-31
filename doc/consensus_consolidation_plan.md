@@ -125,8 +125,9 @@ Native `PbftService` now also owns the complete period-state cleanup task across
 verified votes and proposed blocks: fixed sibling lock order, successor
 validation, one Rust proposal-deletion batch, commit-before-memory publication,
 typed counts, and retry-safe rejection. Its behavioral and failure-injection
-tests are native; the bridge retains only exhaustive result conversion for the
-temporary C++ advance-period executor.
+tests are native. The later period-commit contraction removes the temporary
+C++ cleanup action and its result conversion entirely: the bridge now exposes
+only the final fallible native commit snapshot.
 Native `PbftService` also owns the complete leader-selection task across
 verified votes, proposed blocks, and finalized-chain membership. It prepares
 deterministically ordered owned candidates under the manager-before-siblings
@@ -286,6 +287,11 @@ The PBFT manager bridge suite likewise no longer repeats daemon ineligible
 sleep, proposal ordering/build, broadcast-counter, or deadline-wait behavior.
 Those rules remain covered by native manager tests; bridge coverage stays
 focused on CXX projection, persistence, and external-executor boundaries.
+PBFT period-state cleanup is no longer a separate C++ executor action.
+`PbftService` validates committed-reset provenance and owns the final
+cleanup-plus-period commit under manager, verified-vote, and proposed-block
+guards. The bridge exposes only the fallible final snapshot commit; the cleanup
+result carrier, bridge module, and shim-side count validation are deleted.
 The remaining direct `VoteManager::resetRewardVotes` compatibility method no
 longer materializes a broad finalization storage plan or exposes two
 PBFT-finalization helper methods. It builds the existing narrow identity

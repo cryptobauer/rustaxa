@@ -1037,16 +1037,19 @@ pub fn validate_pbft_manager_advance_period_action_report(
     .into()
 }
 
-/// Records a completed Rust-planned period advance in the long-lived runtime.
+/// Commits a completed Rust-planned period advance in the long-lived runtime.
+///
+/// Rust validates committed-reset provenance, durably removes stale proposed
+/// blocks, cleans native vote/proposal siblings, and publishes the manager
+/// period in one ordered operation. Invalid or duplicate reports return a
+/// rejected snapshot. Operational lock or storage failures cross CXX as an
+/// exception so the C++ Boolean executor boundary can log and return failure;
+/// native state and reset provenance remain retryable.
 pub fn pbft_manager_runtime_apply_period_advance(
     runtime: &BridgePbftService,
     new_period: u64,
-) -> FfiPbftManagerRuntimeSnapshot {
-    let mut runtime = runtime.manager_state();
-    runtime
-        .state
-        .apply_committed_period_advance(new_period)
-        .into()
+) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
+    runtime.0.apply_period_advance(new_period).map(Into::into)
 }
 
 /// Records live broadcast counters in the long-lived PBFT manager runtime.
@@ -2685,7 +2688,6 @@ mod tests {
     const ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS: u8 = 4;
     const ADVANCE_ACTION_RESET_PERIOD_TIMER: u8 = 5;
     const ADVANCE_ACTION_UPDATE_WALLET_ELIGIBILITY: u8 = 6;
-    const ADVANCE_ACTION_CLEANUP_PERIOD_STATE: u8 = 7;
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -3351,7 +3353,7 @@ mod tests {
         assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 9).accepted);
         assert_eq!(runtime.manager_state().state.snapshot(), committed);
         assert!(pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 10).accepted);
-        let applied = pbft_manager_runtime_apply_period_advance(&mut runtime, 11);
+        let applied = pbft_manager_runtime_apply_period_advance(&mut runtime, 11).unwrap();
         assert_eq!(applied.status, 0);
         assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 10).accepted);
     }
@@ -4181,7 +4183,6 @@ mod tests {
                     ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS,
                     ADVANCE_ACTION_RESET_PERIOD_TIMER,
                     ADVANCE_ACTION_UPDATE_WALLET_ELIGIBILITY,
-                    ADVANCE_ACTION_CLEANUP_PERIOD_STATE,
                 ]
             );
 
@@ -4213,12 +4214,14 @@ mod tests {
             );
 
             let snapshot =
-                pbft_manager_runtime_apply_period_advance(&mut runtime, advance.new_period);
+                pbft_manager_runtime_apply_period_advance(&mut runtime, advance.new_period)
+                    .unwrap();
             assert_eq!(snapshot.status, STARTUP_STATUS_READY);
             assert_eq!(snapshot.period, 13);
 
             let rejected_snapshot =
-                pbft_manager_runtime_apply_period_advance(&mut runtime, advance.new_period);
+                pbft_manager_runtime_apply_period_advance(&mut runtime, advance.new_period)
+                    .unwrap();
             assert_ne!(rejected_snapshot.status, STARTUP_STATUS_READY);
             assert_eq!(rejected_snapshot.period, 13);
             assert_eq!(

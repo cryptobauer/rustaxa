@@ -44,10 +44,10 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 29758 |
-| `shim_lines` | 17132 |
-| `cxx_functions` | 390 |
-| `cxx_carriers` | 341 |
+| `bridge_lines` | 29650 |
+| `shim_lines` | 17101 |
+| `cxx_functions` | 389 |
+| `cxx_carriers` | 340 |
 | `cxx_handles` | 20 |
 | `shim_directories` | 11 |
 | `granular_flags` | 8 |
@@ -128,7 +128,6 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/network.rs` | ingress, planning, effects | tarcap handlers | External boundary | Complete `CRW-N01`; retain transport-only execution API. |
 | `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | Thin DTO adapters over native `PbftChainService` | PBFT chain/manager shims | Internal bridge route | Native storage, restoration, lock ownership, transitions, validation, and lookup live in `rustaxa-consensus`; migrate named C++ readers and delete the facade. |
 | `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | Thin `BridgePbftService` adapter plus manager DTO/effect adapters | App, PBFT/vote/pillar shims | Native service wrapper | Native `PbftService` owns coherent sibling restoration, composition, bootstrap readiness, finalization start/resume, all typed executor advancement, owned-action draining, terminal cleanup, and lock-coherent snapshots; retain compact FFI/error-mapping/external-leaf tests while contracting the remaining C++ executor leaves. |
-| `rust/crates/rustaxa-bridge/src/pbft_period_cleanup.rs` | Result conversion over native period cleanup | PBFT manager shim | Internal bridge route | Native `PbftService` owns validation, sibling locks, the durable batch, and publication; delete this conversion entry when the C++ advance-period executor moves native. |
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | CXX conversion over native sync admission/egress tasks plus cert-vote bundle validation conversion | PBFT manager and tarcap | Internal bridge route | Native `PbftService` owns admission cursor lifecycle, report validation, terminal cleanup, bootstrap gating, and storage-backed egress; delete the conversion surface with the PBFT/network pipeline clients. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_generation.rs` | vote generation adapters | Vote/PBFT shims | Internal bridge route | Signing becomes a leaf port and vote behavior remains native. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_ingress.rs` | ingress adapter | network/vote path | Internal bridge route | Complete network pipeline migration. |

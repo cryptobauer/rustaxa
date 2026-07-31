@@ -50,6 +50,7 @@ constexpr uint8_t kPbftMgrStatusNextVotedValue = 2;
 constexpr uint8_t kPbftFinalizationStorageStagePrimary = 0;
 constexpr uint8_t kPbftFinalizationStorageStageDynamic = 1;
 constexpr uint8_t kPbftManagerStartupStatusReady = 0;
+constexpr uint8_t kPbftManagerStartupStatusInvalidFact = 1;
 constexpr uint8_t kPbftManagerRuntimeStateValueProposal = 0;
 constexpr uint8_t kPbftManagerRuntimeStateFinish = 3;
 constexpr uint8_t kPbftManagerRuntimeStateCertify = 2;
@@ -82,7 +83,6 @@ constexpr uint8_t kPbftManagerAdvanceActionResetCurrentRoundTimer = 3;
 constexpr uint8_t kPbftManagerAdvanceActionResetRewardVoteCounters = 4;
 constexpr uint8_t kPbftManagerAdvanceActionResetPeriodTimer = 5;
 constexpr uint8_t kPbftManagerAdvanceActionUpdateWalletEligibility = 6;
-constexpr uint8_t kPbftManagerAdvanceActionCleanupVotes = 7;
 
 PbftFinalizationStorageWriteStage finalizationStorageStage(uint8_t stage) {
   PbftFinalizationStorageWriteStage write_stage{};
@@ -640,7 +640,17 @@ TEST(RustPbftSyncTest, ManagerAdvancePeriodRecordsEffectTranscript) {
             (std::vector<uint8_t>{
                 kPbftManagerAdvanceActionSetVoteManagerPeriodRound, kPbftManagerAdvanceActionResetCurrentRoundTimer,
                 kPbftManagerAdvanceActionResetRewardVoteCounters, kPbftManagerAdvanceActionResetPeriodTimer,
-                kPbftManagerAdvanceActionUpdateWalletEligibility, kPbftManagerAdvanceActionCleanupVotes}));
+                kPbftManagerAdvanceActionUpdateWalletEligibility}));
+
+  const auto committed = pbft_manager_runtime_apply_period_advance(*runtime, plan.new_period);
+  EXPECT_EQ(committed.status, kPbftManagerStartupStatusReady);
+  EXPECT_EQ(committed.period, 13);
+  EXPECT_TRUE(committed.error_code.empty());
+
+  const auto duplicate = pbft_manager_runtime_apply_period_advance(*runtime, plan.new_period);
+  EXPECT_EQ(duplicate.status, kPbftManagerStartupStatusInvalidFact);
+  EXPECT_EQ(duplicate.period, 13);
+  EXPECT_EQ(duplicate.error_code, "PBFT_MANAGER_ADVANCE_PERIOD_NON_INCREASING_PERIOD");
 }
 
 TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {

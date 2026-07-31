@@ -3,7 +3,6 @@ use crate::dag_transaction_service::*;
 use crate::final_chain::*;
 use crate::network::*;
 use crate::pbft_manager::*;
-use crate::pbft_period_cleanup::*;
 use crate::pbft_sync::*;
 use crate::pbft_vote_generation::*;
 use crate::pbft_vote_payload::*;
@@ -1297,22 +1296,6 @@ pub mod rustaxa_ffi {
         accepted: bool,
         status: u8,
         error_code: String,
-    }
-
-    /// Atomic verified-vote/proposed-block period cleanup result.
-    struct PbftPeriodStateCleanupResult {
-        status: u8,
-        error_code: String,
-        transition_published: bool,
-        finalized_chain_size: u64,
-        new_period: u64,
-        verified_vote_periods_removed: u64,
-        verified_votes_removed: u64,
-        vote_payloads_removed: u64,
-        proposed_block_periods_removed: u64,
-        proposed_blocks_removed: u64,
-        persistence_required: bool,
-        persistence_applied_deletes: u64,
     }
 
     /// Rust-owned PBFT manager cursor snapshot used by the transitional C++
@@ -4372,12 +4355,7 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_apply_period_advance(
             runtime: &BridgePbftService,
             new_period: u64,
-        ) -> PbftManagerRuntimeSnapshot;
-        pub fn pbft_service_cleanup_period_state(
-            service: &BridgePbftService,
-            finalized_chain_size: u64,
-            new_period: u64,
-        ) -> Result<PbftPeriodStateCleanupResult>;
+        ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_apply_broadcast_counters(
             runtime: &BridgePbftService,
             broadcast_votes_counter: u32,

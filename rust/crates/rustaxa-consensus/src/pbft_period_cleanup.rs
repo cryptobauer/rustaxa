@@ -17,7 +17,7 @@ use rustaxa_storage::{Storage, StorageWriteBatch};
 /// Typed PBFT period-state cleanup status emitted by Rust-owned cleanup calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum PbftPeriodStateCleanupStatus {
+pub(crate) enum PbftPeriodStateCleanupStatus {
     /// The cleanup request was valid but no stale data existed for persistence or
     /// in-memory cleanup.
     NotRequired,
@@ -27,25 +27,13 @@ pub enum PbftPeriodStateCleanupStatus {
     Rejected,
 }
 
-impl PbftPeriodStateCleanupStatus {
-    /// Returns the stable CXX status code used by the temporary manager adapter.
-    #[must_use]
-    pub const fn as_u8(self) -> u8 {
-        match self {
-            Self::NotRequired => 0,
-            Self::Applied => 1,
-            Self::Rejected => 2,
-        }
-    }
-}
-
 /// Result of one period-state cleanup attempt.
 ///
 /// Counts describe only the mutation published by this call. Rejected results
 /// always report zero mutations and `transition_published == false`; valid
 /// no-op results publish the transition with zero counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PbftPeriodStateCleanupResult {
+pub(crate) struct PbftPeriodStateCleanupResult {
     /// Typed cleanup outcome.
     pub status: PbftPeriodStateCleanupStatus,
     /// Stable diagnostic code for rejected calls, otherwise empty.
@@ -89,6 +77,7 @@ const CLEANUP_STORAGE_COMMIT: &str = "PBFT_PERIOD_STATE_CLEANUP_STORAGE_COMMIT";
 /// Locks are intentionally ordered as verified votes then proposed blocks and
 /// remain held through commit. The order must not be inverted by adjacent
 /// operations that borrow both siblings.
+#[cfg(test)]
 pub(crate) fn cleanup_period_state_with_commit<F>(
     verified_votes: &PbftVerifiedVotesService,
     proposed_blocks: &ProposedBlocksService,
@@ -98,6 +87,33 @@ pub(crate) fn cleanup_period_state_with_commit<F>(
 ) -> Result<PbftPeriodStateCleanupResult>
 where
     F: FnOnce(&Storage, StorageWriteBatch) -> Result<()>,
+{
+    cleanup_period_state_with_commit_and_publish(
+        verified_votes,
+        proposed_blocks,
+        finalized_chain_size,
+        new_period,
+        commit,
+        || {},
+    )
+}
+
+/// Performs cleanup and an infallible owner publication in one lock epoch.
+///
+/// `publish` runs after durable commit and live sibling cleanup, but before
+/// either sibling guard is released. Callers must prevalidate it so no
+/// fallible operation remains after cleanup publication begins.
+pub(crate) fn cleanup_period_state_with_commit_and_publish<F, P>(
+    verified_votes: &PbftVerifiedVotesService,
+    proposed_blocks: &ProposedBlocksService,
+    finalized_chain_size: u64,
+    new_period: u64,
+    commit: F,
+    publish: P,
+) -> Result<PbftPeriodStateCleanupResult>
+where
+    F: FnOnce(&Storage, StorageWriteBatch) -> Result<()>,
+    P: FnOnce(),
 {
     if finalized_chain_size == 0 {
         return Ok(rejected(
@@ -130,6 +146,7 @@ where
         || !proposed_plan.is_empty();
 
     if !any_memory_cleanup {
+        publish();
         return Ok(PbftPeriodStateCleanupResult {
             status: PbftPeriodStateCleanupStatus::NotRequired,
             error_code: String::new(),
@@ -189,6 +206,7 @@ where
     for plan in &proposed_plan {
         proposed_blocks.remove_period(plan.period);
     }
+    publish();
     Ok(result)
 }
 
@@ -224,6 +242,9 @@ mod tests {
     use super::*;
     use crate::{
         PbftService,
+        pbft_manager::{
+            PbftManagerTransitionFact, PbftManagerTransitionKind, plan_pbft_manager_transition,
+        },
         pbft_service::PbftServiceConfig,
         pbft_vote_runtime::PbftVoteAdmissionRuntime,
         verified_votes::{PbftVoteType, VerifiedVote},
@@ -308,8 +329,35 @@ mod tests {
         (block_rlp, link)
     }
 
+    fn record_committed_reset(service: &PbftService, target_period: u64) {
+        let plan = plan_pbft_manager_transition(PbftManagerTransitionFact {
+            kind: PbftManagerTransitionKind::ResetConsensus,
+            period: 1,
+            round: 1,
+            step: 1,
+            target_round: 1,
+            current_round_lambda_ms: 100,
+            target_round_lambda_ms: 100,
+            default_lambda_ms: 100,
+            max_exponential_lambda_ms: 60_000,
+            max_steps: 13,
+            network_next_voting_step: 0,
+            deadline_ms: 400,
+            polling_interval_ms: 100,
+            next_step_time_ms: 400,
+            cacti_hardfork: false,
+            has_cert_voted_block: false,
+            executed_pbft_block: false,
+        });
+        assert!(plan.error_code.is_empty());
+        service
+            .manager_state()
+            .state
+            .record_committed_reset(target_period, &plan);
+    }
+
     #[test]
-    fn cleanup_rejects_commit_without_mutation_then_retries_with_exact_counts() {
+    fn period_advance_commit_failure_preserves_state_and_retries() {
         let (storage, path) = test_storage("rustaxa_consensus_period_cleanup_retry");
         let mut runtime = PbftVoteAdmissionRuntime::new();
         runtime
@@ -355,19 +403,46 @@ mod tests {
             .unwrap();
         storage.commit_write_batch_with_sync(batch, false).unwrap();
 
-        let rejected = cleanup_period_state_with_commit(
-            service.verified_votes(),
-            service.proposed_blocks(),
-            12,
-            13,
-            |_, _| Err(anyhow::anyhow!("injected commit failure")),
-        )
-        .unwrap();
-        assert_eq!(rejected.status, PbftPeriodStateCleanupStatus::Rejected);
-        assert_eq!(rejected.error_code, CLEANUP_STORAGE_COMMIT);
-        assert!(!rejected.transition_published);
-        assert_eq!(rejected.verified_votes_removed, 0);
-        assert_eq!(rejected.proposed_blocks_removed, 0);
+        let missing_reset = service
+            .apply_period_advance(13)
+            .expect("missing provenance returns a rejected snapshot");
+        assert_eq!(
+            missing_reset.error_code,
+            "PBFT_MANAGER_ADVANCE_PERIOD_RESET_NOT_COMMITTED"
+        );
+        assert_eq!(
+            service
+                .verified_votes()
+                .lock()
+                .unwrap()
+                .verified_votes()
+                .size(),
+            2
+        );
+        assert!(
+            service
+                .proposed_blocks()
+                .read()
+                .unwrap()
+                .contains(11, old_hash)
+        );
+
+        record_committed_reset(&service, 13);
+        let commit_error = service
+            .apply_period_advance_with_commit(13, |_, _| {
+                Err(anyhow::anyhow!("injected commit failure"))
+            })
+            .expect_err("durable cleanup failure must stop publication");
+        assert!(commit_error.to_string().contains(CLEANUP_STORAGE_COMMIT));
+        assert_eq!(service.manager_state().state.snapshot().period, 1);
+        assert!(
+            service
+                .manager_state()
+                .state
+                .plan_advance_period_after_reset(12)
+                .accepted,
+            "failed cleanup must preserve committed-reset provenance"
+        );
         assert_eq!(
             service
                 .verified_votes()
@@ -392,17 +467,10 @@ mod tests {
         );
 
         let applied = service
-            .cleanup_period_state(12, 13)
-            .expect("cleanup should recover on retry");
-        assert_eq!(applied.status, PbftPeriodStateCleanupStatus::Applied);
-        assert!(applied.transition_published);
-        assert_eq!(applied.verified_vote_periods_removed, 1);
-        assert_eq!(applied.verified_votes_removed, 1);
-        assert_eq!(applied.vote_payloads_removed, 0);
-        assert_eq!(applied.proposed_block_periods_removed, 1);
-        assert_eq!(applied.proposed_blocks_removed, 1);
-        assert!(applied.persistence_required);
-        assert_eq!(applied.persistence_applied_deletes, 1);
+            .apply_period_advance(13)
+            .expect("combined period commit should recover on retry");
+        assert_eq!(applied.period, 13);
+        assert!(applied.error_code.is_empty());
         assert_eq!(
             service
                 .verified_votes()
@@ -439,6 +507,15 @@ mod tests {
                 .is_some()
         );
 
+        let duplicate = service
+            .apply_period_advance(13)
+            .expect("duplicate report returns a rejected snapshot");
+        assert_eq!(duplicate.period, 13);
+        assert_eq!(
+            duplicate.error_code,
+            "PBFT_MANAGER_ADVANCE_PERIOD_NON_INCREASING_PERIOD"
+        );
+
         drop(service);
         let restarted = test_service(Some(storage.clone()), PbftVoteAdmissionRuntime::new()).0;
         assert!(
@@ -467,6 +544,10 @@ mod tests {
         assert_eq!(no_op.status, PbftPeriodStateCleanupStatus::NotRequired);
         assert!(no_op.transition_published);
         assert!(!no_op.persistence_required);
+        record_committed_reset(&service, 13);
+        let snapshot = service.apply_period_advance(13).unwrap();
+        assert_eq!(snapshot.period, 13);
+        assert!(snapshot.error_code.is_empty());
 
         service
             .verified_votes()

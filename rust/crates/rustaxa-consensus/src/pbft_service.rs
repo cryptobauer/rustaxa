@@ -13,14 +13,18 @@ use crate::pbft_manager::{
     PbftManagerStorageStartupFact, base_owned_finalization_live_report,
     create_pbft_manager_runtime_from_storage,
 };
+#[cfg(test)]
 use crate::pbft_period_cleanup::{PbftPeriodStateCleanupResult, cleanup_period_state_with_commit};
+use crate::pbft_period_cleanup::{
+    PbftPeriodStateCleanupStatus, cleanup_period_state_with_commit_and_publish,
+};
 use crate::pbft_readiness::PbftServiceReadiness;
 use crate::pbft_vote_runtime::PbftVerifiedVotesService;
 use crate::pillar_chain_service::PillarChainService;
 use crate::proposed_blocks::ProposedBlocksService;
 use crate::slashing::SlashingProofService;
 use anyhow::{Context, Result};
-use rustaxa_storage::Storage;
+use rustaxa_storage::{Storage, StorageWriteBatch};
 use std::sync::Arc;
 
 const SLASHING_PROOF_CACHE_MAX_SIZE: usize = 1000;
@@ -141,7 +145,8 @@ impl PbftService {
     /// removals. Valid no-op transitions are published with zero counts.
     /// Validation or storage failures return a typed rejected result without
     /// memory publication; lock poison remains an operational error.
-    pub fn cleanup_period_state(
+    #[cfg(test)]
+    pub(crate) fn cleanup_period_state(
         &self,
         finalized_chain_size: u64,
         new_period: u64,
@@ -157,6 +162,74 @@ impl PbftService {
                     .context("PBFT_PERIOD_STATE_CLEANUP_COMMIT")
             },
         )
+    }
+
+    /// Commits one externally executed PBFT period advance under native ownership.
+    ///
+    /// The manager reset provenance is validated before cleanup. Rust then
+    /// acquires verified-vote and proposed-block siblings in the canonical
+    /// manager-first order, commits durable cleanup before live cleanup
+    /// publication, and publishes the new manager period only after cleanup
+    /// succeeds. Invalid or duplicate period reports return the unchanged
+    /// rejected manager snapshot; storage and cleanup failures return an error
+    /// while preserving reset provenance so the operation can be retried.
+    pub fn apply_period_advance(
+        &self,
+        new_period: u64,
+    ) -> Result<crate::pbft_manager::PbftManagerRuntimeSnapshot> {
+        self.apply_period_advance_with_commit(new_period, |storage, batch| {
+            storage
+                .commit_write_batch_with_sync(batch, false)
+                .context("PBFT_PERIOD_ADVANCE_CLEANUP_COMMIT")
+        })
+    }
+
+    /// Applies one period advance with an injected durable cleanup commit.
+    ///
+    /// This is the single native implementation behind the production commit
+    /// boundary. The injected operation is used by tests to prove that a
+    /// durable-write failure leaves manager reset provenance and both cleanup
+    /// siblings unchanged, allowing the same transition to be retried.
+    pub(crate) fn apply_period_advance_with_commit<F>(
+        &self,
+        new_period: u64,
+        commit: F,
+    ) -> Result<crate::pbft_manager::PbftManagerRuntimeSnapshot>
+    where
+        F: FnOnce(&Storage, StorageWriteBatch) -> Result<()>,
+    {
+        let Some(finalized_chain_size) = new_period.checked_sub(1) else {
+            return Ok(self
+                .manager
+                .lock()
+                .state
+                .apply_committed_period_advance(new_period));
+        };
+        let mut manager = self.manager.lock();
+        let plan = manager
+            .state
+            .plan_advance_period_after_reset(finalized_chain_size);
+        if !plan.accepted || plan.new_period != new_period {
+            return Ok(manager.state.apply_committed_period_advance(new_period));
+        }
+
+        let mut snapshot = None;
+        let cleanup = cleanup_period_state_with_commit_and_publish(
+            self.verified_votes(),
+            self.proposed_blocks(),
+            finalized_chain_size,
+            new_period,
+            commit,
+            || {
+                snapshot = Some(manager.state.apply_committed_period_advance(new_period));
+            },
+        )?;
+        if cleanup.status == PbftPeriodStateCleanupStatus::Rejected || !cleanup.transition_published
+        {
+            return Err(anyhow::Error::msg(cleanup.error_code));
+        }
+
+        snapshot.context("PBFT_PERIOD_ADVANCE_PUBLICATION_MISSING")
     }
 
     /// Starts or resumes one PBFT finalization executor under native ownership.

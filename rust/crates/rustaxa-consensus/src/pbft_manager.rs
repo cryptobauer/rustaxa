@@ -5691,8 +5691,6 @@ pub enum PbftManagerAdvancePeriodAction {
     ResetPeriodTimer,
     /// Update wallet eligibility after reset/wait-for-finalization.
     UpdateWalletEligibility,
-    /// Atomically clean verified votes and proposed blocks for period advance.
-    CleanupPeriodState,
 }
 
 impl PbftManagerAdvancePeriodAction {
@@ -5705,7 +5703,6 @@ impl PbftManagerAdvancePeriodAction {
             Self::ResetRewardVoteCounters => 4,
             Self::ResetPeriodTimer => 5,
             Self::UpdateWalletEligibility => 6,
-            Self::CleanupPeriodState => 7,
         }
     }
 
@@ -5718,7 +5715,6 @@ impl PbftManagerAdvancePeriodAction {
             4 => Some(Self::ResetRewardVoteCounters),
             5 => Some(Self::ResetPeriodTimer),
             6 => Some(Self::UpdateWalletEligibility),
-            7 => Some(Self::CleanupPeriodState),
             _ => None,
         }
     }
@@ -6671,10 +6667,10 @@ pub fn plan_pbft_manager_startup_replay_ranges(
 
 /// Plans the ordered effects for advancing the PBFT manager period.
 ///
-/// C++ remains the executor for timers, wallet eligibility, vote/proposed-block
-/// sidecars, and logging. Rust owns the action order and period arithmetic so
-/// callers cannot advance period cleanup in a different order from the runtime
-/// contract.
+/// C++ remains the executor for timers, counters, wallet eligibility, and
+/// logging. Rust owns the action order and period arithmetic; after those
+/// external effects are reported, the application service atomically commits
+/// vote/proposed-block cleanup and publishes the manager period.
 pub fn plan_pbft_manager_advance_period_after_reset(
     pbft_chain_size: u64,
     reset_executed_block_follow_up: bool,
@@ -6703,7 +6699,6 @@ pub fn plan_pbft_manager_advance_period_after_reset(
     actions.push(PbftManagerAdvancePeriodAction::ResetRewardVoteCounters);
     actions.push(PbftManagerAdvancePeriodAction::ResetPeriodTimer);
     actions.push(PbftManagerAdvancePeriodAction::UpdateWalletEligibility);
-    actions.push(PbftManagerAdvancePeriodAction::CleanupPeriodState);
 
     let Some(new_period) = pbft_chain_size.checked_add(1) else {
         return rejected_advance_period_plan("PBFT_MANAGER_ADVANCE_PERIOD_OVERFLOW");
@@ -12055,7 +12050,6 @@ mod tests {
                 PbftManagerAdvancePeriodAction::ResetRewardVoteCounters,
                 PbftManagerAdvancePeriodAction::ResetPeriodTimer,
                 PbftManagerAdvancePeriodAction::UpdateWalletEligibility,
-                PbftManagerAdvancePeriodAction::CleanupPeriodState,
             ]
         );
 
@@ -12150,7 +12144,7 @@ mod tests {
             &plan,
             PbftManagerAdvancePeriodActionReport {
                 action_index: plan.actions.len() as u64,
-                action: PbftManagerAdvancePeriodAction::CleanupPeriodState.as_u8(),
+                action: PbftManagerAdvancePeriodAction::UpdateWalletEligibility.as_u8(),
                 succeeded: true,
             },
         );
@@ -12159,7 +12153,7 @@ mod tests {
             PbftManagerAdvancePeriodActionReportStatus::ActionIndexOutOfRange
         );
 
-        assert!(PbftManagerAdvancePeriodAction::from_u8(8).is_none());
+        assert!(PbftManagerAdvancePeriodAction::from_u8(7).is_none());
         let removed_action = validate_pbft_manager_advance_period_action_report(
             &plan,
             PbftManagerAdvancePeriodActionReport {

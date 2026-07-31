@@ -875,7 +875,9 @@ carrier test remains around the unchanged CXX result and entrypoint used by the
 temporary C++ advance-period executor. The checked bridge budget falls by 294
 lines to 33,829; CXX functions, carriers, handles, shim lines and directories,
 granular flags, partial factories, compatibility constructors, production C++
-consumers, and public signatures are unchanged.
+consumers, and public signatures are unchanged. This was the intermediate
+boundary at that slice; the later period-commit contraction documented below
+deletes that remaining cleanup carrier and entrypoint.
 
 The following bounded `CRW-12` PBFT ownership contraction moves the complete
 leader-selection prepare/revalidate/finish workflow from `rustaxa-bridge` onto
@@ -1246,6 +1248,24 @@ carrier, persistence, bootstrap, and external-executor boundary sentinels. This
 deletes a net 30 bridge lines and lowers the checked budget to 29,758. CXX
 functions, carriers, handles, shim lines/directories, granular flags, partial
 factories, compatibility constructors, and production consumers are unchanged.
+
+The next `CRW-12` period-commit contraction removes cleanup from the C++
+advance-period action script. After C++ executes the retained timer,
+wallet-eligibility, vote-manager, and counter leaves, one fallible native
+`PbftService` commit validates reset provenance and holds manager,
+verified-vote, and proposed-block guards through durable proposal deletion,
+live sibling cleanup, and infallible manager-period publication. Cleanup
+failure preserves all live owners plus retryable reset provenance; duplicate
+and mismatched reports retain the existing rejected-snapshot contract. The
+standalone production cleanup API/result exports, action code 7, CXX carrier
+and function, bridge module/conversion test, and shim executor/count-validation
+branch are deleted. Native cleanup/retry/no-op tests and the 56-test CXX bridge
+suite cover success and duplicate-rejection across the replacement route.
+Checked budgets fall by 108 bridge lines, 31 shim lines, one CXX function, and
+one carrier to 29,650, 17,101, 389, and 340. Handles, shim directories,
+granular flags, partial factories,
+compatibility constructors, and production consumers remain at 20, 11, eight,
+zero, zero, and 39. No upstream-owned C++ files change.
 
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
@@ -2404,12 +2424,16 @@ non-persisted Rust batch lookup. `DbStorage` save/snapshot compatibility uses st
 second process-local index exists. `VerifiedVotes` likewise owns no runtime, storage handle, or mutex; Network still
 reaches vote state through the stable `VoteManager` facade.
 
-The final combined-operation debt is closed. Period advance now emits one `CleanupPeriodState` action and calls one
-service operation with `finalized_chain_size` and its exact successor. The operation locks verified votes before proposed
-blocks, plans both removals without mutation, commits all proposed-block deletes in one Rust batch, and only then prunes
-both in-memory owners. Rejected validation or storage commit leaves both owners unchanged; empty cleanup publishes a
-typed storage-free no-op. The former manager-only VoteManager cleanup wrapper and second planner action are deleted,
-while individual cleanup APIs remain classified compatibility/test routes.
+The final combined-operation debt is closed. Period advance now emits only the
+remaining external timer, wallet, vote-manager, and counter effects. Its native
+commit validates reset provenance, then holds manager, verified-vote, and
+proposed-block guards while it commits all proposal deletes, publishes both
+sibling cleanups, and finally publishes the manager period through an
+infallible callback before releasing any guard. Rejected validation or storage
+commit leaves all three owners unchanged and retryable; empty cleanup still
+publishes the manager period in the same lock epoch. The standalone production
+cleanup API, CXX cleanup action/result/export, bridge module, shim executor
+branch, and former manager-only VoteManager cleanup wrapper are deleted.
 
 #### Aggressive-cutover boundary work
 
@@ -2443,7 +2467,7 @@ and pure-C++ builds still select the untouched original implementation.
 | DAG proposer | `dag/dag_block_proposer.hpp`, `dag/dag_block_proposer.cpp`, `dag_block_proposer_shim/*` | 576 lines | `partial` | Standalone C++ executor facade with Rust proposer session | The Rust-mode overlay is a self-contained facade: feature-on builds exclude the untouched original source and contain no `DagBlockProposerOld` scaffold, while pure-C++ builds retain the original implementation. C++ still owns thread/network lifecycle, temporary signing, live add-block execution, and live network throttle checks. Transaction packing enters the native owner-bound `TransactionPackingService`, and Rust owns proposer eligibility status decisions, atomic DAG observation/revalidation, legacy VRF input bytes, historical sortition selection, deterministic tip-selection policy, production proposal timestamps, canonical signed block RLP finalization, the legacy `selectDagBlockTips` compatibility surface through storage-backed Rust runtime planning, and the ordered `proposeDagBlock` session for skip reasons, transaction-pack command selection, transaction-pack throttle reporting, runtime-derived VDF wait/cancel and stale-proof decisions, add-block completion outcome, missing VDF input status, and retry-cursor updates. C++ no longer independently reads DAG or sortition storage or echoes those facts back to Rust; it collects only requested external FinalChain facts, then consumes Rust-selected parameters solely as an asynchronous VDF executor instruction. The proposer hands signed block RLP plus transaction payloads to `DagManager` instead of materializing `DagBlock`/`Transaction` objects locally. Remaining proposer gaps are explicit executor boundaries: temporary C++ signing, live add-block side effect execution, and worker/network lifecycle ownership. |
 | Sortition params | `dag/sortition_params_manager.hpp`, `dag/sortition_params_manager.cpp` | 331 lines | `rust-owned` | Native `SortitionService` inside the DAG/transaction root; no Rust-mode C++ manager facade | Deterministic efficiency/threshold runtime state and persistence route to `rustaxa-consensus::sortition` and native `rustaxa-storage` in master Rust mode. `SortitionService` restores the manager before publication and owns its mutex and poison policy; the full application root requires this capability structurally. PBFT finalization uses a two-phase contract: preview the Rust threshold transition without publishing live state, persist any emitted `SortitionParamsChange` inside the primary Rust-owned finalization batch, then commit the live Rust runtime only after storage succeeds and validate the emitted change matches the preview. The standalone Rust handle/factories, facade-owned box, optional bridge field, unavailable branches, capability probe, C++ facade/shim, direct CXX operations, and facade-only tests are deleted. The storage overlay retains only the canonical `SortitionParamsChange` RLP codec required by the stable storage API. The untouched legacy class and `sortition_test` are pure-C++-reference-only. |
 | PBFT chain | `pbft/pbft_chain.hpp`, `pbft/pbft_chain.cpp`, `pbft_chain_shim/*` | 259 lines | `rust-owned` application state; C++ facade retained | Native `rustaxa-consensus::pbft_chain::PbftChainService` behind a C++ compatibility view | The CXX-free native owner holds startup restore/default initialization, storage lifetime, the sibling `RwLock`, head projection/update, block lookup, and next-block validation. Native `PbftService` embeds that owner; production `App` and Rust-mode tests share the full service through the thin CXX adapter between manager and chain facades. The chain-only constructor/factory are deleted. Cross-domain finalization and leader selection temporarily borrow native guards until the complete PBFT owner moves. C++ retains JsonCpp formatting and temporary `PbftBlock` materialization. Feature-on builds import or compile no `PbftChainOld`; pure-C++ builds retain the untouched original implementation. |
-| Proposed blocks | `pbft/proposed_blocks.hpp`, `pbft/proposed_blocks.cpp` | 178 legacy lines | `rust-owned` application state; no Rust-mode C++ facade | Native `rustaxa-consensus::proposed_blocks::ProposedBlocksService` with PBFT-manager boundary materialization | The CXX-free native owner holds restore, membership, compact pivot metadata, validation flags, canonical RLP payloads, storage-first publication, atomic stale-period cleanup, storage lifetime, and the sibling `RwLock`; native behavioral tests cover those contracts. Native `PbftService` embeds the owner, and the PBFT manager bridge adapter calls publication, lookup, mark-valid, snapshot, and combined vote/proposal cleanup operations directly before materializing `PbftBlock` only at validation/network boundaries. The standalone bridge handle/factory, C++ facade/mutex/shim, facade-only operations/carriers/tests, and combined-cleanup behavioral relay are deleted; a thin cleanup-result conversion remains for the temporary C++ advance-period executor. `DbStorage` compatibility uses stateless storage functions; tentative wallet candidates use an isolated Rust-local batch lookup. The untouched original class remains pure-C++-reference-only. |
+| Proposed blocks | `pbft/proposed_blocks.hpp`, `pbft/proposed_blocks.cpp` | 178 legacy lines | `rust-owned` application state; no Rust-mode C++ facade | Native `rustaxa-consensus::proposed_blocks::ProposedBlocksService` with PBFT-manager boundary materialization | The CXX-free native owner holds restore, membership, compact pivot metadata, validation flags, canonical RLP payloads, storage-first publication, atomic stale-period cleanup, storage lifetime, and the sibling `RwLock`; native behavioral tests cover those contracts. Native `PbftService` embeds the owner, and the PBFT manager bridge adapter calls publication, lookup, mark-valid, and snapshot operations directly before materializing `PbftBlock` only at validation/network boundaries. Period advance performs combined vote/proposal cleanup and manager-period publication inside the native service, so no cleanup result crosses CXX. The standalone bridge handle/factory, C++ facade/mutex/shim, facade-only operations/carriers/tests, and combined-cleanup behavioral relay are deleted. `DbStorage` compatibility uses stateless storage functions; tentative wallet candidates use an isolated Rust-local batch lookup. The untouched original class remains pure-C++-reference-only. |
 | Period data queue | `pbft/period_data_queue.hpp`, `pbft/period_data_queue.cpp`, PBFT service queue API | 168 lines | `rust-backed` | Rust metadata owned by the PBFT application service | Admission rules, queued block-link/reward/pillar/cert-vote metadata, transaction metadata and payloads, previous-cert metadata, processable-size/period tracking, pop decisions, cleanup planning, and clear semantics route through `BridgePbftService`. The standalone queue CXX handle, shim overlay, and module flag are retired. C++ keeps live `PeriodData`, compatibility vote/transaction materialization at external boundaries, pillar-vote sidecars, and peer `NodeID` ownership. |
 | PBFT manager | `pbft/pbft_manager.hpp`, `pbft/pbft_manager.cpp`, `pbft_manager_shim/*` | 3267 lines | `partial` | Native PBFT application service plus C++ lifecycle/executor facade | Rust-enabled builds exclude the untouched upstream manager source and expose only the shim-owned `PbftManager` facade. Native `PbftService` and its sibling services own manager scalar state, daemon/action/session cursors, period-data metadata, sync admission, proposal planning, block validation, transition persistence, PBFT chain lifetime/state, proposed-block state, and verified-vote state; `BridgePbftService` is a one-field CXX adapter. Production construction validates slashing configuration, restores every storage-backed sibling before publication, and remains bootstrap-gated until C++ replay/restart work completes. Authoritative leader selection uses a service-owned vote/proposed/chain snapshot plus fingerprint revalidation around the external C++ block validator; no separate proposal-vote snapshot, per-vote proposed lookup, or C++ chain callback remains. Vote admission commits any required progress batch under the vote lock before publishing the transition and restores a bounded checkpoint on failure. Period advance cleans vote and proposed-block state through one storage-first service action. Finalization drains and validates the chain mutation internally; C++ executes only the remaining typed external effects for FinalChain/EVM, DAG, network, timers, signing, events, and compatibility materialization. |
 

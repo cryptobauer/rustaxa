@@ -141,10 +141,6 @@ constexpr uint8_t kPbftManagerAdvancePeriodActionResetRewardVoteCounters = 4;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetPeriodTimer = 5;
 
 constexpr uint8_t kPbftManagerAdvancePeriodActionUpdateWalletEligibility = 6;
-constexpr uint8_t kPbftManagerAdvancePeriodActionCleanupPeriodState = 7;
-constexpr uint8_t kPbftPeriodStateCleanupStatusNotRequired = 0;
-constexpr uint8_t kPbftPeriodStateCleanupStatusApplied = 1;
-constexpr uint8_t kPbftPeriodStateCleanupStatusRejected = 2;
 constexpr uint8_t kPbftManagerTransitionResetConsensus = 0;
 constexpr uint8_t kPbftManagerTransitionToFilter = 1;
 constexpr uint8_t kPbftManagerTransitionToCertify = 2;
@@ -1507,41 +1503,6 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(
       case kPbftManagerAdvancePeriodActionUpdateWalletEligibility:
         eligible_wallets_.updateWalletsEligibility(advance_plan.finalized_chain_size, pbft_service_, final_chain_);
         break;
-      case kPbftManagerAdvancePeriodActionCleanupPeriodState: {
-        // The service atomically cleans verified-vote and proposed-block state after previous-period reward votes are
-        // no longer needed.
-        const auto cleanup = rustaxa::pbft_service_cleanup_period_state(
-            pbft_service_->service(), advance_plan.finalized_chain_size, advance_plan.new_period);
-        const auto typed_success = cleanup.status == kPbftPeriodStateCleanupStatusApplied ||
-                                   cleanup.status == kPbftPeriodStateCleanupStatusNotRequired;
-        const auto no_op_counts_valid =
-            cleanup.status != kPbftPeriodStateCleanupStatusNotRequired ||
-            (cleanup.verified_vote_periods_removed == 0 && cleanup.verified_votes_removed == 0 &&
-             cleanup.vote_payloads_removed == 0 && cleanup.proposed_block_periods_removed == 0 &&
-             cleanup.proposed_blocks_removed == 0 && !cleanup.persistence_required &&
-             cleanup.persistence_applied_deletes == 0);
-        const auto persistence_counts_valid =
-            cleanup.status != kPbftPeriodStateCleanupStatusApplied ||
-            (cleanup.persistence_required
-                 ? cleanup.proposed_blocks_removed != 0 &&
-                       cleanup.persistence_applied_deletes == cleanup.proposed_blocks_removed
-                 : cleanup.proposed_blocks_removed == 0 && cleanup.persistence_applied_deletes == 0);
-        if (cleanup.status == kPbftPeriodStateCleanupStatusRejected || !typed_success ||
-            !cleanup.transition_published || !no_op_counts_valid || !persistence_counts_valid ||
-            cleanup.finalized_chain_size != advance_plan.finalized_chain_size ||
-            cleanup.new_period != advance_plan.new_period) {
-          LOG(log_er_) << "Rust PBFT period-state cleanup rejected chain size " << advance_plan.finalized_chain_size
-                       << ", new period " << advance_plan.new_period << ", status "
-                       << static_cast<uint32_t>(cleanup.status) << ", published " << cleanup.transition_published
-                       << ", returned chain size " << cleanup.finalized_chain_size << ", returned new period "
-                       << cleanup.new_period << ", proposed blocks removed " << cleanup.proposed_blocks_removed
-                       << ", persistence required " << cleanup.persistence_required << ", applied deletes "
-                       << cleanup.persistence_applied_deletes << ", error "
-                       << static_cast<std::string>(cleanup.error_code);
-          return false;
-        }
-        break;
-      }
       default:
         LOG(log_er_) << "Rust PBFT manager advance-period planner returned unknown action "
                      << static_cast<uint32_t>(action);
@@ -1562,14 +1523,21 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(
     ++action_index;
   }
 
-  const auto period_snapshot =
-      rustaxa::pbft_manager_runtime_apply_period_advance(pbft_service_->service(), advance_plan.new_period);
-  if (period_snapshot.status != kPbftManagerStartupRestoreStatusReady) {
-    LOG(log_er_) << "Rust PBFT manager period-advance runtime rejected new period " << advance_plan.new_period
-                 << ", error " << static_cast<std::string>(period_snapshot.error_code);
+  std::optional<rustaxa::PbftManagerRuntimeSnapshot> period_snapshot;
+  try {
+    period_snapshot =
+        rustaxa::pbft_manager_runtime_apply_period_advance(pbft_service_->service(), advance_plan.new_period);
+  } catch (const std::exception &e) {
+    LOG(log_er_) << "Rust PBFT manager period-advance commit failed for new period " << advance_plan.new_period
+                 << ", error " << e.what();
     return false;
   }
-  applyPbftManagerRuntimeSnapshot(period_snapshot, round_, step_, state_, current_round_lambda_, next_step_time_ms_,
+  if (period_snapshot->status != kPbftManagerStartupRestoreStatusReady) {
+    LOG(log_er_) << "Rust PBFT manager period-advance runtime rejected new period " << advance_plan.new_period
+                 << ", error " << static_cast<std::string>(period_snapshot->error_code);
+    return false;
+  }
+  applyPbftManagerRuntimeSnapshot(*period_snapshot, round_, step_, state_, current_round_lambda_, next_step_time_ms_,
                                   rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_,
                                   already_next_voted_value_, already_next_voted_null_block_hash_,
                                   broadcast_votes_counter_, rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
