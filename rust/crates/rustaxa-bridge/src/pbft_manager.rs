@@ -3358,37 +3358,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_runtime_rejects_missing_cacti_lambda_without_mutation() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_startup_reject");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(1, 1)
-                .expect("step seed should persist");
-
-            let error = match create_pbft_manager_runtime_from_storage(&storage, startup_fact()) {
-                Ok(_) => panic!("missing cacti lambda should reject startup"),
-                Err(error) => error,
-            };
-            assert!(error
-                .to_string()
-                .contains("PBFT_MANAGER_STARTUP_MISSING_DYNAMIC_LAMBDA"));
-            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(1).unwrap(), 1);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
     fn bridge_runtime_applies_transition_storage_before_cursor_update() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_transition_apply");
         {

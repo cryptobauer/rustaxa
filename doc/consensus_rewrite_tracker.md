@@ -1307,6 +1307,14 @@ Focused native and bridge rejection tests, the fast gate, and the unchanged
 56-test CXX suite cover the slice. Tier 3 is not required because production
 routing and C++ code are unchanged.
 
+The final bounded `CRW-12` test-ownership contraction in this work window moves
+missing-Cacti-lambda startup rejection and storage non-mutation coverage from
+the bridge into the native manager restore tests. No CXX conversion is involved
+in this test-only helper path. This removes 31 bridge lines and lowers the
+checked budget to 29,373; all other inventory metrics remain unchanged.
+Focused native restore and remaining 20 bridge-manager tests pass. Tier 3 is
+not required because production routing and C++ code are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

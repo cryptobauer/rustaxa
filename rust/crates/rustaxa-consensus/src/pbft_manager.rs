@@ -12438,6 +12438,43 @@ mod tests {
     }
 
     #[test]
+    fn storage_startup_restore_rejects_missing_cacti_lambda_without_mutation() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_missing_cacti_lambda");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            storage
+                .pbft()
+                .write_manager_field(PBFT_MGR_FIELD_ROUND, 1)
+                .expect("round seed should persist");
+            storage
+                .pbft()
+                .write_manager_field(PBFT_MGR_FIELD_STEP, 1)
+                .expect("step seed should persist");
+            let mut fact = storage_startup_fact();
+            fact.cacti_active_at_chain_size = true;
+
+            let error = create_pbft_manager_runtime_from_storage(&storage, fact)
+                .expect_err("missing Cacti lambda should reject startup");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("PBFT_MANAGER_STARTUP_MISSING_DYNAMIC_LAMBDA")
+            );
+            assert_eq!(
+                storage
+                    .pbft()
+                    .manager_field(PBFT_MGR_FIELD_STEP)
+                    .expect("step should load"),
+                Some(1),
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn transition_storage_apply_commits_manager_status_and_own_vote_cleanup() {
         let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_transition_storage");
         {
