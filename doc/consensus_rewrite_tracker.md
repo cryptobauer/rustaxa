@@ -1284,6 +1284,19 @@ persistence tests, the compact bridge adapter test, and all 56
 `rust_consensus_tests`. Tier 3 is not required because production routing,
 C++ code, startup, and externally observable behavior are unchanged.
 
+The next bounded `CRW-12` test-ownership contraction deletes the bridge-local
+broadcast-counter and cached-anchor DAG-order metadata behavior fixtures.
+Native manager tests already cover counter validation/non-mutation/reset and
+complete anchor record/query/remove/clear membership semantics. The live CXX
+wrappers remain direct scalar/hash projections exercised by production C++
+compilation; they own no conversion, lifetime, or error policy requiring a
+parallel RocksDB fixture. This removes 139 bridge lines and lowers the checked
+budget to 29,428. All other inventory metrics and 39 production consumers are
+unchanged; no production caller or upstream-owned C++ file changes. Tier 1 is
+the fast gate; Tier 2 is the two focused native tests, the remaining 22 PBFT
+bridge tests, and all 56 `rust_consensus_tests`. Tier 3 is not required because
+production routing and C++ code are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

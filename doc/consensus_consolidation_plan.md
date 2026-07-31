@@ -293,6 +293,10 @@ own commit-before-publication, accepted-field, and rejection behavior; the
 bridge retains one combined lifecycle-transition storage sentinel plus one
 compact adapter status/error-mapping test instead of three parallel protocol
 tests.
+Broadcast-counter mutation and cached-anchor membership are likewise tested
+only beside the native manager runtime. Their bridge RocksDB fixtures are
+deleted because the live CXX wrappers are direct scalar/hash projections with
+no conversion or error-lifetime policy of their own.
 PBFT period-state cleanup is no longer a separate C++ executor action.
 `PbftService` validates committed-reset provenance and owns the final
 cleanup-plus-period commit under manager, verified-vote, and proposed-block
