@@ -1315,6 +1315,14 @@ checked budget to 29,373; all other inventory metrics remain unchanged.
 Focused native restore and remaining 20 bridge-manager tests pass. Tier 3 is
 not required because production routing and C++ code are unchanged.
 
+The last time-boxed `CRW-12` test contraction deletes the standalone bridge
+own-vote reset fixture. Native transition-storage coverage owns exact deletion
+semantics, and the retained combined bridge lifecycle/storage sentinel already
+proves the production wrapper clears durable own votes. This removes 22 bridge
+lines and lowers the checked budget to 29,351; all other inventory metrics
+remain unchanged. The focused native transition test and remaining 19 bridge
+manager tests cover the slice; no production or C++ code changes.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

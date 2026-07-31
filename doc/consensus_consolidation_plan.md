@@ -304,6 +304,10 @@ request conversion.
 Missing Cacti dynamic-lambda startup rejection and storage non-mutation
 coverage now live with the native manager restore function rather than in a
 bridge-owned RocksDB fixture.
+The standalone bridge own-vote reset fixture is also deleted: native transition
+storage tests own exact deletion behavior, while the retained combined bridge
+lifecycle/storage sentinel already proves the live wrapper clears durable own
+votes.
 PBFT period-state cleanup is no longer a separate C++ executor action.
 `PbftService` validates committed-reset provenance and owns the final
 cleanup-plus-period commit under manager, verified-vote, and proposed-block

@@ -3303,28 +3303,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_runtime_reset_clears_native_own_votes_without_sidecar_command() {
-        let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_clear_own_votes");
-        native_service_storage(&runtime)
-            .pbft()
-            .write_own_verified_vote(H256::from_low_u64_be(71), &[0xC1])
-            .unwrap();
-
-        let result = pbft_manager_runtime_execute_lifecycle_transition(
-            &mut runtime,
-            lifecycle_transition_request(TRANSITION_RESET),
-        )
-        .unwrap();
-
-        assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
-        assert!(native_service_storage(&runtime)
-            .pbft()
-            .own_verified_vote_hashes()
-            .unwrap()
-            .is_empty());
-    }
-
-    #[test]
     fn bridge_runtime_advance_requires_matching_committed_reset() {
         let mut runtime = runtime_for_startup("rustaxa_bridge_runtime_advance_provenance");
         let before = runtime.manager_state().state.snapshot();
