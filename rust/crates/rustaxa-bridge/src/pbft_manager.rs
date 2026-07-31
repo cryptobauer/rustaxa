@@ -411,7 +411,6 @@ const TRANSITION_STORAGE_STATUS_APPLIED: u8 = 0;
 const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
 #[cfg(test)]
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
-
 /// Rust-only startup facts for tests that exercise manager restore independently
 /// from the production service's chain-derived bootstrap contract.
 #[cfg(test)]
@@ -3479,145 +3478,63 @@ mod tests {
     }
 
     #[test]
-    fn bridge_runtime_persists_executed_block_reset_before_snapshot_update() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_executed_reset");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
+    fn bridge_manager_persistence_adapters_map_status_and_errors() {
+        let mut runtime = runtime_for_startup("rustaxa_bridge_manager_persistence_adapters");
+
+        let reset = pbft_manager_runtime_apply_executed_block_reset(&mut runtime)
+            .expect("executed-block reset should map");
+        assert_eq!(reset.status, TRANSITION_STORAGE_STATUS_APPLIED);
+        assert!(!reset.snapshot.executed_pbft_block);
+        assert_eq!(
+            native_service_storage(&runtime)
                 .pbft()
-                .write_manager_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .0
+                .manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                .unwrap(),
+            Some(false)
+        );
+
+        let next_voted = pbft_manager_runtime_apply_next_voted_status(&mut runtime, 2)
+            .expect("next-voted status should map");
+        assert!(next_voted.already_next_voted_value);
+        assert!(!next_voted.already_next_voted_null);
+        assert_eq!(
+            native_service_storage(&runtime)
                 .pbft()
-                .write_manager_field(1, 1)
-                .expect("step seed should persist");
-            storage
-                .0
+                .manager_status(2)
+                .unwrap(),
+            Some(true)
+        );
+        let next_voted_error = match pbft_manager_runtime_apply_next_voted_status(
+            &mut runtime,
+            PBFT_MGR_STATUS_EXECUTED_BLOCK,
+        ) {
+            Ok(_) => panic!("unsupported next-voted status should reject"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            next_voted_error.to_string(),
+            "PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED"
+        );
+
+        let before_cursor = pbft_manager_runtime_snapshot(&runtime);
+        let cursor = pbft_manager_runtime_apply_cursor_field(&mut runtime, 0, 8)
+            .expect("round cursor should map");
+        assert_eq!(cursor.round, 8);
+        assert_eq!(cursor.step, before_cursor.step);
+        assert_eq!(
+            native_service_storage(&runtime)
                 .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK, true)
-                .expect("executed status should persist");
-
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-            assert!(pbft_manager_runtime_snapshot(&runtime).executed_pbft_block);
-            assert!(pbft_queries(&storage)
-                .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
-                .expect("status should load"));
-
-            let result = pbft_manager_runtime_apply_executed_block_reset(&mut runtime)
-                .expect("executed-block reset should not throw");
-
-            assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
-            assert_eq!(result.applied_writes, 1);
-            assert!(!result.snapshot.executed_pbft_block);
-            assert!(!pbft_manager_runtime_snapshot(&runtime).executed_pbft_block);
-            assert!(!pbft_queries(&storage)
-                .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
-                .expect("status should load"));
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_persists_next_voted_status_through_consensus_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_next_voted_status");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-
-            let soft_snapshot = pbft_manager_runtime_apply_next_voted_status(&mut runtime, 2)
-                .expect("soft next-voted status should persist");
-            let null_snapshot = pbft_manager_runtime_apply_next_voted_status(&mut runtime, 3)
-                .expect("null next-voted status should persist");
-            let err = match pbft_manager_runtime_apply_next_voted_status(
-                &mut runtime,
-                PBFT_MGR_STATUS_EXECUTED_BLOCK,
-            ) {
-                Ok(_) => panic!("generic manager status should reject"),
-                Err(err) => err,
-            };
-
-            assert!(soft_snapshot.already_next_voted_value);
-            assert!(!soft_snapshot.already_next_voted_null);
-            assert!(null_snapshot.already_next_voted_value);
-            assert!(null_snapshot.already_next_voted_null);
-            let snapshot = pbft_manager_runtime_snapshot(&runtime);
-            assert!(snapshot.already_next_voted_value);
-            assert!(snapshot.already_next_voted_null);
-            assert!(pbft_queries(&storage).get_pbft_mgr_status(2).unwrap());
-            assert!(pbft_queries(&storage).get_pbft_mgr_status(3).unwrap());
-            assert_eq!(
-                err.to_string(),
-                "PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED"
-            );
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_persists_cursor_fields_through_consensus_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_cursor_fields");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(1, 1)
-                .expect("step seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-
-            let round_snapshot = pbft_manager_runtime_apply_cursor_field(&mut runtime, 0, 8)
-                .expect("round cursor should persist");
-            let step_snapshot = pbft_manager_runtime_apply_cursor_field(&mut runtime, 1, 6)
-                .expect("step cursor should persist");
-            let err = match pbft_manager_runtime_apply_cursor_field(&mut runtime, 2, 1) {
-                Ok(_) => panic!("dynamic lambda should not use cursor field API"),
-                Err(err) => err,
-            };
-
-            assert_eq!(round_snapshot.round, 8);
-            assert_eq!(step_snapshot.round, 8);
-            assert_eq!(step_snapshot.step, 6);
-            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(0).unwrap(), 8);
-            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(1).unwrap(), 6);
-            assert!(err
-                .to_string()
-                .contains("unsupported PBFT manager cursor field"));
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
+                .manager_field(0)
+                .unwrap(),
+            Some(8)
+        );
+        let cursor_error = match pbft_manager_runtime_apply_cursor_field(&mut runtime, 2, 1) {
+            Ok(_) => panic!("unsupported cursor field should reject"),
+            Err(error) => error,
+        };
+        assert!(cursor_error
+            .to_string()
+            .contains("unsupported PBFT manager cursor field"));
     }
 
     #[test]

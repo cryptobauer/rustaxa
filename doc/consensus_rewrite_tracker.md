@@ -1267,6 +1267,23 @@ granular flags, partial factories,
 compatibility constructors, and production consumers remain at 20, 11, eight,
 zero, zero, and 39. No upstream-owned C++ files change.
 
+The following bounded `CRW-12` test-ownership contraction removes three more
+PBFT manager persistence transcripts from `rustaxa-bridge`: executed-block
+reset, next-voted status, and round/step cursor fields. Native manager tests
+now own each storage-before-runtime-publication contract and its invalid-field
+or invalid-status rejection. The bridge retains the combined lifecycle
+transition storage sentinel, one compact adapter status/error-mapping test,
+and focused CXX projection/external-executor coverage. This deletes bridge
+behavior lines while preserving ABI evidence: the bridge budget falls by 83
+lines to 29,567. Shim lines, CXX functions, carriers, handles, shim directories,
+granular flags, partial factories, compatibility constructors, and production
+consumers remain at 17,101, 389, 340, 20, 11, eight, zero, zero, and 39. No
+production caller or upstream-owned C++ file changes.
+Tier 1 is `rewrite-validate-fast`; Tier 2 is the three focused native
+persistence tests, the compact bridge adapter test, and all 56
+`rust_consensus_tests`. Tier 3 is not required because production routing,
+C++ code, startup, and externally observable behavior are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

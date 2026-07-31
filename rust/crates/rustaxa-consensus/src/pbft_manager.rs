@@ -12570,14 +12570,22 @@ mod tests {
         {
             let storage =
                 Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let mut runtime =
+                create_pbft_manager_runtime_from_storage(&storage, storage_startup_fact())
+                    .expect("runtime should restore from Rust storage");
 
             apply_next_voted_status_storage(&storage, PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE)
                 .expect("soft next-voted status should persist");
+            runtime.apply_committed_next_voted_status(PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE);
             apply_next_voted_status_storage(&storage, PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH)
                 .expect("null next-voted status should persist");
+            runtime.apply_committed_next_voted_status(PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH);
             let err = apply_next_voted_status_storage(&storage, PBFT_MGR_STATUS_EXECUTED_BLOCK)
                 .expect_err("generic PBFT manager status should reject");
 
+            let snapshot = runtime.snapshot();
+            assert!(snapshot.already_next_voted_value);
+            assert!(snapshot.already_next_voted_null);
             assert_eq!(
                 storage
                     .pbft()
@@ -12595,6 +12603,38 @@ mod tests {
             assert_eq!(
                 err.to_string(),
                 "PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED"
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn executed_block_reset_persists_before_runtime_publication() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_executed_reset");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            storage
+                .pbft()
+                .write_manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK, true)
+                .expect("executed status should persist");
+            let mut runtime =
+                create_pbft_manager_runtime_from_storage(&storage, storage_startup_fact())
+                    .expect("runtime should restore from Rust storage");
+            assert!(runtime.snapshot().executed_pbft_block);
+
+            apply_executed_block_reset_storage(&storage)
+                .expect("executed-block reset should persist");
+            runtime.apply_committed_executed_block_reset();
+
+            assert!(!runtime.snapshot().executed_pbft_block);
+            assert_eq!(
+                storage
+                    .pbft()
+                    .manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                    .expect("executed status should load"),
+                Some(false),
             );
         }
 

@@ -287,6 +287,12 @@ The PBFT manager bridge suite likewise no longer repeats daemon ineligible
 sleep, proposal ordering/build, broadcast-counter, or deadline-wait behavior.
 Those rules remain covered by native manager tests; bridge coverage stays
 focused on CXX projection, persistence, and external-executor boundaries.
+Executed-block reset, next-voted status, and manager cursor-field persistence
+transcripts now follow the same ownership rule. Native storage/runtime tests
+own commit-before-publication, accepted-field, and rejection behavior; the
+bridge retains one combined lifecycle-transition storage sentinel plus one
+compact adapter status/error-mapping test instead of three parallel protocol
+tests.
 PBFT period-state cleanup is no longer a separate C++ executor action.
 `PbftService` validates committed-reset provenance and owns the final
 cleanup-plus-period commit under manager, verified-vote, and proposed-block
