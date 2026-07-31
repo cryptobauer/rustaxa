@@ -1297,6 +1297,16 @@ the fast gate; Tier 2 is the two focused native tests, the remaining 22 PBFT
 bridge tests, and all 56 `rust_consensus_tests`. Tier 3 is not required because
 production routing and C++ code are unchanged.
 
+The following `CRW-12` lifecycle-rejection contraction moves unneeded
+network-step presence validation into a native runtime test and replaces the
+bridge's separate RocksDB rejection fixtures with one compact unknown-kind
+and network-step projection/non-mutation sentinel. This removes 24 bridge
+lines and lowers the checked budget to 29,404; every other inventory metric
+remains unchanged.
+Focused native and bridge rejection tests, the fast gate, and the unchanged
+56-test CXX suite cover the slice. Tier 3 is not required because production
+routing and C++ code are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

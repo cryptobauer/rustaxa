@@ -12938,6 +12938,27 @@ mod tests {
     }
 
     #[test]
+    fn runtime_rejects_unneeded_network_step_without_mutation() {
+        let runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(1, 1)));
+        let before = runtime.snapshot();
+
+        let plan = runtime.plan_lifecycle_transition(PbftManagerLifecycleTransitionRequest {
+            kind: PbftManagerTransitionKind::ToFilter,
+            target_period: before.period,
+            target_round: before.round,
+            has_network_next_voting_step: true,
+            network_next_voting_step: 7,
+        });
+
+        assert_eq!(plan.status, PbftManagerTransitionStatus::InvalidFact);
+        assert_eq!(
+            plan.error_code,
+            "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH"
+        );
+        assert_eq!(runtime.snapshot(), before);
+    }
+
+    #[test]
     fn leader_selection_prefers_lowest_ranked_non_null_candidate() {
         let mut high_rank = leader_candidate(1, 1, PbftManagerLeaderCandidateStatus::Ready, 9);
         high_rank.weight = 2;

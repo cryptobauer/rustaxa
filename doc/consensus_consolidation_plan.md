@@ -297,6 +297,10 @@ Broadcast-counter mutation and cached-anchor membership are likewise tested
 only beside the native manager runtime. Their bridge RocksDB fixtures are
 deleted because the live CXX wrappers are direct scalar/hash projections with
 no conversion or error-lifetime policy of their own.
+Lifecycle network-step presence validation now lives beside the native manager
+cursor as well. The bridge retains only a compact unknown-kind rejection and
+network-step projection/snapshot-preservation sentinel for its transition
+request conversion.
 PBFT period-state cleanup is no longer a separate C++ executor action.
 `PbftService` validates committed-reset provenance and owns the final
 cleanup-plus-period commit under manager, verified-vote, and proposed-block

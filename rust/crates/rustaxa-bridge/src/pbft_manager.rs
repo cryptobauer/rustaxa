@@ -3358,23 +3358,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_runtime_rejects_unneeded_network_step_presence_without_mutation() {
-        let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_network_presence");
-        let before = runtime.manager_state().state.snapshot();
-        let mut request = lifecycle_transition_request(TRANSITION_FILTER);
-        request.has_network_next_voting_step = true;
-        request.network_next_voting_step = 7;
-        let result =
-            pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, request).unwrap();
-        assert_eq!(result.status, TRANSITION_STORAGE_STATUS_REJECTED);
-        assert_eq!(runtime.manager_state().state.snapshot(), before);
-        assert_eq!(
-            result.error_code,
-            "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH"
-        );
-    }
-
-    #[test]
     fn bridge_runtime_rejects_missing_cacti_lambda_without_mutation() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_startup_reject");
         {
@@ -4012,49 +3995,42 @@ mod tests {
     }
 
     #[test]
-    fn bridge_runtime_rejected_transition_preserves_snapshot() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_transition_reject");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(1, 1)
-                .expect("step seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
+    fn bridge_runtime_maps_unknown_transition_without_mutation() {
+        let mut runtime = runtime_for_startup("rustaxa_bridge_unknown_transition");
+        let before = pbft_manager_runtime_snapshot(&runtime);
+        let result = pbft_manager_runtime_execute_lifecycle_transition(
+            &mut runtime,
+            lifecycle_transition_request(255),
+        )
+        .expect("unknown transition should map to a rejection");
 
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-            let before = pbft_manager_runtime_snapshot(&runtime);
-            let result = pbft_manager_runtime_execute_lifecycle_transition(
-                &mut runtime,
-                lifecycle_transition_request(255),
-            )
-            .expect("runtime apply should return deterministic rejection");
+        assert_eq!(result.status, TRANSITION_STORAGE_STATUS_REJECTED);
+        assert_eq!(result.error_code, "PBFT_MANAGER_TRANSITION_UNKNOWN_KIND");
+        assert_eq!(result.snapshot.period, before.period);
+        assert_eq!(result.snapshot.round, before.round);
+        assert_eq!(result.snapshot.step, before.step);
+        assert_eq!(result.snapshot.state, before.state);
+        let current = pbft_manager_runtime_snapshot(&runtime);
+        assert_eq!(current.period, before.period);
+        assert_eq!(current.round, before.round);
+        assert_eq!(current.step, before.step);
+        assert_eq!(current.state, before.state);
 
-            assert_eq!(result.status, TRANSITION_STORAGE_STATUS_REJECTED);
-            assert_eq!(result.snapshot.round, before.round);
-            assert_eq!(result.snapshot.step, before.step);
-            assert_eq!(result.snapshot.state, before.state);
-            let current = pbft_manager_runtime_snapshot(&runtime);
-            assert_eq!(current.round, before.round);
-            assert_eq!(current.step, before.step);
-            assert_eq!(current.state, before.state);
-            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(0).unwrap(), 1);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
+        let mut network_step_request = lifecycle_transition_request(TRANSITION_FILTER);
+        network_step_request.has_network_next_voting_step = true;
+        network_step_request.network_next_voting_step = 7;
+        let network_step_result =
+            pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, network_step_request)
+                .expect("unexpected network step should map to a rejection");
+        assert_eq!(
+            network_step_result.error_code,
+            "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH"
+        );
+        let current = pbft_manager_runtime_snapshot(&runtime);
+        assert_eq!(current.period, before.period);
+        assert_eq!(current.round, before.round);
+        assert_eq!(current.step, before.step);
+        assert_eq!(current.state, before.state);
     }
 
     #[test]
