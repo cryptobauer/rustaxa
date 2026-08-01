@@ -1396,6 +1396,30 @@ bridge storage-projection sentinel, and the inventory/storage guards pass.
 Tier 2 is the complete 49-test Rust-enabled `rust_consensus_tests` suite; Tier
 3 is the Rust-enabled `taraxad` build. No upstream-owned C++ file changes.
 
+The next bounded `CRW-12` period-data queue ownership contraction moves all
+queue locking and lifecycle access behind native `PbftService`. Snapshot,
+push, pop, stale cleanup, and clear now accept or return native domain types;
+`rustaxa-bridge` only converts stable CXX payloads and no longer reaches
+`manager_state().period_data_queue`. Native queue tests retain sequencing,
+backfill, chain-advance clearing, tail visibility, certificate selection,
+cleanup, and empty-pop coverage, while a new application-root test proves the
+owned service lifecycle. The duplicate bridge RocksDB behavior transcript and
+its fixtures are replaced by one pure all-field input/output conversion
+sentinel. A duplicate happy-path lifecycle-transition transcript is also
+deleted; native transition tests and the retained bridge commit-before-cursor
+fixture own that behavior. This removes a net 155 production bridge lines and
+lowers the checked budget to 28,590; the pure carrier sentinel lives in test
+support outside the production bridge source inventory. CXX functions,
+carriers, handles, shim lines and
+directories, flags, factories, constructors, production consumers, C++
+signatures, live `PeriodData` sidecar ownership, and external behavior remain
+unchanged. Tier 1 `rewrite-validate-fast`, all seven native queue tests, the
+native application-root lifecycle test, the exhaustive bridge carrier
+sentinel, inventory/storage guards, and whitespace validation pass. Tier 2 is
+the complete 49-test Rust-enabled `rust_consensus_tests` suite. Tier 3 is the
+Rust-enabled `taraxad` build. Independent review approves the final ownership,
+parity, visibility, and coverage shape. No upstream-owned C++ file changes.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

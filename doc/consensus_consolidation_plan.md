@@ -321,6 +321,16 @@ storage/consensus suites also own DAG/PBFT existence, cert-voted recovery,
 own-pillar-vote, and startup-replay read behavior. Five parallel bridge RocksDB
 fixtures are replaced by one compact DAG/startup/dynamic-lambda carrier
 projection sentinel.
+Period-data queue locking and lifecycle operations now belong to native
+`PbftService`. Snapshot, push, pop, stale cleanup, and clear cross the bridge
+only as CXX payload conversion; the bridge cannot obtain or mutate the queue
+through the manager guard. Native queue and application-root tests own
+admission, certificate-source selection, cleanup, and lifecycle behavior, so
+the parallel bridge RocksDB transcript is replaced by one pure all-field
+carrier sentinel. The stable CXX API and live C++ sidecar materialization
+remain unchanged. The duplicate happy-path lifecycle transition bridge
+transcript is also deleted; native transition coverage and the retained
+commit-before-cursor bridge fixture own that behavior.
 Missing Cacti dynamic-lambda startup rejection and storage non-mutation
 coverage now live with the native manager restore function rather than in a
 bridge-owned RocksDB fixture.

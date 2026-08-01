@@ -84,6 +84,34 @@ pub struct PeriodDataQueueTransactionIdentity {
     pub sender: [u8; 20],
 }
 
+/// Complete native request for admitting one synced period-data payload.
+///
+/// `entry` carries the durable-domain payload facts, `max_pbft_size` is the
+/// current PBFT-chain size used by admission arithmetic, and
+/// `current_block_cert_vote_rlps` supplies the final-entry certificate source.
+/// The request is consumed exactly once; rejected admission does not mutate
+/// queue state, while arithmetic overflow is returned as an error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeriodDataQueuePushRequest {
+    pub entry: PeriodDataQueueEntryRef,
+    pub max_pbft_size: u64,
+    pub current_block_cert_vote_rlps: Vec<Vec<u8>>,
+}
+
+/// Coherent read-only view of Rust-owned period-data queue state.
+///
+/// The caller supplies the remaining PBFT-chain compatibility facts. The
+/// snapshot derives all queue fields under the manager serialization lock and
+/// never exposes the queue itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeriodDataQueueSnapshot {
+    pub period: u64,
+    pub syncing_period: u64,
+    pub last_block_hash_or_chain: H256,
+    pub size: usize,
+    pub empty: bool,
+}
+
 /// Result of attempting to enqueue one period-data payload.
 ///
 /// Inputs/outputs:
@@ -251,68 +279,38 @@ impl PeriodDataQueue {
         self.last_block_cert_vote_rlps.clear();
     }
 
-    /// Attempts to enqueue one period-data metadata entry.
+    /// Returns one coherent queue snapshot using supplied PBFT-chain facts.
+    pub fn snapshot(
+        &self,
+        pbft_chain_size: u64,
+        current_period: u64,
+        chain_last_hash: H256,
+    ) -> PeriodDataQueueSnapshot {
+        PeriodDataQueueSnapshot {
+            period: self.period(),
+            syncing_period: self.syncing_period(pbft_chain_size),
+            last_block_hash_or_chain: self
+                .last_block_hash_or_chain(current_period, chain_last_hash),
+            size: self.size(),
+            empty: self.is_empty(),
+        }
+    }
+
+    /// Attempts to admit one complete period-data queue request.
     ///
-    /// Inputs:
-    /// - `entry_id`: C++ payload id for the live `PeriodData` object.
-    /// - `entry_period`: PBFT period of the payload block.
-    /// - `block_hash`: PBFT block hash of the payload block.
-    /// - `prev_block_hash`: previous PBFT block hash of the payload block.
-    /// - `pivot_hash`: pivot DAG block hash of the payload block.
-    /// - `final_chain_hash`: final-chain hash of the payload block.
-    /// - `reward_vote_hashes`: reward-vote hashes referenced by the payload
-    ///   PBFT block.
-    /// - `pillar_vote_rlps`: canonical pillar-vote payload bytes carried by
-    ///   the payload.
-    /// - `transaction_rlps`: canonical transaction payload bytes carried by
-    ///   the payload.
-    /// - `previous_cert_vote_rlps`: canonical PBFT cert-vote payload bytes
-    ///   carried by the payload's previous-cert sidecar.
-    /// - `dag_transaction_hashes`: transaction hashes referenced by finalized
-    ///   DAG blocks in the payload.
-    /// - `period_data_transaction_hashes`: transaction hashes supplied in the
-    ///   payload transaction list.
-    /// - `period_data_transaction_identities`: transaction hashes, nonces, and
-    ///   senders supplied in payload transaction-list order.
-    /// - `previous_cert_votes_present`: whether the payload carried previous
-    ///   block cert-vote sidecars.
-    /// - `previous_cert_first_vote_has_weight`: whether the first previous
-    ///   cert-vote sidecar already carried a calculated weight.
-    /// - `pillar_votes_present`: whether the payload carried pillar-vote
-    ///   sidecar data.
-    /// - `extra_data_present`: whether the PBFT block carried extra data.
-    /// - `extra_data_pillar_block_hash_present`: whether that extra data
-    ///   carried a pillar block hash.
-    /// - `max_pbft_size`: current local PBFT chain size.
-    /// - `current_block_cert_vote_rlps`: canonical PBFT cert-vote payload bytes
-    ///   passed for the pushed block; they become the last-block cert-vote
-    ///   source when Rust pops the final queued entry.
-    ///
-    /// Returns a push outcome. Overflow in legacy period arithmetic is reported
-    /// as an error rather than wrapping.
+    /// Rejected period sequencing leaves the queue unchanged. Accepted chain
+    /// advancement may clear stale entries before appending the request.
+    /// Checked period arithmetic overflow is returned as an error.
     pub fn push(
         &mut self,
-        entry_id: u64,
-        entry_period: u64,
-        block_hash: H256,
-        prev_block_hash: H256,
-        pivot_hash: H256,
-        final_chain_hash: H256,
-        reward_vote_hashes: Vec<H256>,
-        pillar_vote_rlps: Vec<Vec<u8>>,
-        transaction_rlps: Vec<Vec<u8>>,
-        previous_cert_vote_rlps: Vec<Vec<u8>>,
-        dag_transaction_hashes: Vec<H256>,
-        period_data_transaction_hashes: Vec<H256>,
-        period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
-        previous_cert_votes_present: bool,
-        previous_cert_first_vote_has_weight: bool,
-        pillar_votes_present: bool,
-        extra_data_present: bool,
-        extra_data_pillar_block_hash_present: bool,
-        max_pbft_size: u64,
-        current_block_cert_vote_rlps: Vec<Vec<u8>>,
+        request: PeriodDataQueuePushRequest,
     ) -> Result<PeriodDataQueuePushOutcome> {
+        let PeriodDataQueuePushRequest {
+            entry,
+            max_pbft_size,
+            current_block_cert_vote_rlps,
+        } = request;
+        let entry_period = entry.period;
         let expected_next_period = std::cmp::max(self.period, max_pbft_size)
             .checked_add(1)
             .ok_or_else(|| anyhow!("period data queue next-period calculation overflowed"))?;
@@ -337,26 +335,7 @@ impl PeriodDataQueue {
         }
 
         self.period = entry_period;
-        self.entries.push_back(PeriodDataQueueEntryRef {
-            entry_id,
-            period: entry_period,
-            block_hash,
-            prev_block_hash,
-            pivot_hash,
-            final_chain_hash,
-            reward_vote_hashes,
-            pillar_vote_rlps,
-            transaction_rlps,
-            previous_cert_vote_rlps,
-            dag_transaction_hashes,
-            period_data_transaction_hashes,
-            period_data_transaction_identities,
-            previous_cert_votes_present,
-            previous_cert_first_vote_has_weight,
-            pillar_votes_present,
-            extra_data_present,
-            extra_data_pillar_block_hash_present,
-        });
+        self.entries.push_back(entry);
         self.last_block_cert_vote_rlps = current_block_cert_vote_rlps;
 
         Ok(PeriodDataQueuePushOutcome {
@@ -481,33 +460,35 @@ mod tests {
             .map(|idx| vec![id as u8, 0xd0 + idx as u8])
             .collect();
         queue
-            .push(
-                id,
-                period,
-                H256::from_low_u64_be(id),
-                H256::from_low_u64_be(id + 1000),
-                H256::from_low_u64_be(id + 2000),
-                H256::from_low_u64_be(id + 2500),
-                vec![H256::from_low_u64_be(id + 2600)],
-                vec![vec![id as u8, 0xa0]],
-                vec![vec![id as u8, 0xb0]],
-                previous_cert_vote_rlps,
-                vec![H256::from_low_u64_be(id + 3000)],
-                vec![H256::from_low_u64_be(id + 4000)],
-                vec![PeriodDataQueueTransactionIdentity {
-                    input_index: 0,
-                    hash: H256::from_low_u64_be(id + 4000),
-                    transaction_nonce: [id as u8; 32],
-                    sender: [id as u8; 20],
-                }],
-                id % 2 == 0,
-                id % 3 == 0,
-                id % 5 == 0,
-                id % 7 == 0,
-                id % 7 == 0 && id % 11 == 0,
-                max_size,
+            .push(PeriodDataQueuePushRequest {
+                entry: PeriodDataQueueEntryRef {
+                    entry_id: id,
+                    period,
+                    block_hash: H256::from_low_u64_be(id),
+                    prev_block_hash: H256::from_low_u64_be(id + 1000),
+                    pivot_hash: H256::from_low_u64_be(id + 2000),
+                    final_chain_hash: H256::from_low_u64_be(id + 2500),
+                    reward_vote_hashes: vec![H256::from_low_u64_be(id + 2600)],
+                    pillar_vote_rlps: vec![vec![id as u8, 0xa0]],
+                    transaction_rlps: vec![vec![id as u8, 0xb0]],
+                    previous_cert_vote_rlps,
+                    dag_transaction_hashes: vec![H256::from_low_u64_be(id + 3000)],
+                    period_data_transaction_hashes: vec![H256::from_low_u64_be(id + 4000)],
+                    period_data_transaction_identities: vec![PeriodDataQueueTransactionIdentity {
+                        input_index: 0,
+                        hash: H256::from_low_u64_be(id + 4000),
+                        transaction_nonce: [id as u8; 32],
+                        sender: [id as u8; 20],
+                    }],
+                    previous_cert_votes_present: id % 2 == 0,
+                    previous_cert_first_vote_has_weight: id % 3 == 0,
+                    pillar_votes_present: id % 5 == 0,
+                    extra_data_present: id % 7 == 0,
+                    extra_data_pillar_block_hash_present: id % 7 == 0 && id % 11 == 0,
+                },
+                max_pbft_size: max_size,
                 current_block_cert_vote_rlps,
-            )
+            })
             .unwrap()
             .accepted
     }
@@ -538,33 +519,35 @@ mod tests {
 
         assert!(push(&mut queue, 2, 2, 0, 1));
         let outcome = queue
-            .push(
-                4,
-                4,
-                H256::from_low_u64_be(4),
-                H256::from_low_u64_be(1004),
-                H256::from_low_u64_be(2004),
-                H256::from_low_u64_be(2504),
-                vec![H256::from_low_u64_be(2604)],
-                vec![vec![4, 0xa0]],
-                vec![vec![4, 0xb0]],
-                vec![vec![4, 0xc0]],
-                vec![H256::from_low_u64_be(3004)],
-                vec![H256::from_low_u64_be(4004)],
-                vec![PeriodDataQueueTransactionIdentity {
-                    input_index: 0,
-                    hash: H256::from_low_u64_be(4004),
-                    transaction_nonce: [4; 32],
-                    sender: [4; 20],
-                }],
-                true,
-                false,
-                true,
-                true,
-                false,
-                3,
-                vec![vec![4, 0xd0]],
-            )
+            .push(PeriodDataQueuePushRequest {
+                entry: PeriodDataQueueEntryRef {
+                    entry_id: 4,
+                    period: 4,
+                    block_hash: H256::from_low_u64_be(4),
+                    prev_block_hash: H256::from_low_u64_be(1004),
+                    pivot_hash: H256::from_low_u64_be(2004),
+                    final_chain_hash: H256::from_low_u64_be(2504),
+                    reward_vote_hashes: vec![H256::from_low_u64_be(2604)],
+                    pillar_vote_rlps: vec![vec![4, 0xa0]],
+                    transaction_rlps: vec![vec![4, 0xb0]],
+                    previous_cert_vote_rlps: vec![vec![4, 0xc0]],
+                    dag_transaction_hashes: vec![H256::from_low_u64_be(3004)],
+                    period_data_transaction_hashes: vec![H256::from_low_u64_be(4004)],
+                    period_data_transaction_identities: vec![PeriodDataQueueTransactionIdentity {
+                        input_index: 0,
+                        hash: H256::from_low_u64_be(4004),
+                        transaction_nonce: [4; 32],
+                        sender: [4; 20],
+                    }],
+                    previous_cert_votes_present: true,
+                    previous_cert_first_vote_has_weight: false,
+                    pillar_votes_present: true,
+                    extra_data_present: true,
+                    extra_data_pillar_block_hash_present: false,
+                },
+                max_pbft_size: 3,
+                current_block_cert_vote_rlps: vec![vec![4, 0xd0]],
+            })
             .unwrap();
 
         assert!(outcome.accepted);

@@ -421,7 +421,7 @@ pub struct PbftManagerRuntimeState {
     /// Shared native storage used by manager persistence and startup replay.
     pub storage: Arc<Storage>,
     /// Ordered finalized-period queue consumed by PBFT synchronization.
-    pub period_data_queue: crate::period_data_queue::PeriodDataQueue,
+    pub(crate) period_data_queue: crate::period_data_queue::PeriodDataQueue,
     /// Active queue-drain cursor, reset whenever a new drain begins.
     pub pbft_sync_queue_drain_session: crate::pbft_sync::PbftSyncQueueDrainSession,
     /// Optional admission cursor for the PBFT sync item currently being checked.

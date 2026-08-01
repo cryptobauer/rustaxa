@@ -24,6 +24,10 @@ use crate::pbft_period_cleanup::{
 };
 use crate::pbft_readiness::PbftServiceReadiness;
 use crate::pbft_vote_runtime::PbftVerifiedVotesService;
+use crate::period_data_queue::{
+    PeriodDataQueueEntryRef, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
+    PeriodDataQueuePushRequest, PeriodDataQueueSnapshot,
+};
 use crate::pillar_chain_service::PillarChainService;
 use crate::proposed_blocks::ProposedBlocksService;
 use crate::slashing::SlashingProofService;
@@ -85,6 +89,50 @@ pub struct PbftService {
 }
 
 impl PbftService {
+    /// Returns a coherent snapshot of manager-owned period-data queue state.
+    pub fn period_data_queue_snapshot(
+        &self,
+        pbft_chain_size: u64,
+        current_period: u64,
+        chain_last_hash: ethereum_types::H256,
+    ) -> PeriodDataQueueSnapshot {
+        self.manager_state().period_data_queue.snapshot(
+            pbft_chain_size,
+            current_period,
+            chain_last_hash,
+        )
+    }
+
+    /// Clears all manager-owned period-data queue metadata.
+    pub fn clear_period_data_queue(&self) {
+        self.manager_state().period_data_queue.clear();
+    }
+
+    /// Admits one complete period-data queue request under manager ownership.
+    ///
+    /// Sequencing rejection is represented in the returned outcome. Checked
+    /// arithmetic errors are returned without partial mutation.
+    pub fn push_period_data_queue(
+        &self,
+        request: PeriodDataQueuePushRequest,
+    ) -> Result<PeriodDataQueuePushOutcome> {
+        self.manager_state().period_data_queue.push(request)
+    }
+
+    /// Pops the next manager-owned queue entry and certificate-source plan.
+    ///
+    /// An empty queue returns an error and leaves state unchanged.
+    pub fn pop_period_data_queue(&self) -> Result<PeriodDataQueuePopPlan> {
+        self.manager_state().period_data_queue.pop()
+    }
+
+    /// Removes and returns queue entries older than `period`.
+    pub fn clean_old_period_data_queue(&self, period: u64) -> Vec<PeriodDataQueueEntryRef> {
+        self.manager_state()
+            .period_data_queue
+            .clean_old_data(period)
+    }
+
     fn run_finalization_executor_task(
         &self,
         task: impl FnOnce(&mut PbftManagerGuard<'_>) -> Result<PbftFinalizationOwnedActionDrain>,
@@ -977,6 +1025,62 @@ mod tests {
 
         drop(active);
         drop(inactive);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn service_owns_period_data_queue_lifecycle() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_period_queue");
+        let service = PbftService::restore(storage, config(10)).expect("service restores");
+        let entry = PeriodDataQueueEntryRef {
+            entry_id: 7,
+            period: 1,
+            block_hash: H256::repeat_byte(0x11),
+            prev_block_hash: H256::repeat_byte(0x22),
+            pivot_hash: H256::repeat_byte(0x33),
+            final_chain_hash: H256::repeat_byte(0x44),
+            reward_vote_hashes: vec![H256::repeat_byte(0x55)],
+            pillar_vote_rlps: vec![vec![0xa1]],
+            transaction_rlps: vec![vec![0xb1]],
+            previous_cert_vote_rlps: vec![vec![0xc1]],
+            dag_transaction_hashes: vec![H256::repeat_byte(0x66)],
+            period_data_transaction_hashes: vec![H256::repeat_byte(0x77)],
+            period_data_transaction_identities: vec![],
+            previous_cert_votes_present: true,
+            previous_cert_first_vote_has_weight: false,
+            pillar_votes_present: true,
+            extra_data_present: true,
+            extra_data_pillar_block_hash_present: false,
+        };
+
+        let pushed = service
+            .push_period_data_queue(PeriodDataQueuePushRequest {
+                entry: entry.clone(),
+                max_pbft_size: 0,
+                current_block_cert_vote_rlps: vec![vec![0xd1]],
+            })
+            .expect("queue push succeeds");
+        assert!(pushed.accepted);
+        assert_eq!(
+            service.period_data_queue_snapshot(5, 1, H256::repeat_byte(0xee)),
+            PeriodDataQueueSnapshot {
+                period: 1,
+                syncing_period: 5,
+                last_block_hash_or_chain: entry.block_hash,
+                size: 1,
+                empty: false,
+            }
+        );
+
+        let popped = service.pop_period_data_queue().expect("queue pop succeeds");
+        assert_eq!(popped.entry_id, entry.entry_id);
+        assert_eq!(popped.cert_vote_rlps, vec![vec![0xd1]]);
+        assert!(popped.use_last_block_cert_votes);
+        assert!(service.clean_old_period_data_queue(2).is_empty());
+        service.clear_period_data_queue();
+        assert!(service.period_data_queue_snapshot(0, 1, H256::zero()).empty);
+
+        drop(service);
         let _ = fs::remove_dir_all(path);
     }
 

@@ -144,6 +144,9 @@ use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
     PbftSyncQueueDrainStatus, PbftSyncQueueDrainStep,
 };
+use rustaxa_consensus::period_data_queue::{
+    PeriodDataQueueEntryRef, PeriodDataQueuePushRequest, PeriodDataQueueTransactionIdentity,
+};
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
 use rustaxa_consensus::{PbftService, PbftServiceConfig};
 
@@ -611,23 +614,23 @@ pub fn pbft_manager_runtime_period_data_queue_snapshot(
     current_period: u64,
     chain_last_hash: [u8; 32],
 ) -> FfiPeriodDataQueueSnapshot {
-    let runtime = runtime.manager_state();
+    let snapshot = runtime.0.period_data_queue_snapshot(
+        pbft_chain_size,
+        current_period,
+        ethereum_types::H256::from(chain_last_hash),
+    );
     FfiPeriodDataQueueSnapshot {
-        period: runtime.period_data_queue.period(),
-        syncing_period: runtime.period_data_queue.syncing_period(pbft_chain_size),
-        last_block_hash_or_chain: runtime
-            .period_data_queue
-            .last_block_hash_or_chain(current_period, ethereum_types::H256::from(chain_last_hash))
-            .into(),
-        size: runtime.period_data_queue.size(),
-        empty: runtime.period_data_queue.is_empty(),
+        period: snapshot.period,
+        syncing_period: snapshot.syncing_period,
+        last_block_hash_or_chain: snapshot.last_block_hash_or_chain.into(),
+        size: snapshot.size,
+        empty: snapshot.empty,
     }
 }
 
 /// Clears PBFT manager runtime queue metadata.
 pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &BridgePbftService) {
-    let mut runtime = runtime.manager_state();
-    runtime.period_data_queue.clear();
+    runtime.0.clear_period_data_queue();
 }
 
 fn queue_drain_step_into_ffi(value: PbftSyncQueueDrainStep) -> FfiPbftSyncQueueDrainStep {
@@ -753,10 +756,86 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
     ))
 }
 
-/// Pushes one period-data payload reference into PBFT manager runtime queue metadata.
+// Pure conversion carrier for the stable CXX push arguments. It exists so the
+// boundary mapping can be tested without constructing storage or a runtime.
+struct PeriodDataQueuePushFfiInput {
+    entry_id: u64,
+    period: u64,
+    block_hash: [u8; 32],
+    prev_block_hash: [u8; 32],
+    pivot_hash: [u8; 32],
+    final_chain_hash: [u8; 32],
+    reward_vote_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
+    pillar_vote_rlps: Vec<FfiPeriodDataQueuePillarVotePayload>,
+    transaction_rlps: Vec<FfiPeriodDataQueueTransactionPayload>,
+    previous_cert_vote_rlps: Vec<FfiPeriodDataQueuePbftVotePayload>,
+    dag_transaction_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
+    period_data_transaction_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
+    period_data_transaction_identities: Vec<FfiPeriodDataQueueTransactionIdentity>,
+    previous_cert_votes_present: bool,
+    previous_cert_first_vote_has_weight: bool,
+    pillar_votes_present: bool,
+    extra_data_present: bool,
+    extra_data_pillar_block_hash_present: bool,
+    max_pbft_size: u64,
+    current_block_cert_vote_rlps: Vec<FfiPeriodDataQueuePbftVotePayload>,
+}
+
+impl From<PeriodDataQueuePushFfiInput> for PeriodDataQueuePushRequest {
+    fn from(value: PeriodDataQueuePushFfiInput) -> Self {
+        Self {
+            entry: PeriodDataQueueEntryRef {
+                entry_id: value.entry_id,
+                period: value.period,
+                block_hash: value.block_hash.into(),
+                prev_block_hash: value.prev_block_hash.into(),
+                pivot_hash: value.pivot_hash.into(),
+                final_chain_hash: value.final_chain_hash.into(),
+                reward_vote_hashes: bridge_hashes_to_h256(value.reward_vote_hashes),
+                pillar_vote_rlps: value
+                    .pillar_vote_rlps
+                    .into_iter()
+                    .map(|payload| payload.vote_rlp)
+                    .collect(),
+                transaction_rlps: value
+                    .transaction_rlps
+                    .into_iter()
+                    .map(|payload| payload.transaction_rlp)
+                    .collect(),
+                previous_cert_vote_rlps: pbft_vote_rlps_to_vec(value.previous_cert_vote_rlps),
+                dag_transaction_hashes: bridge_hashes_to_h256(value.dag_transaction_hashes),
+                period_data_transaction_hashes: bridge_hashes_to_h256(
+                    value.period_data_transaction_hashes,
+                ),
+                period_data_transaction_identities: value
+                    .period_data_transaction_identities
+                    .into_iter()
+                    .map(|identity| PeriodDataQueueTransactionIdentity {
+                        input_index: identity.input_index,
+                        hash: identity.hash.into(),
+                        transaction_nonce: identity.transaction_nonce,
+                        sender: identity.sender,
+                    })
+                    .collect(),
+                previous_cert_votes_present: value.previous_cert_votes_present,
+                previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
+                pillar_votes_present: value.pillar_votes_present,
+                extra_data_present: value.extra_data_present,
+                extra_data_pillar_block_hash_present: value.extra_data_pillar_block_hash_present,
+            },
+            max_pbft_size: value.max_pbft_size,
+            current_block_cert_vote_rlps: pbft_vote_rlps_to_vec(value.current_block_cert_vote_rlps),
+        }
+    }
+}
+
+/// Pushes one period-data payload reference into native manager queue metadata.
 ///
-/// C++ remains the temporary owner of live `PeriodData`, `PbftVote`, and peer sidecars.
-/// Rust owns the compact queue ordering, admission, cleanup, and pop-source decisions.
+/// C++ supplies canonical payload facts and retains live `PeriodData`,
+/// `PbftVote`, and peer sidecars. The bridge converts the complete request;
+/// native `PbftService` owns locking, admission, cleanup, and pop-source state.
+/// Sequencing rejection is returned as an outcome and checked period overflow
+/// is returned as an error without partial queue mutation.
 pub fn pbft_manager_runtime_period_data_queue_push(
     runtime: &BridgePbftService,
     entry_id: u64,
@@ -780,62 +859,37 @@ pub fn pbft_manager_runtime_period_data_queue_push(
     max_pbft_size: u64,
     current_block_cert_vote_rlps: Vec<FfiPeriodDataQueuePbftVotePayload>,
 ) -> anyhow::Result<FfiPeriodDataQueuePushOutcome> {
-    let mut runtime = runtime.manager_state();
-    Ok(runtime
-        .period_data_queue
-        .push(
-            entry_id,
-            period,
-            ethereum_types::H256::from(block_hash),
-            ethereum_types::H256::from(prev_block_hash),
-            ethereum_types::H256::from(pivot_hash),
-            ethereum_types::H256::from(final_chain_hash),
-            bridge_hashes_to_h256(reward_vote_hashes),
-            pillar_vote_rlps
-                .into_iter()
-                .map(|payload| payload.vote_rlp)
-                .collect(),
-            transaction_rlps
-                .into_iter()
-                .map(|payload| payload.transaction_rlp)
-                .collect(),
-            pbft_vote_rlps_to_vec(previous_cert_vote_rlps),
-            dag_transaction_hashes
-                .into_iter()
-                .map(|hash| ethereum_types::H256::from(hash.hash))
-                .collect(),
-            period_data_transaction_hashes
-                .into_iter()
-                .map(|hash| ethereum_types::H256::from(hash.hash))
-                .collect(),
-            period_data_transaction_identities
-                .into_iter()
-                .map(|identity| {
-                    rustaxa_consensus::period_data_queue::PeriodDataQueueTransactionIdentity {
-                        input_index: identity.input_index,
-                        hash: ethereum_types::H256::from(identity.hash),
-                        transaction_nonce: identity.transaction_nonce,
-                        sender: identity.sender,
-                    }
-                })
-                .collect(),
-            previous_cert_votes_present,
-            previous_cert_first_vote_has_weight,
-            pillar_votes_present,
-            extra_data_present,
-            extra_data_pillar_block_hash_present,
-            max_pbft_size,
-            pbft_vote_rlps_to_vec(current_block_cert_vote_rlps),
-        )?
-        .into())
+    let request = PeriodDataQueuePushFfiInput {
+        entry_id,
+        period,
+        block_hash,
+        prev_block_hash,
+        pivot_hash,
+        final_chain_hash,
+        reward_vote_hashes,
+        pillar_vote_rlps,
+        transaction_rlps,
+        previous_cert_vote_rlps,
+        dag_transaction_hashes,
+        period_data_transaction_hashes,
+        period_data_transaction_identities,
+        previous_cert_votes_present,
+        previous_cert_first_vote_has_weight,
+        pillar_votes_present,
+        extra_data_present,
+        extra_data_pillar_block_hash_present,
+        max_pbft_size,
+        current_block_cert_vote_rlps,
+    }
+    .into();
+    Ok(runtime.0.push_period_data_queue(request)?.into())
 }
 
 /// Pops one PBFT sync queue metadata entry from PBFT manager runtime state.
 pub fn pbft_manager_runtime_period_data_queue_pop(
     runtime: &BridgePbftService,
 ) -> anyhow::Result<FfiPeriodDataQueuePopPlan> {
-    let mut runtime = runtime.manager_state();
-    Ok(runtime.period_data_queue.pop()?.into())
+    Ok(runtime.0.pop_period_data_queue()?.into())
 }
 
 /// Removes stale PBFT sync queue metadata entries from PBFT manager runtime state.
@@ -843,10 +897,9 @@ pub fn pbft_manager_runtime_period_data_queue_clean_old_data(
     runtime: &BridgePbftService,
     period: u64,
 ) -> Vec<FfiPeriodDataQueueEntryRef> {
-    let mut runtime = runtime.manager_state();
     runtime
-        .period_data_queue
-        .clean_old_data(period)
+        .0
+        .clean_old_period_data_queue(period)
         .into_iter()
         .map(Into::into)
         .collect()
@@ -2642,6 +2695,10 @@ impl From<PbftManagerAdvancePeriodActionReportResult>
 }
 
 #[cfg(test)]
+#[path = "../test_support/pbft_manager_period_data_queue.rs"]
+mod period_data_queue_adapter_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ffi::{BridgePbftStorageQueries, BridgeStorage};
@@ -2682,63 +2739,6 @@ mod tests {
             .expect("system clock should be after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), nanos))
-    }
-
-    fn queue_hash(seed: u8) -> [u8; 32] {
-        [seed; 32]
-    }
-
-    fn queue_transaction_hashes(
-        seeds: &[u8],
-    ) -> Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash> {
-        seeds
-            .iter()
-            .map(|seed| crate::ffi::rustaxa_ffi::PbftSyncTransactionHash {
-                hash: queue_hash(*seed),
-            })
-            .collect()
-    }
-
-    fn queue_pillar_vote_rlps(seeds: &[u8]) -> Vec<FfiPeriodDataQueuePillarVotePayload> {
-        seeds
-            .iter()
-            .map(|seed| FfiPeriodDataQueuePillarVotePayload {
-                vote_rlp: vec![*seed, seed.wrapping_add(1)],
-            })
-            .collect()
-    }
-
-    fn queue_transaction_rlps(seeds: &[u8]) -> Vec<FfiPeriodDataQueueTransactionPayload> {
-        seeds
-            .iter()
-            .map(|seed| FfiPeriodDataQueueTransactionPayload {
-                transaction_rlp: vec![*seed, seed.wrapping_add(1)],
-            })
-            .collect()
-    }
-
-    fn queue_pbft_vote_rlps(seeds: &[u8]) -> Vec<FfiPeriodDataQueuePbftVotePayload> {
-        seeds
-            .iter()
-            .map(|seed| FfiPeriodDataQueuePbftVotePayload {
-                vote_rlp: vec![*seed, seed.wrapping_add(1)],
-            })
-            .collect()
-    }
-
-    fn queue_transaction_identities(seeds: &[u8]) -> Vec<FfiPeriodDataQueueTransactionIdentity> {
-        seeds
-            .iter()
-            .enumerate()
-            .map(
-                |(input_index, seed)| FfiPeriodDataQueueTransactionIdentity {
-                    input_index: input_index as u64,
-                    hash: queue_hash(*seed),
-                    transaction_nonce: queue_hash(seed.wrapping_add(1)),
-                    sender: [seed.wrapping_add(2); 20],
-                },
-            )
-            .collect()
     }
 
     fn pbft_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
@@ -3141,161 +3141,6 @@ mod tests {
         ));
         assert!(dynamic_lambda.last_saved_period_lambda_found);
         assert_eq!(dynamic_lambda.last_saved_period_lambda, 1_234);
-    }
-
-    #[test]
-    fn bridge_runtime_owns_period_data_queue_metadata() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_period_data_queue");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 500)
-                .expect("lambda seed should persist");
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should initialize");
-
-            let first = pbft_manager_runtime_period_data_queue_push(
-                &mut runtime,
-                11,
-                1,
-                queue_hash(0x11),
-                queue_hash(0xa1),
-                queue_hash(0xb1),
-                queue_hash(0xe1),
-                queue_transaction_hashes(&[0xf1]),
-                queue_pillar_vote_rlps(&[0xa1]),
-                queue_transaction_rlps(&[0xb1]),
-                queue_pbft_vote_rlps(&[]),
-                queue_transaction_hashes(&[0xc1]),
-                queue_transaction_hashes(&[0xd1]),
-                queue_transaction_identities(&[0xd1]),
-                false,
-                false,
-                false,
-                false,
-                false,
-                0,
-                queue_pbft_vote_rlps(&[0x81]),
-            )
-            .expect("first push should succeed");
-            assert!(first.accepted);
-            assert!(!first.clear_existing);
-            let first_snapshot =
-                pbft_manager_runtime_period_data_queue_snapshot(&runtime, 5, 1, queue_hash(0xee));
-            assert_eq!(first_snapshot.period, 1);
-            assert_eq!(first_snapshot.syncing_period, 5);
-            assert_eq!(first_snapshot.size, 1);
-
-            let second = pbft_manager_runtime_period_data_queue_push(
-                &mut runtime,
-                22,
-                2,
-                queue_hash(0x22),
-                queue_hash(0xa2),
-                queue_hash(0xb2),
-                queue_hash(0xe2),
-                queue_transaction_hashes(&[0xf2]),
-                queue_pillar_vote_rlps(&[0xa2]),
-                queue_transaction_rlps(&[0xb2]),
-                queue_pbft_vote_rlps(&[0x92]),
-                queue_transaction_hashes(&[0xc2]),
-                queue_transaction_hashes(&[0xd2]),
-                queue_transaction_identities(&[0xd2]),
-                true,
-                false,
-                true,
-                true,
-                false,
-                0,
-                queue_pbft_vote_rlps(&[0x82]),
-            )
-            .expect("second push should succeed");
-            assert!(second.accepted);
-            let second_snapshot =
-                pbft_manager_runtime_period_data_queue_snapshot(&runtime, 5, 1, queue_hash(0xee));
-            assert_eq!(second_snapshot.last_block_hash_or_chain, queue_hash(0x22));
-
-            let first_pop = pbft_manager_runtime_period_data_queue_pop(&mut runtime)
-                .expect("first pop should produce a handoff");
-            assert_eq!(first_pop.entry_id, 11);
-            assert_eq!(first_pop.entry_period, 1);
-            assert_eq!(first_pop.block_hash, queue_hash(0x11));
-            assert_eq!(first_pop.cert_vote_rlps[0].vote_rlp, vec![0x92, 0x93]);
-            assert!(!first_pop.use_last_block_cert_votes);
-            assert_eq!(first_pop.next_entry_id, 22);
-            assert_eq!(first_pop.effective_size, 1);
-
-            let second_pop = pbft_manager_runtime_period_data_queue_pop(&mut runtime)
-                .expect("second pop should produce a handoff");
-            assert_eq!(second_pop.entry_id, 22);
-            assert_eq!(second_pop.cert_vote_rlps[0].vote_rlp, vec![0x82, 0x83]);
-            assert!(second_pop.use_last_block_cert_votes);
-            let empty_snapshot =
-                pbft_manager_runtime_period_data_queue_snapshot(&runtime, 5, 1, queue_hash(0xee));
-            assert!(empty_snapshot.empty);
-            assert_eq!(empty_snapshot.period, 0);
-
-            pbft_manager_runtime_period_data_queue_push(
-                &mut runtime,
-                33,
-                6,
-                queue_hash(0x33),
-                queue_hash(0xa3),
-                queue_hash(0xb3),
-                queue_hash(0xe3),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                false,
-                false,
-                false,
-                false,
-                false,
-                4,
-                queue_pbft_vote_rlps(&[0x83]),
-            )
-            .expect("empty queue backfill should succeed");
-            let removed = pbft_manager_runtime_period_data_queue_clean_old_data(&mut runtime, 7);
-            assert_eq!(removed.len(), 1);
-            assert_eq!(removed[0].entry_id, 33);
-            let cleaned_snapshot =
-                pbft_manager_runtime_period_data_queue_snapshot(&runtime, 5, 1, queue_hash(0xee));
-            assert!(cleaned_snapshot.empty);
-
-            pbft_manager_runtime_period_data_queue_clear(&mut runtime);
-            let cleared_snapshot =
-                pbft_manager_runtime_period_data_queue_snapshot(&runtime, 5, 1, queue_hash(0xee));
-            assert_eq!(cleared_snapshot.period, 0);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_executes_lifecycle_transition_from_owned_cursor() {
-        let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_transition");
-        let before = runtime.manager_state().state.snapshot();
-        let result = pbft_manager_runtime_execute_lifecycle_transition(
-            &mut runtime,
-            lifecycle_transition_request(PbftManagerTransitionKind::ToFilter.as_u8()),
-        )
-        .unwrap();
-
-        assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
-        assert_eq!(result.snapshot.period, before.period);
-        assert_eq!(result.snapshot.round, before.round);
-        assert_eq!(result.snapshot.step, before.step + 1);
-        assert_eq!(result.snapshot.state, 1);
-        assert!(!result.remove_cert_voted_sidecar);
-        assert!(result.error_code.is_empty());
     }
 
     #[test]
