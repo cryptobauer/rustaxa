@@ -8,10 +8,10 @@
 //! or an external executor boundary.
 
 use crate::dag::{
-    DagBlockStorageLookup, DagDposAuthorizationFacts, DagFrontier, DagHashStorageLookup,
-    DagPersistenceCounters, DagPivotTipsValidation, DagProposerStorageTipSelectionInput,
-    DagProposerTipSelection, DagVdfSortitionBlockInput, dag_block_transaction_hashes,
-    dag_manager_block_from_rlp, verify_dag_vdf_sortition_from_block,
+    DAG_VERIFY_DPOS_STATUS_NOT_CHECKED, DagBlockStorageLookup, DagDposAuthorizationFacts,
+    DagFrontier, DagHashStorageLookup, DagPersistenceCounters, DagPivotTipsValidation,
+    DagProposerStorageTipSelectionInput, DagProposerTipSelection, DagVdfSortitionBlockInput,
+    dag_block_transaction_hashes, dag_manager_block_from_rlp, verify_dag_vdf_sortition_from_block,
 };
 use crate::dag_service::{
     DagAddBlockPreparedTransaction, DagAddBlockSession, DagAddBlockStoredPlan,
@@ -22,6 +22,7 @@ use crate::dag_service::{
     DagVerifyBlockAuthorizationPreparation, DagVerifyBlockAuthorizationSnapshot,
     DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
 };
+use crate::final_chain::FinalChain;
 use crate::sortition::{
     PeriodEfficiencyCounts, SortitionConfig, SortitionParamsChange, SortitionService,
     SortitionServiceGuard, calculate_dag_efficiency,
@@ -236,30 +237,30 @@ pub struct DagProposerPackStep {
 
 /// External FinalChain facts requested for one exact proposer cursor.
 #[derive(Clone)]
-pub struct DagProposerFinalChainRequest {
+struct DagProposerFinalChainRequest {
     snapshot: DagProposerFinalChainFactsSnapshot,
     initially_loaded_params: crate::sortition::SortitionParams,
     /// Proposal period queried at the retained FinalChain boundary.
-    pub proposal_period: u64,
+    proposal_period: u64,
     /// Whether the native DAG observation resolved a proposal period.
-    pub proposal_period_found: bool,
+    proposal_period_found: bool,
     /// Proposer address queried for historical DPoS authorization.
-    pub proposer_address: [u8; 20],
+    proposer_address: [u8; 20],
 }
 
 /// Proposer preparation either requests unlocked FinalChain facts or returns a terminal step.
-pub enum DagProposerFinalChainRequestOrStep {
+enum DagProposerFinalChainRequestOrStep {
     Request(DagProposerFinalChainRequest),
     Step(Box<DagProposerSessionStep>),
 }
 
 /// FinalChain facts returned across the retained external executor boundary.
 #[derive(Clone)]
-pub struct DagProposerFinalChainFacts {
+struct DagProposerFinalChainFacts {
     /// Latest finalized period observed by FinalChain.
-    pub last_finalized_period: u64,
+    last_finalized_period: u64,
     /// Historical proposer authorization and vote facts.
-    pub authorization_facts: DagDposAuthorizationFacts,
+    authorization_facts: DagDposAuthorizationFacts,
 }
 
 /// Ordered transaction views prepared for retained C++ materialization.
@@ -286,16 +287,16 @@ pub struct DagVerifyBlockTransactionCompletionReport {
 
 /// FinalChain authorization request prepared without retaining a native guard.
 #[derive(Clone)]
-pub struct DagVerifyBlockAuthorizationRequest {
+struct DagVerifyBlockAuthorizationRequest {
     snapshot: DagVerifyBlockAuthorizationSnapshot,
     /// Proposal period queried at the retained FinalChain boundary.
-    pub proposal_period: u64,
+    proposal_period: u64,
     /// Recovered DAG block sender queried for DPoS and VRF facts.
-    pub sender: H160,
+    sender: H160,
 }
 
 /// Authorization preparation either requests external facts or returns a status step.
-pub enum DagVerifyBlockAuthorizationRequestOrStep {
+enum DagVerifyBlockAuthorizationRequestOrStep {
     Request(DagVerifyBlockAuthorizationRequest),
     Step(DagVerifyBlockSessionStep),
 }
@@ -843,12 +844,71 @@ impl DagTransactionService {
         self.abort_proposer_pack(session_id)
     }
 
+    /// Composes one proposer cursor with native FinalChain authorization facts.
+    ///
+    /// The task snapshots DAG state and loads the initial historical sortition
+    /// parameters before borrowing `final_chain`. No DAG, sortition, or
+    /// transaction guard survives the FinalChain head or authorization reads.
+    /// Completion reacquires DAG then sortition, revalidates the exact cursor
+    /// and parameter snapshot, and advances only that cursor. A FinalChain or
+    /// initial sortition failure removes only the still-matching cursor; a
+    /// stale replacement or parameter drift is preserved for its owner.
+    pub fn report_proposer_final_chain_facts_with_final_chain(
+        &self,
+        session_id: u64,
+        final_chain: &FinalChain,
+    ) -> Result<DagProposerSessionStep> {
+        self.report_proposer_final_chain_facts_with_final_chain_hook(session_id, final_chain, || {})
+    }
+
+    fn report_proposer_final_chain_facts_with_final_chain_hook(
+        &self,
+        session_id: u64,
+        final_chain: &FinalChain,
+        between_query_and_apply: impl FnOnce(),
+    ) -> Result<DagProposerSessionStep> {
+        let request = match self.prepare_proposer_final_chain_facts(session_id)? {
+            DagProposerFinalChainRequestOrStep::Request(request) => request,
+            DagProposerFinalChainRequestOrStep::Step(step) => return Ok(*step),
+        };
+        let facts = (|| {
+            let last_finalized_period = final_chain.last_block_number()?;
+            let authorization_facts = if request.proposal_period_found {
+                final_chain.dag_dpos_authorization_facts(
+                    request.proposal_period.into(),
+                    request.proposer_address,
+                )?
+            } else {
+                DagDposAuthorizationFacts {
+                    vrf_key: None,
+                    vrf_key_found: false,
+                    sender_eligible_vote_count: 0,
+                    vdf_sortition_max_vote_count: 0,
+                    eligibility_status: DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
+                }
+            };
+            Ok::<_, anyhow::Error>(DagProposerFinalChainFacts {
+                last_finalized_period,
+                authorization_facts,
+            })
+        })();
+        let facts = match facts {
+            Ok(facts) => facts,
+            Err(error) => {
+                self.abort_proposer_final_chain_facts(&request)?;
+                return Err(error);
+            }
+        };
+        between_query_and_apply();
+        self.complete_proposer_final_chain_facts(&request, facts)
+    }
+
     /// Prepares an unlocked FinalChain query for an exact proposer cursor.
     ///
     /// DAG and sortition locks are acquired in separate intervals and both are
     /// released before the request is returned. Sortition lookup failure removes
     /// only the still-matching proposer cursor.
-    pub fn prepare_proposer_final_chain_facts(
+    fn prepare_proposer_final_chain_facts(
         &self,
         session_id: u64,
     ) -> Result<DagProposerFinalChainRequestOrStep> {
@@ -886,7 +946,7 @@ impl DagTransactionService {
     }
 
     /// Revalidates one prepared proposer cursor and applies unlocked FinalChain facts.
-    pub fn complete_proposer_final_chain_facts(
+    fn complete_proposer_final_chain_facts(
         &self,
         request: &DagProposerFinalChainRequest,
         facts: DagProposerFinalChainFacts,
@@ -919,7 +979,7 @@ impl DagTransactionService {
     }
 
     /// Removes only the unchanged cursor that owned a failed FinalChain request.
-    pub fn abort_proposer_final_chain_facts(
+    fn abort_proposer_final_chain_facts(
         &self,
         request: &DagProposerFinalChainRequest,
     ) -> Result<bool> {
@@ -1112,11 +1172,47 @@ impl DagTransactionService {
         Ok(dag.verify_block_session_apply_transaction_resolution(resolved_transactions))
     }
 
+    /// Composes the active verifier cursor with native FinalChain DPoS facts.
+    ///
+    /// DAG state is snapshotted and released before canonical block decoding,
+    /// sender recovery, and the historical FinalChain query. The task then
+    /// reacquires the DAG lock and advances only the exact cursor generation
+    /// and fingerprint. Decode, recovery, or FinalChain failures remove only
+    /// the still-matching cursor; a stale replacement remains untouched.
+    pub fn report_verify_block_authorization_with_final_chain(
+        &self,
+        final_chain: &FinalChain,
+    ) -> Result<DagVerifyBlockSessionStep> {
+        self.report_verify_block_authorization_with_final_chain_hook(final_chain, || {})
+    }
+
+    fn report_verify_block_authorization_with_final_chain_hook(
+        &self,
+        final_chain: &FinalChain,
+        between_query_and_apply: impl FnOnce(),
+    ) -> Result<DagVerifyBlockSessionStep> {
+        let request = match self.prepare_verify_block_authorization()? {
+            DagVerifyBlockAuthorizationRequestOrStep::Request(request) => request,
+            DagVerifyBlockAuthorizationRequestOrStep::Step(step) => return Ok(step),
+        };
+        let facts = match final_chain
+            .dag_dpos_authorization_facts(request.proposal_period.into(), request.sender.0)
+        {
+            Ok(facts) => facts,
+            Err(error) => {
+                self.abort_verify_block_authorization(&request)?;
+                return Err(error);
+            }
+        };
+        between_query_and_apply();
+        self.complete_verify_block_authorization(&request, facts)
+    }
+
     /// Prepares an unlocked FinalChain authorization query for the exact cursor.
     ///
     /// Sender decoding and recovery happen after releasing the DAG lock. A
     /// decode or recovery failure removes only the unchanged owning cursor.
-    pub fn prepare_verify_block_authorization(
+    fn prepare_verify_block_authorization(
         &self,
     ) -> Result<DagVerifyBlockAuthorizationRequestOrStep> {
         let snapshot = {
@@ -1155,7 +1251,7 @@ impl DagTransactionService {
     }
 
     /// Applies authorization facts to the exact prepared cursor.
-    pub fn complete_verify_block_authorization(
+    fn complete_verify_block_authorization(
         &self,
         request: &DagVerifyBlockAuthorizationRequest,
         facts: DagDposAuthorizationFacts,
@@ -1166,7 +1262,7 @@ impl DagTransactionService {
     }
 
     /// Removes only the unchanged cursor that owned a failed authorization query.
-    pub fn abort_verify_block_authorization(
+    fn abort_verify_block_authorization(
         &self,
         request: &DagVerifyBlockAuthorizationRequest,
     ) -> Result<bool> {
@@ -1780,9 +1876,11 @@ fn keccak256_bytes(bytes: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
     use crate::dag::{
-        DAG_PROPOSER_ACTION_CONTINUE, DAG_VERIFY_REJECT_MISSING_TRANSACTION, DagFrontier,
-        DagManagerBlock, DagProposerAttemptPlan, DagProposerFrontierFacts,
-        ensure_proposal_period_mapping, save_dag_block_to_storage,
+        DAG_PROPOSER_ACTION_CONTINUE, DAG_PROPOSER_REASON_TRANSACTION_POOL_EMPTY,
+        DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION, DAG_VERIFY_REJECT_FUTURE_BLOCK,
+        DAG_VERIFY_REJECT_MISSING_TRANSACTION, DagFrontier, DagManagerBlock,
+        DagProposerAttemptPlan, DagProposerFrontierFacts, ensure_proposal_period_mapping,
+        save_dag_block_to_storage,
     };
     use crate::dag_service::{
         DagProposerObservation, DagProposerRetryState, DagProposerSession,
@@ -1790,7 +1888,9 @@ mod tests {
         DagVerifyBlockSession, DagVerifyBlockSessionAction,
     };
     use crate::gas_pricer::GasPricerConfig;
-    use crate::sortition::{HUNDRED_PERCENT, SortitionParams, VdfParams, VrfParams};
+    use crate::sortition::{
+        HUNDRED_PERCENT, SortitionParams, SortitionParamsChange, VdfParams, VrfParams,
+    };
     use crate::transaction_queue::TransactionQueueEntry;
     use crate::transaction_service::{
         TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR, TM_TRANSACTION_VIEW_SOURCE_QUEUE,
@@ -1800,6 +1900,12 @@ mod tests {
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_storage::Config;
+    use rustaxa_types::{
+        DposTokenAmount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
+    };
+    use rustaxa_vdf::prover::CancellationToken;
+    use rustaxa_vdf::sortition::{self, LegacySortitionParams};
+    use rustaxa_vdf::vrf::public_key_from_secret;
     use std::path::PathBuf;
     use std::sync::Barrier;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1896,6 +2002,209 @@ mod tests {
         signed.append(&U256::from_big_endian(&signature[..32]));
         signed.append(&U256::from_big_endian(&signature[32..]));
         signed.out().to_vec()
+    }
+
+    const PROPOSER_VRF_SECRET: [u8; 64] = [
+        0x90, 0xf5, 0x9a, 0x7e, 0xe7, 0xa3, 0x92, 0xc8, 0x11, 0xc5, 0xd2, 0x99, 0xb5, 0x57, 0xa4,
+        0xe0, 0x9e, 0x61, 0x0d, 0xe7, 0xd1, 0x09, 0xd6, 0xb3, 0xfc, 0xb1, 0x9a, 0xb8, 0xd5, 0x1c,
+        0x9a, 0x0d, 0x93, 0x1f, 0x5e, 0x7d, 0xb0, 0x7c, 0x99, 0x69, 0xe4, 0x38, 0xdb, 0x7e, 0x28,
+        0x7e, 0xab, 0xba, 0xac, 0xa4, 0x9c, 0xa4, 0x14, 0xf5, 0xf3, 0xa4, 0x02, 0xea, 0x69, 0x97,
+        0xad, 0xe4, 0x00, 0x81,
+    ];
+
+    fn signing_address(key: &SigningKey) -> [u8; 20] {
+        let public_key = key.verifying_key().to_encoded_point(false);
+        let hash = keccak256(&public_key.as_bytes()[1..]);
+        hash.as_bytes()[12..].try_into().expect("address bytes")
+    }
+
+    fn proposer_address() -> [u8; 20] {
+        signing_address(&SigningKey::from_slice(&[0x44; 32]).expect("proposer signing key"))
+    }
+
+    fn proposer_begin_input() -> DagProposerSessionBeginInput {
+        DagProposerSessionBeginInput {
+            max_non_finalized_transactions: 100,
+            dag_expiry_level_limit: 100,
+            wallet_vrf_public_key: public_key_from_secret(&PROPOSER_VRF_SECRET)
+                .expect("proposer VRF public key"),
+            wallet_vrf_secret: PROPOSER_VRF_SECRET,
+            proposer_address: proposer_address(),
+            max_non_finalized_dag_blocks: 100,
+            max_non_finalized_dag_blocks_low_difficulty: 50,
+            max_retry_count: 20,
+            proposal_weight_limit: 100_000,
+            total_transaction_shards: 1,
+            node_transaction_shard: 0,
+            shard_period_interval: 10,
+            pbft_gas_limit: 1_000_000,
+            dag_gas_limit: 100_000,
+            max_tips: 16,
+        }
+    }
+
+    fn final_chain_with_proposer(storage: Arc<Storage>, address: [u8; 20]) -> FinalChain {
+        let stake = U256::from(10_000u64).to_big_endian().to_vec();
+        FinalChain::new(
+            storage,
+            0.into(),
+            0,
+            Vec::new(),
+            vec![GenesisValidator {
+                address,
+                vrf_key: public_key_from_secret(&PROPOSER_VRF_SECRET)
+                    .expect("proposer VRF public key"),
+                total_stake: stake.clone(),
+                delegations: vec![(address, stake)],
+                metadata: GenesisValidatorMetadata {
+                    owner: address,
+                    commission: 0,
+                    description: String::new(),
+                    endpoint: String::new(),
+                },
+            }],
+            GenesisDposConfig {
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
+            },
+        )
+        .expect("native FinalChain")
+    }
+
+    fn signed_dag_block(seed: u8) -> Vec<u8> {
+        let unsigned = composed_add_block_rlp(H256::repeat_byte(1), 1, &[]);
+        let mut block = rustaxa_types::dag::DagBlock::try_from(
+            rustaxa_types::codec::rlp::dag::DagBlockRlp::new(&unsigned),
+        )
+        .expect("test DAG block should decode");
+        let key = SigningKey::from_slice(&[seed; 32]).expect("test DAG signing key");
+        let (signature, recovery_id) = key
+            .sign_prehash_recoverable(block.signing_hash().as_bytes())
+            .expect("test DAG block should sign");
+        block.signature[..64].copy_from_slice(&signature.to_bytes());
+        block.signature[64] = recovery_id.to_byte();
+
+        let mut encoded = RlpStream::new_list(8);
+        encoded.append(&block.pivot);
+        encoded.append(&block.level);
+        encoded.append(&block.timestamp);
+        encoded.append(&block.vdf);
+        encoded.append_list(&block.tips);
+        encoded.append_list(&block.transactions);
+        encoded.append(&block.signature.as_ref());
+        encoded.append(&block.gas_estimation);
+        encoded.out().to_vec()
+    }
+
+    fn vdf_test_block(vdf_payload: Vec<u8>) -> Vec<u8> {
+        let mut block = RlpStream::new_list(8);
+        block.append(&H256::repeat_byte(1));
+        block.append(&1_u64);
+        block.append(&0_u64);
+        block.append(&vdf_payload);
+        block.begin_list(0);
+        block.begin_list(0);
+        block.append(&&[0_u8; 65][..]);
+        block.append(&0_u64);
+        block.out().to_vec()
+    }
+
+    fn signed_vdf_test_block(vdf_payload: Vec<u8>) -> Vec<u8> {
+        let mut block = rustaxa_types::dag::DagBlock::try_from(
+            rustaxa_types::codec::rlp::dag::DagBlockRlp::new(&vdf_test_block(vdf_payload)),
+        )
+        .expect("test VDF DAG block should decode");
+        let key = SigningKey::from_slice(&[0x44; 32]).expect("test DAG signing key");
+        let (signature, recovery_id) = key
+            .sign_prehash_recoverable(block.signing_hash().as_bytes())
+            .expect("test VDF DAG block should sign");
+        block.signature[..64].copy_from_slice(&signature.to_bytes());
+        block.signature[64] = recovery_id.to_byte();
+
+        let mut encoded = RlpStream::new_list(8);
+        encoded.append(&block.pivot);
+        encoded.append(&block.level);
+        encoded.append(&block.timestamp);
+        encoded.append(&block.vdf);
+        encoded.append_list(&block.tips);
+        encoded.append_list(&block.transactions);
+        encoded.append(&block.signature.as_ref());
+        encoded.append(&block.gas_estimation);
+        encoded.out().to_vec()
+    }
+
+    fn valid_vdf_request(
+        threshold_upper: u16,
+        proposal_period_hash: H256,
+    ) -> DagVerifyBlockVdfRequest {
+        let placeholder = vdf_test_block(Vec::new());
+        let vrf_input = crate::dag::construct_dag_vrf_input(1, proposal_period_hash);
+        let vdf_input = crate::dag::construct_dag_vdf_message_from_block_rlp(&placeholder)
+            .expect("VDF message should build");
+        let proof = sortition::prove_legacy_vdf_sortition(
+            LegacySortitionParams {
+                vrf_threshold_upper: threshold_upper,
+                vdf_difficulty_min: 1,
+                vdf_difficulty_max: 10,
+                vdf_difficulty_stale: 5,
+                vdf_lambda_bound: 100,
+            },
+            &PROPOSER_VRF_SECRET,
+            &vrf_input,
+            &vdf_input,
+            1,
+            1,
+            &CancellationToken::new(),
+        )
+        .expect("VDF proof should generate");
+        let mut payload = RlpStream::new_list(4);
+        payload.append(&&proof.vrf_proof[..]);
+        payload.append(&proof.vdf_proof);
+        payload.append(&proof.vdf_output);
+        payload.append(&proof.difficulty);
+        DagVerifyBlockVdfRequest {
+            cursor_id: 0,
+            block_rlp: signed_vdf_test_block(payload.out().to_vec()),
+            block_level: 1,
+            proposal_period_hash,
+        }
+    }
+
+    fn begin_verify_authorization(
+        root: &DagTransactionService,
+        block_rlp: Vec<u8>,
+    ) -> Result<DagVerifyBlockSessionStep> {
+        root.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: keccak256(&block_rlp).to_fixed_bytes(),
+            block_level: 1,
+            pivot: [1; 32],
+            tips: Vec::new(),
+            block_transaction_hashes: Vec::new(),
+            supplied_transaction_hashes: Vec::new(),
+            block_rlp,
+        })?;
+        let preparation = root.prepare_verify_block_transactions()?;
+        root.complete_verify_block_transactions(DagVerifyBlockTransactionCompletionReport {
+            cursor_id: preparation.cursor_id,
+            proposal_period: preparation.proposal_period,
+            account_nonce_facts: Vec::new(),
+        })
+    }
+
+    fn begin_verify_vdf(
+        root: &DagTransactionService,
+        final_chain: &FinalChain,
+        block_rlp: Vec<u8>,
+    ) -> Result<DagVerifyBlockSessionStep> {
+        let authorization = begin_verify_authorization(root, block_rlp)?;
+        assert_eq!(authorization.action, 2);
+        root.report_verify_block_authorization_with_final_chain(final_chain)
     }
 
     fn composed_add_block_rlp(pivot: H256, level: u64, transactions: &[H256]) -> Vec<u8> {
@@ -3812,6 +4121,333 @@ mod tests {
         );
         assert_eq!(sortition_snapshot(&root)?, snapshot);
 
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn final_chain_composed_verify_authorization_owns_query_and_cleanup() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_verify_final_chain_composition");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let final_chain = final_chain_with_proposer(storage.clone(), proposer_address());
+
+        let authorization = begin_verify_authorization(&root, signed_dag_block(0x44))?;
+        assert_eq!(authorization.action, 2);
+        let vdf = root.report_verify_block_authorization_with_final_chain(&final_chain)?;
+        assert_eq!(vdf.action, 3);
+        assert_eq!(vdf.vote_count, 10);
+        assert_eq!(vdf.max_vote_count, 30);
+
+        begin_verify_authorization(&root, signed_dag_block(0x45))?;
+        let missing_key = root.report_verify_block_authorization_with_final_chain(&final_chain)?;
+        assert!(missing_key.complete);
+        assert_eq!(
+            missing_key.reject_code,
+            DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+
+        storage.dag().write_proposal_period_at_level(1, 1)?;
+        begin_verify_authorization(&root, signed_dag_block(0x44))?;
+        let unavailable = root.report_verify_block_authorization_with_final_chain(&final_chain)?;
+        assert!(unavailable.complete);
+        assert_eq!(unavailable.reject_code, DAG_VERIFY_REJECT_FUTURE_BLOCK);
+
+        begin_verify_authorization(&root, vec![0x80])?;
+        let decode_error = root
+            .report_verify_block_authorization_with_final_chain(&final_chain)
+            .expect_err("malformed retained block bytes must fail and clean the cursor");
+        assert!(
+            decode_error
+                .to_string()
+                .contains("DAG_VERIFY_SESSION_AUTHORIZATION_BLOCK_DECODE")
+        );
+        assert!(
+            root.next_verify_block_session()?
+                .error_code
+                .contains("DAG_VERIFY_SESSION_NOT_STARTED")
+        );
+
+        drop(final_chain);
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn final_chain_composed_verify_authorization_preserves_stale_replacement() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_verify_final_chain_stale");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let final_chain = final_chain_with_proposer(storage.clone(), proposer_address());
+
+        root.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: [0; 32],
+            block_level: 1,
+            pivot: [1; 32],
+            tips: Vec::new(),
+            block_transaction_hashes: Vec::new(),
+            supplied_transaction_hashes: Vec::new(),
+            block_rlp: signed_dag_block(0x44),
+        })?;
+        let wrong_stage = root.report_verify_block_authorization_with_final_chain(&final_chain)?;
+        assert_eq!(wrong_stage.status, 2);
+        assert!(
+            wrong_stage
+                .error_code
+                .contains("DAG_VERIFY_SESSION_UNEXPECTED_AUTHORIZATION_REPORT")
+        );
+
+        begin_verify_authorization(&root, signed_dag_block(0x44))?;
+        let stale = root
+            .report_verify_block_authorization_with_final_chain_hook(&final_chain, || {
+                root.begin_verify_block_session(DagVerifyBlockSessionInput {
+                    block_hash: [9; 32],
+                    block_level: 1,
+                    pivot: [1; 32],
+                    tips: Vec::new(),
+                    block_transaction_hashes: Vec::new(),
+                    supplied_transaction_hashes: Vec::new(),
+                    block_rlp: signed_dag_block(0x45),
+                })
+                .expect("replacement cursor opens while FinalChain query is unlocked");
+            })
+            .expect_err("stale authorization facts must not advance a replacement cursor");
+        assert!(
+            stale
+                .to_string()
+                .contains("DAG_VERIFY_SESSION_AUTHORIZATION_CURSOR_MISMATCH")
+        );
+        assert_eq!(root.next_verify_block_session()?.action, 1);
+
+        drop(final_chain);
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn final_chain_composed_proposer_owns_pressure_params_and_stale_retry() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_proposer_final_chain_composition");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let mut config = service_config();
+        config.sortition.params.vrf.threshold_upper = u16::MAX;
+        let root = DagTransactionService::restore(storage.clone(), config)?;
+        let final_chain = final_chain_with_proposer(storage.clone(), proposer_address());
+
+        let empty_id = root.begin_proposer_session(proposer_begin_input())?;
+        let empty =
+            root.report_proposer_final_chain_facts_with_final_chain(empty_id, &final_chain)?;
+        assert_eq!(
+            empty.reason_code,
+            DAG_PROPOSER_REASON_TRANSACTION_POOL_EMPTY
+        );
+
+        insert_pack_transaction(
+            &root,
+            &SigningKey::from_slice(&[0x71; 32]).expect("transaction signing key"),
+        )?;
+        let sidecar_rlp = signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x72; 32])?);
+        root.lock_transaction()?
+            .sidecar
+            .insert_non_finalized(keccak256(&sidecar_rlp), sidecar_rlp)?;
+        let mut limited_input = proposer_begin_input();
+        limited_input.max_non_finalized_transactions = 0;
+        let limited_id = root.begin_proposer_session(limited_input)?;
+        let limited =
+            root.report_proposer_final_chain_facts_with_final_chain(limited_id, &final_chain)?;
+        assert_eq!(
+            limited.reason_code,
+            crate::dag::DAG_PROPOSER_REASON_NON_FINALIZED_TRANSACTION_LIMIT
+        );
+
+        let session_id = root.begin_proposer_session(proposer_begin_input())?;
+        let pack =
+            root.report_proposer_final_chain_facts_with_final_chain(session_id, &final_chain)?;
+        assert_eq!(pack.action, DagProposerSessionAction::PackTransactions);
+        assert_eq!(pack.vote_count, 10);
+        assert_eq!(pack.max_vote_count, 30);
+
+        let wrong_stage =
+            root.report_proposer_final_chain_facts_with_final_chain(session_id, &final_chain)?;
+        assert_eq!(wrong_stage.status, 2);
+        assert!(
+            wrong_stage
+                .error_code
+                .contains("DAG_PROPOSER_SESSION_UNEXPECTED_FINAL_CHAIN_FACTS_REPORT")
+        );
+
+        let drift_id = root.begin_proposer_session(proposer_begin_input())?;
+        let period = root.next_proposer_session(drift_id)?.proposal_period;
+        let drift = root
+            .report_proposer_final_chain_facts_with_final_chain_hook(drift_id, &final_chain, || {
+                storage
+                    .metadata()
+                    .write_sortition_params_change(
+                        period,
+                        &SortitionParamsChange {
+                            period,
+                            interval_efficiency: 5_000,
+                            threshold_upper: 1_234,
+                        }
+                        .to_rlp_bytes(),
+                    )
+                    .expect("sortition drift row");
+            })
+            .expect_err("changed exact params must request retry without advancement");
+        assert!(
+            drift
+                .to_string()
+                .contains("DAG_PROPOSER_SESSION_SORTITION_PARAMS_STALE_RETRY")
+        );
+        assert_eq!(
+            root.next_proposer_session(drift_id)?.action,
+            DagProposerSessionAction::CollectFinalChainFacts
+        );
+
+        drop(final_chain);
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn final_chain_composed_proposer_failure_cleans_only_matching_cursor() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_proposer_final_chain_failure");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let final_chain = final_chain_with_proposer(storage.clone(), proposer_address());
+        let first = root.begin_proposer_session(proposer_begin_input())?;
+        let second = root.begin_proposer_session(proposer_begin_input())?;
+
+        storage.final_chain().write_conformance_lookup_rows(
+            1,
+            &[1],
+            99,
+            H256::zero(),
+            &[],
+            H256::zero(),
+            &[],
+            H256::zero(),
+            &[],
+            99,
+            &[],
+        )?;
+        let read_error = root
+            .report_proposer_final_chain_facts_with_final_chain(first, &final_chain)
+            .expect_err("invalid FinalChain head must fail after the initial sortition lookup");
+        assert!(
+            read_error
+                .to_string()
+                .contains("final_chain_meta/LAST_NUMBER")
+        );
+        assert!(
+            root.next_proposer_session(first)?
+                .error_code
+                .contains("DAG_PROPOSER_SESSION_NOT_STARTED")
+        );
+        assert_eq!(
+            root.next_proposer_session(second)?.action,
+            DagProposerSessionAction::CollectFinalChainFacts
+        );
+
+        let malformed = root.begin_proposer_session(proposer_begin_input())?;
+        let period = root.next_proposer_session(malformed)?.proposal_period;
+        storage
+            .metadata()
+            .write_sortition_params_change(period, &[0x80])?;
+        let lookup_error = root
+            .report_proposer_final_chain_facts_with_final_chain(malformed, &final_chain)
+            .expect_err("malformed initial sortition row must fail and clean its cursor");
+        assert!(
+            format!("{lookup_error:#}")
+                .contains("DAG_PROPOSER_SESSION_SORTITION_PARAMS_INITIAL_LOOKUP")
+        );
+        assert!(
+            root.next_proposer_session(malformed)?
+                .error_code
+                .contains("DAG_PROPOSER_SESSION_NOT_STARTED")
+        );
+
+        drop(final_chain);
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_root_vdf_owns_historical_invalid_and_wrong_stage_paths() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_native_root_vdf");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let final_chain = final_chain_with_proposer(storage.clone(), proposer_address());
+        let proposal_period_hash = H256::repeat_byte(0x91);
+        let mut valid = valid_vdf_request(1_234, proposal_period_hash);
+        let vdf = begin_verify_vdf(&root, &final_chain, valid.block_rlp.clone())?;
+        assert_eq!(vdf.action, 3);
+        valid.cursor_id = vdf.cursor_id;
+        storage.metadata().write_sortition_params_change(
+            vdf.proposal_period,
+            &SortitionParamsChange {
+                period: vdf.proposal_period,
+                interval_efficiency: 5_000,
+                threshold_upper: 1_234,
+            }
+            .to_rlp_bytes(),
+        )?;
+        assert_eq!(
+            root.lock_sortition()?.current_params().vrf.threshold_upper,
+            0x100
+        );
+        let gas = root.verify_block_vdf(valid)?;
+        assert_eq!(gas.action, 4);
+        assert_eq!(gas.cursor_id, vdf.cursor_id);
+
+        let malformed_block = signed_vdf_test_block(vec![0x80]);
+        let malformed = begin_verify_vdf(&root, &final_chain, malformed_block.clone())?;
+        let invalid = root.verify_block_vdf(DagVerifyBlockVdfRequest {
+            cursor_id: malformed.cursor_id,
+            block_rlp: malformed_block,
+            block_level: 1,
+            proposal_period_hash: H256::repeat_byte(0x92),
+        })?;
+        assert!(invalid.complete);
+        assert_eq!(
+            invalid.reject_code,
+            DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+
+        let wrong_request = valid_vdf_request(0x100, H256::repeat_byte(0x93));
+        root.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: keccak256(&wrong_request.block_rlp).to_fixed_bytes(),
+            block_level: 1,
+            pivot: [1; 32],
+            tips: Vec::new(),
+            block_transaction_hashes: Vec::new(),
+            supplied_transaction_hashes: Vec::new(),
+            block_rlp: wrong_request.block_rlp.clone(),
+        })?;
+        let cursor = root.next_verify_block_session()?.cursor_id;
+        let wrong_stage = root
+            .verify_block_vdf(DagVerifyBlockVdfRequest {
+                cursor_id: cursor,
+                ..wrong_request
+            })
+            .expect_err("wrong-stage VDF report must not advance the verifier cursor");
+        assert!(
+            wrong_stage
+                .to_string()
+                .contains("DAG_VERIFY_SESSION_UNEXPECTED_VDF_ACTION")
+        );
+        assert_eq!(root.next_verify_block_session()?.action, 1);
+
+        drop(final_chain);
         drop(root);
         drop(storage);
         std::fs::remove_dir_all(path)?;

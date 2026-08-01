@@ -44,7 +44,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 27833 |
+| `bridge_lines` | 26472 |
 | `shim_lines` | 17101 |
 | `cxx_functions` | 389 |
 | `cxx_carriers` | 340 |
@@ -122,7 +122,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | Module | Surface | Named consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
 | `rust/crates/rustaxa-bridge/src/dag.rs` | Proposer worker-command and legacy VDF-message CXX conversions | DAG manager/proposer shims | Executor conversion leaf | Delete when the C++ worker loop and VDF executor consume native commands and bytes without a standalone bridge module. |
-| `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | CXX conversion and unlocked leaf adapters over native `DagTransactionService` | App, DAG, transaction, gas, sortition shims | Native service wrapper | Retain only CXX conversion, focused external-leaf/ABI tests, and FinalChain, EVM, signing, VDF-generation, and transport leaf execution; transaction-resolution protocol behavior is native; delete with native application bootstrap and executor ports. |
+| `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | CXX conversion, FinalChain-handle unwrapping, and retained external leaf adapters over native `DagTransactionService` | App, DAG, transaction, gas, sortition shims | Native service wrapper | Retain only CXX conversion, focused external-leaf/ABI tests, FinalChain handle unwrapping, and EVM, signing, VDF-generation, and transport leaf execution; proposer/verifier FinalChain composition and transaction-resolution protocol behavior are native; delete with native application bootstrap and executor ports. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | FinalChain and execution APIs | FinalChain shim, execution adapters | External boundary | Split native ownership, public query, and a narrow external-EVM executor API. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | ingress, planning, effects | tarcap handlers | External boundary | Complete `CRW-N01`; retain transport-only execution API. |

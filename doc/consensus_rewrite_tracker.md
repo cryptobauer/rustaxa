@@ -1618,6 +1618,41 @@ assertion failed before that resource leakage. Independent review required an
 exact-preparation cleanup assertion, corrected finalization-token error docs,
 accurate inventory wording, and removal of a dead conversion; all were applied.
 
+The next bounded `CRW-12` DAG/FinalChain composition slice moves the complete
+proposer head/authorization lookup and verifier authorization lookup behind
+task-shaped native `DagTransactionService` methods. Each task snapshots its
+exact cursor, releases every DAG, sortition, and transaction guard before
+borrowing native `FinalChain`, and reacquires the canonical lock domains only
+to validate and advance the matching cursor. Query, decode, or recovery errors
+clean only the still-matching cursor; stale replacements and sortition-parameter
+drift survive without advancement. The bridge now only unwraps the retained
+`BridgeFinalChain` handle and converts the owned native step. Its split-protocol
+request/fact adapters, test guard escape hatches, FinalChain helper, and fifteen
+RocksDB-backed behavioral fixtures are deleted. Five native tests cover
+successful and rejected authorization, missing/future/malformed blocks, stale
+replacement, live transaction pressure, sortition drift, and matching-only
+failure cleanup plus historical-parameter VDF success, malformed-proof
+rejection, and wrong-stage preservation; existing native packing coverage and
+the 49-test CXX suite retain the other production and ABI contracts. This removes a net 1,361 bridge
+lines and lowers the exact budget to 26,472. CXX functions, carriers, handles,
+shim lines/directories, flags, factories, constructors, production consumers,
+and public CXX signatures are unchanged. No upstream-owned C++ file changes.
+
+Validation passes `make rewrite-validate-fast`, the 33 native DAG application
+tests (including all four new FinalChain-composed cases), all 132 retained bridge
+tests, the 49-test CXX consensus suite, `dag_test`, `dag_block_test`, isolated
+`pbft_chain_test`, `pbft_chain_shim_test`, both structural guards and self-tests,
+whitespace checks, and the Rust-enabled `taraxad` smoke gate. The repo-wide CTest
+attempt remains non-isolated and partially unbuilt: registered missing binaries,
+same-process `/tmp/taraxa0` RocksDB-lock leakage, and unavailable static Go zlib/
+snappy libraries prevent a clean aggregate result. Python integration cannot
+start because this image lacks `virtualenv` and `pytest` under its externally
+managed Python installation.
+Independent review found and verified the restored sidecar-pressure, malformed
+sortition, and VDF application-root coverage plus crate-private verifier snapshot
+visibility, then approved the final lock order, cursor revalidation, cleanup,
+bridge contraction, and documentation shape.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

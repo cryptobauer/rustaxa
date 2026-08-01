@@ -197,7 +197,7 @@ pub struct DagVerifyBlockTransactionCompletion {
 }
 
 #[derive(Clone)]
-pub struct DagVerifyBlockAuthorizationSnapshot {
+pub(crate) struct DagVerifyBlockAuthorizationSnapshot {
     pub cursor_id: u64,
     pub fingerprint: [u8; 32],
     pub generation: u64,
@@ -205,7 +205,7 @@ pub struct DagVerifyBlockAuthorizationSnapshot {
     pub block_rlp: Vec<u8>,
 }
 
-pub enum DagVerifyBlockAuthorizationPreparation {
+pub(crate) enum DagVerifyBlockAuthorizationPreparation {
     Snapshot(DagVerifyBlockAuthorizationSnapshot),
     Step(DagVerifyBlockSessionStep),
 }

@@ -421,7 +421,13 @@ materialization, FinalChain lookup, and EVM estimation as unlocked leaves. The
 duplicated bridge verifier-transaction behavioral suite is deleted; native
 tests own all-supplied completion, canonical queue/sidecar resolution, missing
 transaction rejection, finalized-nonce validation, and stale period/stage
-cursor behavior. The
+cursor behavior. Native `DagTransactionService` now also composes proposer
+head/authorization and verifier authorization reads directly with native
+`FinalChain`: exact DAG cursors are captured before the unlocked query and
+matching-only advancement or cleanup occurs after reacquisition. The bridge
+only unwraps the retained FinalChain handle and converts the result; its
+split-protocol types, helpers, guard escape hatches, and behavioral fixtures
+are deleted. The
 native root also owns the remaining DAG manager query, storage-lookup,
 graph-status, and non-finalized-sync tasks and returns only owned domain
 snapshots. Superseded direct proposer/verifier/query adapters and their bridge

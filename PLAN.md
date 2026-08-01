@@ -1103,7 +1103,7 @@ The current Rust consensus footprint is broad but still incomplete:
    `TransactionPackingService`. That service owns the private packing mutex and poison policy, compatibility-or-DAG
    owner binding, canonical candidate/RLP snapshot, shard cursor, pending-estimate ordering, actual-demotion
    acknowledgement, and selective abort. Compatibility `packTrxs` drives a narrow Rust step protocol, while DAG proposal packing is
-   composed inside `BridgeDagTransactionService`: Rust derives pack limits from the private DAG cursor, binds the
+   composed inside native `DagTransactionService`: Rust derives pack limits from the private DAG cursor, binds the
    transaction cursor to that proposal session, and transfers selected canonical payloads directly back into DAG state.
    C++ sees only required EVM estimate candidates. Declared-gas and gas-estimation-cache hits are consumed inside Rust
    without a callback. The stale standalone planner FFI, proposer request/report carriers, and C++ sharded-pack payload
@@ -1115,8 +1115,10 @@ The current Rust consensus footprint is broad but still incomplete:
    construction, restoration, lifetime, canonical lock order, add-block cursor and atomic DAG/transaction persistence,
    finalized-order application with post-commit transaction-sidecar cleanup, proposer transaction packing, and the
    complete DAG verification session. Verification resolves queue/sidecar/storage views, revalidates authorization and
-   VDF snapshots, verifies the VDF proof, and decides terminal gas status in Rust; C++ retains only transaction object
-   materialization, exact-period FinalChain reads, and EVM estimation as unlocked executor leaves. The bridge converts
+   VDF snapshots, verifies the VDF proof, and decides terminal gas status in Rust. Native application tasks also borrow
+   `FinalChain` only after releasing every DAG-cluster guard, then revalidate the exact proposer or verifier cursor before
+   applying head and authorization facts; C++ retains only transaction object materialization and EVM estimation as
+   unlocked executor leaves. The bridge unwraps the retained FinalChain handle and converts
    CXX carriers for those operations without owning their state, lock choreography, or storage batches.
    Rust also owns `estimateTransactionGas` and
    `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction hash, proposal period)` opaque
