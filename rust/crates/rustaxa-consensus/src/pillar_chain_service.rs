@@ -806,6 +806,38 @@ mod tests {
     }
 
     #[test]
+    fn restore_rejects_malformed_persisted_current_data() {
+        let storage = temp_storage("pillar_owner_restore_malformed_current");
+        save_current_pillar_block_data_storage(storage.as_ref(), &[0xc1, 0x01])
+            .expect("malformed current bytes should persist");
+        let error = match PillarChainService::restore(storage) {
+            Ok(_) => panic!("malformed current data must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("restore current pillar anchor snapshot")
+        );
+    }
+
+    #[test]
+    fn restore_rejects_malformed_latest_finalized_pillar_block() {
+        let storage = temp_storage("pillar_owner_restore_malformed_latest");
+        save_finalized_pillar_block_storage(storage.as_ref(), 42, &[0xc1, 0x01])
+            .expect("malformed latest bytes should persist");
+        let error = match PillarChainService::restore(storage) {
+            Ok(_) => panic!("malformed latest block must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("restore current pillar anchor snapshot")
+        );
+    }
+
+    #[test]
     fn restore_starts_pending_with_empty_generation_zero_snapshot() {
         let service =
             PillarChainService::restore(temp_storage("pillar_owner_restore")).expect("restore");
@@ -969,6 +1001,50 @@ mod tests {
         assert_eq!(snapshot.generation, 0);
         assert_eq!(snapshot.anchor.expect("anchor").period, 7);
         assert_eq!(snapshot.current_data_rlp, current);
+    }
+
+    #[test]
+    fn malformed_apply_current_data_preserves_durable_and_snapshot_state() {
+        let storage = temp_storage("pillar_owner_malformed_apply_unchanged");
+        let service = PillarChainService::restore(storage.clone()).expect("restore");
+        service.complete_bootstrap().expect("ready");
+        let current = current_data(pillar_block(41, H256::from_low_u64_be(10)), Vec::new());
+        service
+            .apply_planned_current_block_data(current.clone(), 0)
+            .expect("valid apply");
+
+        let before = {
+            let state = service.lock(false).expect("lock");
+            let snapshot = state.current_anchor.read().expect("snapshot read");
+            (
+                state.anchor_generation().expect("generation"),
+                snapshot.anchor,
+                snapshot.current_data_rlp.clone(),
+            )
+        };
+
+        assert!(
+            service
+                .apply_planned_current_block_data(vec![0xc1, 0x01], before.0)
+                .is_err()
+        );
+
+        let after = {
+            let state = service.lock(false).expect("lock");
+            let snapshot = state.current_anchor.read().expect("snapshot read");
+            (
+                state.anchor_generation().expect("generation"),
+                snapshot.anchor,
+                snapshot.current_data_rlp.clone(),
+            )
+        };
+        assert_eq!(before.0, after.0);
+        assert_eq!(before.1, after.1);
+        assert_eq!(before.2, after.2);
+        assert_eq!(
+            load_current_pillar_block_data_storage(storage.as_ref()).expect("durable current"),
+            current
+        );
     }
 
     #[test]

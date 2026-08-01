@@ -1783,6 +1783,38 @@ allowance matching the retained CXX operation shape. Independent review
 approved the ownership closure after focused FFI VDF conversion coverage was
 retained at the bridge boundary.
 
+The next bounded `CRW-12` PBFT sibling test-ownership slice removes the
+remaining pillar-chain protocol/runtime suite from `rustaxa-bridge`. Native
+`PillarChainService` and root `PbftService` tests now exclusively own pillar
+restoration, readiness, bootstrap/restart, anchor generation and atomic
+mutation, linkage, block creation, and composed FinalChain behavior. Three
+missing negative cases move beside the native owner: malformed persisted
+current data, malformed latest-finalized data, and malformed current-data
+apply with unchanged durable bytes and in-memory generation/snapshot. The
+bridge deletes its ready-service fixture and twelve RocksDB-backed behavioral
+tests, retaining only three focused sentinels for current-anchor tag/status and
+readiness-error projection, typed pillar-storage byte/missing/error behavior,
+and FinalChain-handle plus block-plan carrier conversion. This removes 434
+bridge lines and lowers the exact `bridge_lines` budget to 23,433. CXX
+functions, carriers, handles, shim lines/directories, flags, factories,
+constructors, production consumers, declarations, and C++ callers are
+unchanged. No upstream-owned C++ file changes.
+
+Validation for this pillar-chain test-ownership slice passed the full native
+consensus (1,077 tests) and bridge (88 tests) suites,
+`rewrite-validate-fast`, the bridge inventory guard and its self-test, the
+storage-boundary guard, `git diff --check`, and `rewrite-validate-smoke` with
+`RUSTAXA_ENABLE=ON`. The focused `pillar_chain_test` binary passed 10 of 13
+cases in one process; two cases that encountered the suite's shared
+`/tmp/taraxa0/db/db/LOCK` leak passed when rerun independently. The remaining
+`finalize_root_in_pillar_block` case still requires committed external-EVM
+state for block 3 and fails independently before reaching this Rust-test-only
+change. No `Old::`, retired consensus-network-queue, or native
+`BridgeStorage` references were found in the closeout searches. Independent
+review approved the contraction after the retained storage sentinel proved
+cloned-handle lifetime and exact error identities and the FinalChain sentinel
+covered every material block-plan carrier field.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
