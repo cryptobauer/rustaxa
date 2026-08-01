@@ -25,10 +25,7 @@ impl BridgePbftService {
         &self,
         input: DoubleVotingProofInput,
     ) -> Result<DoubleVotingProofPlan> {
-        Ok(self
-            .slashing()
-            .plan_double_voting_proof(input.into())?
-            .into())
+        Ok(self.0.plan_double_voting_proof(input.into())?.into())
     }
 
     /// Applies a typed transaction executor report to Rust duplicate protection.
@@ -41,7 +38,7 @@ impl BridgePbftService {
         report: DoubleVotingProofSubmissionReport,
     ) -> Result<bool> {
         Ok(self
-            .slashing()
+            .0
             .report_double_voting_proof_submission(
                 H256::from(report.proof_hash),
                 report.transaction_inserted,
@@ -205,59 +202,6 @@ mod tests {
     }
 
     #[test]
-    fn bridges_planner_plan_output() {
-        let (service, path) = service(true, 0);
-        let input = proof_input(2, 1, vec![submitter(0, true, 9)]);
-
-        let plan = service.slashing_plan_double_voting_proof(input).unwrap();
-
-        assert_eq!(
-            plan.status,
-            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::Planned)
-        );
-        assert!(plan.should_submit);
-        assert_eq!(plan.wallet_index, 0);
-        assert_eq!(plan.nonce, {
-            let mut bytes = [0u8; 32];
-            bytes[31] = 9;
-            bytes
-        });
-        assert!(!plan.call_data.is_empty());
-        assert_eq!(plan.value, [0u8; 32]);
-        assert_eq!(plan.gas_limit, 100_000);
-        drop(service);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-
-    #[test]
-    fn bridge_propagates_magnolia_activation_period() {
-        let (before, before_path) = service(true, 101);
-        let plan = before
-            .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
-            .unwrap();
-        assert_eq!(
-            plan.status,
-            double_voting_proof_plan_status_code(
-                DoubleVotingProofPlanStatus::BeforeMagnoliaActivation
-            )
-        );
-        assert!(!plan.should_submit);
-
-        let (at_activation, activation_path) = service(true, 100);
-        assert_eq!(
-            at_activation
-                .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)],))
-                .unwrap()
-                .status,
-            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::Planned)
-        );
-        drop(before);
-        drop(at_activation);
-        std::fs::remove_dir_all(before_path).unwrap();
-        std::fs::remove_dir_all(activation_path).unwrap();
-    }
-
-    #[test]
     fn bridge_plan_status_codes_remain_stable() {
         assert_eq!(
             double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::Planned),
@@ -321,46 +265,6 @@ mod tests {
         });
         assert_eq!(plan.contract_address[19], 0xee);
         assert_eq!(plan.value, [0u8; 32]);
-        drop(service);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-
-    #[test]
-    fn bridge_reports_submission_executor_outcome() {
-        let (service, path) = service(true, 0);
-        let plan = service
-            .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
-            .unwrap();
-
-        let rejected = service
-            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
-                proof_hash: plan.proof_hash,
-                transaction_inserted: false,
-            })
-            .unwrap();
-        assert!(!rejected);
-        assert_eq!(
-            service
-                .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
-                .unwrap()
-                .status,
-            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::Planned),
-        );
-
-        let accepted = service
-            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
-                proof_hash: plan.proof_hash,
-                transaction_inserted: true,
-            })
-            .unwrap();
-        assert!(accepted);
-        assert_eq!(
-            service
-                .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
-                .unwrap()
-                .status,
-            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::DuplicateProof),
-        );
         drop(service);
         std::fs::remove_dir_all(path).unwrap();
     }

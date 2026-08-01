@@ -108,6 +108,9 @@ storage reach-through.
 The native root also requires verified-vote, slashing, and pillar siblings by construction. C++ clients retain
 null-service and pillar-readiness checks, but no longer probe for capabilities that cannot be absent from a published
 service.
+The native PBFT root now exposes task-shaped slashing plan/report operations as well; bridge and native sibling
+accessors are deleted. Slashing planner, activation, and duplicate-cache behavior is tested at the native root, while
+the bridge retains only status-code and canonical ABI-byte conversion fixtures.
 Native `rustaxa-consensus::pillar_chain_service::PillarChainService` now owns pillar storage and restoration,
 `PillarVotes`, the canonical anchor snapshot, both preparation registries and finalization token sequence, the outer
 serialization mutex, and bootstrap readiness. Native pillar-vote task methods own admission, relevance, weighted

@@ -51,7 +51,10 @@ use crate::period_data_queue::{
 use crate::pillar_chain::load_own_pillar_block_vote_storage;
 use crate::pillar_chain_service::PillarChainService;
 use crate::proposed_blocks::ProposedBlocksService;
-use crate::slashing::SlashingProofService;
+use crate::slashing::{
+    DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofSubmissionPlan,
+    SlashingProofService,
+};
 use anyhow::{Context, Result};
 use rustaxa_storage::{Storage, StorageWriteBatch};
 use std::sync::Arc;
@@ -159,6 +162,31 @@ pub struct PbftService {
 }
 
 impl PbftService {
+    /// Plans one double-voting proof through the application-owned slashing service.
+    ///
+    /// The native slashing service owns planner configuration, duplicate-cache
+    /// locking, validation, and canonical ABI bytes. External account facts are
+    /// already present in `input`; no executor runs during this call.
+    pub fn plan_double_voting_proof(
+        &self,
+        input: DoubleVotingProofInput,
+    ) -> Result<DoubleVotingProofPlan> {
+        self.slashing.plan_double_voting_proof(input)
+    }
+
+    /// Applies one external slashing-transaction insertion report.
+    ///
+    /// Accepted insertions update the bounded native duplicate cache; rejected
+    /// insertions remain retryable. Signing and transaction insertion remain
+    /// explicit C++ leaf effects.
+    pub fn report_double_voting_proof_submission(
+        &self,
+        proof_hash: ethereum_types::H256,
+        transaction_inserted: bool,
+    ) -> Result<DoubleVotingProofSubmissionPlan> {
+        self.slashing
+            .report_double_voting_proof_submission(proof_hash, transaction_inserted)
+    }
     /// Loads one finalized startup-replay period through manager-owned storage.
     ///
     /// Missing periods remain explicit in the returned native payload. Optional
@@ -1236,11 +1264,6 @@ impl PbftService {
         &self.verified_votes
     }
 
-    /// Returns the native slashing sibling.
-    pub fn slashing(&self) -> &SlashingProofService {
-        &self.slashing
-    }
-
     /// Returns the native pillar sibling.
     pub fn pillar(&self) -> &PillarChainService {
         &self.pillar
@@ -1895,6 +1918,75 @@ mod tests {
         assert!(service.is_ready());
         service.complete_bootstrap();
         assert!(service.is_ready());
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn service_owns_slashing_plan_and_submission_lifecycle() {
+        use crate::slashing::{
+            DoubleVotingProofInput, DoubleVotingProofPlanStatus, SlashingSubmitterFact,
+        };
+
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_slashing_owner");
+        let mut service_config = config(1);
+        service_config.magnolia_activation_period = 10;
+        let service = PbftService::restore(storage, service_config).unwrap();
+        let input = DoubleVotingProofInput {
+            vote_a_hash: H256::repeat_byte(1),
+            vote_b_hash: H256::repeat_byte(2),
+            vote_a_period: 10,
+            vote_b_period: 10,
+            vote_a_round: 2,
+            vote_b_round: 2,
+            vote_a_step: 3,
+            vote_b_step: 3,
+            vote_a_rlp: vec![0xc1, 0x01],
+            vote_b_rlp: vec![0xc1, 0x02],
+            submitters: vec![SlashingSubmitterFact {
+                wallet_index: 0,
+                nonce: U256::one(),
+                balance: U256::one(),
+            }],
+        };
+
+        let mut before_activation = input.clone();
+        before_activation.vote_a_period = 9;
+        before_activation.vote_b_period = 9;
+        assert_eq!(
+            service
+                .plan_double_voting_proof(before_activation)
+                .unwrap()
+                .status,
+            DoubleVotingProofPlanStatus::BeforeMagnoliaActivation
+        );
+
+        let plan = service.plan_double_voting_proof(input.clone()).unwrap();
+        assert_eq!(plan.status, DoubleVotingProofPlanStatus::Planned);
+        assert!(
+            !service
+                .report_double_voting_proof_submission(plan.proof_hash, false)
+                .unwrap()
+                .submitted
+        );
+        assert_eq!(
+            service
+                .plan_double_voting_proof(input.clone())
+                .unwrap()
+                .status,
+            DoubleVotingProofPlanStatus::Planned
+        );
+        assert!(
+            service
+                .report_double_voting_proof_submission(plan.proof_hash, true)
+                .unwrap()
+                .submitted
+        );
+        assert_eq!(
+            service.plan_double_voting_proof(input).unwrap().status,
+            DoubleVotingProofPlanStatus::DuplicateProof
+        );
 
         drop(service);
         let _ = fs::remove_dir_all(path);

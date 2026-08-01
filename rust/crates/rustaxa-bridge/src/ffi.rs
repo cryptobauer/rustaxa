@@ -170,10 +170,6 @@ impl BridgePbftService {
         self.0.verified_votes()
     }
 
-    pub(crate) fn slashing(&self) -> &rustaxa_consensus::slashing::SlashingProofService {
-        self.0.slashing()
-    }
-
     pub(crate) fn pillar(&self) -> &rustaxa_consensus::PillarChainService {
         self.0.pillar()
     }

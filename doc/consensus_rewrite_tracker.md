@@ -1542,6 +1542,32 @@ into production. Residual non-blocking risk is that `PbftService::manager_state`
 remains a public native API, so guards are absent from current bridge code but
 not type-system-inaccessible to a future adapter.
 
+The next bounded `CRW-12` slashing-owner contraction moves double-vote proof
+planning and submission reporting behind task-shaped native `PbftService`
+methods. The bridge and native slashing sibling accessors are deleted, so the
+bridge can no longer reach the planner mutex or duplicate cache. Three duplicate
+bridge behavioral fixtures for normal planning, Magnolia activation, and
+accepted/rejected submission lifecycle move to one native application-root
+test plus the existing exhaustive native slashing suite. The bridge retains
+only stable status-code and canonical proof-hash/ABI-byte conversion fixtures.
+C++ still owns FinalChain account fact collection, transaction construction,
+signing, gas-price lookup, and transaction-pool insertion as named leaf effects.
+This removes a net 100 production bridge lines and lowers the checked budget to
+28,174. CXX functions, carriers, handles, shim lines/directories, flags,
+factories, constructors, production consumers, and public signatures remain
+unchanged. No upstream-owned C++ file changes.
+
+Tier 1 `rewrite-validate-fast`, the focused native slashing-owner lifecycle
+test, retained bridge status/ABI fixtures, exact inventory and storage-boundary
+guards, and whitespace validation pass. Tier 2 is the complete 49-test
+Rust-enabled `rust_consensus_tests` suite. Tier 3 is the `taraxad` build.
+Independent review approves native delegation and mutex ownership, Magnolia
+configuration propagation, retry/accept/duplicate behavior, accessor deletion,
+ABI coverage, and the exact 28,174-line inventory. Residual non-blocking risk is
+that the application-root test does not stress concurrent submissions; the
+unchanged native mutex owner and lower-level clone/cache tests cover the shared
+lock contract.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
