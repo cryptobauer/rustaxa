@@ -6,7 +6,11 @@
 //! adds a root-wide lock.
 
 use crate::pbft_chain::PbftChainService;
-use crate::pbft_finalize::PbftFinalizationRuntimeAction;
+use crate::pbft_finalize::{
+    PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationPeriodLambdaLookup,
+    PbftFinalizationRuntimeAction, PbftFinalizationStatus,
+    load_pbft_finalization_last_period_lambda, plan_pbft_dynamic_lambda,
+};
 use crate::pbft_manager::{
     PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
     PbftFinalizationOwnedActionDrain, PbftManagerGuard, PbftManagerService,
@@ -50,6 +54,18 @@ pub struct PbftServiceConfig {
     pub magnolia_activation_period: u64,
 }
 
+/// Native dynamic-lambda decision composed with its durable prior-lambda fact.
+///
+/// `plan` contains the deterministic finalization policy decision. The lookup
+/// is populated only for an accepted, active dynamic-lambda plan; inactive or
+/// rejected plans carry `found = false` and value zero without reading storage.
+pub struct PbftFinalizationDynamicLambdaDecision {
+    /// Deterministic dynamic-lambda policy result.
+    pub plan: PbftDynamicLambdaPlan,
+    /// Closest persisted lambda at or before the preceding finalized period.
+    pub last_saved_period_lambda: PbftFinalizationPeriodLambdaLookup,
+}
+
 /// CXX-free native owner of the complete PBFT application-service graph.
 ///
 /// Restoration validates storage-independent slashing configuration first,
@@ -84,6 +100,42 @@ impl PbftService {
             refresh_dag_counters: drain.refresh_dag_counters,
             snapshot: manager.state.snapshot(),
             error_code: drain.error_code,
+        })
+    }
+
+    /// Plans one finalization dynamic-lambda update with native storage facts.
+    ///
+    /// The service derives the prior-period lookup from its manager-owned
+    /// storage handle. Active accepted plans query the closest persisted lambda
+    /// at or before `finalized_period - 1`. Period zero has no predecessor and
+    /// returns an empty lookup without reading a period-zero row. Disabled or
+    /// rejected plans likewise return an empty lookup. Storage failures are
+    /// returned without mutating manager or durable state.
+    pub fn plan_finalization_dynamic_lambda(
+        &self,
+        fact: PbftDynamicLambdaFact,
+    ) -> Result<PbftFinalizationDynamicLambdaDecision> {
+        let dynamic_lambda_active = fact.dynamic_lambda_active;
+        let finalized_period = fact.finalized_period;
+        let plan = plan_pbft_dynamic_lambda(fact);
+        let last_saved_period_lambda = if dynamic_lambda_active
+            && plan.status == PbftFinalizationStatus::Accepted
+            && finalized_period > 0
+        {
+            let manager = self.manager_state();
+            load_pbft_finalization_last_period_lambda(
+                manager.storage.as_ref(),
+                finalized_period.saturating_sub(1),
+            )?
+        } else {
+            PbftFinalizationPeriodLambdaLookup {
+                found: false,
+                value: 0,
+            }
+        };
+        Ok(PbftFinalizationDynamicLambdaDecision {
+            plan,
+            last_saved_period_lambda,
         })
     }
 
@@ -653,6 +705,26 @@ mod tests {
         }
     }
 
+    fn dynamic_lambda_fact(finalized_period: u64) -> PbftDynamicLambdaFact {
+        PbftDynamicLambdaFact {
+            dynamic_lambda_active: true,
+            finalized_period,
+            finalized_round: 1,
+            pre_adjust_rounds_count_dynamic_lambda: 9,
+            pre_adjust_dynamic_lambda: 1_500,
+            config: crate::pbft_finalize::PbftDynamicLambdaConfig {
+                cacti_block_num: 10,
+                lambda_min: 500,
+                lambda_max: 1_500,
+                lambda_default: 2_000,
+                lambda_change_interval: 10,
+                lambda_change: 10,
+                consensus_delay: 400,
+                dpos_blocks_per_year: 500,
+            },
+        }
+    }
+
     fn dag_service(storage: Arc<Storage>) -> DagTransactionService {
         DagTransactionService::restore(
             storage,
@@ -905,6 +977,67 @@ mod tests {
 
         drop(active);
         drop(inactive);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dynamic_lambda_planning_and_storage_lookup_are_owned_by_native_service() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_dynamic_lambda");
+        storage
+            .metadata()
+            .write_period_lambda(19, 1_234)
+            .expect("period lambda persists");
+        storage
+            .metadata()
+            .write_period_lambda(0, 999)
+            .expect("period-zero lambda persists for lower-bound regression");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+
+        let decision = service
+            .plan_finalization_dynamic_lambda(dynamic_lambda_fact(20))
+            .expect("dynamic-lambda decision succeeds");
+        assert_eq!(decision.plan.status, PbftFinalizationStatus::Accepted);
+        assert!(decision.plan.apply_dynamic_lambda_update);
+        assert_eq!(decision.plan.period_lambda, 1_500);
+        assert_eq!(decision.plan.blocks_per_year, 9_275_294);
+        assert_eq!(decision.plan.rounds_count_dynamic_lambda, 0);
+        assert_eq!(decision.plan.dynamic_lambda, 1_490);
+        assert_eq!(
+            decision.last_saved_period_lambda,
+            PbftFinalizationPeriodLambdaLookup {
+                found: true,
+                value: 1_234,
+            }
+        );
+
+        let missing = service
+            .plan_finalization_dynamic_lambda(dynamic_lambda_fact(0))
+            .expect("period zero has no prior lambda");
+        assert_eq!(
+            missing.last_saved_period_lambda,
+            PbftFinalizationPeriodLambdaLookup {
+                found: false,
+                value: 0,
+            }
+        );
+
+        let mut inactive_fact = dynamic_lambda_fact(20);
+        inactive_fact.dynamic_lambda_active = false;
+        let inactive = service
+            .plan_finalization_dynamic_lambda(inactive_fact)
+            .expect("inactive dynamic-lambda decision succeeds");
+        assert!(!inactive.plan.apply_dynamic_lambda_update);
+        assert!(!inactive.last_saved_period_lambda.found);
+
+        let mut rejected_fact = dynamic_lambda_fact(20);
+        rejected_fact.config.lambda_change_interval = 0;
+        let rejected = service
+            .plan_finalization_dynamic_lambda(rejected_fact)
+            .expect("rejected policy does not read prior lambda");
+        assert_eq!(rejected.plan.status, PbftFinalizationStatus::ContractError);
+        assert!(!rejected.last_saved_period_lambda.found);
+
+        drop(service);
         let _ = fs::remove_dir_all(path);
     }
 

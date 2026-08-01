@@ -1372,6 +1372,30 @@ all three native queue-drain tests, all five native state-action session tests,
 all 125 native manager tests, and the 49-test CXX suite pass. Tier 3 is not
 required because no production behavior, startup route, or ABI changed.
 
+The next bounded `CRW-12` storage-read ownership contraction moves
+dynamic-lambda policy-plus-prior-lambda composition out of `rustaxa-bridge`
+and onto native `PbftService`. The application root now plans the update and,
+only for accepted active nonzero periods, loads the closest persisted lambda
+through its manager-owned storage handle; period zero explicitly has no
+predecessor, and the bridge performs CXX conversion only. A
+native application-root test covers found and missing prior-lambda decisions,
+while the retained CXX dynamic-lambda case preserves end-to-end projection.
+Four additional bridge RocksDB fixtures for DAG/PBFT existence, cert-voted
+recovery, own pillar vote, and startup replay are deleted because their exact
+found/missing, payload, validation, and persistence contracts already live in
+native DAG, PBFT-chain/manager, pillar, and storage tests. One compact bridge
+sentinel retains DAG lookup, startup replay, and dynamic-lambda carrier
+projection, including hash lists and optional/prior lambda encoding. This
+removes a net 288 bridge lines and lowers the checked budget to 28,745; CXX
+functions, carriers, handles,
+shim lines/directories, granular flags, partial factories, compatibility
+constructors, and production consumers remain unchanged. Production CXX
+signatures and external behavior are unchanged.
+Tier 1 `rewrite-validate-fast`, the 14 native PBFT-service tests, the focused
+bridge storage-projection sentinel, and the inventory/storage guards pass.
+Tier 2 is the complete 49-test Rust-enabled `rust_consensus_tests` suite; Tier
+3 is the Rust-enabled `taraxad` build. No upstream-owned C++ file changes.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

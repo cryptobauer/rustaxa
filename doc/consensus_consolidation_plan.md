@@ -313,6 +313,14 @@ report-validation, sidecar, and completion behavior. The bridge retains one
 combined field/status projection sentinel and bootstrap-readiness coverage;
 the CXX suite retains storage-backed startup, period-advance, finalization, and
 external-executor boundaries instead of repeating native manager transcripts.
+Finalization dynamic-lambda composition is now a native `PbftService` task:
+Rust plans the update and, for an accepted active nonzero period, loads the
+closest prior persisted lambda through the manager-owned storage handle before
+the bridge projects the decision. Native
+storage/consensus suites also own DAG/PBFT existence, cert-voted recovery,
+own-pillar-vote, and startup-replay read behavior. Five parallel bridge RocksDB
+fixtures are replaced by one compact DAG/startup/dynamic-lambda carrier
+projection sentinel.
 Missing Cacti dynamic-lambda startup rejection and storage non-mutation
 coverage now live with the native manager restore function rather than in a
 bridge-owned RocksDB fixture.

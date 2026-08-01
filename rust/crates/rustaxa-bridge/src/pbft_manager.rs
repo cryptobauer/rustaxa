@@ -73,13 +73,11 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::{BridgePbftService, BridgeStorage};
 use crate::transaction_manager::bridge_to_service_account_nonce_facts;
 use anyhow::anyhow;
-use rustaxa_consensus::dag::dag_block_period_from_storage;
+use rustaxa_consensus::dag::{dag_block_period_from_storage, DagBlockPeriodStorageLookup};
 use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
 #[cfg(test)]
 use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::pbft_finalize::{
-    load_pbft_finalization_last_period_lambda as load_domain_pbft_finalization_last_period_lambda,
-    plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent, PbftDynamicLambdaConfig,
     PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationPlan,
@@ -127,10 +125,10 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerProposalWalletFact, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
     PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
     PbftManagerRuntimeStateCode, PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact,
-    PbftManagerSleepPlan, PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
-    PbftManagerStateActionEffect, PbftManagerStateActionEffectReport,
-    PbftManagerStateActionEffectResultCode, PbftManagerStateActionFact,
-    PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
+    PbftManagerSleepPlan, PbftManagerStartupReplayPeriod, PbftManagerStartupReplayRangeFact,
+    PbftManagerStartupReplayRangePlan, PbftManagerStateActionEffect,
+    PbftManagerStateActionEffectReport, PbftManagerStateActionEffectResultCode,
+    PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
     PbftManagerStateActionSessionStep, PbftManagerTransitionKind, PbftManagerTransitionStatus,
     PbftManagerTransitionStorageStatus,
 };
@@ -566,7 +564,13 @@ pub fn pbft_manager_runtime_load_startup_replay_period(
         period,
         load_period_lambda,
     )?;
-    Ok(crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod {
+    Ok(startup_replay_period_into_ffi(replay))
+}
+
+fn startup_replay_period_into_ffi(
+    replay: PbftManagerStartupReplayPeriod,
+) -> crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod {
+    crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod {
         found: replay.found,
         period_data_rlp: replay.period_data_rlp,
         finalized_dag_hashes: replay
@@ -576,7 +580,7 @@ pub fn pbft_manager_runtime_load_startup_replay_period(
             .collect(),
         has_period_lambda: replay.period_lambda.is_some(),
         period_lambda: replay.period_lambda.unwrap_or_default(),
-    })
+    }
 }
 
 /// Returns the current Rust-owned PBFT manager runtime snapshot.
@@ -1488,11 +1492,15 @@ pub fn pbft_manager_runtime_dag_block_period(
     let runtime = runtime.manager_state();
     let lookup =
         dag_block_period_from_storage(runtime.storage.as_ref(), ethereum_types::H256::from(*hash))?;
-    Ok(FfiBlockPeriodLookup {
+    Ok(dag_block_period_lookup_into_ffi(lookup))
+}
+
+fn dag_block_period_lookup_into_ffi(lookup: DagBlockPeriodStorageLookup) -> FfiBlockPeriodLookup {
+    FfiBlockPeriodLookup {
         found: lookup.found,
         period: lookup.period,
         position: lookup.position,
-    })
+    }
 }
 
 /// Checks PBFT block existence through PBFT-manager runtime storage.
@@ -1550,25 +1558,13 @@ pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
     runtime: &BridgePbftService,
     fact: FfiPbftDynamicLambdaFact,
 ) -> anyhow::Result<FfiPbftManagerFinalizationDynamicLambdaPlan> {
-    let runtime = runtime.manager_state();
-    let dynamic_lambda_active = fact.dynamic_lambda_active;
-    let finalized_period = fact.finalized_period;
-    let plan = plan_domain_pbft_dynamic_lambda(PbftDynamicLambdaFact::from(fact));
-    let (last_saved_period_lambda_found, last_saved_period_lambda) = if dynamic_lambda_active
-        && plan.status == rustaxa_consensus::pbft_finalize::PbftFinalizationStatus::Accepted
-    {
-        let lookup = load_domain_pbft_finalization_last_period_lambda(
-            runtime.storage.as_ref(),
-            finalized_period.saturating_sub(1),
-        )?;
-        (lookup.found, lookup.value)
-    } else {
-        (false, 0)
-    };
+    let decision = runtime
+        .0
+        .plan_finalization_dynamic_lambda(PbftDynamicLambdaFact::from(fact))?;
     Ok(FfiPbftManagerFinalizationDynamicLambdaPlan::from((
-        plan,
-        last_saved_period_lambda_found,
-        last_saved_period_lambda,
+        decision.plan,
+        decision.last_saved_period_lambda.found,
+        decision.last_saved_period_lambda.value,
     )))
 }
 
@@ -2648,15 +2644,12 @@ impl From<PbftManagerAdvancePeriodActionReportResult>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::rustaxa_ffi::PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig;
     use crate::ffi::{BridgePbftStorageQueries, BridgeStorage};
-    use crate::pillar_chain::create_pillar_test_service_from_storage;
     use crate::storage::{
         create_pbft_storage_queries, create_pbft_vote_storage_queries, create_storage,
     };
     use ethereum_types::H256;
-    use rustaxa_consensus::pbft_finalize::{PbftFinalizationRuntimeStatus, PbftFinalizationStatus};
-    use rustaxa_consensus::pbft_manager::save_cert_voted_block_in_round_storage;
+    use rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStatus;
     use rustaxa_consensus::{save_own_verified_vote, PbftVoteStorageRecord};
     use std::fs;
     use std::path::PathBuf;
@@ -2940,26 +2933,6 @@ mod tests {
         assert_ne!(ready_drain.error_code, "PBFT_SERVICE_BOOTSTRAP_INCOMPLETE");
     }
 
-    fn dynamic_lambda_fact(finalized_period: u64) -> FfiPbftDynamicLambdaFact {
-        FfiPbftDynamicLambdaFact {
-            dynamic_lambda_active: true,
-            finalized_period,
-            finalized_round: 1,
-            pre_adjust_rounds_count_dynamic_lambda: 9,
-            pre_adjust_dynamic_lambda: 1_500,
-            config: FfiPbftDynamicLambdaConfig {
-                cacti_block_num: 10,
-                lambda_min: 500,
-                lambda_max: 1_500,
-                lambda_default: 2_000,
-                lambda_change_interval: 10,
-                lambda_change: 10,
-                consensus_delay: 400,
-                dpos_blocks_per_year: 500,
-            },
-        }
-    }
-
     fn runtime_for_finalization_test(name: &str) -> (PathBuf, Box<BridgePbftService>) {
         let temp_dir = unique_temp_dir(name);
         let storage = create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
@@ -2981,54 +2954,6 @@ mod tests {
         })
         .expect("test PBFT chain head should be valid");
         (temp_dir, runtime)
-    }
-
-    fn finalized_dag_period_data_rlp_with_counts(
-        pivot: H256,
-        unique_transactions: usize,
-        dag_transaction_ref_counts: &[usize],
-    ) -> Vec<u8> {
-        let mut pbft_block = rlp::RlpStream::new_list(8);
-        pbft_block.append(&H256::from_low_u64_be(1));
-        pbft_block.append(&pivot);
-        pbft_block.append(&H256::from_low_u64_be(2));
-        pbft_block.append(&H256::from_low_u64_be(3));
-        pbft_block.append(&10_u64);
-        pbft_block.append(&123_u64);
-        pbft_block.begin_list(0);
-        pbft_block.append(&vec![0_u8; 65]);
-
-        let ordered_transaction_hashes = rlp::RlpStream::new_list(0);
-        let mut transaction_indexes = rlp::RlpStream::new_list(dag_transaction_ref_counts.len());
-        for count in dag_transaction_ref_counts {
-            transaction_indexes.begin_list(*count);
-            for index in 0..*count {
-                transaction_indexes.append(&index);
-            }
-        }
-        let compact_blocks = rlp::RlpStream::new_list(0);
-        let mut bundle = rlp::RlpStream::new_list(3);
-        bundle.append_raw(&ordered_transaction_hashes.out(), 1);
-        bundle.append_raw(&transaction_indexes.out(), 1);
-        bundle.append_raw(&compact_blocks.out(), 1);
-
-        let mut period_data = rlp::RlpStream::new_list(4);
-        period_data.append_raw(&pbft_block.out(), 1);
-        period_data.append_empty_data();
-        period_data.append_raw(&bundle.out(), 1);
-        period_data.begin_list(unique_transactions);
-        for _ in 0..unique_transactions {
-            period_data.append_empty_data();
-        }
-        period_data.out().to_vec()
-    }
-
-    fn finalized_dag_period_data_rlp(pivot: H256) -> Vec<u8> {
-        finalized_dag_period_data_rlp_with_counts(pivot, 0, &[])
-    }
-
-    fn empty_finalized_dag_period_data_rlp() -> Vec<u8> {
-        finalized_dag_period_data_rlp(H256::zero())
     }
 
     #[test]
@@ -3165,6 +3090,57 @@ mod tests {
         assert!(!state_step.complete);
         assert!(state_step.can_continue);
         assert_eq!(state_step.error_code, "STATE_STEP_SENTINEL");
+    }
+
+    #[test]
+    fn bridge_storage_read_adapters_preserve_boundary_fields() {
+        let dag_lookup = dag_block_period_lookup_into_ffi(DagBlockPeriodStorageLookup {
+            found: true,
+            period: 12,
+            position: 4,
+        });
+        assert!(dag_lookup.found);
+        assert_eq!((dag_lookup.period, dag_lookup.position), (12, 4));
+
+        let replay = startup_replay_period_into_ffi(PbftManagerStartupReplayPeriod {
+            found: true,
+            period_data_rlp: vec![0xC0],
+            finalized_dag_hashes: vec![H256::repeat_byte(0xDA)],
+            period_lambda: Some(1_234),
+        });
+        assert!(replay.found);
+        assert_eq!(replay.period_data_rlp, vec![0xC0]);
+        assert_eq!(replay.finalized_dag_hashes.len(), 1);
+        assert_eq!(replay.finalized_dag_hashes[0].hash, [0xDA; 32]);
+        assert!(replay.has_period_lambda);
+        assert_eq!(replay.period_lambda, 1_234);
+
+        let missing = startup_replay_period_into_ffi(PbftManagerStartupReplayPeriod {
+            found: false,
+            period_data_rlp: Vec::new(),
+            finalized_dag_hashes: Vec::new(),
+            period_lambda: None,
+        });
+        assert!(!missing.found);
+        assert!(!missing.has_period_lambda);
+        assert_eq!(missing.period_lambda, 0);
+
+        let dynamic_lambda = FfiPbftManagerFinalizationDynamicLambdaPlan::from((
+            PbftDynamicLambdaPlan {
+                apply_dynamic_lambda_update: true,
+                period_lambda: 1_500,
+                blocks_per_year: 9_275_294,
+                rounds_count_dynamic_lambda: 0,
+                dynamic_lambda: 1_490,
+                decreased_dynamic_lambda: true,
+                increased_dynamic_lambda: false,
+                status: PbftFinalizationStatus::Accepted,
+            },
+            true,
+            1_234,
+        ));
+        assert!(dynamic_lambda.last_saved_period_lambda_found);
+        assert_eq!(dynamic_lambda.last_saved_period_lambda, 1_234);
     }
 
     #[test]
@@ -3452,270 +3428,6 @@ mod tests {
         assert!(cursor_error
             .to_string()
             .contains("unsupported PBFT manager cursor field"));
-    }
-
-    #[test]
-    fn bridge_runtime_reads_dag_period_and_pbft_existence_from_owned_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_storage_facts");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(1, 1)
-                .expect("step seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            let dag_hash = [0xDA; 32];
-            let pbft_hash = [0xBE; 32];
-            storage
-                .0
-                .dag()
-                .write_period(H256::from(dag_hash), 12, 4)
-                .expect("DAG period should persist");
-            storage
-                .0
-                .period()
-                .write_pbft_period(H256::from(pbft_hash), 9)
-                .expect("PBFT period index should persist");
-            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-
-            let dag_lookup = pbft_manager_runtime_dag_block_period(&runtime, &dag_hash)
-                .expect("DAG period should load");
-            let missing_dag = pbft_manager_runtime_dag_block_period(&runtime, &[0xDB; 32])
-                .expect("missing DAG period should load");
-
-            assert!(dag_lookup.found);
-            assert_eq!(dag_lookup.period, 12);
-            assert_eq!(dag_lookup.position, 4);
-            assert!(!missing_dag.found);
-            assert!(pbft_manager_runtime_pbft_block_in_db(&runtime, &pbft_hash)
-                .expect("PBFT existence should load"));
-            assert!(
-                !pbft_manager_runtime_pbft_block_in_db(&runtime, &[0xBF; 32])
-                    .expect("missing PBFT existence should load")
-            );
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_plans_finalization_dynamic_lambda_from_owned_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_finalization_lambda");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            storage
-                .0
-                .metadata()
-                .write_period_lambda(19, 1_234)
-                .expect("period lambda should persist");
-            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-
-            let plan = pbft_manager_runtime_plan_finalization_dynamic_lambda(
-                &runtime,
-                dynamic_lambda_fact(20),
-            )
-            .expect("runtime dynamic-lambda planner should run");
-            let missing = pbft_manager_runtime_plan_finalization_dynamic_lambda(
-                &runtime,
-                dynamic_lambda_fact(1),
-            )
-            .expect("runtime missing dynamic-lambda planner should run");
-
-            assert_eq!(plan.status, PbftFinalizationStatus::Accepted.as_u8());
-            assert!(plan.apply_dynamic_lambda_update);
-            assert_eq!(plan.period_lambda, 1_500);
-            assert_eq!(plan.blocks_per_year, 9_275_294);
-            assert_eq!(plan.rounds_count_dynamic_lambda, 0);
-            assert_eq!(plan.dynamic_lambda, 1_490);
-            assert!(plan.last_saved_period_lambda_found);
-            assert_eq!(plan.last_saved_period_lambda, 1_234);
-            assert!(!missing.last_saved_period_lambda_found);
-            assert_eq!(missing.last_saved_period_lambda, 0);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_reads_cert_voted_block_from_owned_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_cert_voted_block");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(1, 1)
-                .expect("step seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            save_cert_voted_block_in_round_storage(storage.0.as_ref(), 3, &[0xC0])
-                .expect("cert-voted block should persist");
-
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-            let pbft_queries = create_pbft_storage_queries(&storage);
-            let runtime_payload = pbft_manager_runtime_cert_voted_block_in_round(&runtime)
-                .expect("runtime-owned storage read should succeed");
-            assert_eq!(
-                runtime_payload,
-                pbft_queries
-                    .get_cert_voted_block_in_round()
-                    .expect("compatibility storage view should load")
-            );
-
-            let snapshot = pbft_manager_runtime_save_cert_voted_block_in_round(
-                &mut runtime,
-                10,
-                4,
-                [0x44; 32],
-                vec![0xC0],
-            )
-            .expect("runtime-owned storage write should succeed");
-            let rewritten_payload = pbft_manager_runtime_cert_voted_block_in_round(&runtime)
-                .expect("rewritten cert-voted block should load");
-            let err = match pbft_manager_runtime_save_cert_voted_block_in_round(
-                &mut runtime,
-                10,
-                5,
-                [0x55; 32],
-                Vec::new(),
-            ) {
-                Ok(_) => panic!("empty cert-voted block payload should reject"),
-                Err(err) => err,
-            };
-
-            assert!(snapshot.has_cert_voted_block);
-            assert_eq!(snapshot.cert_voted_block_period, 10);
-            assert_eq!(snapshot.cert_voted_block_round, 4);
-            assert_eq!(snapshot.cert_voted_block_hash, [0x44; 32]);
-            assert_eq!(
-                pbft_manager_runtime_snapshot(&runtime).cert_voted_block_hash,
-                [0x44; 32]
-            );
-            let rewritten_rlp = rlp::Rlp::new(&rewritten_payload);
-            assert_eq!(rewritten_rlp.at(0).unwrap().as_val::<u64>().unwrap(), 4);
-            assert_eq!(rewritten_rlp.at(1).unwrap().as_raw(), &[0xC0]);
-            assert_eq!(
-                err.to_string(),
-                "PBFT_MANAGER_CERT_VOTED_BLOCK_EMPTY_PAYLOAD"
-            );
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_reads_own_pillar_vote_from_owned_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_own_pillar_vote");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(1, 1)
-                .expect("step seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            create_pillar_test_service_from_storage(&storage)
-                .expect("pillar runtime should initialize")
-                .pbft_service_pillar_apply_own_vote(vec![0xC0])
-                .expect("own pillar vote should persist");
-            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-
-            let vote_rlp = pbft_manager_runtime_own_pillar_block_vote(&runtime)
-                .expect("runtime-owned pillar vote should load");
-
-            assert_eq!(vote_rlp, vec![0xC0]);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_loads_startup_replay_period_from_owned_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_startup_replay_period");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            let period_data = empty_finalized_dag_period_data_rlp();
-            storage
-                .0
-                .period()
-                .write(12, &period_data.clone())
-                .expect("period data should persist");
-            storage
-                .0
-                .metadata()
-                .write_period_lambda(11, 1_234)
-                .expect("period lambda should persist");
-            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-
-            let replay = pbft_manager_runtime_load_startup_replay_period(&runtime, 12, true)
-                .expect("runtime startup replay read should succeed");
-            let missing = pbft_manager_runtime_load_startup_replay_period(&runtime, 13, true)
-                .expect("runtime missing startup replay read should succeed");
-
-            assert!(replay.found);
-            assert_eq!(replay.period_data_rlp, period_data);
-            assert!(replay.finalized_dag_hashes.is_empty());
-            assert!(replay.has_period_lambda);
-            assert_eq!(replay.period_lambda, 1_234);
-            assert!(!missing.found);
-            assert!(missing.period_data_rlp.is_empty());
-            assert!(missing.finalized_dag_hashes.is_empty());
-            assert!(!missing.has_period_lambda);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
