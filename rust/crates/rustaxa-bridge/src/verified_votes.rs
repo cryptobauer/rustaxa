@@ -739,7 +739,7 @@ impl VerifiedVotesAccess<'_> {
             context_to_domain(&context),
             |write| persist_pbft_vote_progress(storage, write),
         )?;
-        Ok(runtime_outcome_to_ffi(validation, result, context))
+        Ok(runtime_outcome_to_ffi(validation, result))
     }
 
     #[cfg(test)]
@@ -1694,7 +1694,6 @@ fn reward_votes_reset_apply_request_to_domain(
 fn runtime_outcome_to_ffi(
     validation: PbftCanonicalVoteValidation,
     transaction: PbftVoteAdmissionTransactionResult,
-    context: FfiPbftVoteProgressContext,
 ) -> PbftVoteAdmissionRuntimeResult {
     let transition_published = transaction.transition_published;
     let persistence_required = transaction.persistence_required;
@@ -1707,13 +1706,10 @@ fn runtime_outcome_to_ffi(
     let vote = progress_fact
         .map(progress_fact_to_vote)
         .unwrap_or(empty_vote);
-    let progress = outcome.execution.as_ref().map(|execution| {
-        execution_plan_to_ffi(
-            execution.pipeline_step.progress_plan.clone(),
-            progress_fact.unwrap_or_else(empty_domain_progress_fact),
-            context,
-        )
-    });
+    let progress = outcome
+        .execution
+        .as_ref()
+        .map(|execution| execution_plan_to_ffi(execution.pipeline_step.progress_plan.clone()));
     let status = progress
         .as_ref()
         .map(|progress| progress.status)
@@ -1845,24 +1841,6 @@ fn progress_fact_to_vote(value: rustaxa_consensus::PbftVoteProgressFact) -> Veri
         step: value.identity.step,
         vote_type: value.vote_type.into(),
         weight: value.weight,
-    }
-}
-
-fn empty_domain_progress_fact() -> rustaxa_consensus::PbftVoteProgressFact {
-    rustaxa_consensus::PbftVoteProgressFact {
-        identity: rustaxa_consensus::PbftVoteIdentity {
-            vote_hash: [0; 32].into(),
-            block_hash: [0; 32].into(),
-            period: 0,
-            round: 0,
-            step: 0,
-            voter: [0; 20].into(),
-        },
-        vote_type: PbftVoteType::Soft,
-        weight: 0,
-        vote_already_known: false,
-        carries_proposed_block: false,
-        valid_stale_reward_vote: false,
     }
 }
 
@@ -3377,15 +3355,6 @@ mod tests {
             carries_proposed_block: true,
             valid_stale_reward_vote: false,
         };
-        let context = FfiPbftVoteProgressContext {
-            current_period: 3,
-            current_round: 2,
-            max_future_period_delta: 1,
-            has_two_t_plus_one_threshold: true,
-            two_t_plus_one_threshold: 5,
-            require_proposed_block_sidecar: false,
-            slashing_enabled: true,
-        };
         let add_outcome = ConsensusAddVerifiedVoteOutcome {
             inserted: true,
             total_weight: 5,
@@ -3449,15 +3418,6 @@ mod tests {
                 transition_published: false,
                 persistence_error_code: "PBFT_VOTE_PERSIST_STORAGE_OR_LOCK_FAILURE".to_owned(),
             },
-            FfiPbftVoteProgressContext {
-                current_period: 3,
-                current_round: 2,
-                max_future_period_delta: 1,
-                has_two_t_plus_one_threshold: true,
-                two_t_plus_one_threshold: 5,
-                require_proposed_block_sidecar: false,
-                slashing_enabled: true,
-            },
         );
         assert!(!rejected.accepted);
         assert!(rejected.rejected);
@@ -3486,7 +3446,6 @@ mod tests {
                 transition_published: true,
                 persistence_error_code: String::new(),
             },
-            context,
         );
 
         assert!(result.accepted);

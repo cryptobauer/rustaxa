@@ -1332,6 +1332,28 @@ lowers the checked budget to 29,318; other inventory metrics remain unchanged.
 Focused native period-advance tests and the remaining 18 bridge-manager tests
 cover the deletion; no production or C++ code changes.
 
+The next bounded `CRW-12` vote-progress contraction deletes five bridge-local
+planner transcripts and their test-only reconstruction of a CXX
+`VerifiedVoteAddOutcome`. Native `pbft_vote_progress` tests own insert
+prechecks, stale reward persistence, threshold advancement, conflicting-vote
+slashing, and missing proposed-block sidecar behavior. Production projection
+now consumes only the native plan rather than redundantly accepting the
+already-consumed progress fact and context. The bridge retains one focused
+effect/status projection sentinel plus the existing admission-result
+publication-gating sentinel. This removes a net 219 bridge lines and lowers
+the checked budget to 29,099; CXX functions, carriers, handles, shim lines and
+directories, granular flags, partial factories, compatibility constructors,
+and production consumers remain unchanged. No production CXX signature or C++
+source changes.
+Tier 1 `rewrite-validate-fast`, all 15 native vote-progress tests, the focused
+bridge projection/publication tests, inventory live/self checks, the storage
+boundary guard, and whitespace validation pass. Tier 2 is the Rust-enabled
+56-test `rust_consensus_tests` suite with the complete feature bundle enabled.
+Tier 3 is not required because production behavior, the CXX ABI, C++ code,
+startup, and externally observable routing are unchanged. All touched paths
+are Rust or rewrite documentation, so there is no upstream-owned C++
+intersection.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

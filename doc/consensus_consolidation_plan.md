@@ -301,6 +301,12 @@ Lifecycle network-step presence validation now lives beside the native manager
 cursor as well. The bridge retains only a compact unknown-kind rejection and
 network-step projection/snapshot-preservation sentinel for its transition
 request conversion.
+PBFT vote-progress planning follows the same test-ownership boundary. Native
+consensus tests own insert prechecks, stale reward persistence, threshold
+progress, slashing, and proposed-block sidecar decisions. The bridge consumes
+only the returned native plan, without relaying duplicate progress facts or
+contexts into projection, and retains one focused effect/status projection
+sentinel instead of a parallel planner suite.
 Missing Cacti dynamic-lambda startup rejection and storage non-mutation
 coverage now live with the native manager restore function rather than in a
 bridge-owned RocksDB fixture.
