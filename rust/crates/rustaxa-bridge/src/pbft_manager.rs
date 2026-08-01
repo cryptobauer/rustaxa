@@ -2672,11 +2672,6 @@ mod tests {
     }
 
     const STATE_VALUE_PROPOSAL: u8 = 0;
-    const STATE_ACTION_NEXT_VOTE_NULL_BLOCK: u8 = 8;
-    const STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE: u8 = 10;
-    const STATE_ACTION_SESSION_ACTIVE: u8 = 0;
-    const STATE_ACTION_SESSION_COMPLETE: u8 = 1;
-    const STATE_ACTION_EFFECT_APPLIED: u8 = 0;
     const STARTUP_STATUS_READY: u8 = 0;
     const TRANSITION_RESET: u8 = 0;
     const TRANSITION_FILTER: u8 = 1;
@@ -2778,28 +2773,6 @@ mod tests {
         let mut startup = startup_fact();
         startup.cacti_active_at_chain_size = false;
         create_pbft_manager_runtime_from_storage(&storage, startup).unwrap()
-    }
-
-    fn state_fact(state: u8) -> FfiPbftManagerStateActionFact {
-        FfiPbftManagerStateActionFact {
-            state,
-            period: 10,
-            round: 2,
-            step: 3,
-            elapsed_round_ms: 250,
-            deadline_ms: 1_000,
-            current_round_lambda_ms: 100,
-            polling_interval_ms: 100,
-            has_previous_round_next_null: false,
-            has_previous_round_next_value: false,
-            previous_round_next_value_hash: [0x44; 32],
-            has_current_round_soft_value: false,
-            current_round_soft_value_hash: [0x55; 32],
-            has_cert_voted_block: false,
-            cert_voted_block_hash: [0x66; 32],
-            already_next_voted_value: false,
-            already_next_voted_null: false,
-        }
     }
 
     fn proposal_fact() -> FfiPbftManagerProposalInitialFact {
@@ -3093,6 +3066,108 @@ mod tests {
     }
 
     #[test]
+    fn bridge_session_adapters_preserve_boundary_fields() {
+        let queue_step = queue_drain_step_into_ffi(PbftSyncQueueDrainStep {
+            action: PbftSyncQueueDrainAction::PushAccepted,
+            status: PbftSyncQueueDrainStatus::Active,
+            clean_before_period: 42,
+            can_continue: true,
+            error_code: "QUEUE_STEP_SENTINEL",
+        });
+        assert_eq!(
+            (queue_step.action, queue_step.status),
+            (
+                PbftSyncQueueDrainAction::PushAccepted.as_u8(),
+                PbftSyncQueueDrainStatus::Active.as_u8()
+            )
+        );
+        assert_eq!(queue_step.clean_before_period, 42);
+        assert!(queue_step.can_continue);
+        assert_eq!(queue_step.error_code, "QUEUE_STEP_SENTINEL");
+
+        let queue_report = queue_drain_report_result_into_ffi(PbftSyncQueueDrainReportResult {
+            status: PbftSyncQueueDrainStatus::PushFailed,
+            can_continue: false,
+            error_code: "QUEUE_REPORT_SENTINEL",
+        });
+        assert_eq!(
+            queue_report.status,
+            PbftSyncQueueDrainStatus::PushFailed.as_u8()
+        );
+        assert!(!queue_report.can_continue);
+        assert_eq!(queue_report.error_code, "QUEUE_REPORT_SENTINEL");
+
+        let queue_report_input = queue_drain_report_from_ffi(FfiPbftSyncQueueDrainReport {
+            action: PbftSyncQueueDrainAction::UpdateSyncState.as_u8(),
+            success: false,
+            accepted_period_data: true,
+        });
+        assert_eq!(
+            queue_report_input.action,
+            PbftSyncQueueDrainAction::UpdateSyncState
+        );
+        assert!(!queue_report_input.success);
+        assert!(queue_report_input.accepted_period_data);
+
+        let state_report_input: PbftManagerStateActionEffectReport =
+            FfiPbftManagerStateActionEffectReport {
+                cursor: 9,
+                intent: PbftManagerStateActionIntent::NextVoteNullBlock.as_u8(),
+                result: PbftManagerStateActionEffectResultCode::SkippedNoWork.as_u8(),
+                error_code: "STATE_REPORT_SENTINEL".to_owned(),
+            }
+            .into();
+        assert_eq!(state_report_input.cursor, 9);
+        assert_eq!(
+            state_report_input.intent,
+            PbftManagerStateActionIntent::NextVoteNullBlock
+        );
+        assert_eq!(
+            state_report_input.result,
+            PbftManagerStateActionEffectResultCode::SkippedNoWork
+        );
+        assert_eq!(state_report_input.error_code, "STATE_REPORT_SENTINEL");
+
+        let state_step: FfiPbftManagerStateActionSessionStep = PbftManagerStateActionSessionStep {
+            status: PbftManagerStateActionSessionStatus::Active,
+            cursor: 7,
+            has_effect: true,
+            effect: PbftManagerStateActionEffect {
+                intent: PbftManagerStateActionIntent::NextVoteCurrentSoftValue,
+                hash: [0x55; 32],
+                request_proposed_block_sidecar: true,
+                proposed_block_sidecar_hash: [0x66; 32],
+                proposed_block_sidecar_period: 11,
+            },
+            go_finish_state: true,
+            loop_back_finish_state: false,
+            complete: false,
+            can_continue: true,
+            error_code: "STATE_STEP_SENTINEL".to_owned(),
+        }
+        .into();
+        assert_eq!(
+            state_step.status,
+            PbftManagerStateActionSessionStatus::Active.as_u8()
+        );
+        assert_eq!(state_step.cursor, 7);
+        assert!(state_step.has_effect);
+        assert_eq!(
+            state_step.effect.intent,
+            PbftManagerStateActionIntent::NextVoteCurrentSoftValue.as_u8()
+        );
+        assert_eq!(state_step.effect.hash, [0x55; 32]);
+        assert!(state_step.effect.request_proposed_block_sidecar);
+        assert_eq!(state_step.effect.proposed_block_sidecar_hash, [0x66; 32]);
+        assert_eq!(state_step.effect.proposed_block_sidecar_period, 11);
+        assert!(state_step.go_finish_state);
+        assert!(!state_step.loop_back_finish_state);
+        assert!(!state_step.complete);
+        assert!(state_step.can_continue);
+        assert_eq!(state_step.error_code, "STATE_STEP_SENTINEL");
+    }
+
+    #[test]
     fn bridge_runtime_owns_period_data_queue_metadata() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_period_data_queue");
         {
@@ -3226,61 +3301,6 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_owns_state_action_effect_session() {
-        let mut finish_polling_fact = state_fact(4);
-        finish_polling_fact.current_round_lambda_ms = 1_000;
-        finish_polling_fact.has_current_round_soft_value = true;
-        finish_polling_fact.has_previous_round_next_null = true;
-        let temp_path = unique_temp_dir("rustaxa_bridge_pbft_manager_state_action_runtime");
-        let storage =
-            crate::storage::create_storage(temp_path.to_str().expect("utf-8 temp path")).unwrap();
-        let mut startup = startup_fact();
-        startup.cacti_active_at_chain_size = false;
-        let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup).unwrap();
-
-        pbft_manager_runtime_begin_state_action_effect_session(&mut runtime, finish_polling_fact);
-
-        let first = pbft_manager_runtime_state_action_effect_session_next(&mut runtime);
-        assert_eq!(first.status, STATE_ACTION_SESSION_ACTIVE);
-        assert!(first.has_effect);
-        assert_eq!(
-            first.effect.intent,
-            STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE
-        );
-        assert!(first.effect.request_proposed_block_sidecar);
-        assert_eq!(first.effect.proposed_block_sidecar_hash, [0x55; 32]);
-        assert_eq!(first.effect.proposed_block_sidecar_period, 10);
-
-        let second = pbft_manager_runtime_state_action_effect_session_report(
-            &mut runtime,
-            FfiPbftManagerStateActionEffectReport {
-                cursor: first.cursor,
-                intent: first.effect.intent,
-                result: STATE_ACTION_EFFECT_APPLIED,
-                error_code: String::new(),
-            },
-        );
-        assert_eq!(second.status, STATE_ACTION_SESSION_ACTIVE);
-        assert_eq!(second.effect.intent, STATE_ACTION_NEXT_VOTE_NULL_BLOCK);
-        assert!(!second.effect.request_proposed_block_sidecar);
-        assert_eq!(second.effect.proposed_block_sidecar_hash, [0; 32]);
-        assert_eq!(second.effect.proposed_block_sidecar_period, 0);
-
-        let done = pbft_manager_runtime_state_action_effect_session_report(
-            &mut runtime,
-            FfiPbftManagerStateActionEffectReport {
-                cursor: second.cursor,
-                intent: second.effect.intent,
-                result: STATE_ACTION_EFFECT_APPLIED,
-                error_code: String::new(),
-            },
-        );
-        assert_eq!(done.status, STATE_ACTION_SESSION_COMPLETE);
-        assert!(done.complete);
-        assert!(done.can_continue);
     }
 
     #[test]
@@ -3486,92 +3506,6 @@ mod tests {
                 !pbft_manager_runtime_pbft_block_in_db(&runtime, &[0xBF; 32])
                     .expect("missing PBFT existence should load")
             );
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_owns_pbft_sync_queue_drain_session() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_queue_drain");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 500)
-                .expect("lambda seed should persist");
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should initialize");
-
-            pbft_manager_runtime_begin_pbft_sync_queue_drain(&mut runtime);
-            let clean = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 2, 10);
-            assert_eq!(clean.action, PbftSyncQueueDrainAction::CleanOldData.as_u8());
-            assert_eq!(clean.clean_before_period, 10);
-            let report = pbft_manager_runtime_pbft_sync_queue_drain_report(
-                &mut runtime,
-                FfiPbftSyncQueueDrainReport {
-                    action: clean.action,
-                    success: true,
-                    accepted_period_data: false,
-                },
-            );
-            assert_eq!(report.status, 0);
-            assert!(report.can_continue);
-
-            let pop = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 1, 10);
-            assert_eq!(pop.action, PbftSyncQueueDrainAction::PopAndProcess.as_u8());
-            let report = pbft_manager_runtime_pbft_sync_queue_drain_report(
-                &mut runtime,
-                FfiPbftSyncQueueDrainReport {
-                    action: pop.action,
-                    success: true,
-                    accepted_period_data: true,
-                },
-            );
-            assert!(report.can_continue);
-
-            let push = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 1, 10);
-            assert_eq!(push.action, PbftSyncQueueDrainAction::PushAccepted.as_u8());
-            let report = pbft_manager_runtime_pbft_sync_queue_drain_report(
-                &mut runtime,
-                FfiPbftSyncQueueDrainReport {
-                    action: push.action,
-                    success: true,
-                    accepted_period_data: false,
-                },
-            );
-            assert!(report.can_continue);
-
-            let update = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 1, 11);
-            assert_eq!(
-                update.action,
-                PbftSyncQueueDrainAction::UpdateSyncState.as_u8()
-            );
-            let report = pbft_manager_runtime_pbft_sync_queue_drain_report(
-                &mut runtime,
-                FfiPbftSyncQueueDrainReport {
-                    action: update.action,
-                    success: true,
-                    accepted_period_data: false,
-                },
-            );
-            assert!(report.can_continue);
-
-            let stop = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 0, 11);
-            assert_eq!(stop.action, PbftSyncQueueDrainAction::Stop.as_u8());
-            assert_eq!(stop.status, 1);
-            assert!(!stop.can_continue);
-
-            pbft_manager_runtime_begin_pbft_sync_queue_drain(&mut runtime);
-            let restarted = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 0, 12);
-            assert_eq!(
-                restarted.action,
-                PbftSyncQueueDrainAction::CleanOldData.as_u8()
-            );
-            assert_eq!(restarted.clean_before_period, 12);
         }
 
         let _ = fs::remove_dir_all(temp_dir);

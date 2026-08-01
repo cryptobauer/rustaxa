@@ -1354,6 +1354,24 @@ startup, and externally observable routing are unchanged. All touched paths
 are Rust or rewrite documentation, so there is no upstream-owned C++
 intersection.
 
+The following bounded `CRW-12` manager-session test-ownership contraction
+deletes the bridge-local PBFT sync queue-drain and state-action effect behavior
+transcripts plus seven duplicate CXX manager transcripts for tick ordering,
+restart/reset decisions, invalid round/cursor reports, certify transition, and
+finish-polling state actions. Native `pbft_sync` and `pbft_manager` tests own
+those state machines, including executor failure, invalid-report, sidecar, and
+completion branches. The bridge retains one combined queue/state projection
+sentinel and bootstrap-readiness coverage; the CXX suite retains
+storage-backed startup, period advance, finalization/resume, and external-leaf
+boundaries. This removes a net 66 bridge lines and 278 CXX test lines, lowering
+the checked bridge budget to 29,033 and the Rust-enabled CXX suite from 56 to
+49 tests. CXX functions, carriers, handles, shim lines/directories, granular
+flags, partial factories, compatibility constructors, production consumers,
+production signatures, and routing are unchanged. Focused bridge coverage,
+all three native queue-drain tests, all five native state-action session tests,
+all 125 native manager tests, and the 49-test CXX suite pass. Tier 3 is not
+required because no production behavior, startup route, or ABI changed.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
@@ -2841,4 +2859,4 @@ Open questions:
 | Slashing proof planning | Rust byte-level proof-hash and calldata fixtures plus `StateAPITest.slashing`; richer C++ legacy vote/submission transcripts remain useful when available |
 | Pillar vote aggregation and sync bundle validation | Rust validation plus service-owned pillar-vote tests in `rustaxa-consensus`/`rustaxa-bridge` and focused `pillar_chain_test`/`pbft_manager_test` cases when manager behavior is touched |
 | Pillar/reward behavior | Rust validation plus `pillar_chain_test`, `rewards_stats_test`, and affected full-node tests |
-| PBFT manager state machine | Targeted PBFT/vote/DAG tests plus full-node smoke and Python integration coverage as needed; feature-on source/archive audits now prove the original manager and `PbftManagerOld` scaffold are absent, while `rust_consensus_tests` records CXX bridge transcripts for daemon tick action order/restart/reset behavior, finish-polling state-action effects, staged sync admission through accept, finalization runtime and duplicate/restart resume actions, crash-window resume classification, period-advance effects, storage-backed startup snapshot restore, and the completed PBFT manager closeout boundary |
+| PBFT manager state machine | Targeted PBFT/vote/DAG tests plus full-node smoke and Python integration coverage as needed; feature-on source/archive audits now prove the original manager and `PbftManagerOld` scaffold are absent. Native manager tests own daemon tick, queue-drain, and state-action session behavior; `rust_consensus_tests` retains CXX bridge coverage for staged sync admission, finalization/external actions and resume, period-advance effects, storage-backed startup restore, and the completed PBFT manager closeout boundary. |

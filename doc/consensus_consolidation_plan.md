@@ -307,6 +307,12 @@ progress, slashing, and proposed-block sidecar decisions. The bridge consumes
 only the returned native plan, without relaying duplicate progress facts or
 contexts into projection, and retains one focused effect/status projection
 sentinel instead of a parallel planner suite.
+PBFT queue-drain and state-action sessions now follow that boundary as well.
+Native consensus tests own action ordering, restart, executor failure,
+report-validation, sidecar, and completion behavior. The bridge retains one
+combined field/status projection sentinel and bootstrap-readiness coverage;
+the CXX suite retains storage-backed startup, period-advance, finalization, and
+external-executor boundaries instead of repeating native manager transcripts.
 Missing Cacti dynamic-lambda startup rejection and storage non-mutation
 coverage now live with the native manager restore function rather than in a
 bridge-owned RocksDB fixture.
