@@ -1671,6 +1671,23 @@ lowers the exact budget to 26,017. CXX functions, carriers, handles, shim
 lines/directories, flags, factories, constructors, production consumers, and
 public CXX signatures are unchanged. No upstream-owned C++ file changes.
 
+The following bounded `CRW-12` PBFT/FinalChain composition slice moves the
+complete weighted-vote generation, proposer-sortition, and four DPoS fact
+collection tasks behind native `PbftService` methods. Rust now owns identity
+and VRF validation precedence, ordered voter/total stake reads, zero-stake
+short-circuiting, typed availability outcomes with stable future/infrastructure
+error codes, diagnostic typed FinalChain heads, duplicate-preserving wrapping wallet aggregation, and
+ordered batch status promotion. Native facts no longer reproduce CXX
+status/presence/zero-sentinel combinations; the bridge derives those legacy
+fields from typed ready/unavailable outcomes. Twenty composed behavior tests
+move to the native owner, while the bridge retains standalone signed-vote and
+unknown-vote-type ABI sentinels plus two focused typed-result conversion tests. All six CXX
+operations, carriers, callers, and signatures remain unchanged, but the bridge
+module loses 506 lines and the exact `bridge_lines` budget falls to 25,511.
+CXX functions, carriers, handles, shim lines/directories, flags, factories,
+constructors, and production consumers are unchanged. No upstream-owned C++
+file changes.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

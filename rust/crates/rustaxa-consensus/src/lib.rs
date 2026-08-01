@@ -245,8 +245,13 @@ pub use pbft_vote_event::{
     build_pbft_vote_event_fact_from_validation,
 };
 pub use pbft_vote_generation::{
-    PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteGenerationStatus, PbftVoteWeightFacts,
-    generate_pbft_vote, generate_pbft_vote_with_weight,
+    PbftFinalChainDposAddressVoteFact, PbftFinalChainDposTotalVoteCountFacts,
+    PbftFinalChainDposTotalVoteCountRequest, PbftFinalChainDposWalletAggregateVoteCountFacts,
+    PbftFinalChainDposWalletAggregateVoteCountRequest,
+    PbftFinalChainDposWalletEligibilityBatchFacts, PbftFinalChainDposWalletEligibilityBatchRequest,
+    PbftFinalChainDposWalletEligibilityFacts, PbftFinalChainDposWalletEligibilityRequest,
+    PbftFinalChainFact, PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteGenerationStatus,
+    PbftVoteWeightFacts, generate_pbft_vote, generate_pbft_vote_with_weight,
 };
 pub use pbft_vote_ingress::{
     PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,

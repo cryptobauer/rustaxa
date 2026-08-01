@@ -21,21 +21,20 @@ use crate::ffi::rustaxa_ffi::{
     PbftVoteGenerationInput as FfiPbftVoteGenerationInput,
 };
 use crate::ffi::{BridgeFinalChain, BridgePbftService};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::pbft_vote_generation::{
-    generate_pbft_vote, generate_pbft_vote_with_weight, PbftGeneratedVote, PbftVoteGenerationInput,
-    PbftVoteWeightFacts,
+    generate_pbft_vote, PbftFinalChainDposAddressVoteFact, PbftFinalChainDposTotalVoteCountFacts,
+    PbftFinalChainDposTotalVoteCountRequest, PbftFinalChainDposWalletAggregateVoteCountFacts,
+    PbftFinalChainDposWalletAggregateVoteCountRequest,
+    PbftFinalChainDposWalletEligibilityBatchFacts, PbftFinalChainDposWalletEligibilityBatchRequest,
+    PbftFinalChainDposWalletEligibilityFacts, PbftFinalChainDposWalletEligibilityRequest,
+    PbftFinalChainFact, PbftGeneratedVote, PbftVoteGenerationInput,
 };
 use rustaxa_consensus::pbft_vote_validation::{
-    generate_and_validate_proposer_sortition_with_prepared_request,
-    prepare_and_validate_pbft_proposer_sortition_request, PbftProposerSortitionRequest,
-    PbftProposerSortitionResult,
+    PbftProposerSortitionRequest, PbftProposerSortitionResult,
 };
 use rustaxa_consensus::verified_votes::PbftVoteType;
-
-const PBFT_FINAL_CHAIN_FACT_STATUS_READY: u8 = 0;
-const PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE: u8 = 1;
 
 /// Generates one signed PBFT vote payload in Rust.
 pub fn pbft_generate_signed_vote(
@@ -61,47 +60,15 @@ impl BridgePbftService {
         number_of_proposers: u64,
     ) -> Result<FfiPbftGeneratedVote> {
         let input: PbftVoteGenerationInput = input.try_into()?;
-        let dpos_period = input
-            .period
-            .checked_sub(1)
-            .ok_or_else(|| anyhow!("PBFT_VOTE_GENERATION_PERIOD_UNDERFLOW"))?;
-        let voter = input.expected_voter;
-
-        let voter_dpos_vote_count = match final_chain
+        Ok(self
             .0
-            .pbft_dpos_eligible_vote_count(dpos_period, voter.0)
-        {
-            Ok(Some(votes)) => votes,
-            Ok(None) => anyhow::bail!("PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD"),
-            Err(err) => anyhow::bail!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}"),
-        };
-        if voter_dpos_vote_count == 0 {
-            return Ok(generate_pbft_vote_with_weight(
+            .generate_signed_vote_with_weight(
+                &final_chain.0,
                 input,
-                PbftVoteWeightFacts {
-                    voter_dpos_vote_count,
-                    total_dpos_vote_count: 0,
-                    committee_size,
-                    number_of_proposers,
-                },
+                committee_size,
+                number_of_proposers,
             )?
-            .into());
-        }
-        let total_dpos_vote_count = match final_chain
-            .0
-            .pbft_dpos_eligible_total_vote_count(dpos_period)
-        {
-            Ok(Some(total)) => total,
-            Ok(None) => anyhow::bail!("PBFT_FINAL_CHAIN_TOTAL_VOTES_FACT_FUTURE_PERIOD"),
-            Err(err) => anyhow::bail!("PBFT_FINAL_CHAIN_TOTAL_VOTES_FACT_UNAVAILABLE: {err}"),
-        };
-        let facts = PbftVoteWeightFacts {
-            voter_dpos_vote_count,
-            total_dpos_vote_count,
-            committee_size,
-            number_of_proposers,
-        };
-        Ok(generate_pbft_vote_with_weight(input, facts)?.into())
+            .into())
     }
 
     /// Generates proposer-sortition proof inputs and validates local proposer weight.
@@ -114,55 +81,13 @@ impl BridgePbftService {
         final_chain: &BridgeFinalChain,
         request: FfiPbftProposerSortitionRequest,
     ) -> Result<FfiPbftProposerSortitionResult> {
-        let request = PbftProposerSortitionRequest::try_from(request)?;
-        let request = prepare_and_validate_pbft_proposer_sortition_request(request)?;
-        let dpos_period = request
-            .request
-            .pbft_period
-            .checked_sub(1)
-            .ok_or_else(|| anyhow!("PBFT_PROPOSER_SORTITION_PERIOD_UNDERFLOW"))?;
-
-        let voter_dpos_vote_count = match final_chain
+        Ok(self
             .0
-            .pbft_dpos_eligible_vote_count(dpos_period, request.request.expected_voter.0)
-        {
-            Ok(Some(votes)) => votes,
-            Ok(None) => {
-                return Ok(PbftProposerSortitionResult::rejected(
-                    rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::FutureDposState,
-                )
-                .into())
-            }
-            Err(err) => anyhow::bail!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}"),
-        };
-
-        if voter_dpos_vote_count == 0 {
-            return Ok(PbftProposerSortitionResult::rejected(
-                rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::ZeroStake,
-            )
-            .into());
-        }
-
-        let total_dpos_vote_count = match final_chain.0.pbft_dpos_eligible_total_vote_count(dpos_period)
-        {
-            Ok(Some(total)) => total,
-            Ok(None) => {
-                return Ok(PbftProposerSortitionResult::rejected(
-                    rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::FutureDposState,
-                )
-                .into())
-            }
-            Err(err) => anyhow::bail!("PBFT_FINAL_CHAIN_TOTAL_VOTES_FACT_UNAVAILABLE: {err}"),
-        };
-
-        Ok(
-            generate_and_validate_proposer_sortition_with_prepared_request(
-                request,
-                voter_dpos_vote_count,
-                total_dpos_vote_count,
+            .generate_and_validate_proposer_sortition(
+                &final_chain.0,
+                PbftProposerSortitionRequest::try_from(request)?,
             )?
-            .into(),
-        )
+            .into())
     }
 
     /// Queries PBFT-facing total DPoS-vote facts for an exact period.
@@ -174,38 +99,15 @@ impl BridgePbftService {
         final_chain: &BridgeFinalChain,
         request: FfiPbftFinalChainDposTotalVoteCountRequest,
     ) -> Result<FfiPbftFinalChainDposTotalVoteCountFacts> {
-        let last_block_number = final_chain.0.last_block_number()?;
-        let (status, has_total_vote_count, total_vote_count, error_code) = match final_chain
+        Ok(self
             .0
-            .pbft_dpos_eligible_total_vote_count(request.period)
-        {
-            Ok(Some(total_vote_count)) => (
-                PBFT_FINAL_CHAIN_FACT_STATUS_READY,
-                true,
-                total_vote_count,
-                String::new(),
-            ),
-            Ok(None) => (
-                PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                false,
-                0,
-                "PBFT_FINAL_CHAIN_TOTAL_VOTES_FUTURE_PERIOD".to_string(),
-            ),
-            Err(err) => (
-                PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                false,
-                0,
-                format!("PBFT_FINAL_CHAIN_TOTAL_VOTES_UNAVAILABLE: {err}"),
-            ),
-        };
-
-        Ok(FfiPbftFinalChainDposTotalVoteCountFacts {
-            status,
-            last_block_number,
-            has_total_vote_count,
-            total_vote_count,
-            error_code,
-        })
+            .collect_dpos_total_vote_count(
+                &final_chain.0,
+                PbftFinalChainDposTotalVoteCountRequest {
+                    period: request.period,
+                },
+            )?
+            .into())
     }
 
     /// Queries PBFT-facing aggregate DPoS-vote facts for a supplied wallet subset.
@@ -218,53 +120,20 @@ impl BridgePbftService {
         final_chain: &BridgeFinalChain,
         request: FfiPbftFinalChainDposWalletAggregateVoteCountRequest,
     ) -> Result<FfiPbftFinalChainDposWalletAggregateVoteCountFacts> {
-        let last_block_number = final_chain.0.last_block_number()?;
-        let addresses = request
-            .addresses
-            .into_iter()
-            .map(|entry| entry.address)
-            .collect::<Vec<_>>();
-        let (status, has_aggregate_vote_count, aggregate_vote_count, error_code) =
-            if addresses.is_empty() {
-                (PBFT_FINAL_CHAIN_FACT_STATUS_READY, true, 0, String::new())
-            } else {
-                match final_chain
-                    .0
-                    .pbft_dpos_eligible_wallet_vote_counts(request.period, &addresses[..])
-                {
-                    Ok(Some(votes)) => {
-                        let aggregate_vote_count = votes
-                            .iter()
-                            .fold(0_u64, |total, vote| total.wrapping_add(vote.vote_count));
-                        (
-                            PBFT_FINAL_CHAIN_FACT_STATUS_READY,
-                            true,
-                            aggregate_vote_count,
-                            String::new(),
-                        )
-                    }
-                    Ok(None) => (
-                        PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                        false,
-                        0,
-                        "PBFT_FINAL_CHAIN_WALLET_VOTES_FUTURE_PERIOD".to_string(),
-                    ),
-                    Err(err) => (
-                        PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                        false,
-                        0,
-                        format!("PBFT_FINAL_CHAIN_WALLET_VOTES_UNAVAILABLE: {err}"),
-                    ),
-                }
-            };
-
-        Ok(FfiPbftFinalChainDposWalletAggregateVoteCountFacts {
-            status,
-            last_block_number,
-            has_aggregate_vote_count,
-            aggregate_vote_count,
-            error_code,
-        })
+        Ok(self
+            .0
+            .collect_dpos_wallet_aggregate_vote_count(
+                &final_chain.0,
+                PbftFinalChainDposWalletAggregateVoteCountRequest {
+                    period: request.period,
+                    addresses: request
+                        .addresses
+                        .into_iter()
+                        .map(|entry| H160::from(entry.address))
+                        .collect(),
+                },
+            )?
+            .into())
     }
 
     /// Queries PBFT-facing single-wallet DPoS vote facts for one address.
@@ -273,36 +142,16 @@ impl BridgePbftService {
         final_chain: &BridgeFinalChain,
         request: FfiPbftFinalChainDposWalletEligibilityRequest,
     ) -> Result<FfiPbftFinalChainDposWalletEligibilityFacts> {
-        let last_block_number = final_chain.0.last_block_number()?;
-        let (status, vote_count, error_code) = match final_chain
+        Ok(self
             .0
-            .pbft_dpos_eligible_vote_count(request.period, request.address)
-        {
-            Ok(Some(vote_count)) => (
-                PBFT_FINAL_CHAIN_FACT_STATUS_READY,
-                vote_count,
-                String::new(),
-            ),
-            Ok(None) => (
-                PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                0,
-                "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD".to_string(),
-            ),
-            Err(err) => (
-                PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                0,
-                format!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}"),
-            ),
-        };
-
-        Ok(FfiPbftFinalChainDposWalletEligibilityFacts {
-            status,
-            last_block_number,
-            address: request.address,
-            eligible: vote_count > 0,
-            vote_count,
-            error_code,
-        })
+            .collect_dpos_wallet_eligibility(
+                &final_chain.0,
+                PbftFinalChainDposWalletEligibilityRequest {
+                    period: request.period,
+                    address: H160::from(request.address),
+                },
+            )?
+            .into())
     }
 
     /// Queries PBFT-facing per-wallet DPoS vote facts for multiple addresses.
@@ -314,68 +163,20 @@ impl BridgePbftService {
         final_chain: &BridgeFinalChain,
         request: FfiPbftFinalChainDposWalletEligibilityBatchRequest,
     ) -> Result<FfiPbftFinalChainDposWalletEligibilityBatchFacts> {
-        let last_block_number = final_chain.0.last_block_number()?;
-        let mut address_facts = Vec::with_capacity(request.addresses.len());
-        let mut all_ready = true;
-        let mut error_code = String::new();
-
-        for address in request.addresses {
-            let (status, vote_count, address_error_code) = match final_chain
-                .0
-                .pbft_dpos_eligible_vote_count(request.period, address.address)
-            {
-                Ok(Some(vote_count)) => (
-                    PBFT_FINAL_CHAIN_FACT_STATUS_READY,
-                    vote_count,
-                    String::new(),
-                ),
-                Ok(None) => (
-                    PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                    0,
-                    "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD".to_string(),
-                ),
-                Err(err) => (
-                    PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                    0,
-                    format!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}"),
-                ),
-            };
-
-            if status != PBFT_FINAL_CHAIN_FACT_STATUS_READY {
-                all_ready = false;
-                if error_code.is_empty() {
-                    error_code = address_error_code.clone();
-                }
-            }
-
-            address_facts.push(FfiPbftFinalChainDposAddressVoteFact {
-                address: address.address,
-                status,
-                eligible: vote_count > 0,
-                vote_count,
-                error_code: address_error_code,
-            });
-        }
-
-        let status = if all_ready {
-            PBFT_FINAL_CHAIN_FACT_STATUS_READY
-        } else {
-            PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
-        };
-        let error_code = if status == PBFT_FINAL_CHAIN_FACT_STATUS_READY {
-            String::new()
-        } else if error_code.is_empty() {
-            "PBFT_FINAL_CHAIN_ADDRESS_FACTS_UNAVAILABLE".to_string()
-        } else {
-            error_code
-        };
-
-        Ok(FfiPbftFinalChainDposWalletEligibilityBatchFacts {
-            status,
-            last_block_number,
-            address_facts,
-            error_code,
-        })
+        Ok(self
+            .0
+            .collect_dpos_wallet_eligibility_batch(
+                &final_chain.0,
+                PbftFinalChainDposWalletEligibilityBatchRequest {
+                    period: request.period,
+                    addresses: request
+                        .addresses
+                        .into_iter()
+                        .map(|entry| H160::from(entry.address))
+                        .collect(),
+                },
+            )?
+            .into())
     }
 }
 
@@ -422,6 +223,109 @@ impl From<PbftGeneratedVote> for FfiPbftGeneratedVote {
     }
 }
 
+impl From<PbftFinalChainDposAddressVoteFact> for FfiPbftFinalChainDposAddressVoteFact {
+    fn from(value: PbftFinalChainDposAddressVoteFact) -> Self {
+        let status = value.status;
+        let status_code = status.as_u8();
+        let (eligible, vote_count, error_code) = match status {
+            PbftFinalChainFact::Ready(vote_count) => (vote_count > 0, vote_count, String::new()),
+            PbftFinalChainFact::Unavailable { error_code } => (false, 0, error_code),
+        };
+
+        Self {
+            address: value.address.0,
+            status: status_code,
+            eligible,
+            vote_count,
+            error_code,
+        }
+    }
+}
+
+impl From<PbftFinalChainDposTotalVoteCountFacts> for FfiPbftFinalChainDposTotalVoteCountFacts {
+    fn from(value: PbftFinalChainDposTotalVoteCountFacts) -> Self {
+        let status = value.status;
+        let status_code = status.as_u8();
+        let (has_total_vote_count, total_vote_count, error_code) = match status {
+            PbftFinalChainFact::Ready(total_vote_count) => (true, total_vote_count, String::new()),
+            PbftFinalChainFact::Unavailable { error_code } => (false, 0, error_code),
+        };
+
+        Self {
+            status: status_code,
+            last_block_number: value.last_block_number.as_u64(),
+            has_total_vote_count,
+            total_vote_count,
+            error_code,
+        }
+    }
+}
+
+impl From<PbftFinalChainDposWalletAggregateVoteCountFacts>
+    for FfiPbftFinalChainDposWalletAggregateVoteCountFacts
+{
+    fn from(value: PbftFinalChainDposWalletAggregateVoteCountFacts) -> Self {
+        let status = value.status;
+        let status_code = status.as_u8();
+        let (has_aggregate_vote_count, aggregate_vote_count, error_code) = match status {
+            PbftFinalChainFact::Ready(aggregate_vote_count) => {
+                (true, aggregate_vote_count, String::new())
+            }
+            PbftFinalChainFact::Unavailable { error_code } => (false, 0, error_code),
+        };
+
+        Self {
+            status: status_code,
+            last_block_number: value.last_block_number.as_u64(),
+            has_aggregate_vote_count,
+            aggregate_vote_count,
+            error_code,
+        }
+    }
+}
+
+impl From<PbftFinalChainDposWalletEligibilityFacts>
+    for FfiPbftFinalChainDposWalletEligibilityFacts
+{
+    fn from(value: PbftFinalChainDposWalletEligibilityFacts) -> Self {
+        let status = value.status;
+        let status_code = status.as_u8();
+        let (eligible, vote_count, error_code) = match status {
+            PbftFinalChainFact::Ready(vote_count) => (vote_count > 0, vote_count, String::new()),
+            PbftFinalChainFact::Unavailable { error_code } => (false, 0, error_code),
+        };
+
+        Self {
+            status: status_code,
+            last_block_number: value.last_block_number.as_u64(),
+            address: value.address.0,
+            eligible,
+            vote_count,
+            error_code,
+        }
+    }
+}
+
+impl From<PbftFinalChainDposWalletEligibilityBatchFacts>
+    for FfiPbftFinalChainDposWalletEligibilityBatchFacts
+{
+    fn from(value: PbftFinalChainDposWalletEligibilityBatchFacts) -> Self {
+        let status_code = value.status.as_u8();
+        let error_code = value.status.error_code().to_owned();
+
+        Self {
+            status: status_code,
+            last_block_number: value.last_block_number.as_u64(),
+            address_facts: value
+                .address_facts
+                .into_iter()
+                .map(FfiPbftFinalChainDposAddressVoteFact::from)
+                .collect(),
+            error_code,
+        }
+    }
+}
+
 impl From<PbftProposerSortitionResult> for FfiPbftProposerSortitionResult {
     fn from(value: PbftProposerSortitionResult) -> Self {
         Self {
@@ -451,15 +355,12 @@ impl TryFrom<FfiPbftProposerSortitionRequest> for PbftProposerSortitionRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::rustaxa_ffi;
-    use crate::final_chain::create_final_chain;
-    use crate::pbft_manager::create_pbft_service_from_storage;
-    use crate::storage::create_storage;
     use k256::ecdsa::SigningKey;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use rustaxa_consensus::pbft_vote_generation::PbftFinalChainFact;
+    use rustaxa_types::FinalChainBlockNumber;
+    use tiny_keccak::{Hasher, Keccak};
 
     const NODE_SECRET: [u8; 32] = [0x24; 32];
-    const NODE_SECRET_ZERO_STAKE: [u8; 32] = [0x55; 32];
     const VRF_SECRET: [u8; 64] = [
         0x90, 0xf5, 0x9a, 0x7e, 0xe7, 0xa3, 0x92, 0xc8, 0x11, 0xc5, 0xd2, 0x99, 0xb5, 0x57, 0xa4,
         0xe0, 0x9e, 0x61, 0x0d, 0xe7, 0xd1, 0x09, 0xd6, 0xb3, 0xfc, 0xb1, 0x9a, 0xb8, 0xd5, 0x1c,
@@ -472,80 +373,10 @@ mod tests {
         let key = SigningKey::from_slice(secret).unwrap();
         let public_key = key.verifying_key().to_encoded_point(false);
         let mut output = [0_u8; 32];
-        let mut hasher = tiny_keccak::Keccak::v256();
-        tiny_keccak::Hasher::update(&mut hasher, &public_key.as_bytes()[1..]);
-        tiny_keccak::Hasher::finalize(hasher, &mut output);
+        let mut hasher = Keccak::v256();
+        hasher.update(&public_key.as_bytes()[1..]);
+        hasher.finalize(&mut output);
         output[12..].try_into().unwrap()
-    }
-
-    fn test_fixture() -> (
-        Box<crate::ffi::BridgePbftService>,
-        Box<crate::ffi::BridgeFinalChain>,
-    ) {
-        let mut path = std::env::temp_dir();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        path.push(format!("rustaxa_bridge_pbft_vote_generation_{nanos}"));
-
-        let storage = create_storage(path.to_str().expect("temp path")).unwrap();
-        let service = create_pbft_service_from_storage(
-            &storage,
-            rustaxa_ffi::PbftServiceConfig {
-                genesis_lambda_ms: 100,
-                cacti_lambda_max_ms: 1500,
-                cacti_lambda_default_ms: 500,
-                cacti_block: 1,
-                max_exponential_lambda_ms: 60_000,
-                max_steps: 13,
-                deadline_ms: 1000,
-                polling_interval_ms: 100,
-                report_malicious_behaviour: true,
-                magnolia_activation_period: 0,
-            },
-        )
-        .unwrap();
-
-        let final_chain = create_final_chain(
-            &storage,
-            0,
-            0,
-            Vec::new(),
-            vec![rustaxa_ffi::GenesisValidator {
-                address: voter_from_secret(&NODE_SECRET),
-                owner: voter_from_secret(&NODE_SECRET),
-                vrf_key: rustaxa_vdf::vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
-                commission: 0,
-                description: String::new(),
-                endpoint: String::new(),
-                total_stake: u256_be(5_000),
-                delegations: vec![rustaxa_ffi::GenesisDelegation {
-                    delegator: voter_from_secret(&NODE_SECRET),
-                    stake: u256_be(5_000),
-                }],
-            }],
-            rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: u256_be(1_000),
-                vote_eligibility_balance_step: u256_be(1_000),
-                validator_maximum_stake: u256_be(30_000),
-                minimum_deposit: Vec::new(),
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .unwrap();
-
-        (service, final_chain)
-    }
-
-    fn u256_be(value: u64) -> Vec<u8> {
-        let bytes = ethereum_types::U256::from(value).to_big_endian();
-        let mut padded = [0_u8; 32];
-        padded[32 - bytes.len()..].copy_from_slice(&bytes);
-        padded.to_vec()
     }
 
     fn input(vote_type: u8, step: u64, secret: [u8; 32]) -> FfiPbftVoteGenerationInput {
@@ -562,186 +393,6 @@ mod tests {
         }
     }
 
-    fn input_with_period(
-        vote_type: u8,
-        step: u64,
-        secret: [u8; 32],
-        period: u64,
-    ) -> FfiPbftVoteGenerationInput {
-        FfiPbftVoteGenerationInput {
-            block_hash: [0x11; 32],
-            vote_type,
-            period,
-            round: 1,
-            step,
-            node_secret: secret,
-            vrf_secret: VRF_SECRET,
-            expected_voter: voter_from_secret(&secret),
-            expected_vrf_public_key: rustaxa_vdf::vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
-        }
-    }
-
-    fn proposer_sortition_request(
-        voter_secret: [u8; 32],
-        pbft_period: u64,
-        pbft_round: u64,
-        number_of_proposers: u64,
-    ) -> FfiPbftProposerSortitionRequest {
-        let expected_voter = voter_from_secret(&voter_secret);
-        let signing_key = SigningKey::from_slice(&voter_secret).unwrap();
-        let point = signing_key.verifying_key().to_encoded_point(false);
-        let mut voter_public_key = [0_u8; 64];
-        voter_public_key.copy_from_slice(&point.as_bytes()[1..]);
-
-        FfiPbftProposerSortitionRequest {
-            pbft_period,
-            pbft_round,
-            number_of_proposers,
-            vrf_secret: VRF_SECRET,
-            expected_vrf_public_key: rustaxa_vdf::vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
-            voter_public_key,
-            expected_voter,
-        }
-    }
-
-    #[test]
-    fn bridge_service_generates_and_validates_local_proposer_sortition() {
-        let (service, final_chain) = test_fixture();
-        let request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
-
-        let result = service
-            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
-            .unwrap();
-
-        assert_eq!(
-            result.status,
-            rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::Valid.as_u8()
-        );
-        assert!(result.accepted);
-        assert_eq!(result.error_code, "");
-    }
-
-    #[test]
-    fn bridge_service_proposer_sortition_is_deterministic_for_identical_inputs() {
-        let (service, final_chain) = test_fixture();
-        let request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
-
-        let first = service
-            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
-            .unwrap();
-        let second = service
-            .pbft_service_generate_and_validate_proposer_sortition(
-                &final_chain,
-                proposer_sortition_request(NODE_SECRET, 1, 1, 100),
-            )
-            .unwrap();
-
-        assert_eq!(first.status, second.status);
-        assert_eq!(first.accepted, second.accepted);
-        assert_eq!(first.error_code, second.error_code);
-    }
-
-    #[test]
-    fn bridge_service_reports_proposer_sortition_zero_stake_as_typed_status() {
-        let (service, final_chain) = test_fixture();
-        let request = proposer_sortition_request(NODE_SECRET_ZERO_STAKE, 1, 1, 100);
-
-        let result = service
-            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
-            .unwrap();
-
-        assert_eq!(
-            result.status,
-            rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::ZeroStake.as_u8()
-        );
-        assert!(!result.accepted);
-    }
-
-    #[test]
-    fn bridge_service_reports_proposer_sortition_future_as_typed_status() {
-        let (service, final_chain) = test_fixture();
-        let request = proposer_sortition_request(NODE_SECRET, 99, 1, 100);
-
-        let result = service
-            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
-            .unwrap();
-
-        assert_eq!(
-            result.status,
-            rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::FutureDposState
-                .as_u8()
-        );
-    }
-
-    #[test]
-    fn bridge_service_errors_on_proposer_sortition_period_zero() {
-        let (service, final_chain) = test_fixture();
-        let request = proposer_sortition_request(NODE_SECRET, 0, 1, 100);
-
-        let err = service
-            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
-            .expect_err("period 0 must underflow");
-        assert!(err
-            .to_string()
-            .contains("PBFT_PROPOSER_SORTITION_PERIOD_UNDERFLOW"));
-    }
-
-    #[test]
-    fn bridge_service_errors_on_proposer_sortition_identity_mismatch() {
-        let (service, final_chain) = test_fixture();
-        let mut request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
-        request.expected_voter = voter_from_secret(&NODE_SECRET_ZERO_STAKE);
-
-        let err = service
-            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
-            .expect_err("identity mismatch must be a boundary error");
-        assert!(err
-            .to_string()
-            .contains("PBFT_PROPOSER_SORTITION_INVALID_VOTER_IDENTITY"));
-    }
-
-    #[test]
-    fn bridge_service_validates_proposer_sortition_identity_before_future_period_lookup() {
-        let (service, final_chain) = test_fixture();
-        let mut request = proposer_sortition_request(NODE_SECRET, 99, 1, 100);
-        request.expected_voter = voter_from_secret(&NODE_SECRET_ZERO_STAKE);
-
-        let err = service
-            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
-            .expect_err("identity mismatch must be checked before FinalChain state");
-        assert!(err
-            .to_string()
-            .contains("PBFT_PROPOSER_SORTITION_INVALID_VOTER_IDENTITY"));
-    }
-
-    #[test]
-    fn bridge_service_validates_proposer_sortition_vrf_public_key_before_future_period_lookup() {
-        let (service, final_chain) = test_fixture();
-        let mut request = proposer_sortition_request(NODE_SECRET, 99, 1, 100);
-        request.expected_vrf_public_key = [0_u8; 32];
-
-        let err = service
-            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
-            .expect_err("vrf mismatch must be checked before FinalChain state");
-        assert!(err
-            .to_string()
-            .contains("PBFT_PROPOSER_SORTITION_INVALID_VRF_PUBLIC_KEY"));
-    }
-
-    #[test]
-    fn bridge_service_errors_on_proposer_sortition_vrf_mismatch() {
-        let (service, final_chain) = test_fixture();
-        let mut request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
-        request.expected_vrf_public_key = [0_u8; 32];
-
-        let err = service
-            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
-            .expect_err("vrf public key mismatch must be a boundary error");
-        assert!(err
-            .to_string()
-            .contains("PBFT_PROPOSER_SORTITION_INVALID_VRF_PUBLIC_KEY"));
-    }
-
     #[test]
     fn bridge_generates_signed_vote_bytes() {
         let vote = pbft_generate_signed_vote(input(3, 3, NODE_SECRET)).unwrap();
@@ -752,249 +403,92 @@ mod tests {
     }
 
     #[test]
-    fn bridge_service_generates_weighted_vote_bytes() {
-        let (service, final_chain) = test_fixture();
-        let vote = service
-            .pbft_service_generate_signed_vote_with_weight(
-                &final_chain,
-                input_with_period(1, 1, NODE_SECRET, 1),
-                50,
-                100,
-            )
-            .unwrap();
-        assert!(vote.accepted);
-        assert!(vote.has_weight);
-        assert!(vote.weight > 0);
+    fn bridge_rejects_unknown_vote_type_at_ffi_boundary() {
+        assert!(pbft_generate_signed_vote(input(u8::MAX, 3, NODE_SECRET)).is_err());
     }
 
     #[test]
-    fn bridge_service_generates_weighted_zero_stake_vote() {
-        let (service, final_chain) = test_fixture();
-        let vote = service
-            .pbft_service_generate_signed_vote_with_weight(
-                &final_chain,
-                input_with_period(1, 1, NODE_SECRET_ZERO_STAKE, 1),
-                50,
-                100,
-            )
-            .unwrap();
+    fn bridge_converts_ready_and_unavailable_dpos_facts() {
+        let total_ready: FfiPbftFinalChainDposTotalVoteCountFacts =
+            rustaxa_consensus::pbft_vote_generation::PbftFinalChainDposTotalVoteCountFacts {
+                last_block_number: FinalChainBlockNumber::new(10),
+                status: PbftFinalChainFact::Ready(5),
+            }
+            .into();
+
+        assert_eq!(total_ready.status, 0);
+        assert!(total_ready.has_total_vote_count);
+        assert_eq!(total_ready.total_vote_count, 5);
+        assert_eq!(total_ready.last_block_number, 10);
+        assert_eq!(total_ready.error_code, "");
+
+        let total_unavailable: FfiPbftFinalChainDposTotalVoteCountFacts =
+            rustaxa_consensus::pbft_vote_generation::PbftFinalChainDposTotalVoteCountFacts {
+                last_block_number: FinalChainBlockNumber::new(10),
+                status: PbftFinalChainFact::Unavailable {
+                    error_code: "PBFT_FINAL_CHAIN_TOTAL_VOTES_UNAVAILABLE".to_string(),
+                },
+            }
+            .into();
+
+        assert_eq!(total_unavailable.status, 1);
+        assert!(!total_unavailable.has_total_vote_count);
         assert_eq!(
-            vote.status,
-            rustaxa_consensus::pbft_vote_generation::PbftVoteGenerationStatus::ZeroStake.as_u8()
+            total_unavailable.error_code,
+            "PBFT_FINAL_CHAIN_TOTAL_VOTES_UNAVAILABLE"
         );
-        assert!(!vote.accepted);
+        assert_eq!(total_unavailable.total_vote_count, 0);
     }
 
     #[test]
-    fn bridge_service_reports_zero_weight_as_typed_generation_status() {
-        let (service, final_chain) = test_fixture();
-        let vote = service
-            .pbft_service_generate_signed_vote_with_weight(
-                &final_chain,
-                input_with_period(1, 1, NODE_SECRET, 1),
-                0,
-                0,
-            )
-            .unwrap();
-        assert_eq!(
-            vote.status,
-            rustaxa_consensus::pbft_vote_generation::PbftVoteGenerationStatus::ZeroWeight.as_u8()
-        );
-        assert!(!vote.accepted);
-    }
-
-    #[test]
-    fn bridge_service_preserves_identity_error_before_zero_stake_status() {
-        let (service, final_chain) = test_fixture();
-        let mut mismatched = input_with_period(1, 1, NODE_SECRET, 1);
-        mismatched.expected_voter = voter_from_secret(&NODE_SECRET_ZERO_STAKE);
-        let vote = service
-            .pbft_service_generate_signed_vote_with_weight(&final_chain, mismatched, 50, 100)
-            .unwrap();
-        assert_eq!(
-            vote.status,
-            rustaxa_consensus::pbft_vote_generation::PbftVoteGenerationStatus::NodeSecretMismatch
-                .as_u8()
-        );
-        assert!(!vote.accepted);
-    }
-
-    #[test]
-    fn bridge_service_generates_weighted_vote_from_future_period() {
-        let (service, final_chain) = test_fixture();
-        assert!(service
-            .pbft_service_generate_signed_vote_with_weight(
-                &final_chain,
-                input_with_period(1, 1, NODE_SECRET, 99),
-                50,
-                100
-            )
-            .is_err());
-    }
-
-    #[test]
-    fn bridge_service_generates_weighted_vote_from_period_zero() {
-        let (service, final_chain) = test_fixture();
-        assert!(service
-            .pbft_service_generate_signed_vote_with_weight(
-                &final_chain,
-                input_with_period(1, 1, NODE_SECRET, 0),
-                50,
-                100
-            )
-            .is_err());
-    }
-
-    #[test]
-    fn bridge_service_rejects_invalid_weighted_vote_type() {
-        let (service, final_chain) = test_fixture();
-        let invalid_input = input_with_period(255, 1, NODE_SECRET, 1);
-        assert!(service
-            .pbft_service_generate_signed_vote_with_weight(&final_chain, invalid_input, 50, 100)
-            .is_err());
-    }
-
-    #[test]
-    fn bridge_service_collects_pbft_dpos_total_vote_count() {
-        let (service, final_chain) = test_fixture();
-        let ready = service
-            .pbft_service_collect_dpos_total_vote_count(
-                &final_chain,
-                rustaxa_ffi::PbftFinalChainDposTotalVoteCountRequest { period: 0 },
-            )
-            .expect("ready total-vote lookup should return data");
-        assert_eq!(ready.status, 0);
-        assert!(ready.has_total_vote_count);
-        assert_eq!(ready.total_vote_count, 5);
-
-        let future = service
-            .pbft_service_collect_dpos_total_vote_count(
-                &final_chain,
-                rustaxa_ffi::PbftFinalChainDposTotalVoteCountRequest { period: 99 },
-            )
-            .expect("future total-vote lookup should be returned as unavailable data");
-        assert_eq!(future.status, 1);
-        assert!(!future.has_total_vote_count);
-        assert_eq!(
-            future.error_code,
-            "PBFT_FINAL_CHAIN_TOTAL_VOTES_FUTURE_PERIOD"
-        );
-    }
-
-    #[test]
-    fn bridge_service_collects_pbft_dpos_wallet_aggregate_vote_count() {
-        let (service, final_chain) = test_fixture();
-        let validator = voter_from_secret(&NODE_SECRET);
-        let ready = service
-            .pbft_service_collect_dpos_wallet_aggregate_vote_count(
-                &final_chain,
-                rustaxa_ffi::PbftFinalChainDposWalletAggregateVoteCountRequest {
-                    period: 0,
-                    addresses: vec![
-                        rustaxa_ffi::PbftFinalChainDposAddress { address: validator },
-                        rustaxa_ffi::PbftFinalChainDposAddress {
-                            address: [0xA1; 20],
+    fn bridge_conversion_preserves_batch_order_and_top_status_error_code() {
+        let address_one = [0x11_u8; 20];
+        let address_two = [0x22_u8; 20];
+        let batch: FfiPbftFinalChainDposWalletEligibilityBatchFacts =
+            rustaxa_consensus::pbft_vote_generation::PbftFinalChainDposWalletEligibilityBatchFacts {
+                last_block_number: FinalChainBlockNumber::new(99),
+                status: PbftFinalChainFact::Unavailable {
+                    error_code: "PBFT_FINAL_CHAIN_ADDRESS_FACTS_UNAVAILABLE".to_string(),
+                },
+                address_facts: vec![
+                    rustaxa_consensus::pbft_vote_generation::PbftFinalChainDposAddressVoteFact {
+                        address: address_one.into(),
+                        status: PbftFinalChainFact::Ready(5),
+                    },
+                    rustaxa_consensus::pbft_vote_generation::PbftFinalChainDposAddressVoteFact {
+                        address: address_two.into(),
+                        status: PbftFinalChainFact::Unavailable {
+                            error_code: "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD".to_string(),
                         },
-                    ],
-                },
-            )
-            .expect("ready aggregate vote lookup should return data");
-        assert_eq!(ready.status, 0);
-        assert!(ready.has_aggregate_vote_count);
-        assert_eq!(ready.aggregate_vote_count, 5);
+                    },
+                    rustaxa_consensus::pbft_vote_generation::PbftFinalChainDposAddressVoteFact {
+                        address: address_one.into(),
+                        status: PbftFinalChainFact::Ready(0),
+                    },
+                ],
+            }
+            .into();
 
-        let unavailable = service
-            .pbft_service_collect_dpos_wallet_aggregate_vote_count(
-                &final_chain,
-                rustaxa_ffi::PbftFinalChainDposWalletAggregateVoteCountRequest {
-                    period: 99,
-                    addresses: vec![rustaxa_ffi::PbftFinalChainDposAddress { address: validator }],
-                },
-            )
-            .expect("future aggregate vote lookup should be returned as unavailable data");
-        assert_eq!(unavailable.status, 1);
-        assert!(!unavailable.has_aggregate_vote_count);
+        assert_eq!(batch.status, 1);
         assert_eq!(
-            unavailable.error_code,
-            "PBFT_FINAL_CHAIN_WALLET_VOTES_FUTURE_PERIOD"
+            batch.error_code,
+            "PBFT_FINAL_CHAIN_ADDRESS_FACTS_UNAVAILABLE"
         );
-    }
-
-    #[test]
-    fn bridge_service_collects_pbft_dpos_wallet_eligibility() {
-        let (service, final_chain) = test_fixture();
-        let validator = voter_from_secret(&NODE_SECRET);
-        let ready = service
-            .pbft_service_collect_dpos_wallet_eligibility(
-                &final_chain,
-                rustaxa_ffi::PbftFinalChainDposWalletEligibilityRequest {
-                    period: 0,
-                    address: validator,
-                },
-            )
-            .expect("ready wallet eligibility lookup should return data");
-        assert_eq!(ready.status, 0);
-        assert!(ready.eligible);
-        assert_eq!(ready.vote_count, 5);
-
-        let zero_stake = service
-            .pbft_service_collect_dpos_wallet_eligibility(
-                &final_chain,
-                rustaxa_ffi::PbftFinalChainDposWalletEligibilityRequest {
-                    period: 0,
-                    address: [0xA1; 20],
-                },
-            )
-            .expect("zero-stake wallet lookup should be ready with zero values");
-        assert_eq!(zero_stake.status, 0);
-        assert!(!zero_stake.eligible);
-        assert_eq!(zero_stake.vote_count, 0);
-    }
-
-    #[test]
-    fn bridge_service_collects_pbft_dpos_wallet_eligibility_batch() {
-        let (service, final_chain) = test_fixture();
-        let validator = voter_from_secret(&NODE_SECRET);
-        let ready = service
-            .pbft_service_collect_dpos_wallet_eligibility_batch(
-                &final_chain,
-                rustaxa_ffi::PbftFinalChainDposWalletEligibilityBatchRequest {
-                    period: 0,
-                    addresses: vec![
-                        rustaxa_ffi::PbftFinalChainDposAddress { address: validator },
-                        rustaxa_ffi::PbftFinalChainDposAddress {
-                            address: [0xA1; 20],
-                        },
-                    ],
-                },
-            )
-            .expect("ready wallet batch lookup should return data");
-        assert_eq!(ready.status, 0);
-        assert_eq!(ready.address_facts.len(), 2);
-        assert_eq!(ready.address_facts[0].status, 0);
-        assert_eq!(ready.address_facts[1].status, 0);
-        assert_eq!(ready.address_facts[0].vote_count, 5);
-        assert_eq!(ready.address_facts[1].vote_count, 0);
-
-        let unavailable = service
-            .pbft_service_collect_dpos_wallet_eligibility_batch(
-                &final_chain,
-                rustaxa_ffi::PbftFinalChainDposWalletEligibilityBatchRequest {
-                    period: 99,
-                    addresses: vec![
-                        rustaxa_ffi::PbftFinalChainDposAddress { address: validator },
-                        rustaxa_ffi::PbftFinalChainDposAddress {
-                            address: [0xA1; 20],
-                        },
-                    ],
-                },
-            )
-            .expect("future batch lookup should be returned as unavailable data");
-        assert_eq!(unavailable.status, 1);
-        assert_eq!(unavailable.address_facts[0].status, 1);
+        assert_eq!(batch.address_facts.len(), 3);
+        assert_eq!(batch.address_facts[0].address, address_one);
+        assert_eq!(batch.address_facts[1].address, address_two);
+        assert_eq!(batch.address_facts[2].address, address_one);
+        assert_eq!(batch.address_facts[0].status, 0);
+        assert!(batch.address_facts[0].eligible);
+        assert_eq!(batch.address_facts[1].status, 1);
+        assert!(!batch.address_facts[1].eligible);
+        assert_eq!(batch.address_facts[1].vote_count, 0);
         assert_eq!(
-            unavailable.address_facts[0].error_code,
+            batch.address_facts[1].error_code,
             "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD"
         );
+        assert_eq!(batch.address_facts[2].status, 0);
+        assert!(!batch.address_facts[2].eligible);
+        assert_eq!(batch.address_facts[2].vote_count, 0);
     }
 }

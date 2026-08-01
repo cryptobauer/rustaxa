@@ -1,15 +1,15 @@
-//! Rust-owned PBFT vote byte generation.
+//! Native PBFT vote generation and FinalChain lookup fact types.
 //!
-//! This module creates the canonical legacy PBFT vote payload that C++
-//! `PbftVote` expects while keeping state access outside Rust. Callers pass
-//! ephemeral wallet secrets plus already-read DPoS facts. The output is plain
-//! canonical bytes, hashes, and derived facts; no live vote object, storage
-//! batch, network send, or replay-cache mutation is owned here.
+//! This module is composition-first by design: FinalChain-facing fact queries are
+//! represented as typed request/result values and resolved in `PbftService` at the
+//! service boundary. Rust-only generation remains deterministic byte/fact
+//! construction with no live vote object, storage write, or replay-cache mutation.
 
 use anyhow::{Context, Result, anyhow};
 use ethereum_types::{H160, H256};
 use k256::ecdsa::SigningKey;
 use rlp::RlpStream;
+use rustaxa_types::FinalChainBlockNumber;
 use rustaxa_vdf::vrf::{
     self, VRF_OUTPUT_BYTES, VRF_PROOF_BYTES, VRF_PUBLIC_KEY_BYTES, VRF_SECRET_KEY_BYTES,
 };
@@ -19,6 +19,182 @@ use crate::pbft_vote_validation::{
     legacy_pbft_vote_signing_hash, legacy_vrf_message_rlp, pbft_vote_sortition_threshold,
 };
 use crate::verified_votes::PbftVoteType;
+
+/// Status for a PBFT FinalChain fact query.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum PbftFinalChainFact<T> {
+    /// Query resolved and returned typed payload data.
+    Ready(T),
+    /// Query could not be resolved because the period is future or the backing
+    /// FinalChain snapshot is unavailable/corrupt.
+    Unavailable {
+        /// Stable diagnostic code for unavailable data and errors.
+        error_code: String,
+    },
+}
+
+impl<T> PbftFinalChainFact<T> {
+    /// Stable bridge-facing status byte code.
+    pub const fn as_u8(&self) -> u8 {
+        match self {
+            Self::Ready(_) => 0,
+            Self::Unavailable { .. } => 1,
+        }
+    }
+
+    /// Reports whether the fact contains ready data.
+    pub const fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+
+    /// Reports whether the fact carries an unavailable-state diagnostic.
+    pub const fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Unavailable { .. })
+    }
+
+    /// Returns the unavailable diagnostic, or an empty string for ready data.
+    pub fn error_code(&self) -> &str {
+        match self {
+            Self::Ready(_) => "",
+            Self::Unavailable { error_code } => error_code,
+        }
+    }
+}
+
+impl PbftFinalChainFact<u64> {
+    /// Projects the ready value or the legacy compatibility zero sentinel.
+    pub const fn data_or_zero(&self) -> u64 {
+        match self {
+            Self::Ready(value) => *value,
+            Self::Unavailable { .. } => 0,
+        }
+    }
+}
+
+/// Request to collect total PBFT DPoS vote-count facts for one consensus period.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalChainDposTotalVoteCountRequest {
+    /// PBFT-consensus period to query.
+    pub period: u64,
+}
+
+/// Response for one-period PBFT DPoS total-vote fact lookup.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalChainDposTotalVoteCountFacts {
+    /// Last finalized block number sampled before processing this query.
+    ///
+    /// This is a diagnostic snapshot and is not atomically tied to all sub-reads
+    /// for the requested period.
+    pub last_block_number: FinalChainBlockNumber,
+    /// Typed outcome for downstream compatibility encoding.
+    pub status: PbftFinalChainFact<u64>,
+}
+
+/// One-wallet address fact for batch FinalChain DPoS checks.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalChainDposAddressVoteFact {
+    /// Wallet address under inspection.
+    pub address: H160,
+    /// Typed status for per-wallet fact availability.
+    pub status: PbftFinalChainFact<u64>,
+}
+
+impl PbftFinalChainDposAddressVoteFact {
+    /// Derives eligibility from a ready nonzero vote count.
+    pub const fn is_eligible(&self) -> bool {
+        match &self.status {
+            PbftFinalChainFact::Ready(vote_count) => *vote_count > 0,
+            PbftFinalChainFact::Unavailable { .. } => false,
+        }
+    }
+
+    /// Projects the ready vote count or the legacy compatibility zero sentinel.
+    pub const fn vote_count(&self) -> u64 {
+        self.status.data_or_zero()
+    }
+}
+
+/// Request to collect an ordered subset aggregate DPoS vote-count fact.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalChainDposWalletAggregateVoteCountRequest {
+    /// PBFT-consensus period to query.
+    pub period: u64,
+    /// Ordered wallet subset for aggregate sum.
+    pub addresses: Vec<H160>,
+}
+
+/// Response for one-period PBFT DPoS wallet aggregate fact lookup.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalChainDposWalletAggregateVoteCountFacts {
+    /// Last finalized block number sampled before processing this query.
+    ///
+    /// This is a diagnostic snapshot and is not atomically tied to all sub-reads
+    /// for the requested wallet subset.
+    pub last_block_number: FinalChainBlockNumber,
+    /// Typed outcome for downstream compatibility encoding.
+    pub status: PbftFinalChainFact<u64>,
+}
+
+/// Request for a single-wallet DPoS eligibility query.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalChainDposWalletEligibilityRequest {
+    /// PBFT-consensus period to query.
+    pub period: u64,
+    /// Wallet address to test for eligibility.
+    pub address: H160,
+}
+
+/// Response for one-wallet DPoS eligibility query.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalChainDposWalletEligibilityFacts {
+    /// Last finalized block number sampled before processing this query.
+    ///
+    /// This is a diagnostic snapshot and is not atomically tied to all sub-reads
+    /// for the requested address.
+    pub last_block_number: FinalChainBlockNumber,
+    /// Echoed wallet address.
+    pub address: H160,
+    /// Typed outcome for downstream compatibility encoding.
+    pub status: PbftFinalChainFact<u64>,
+}
+
+impl PbftFinalChainDposWalletEligibilityFacts {
+    /// Derives eligibility from a ready nonzero vote count.
+    pub const fn is_eligible(&self) -> bool {
+        match &self.status {
+            PbftFinalChainFact::Ready(vote_count) => *vote_count > 0,
+            PbftFinalChainFact::Unavailable { .. } => false,
+        }
+    }
+
+    /// Projects the ready vote count or the legacy compatibility zero sentinel.
+    pub const fn vote_count(&self) -> u64 {
+        self.status.data_or_zero()
+    }
+}
+
+/// Request for ordered multi-wallet DPoS eligibility lookup.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalChainDposWalletEligibilityBatchRequest {
+    /// PBFT-consensus period to query.
+    pub period: u64,
+    /// Ordered list of wallet addresses.
+    pub addresses: Vec<H160>,
+}
+
+/// Response for ordered multi-wallet DPoS eligibility lookup.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalChainDposWalletEligibilityBatchFacts {
+    /// Last finalized block number sampled before processing this query.
+    ///
+    /// This is a diagnostic snapshot and is not atomically tied to all sub-reads
+    /// for the requested addresses.
+    pub last_block_number: FinalChainBlockNumber,
+    /// Typed top-level batch outcome.
+    pub status: PbftFinalChainFact<()>,
+    /// Per-address facts preserving request order.
+    pub address_facts: Vec<PbftFinalChainDposAddressVoteFact>,
+}
 
 /// Status for a local PBFT vote generation attempt.
 ///

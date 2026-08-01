@@ -46,6 +46,15 @@ use crate::pbft_sync::{
 };
 use crate::pbft_thresholds::{PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan};
 use crate::pbft_vote_event::PbftVoteEventFactFlags;
+use crate::pbft_vote_generation::{
+    PbftFinalChainDposAddressVoteFact, PbftFinalChainDposTotalVoteCountFacts,
+    PbftFinalChainDposTotalVoteCountRequest, PbftFinalChainDposWalletAggregateVoteCountFacts,
+    PbftFinalChainDposWalletAggregateVoteCountRequest,
+    PbftFinalChainDposWalletEligibilityBatchFacts, PbftFinalChainDposWalletEligibilityBatchRequest,
+    PbftFinalChainDposWalletEligibilityFacts, PbftFinalChainDposWalletEligibilityRequest,
+    PbftFinalChainFact, PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteWeightFacts,
+    generate_pbft_vote_with_weight,
+};
 use crate::pbft_vote_payload::build_weighted_pbft_vote_payload;
 use crate::pbft_vote_progress::PbftVoteProgressContext;
 use crate::pbft_vote_runtime::{
@@ -53,9 +62,11 @@ use crate::pbft_vote_runtime::{
 };
 use crate::pbft_vote_storage::persist_pbft_vote_progress;
 use crate::pbft_vote_validation::{
-    PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,
-    PbftVoteAdmissionValidationRequest, PbftVoteValidationExternalFacts,
-    inspect_canonical_pbft_vote, validate_canonical_pbft_vote,
+    PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation, PbftProposerSortitionRequest,
+    PbftProposerSortitionResult, PbftVoteAdmissionValidationRequest,
+    PbftVoteValidationExternalFacts,
+    generate_and_validate_proposer_sortition_with_prepared_request, inspect_canonical_pbft_vote,
+    prepare_and_validate_pbft_proposer_sortition_request, validate_canonical_pbft_vote,
 };
 use crate::period_data_queue::{
     PeriodDataQueueEntryRef, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
@@ -1511,6 +1522,288 @@ impl PbftService {
             )
     }
 
+    /// Generates one canonical weighted PBFT vote after compositional FinalChain reads.
+    ///
+    /// The service validates the vote period conversion (`period - 1`) before any
+    /// state lookup and preserves the legacy C++ error strings for unavailable
+    /// FinalChain rows. This method returns `Result::Err` for malformed
+    /// wallets, malformed proofs, and explicit FinalChain-query failures; zero
+    /// stake/total cases remain returned as typed rejected payloads. Voter stake
+    /// is always read before total stake, and zero voter stake skips the total
+    /// lookup. No PBFT service lock is held while FinalChain is queried.
+    pub fn generate_signed_vote_with_weight(
+        &self,
+        final_chain: &FinalChain,
+        input: PbftVoteGenerationInput,
+        committee_size: u64,
+        number_of_proposers: u64,
+    ) -> Result<PbftGeneratedVote> {
+        let dpos_period = input
+            .period
+            .checked_sub(1)
+            .ok_or_else(|| anyhow::anyhow!("PBFT_VOTE_GENERATION_PERIOD_UNDERFLOW"))?;
+        let voter = input.expected_voter;
+
+        let voter_dpos_vote_count =
+            match final_chain.pbft_dpos_eligible_vote_count(dpos_period, voter.0) {
+                Ok(Some(votes)) => votes,
+                Ok(None) => anyhow::bail!("PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD"),
+                Err(err) => {
+                    anyhow::bail!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}")
+                }
+            };
+
+        if voter_dpos_vote_count == 0 {
+            return Ok(generate_pbft_vote_with_weight(
+                input,
+                PbftVoteWeightFacts {
+                    voter_dpos_vote_count,
+                    total_dpos_vote_count: 0,
+                    committee_size,
+                    number_of_proposers,
+                },
+            )?);
+        }
+
+        let total_dpos_vote_count =
+            match final_chain.pbft_dpos_eligible_total_vote_count(dpos_period) {
+                Ok(Some(total)) => total,
+                Ok(None) => {
+                    anyhow::bail!("PBFT_FINAL_CHAIN_TOTAL_VOTES_FACT_FUTURE_PERIOD")
+                }
+                Err(err) => {
+                    anyhow::bail!("PBFT_FINAL_CHAIN_TOTAL_VOTES_FACT_UNAVAILABLE: {err}")
+                }
+            };
+
+        generate_pbft_vote_with_weight(
+            input,
+            PbftVoteWeightFacts {
+                voter_dpos_vote_count,
+                total_dpos_vote_count,
+                committee_size,
+                number_of_proposers,
+            },
+        )
+    }
+
+    /// Validates local proposer sortition identity/keys and resolves DPoS facts.
+    ///
+    /// Request validation happens before any FinalChain read. The method resolves
+    /// DPoS facts in the original bridge order and returns typed status results
+    /// when lookup outcomes are future/invalid. Identity and VRF errors precede
+    /// period conversion; infrastructure lookup failures are returned as errors.
+    pub fn generate_and_validate_proposer_sortition(
+        &self,
+        final_chain: &FinalChain,
+        request: PbftProposerSortitionRequest,
+    ) -> Result<PbftProposerSortitionResult> {
+        let request = prepare_and_validate_pbft_proposer_sortition_request(request)?;
+        let dpos_period = request
+            .request
+            .pbft_period
+            .checked_sub(1)
+            .ok_or_else(|| anyhow::anyhow!("PBFT_PROPOSER_SORTITION_PERIOD_UNDERFLOW"))?;
+
+        let voter_dpos_vote_count = match final_chain
+            .pbft_dpos_eligible_vote_count(dpos_period, request.request.expected_voter.0)
+        {
+            Ok(Some(votes)) => votes,
+            Ok(None) => {
+                return Ok(PbftProposerSortitionResult::rejected(
+                    crate::pbft_vote_validation::PbftProposerSortitionStatus::FutureDposState,
+                ));
+            }
+            Err(err) => {
+                anyhow::bail!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}")
+            }
+        };
+
+        if voter_dpos_vote_count == 0 {
+            return Ok(PbftProposerSortitionResult::rejected(
+                crate::pbft_vote_validation::PbftProposerSortitionStatus::ZeroStake,
+            ));
+        }
+
+        let total_dpos_vote_count =
+            match final_chain.pbft_dpos_eligible_total_vote_count(dpos_period) {
+                Ok(Some(total)) => total,
+                Ok(None) => {
+                    return Ok(PbftProposerSortitionResult::rejected(
+                        crate::pbft_vote_validation::PbftProposerSortitionStatus::FutureDposState,
+                    ));
+                }
+                Err(err) => {
+                    anyhow::bail!("PBFT_FINAL_CHAIN_TOTAL_VOTES_FACT_UNAVAILABLE: {err}")
+                }
+            };
+
+        generate_and_validate_proposer_sortition_with_prepared_request(
+            request,
+            voter_dpos_vote_count,
+            total_dpos_vote_count,
+        )
+    }
+
+    /// Collects one PBFT-period total DPoS-vote fact through FinalChain.
+    ///
+    /// The current FinalChain head is sampled first as a diagnostic value; it is
+    /// not an atomic snapshot with the subsequent period lookup. Ready totals are
+    /// typed data, while future or failed/corrupt lookups are typed unavailable
+    /// facts. Only failure to sample the diagnostic head returns an error.
+    ///
+    /// The sampled head is returned for diagnostics and is not atomically tied to
+    /// the sub-reads for `request.period`.
+    pub fn collect_dpos_total_vote_count(
+        &self,
+        final_chain: &FinalChain,
+        request: PbftFinalChainDposTotalVoteCountRequest,
+    ) -> Result<PbftFinalChainDposTotalVoteCountFacts> {
+        let last_block_number = final_chain.last_block_number_typed()?;
+        let status = match final_chain.pbft_dpos_eligible_total_vote_count(request.period) {
+            Ok(Some(total_vote_count)) => PbftFinalChainFact::Ready(total_vote_count),
+            Ok(None) => PbftFinalChainFact::Unavailable {
+                error_code: "PBFT_FINAL_CHAIN_TOTAL_VOTES_FUTURE_PERIOD".to_string(),
+            },
+            Err(err) => PbftFinalChainFact::Unavailable {
+                error_code: format!("PBFT_FINAL_CHAIN_TOTAL_VOTES_UNAVAILABLE: {err}"),
+            },
+        };
+
+        Ok(PbftFinalChainDposTotalVoteCountFacts {
+            status,
+            last_block_number,
+        })
+    }
+
+    /// Collects one ordered wallet-subset aggregate DPoS vote fact through
+    /// FinalChain.
+    ///
+    /// The head is sampled first for diagnostics. Addresses retain caller order
+    /// and duplicates, and counts use legacy wrapping `u64` addition. An empty
+    /// subset returns ready zero without a period lookup. Future or failed/corrupt
+    /// lookups are typed unavailable facts; head-sampling failure is an error.
+    ///
+    /// The sampled head is returned for diagnostics and is not atomically tied to
+    /// the sub-reads for this request's address list.
+    pub fn collect_dpos_wallet_aggregate_vote_count(
+        &self,
+        final_chain: &FinalChain,
+        request: PbftFinalChainDposWalletAggregateVoteCountRequest,
+    ) -> Result<PbftFinalChainDposWalletAggregateVoteCountFacts> {
+        let last_block_number = final_chain.last_block_number_typed()?;
+        let addresses: Vec<[u8; 20]> = request.addresses.iter().map(|address| address.0).collect();
+
+        let status = if addresses.is_empty() {
+            PbftFinalChainFact::Ready(0)
+        } else {
+            match final_chain.pbft_dpos_eligible_wallet_vote_counts(request.period, &addresses) {
+                Ok(Some(votes)) => {
+                    let aggregate_vote_count = votes
+                        .iter()
+                        .fold(0_u64, |total, vote| total.wrapping_add(vote.vote_count));
+                    PbftFinalChainFact::Ready(aggregate_vote_count)
+                }
+                Ok(None) => PbftFinalChainFact::Unavailable {
+                    error_code: "PBFT_FINAL_CHAIN_WALLET_VOTES_FUTURE_PERIOD".to_string(),
+                },
+                Err(err) => PbftFinalChainFact::Unavailable {
+                    error_code: format!("PBFT_FINAL_CHAIN_WALLET_VOTES_UNAVAILABLE: {err}"),
+                },
+            }
+        };
+
+        Ok(PbftFinalChainDposWalletAggregateVoteCountFacts {
+            status,
+            last_block_number,
+        })
+    }
+
+    /// Collects one-wallet DPoS eligibility through FinalChain.
+    ///
+    /// The head is sampled first for diagnostics, then the exact period/address
+    /// lookup returns a typed vote count. Eligibility is derived from a ready
+    /// nonzero count. Future or failed/corrupt lookups are typed unavailable;
+    /// head-sampling failure is returned as an error.
+    ///
+    /// The sampled head is returned for diagnostics and is not atomically tied to
+    /// the lookup row for `request.address`.
+    pub fn collect_dpos_wallet_eligibility(
+        &self,
+        final_chain: &FinalChain,
+        request: PbftFinalChainDposWalletEligibilityRequest,
+    ) -> Result<PbftFinalChainDposWalletEligibilityFacts> {
+        let last_block_number = final_chain.last_block_number_typed()?;
+        let status =
+            match final_chain.pbft_dpos_eligible_vote_count(request.period, request.address.0) {
+                Ok(Some(vote_count)) => PbftFinalChainFact::Ready(vote_count),
+                Ok(None) => PbftFinalChainFact::Unavailable {
+                    error_code: "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD".to_string(),
+                },
+                Err(err) => PbftFinalChainFact::Unavailable {
+                    error_code: format!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}"),
+                },
+            };
+
+        Ok(PbftFinalChainDposWalletEligibilityFacts {
+            status,
+            last_block_number,
+            address: request.address,
+        })
+    }
+
+    /// Collects one batch of ordered one-wallet DPoS eligibility facts.
+    ///
+    /// The diagnostic head is sampled first. Address order and duplicates are
+    /// preserved; each lookup has its own typed outcome, and the first unavailable
+    /// diagnostic becomes the top-level batch error. Empty batches are ready even
+    /// for future periods. Only head-sampling failure returns an error.
+    ///
+    /// The sampled head is returned for diagnostics and is not atomically tied to
+    /// all per-address lookups.
+    pub fn collect_dpos_wallet_eligibility_batch(
+        &self,
+        final_chain: &FinalChain,
+        request: PbftFinalChainDposWalletEligibilityBatchRequest,
+    ) -> Result<PbftFinalChainDposWalletEligibilityBatchFacts> {
+        let last_block_number = final_chain.last_block_number_typed()?;
+        let mut address_facts = Vec::with_capacity(request.addresses.len());
+        let mut top_error_code = None;
+
+        for address in request.addresses {
+            let status = match final_chain.pbft_dpos_eligible_vote_count(request.period, address.0)
+            {
+                Ok(Some(vote_count)) => PbftFinalChainFact::Ready(vote_count),
+                Ok(None) => PbftFinalChainFact::Unavailable {
+                    error_code: "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD".to_string(),
+                },
+                Err(err) => PbftFinalChainFact::Unavailable {
+                    error_code: format!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}"),
+                },
+            };
+
+            if top_error_code.is_none()
+                && let PbftFinalChainFact::Unavailable { error_code } = &status
+            {
+                top_error_code = Some(error_code.clone());
+            }
+
+            address_facts.push(PbftFinalChainDposAddressVoteFact { address, status });
+        }
+
+        let status = if let Some(error_code) = top_error_code {
+            PbftFinalChainFact::Unavailable { error_code }
+        } else {
+            PbftFinalChainFact::Ready(())
+        };
+
+        Ok(PbftFinalChainDposWalletEligibilityBatchFacts {
+            status,
+            last_block_number,
+            address_facts,
+        })
+    }
+
     /// Prepares one pillar block for PBFT finalization under a one-shot token.
     ///
     /// The result contains deterministic request/emit effects, selected votes,
@@ -1860,10 +2153,13 @@ mod tests {
     use crate::gas_pricer::GasPricerConfig;
     use crate::pbft_thresholds::PbftTwoTPlusOneThresholdStatus;
     use crate::pbft_vote_event::PbftVoteEventFactFlags;
-    use crate::pbft_vote_generation::{PbftVoteGenerationInput, generate_pbft_vote};
+    use crate::pbft_vote_generation::{
+        PbftVoteGenerationInput, PbftVoteGenerationStatus, generate_pbft_vote,
+    };
     use crate::pbft_vote_progress::PbftVoteProgressContext;
     use crate::pbft_vote_validation::{
-        PbftVoteValidationExternalFacts, PbftVoteValidationStatus, validate_canonical_pbft_vote,
+        PbftProposerSortitionRequest, PbftProposerSortitionStatus, PbftVoteValidationExternalFacts,
+        PbftVoteValidationStatus, validate_canonical_pbft_vote,
     };
     use crate::sortition::{SortitionConfig, SortitionParams, VdfParams, VrfParams};
     use crate::transaction_service::TransactionServiceConfig;
@@ -1883,6 +2179,7 @@ mod tests {
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     const NODE_SECRET: [u8; 32] = [0x35; 32];
     const NODE_SECRET_TWO: [u8; 32] = [0x42; 32];
+    const NODE_SECRET_ZERO_STAKE: [u8; 32] = [0x55; 32];
     const VRF_SECRET: [u8; 64] = [
         0x90, 0xf5, 0x9a, 0x7e, 0xe7, 0xa3, 0x92, 0xc8, 0x11, 0xc5, 0xd2, 0x99, 0xb5, 0x57, 0xa4,
         0xe0, 0x9e, 0x61, 0x0d, 0xe7, 0xd1, 0x09, 0xd6, 0xb3, 0xfc, 0xb1, 0x9a, 0xb8, 0xd5, 0x1c,
@@ -2135,6 +2432,61 @@ mod tests {
             number_of_proposers: 20,
             has_preverified_weight,
             preverified_weight,
+        }
+    }
+
+    fn service_with_test_chain(stake: u64, voter_secret: [u8; 32]) -> (PbftService, FinalChain) {
+        let (_, storage) = temp_storage("pbft_service_vote_generation_chain");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&voter_secret);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            stake,
+        );
+        (service, final_chain)
+    }
+
+    fn vote_input(
+        vote_type: PbftVoteType,
+        step: u64,
+        secret: [u8; 32],
+        period: u64,
+    ) -> PbftVoteGenerationInput {
+        PbftVoteGenerationInput {
+            block_hash: H256::from_low_u64_be(0x11),
+            vote_type,
+            period,
+            round: 1,
+            step,
+            node_secret: secret,
+            vrf_secret: VRF_SECRET,
+            expected_voter: voter_from_secret(&secret).into(),
+            expected_vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+        }
+    }
+
+    fn proposer_sortition_request(
+        voter_secret: [u8; 32],
+        pbft_period: u64,
+        pbft_round: u64,
+        number_of_proposers: u64,
+    ) -> PbftProposerSortitionRequest {
+        let expected_voter = voter_from_secret(&voter_secret);
+        let signing_key = SigningKey::from_slice(&voter_secret).unwrap();
+        let point = signing_key.verifying_key().to_encoded_point(false);
+        let mut voter_public_key = [0_u8; 64];
+        voter_public_key.copy_from_slice(&point.as_bytes()[1..]);
+
+        PbftProposerSortitionRequest {
+            pbft_period,
+            pbft_round,
+            number_of_proposers,
+            vrf_secret: VRF_SECRET,
+            expected_vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            voter_public_key,
+            expected_voter: H160::from(expected_voter),
         }
     }
 
@@ -2401,6 +2753,421 @@ mod tests {
         assert_eq!(cached.status, PbftTwoTPlusOneThresholdStatus::Available);
         assert_eq!(cached.threshold, seeded_plan.threshold);
         assert!(cached.cache_hit);
+    }
+
+    #[test]
+    fn composed_service_generates_and_validates_local_proposer_sortition() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
+
+        let result = service
+            .generate_and_validate_proposer_sortition(&final_chain, request)
+            .unwrap();
+
+        assert_eq!(result.status, PbftProposerSortitionStatus::Valid);
+        assert!(result.accepted);
+        assert_eq!(result.error_code, "");
+    }
+
+    #[test]
+    fn composed_service_generates_and_validates_local_proposer_sortition_deterministically() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
+
+        let first = service
+            .generate_and_validate_proposer_sortition(&final_chain, request)
+            .unwrap();
+        let second = service
+            .generate_and_validate_proposer_sortition(
+                &final_chain,
+                proposer_sortition_request(NODE_SECRET, 1, 1, 100),
+            )
+            .unwrap();
+
+        assert_eq!(first.status, second.status);
+        assert_eq!(first.accepted, second.accepted);
+        assert_eq!(first.error_code, second.error_code);
+    }
+
+    #[test]
+    fn composed_service_reports_proposer_sortition_zero_stake_as_typed_status() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let request = proposer_sortition_request(NODE_SECRET_ZERO_STAKE, 1, 1, 100);
+
+        let result = service
+            .generate_and_validate_proposer_sortition(&final_chain, request)
+            .unwrap();
+
+        assert_eq!(result.status, PbftProposerSortitionStatus::ZeroStake);
+        assert!(!result.accepted);
+    }
+
+    #[test]
+    fn composed_service_reports_proposer_sortition_future_as_typed_status() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let request = proposer_sortition_request(NODE_SECRET, 99, 1, 100);
+
+        let result = service
+            .generate_and_validate_proposer_sortition(&final_chain, request)
+            .unwrap();
+
+        assert_eq!(result.status, PbftProposerSortitionStatus::FutureDposState);
+    }
+
+    #[test]
+    fn composed_service_errors_on_proposer_sortition_period_zero() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let request = proposer_sortition_request(NODE_SECRET, 0, 1, 100);
+
+        let err = service
+            .generate_and_validate_proposer_sortition(&final_chain, request)
+            .expect_err("period 0 must underflow");
+        assert!(
+            err.to_string()
+                .contains("PBFT_PROPOSER_SORTITION_PERIOD_UNDERFLOW")
+        );
+    }
+
+    #[test]
+    fn composed_service_errors_on_proposer_sortition_identity_mismatch() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let mut request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
+        request.expected_voter = H160::from([0xAA; 20]);
+
+        let err = service
+            .generate_and_validate_proposer_sortition(&final_chain, request)
+            .expect_err("identity mismatch must be a boundary error");
+        assert!(
+            err.to_string()
+                .contains("PBFT_PROPOSER_SORTITION_INVALID_VOTER_IDENTITY")
+        );
+    }
+
+    #[test]
+    fn composed_service_validates_proposer_sortition_identity_before_future_period_lookup() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let mut request = proposer_sortition_request(NODE_SECRET, 99, 1, 100);
+        request.expected_voter = H160::from([0xAA; 20]);
+
+        let err = service
+            .generate_and_validate_proposer_sortition(&final_chain, request)
+            .expect_err("identity mismatch must be checked before FinalChain state");
+        assert!(
+            err.to_string()
+                .contains("PBFT_PROPOSER_SORTITION_INVALID_VOTER_IDENTITY")
+        );
+    }
+
+    #[test]
+    fn composed_service_validates_proposer_sortition_vrf_public_key_before_future_period_lookup() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let mut request = proposer_sortition_request(NODE_SECRET, 99, 1, 100);
+        request.expected_vrf_public_key = [0_u8; 32];
+
+        let err = service
+            .generate_and_validate_proposer_sortition(&final_chain, request)
+            .expect_err("vrf mismatch must be checked before FinalChain state");
+        assert!(
+            err.to_string()
+                .contains("PBFT_PROPOSER_SORTITION_INVALID_VRF_PUBLIC_KEY")
+        );
+    }
+
+    #[test]
+    fn composed_service_errors_on_proposer_sortition_vrf_mismatch() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let mut request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
+        request.expected_vrf_public_key = [0_u8; 32];
+
+        let err = service
+            .generate_and_validate_proposer_sortition(&final_chain, request)
+            .expect_err("vrf public key mismatch must be a boundary error");
+        assert!(
+            err.to_string()
+                .contains("PBFT_PROPOSER_SORTITION_INVALID_VRF_PUBLIC_KEY")
+        );
+    }
+
+    #[test]
+    fn composed_service_generates_weighted_vote_bytes() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let vote = service
+            .generate_signed_vote_with_weight(
+                &final_chain,
+                vote_input(PbftVoteType::Propose, 1, NODE_SECRET, 1),
+                50,
+                100,
+            )
+            .unwrap();
+
+        assert!(vote.accepted);
+        assert!(vote.has_weight);
+        assert!(vote.weight > 0);
+    }
+
+    #[test]
+    fn composed_service_generates_weighted_zero_stake_vote() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let vote = service
+            .generate_signed_vote_with_weight(
+                &final_chain,
+                vote_input(PbftVoteType::Propose, 1, NODE_SECRET_ZERO_STAKE, 1),
+                50,
+                100,
+            )
+            .unwrap();
+
+        assert_eq!(vote.status, PbftVoteGenerationStatus::ZeroStake);
+        assert!(!vote.accepted);
+    }
+
+    #[test]
+    fn composed_service_reports_zero_weight_as_typed_generation_status() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let vote = service
+            .generate_signed_vote_with_weight(
+                &final_chain,
+                vote_input(PbftVoteType::Propose, 1, NODE_SECRET, 1),
+                0,
+                0,
+            )
+            .unwrap();
+
+        assert_eq!(vote.status, PbftVoteGenerationStatus::ZeroWeight);
+        assert!(!vote.accepted);
+    }
+
+    #[test]
+    fn composed_service_preserves_identity_error_before_zero_stake_status() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let mut mismatched = vote_input(PbftVoteType::Propose, 1, NODE_SECRET, 1);
+        mismatched.expected_voter = H160::from([0xAA; 20]);
+
+        let vote = service
+            .generate_signed_vote_with_weight(&final_chain, mismatched, 50, 100)
+            .unwrap();
+
+        assert_eq!(vote.status, PbftVoteGenerationStatus::NodeSecretMismatch);
+        assert!(!vote.accepted);
+    }
+
+    #[test]
+    fn composed_service_generates_weighted_vote_from_future_period() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        assert!(
+            service
+                .generate_signed_vote_with_weight(
+                    &final_chain,
+                    vote_input(PbftVoteType::Propose, 1, NODE_SECRET, 99),
+                    50,
+                    100
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn composed_service_generates_weighted_vote_from_period_zero() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        assert!(
+            service
+                .generate_signed_vote_with_weight(
+                    &final_chain,
+                    vote_input(PbftVoteType::Propose, 1, NODE_SECRET, 0),
+                    50,
+                    100
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn composed_service_rejects_invalid_weighted_vote_type() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let invalid_input = vote_input(PbftVoteType::Invalid, 1, NODE_SECRET, 1);
+
+        let vote = service
+            .generate_signed_vote_with_weight(&final_chain, invalid_input, 50, 100)
+            .unwrap();
+
+        assert_eq!(vote.status, PbftVoteGenerationStatus::InvalidVoteType);
+        assert!(!vote.accepted);
+    }
+
+    #[test]
+    fn composed_service_collects_pbft_dpos_total_vote_count() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let ready = service
+            .collect_dpos_total_vote_count(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposTotalVoteCountRequest { period: 0 },
+            )
+            .expect("ready total-vote lookup should return data");
+
+        assert_eq!(ready.status.as_u8(), 0);
+        assert!(ready.status.is_ready());
+        assert_eq!(ready.status.data_or_zero(), 5);
+        assert_eq!(
+            ready.last_block_number,
+            rustaxa_types::FinalChainBlockNumber::GENESIS
+        );
+
+        let future = service
+            .collect_dpos_total_vote_count(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposTotalVoteCountRequest { period: 99 },
+            )
+            .expect("future total-vote lookup should be returned as unavailable data");
+        assert_eq!(future.status.as_u8(), 1);
+        assert!(future.status.is_unavailable());
+        assert_eq!(
+            future.status.error_code(),
+            "PBFT_FINAL_CHAIN_TOTAL_VOTES_FUTURE_PERIOD"
+        );
+    }
+
+    #[test]
+    fn composed_service_collects_pbft_dpos_wallet_aggregate_vote_count() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let validator = voter_from_secret(&NODE_SECRET);
+        let ready = service
+            .collect_dpos_wallet_aggregate_vote_count(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountRequest {
+                    period: 0,
+                    addresses: vec![H160::from(validator), H160::from([0xA1; 20])],
+                },
+            )
+            .expect("ready aggregate vote lookup should return data");
+
+        assert_eq!(ready.status.as_u8(), 0);
+        assert!(ready.status.is_ready());
+        assert_eq!(ready.status.data_or_zero(), 5);
+
+        let duplicate = service
+            .collect_dpos_wallet_aggregate_vote_count(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountRequest {
+                    period: 0,
+                    addresses: vec![H160::from(validator), H160::from(validator)],
+                },
+            )
+            .expect("duplicate wallets remain part of the aggregate");
+        assert_eq!(duplicate.status.data_or_zero(), 10);
+
+        let empty_future = service
+            .collect_dpos_wallet_aggregate_vote_count(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountRequest {
+                    period: 99,
+                    addresses: Vec::new(),
+                },
+            )
+            .expect("empty aggregates do not require period state");
+        assert!(empty_future.status.is_ready());
+        assert_eq!(empty_future.status.data_or_zero(), 0);
+
+        let unavailable = service
+            .collect_dpos_wallet_aggregate_vote_count(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountRequest {
+                    period: 99,
+                    addresses: vec![H160::from(validator)],
+                },
+            )
+            .expect("future aggregate vote lookup should be returned as unavailable data");
+        assert_eq!(unavailable.status.as_u8(), 1);
+        assert!(unavailable.status.is_unavailable());
+        assert_eq!(
+            unavailable.status.error_code(),
+            "PBFT_FINAL_CHAIN_WALLET_VOTES_FUTURE_PERIOD"
+        );
+    }
+
+    #[test]
+    fn composed_service_collects_pbft_dpos_wallet_eligibility() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let validator = voter_from_secret(&NODE_SECRET);
+        let ready = service
+            .collect_dpos_wallet_eligibility(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposWalletEligibilityRequest {
+                    period: 0,
+                    address: H160::from(validator),
+                },
+            )
+            .expect("ready wallet eligibility lookup should return data");
+        assert_eq!(ready.status.as_u8(), 0);
+        assert!(ready.status.is_ready());
+        assert!(ready.is_eligible());
+        assert_eq!(ready.vote_count(), 5);
+
+        let zero_stake = service
+            .collect_dpos_wallet_eligibility(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposWalletEligibilityRequest {
+                    period: 0,
+                    address: H160::from([0xA1; 20]),
+                },
+            )
+            .expect("zero-stake wallet lookup should be ready with zero values");
+        assert_eq!(zero_stake.status.as_u8(), 0);
+        assert!(zero_stake.status.is_ready());
+        assert!(!zero_stake.is_eligible());
+        assert_eq!(zero_stake.vote_count(), 0);
+    }
+
+    #[test]
+    fn composed_service_collects_pbft_dpos_wallet_eligibility_batch() {
+        let (service, final_chain) = service_with_test_chain(5_000, NODE_SECRET);
+        let validator = voter_from_secret(&NODE_SECRET);
+        let ready = service
+            .collect_dpos_wallet_eligibility_batch(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposWalletEligibilityBatchRequest {
+                    period: 0,
+                    addresses: vec![H160::from(validator), H160::from([0xA1; 20])],
+                },
+            )
+            .expect("ready wallet batch lookup should return data");
+        assert_eq!(ready.status.as_u8(), 0);
+        assert!(ready.status.is_ready());
+        assert_eq!(ready.address_facts.len(), 2);
+        assert_eq!(ready.address_facts[0].status.as_u8(), 0);
+        assert_eq!(ready.address_facts[1].status.as_u8(), 0);
+        assert!(ready.address_facts[0].is_eligible());
+        assert_eq!(ready.address_facts[0].vote_count(), 5);
+        assert!(!ready.address_facts[1].is_eligible());
+        assert_eq!(ready.address_facts[1].vote_count(), 0);
+
+        let empty_future = service
+            .collect_dpos_wallet_eligibility_batch(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposWalletEligibilityBatchRequest {
+                    period: 99,
+                    addresses: Vec::new(),
+                },
+            )
+            .expect("empty batches do not require period state");
+        assert!(empty_future.status.is_ready());
+        assert!(empty_future.address_facts.is_empty());
+
+        let unavailable = service
+            .collect_dpos_wallet_eligibility_batch(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposWalletEligibilityBatchRequest {
+                    period: 99,
+                    addresses: vec![H160::from(validator), H160::from([0xA1; 20])],
+                },
+            )
+            .expect("future batch lookup should be returned as unavailable data");
+        assert_eq!(unavailable.status.as_u8(), 1);
+        assert!(unavailable.status.is_unavailable());
+        assert_eq!(unavailable.address_facts[0].status.as_u8(), 1);
+        assert_eq!(
+            unavailable.address_facts[0].status.error_code(),
+            "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD"
+        );
     }
 
     fn cert_vote_rlp(block_hash: H256, secret: [u8; 32]) -> Vec<u8> {
