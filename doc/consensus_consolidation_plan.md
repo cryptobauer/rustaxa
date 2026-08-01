@@ -85,8 +85,10 @@ head transitions, validation, and block lookup; the bridge chain-state struct an
 operations still borrow both native sibling guards. CXX-free
 `rustaxa-consensus::pbft_vote_runtime::PbftVerifiedVotesService` now also owns verified-vote storage lifetime,
 atomic restoration, and the shared admission-runtime mutex. The bridge owns neither the verified-vote runtime nor its
-lock; it temporarily borrows the native guard for FinalChain, finalization, and DTO/effect
-composition. Native `rustaxa-consensus::pbft_service::PbftService` now owns slashing configuration validation, coherent
+lock. Its remaining replay/query/cleanup, own-vote/progress persistence, optimized-bundle egress, and coherent snapshot
+families are task-shaped native operations reached through `PbftService`; the bridge performs only raw CXX kind/status
+and carrier projection and cannot access the sibling guard or storage. Native
+`rustaxa-consensus::pbft_service::PbftService` now owns slashing configuration validation, coherent
 restoration of every storage-backed PBFT sibling from one handle, complete root publication, and bootstrap readiness.
 `BridgePbftService` is a one-field
 CXX adapter and retains no sibling state, storage handle, mutex, or readiness flag; durable access comes from the native

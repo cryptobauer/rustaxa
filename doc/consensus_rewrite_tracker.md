@@ -1688,6 +1688,44 @@ CXX functions, carriers, handles, shim lines/directories, flags, factories,
 constructors, and production consumers are unchanged. No upstream-owned C++
 file changes.
 
+The next bounded `CRW-12` PBFT ownership slice moves the remaining fifteen
+production verified-vote access, storage, and egress operations behind
+task-shaped native `PbftService` methods. Native consensus now owns replay
+queries/mutation, next-round and `2t+1` lookup, coherent state/step snapshots,
+single-epoch next/next-null bundle planning, optimized bundle validation and
+encoding, cleanup, validated own-vote persistence/lifecycle, and serialized
+vote-progress persistence. Domain APIs use typed bundle families and statuses
+plus `Option` for missing mappings; only the bridge projects raw CXX kinds,
+numeric statuses, diagnostic strings, and zero sentinels. The bridge-local
+`VerifiedVotesAccess`, storage/lock reach-through, forwarding macros, private
+sibling accessor, low-level mutation helpers, and behavioral fixtures are
+deleted. Three comprehensive native service tests cover query/bundle/cleanup,
+own-vote validation/lifecycle, and progress-persistence mutex serialization;
+six compact bridge tests retain ordered carrier, exhaustive status, invalid
+build-kind, invalid persistence-kind, leader/reward status, and executor-intent
+projections. This removes a net 1,588 bridge lines and lowers the exact
+`bridge_lines` budget to 23,923. CXX
+functions, carriers, handles, shim lines/directories, flags, factories,
+constructors, production consumers, public CXX signatures, and C++ callers are
+unchanged. No upstream-owned C++ file changes.
+
+Validation for this verified-vote ownership slice passed the full
+`rustaxa-consensus` (1,071 tests) and `rustaxa-bridge` (101 tests) package
+suites, including all three new native service tests and all six focused
+bridge projections. `rewrite-validate-fast`, `rewrite-validate-consensus`,
+`rewrite-validate-storage`, `rewrite-validate-smoke`, the bridge inventory and
+storage boundary guards, the 49-case `rust_consensus_tests` binary, and the
+9-case `rust_storage_tests` binary passed. The affected `vote_test` cases pass
+when each runs in a fresh process; the aggregate binary and full CTest run
+retain the existing same-process `/tmp/taraxa0/db/db/LOCK` leak. The full CTest
+gate reported 9 of 21 tests passing, with its remaining failures also including
+unbuilt test executables and the Go test's unavailable static zlib/snappy
+linker inputs. Python integration could not collect because this image rejects
+system package installation under PEP 668 and has neither `virtualenv` nor
+`pytest`. Independent review approved the ownership boundary after the native
+missing-plan result was corrected to preserve the requested period and round
+through the stable CXX projection.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

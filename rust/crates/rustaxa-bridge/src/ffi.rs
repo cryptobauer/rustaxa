@@ -164,12 +164,6 @@ impl BridgePbftService {
         self.0.proposed_blocks()
     }
 
-    pub(crate) fn verified_votes(
-        &self,
-    ) -> &rustaxa_consensus::pbft_vote_runtime::PbftVerifiedVotesService {
-        self.0.verified_votes()
-    }
-
     pub(crate) fn complete_bootstrap(&self) {
         self.0.complete_bootstrap();
     }

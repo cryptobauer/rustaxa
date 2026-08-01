@@ -35,23 +35,281 @@ use crate::pbft_vote_admission::{
 };
 use crate::pbft_vote_event::PbftVoteEventFactFlags;
 use crate::pbft_vote_payload::{
-    PbftVotePayloadRecord, build_slashing_pbft_vote_payload, build_weighted_pbft_vote_bundle,
-    build_weighted_pbft_vote_payload,
+    PbftVotePayloadRecord, build_optimized_pbft_vote_bundle, build_slashing_pbft_vote_payload,
+    build_weighted_pbft_vote_bundle, build_weighted_pbft_vote_payload,
 };
 use crate::pbft_vote_progress::PbftVoteProgressContext;
 use crate::pbft_vote_progress::PbftVoteProgressIntent;
 use crate::pbft_vote_storage::{
     PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,
-    PbftVoteProgressPersistenceWrite, PbftVoteStorageRecord,
+    PbftVoteProgressPersistenceWrite, PbftVoteStorageRecord, clear_own_verified_votes,
+    persist_pbft_vote_progress, save_own_verified_vote,
 };
 use crate::pbft_vote_validation::{
     PbftCanonicalVoteInspection, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,
     PbftVoteReplayCache, PbftVoteReplayCheckpoint, inspect_canonical_pbft_vote,
 };
 use crate::verified_votes::{
-    AddVerifiedVoteOutcome, TwoTPlusOneVotedBlockType, VerifiedVote, VerifiedVotes,
-    VerifiedVotesCleanupPlan, VerifiedVotesRoundCheckpoint, VotesWithWeight,
+    AddVerifiedVoteOutcome, DetermineNewRoundOutcome as ConsensusDetermineNewRoundOutcome,
+    RoundMarkerSnapshot, TwoTPlusOneSnapshotEntry, TwoTPlusOneVotedBlockType, VerifiedVote,
+    VerifiedVotes, VerifiedVotesCleanupPlan, VerifiedVotesRoundCheckpoint, VotesWithWeight,
 };
+
+const PBFT_OPTIMIZED_BUNDLE_READY: VerifiedVoteOptimizedBundleStatus =
+    VerifiedVoteOptimizedBundleStatus::Ready;
+const PBFT_OPTIMIZED_BUNDLE_NOT_FOUND: VerifiedVoteOptimizedBundleStatus =
+    VerifiedVoteOptimizedBundleStatus::NotFound;
+const PBFT_OPTIMIZED_BUNDLE_EMPTY_REQUEST: VerifiedVoteOptimizedBundleStatus =
+    VerifiedVoteOptimizedBundleStatus::EmptyRequest;
+const PBFT_OPTIMIZED_BUNDLE_MAPPING_MISMATCH: VerifiedVoteOptimizedBundleStatus =
+    VerifiedVoteOptimizedBundleStatus::MappingMismatch;
+const PBFT_OPTIMIZED_BUNDLE_MISSING_PAYLOAD: VerifiedVoteOptimizedBundleStatus =
+    VerifiedVoteOptimizedBundleStatus::MissingPayload;
+const PBFT_OPTIMIZED_BUNDLE_PAYLOAD_DECODE_ERROR: VerifiedVoteOptimizedBundleStatus =
+    VerifiedVoteOptimizedBundleStatus::PayloadDecodeError;
+const PBFT_OPTIMIZED_BUNDLE_PAYLOAD_METADATA_MISMATCH: VerifiedVoteOptimizedBundleStatus =
+    VerifiedVoteOptimizedBundleStatus::PayloadMetadataMismatch;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+/// Outcome of planning or building an optimized verified-vote bundle.
+///
+/// Every variant is deterministic protocol state, not an infrastructure
+/// failure. The bridge projects variants to the stable legacy numeric and
+/// error-code pair; lock, storage, and invariant failures remain `Err`.
+pub enum VerifiedVoteOptimizedBundleStatus {
+    /// A plan or encoded bundle is available.
+    Ready = 0,
+    /// No matching `2t+1` mapping exists.
+    NotFound = 1,
+    /// The caller requested no vote hashes.
+    EmptyRequest = 2,
+    /// Reserved bridge projection for an invalid raw compatibility kind.
+    UnsupportedKind = 3,
+    /// Requested block coordinates differ from the retained mapping.
+    MappingMismatch = 4,
+    /// A requested hash is absent from the retained plan.
+    HashNotInPlan = 5,
+    /// Requested hashes do not preserve retained plan order.
+    OrderMismatch = 6,
+    /// A retained plan hash has no weighted payload sidecar.
+    MissingPayload = 7,
+    /// A retained payload could not be decoded for optimized encoding.
+    PayloadDecodeError = 8,
+    /// A retained payload does not match the requested coordinates.
+    PayloadMetadataMismatch = 9,
+}
+
+impl VerifiedVoteOptimizedBundleStatus {
+    /// Returns the stable CXX numeric projection.
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Returns the stable CXX diagnostic projection.
+    pub const fn legacy_error_code(self) -> &'static str {
+        match self {
+            Self::Ready => "PBFT_OPTIMIZED_VOTE_BUNDLE_READY",
+            Self::NotFound => "PBFT_OPTIMIZED_VOTE_BUNDLE_NOT_FOUND",
+            Self::EmptyRequest => "PBFT_OPTIMIZED_VOTE_BUNDLE_EMPTY_REQUEST",
+            Self::UnsupportedKind => "PBFT_OPTIMIZED_VOTE_BUNDLE_UNSUPPORTED_KIND",
+            Self::MappingMismatch => "PBFT_OPTIMIZED_VOTE_BUNDLE_MAPPING_MISMATCH",
+            Self::HashNotInPlan => "PBFT_OPTIMIZED_VOTE_BUNDLE_HASH_NOT_IN_PLAN",
+            Self::OrderMismatch => "PBFT_OPTIMIZED_VOTE_BUNDLE_ORDER_MISMATCH",
+            Self::MissingPayload => "PBFT_OPTIMIZED_VOTE_BUNDLE_MISSING_RETAINED_PAYLOAD",
+            Self::PayloadDecodeError => "PBFT_OPTIMIZED_VOTE_BUNDLE_PAYLOAD_DECODE_ERROR",
+            Self::PayloadMetadataMismatch => "PBFT_OPTIMIZED_VOTE_BUNDLE_PAYLOAD_METADATA_MISMATCH",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// Typed plan for one optimized verified-vote bundle family.
+///
+/// `plan` is absent only when the mapping is not found; its coordinates remain
+/// the exact query coordinates. Infrastructure and retained-state invariant
+/// failures are returned by the service instead of encoded here.
+pub struct PbftOptimizedVoteBundlePlan {
+    /// Stable status for this plan query.
+    pub status: VerifiedVoteOptimizedBundleStatus,
+    /// Bundle family requested in the plan.
+    pub kind: TwoTPlusOneVotedBlockType,
+    /// Requested PBFT period, retained even when no mapping exists.
+    pub period: u64,
+    /// Requested PBFT round, retained even when no mapping exists.
+    pub round: u64,
+    /// Full plan details when this family is available.
+    pub plan: Option<PbftOptimizedVoteBundlePlanEntry>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// Available optimized-bundle coordinates and canonical vote-hash order.
+///
+/// Every hash belongs to the mapped bucket in retained insertion order; bundle
+/// building accepts only ordered subsequences of this vector.
+pub struct PbftOptimizedVoteBundlePlanEntry {
+    /// Planned block hash.
+    pub block_hash: H256,
+    /// Planned period.
+    pub period: u64,
+    /// Planned round.
+    pub round: u64,
+    /// Planned step.
+    pub step: u64,
+    /// Ordered vote hashes for the plan.
+    pub vote_hashes: Vec<H256>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// One verified vote paired with its required weighted payload sidecar.
+///
+/// Snapshot construction fails rather than emitting an entry when the retained
+/// vote has no matching payload.
+pub struct VerifiedVoteStateSnapshotEntry {
+    /// Vote metadata retained in the verified-vote runtime.
+    pub vote: VerifiedVote,
+    /// Weighted vote payload retained alongside `vote` metadata.
+    pub weighted_vote: PbftVotePayloadRecord,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// Coherent verified-vote metadata and payload snapshot from one lock epoch.
+///
+/// Entries and marker vectors preserve native deterministic ordering; missing
+/// retained payloads make the complete snapshot fail.
+pub struct VerifiedVotesStateSnapshot {
+    /// Every retained vote with matching weighted payload.
+    pub votes: Vec<VerifiedVoteStateSnapshotEntry>,
+    /// Canonical round markers.
+    pub round_markers: Vec<RoundMarkerSnapshot>,
+    /// Canonical 2t+1 marker snapshot.
+    pub two_t_plus_one: Vec<TwoTPlusOneSnapshotEntry>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// One block bucket from a step-level verified-vote payload snapshot.
+///
+/// `total_weight` is the retained aggregate for `votes`; every hash-resolved
+/// payload must exist or the enclosing lookup fails.
+pub struct VerifiedStepVotePayloadEntry {
+    /// Voted block hash for this payload bucket.
+    pub block_hash: H256,
+    /// Total retained weight for this bucket.
+    pub total_weight: u64,
+    /// Retained weighted payloads in canonical order.
+    pub votes: Vec<PbftVotePayloadRecord>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// Coherent next and next-null optimized-bundle plans for one query.
+///
+/// Both family plans are derived under one verified-vote lock epoch. Missing
+/// mappings are represented by the optional entry inside each family plan.
+pub struct PbftNextVotesBundleEgressPlan {
+    /// Stable plan status.
+    pub status: VerifiedVoteOptimizedBundleStatus,
+    /// Period for both returned plans.
+    pub period: u64,
+    /// Round for both returned plans.
+    pub round: u64,
+    /// Next-vote 2t+1 plan.
+    pub next_votes: PbftOptimizedVoteBundlePlan,
+    /// Next-null 2t+1 plan.
+    pub next_null_votes: PbftOptimizedVoteBundlePlan,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// Deterministic result of validating and encoding an optimized vote bundle.
+///
+/// Non-ready statuses carry no bundle bytes. Lock and invariant failures remain
+/// service errors rather than status variants.
+pub struct PbftOptimizedVoteBundleBuildResult {
+    /// Stable build status.
+    pub status: VerifiedVoteOptimizedBundleStatus,
+    /// Verified vote hashes that were requested.
+    pub vote_hashes: Vec<H256>,
+    /// Optimized vote-bundle payload.
+    pub votes_bundle_rlp: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// Typed request to build an optimized bundle from retained vote hashes.
+///
+/// Hashes must be non-empty, match the mapped coordinates, and form an ordered
+/// subsequence of the retained plan.
+pub struct PbftOptimizedVoteBundleBuildRequest {
+    /// Target bundle family.
+    pub kind: TwoTPlusOneVotedBlockType,
+    /// Target block hash.
+    pub block_hash: H256,
+    /// Target period.
+    pub period: u64,
+    /// Target round.
+    pub round: u64,
+    /// Target step.
+    pub step: u64,
+    /// Vote hashes in caller order.
+    pub vote_hashes: Vec<H256>,
+}
+
+/// Native latest-round `2t+1` bundle requested by direct vote-progress persistence.
+///
+/// The bundle family is domain-typed; raw compatibility discriminants are
+/// accepted only below this service boundary when the request is encoded for
+/// storage. Payload bytes must be the canonical weighted-vote bundle selected
+/// for the supplied PBFT coordinates.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftVerifiedVoteProgressBundle {
+    /// Domain bundle family.
+    pub kind: TwoTPlusOneVotedBlockType,
+    /// PBFT period represented by the bundle.
+    pub period: u64,
+    /// PBFT round represented by the bundle.
+    pub round: u64,
+    /// PBFT step that triggered persistence.
+    pub step: u64,
+    /// Block selected by the threshold family.
+    pub block_hash: H256,
+    /// Canonical RLP list of weighted vote payloads.
+    pub votes_bundle_rlp: Vec<u8>,
+}
+
+/// Native direct persistence request for PBFT vote-progress effects.
+///
+/// Either field may be absent. When present, both writes commit through the
+/// existing Rust storage transaction while the verified-vote runtime lock
+/// serializes the operation with admission persistence.
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub struct PbftVerifiedVoteProgressPersistenceWrite {
+    /// Optional accepted stale cert vote stored for reward selection.
+    pub extra_reward_vote: Option<PbftVoteStorageRecord>,
+    /// Optional latest-round `2t+1` bundle replacement.
+    pub two_t_plus_one_bundle: Option<PbftVerifiedVoteProgressBundle>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// Mapped `2t+1` block coordinates with every retained weighted payload.
+///
+/// The service returns `None` for a missing mapping and fails if a present
+/// mapping cannot resolve its complete payload set.
+pub struct VerifiedVotesTwoTPlusOneVotePayloads {
+    /// Target mapped voted block.
+    pub block_hash: H256,
+    /// Target mapped step.
+    pub step: u64,
+    /// Ordered retained vote payloads.
+    pub votes: Vec<PbftVotePayloadRecord>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+/// Typed block and step returned by a `2t+1` mapping lookup.
+///
+/// Missing mappings are represented by `Option` at the service boundary.
+pub struct VerifiedVotesTwoTPlusOneVotedBlock {
+    /// Voted block.
+    pub block_hash: H256,
+    /// Source step.
+    pub step: u64,
+}
 
 /// Canonical and weighted PBFT vote payloads retained for one admitted vote.
 ///
@@ -214,6 +472,24 @@ fn validate_restored_bundle_kind(
         "stored 2t+1 vote does not match bundle category {kind:?}"
     );
     Ok(())
+}
+
+fn validate_own_vote_storage_record(
+    record: PbftVoteStorageRecord,
+) -> Result<PbftVoteStorageRecord> {
+    let inspection = inspect_canonical_pbft_vote(record.vote_rlp.as_slice())?;
+    anyhow::ensure!(
+        inspection.status == PbftCanonicalVoteInspectionStatus::Valid
+            && inspection.signature_valid
+            && inspection.has_embedded_weight
+            && inspection.embedded_weight > 0,
+        "VERIFIED_VOTES_OWN_VOTE_PAYLOAD_INVALID"
+    );
+    anyhow::ensure!(
+        inspection.vote_hash == record.hash,
+        "VERIFIED_VOTES_OWN_VOTE_HASH_MISMATCH"
+    );
+    Ok(record)
 }
 
 fn decode_finalized_reward_cursor_bundle(
@@ -517,7 +793,7 @@ impl PbftVerifiedVotesService {
     /// all state reads and mutations across service clones. Lock poisoning is
     /// returned as `PBFT_VERIFIED_VOTES_SERVICE_LOCK_POISONED`; callers must
     /// release the guard before invoking external executors.
-    pub fn lock(&self) -> Result<PbftVerifiedVotesServiceGuard<'_>> {
+    pub(crate) fn lock(&self) -> Result<PbftVerifiedVotesServiceGuard<'_>> {
         self.runtime
             .lock()
             .map_err(|_| anyhow!("PBFT_VERIFIED_VOTES_SERVICE_LOCK_POISONED"))
@@ -529,8 +805,401 @@ impl PbftVerifiedVotesService {
     /// valid for the service lifetime. It is temporarily exposed so adjacent
     /// atomic admission, cleanup, and finalization workflows can commit before
     /// publishing guarded memory changes.
-    pub fn storage(&self) -> &Storage {
+    pub(crate) fn storage(&self) -> &Storage {
         self.storage.as_ref()
+    }
+
+    /// Loads locally generated weighted vote records from owned storage.
+    ///
+    /// Records are validated as payload-key-canonical weighted PBFT votes and
+    /// only accepted when signatures are valid and embedded weight is positive.
+    /// Rows are returned in storage-key order under the own-vote storage mutex;
+    /// lock, enumeration, decoding, signature, and hash mismatches are errors.
+    pub fn verified_votes_own_vote_records(&self) -> Result<Vec<PbftVoteStorageRecord>> {
+        let _guard = self.storage.lock_own_verified_votes()?;
+        self.storage
+            .pbft()
+            .own_verified_vote_records()?
+            .into_iter()
+            .map(|record| {
+                validate_own_vote_storage_record(PbftVoteStorageRecord {
+                    hash: record.vote_hash,
+                    vote_rlp: record.vote_rlp,
+                })
+            })
+            .collect()
+    }
+
+    /// Returns the in-memory verified-vote count from one runtime lock epoch.
+    ///
+    /// The result includes every retained vote hash. Runtime lock poison is
+    /// returned as `PBFT_VERIFIED_VOTES_SERVICE_LOCK_POISONED`.
+    pub fn verified_votes_size(&self) -> Result<u64> {
+        Ok(self.lock()?.verified_votes().size())
+    }
+
+    /// Checks whether the supplied hash is already recorded in replay protection.
+    ///
+    /// The query is read under one runtime lock epoch and returns lock poison as
+    /// an error without mutating replay state.
+    pub fn verified_votes_replay_contains(&self, vote_hash: H256) -> Result<bool> {
+        Ok(self.lock()?.replay_contains(vote_hash))
+    }
+
+    /// Inserts the supplied hash into replay protection.
+    ///
+    /// Returns `true` only for a new insertion and `false` for an existing hash;
+    /// runtime lock poison is returned without mutation.
+    pub fn verified_votes_replay_insert(&self, vote_hash: H256) -> Result<bool> {
+        Ok(self.lock()?.replay_insert(vote_hash))
+    }
+
+    /// Calculates next-round advancement from stored next-vote `2t+1` mappings.
+    ///
+    /// `period` and `current_round` select the search window. `None` means no
+    /// qualifying mapping; the complete read uses one runtime lock epoch.
+    pub fn verified_votes_determine_new_round(
+        &self,
+        period: u64,
+        current_round: u64,
+    ) -> Result<Option<ConsensusDetermineNewRoundOutcome>> {
+        Ok(self
+            .lock()?
+            .verified_votes()
+            .determine_new_round(period, current_round))
+    }
+
+    /// Looks up one `2t+1` voted block marker for the supplied period/round.
+    ///
+    /// The typed `kind` selects the mapping family. `None` is an ordinary
+    /// missing mapping; runtime lock poison is the only operational error.
+    pub fn verified_votes_get_two_t_plus_one_voted_block(
+        &self,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+    ) -> Result<Option<VerifiedVotesTwoTPlusOneVotedBlock>> {
+        Ok(self
+            .lock()?
+            .verified_votes()
+            .get_two_t_plus_one_voted_block(period, round, kind)
+            .map(|value| VerifiedVotesTwoTPlusOneVotedBlock {
+                block_hash: value.hash,
+                step: value.step,
+            }))
+    }
+
+    /// Returns retained weighted payloads for one mapped `2t+1` voted block.
+    ///
+    /// `None` means the typed mapping is absent. A present mapping must resolve
+    /// every ordered payload under the same lock epoch or the lookup fails.
+    pub fn verified_votes_get_two_t_plus_one_voted_block_payloads(
+        &self,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+    ) -> Result<Option<VerifiedVotesTwoTPlusOneVotePayloads>> {
+        let runtime = self.lock()?;
+        let Some(voted_block) = runtime
+            .verified_votes()
+            .get_two_t_plus_one_voted_block(period, round, kind)
+        else {
+            return Ok(None);
+        };
+        let votes = runtime
+            .two_t_plus_one_weighted_payloads(period, round, kind)?
+            .ok_or(anyhow!("PBFT_VERIFIED_VOTES_TWO_T_PLUS_ONE_MISSING"))?
+            .into_iter()
+            .collect();
+        Ok(Some(VerifiedVotesTwoTPlusOneVotePayloads {
+            block_hash: voted_block.hash,
+            step: voted_block.step,
+            votes,
+        }))
+    }
+
+    /// Persists one latest-round own verified vote through this service.
+    ///
+    /// The record is signature, weight, and hash validated before the own-vote
+    /// storage transaction. Validation/lock errors are `Err`; write failures use
+    /// the stable rejected persistence result.
+    pub fn verified_votes_save_own_verified_vote(
+        &self,
+        record: PbftVoteStorageRecord,
+    ) -> Result<PbftVotePersistenceResult> {
+        save_own_verified_vote(self.storage(), validate_own_vote_storage_record(record)?)
+    }
+
+    /// Clears all latest-round own verified votes through this service.
+    ///
+    /// Enumeration and batch commit share the own-vote storage mutex. Lock or
+    /// enumeration errors propagate; write failures use a rejected result.
+    pub fn verified_votes_clear_own_verified_votes(&self) -> Result<PbftVotePersistenceResult> {
+        clear_own_verified_votes(self.storage())
+    }
+
+    /// Persists generated vote-progress writes through this service.
+    ///
+    /// The typed optional writes are converted only at the storage boundary.
+    /// One runtime guard serializes the complete commit with admission; lock or
+    /// storage access errors propagate and write failures remain typed results.
+    pub fn verified_votes_persist_pbft_vote_progress(
+        &self,
+        write: PbftVerifiedVoteProgressPersistenceWrite,
+    ) -> Result<PbftVotePersistenceResult> {
+        let _runtime = self.lock()?;
+        persist_pbft_vote_progress(
+            self.storage(),
+            PbftVoteProgressPersistenceWrite {
+                extra_reward_vote: write.extra_reward_vote,
+                two_t_plus_one_bundle: write.two_t_plus_one_bundle.map(|bundle| {
+                    PbftTwoTPlusOneVoteBundle {
+                        kind: bundle.kind.into(),
+                        period: bundle.period,
+                        round: bundle.round,
+                        step: bundle.step,
+                        block_hash: bundle.block_hash,
+                        votes_bundle_rlp: bundle.votes_bundle_rlp,
+                    }
+                }),
+            },
+        )
+    }
+
+    /// Plans and applies one bounded verified-vote cleanup cycle.
+    ///
+    /// Votes strictly older than `pbft_period` are removed with their payloads
+    /// under one runtime guard. Lock poison aborts without partial cleanup.
+    pub fn verified_votes_cleanup_votes_by_period(&self, pbft_period: u64) -> Result<()> {
+        self.lock()?.cleanup_votes_by_period(pbft_period);
+        Ok(())
+    }
+
+    /// Builds next-vote bundle egress plans with one lock epoch.
+    ///
+    /// `period` and `round` are preserved in both typed family plans, including
+    /// missing mappings. Both plans observe one coherent runtime snapshot;
+    /// retained-state or lock failures propagate.
+    pub fn verified_votes_plan_next_votes_bundle_egress(
+        &self,
+        period: u64,
+        round: u64,
+    ) -> Result<PbftNextVotesBundleEgressPlan> {
+        let runtime = self.lock()?;
+        Ok(PbftNextVotesBundleEgressPlan {
+            status: PBFT_OPTIMIZED_BUNDLE_READY,
+            period,
+            round,
+            next_votes: self.verified_votes_optimized_bundle_plan_runtime(
+                &runtime,
+                period,
+                round,
+                TwoTPlusOneVotedBlockType::NextVotedBlock,
+            )?,
+            next_null_votes: self.verified_votes_optimized_bundle_plan_runtime(
+                &runtime,
+                period,
+                round,
+                TwoTPlusOneVotedBlockType::NextVotedNullBlock,
+            )?,
+        })
+    }
+
+    /// Builds an optimized votes bundle egress payload from runtime state.
+    ///
+    /// The request must match the typed mapping and contain an ordered non-empty
+    /// hash subsequence. Protocol mismatches return typed statuses; runtime lock
+    /// and retained-state invariant failures remain errors.
+    pub fn verified_votes_build_optimized_votes_bundle_egress(
+        &self,
+        request: PbftOptimizedVoteBundleBuildRequest,
+    ) -> Result<PbftOptimizedVoteBundleBuildResult> {
+        let requested_hashes = request.vote_hashes;
+        if requested_hashes.is_empty() {
+            return Ok(PbftOptimizedVoteBundleBuildResult {
+                status: PBFT_OPTIMIZED_BUNDLE_EMPTY_REQUEST,
+                vote_hashes: Vec::new(),
+                votes_bundle_rlp: Vec::new(),
+            });
+        }
+
+        let runtime = self.lock()?;
+        let Some(voted) = runtime.verified_votes().get_two_t_plus_one_voted_block(
+            request.period,
+            request.round,
+            request.kind,
+        ) else {
+            return Ok(PbftOptimizedVoteBundleBuildResult {
+                status: PBFT_OPTIMIZED_BUNDLE_NOT_FOUND,
+                vote_hashes: requested_hashes,
+                votes_bundle_rlp: Vec::new(),
+            });
+        };
+
+        if voted.hash != request.block_hash || voted.step != request.step {
+            return Ok(PbftOptimizedVoteBundleBuildResult {
+                status: PBFT_OPTIMIZED_BUNDLE_MAPPING_MISMATCH,
+                vote_hashes: requested_hashes,
+                votes_bundle_rlp: Vec::new(),
+            });
+        }
+
+        let planned_hashes = runtime
+            .verified_votes()
+            .get_two_t_plus_one_voted_block_vote_hashes(
+                request.period,
+                request.round,
+                request.kind,
+            );
+        if let Err(status) = ensure_ordered_subsequence(&planned_hashes, &requested_hashes) {
+            return Ok(PbftOptimizedVoteBundleBuildResult {
+                status,
+                vote_hashes: requested_hashes,
+                votes_bundle_rlp: Vec::new(),
+            });
+        }
+
+        let mut records = Vec::with_capacity(requested_hashes.len());
+        for vote_hash in &requested_hashes {
+            let Some(record) = runtime.weighted_payload(*vote_hash).cloned() else {
+                return Ok(PbftOptimizedVoteBundleBuildResult {
+                    status: PBFT_OPTIMIZED_BUNDLE_MISSING_PAYLOAD,
+                    vote_hashes: requested_hashes,
+                    votes_bundle_rlp: Vec::new(),
+                });
+            };
+            records.push(record);
+        }
+
+        match build_optimized_pbft_vote_bundle(
+            &records,
+            voted.hash,
+            request.period,
+            request.round,
+            voted.step,
+        ) {
+            Ok(bundle) => Ok(PbftOptimizedVoteBundleBuildResult {
+                status: PBFT_OPTIMIZED_BUNDLE_READY,
+                vote_hashes: bundle.vote_hashes,
+                votes_bundle_rlp: bundle.bundle_rlp,
+            }),
+            Err(err) if err.to_string().contains("mismatches requested metadata") => {
+                Ok(PbftOptimizedVoteBundleBuildResult {
+                    status: PBFT_OPTIMIZED_BUNDLE_PAYLOAD_METADATA_MISMATCH,
+                    vote_hashes: requested_hashes,
+                    votes_bundle_rlp: Vec::new(),
+                })
+            }
+            Err(_) => Ok(PbftOptimizedVoteBundleBuildResult {
+                status: PBFT_OPTIMIZED_BUNDLE_PAYLOAD_DECODE_ERROR,
+                vote_hashes: requested_hashes,
+                votes_bundle_rlp: Vec::new(),
+            }),
+        }
+    }
+
+    /// Returns deterministic verified-vote payload snapshots.
+    ///
+    /// Votes, round markers, and `2t+1` markers come from one runtime lock epoch.
+    /// Missing weighted sidecars and lock poison fail the complete snapshot.
+    pub fn verified_votes_state_snapshot(&self) -> Result<VerifiedVotesStateSnapshot> {
+        let runtime = self.lock()?;
+        let votes = runtime
+            .verified_votes()
+            .snapshot_votes()
+            .into_iter()
+            .map(|vote| {
+                let weighted_vote = runtime
+                    .weighted_payload(vote.vote_hash)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("PBFT_VERIFIED_VOTES_MISSING_RETAINED_PAYLOAD"))?;
+                Ok(VerifiedVoteStateSnapshotEntry {
+                    vote,
+                    weighted_vote,
+                })
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
+        Ok(VerifiedVotesStateSnapshot {
+            votes,
+            round_markers: runtime.verified_votes().snapshot_round_markers(),
+            two_t_plus_one: runtime.verified_votes().snapshot_two_t_plus_one(),
+        })
+    }
+
+    /// Returns one step's buckets of retained payloads in deterministic order.
+    ///
+    /// `None` means the `(period, round, step)` bucket is absent. A present bucket
+    /// must resolve every weighted payload under the same lock or the lookup fails.
+    pub fn verified_votes_step_payloads(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+    ) -> Result<Option<Vec<VerifiedStepVotePayloadEntry>>> {
+        let runtime = self.lock()?;
+        let Some(entries) = runtime.verified_votes().get_step_votes(period, round, step) else {
+            return Ok(None);
+        };
+
+        let entries = entries
+            .into_iter()
+            .map(|entry| {
+                let votes = entry
+                    .vote_hashes
+                    .into_iter()
+                    .map(|vote_hash| {
+                        runtime.weighted_payload(vote_hash).cloned().ok_or_else(|| {
+                            anyhow!("PBFT_VERIFIED_VOTES_STEP_MISSING_RETAINED_PAYLOAD")
+                        })
+                    })
+                    .collect::<Result<Vec<_>, anyhow::Error>>()?;
+                Ok(VerifiedStepVotePayloadEntry {
+                    block_hash: entry.block_hash,
+                    total_weight: entry.total_weight,
+                    votes,
+                })
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+        Ok(Some(entries))
+    }
+
+    fn verified_votes_optimized_bundle_plan_runtime(
+        &self,
+        runtime: &PbftVerifiedVotesServiceGuard<'_>,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+    ) -> Result<PbftOptimizedVoteBundlePlan> {
+        let _ = &self;
+        let Some(voted) = runtime
+            .verified_votes()
+            .get_two_t_plus_one_voted_block(period, round, kind)
+        else {
+            return Ok(PbftOptimizedVoteBundlePlan {
+                status: PBFT_OPTIMIZED_BUNDLE_NOT_FOUND,
+                kind,
+                period,
+                round,
+                plan: None,
+            });
+        };
+
+        Ok(PbftOptimizedVoteBundlePlan {
+            status: PBFT_OPTIMIZED_BUNDLE_READY,
+            kind,
+            period,
+            round,
+            plan: Some(PbftOptimizedVoteBundlePlanEntry {
+                block_hash: voted.hash,
+                period,
+                round,
+                step: voted.step,
+                vote_hashes: runtime
+                    .verified_votes()
+                    .get_two_t_plus_one_voted_block_vote_hashes(period, round, kind),
+            }),
+        })
     }
 
     /// Returns the current reward-vote cursor as an owned domain snapshot.
@@ -694,6 +1363,26 @@ impl PbftVerifiedVotesService {
         let mut runtime = self.lock()?;
         runtime.commit_reward_vote_cursor(&self.storage, request.cursor, request.reset_generation)
     }
+}
+
+fn ensure_ordered_subsequence(
+    planned_hashes: &[H256],
+    requested_hashes: &[H256],
+) -> Result<(), VerifiedVoteOptimizedBundleStatus> {
+    let mut cursor = 0;
+    for requested_hash in requested_hashes {
+        let Some(relative_position) = planned_hashes[cursor..]
+            .iter()
+            .position(|planned_hash| planned_hash == requested_hash)
+        else {
+            if planned_hashes[..cursor].contains(requested_hash) {
+                return Err(VerifiedVoteOptimizedBundleStatus::OrderMismatch);
+            }
+            return Err(VerifiedVoteOptimizedBundleStatus::HashNotInPlan);
+        };
+        cursor += relative_position + 1;
+    }
+    Ok(())
 }
 
 impl Default for PbftVoteAdmissionRuntime {
@@ -3686,6 +4375,265 @@ mod tests {
             .err()
             .expect("malformed durable vote must prevent service publication");
 
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn verified_votes_service_owns_access_queries_bundles_and_cleanup() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rustaxa_verified_access_{nonce}"));
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let block_hash = [0x71; 32];
+        let first = vote_rlp_from_secret(block_hash, 3, NODE_SECRET);
+        let second = vote_rlp_from_secret(block_hash, 3, NODE_SECRET_TWO);
+        let first_validation = validation(&first);
+        let second_validation = validation(&second);
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+        runtime
+            .admit_validated_vote(&first, &first_validation, flags(), context(Some(80)))
+            .unwrap();
+        runtime
+            .admit_validated_vote(&second, &second_validation, flags(), context(Some(80)))
+            .unwrap();
+        let service = PbftVerifiedVotesService::from_runtime(storage.clone(), runtime);
+
+        assert_eq!(service.verified_votes_size().unwrap(), 2);
+        assert!(
+            service
+                .verified_votes_replay_contains(first_validation.vote_hash)
+                .unwrap()
+        );
+        let extra_hash = H256::from([0x72; 32]);
+        assert!(service.verified_votes_replay_insert(extra_hash).unwrap());
+        assert!(!service.verified_votes_replay_insert(extra_hash).unwrap());
+
+        let mapping = service
+            .verified_votes_get_two_t_plus_one_voted_block(
+                12,
+                2,
+                TwoTPlusOneVotedBlockType::CertVotedBlock,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(mapping.block_hash, H256::from(block_hash));
+        assert_eq!(mapping.step, 3);
+        let payloads = service
+            .verified_votes_get_two_t_plus_one_voted_block_payloads(
+                12,
+                2,
+                TwoTPlusOneVotedBlockType::CertVotedBlock,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(payloads.votes.len(), 2);
+        let requested_hashes = payloads
+            .votes
+            .iter()
+            .map(|vote| vote.hash)
+            .collect::<Vec<_>>();
+        let built = service
+            .verified_votes_build_optimized_votes_bundle_egress(
+                PbftOptimizedVoteBundleBuildRequest {
+                    kind: TwoTPlusOneVotedBlockType::CertVotedBlock,
+                    block_hash: mapping.block_hash,
+                    period: 12,
+                    round: 2,
+                    step: mapping.step,
+                    vote_hashes: requested_hashes.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(built.status, VerifiedVoteOptimizedBundleStatus::Ready);
+        assert_eq!(built.vote_hashes, requested_hashes);
+        assert!(!built.votes_bundle_rlp.is_empty());
+        let mut reversed_hashes = requested_hashes.clone();
+        reversed_hashes.reverse();
+        assert_eq!(
+            service
+                .verified_votes_build_optimized_votes_bundle_egress(
+                    PbftOptimizedVoteBundleBuildRequest {
+                        kind: TwoTPlusOneVotedBlockType::CertVotedBlock,
+                        block_hash: mapping.block_hash,
+                        period: 12,
+                        round: 2,
+                        step: mapping.step,
+                        vote_hashes: reversed_hashes,
+                    },
+                )
+                .unwrap()
+                .status,
+            VerifiedVoteOptimizedBundleStatus::OrderMismatch
+        );
+        assert_eq!(
+            service
+                .verified_votes_build_optimized_votes_bundle_egress(
+                    PbftOptimizedVoteBundleBuildRequest {
+                        kind: TwoTPlusOneVotedBlockType::CertVotedBlock,
+                        block_hash: H256::zero(),
+                        period: 12,
+                        round: 2,
+                        step: mapping.step,
+                        vote_hashes: requested_hashes.clone(),
+                    },
+                )
+                .unwrap()
+                .status,
+            VerifiedVoteOptimizedBundleStatus::MappingMismatch
+        );
+        let next_plan = service
+            .verified_votes_plan_next_votes_bundle_egress(12, 2)
+            .unwrap();
+        assert_eq!(
+            next_plan.next_votes.status,
+            VerifiedVoteOptimizedBundleStatus::NotFound
+        );
+        assert_eq!(next_plan.next_votes.period, 12);
+        assert_eq!(next_plan.next_votes.round, 2);
+        assert!(next_plan.next_votes.plan.is_none());
+        assert_eq!(next_plan.next_null_votes.period, 12);
+        assert_eq!(next_plan.next_null_votes.round, 2);
+
+        let snapshot = service.verified_votes_state_snapshot().unwrap();
+        assert_eq!(snapshot.votes.len(), 2);
+        let step = service
+            .verified_votes_step_payloads(12, 2, 3)
+            .unwrap()
+            .unwrap();
+        assert_eq!(step.len(), 1);
+        assert_eq!(step[0].votes.len(), 2);
+        assert!(
+            service
+                .verified_votes_step_payloads(12, 2, 99)
+                .unwrap()
+                .is_none()
+        );
+
+        service.verified_votes_cleanup_votes_by_period(13).unwrap();
+        assert_eq!(service.verified_votes_size().unwrap(), 0);
+        assert!(
+            service
+                .verified_votes_state_snapshot()
+                .unwrap()
+                .votes
+                .is_empty()
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn verified_votes_direct_persistence_waits_for_runtime_serialization() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rustaxa_verified_persist_lock_{nonce}"));
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let service = PbftVerifiedVotesService::from_runtime(
+            storage.clone(),
+            PbftVoteAdmissionRuntime::new(),
+        );
+        let guard = service.lock().unwrap();
+        let worker = service.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = worker
+                .verified_votes_persist_pbft_vote_progress(
+                    PbftVerifiedVoteProgressPersistenceWrite::default(),
+                )
+                .unwrap();
+            done_tx.send(result).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(guard);
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_secs(2)).unwrap().status,
+            PbftVotePersistenceStatus::Applied
+        );
+        thread.join().unwrap();
+
+        drop(service);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn verified_votes_service_validates_saves_reads_and_clears_own_votes() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rustaxa_verified_own_votes_{nonce}"));
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let service = PbftVerifiedVotesService::from_runtime(
+            storage.clone(),
+            PbftVoteAdmissionRuntime::new(),
+        );
+        let first =
+            build_weighted_pbft_vote_payload(&vote_rlp_from_secret([0x81; 32], 3, NODE_SECRET), 4)
+                .unwrap();
+        let first = PbftVoteStorageRecord {
+            hash: first.hash,
+            vote_rlp: first.vote_rlp,
+        };
+        let second = build_weighted_pbft_vote_payload(
+            &vote_rlp_from_secret([0x82; 32], 3, NODE_SECRET_TWO),
+            5,
+        )
+        .unwrap();
+        let second = PbftVoteStorageRecord {
+            hash: second.hash,
+            vote_rlp: second.vote_rlp,
+        };
+        for record in [second.clone(), first.clone()] {
+            assert_eq!(
+                service
+                    .verified_votes_save_own_verified_vote(record)
+                    .unwrap()
+                    .status,
+                PbftVotePersistenceStatus::Applied
+            );
+        }
+        let records = service.verified_votes_own_vote_records().unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.windows(2).all(|pair| pair[0].hash < pair[1].hash));
+
+        let mut mismatched = first;
+        mismatched.hash = H256::from([0x83; 32]);
+        assert!(
+            service
+                .verified_votes_save_own_verified_vote(mismatched)
+                .unwrap_err()
+                .to_string()
+                .contains("VERIFIED_VOTES_OWN_VOTE_HASH_MISMATCH")
+        );
+        assert_eq!(
+            service
+                .verified_votes_clear_own_verified_votes()
+                .unwrap()
+                .status,
+            PbftVotePersistenceStatus::Applied
+        );
+        assert!(
+            service
+                .verified_votes_own_vote_records()
+                .unwrap()
+                .is_empty()
+        );
+
+        drop(service);
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
     }

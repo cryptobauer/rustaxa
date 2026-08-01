@@ -270,12 +270,18 @@ pub use pbft_vote_progress::{
     PbftVoteProgressPlan, PbftVoteProgressStatus, plan_pbft_vote_progress,
 };
 pub use pbft_vote_runtime::{
-    PbftRewardVotePayloadSelection, PbftVerifiedVotesService, PbftVoteAdmissionPersistenceStatus,
-    PbftVoteAdmissionRuntime, PbftVoteAdmissionTransactionResult, PbftVoteRuntimeAdmissionOutcome,
-    PbftVoteRuntimeBundle, PbftVoteRuntimeCleanupPlan, PbftVoteRuntimePayload,
-    PbftVoteRuntimeSlashingPayloads, RewardVoteCursor, RewardVoteCursorCommitRequest,
-    RewardVoteCursorCommitResult, RewardVoteCursorCommitStatus, RewardVoteCursorSnapshot,
-    RewardVotePayloadSnapshot, RewardVoteResetApplyRequest, RewardVoteResetPrepareRequest,
+    PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
+    PbftOptimizedVoteBundleBuildResult, PbftOptimizedVoteBundlePlan,
+    PbftOptimizedVoteBundlePlanEntry, PbftRewardVotePayloadSelection,
+    PbftVerifiedVoteProgressBundle, PbftVerifiedVoteProgressPersistenceWrite,
+    PbftVerifiedVotesService, PbftVoteAdmissionPersistenceStatus, PbftVoteAdmissionRuntime,
+    PbftVoteAdmissionTransactionResult, PbftVoteRuntimeAdmissionOutcome, PbftVoteRuntimeBundle,
+    PbftVoteRuntimeCleanupPlan, PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads,
+    RewardVoteCursor, RewardVoteCursorCommitRequest, RewardVoteCursorCommitResult,
+    RewardVoteCursorCommitStatus, RewardVoteCursorSnapshot, RewardVotePayloadSnapshot,
+    RewardVoteResetApplyRequest, RewardVoteResetPrepareRequest, VerifiedStepVotePayloadEntry,
+    VerifiedVoteOptimizedBundleStatus, VerifiedVoteStateSnapshotEntry, VerifiedVotesStateSnapshot,
+    VerifiedVotesTwoTPlusOneVotePayloads, VerifiedVotesTwoTPlusOneVotedBlock,
 };
 pub use pbft_vote_storage::{
     PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,

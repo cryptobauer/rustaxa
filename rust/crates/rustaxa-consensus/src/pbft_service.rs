@@ -10,7 +10,7 @@ use crate::dag::{DagBlockPeriodStorageLookup, dag_block_period_from_storage};
 use crate::pbft_chain::{PbftChainService, pbft_block_exists_in_storage};
 use crate::pbft_finalize::{
     PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationPeriodLambdaLookup,
-    PbftFinalizationRuntimeAction, PbftFinalizationStatus,
+    PbftFinalizationRuntimeAction, PbftFinalizationStatus, PbftFinalizedPeriodApplyResult,
     load_pbft_finalization_last_period_lambda, plan_pbft_dynamic_lambda,
 };
 use crate::pbft_manager::{
@@ -58,9 +58,17 @@ use crate::pbft_vote_generation::{
 use crate::pbft_vote_payload::build_weighted_pbft_vote_payload;
 use crate::pbft_vote_progress::PbftVoteProgressContext;
 use crate::pbft_vote_runtime::{
-    PbftVerifiedVotesService, PbftVoteAdmissionTransactionResult, PbftVoteRuntimeReplayOutcome,
+    PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
+    PbftOptimizedVoteBundleBuildResult, PbftRewardVotePayloadSelection,
+    PbftVerifiedVoteProgressPersistenceWrite, PbftVerifiedVotesService,
+    PbftVoteAdmissionTransactionResult, PbftVoteRuntimeReplayOutcome, RewardVoteCursorSnapshot,
+    RewardVotePayloadSnapshot, RewardVoteResetApplyRequest, VerifiedStepVotePayloadEntry,
+    VerifiedVotesStateSnapshot, VerifiedVotesTwoTPlusOneVotePayloads,
+    VerifiedVotesTwoTPlusOneVotedBlock,
 };
-use crate::pbft_vote_storage::persist_pbft_vote_progress;
+use crate::pbft_vote_storage::{
+    PbftVotePersistenceResult, PbftVoteStorageRecord, persist_pbft_vote_progress,
+};
 use crate::pbft_vote_validation::{
     PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation, PbftProposerSortitionRequest,
     PbftProposerSortitionResult, PbftVoteAdmissionValidationRequest,
@@ -94,7 +102,9 @@ use crate::slashing::{
     DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofSubmissionPlan,
     SlashingProofService,
 };
+use crate::verified_votes::{DetermineNewRoundOutcome, TwoTPlusOneVotedBlockType};
 use anyhow::{Context, Result};
+use ethereum_types::H256;
 use rustaxa_storage::{Storage, StorageWriteBatch};
 use std::sync::Arc;
 
@@ -2135,8 +2145,220 @@ impl PbftService {
     }
 
     /// Returns the native verified-vote sibling.
-    pub fn verified_votes(&self) -> &PbftVerifiedVotesService {
+    pub(crate) fn verified_votes(&self) -> &PbftVerifiedVotesService {
         &self.verified_votes
+    }
+
+    /// Returns verified-vote storage snapshots and sidecars through the service.
+    ///
+    /// Inputs, ordering, validation, and storage error behavior are exactly the
+    /// native sibling contract in [`PbftVerifiedVotesService::verified_votes_own_vote_records`].
+    pub fn verified_votes_own_vote_records(&self) -> Result<Vec<PbftVoteStorageRecord>> {
+        self.verified_votes().verified_votes_own_vote_records()
+    }
+
+    /// Returns deterministic verified-vote count under runtime lock.
+    ///
+    /// The output and lock-poison behavior are exactly
+    /// [`PbftVerifiedVotesService::verified_votes_size`].
+    pub fn verified_votes_size(&self) -> Result<u64> {
+        self.verified_votes().verified_votes_size()
+    }
+
+    /// Checks replay-protection membership for one vote hash.
+    ///
+    /// `vote_hash`, the boolean output, and lock errors follow
+    /// [`PbftVerifiedVotesService::verified_votes_replay_contains`].
+    pub fn verified_votes_replay_contains(&self, vote_hash: H256) -> Result<bool> {
+        self.verified_votes()
+            .verified_votes_replay_contains(vote_hash)
+    }
+
+    /// Inserts one replay-protection membership bit.
+    ///
+    /// The inserted/already-present result and atomicity follow
+    /// [`PbftVerifiedVotesService::verified_votes_replay_insert`].
+    pub fn verified_votes_replay_insert(&self, vote_hash: H256) -> Result<bool> {
+        self.verified_votes()
+            .verified_votes_replay_insert(vote_hash)
+    }
+
+    /// Derives the next round for a supplied period/current-round pair.
+    ///
+    /// `None`, coherent-read, and lock-error behavior follow
+    /// [`PbftVerifiedVotesService::verified_votes_determine_new_round`].
+    pub fn verified_votes_determine_new_round(
+        &self,
+        period: u64,
+        current_round: u64,
+    ) -> Result<Option<DetermineNewRoundOutcome>> {
+        self.verified_votes()
+            .verified_votes_determine_new_round(period, current_round)
+    }
+
+    /// Loads one voted-block mapping from runtime-owned next-vote 2t+1 state.
+    ///
+    /// Typed input, optional output, and error behavior follow
+    /// [`PbftVerifiedVotesService::verified_votes_get_two_t_plus_one_voted_block`].
+    pub fn verified_votes_get_two_t_plus_one_voted_block(
+        &self,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+    ) -> Result<Option<VerifiedVotesTwoTPlusOneVotedBlock>> {
+        self.verified_votes()
+            .verified_votes_get_two_t_plus_one_voted_block(period, round, kind)
+    }
+
+    /// Loads retained payloads for one mapped voted block.
+    ///
+    /// Typed input, ordered optional output, and missing-sidecar errors follow
+    /// [`PbftVerifiedVotesService::verified_votes_get_two_t_plus_one_voted_block_payloads`].
+    pub fn verified_votes_get_two_t_plus_one_voted_block_payloads(
+        &self,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+    ) -> Result<Option<VerifiedVotesTwoTPlusOneVotePayloads>> {
+        self.verified_votes()
+            .verified_votes_get_two_t_plus_one_voted_block_payloads(period, round, kind)
+    }
+
+    /// Returns the current reward-vote cursor snapshot.
+    ///
+    /// The coherent output, empty-cursor sentinel, and lock errors follow the
+    /// native verified-vote sibling's reward cursor contract.
+    pub fn reward_vote_cursor_snapshot(&self) -> Result<RewardVoteCursorSnapshot> {
+        self.verified_votes().reward_vote_cursor_snapshot()
+    }
+
+    /// Returns the latest reset period from reward-vote cursor state.
+    ///
+    /// Returns zero before the first reset and propagates native sibling lock
+    /// errors without exposing mutable state.
+    pub fn reward_vote_period(&self) -> Result<u64> {
+        self.verified_votes().reward_vote_period()
+    }
+
+    /// Selects reward-vote payloads for one cert family.
+    ///
+    /// `block_period` and ordered requested hashes produce the sibling's typed
+    /// selection result; mapping, payload, and lock failures propagate.
+    pub fn select_reward_vote_payloads(
+        &self,
+        block_period: u64,
+        requested_vote_hashes: Vec<H256>,
+    ) -> Result<PbftRewardVotePayloadSelection> {
+        self.verified_votes()
+            .select_reward_vote_payloads(block_period, requested_vote_hashes)
+    }
+
+    /// Builds one optimized next-vote 2t+1 bundle egress plan.
+    ///
+    /// Query coordinates, coherent two-family output, and errors follow
+    /// [`PbftVerifiedVotesService::verified_votes_plan_next_votes_bundle_egress`].
+    pub fn verified_votes_plan_next_votes_bundle_egress(
+        &self,
+        period: u64,
+        round: u64,
+    ) -> Result<PbftNextVotesBundleEgressPlan> {
+        self.verified_votes()
+            .verified_votes_plan_next_votes_bundle_egress(period, round)
+    }
+
+    /// Builds one optimized verified-vote bundle payload from retained hashes.
+    ///
+    /// Typed statuses, bundle bytes, ordering invariants, and errors follow
+    /// [`PbftVerifiedVotesService::verified_votes_build_optimized_votes_bundle_egress`].
+    pub fn verified_votes_build_optimized_votes_bundle_egress(
+        &self,
+        request: PbftOptimizedVoteBundleBuildRequest,
+    ) -> Result<PbftOptimizedVoteBundleBuildResult> {
+        self.verified_votes()
+            .verified_votes_build_optimized_votes_bundle_egress(request)
+    }
+
+    /// Applies bounded verified-votes cleanup.
+    ///
+    /// The cutoff input, atomic runtime mutation, and lock errors follow
+    /// [`PbftVerifiedVotesService::verified_votes_cleanup_votes_by_period`].
+    pub fn verified_votes_cleanup_votes_by_period(&self, pbft_period: u64) -> Result<()> {
+        self.verified_votes()
+            .verified_votes_cleanup_votes_by_period(pbft_period)
+    }
+
+    /// Persists one latest-round own verified vote.
+    ///
+    /// Validation, storage serialization, typed rejection, and errors follow
+    /// [`PbftVerifiedVotesService::verified_votes_save_own_verified_vote`].
+    pub fn verified_votes_save_own_verified_vote(
+        &self,
+        record: PbftVoteStorageRecord,
+    ) -> Result<PbftVotePersistenceResult> {
+        self.verified_votes()
+            .verified_votes_save_own_verified_vote(record)
+    }
+
+    /// Clears all latest-round own verified vote records.
+    ///
+    /// Enumeration, batch semantics, typed rejection, and errors follow
+    /// [`PbftVerifiedVotesService::verified_votes_clear_own_verified_votes`].
+    pub fn verified_votes_clear_own_verified_votes(&self) -> Result<PbftVotePersistenceResult> {
+        self.verified_votes()
+            .verified_votes_clear_own_verified_votes()
+    }
+
+    /// Persists generated vote-progress effects.
+    ///
+    /// Typed inputs, runtime-to-storage serialization, result statuses, and
+    /// errors follow [`PbftVerifiedVotesService::verified_votes_persist_pbft_vote_progress`].
+    pub fn verified_votes_persist_pbft_vote_progress(
+        &self,
+        write: PbftVerifiedVoteProgressPersistenceWrite,
+    ) -> Result<PbftVotePersistenceResult> {
+        self.verified_votes()
+            .verified_votes_persist_pbft_vote_progress(write)
+    }
+
+    /// Applies the full reward-vote reset pipeline.
+    ///
+    /// The typed request produces the sibling's storage/live-publication result;
+    /// identity, monotonicity, lock, and storage failures propagate unchanged.
+    pub fn apply_reward_votes_reset(
+        &self,
+        request: RewardVoteResetApplyRequest,
+    ) -> Result<PbftFinalizedPeriodApplyResult> {
+        self.verified_votes().apply_reward_votes_reset(request)
+    }
+
+    /// Returns deterministic verified-vote runtime state snapshot.
+    ///
+    /// Coherence, ordering, missing-sidecar invariants, and errors follow
+    /// [`PbftVerifiedVotesService::verified_votes_state_snapshot`].
+    pub fn verified_votes_state_snapshot(&self) -> Result<VerifiedVotesStateSnapshot> {
+        self.verified_votes().verified_votes_state_snapshot()
+    }
+
+    /// Returns one step payload snapshot.
+    ///
+    /// Typed coordinates, `None` semantics, payload ordering, and errors follow
+    /// [`PbftVerifiedVotesService::verified_votes_step_payloads`].
+    pub fn verified_votes_step_payloads(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+    ) -> Result<Option<Vec<VerifiedStepVotePayloadEntry>>> {
+        self.verified_votes()
+            .verified_votes_step_payloads(period, round, step)
+    }
+
+    /// Returns one deterministic reward-vote snapshot from native service state.
+    ///
+    /// Cursor and records are observed coherently; missing payloads and lock
+    /// failures propagate from the native sibling without partial output.
+    pub fn current_reward_vote_snapshot(&self) -> Result<RewardVotePayloadSnapshot> {
+        self.verified_votes().current_reward_vote_snapshot()
     }
 
     /// Returns the native pillar sibling.
