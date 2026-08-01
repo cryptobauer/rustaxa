@@ -86,8 +86,6 @@ use rustaxa_consensus::pbft_finalize::{
 };
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
-    apply_executed_block_reset_storage, apply_next_voted_status_storage,
-    apply_pbft_manager_cursor_field_storage,
     create_pbft_manager_proposal_session as create_domain_pbft_manager_proposal_session,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     create_pbft_manager_state_action_effect_session as create_domain_pbft_manager_state_action_effect_session,
@@ -407,10 +405,7 @@ impl From<&FfiPbftFinalizationIntentPlan> for PbftFinalizationPlan {
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
 const RUNTIME_STATUS_COMPLETE: u8 = 1;
 const ACTION_NO_ACTION: u8 = 255;
-const TRANSITION_STORAGE_STATUS_APPLIED: u8 = 0;
-const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
 #[cfg(test)]
-const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 /// Rust-only startup facts for tests that exercise manager restore independently
 /// from the production service's chain-derived bootstrap contract.
 #[cfg(test)]
@@ -1337,20 +1332,6 @@ pub fn pbft_manager_runtime_own_pillar_block_vote(
     load_own_pillar_block_vote_storage(runtime.storage.as_ref())
 }
 
-fn transition_runtime_apply_result(
-    status: u8,
-    applied_writes: u64,
-    snapshot: PbftManagerRuntimeSnapshot,
-    error_code: String,
-) -> FfiPbftManagerRuntimeStorageApplyResult {
-    FfiPbftManagerRuntimeStorageApplyResult {
-        status,
-        applied_writes,
-        snapshot: snapshot.into(),
-        error_code,
-    }
-}
-
 /// Plans, persists, and commits one lifecycle transition as a Rust-owned operation.
 pub fn pbft_manager_runtime_execute_lifecycle_transition(
     runtime: &BridgePbftService,
@@ -1400,23 +1381,13 @@ pub fn pbft_manager_runtime_execute_lifecycle_transition(
 pub fn pbft_manager_runtime_apply_executed_block_reset(
     runtime: &BridgePbftService,
 ) -> anyhow::Result<FfiPbftManagerRuntimeStorageApplyResult> {
-    let mut runtime = runtime.manager_state();
-    if apply_executed_block_reset_storage(runtime.storage.as_ref()).is_err() {
-        return Ok(transition_runtime_apply_result(
-            TRANSITION_STORAGE_STATUS_REJECTED,
-            0,
-            runtime.state.snapshot(),
-            "PBFT_MANAGER_EXECUTED_BLOCK_RESET_WRITE_FAILURE".to_string(),
-        ));
-    }
-
-    runtime.state.apply_committed_executed_block_reset();
-    Ok(transition_runtime_apply_result(
-        TRANSITION_STORAGE_STATUS_APPLIED,
-        1,
-        runtime.state.snapshot(),
-        String::new(),
-    ))
+    let outcome = runtime.0.apply_executed_block_reset();
+    Ok(FfiPbftManagerRuntimeStorageApplyResult {
+        status: outcome.status.as_u8(),
+        applied_writes: outcome.applied_writes,
+        snapshot: outcome.snapshot.into(),
+        error_code: outcome.error_code,
+    })
 }
 
 /// Applies a successful next-vote PBFT manager status through runtime-owned storage.
@@ -1439,10 +1410,7 @@ pub fn pbft_manager_runtime_apply_next_voted_status(
     runtime: &BridgePbftService,
     status: u8,
 ) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
-    let mut runtime = runtime.manager_state();
-    apply_next_voted_status_storage(runtime.storage.as_ref(), status)?;
-    runtime.state.apply_committed_next_voted_status(status);
-    Ok(runtime.state.snapshot().into())
+    runtime.0.apply_next_voted_status(status).map(Into::into)
 }
 
 /// Applies a PBFT manager cursor field through runtime-owned Rust storage.
@@ -1465,10 +1433,7 @@ pub fn pbft_manager_runtime_apply_cursor_field(
     field: u8,
     value: u32,
 ) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
-    let mut runtime = runtime.manager_state();
-    apply_pbft_manager_cursor_field_storage(runtime.storage.as_ref(), field, value)?;
-    runtime.state.apply_committed_cursor_field(field, value);
-    Ok(runtime.state.snapshot().into())
+    runtime.0.apply_cursor_field(field, value).map(Into::into)
 }
 
 /// Resolves a finalized DAG block period through PBFT-manager runtime storage.
@@ -2655,15 +2620,6 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// Clones the storage handle from the native manager owner for bridge
-    /// boundary fixtures. This deliberately avoids recreating the removed
-    /// bridge-root storage sidecar.
-    fn native_service_storage(
-        service: &BridgePbftService,
-    ) -> std::sync::Arc<rustaxa_storage::Storage> {
-        service.manager_state().storage.clone()
-    }
-
     const STATE_VALUE_PROPOSAL: u8 = 0;
     const STARTUP_STATUS_READY: u8 = 0;
     const TRANSITION_RESET: u8 = 0;
@@ -3080,66 +3036,6 @@ mod tests {
         ));
         assert!(dynamic_lambda.last_saved_period_lambda_found);
         assert_eq!(dynamic_lambda.last_saved_period_lambda, 1_234);
-    }
-
-    #[test]
-    fn bridge_manager_persistence_adapters_map_status_and_errors() {
-        let mut runtime = runtime_for_startup("rustaxa_bridge_manager_persistence_adapters");
-
-        let reset = pbft_manager_runtime_apply_executed_block_reset(&mut runtime)
-            .expect("executed-block reset should map");
-        assert_eq!(reset.status, TRANSITION_STORAGE_STATUS_APPLIED);
-        assert!(!reset.snapshot.executed_pbft_block);
-        assert_eq!(
-            native_service_storage(&runtime)
-                .pbft()
-                .manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
-                .unwrap(),
-            Some(false)
-        );
-
-        let next_voted = pbft_manager_runtime_apply_next_voted_status(&mut runtime, 2)
-            .expect("next-voted status should map");
-        assert!(next_voted.already_next_voted_value);
-        assert!(!next_voted.already_next_voted_null);
-        assert_eq!(
-            native_service_storage(&runtime)
-                .pbft()
-                .manager_status(2)
-                .unwrap(),
-            Some(true)
-        );
-        let next_voted_error = match pbft_manager_runtime_apply_next_voted_status(
-            &mut runtime,
-            PBFT_MGR_STATUS_EXECUTED_BLOCK,
-        ) {
-            Ok(_) => panic!("unsupported next-voted status should reject"),
-            Err(error) => error,
-        };
-        assert_eq!(
-            next_voted_error.to_string(),
-            "PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED"
-        );
-
-        let before_cursor = pbft_manager_runtime_snapshot(&runtime);
-        let cursor = pbft_manager_runtime_apply_cursor_field(&mut runtime, 0, 8)
-            .expect("round cursor should map");
-        assert_eq!(cursor.round, 8);
-        assert_eq!(cursor.step, before_cursor.step);
-        assert_eq!(
-            native_service_storage(&runtime)
-                .pbft()
-                .manager_field(0)
-                .unwrap(),
-            Some(8)
-        );
-        let cursor_error = match pbft_manager_runtime_apply_cursor_field(&mut runtime, 2, 1) {
-            Ok(_) => panic!("unsupported cursor field should reject"),
-            Err(error) => error,
-        };
-        assert!(cursor_error
-            .to_string()
-            .contains("unsupported PBFT manager cursor field"));
     }
 
     #[test]

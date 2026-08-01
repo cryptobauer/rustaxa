@@ -1441,6 +1441,29 @@ Tier 2 is the complete 49-test Rust-enabled `rust_consensus_tests` suite. Tier
 commit-before-publication, effect parity, and boundary conversion. No
 upstream-owned C++ file changes.
 
+The following bounded `CRW-12` manager-persistence contraction moves delayed
+executed-block reset, next-voted status, and round/step cursor write sequencing
+behind native `PbftService`. Each operation now holds the manager domain,
+performs its supported durable write, and publishes the runtime snapshot only
+after success. Unsupported next-voted ids and cursor fields preserve the live
+snapshot. The bridge is reduced to direct status/snapshot projection, and its
+duplicate RocksDB transcript is replaced by a native application-root test
+covering successful persistence plus rejected non-publication. This removes a
+net 104 production bridge lines and lowers the checked budget to 28,353. CXX
+functions, carriers, handles, shim lines/directories, flags, factories,
+constructors, production consumers, public signatures, and C++ executor
+ordering remain unchanged. No upstream-owned C++ file changes.
+
+Validation is complete at Tier 1 with `make rewrite-validate-fast`, the focused
+native service persistence test, the retained bridge rejection edge test, the
+inventory guard and self-test, the storage-boundary guard, and whitespace
+checks. Tier 2 is the complete 49-test Rust-enabled `rust_consensus_tests`
+suite. Tier 3 is the `taraxad` build. Independent review approves durable
+write-before-publication ordering, rejection parity, direct bridge projection,
+test replacement, documentation, and the exact 28,353-line inventory budget;
+the residual non-blocking risk is the absence of injected RocksDB operational
+failure at the service layer, whose ordering remains structurally enforced.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

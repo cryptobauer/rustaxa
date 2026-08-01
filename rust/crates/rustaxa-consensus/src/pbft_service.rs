@@ -16,8 +16,9 @@ use crate::pbft_manager::{
     PbftFinalizationOwnedActionDrain, PbftManagerGuard, PbftManagerLifecycleTransitionRequest,
     PbftManagerRuntimeSnapshot, PbftManagerService, PbftManagerStorageStartupFact,
     PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
-    apply_pbft_manager_transition_storage, base_owned_finalization_live_report,
-    create_pbft_manager_runtime_from_storage,
+    apply_executed_block_reset_storage, apply_next_voted_status_storage,
+    apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
+    base_owned_finalization_live_report, create_pbft_manager_runtime_from_storage,
 };
 #[cfg(test)]
 use crate::pbft_period_cleanup::{PbftPeriodStateCleanupResult, cleanup_period_state_with_commit};
@@ -105,6 +106,22 @@ pub struct PbftManagerLifecycleTransitionOutcome {
     pub error_code: String,
 }
 
+/// Native result of a manager storage write that reports rejection as data.
+///
+/// The snapshot is captured under the same manager lock as the durable write.
+/// Applied outcomes publish runtime state only after storage succeeds;
+/// rejected outcomes preserve the previous snapshot and carry a stable error.
+pub struct PbftManagerRuntimeStorageApplyOutcome {
+    /// Durable write status.
+    pub status: PbftManagerTransitionStorageStatus,
+    /// Number of accepted manager storage writes.
+    pub applied_writes: u64,
+    /// Authoritative post-apply or preserved pre-rejection snapshot.
+    pub snapshot: PbftManagerRuntimeSnapshot,
+    /// Stable rejection detail; empty after success.
+    pub error_code: String,
+}
+
 /// CXX-free native owner of the complete PBFT application-service graph.
 ///
 /// Restoration validates storage-independent slashing configuration first,
@@ -124,6 +141,52 @@ pub struct PbftService {
 }
 
 impl PbftService {
+    /// Durably clears the delayed executed-block status and then publishes it.
+    ///
+    /// Storage rejection is returned as a rejected typed outcome because the
+    /// retained C++ follow-up treats it as an executor result. The previous
+    /// snapshot is preserved and no runtime state is published on failure.
+    pub fn apply_executed_block_reset(&self) -> PbftManagerRuntimeStorageApplyOutcome {
+        let mut manager = self.manager_state();
+        if apply_executed_block_reset_storage(manager.storage.as_ref()).is_err() {
+            return PbftManagerRuntimeStorageApplyOutcome {
+                status: PbftManagerTransitionStorageStatus::Rejected,
+                applied_writes: 0,
+                snapshot: manager.state.snapshot(),
+                error_code: "PBFT_MANAGER_EXECUTED_BLOCK_RESET_WRITE_FAILURE".to_owned(),
+            };
+        }
+        manager.state.apply_committed_executed_block_reset();
+        PbftManagerRuntimeStorageApplyOutcome {
+            status: PbftManagerTransitionStorageStatus::Applied,
+            applied_writes: 1,
+            snapshot: manager.state.snapshot(),
+            error_code: String::new(),
+        }
+    }
+
+    /// Persists and publishes one supported next-voted manager status.
+    ///
+    /// Unsupported status ids or storage errors return before runtime
+    /// publication, preserving the previous snapshot.
+    pub fn apply_next_voted_status(&self, status: u8) -> Result<PbftManagerRuntimeSnapshot> {
+        let mut manager = self.manager_state();
+        apply_next_voted_status_storage(manager.storage.as_ref(), status)?;
+        manager.state.apply_committed_next_voted_status(status);
+        Ok(manager.state.snapshot())
+    }
+
+    /// Persists and publishes one supported manager round/step cursor field.
+    ///
+    /// Unsupported fields or storage errors return before runtime publication;
+    /// dynamic-lambda storage remains owned by finalization.
+    pub fn apply_cursor_field(&self, field: u8, value: u32) -> Result<PbftManagerRuntimeSnapshot> {
+        let mut manager = self.manager_state();
+        apply_pbft_manager_cursor_field_storage(manager.storage.as_ref(), field, value)?;
+        manager.state.apply_committed_cursor_field(field, value);
+        Ok(manager.state.snapshot())
+    }
+
     fn rejected_lifecycle_transition(
         snapshot: PbftManagerRuntimeSnapshot,
         error_code: String,
@@ -1287,6 +1350,52 @@ mod tests {
         assert_eq!(
             mismatched_network_step.error_code,
             "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH"
+        );
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn service_owns_manager_status_and_cursor_persistence() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_manager_persistence");
+        let service = PbftService::restore(storage.clone(), config(1)).expect("service restores");
+
+        let reset = service.apply_executed_block_reset();
+        assert_eq!(reset.status, PbftManagerTransitionStorageStatus::Applied);
+        assert_eq!(reset.applied_writes, 1);
+        assert!(!reset.snapshot.executed_pbft_block);
+        assert_eq!(storage.pbft().manager_status(0).unwrap(), Some(false));
+
+        let next_voted = service.apply_next_voted_status(2).expect("status persists");
+        assert!(next_voted.already_next_voted_value);
+        assert!(!next_voted.already_next_voted_null);
+        assert_eq!(storage.pbft().manager_status(2).unwrap(), Some(true));
+        let before_rejected_status = service.manager_state().state.snapshot();
+        assert_eq!(
+            service.apply_next_voted_status(0).unwrap_err().to_string(),
+            "PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED"
+        );
+        assert_eq!(
+            service.manager_state().state.snapshot(),
+            before_rejected_status
+        );
+
+        let before_cursor = service.manager_state().state.snapshot();
+        let cursor = service.apply_cursor_field(0, 8).expect("round persists");
+        assert_eq!((cursor.round, cursor.step), (8, before_cursor.step));
+        assert_eq!(storage.pbft().manager_field(0).unwrap(), Some(8));
+        let before_rejected_cursor = service.manager_state().state.snapshot();
+        assert!(
+            service
+                .apply_cursor_field(2, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported PBFT manager cursor field")
+        );
+        assert_eq!(
+            service.manager_state().state.snapshot(),
+            before_rejected_cursor
         );
 
         drop(service);

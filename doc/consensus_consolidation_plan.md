@@ -339,6 +339,12 @@ stable request and projects typed external timer, sidecar, and vote-manager
 effects. Native application-root tests replace the bridge RocksDB transcript;
 the compact bridge rejection sentinel and CXX transition/period-advance cases
 retain boundary projection coverage.
+The adjacent executed-block reset, next-voted status, and round/step cursor
+writes now follow the same service boundary. Native `PbftService` owns each
+durable-write-before-runtime-publication sequence and rejects unsupported
+status/field ids without live mutation. Their bridge wrappers are direct
+result projections, and the duplicate bridge storage fixture is replaced by
+one native application-root persistence test.
 Missing Cacti dynamic-lambda startup rejection and storage non-mutation
 coverage now live with the native manager restore function rather than in a
 bridge-owned RocksDB fixture.
