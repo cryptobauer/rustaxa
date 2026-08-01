@@ -1851,6 +1851,28 @@ approved after the lifecycle sentinel covered the rejected path and reachable
 reset, certify, and finish-polling effect combinations without relying on a
 protocol runtime.
 
+The next bounded `CRW-12` PBFT-sync test-ownership slice removes the complete
+RocksDB-backed admission/egress protocol fixture from `rustaxa-bridge`. Native
+`PbftService` and PBFT-sync tests remain authoritative for bootstrap gating,
+cursor/check ordering, mismatched reports, terminal cleanup, abort, period-data
+loads, and reward-vote attachment. The bridge retains only pure all-field
+sentinels for admission input, transaction reports, not-started status/error
+fallback, egress projection, and cert-vote validation.
+Production signatures, routing, CXX functions, carriers, handles, callers,
+shims, flags, factories, and constructors are unchanged. The contraction
+removes ten net bridge lines and lowers the exact `bridge_lines` budget to
+23,293; no upstream-owned C++ file changes.
+
+Validation passed the five focused PBFT-sync bridge sentinels, the authoritative
+native ownership case, the full native consensus (1,077 tests) and bridge (91
+tests) suites, `rewrite-validate-fast`, the bridge inventory guard and its
+self-test, the storage-boundary guard and its self-test, `git diff --check`, and
+`rewrite-validate-smoke` with `RUSTAXA_ENABLE=ON`. Closeout searches found no
+deleted fixture helpers, `Old::`, retired consensus-network-queue, or native
+`BridgeStorage` references in the PBFT-sync bridge module. Because production
+routing and CXX declarations are unchanged, the existing native behavior and
+CXX external-finalization suites remain the correctly scoped boundary coverage.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

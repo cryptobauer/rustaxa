@@ -309,9 +309,10 @@ PBFT synced-period admission is now a native application task as well.
 `PbftService` gates session creation on bootstrap readiness, while
 `PbftManagerService` owns cursor allocation/replacement, check/report
 validation, terminal cleanup, abort, and storage-backed sync egress loading.
-The bridge module retains only CXX carrier/status conversion plus focused
-cert-vote and end-to-end sync projection sentinels; its broad RocksDB-backed
-session and egress behavioral tests are replaced by native service coverage.
+The bridge module retains only CXX carrier/status/error conversion plus focused
+cert-vote sentinels. Its RocksDB-backed admission-session and egress protocol
+fixture is replaced by native service coverage and focused pure carrier/status
+projection tests.
 The PBFT manager bridge suite likewise no longer repeats daemon ineligible
 sleep, proposal ordering/build, broadcast-counter, or deadline-wait behavior.
 Those rules remain covered by native manager tests; bridge coverage stays
