@@ -62,7 +62,7 @@ add_executable(pbft_chain_test pbft_chain_test.cpp)
 target_link_libraries(pbft_chain_test test_util)
 add_test(pbft_chain_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_chain_test)
 
-if(RUSTAXA_ENABLE_PBFT_CHAIN)
+if(RUSTAXA_ENABLE)
     add_executable(pbft_chain_shim_test pbft_chain_shim_test.cpp)
     target_link_libraries(pbft_chain_shim_test test_util)
     add_test(pbft_chain_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_chain_shim_test)
@@ -96,7 +96,7 @@ add_executable(vote_test vote_test.cpp)
 target_link_libraries(vote_test test_util)
 add_test(vote_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/vote_test)
 
-if(NOT RUSTAXA_ENABLE_FINAL_CHAIN)
+if(NOT RUSTAXA_ENABLE)
     # Preserve the untouched pure-C++ reference implementation and its tests.
     # Native Rust FinalChain owns rewards-stat behavior in Rust mode.
     add_executable(rewards_stats_test rewards_stats_test.cpp)

@@ -47,10 +47,9 @@ production routing.
 Use this tier when a rewrite changes a deterministic subsystem boundary, a C++ shim route, or runtime-facing behavior.
 
 Before reporting a Rust-enabled CMake gate, inspect `/build/CMakeCache.txt` (or the selected `BUILD_OUTPUT_DIR`) and
-verify `RUSTAXA_ENABLE:BOOL=ON` plus every module option traversed by the tested route. Prefer `make configure` for the
-supported production feature bundle. The current Make targets only warn when the master option is disabled and do not
-enforce module-specific options, so target success alone does not prove that the intended Rust implementation ran.
-Record the relevant cache options with the validation evidence.
+verify `RUSTAXA_ENABLE:BOOL=ON`. Prefer `make configure` for the supported production composition. The master option is
+the only supported topology switch: `ON` selects the complete Rust rewrite composition and `OFF` selects the pure-C++
+reference composition. Record the master cache option with the validation evidence.
 
 Storage:
 
@@ -87,8 +86,7 @@ make rewrite-validate-final-chain
 
 This runs the fast Rust gate, builds targeted FinalChain/runtime tests, runs `final_chain_test`, `state_api_test`, and
 `rpc_test` when available, then runs the Rust-enabled binary link/CLI smoke target. Before treating this as Rust
-FinalChain evidence, require at minimum `RUSTAXA_ENABLE`, `RUSTAXA_ENABLE_STORAGE`, and
-`RUSTAXA_ENABLE_FINAL_CHAIN` to be `ON`, plus any other module option exercised by the changed route.
+FinalChain evidence, require `RUSTAXA_ENABLE` to be `ON`.
 
 As with the consensus target, a skipped test required by the changed boundary is a validation gap. The target must not
 be reported as complete Tier 2 evidence unless all required tests actually ran.
@@ -180,12 +178,12 @@ intersection, or otherwise high-risk rewrite changes.
 
   This composite gate runs the Tier 2 FinalChain target first, then configures the same source tree in an isolated
   all-Rustaxa-disabled pure-C++ build, builds `final_chain_test` with 12 jobs, and runs all focused
-  `FinalChainTest.native_dpos_*` fixtures followed by the complete suite. The reusable pure-C++ build defaults to
-  `/tmp/rustaxa-final-chain-pure-cpp`; override `FINAL_CHAIN_CPP_BUILD_ROOT` only with another isolated absolute path.
+`FinalChainTest.native_dpos_*` fixtures followed by the complete suite. The reusable pure-C++ build defaults to
+`/tmp/rustaxa-final-chain-pure-cpp`; override `FINAL_CHAIN_CPP_BUILD_ROOT` only with another isolated absolute path.
   This is the regular Tier 3 differential for current-source FinalChain method, receipt, and persisted-state parity
   claims. Standing Tier 3 authorization includes the underlying script, so do not request separate approval when this
   gate is required. The script enforces the pure-C++ leg, but the caller must first verify that the Tier 2 build has
-  `RUSTAXA_ENABLE`, `RUSTAXA_ENABLE_STORAGE`, and `RUSTAXA_ENABLE_FINAL_CHAIN` set to `ON`; otherwise the result may be
+  `RUSTAXA_ENABLE` set to `ON`; otherwise the result may be
   C++ compared with C++ and must not be reported as Rust/C++ parity.
 
 - Pure C++ validation on `cpp-reference` for upstream sync work or C++ intersection changes. Use the repository

@@ -279,11 +279,11 @@ const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPi
  * - Preserves the public C++ `PillarChainManager` API while keeping all
  *   Rust-enabled routing in shim-owned files.
  * - Owns the pillar-vote Rust identity/relevance/validation insertion paths so
- *   the upstream-owned implementation remains untouched for module-disabled
- *   and pure C++ reference builds.
+ *   the upstream-owned implementation remains untouched for pure C++
+ *   reference builds.
  *
  * Invariants:
- * - Rust pillar-vote builds compile this standalone production surface without
+ * - Rust production builds compile this standalone surface without
  *   importing or linking the legacy PillarChainManager implementation.
  * - Production pillar and PBFT operations share one application-owned Rust
  *   service lifetime; the manager never creates an independent pillar runtime.

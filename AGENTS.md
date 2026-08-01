@@ -32,7 +32,7 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 - PBFT manager breakthrough boundary: move the protocol brain to Rust while keeping network/tarcap transport and
   EVM/FinalChain execution outside the manager migration for now. Rust should return typed effects for those boundaries
   instead of owning peer transport, packet wrapping, gossip fanout, gas/state execution, receipts, or contract execution.
-- In C++ files, prefer additive per-module guards (`#ifdef RUSTAXA_ENABLE_VDF`, `#ifdef RUSTAXA_ENABLE_STORAGE`, `#ifdef RUSTAXA_ENABLE_FINAL_CHAIN`) or the master `#ifdef RUSTAXA_ENABLE` for shim-overlay integration over deleting legacy logic.
+- In C++ files, use the master `#ifdef RUSTAXA_ENABLE` guard for shim-overlay integration over deleting legacy logic. Rust production has one supported composition; subsystem-specific Rustaxa feature guards are retired.
 - For upstream-owned C++ classes, use the storage/final-chain overlay shim strategy instead of editing legacy files inline:
   add a shim include overlay, compile legacy implementation as `*Old`, and provide a shim class in shim-owned files. The
   shim class is the Rust-mode surface. Each method should call into Rust when the Rust implementation exists; otherwise,

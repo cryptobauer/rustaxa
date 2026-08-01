@@ -366,15 +366,16 @@ Validation:
 
 Goal: keep `final_chain::FinalChain` public API stable while moving implementation behind an additive shim and Rust-backed components.
 
-The FinalChain shim uses a header overlay pattern and can be enabled with:
+The FinalChain shim uses a header overlay pattern and is enabled by the single
+Rust production composition switch:
 
-- `RUSTAXA_ENABLE_FINAL_CHAIN`
+- `RUSTAXA_ENABLE`
 
 When enabled, the standalone overlay supplies `final_chain::FinalChain` and the untouched legacy implementation is
 excluded from Rust production builds. Native Rust FinalChain owns rewards-stat planning, cache persistence, restart,
 and distribution behavior directly; Rust mode has no standalone `rewards::Stats` overlay or bridge runtime. The former
-`RUSTAXA_ENABLE_REWARDS_STATS` flag, `StatsOld` scaffold, and compatibility facade are retired. FinalChain-disabled and
-pure-C++ reference builds retain the untouched legacy RewardsStats header, source, and focused test.
+standalone rewards-stats flag, `StatsOld` scaffold, and compatibility facade are retired. Pure-C++ reference builds
+retain the untouched legacy RewardsStats header, source, and focused test.
 
 ### Current Implementation Status
 
@@ -909,7 +910,7 @@ The completed PBFT manager closeout folded the dedicated slice tracker into this
 10. Overlay shrink and upstream-sync cleanup: `PbftManagerOld` production forwarding and stale overlay TODOs were
     removed or replaced with explicit public API, lifecycle, network, EVM, and executor-boundary classifications. The
     remaining dead legacy compile scaffold is also gone: feature-on builds import and compile only the standalone shim
-    facade and implementation, while module-disabled and pure-C++ builds retain the untouched original manager.
+    facade and implementation, while pure-C++ builds retain the untouched original manager.
 11. Runtime mirror and protocol sidecar closeout: remaining direct scalar-mirror reads were removed from Rust-mode
     production helpers or classified as compatibility caches, satisfying the PBFT manager closeout definition.
 
@@ -974,14 +975,14 @@ The current Rust consensus footprint is broad but still incomplete:
   flooring, and percentile bid selection.
   Rust mode no longer exposes a standalone `GasPricer` facade or feature flag. App finalization and metrics, Eth RPC,
   GraphQL, and SlashingManager use the App-owned `TransactionManager` gas-price query/update operations directly.
-  Module-disabled and pure-C++ configurations retain the untouched original implementation only where the untouched
-  legacy SlashingManager or pure-C++ tests require it.
+  Pure-C++ configurations retain the untouched original implementation for the legacy SlashingManager and reference
+  tests.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
   cache decisions, unweighted vote evidence payload normalization, submitter selection, and slashing contract calldata
   construction through Rust; the PBFT vote admission route now passes Rust-normalized unweighted payload records, while
   C++ keeps account reads, gas bidding, transaction signing, transaction-pool insertion, and the live-vote overload for
   remaining compatibility callers. The standalone facade no longer imports or compiles `SlashingManagerOld`; the
-  module-disabled and pure-C++ routes retain the untouched original implementation. The shim supplies Magnolia activation
+  pure-C++ routes retain the untouched original implementation. The shim supplies Magnolia activation
   once at planner construction, so Rust owns the legacy vote-A-period submission gate with activation equality allowed.
   Rust FinalChain also treats Magnolia and Cacti activation block zero as active from genesis, matching the plain legacy
   hardfork comparison while keeping transaction-inclusion activation separate from local proof-evidence admission.
@@ -996,14 +997,14 @@ The current Rust consensus footprint is broad but still incomplete:
   consensus slices.
 - `rustaxa-consensus` now contains a Rust pillar-vote aggregation domain for already-verified pillar vote facts:
   period initialization, per-validator uniqueness, weighted per-block aggregation, deterministic threshold subset
-  selection, and stale-period cleanup. The `RUSTAXA_ENABLE_PILLAR_VOTES` overlay routes the C++ `PillarVotes` API
+  selection, and stale-period cleanup. The `RUSTAXA_ENABLE` overlay routes the C++ `PillarVotes` API
   through Rust for deterministic aggregation while C++ keeps live `PillarVote` sidecars. The PBFT sync pillar-vote
   bundle path now calls a stateless Rust bundle planner for period/block validation, duplicate-safe unique-weight
   threshold accounting, deterministic rejection statuses, accepted vote weights, and Rust-recovered voter identities.
   The PBFT shim resolves only Rust-accepted vote hashes back to live C++ sidecars and inserts them through a temporary
   planned-insertion hook that does not re-run manager validation, recover voters in C++, or re-query DPoS weights.
   `PillarChainManager::isRelevantPillarVote` now uses a shim-owned Rust relevance planner for period/block/known-vote
-  decisions under `RUSTAXA_ENABLE_PILLAR_VOTES`.
+  decisions under `RUSTAXA_ENABLE`.
   `PillarChainManager::validatePillarVote` now inspects pillar-vote RLP in Rust, uses the Rust-recovered
   `(period, vote_hash, voter)` identity for uniqueness, uses the recovered voter for DPoS eligibility, and avoids C++
   signature or voter recovery in Rust mode. `PillarChainManager::addVerifiedPillarVote` now also runs through Rust
@@ -1059,11 +1060,11 @@ The current Rust consensus footprint is broad but still incomplete:
 7. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
 8. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
    `PbftChain` startup restore, head updates, persisted-head preview, block existence/RLP lookup, and next-block
-   validation route through the standalone Rust-backed facade under `RUSTAXA_ENABLE_PBFT_CHAIN`. The CXX-free native
+   validation route through the standalone Rust-backed facade under `RUSTAXA_ENABLE`. The CXX-free native
    `PbftChainService` now owns the storage handle, restore/default initialization, sibling lock, transitions,
    validation, and lookup while bridge methods only adapt DTOs; feature-on builds
    no longer import or compile `PbftChainOld`; proposed-block membership, validity flags, RLP snapshots, persistence,
-   restore, and cleanup route through the standalone Rust-backed facade under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`, and
+   restore, and cleanup route through the standalone Rust-backed facade under `RUSTAXA_ENABLE`, and
    feature-on builds no longer import or compile `ProposedBlocksOld`; period-data queue admission, effective size, pop
    vote-source decisions, and cleanup planning now live inside the PBFT manager Rust runtime. The standalone period-data
    queue CXX handle, shim overlay, and module flag have been retired; C++ keeps only temporary live sidecars for `PeriodData`,
@@ -1431,7 +1432,7 @@ Use targeted validation before broad integration runs:
   and targeted `pbft_chain_test` or `pbft_manager_test` cases; broader PBFT changes should also run relevant
   `vote_test` coverage.
 - Pillar vote aggregation or PBFT sync bundle validation changes should run Rust validation plus `rust_consensus_tests`
-  and `pillar_votes_shim_test` when `RUSTAXA_ENABLE_PILLAR_VOTES` is enabled; manager-path changes should also run
+  and `pillar_votes_shim_test` when `RUSTAXA_ENABLE` is enabled; manager-path changes should also run
   targeted `pbft_manager_test`/`pillar_chain_test` coverage and any affected final-chain or full-node tests.
 - Rewards-stat planner changes should run Rust validation plus the Rust rewards-stat and FinalChain unit tests and
   `rust_consensus_tests`; add final-chain/full-node coverage when reward distribution routing changes. The legacy

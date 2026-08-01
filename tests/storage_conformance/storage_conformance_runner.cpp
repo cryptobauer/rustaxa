@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(RUSTAXA_ENABLE_STORAGE)
+#if defined(RUSTAXA_ENABLE)
 #include "rustaxa-bridge/ffi.rs.h"
 #else
 #include <libdevcrypto/Common.h>
@@ -113,7 +113,7 @@ std::string optionalToString(const std::optional<T>& value) {
   return toString(*value);
 }
 
-#if defined(RUSTAXA_ENABLE_STORAGE)
+#if defined(RUSTAXA_ENABLE)
 std::optional<uint64_t> leToU64(const std::vector<uint8_t>& bytes) {
   if (bytes.size() != 8) {
     return std::nullopt;

@@ -50,7 +50,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 | `cxx_carriers` | 340 |
 | `cxx_handles` | 20 |
 | `shim_directories` | 11 |
-| `granular_flags` | 8 |
+| `granular_flags` | 0 |
 | `partial_service_factories` | 0 |
 | `compatibility_constructor_calls` | 0 |
 | `non_test_cpp_consumers` | 39 |

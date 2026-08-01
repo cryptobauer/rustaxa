@@ -1,7 +1,7 @@
 add_executable(storage_conformance_runner
     storage_conformance_runner.cpp
 )
-if(RUSTAXA_ENABLE_STORAGE)
+if(RUSTAXA_ENABLE)
     target_link_libraries(storage_conformance_runner
         PRIVATE
         rustaxa-bridge

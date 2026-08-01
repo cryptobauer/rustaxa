@@ -443,7 +443,7 @@ state.
 
 ### 3. Collapse configuration topology
 
-- Define one Rust-enabled production feature bundle.
+- One Rust-enabled production feature bundle is defined by `RUSTAXA_ENABLE`.
 - Delete chain-only, pillar-only, transaction-only, and similar partial-service production factories after their tests
   use native fixtures.
 - The pillar-only compatibility factory and Rust-mode manager compatibility constructor are deleted; pillar C++ tests
@@ -457,7 +457,9 @@ state.
 - The PBFT-chain-only factory and Rust-mode `PbftChain(DbStorage)` constructor are deleted. The retained facade accepts
   only the full App-owned PBFT service, and C++/CXX tests use that same composition. No production or test-visible
   partial-service factory remains.
-- Remove redundant module flags and CMake dependency matrices in dependency order.
+- All eight redundant module flags and their impossible mixed-topology dependency
+  matrices are deleted; build, test, parity, and conformance selection uses only
+  the master switch.
 - Continue to compile untouched legacy implementations in the all-Rust-disabled reference configuration.
 
 Completion condition: Rust application construction has one production composition path and no compatibility-only

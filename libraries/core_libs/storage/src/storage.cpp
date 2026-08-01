@@ -41,7 +41,7 @@ DbStorage::DbStorage(const fs::path& path, uint32_t db_snapshot_each_n_pbft_bloc
   async_write_.sync = false;
   sync_write_.sync = true;
 
-#ifdef RUSTAXA_ENABLE_STORAGE
+#ifdef RUSTAXA_ENABLE
   (void)max_open_files;
   (void)db_revert_to_period;
   (void)node_addr;

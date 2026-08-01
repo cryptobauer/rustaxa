@@ -194,7 +194,7 @@ struct FinalChainTest : WithDataDir {
 };
 
 TEST_F(FinalChainTest, rustModePruneDoesNotRunLegacyBatchPath) {
-#ifdef RUSTAXA_ENABLE_FINAL_CHAIN
+#ifdef RUSTAXA_ENABLE
   init();
   EXPECT_THROW(SUT->prune(0), DbException);
 #else
@@ -6722,7 +6722,7 @@ TEST_F(FinalChainTest, native_dpos_transfer_into_contract_selector_phalaenopsis_
   const auto expected_sender_after_block1 =
       initial_sender_balance - u256(pre_fork_selector_gas + pre_fork_trailing_gas) * kGasPrice;
   auto expected_dpos_after_block1 = initial_dpos_balance;
-#ifdef RUSTAXA_ENABLE_FINAL_CHAIN
+#ifdef RUSTAXA_ENABLE
   // Rust finalization materializes transaction-fee custody in the DPoS
   // contract account; legacy C++ keeps that reward accounting internal.
   expected_dpos_after_block1 += u256(pre_fork_selector_gas + pre_fork_trailing_gas) * kGasPrice;
@@ -6752,7 +6752,7 @@ TEST_F(FinalChainTest, native_dpos_transfer_into_contract_selector_phalaenopsis_
   const auto expected_sender_after_block2 =
       expected_sender_after_block1 - u256(phalaenopsis_success_gas) * kGasPrice - kTransferAmount;
   auto expected_dpos_after_block2 = expected_dpos_after_block1 + kTransferAmount;
-#ifdef RUSTAXA_ENABLE_FINAL_CHAIN
+#ifdef RUSTAXA_ENABLE
   expected_dpos_after_block2 += u256(phalaenopsis_success_gas) * kGasPrice;
 #endif
   EXPECT_EQ(post_block2_sender->nonce, 3);
@@ -6781,7 +6781,7 @@ TEST_F(FinalChainTest, native_dpos_transfer_into_contract_selector_phalaenopsis_
   const auto expected_sender_after_block3 =
       expected_sender_after_block2 - u256(phalaenopsis_success_gas) * kGasPrice - kTransferAmount;
   auto expected_dpos_after_block3 = expected_dpos_after_block2 + kTransferAmount;
-#ifdef RUSTAXA_ENABLE_FINAL_CHAIN
+#ifdef RUSTAXA_ENABLE
   expected_dpos_after_block3 += u256(phalaenopsis_success_gas) * kGasPrice;
 #endif
   EXPECT_EQ(post_block3_sender->nonce, 4);

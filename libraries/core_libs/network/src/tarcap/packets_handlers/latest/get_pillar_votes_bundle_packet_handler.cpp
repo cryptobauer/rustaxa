@@ -38,7 +38,7 @@ void GetPillarVotesBundlePacketHandler::process(const threadpool::PacketData &pa
     throw MaliciousPeerException(err_msg.str());
   }
 
-#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+#ifdef RUSTAXA_ENABLE
   const auto chunks = pillar_chain_manager_->buildVerifiedPillarVoteNetworkBundles(
       packet.period, packet.pillar_block_hash, PillarVotesBundlePacketHandler::kMaxPillarVotesInBundleRlp);
   if (chunks.empty()) {

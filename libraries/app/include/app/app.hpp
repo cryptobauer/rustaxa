@@ -16,7 +16,7 @@
 namespace taraxa {
 
 class Plugin;
-#ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
+#ifndef RUSTAXA_ENABLE
 class GasPricer;
 #endif
 #ifdef RUSTAXA_ENABLE
@@ -108,7 +108,7 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
 #endif
   std::shared_ptr<DagManager> dag_mgr_;
   std::shared_ptr<TransactionManager> trx_mgr_;
-#ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<GasPricer> gas_pricer_;
 #endif
   std::shared_ptr<Network> network_;

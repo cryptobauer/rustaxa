@@ -443,7 +443,7 @@ TEST_F(PillarChainTest, addVerifiedPillarVote_insertsWithRecoveredIdentityWeight
 }
 
 TEST_F(PillarChainTest, addVerifiedPillarVote_rejectsInvalidRustInspectedSignature) {
-#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+#ifdef RUSTAXA_ENABLE
   auto cfg = make_node_cfgs(1, 1, 10).front();
   cfg.genesis.state.dpos.delegation_delay = 1;
   cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
@@ -470,7 +470,7 @@ TEST_F(PillarChainTest, addVerifiedPillarVote_rejectsInvalidRustInspectedSignatu
 }
 
 TEST_F(PillarChainTest, validatePillarVote_usesRustRecoveredIdentityForUniqueness) {
-#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+#ifdef RUSTAXA_ENABLE
   auto cfg = make_node_cfgs(1, 1, 10).front();
   cfg.genesis.state.dpos.delegation_delay = 1;
   cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
@@ -499,7 +499,7 @@ TEST_F(PillarChainTest, validatePillarVote_usesRustRecoveredIdentityForUniquenes
 }
 
 TEST_F(PillarChainTest, injectedService_rejectsInvalidRustInspectedSignature) {
-#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+#ifdef RUSTAXA_ENABLE
   auto cfg = make_node_cfgs(1, 1, 10).front();
   cfg.genesis.state.dpos.delegation_delay = 1;
   cfg.genesis.state.hardforks.ficus_hf.block_num = 0;

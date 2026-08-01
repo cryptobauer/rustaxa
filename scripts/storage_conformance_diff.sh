@@ -48,15 +48,11 @@ configure_and_build() {
 
 echo "[1/4] Configuring and building C++ reference mode..."
 configure_and_build "${CPP_BUILD_DIR}" \
-  -DRUSTAXA_ENABLE=OFF \
-  -DRUSTAXA_ENABLE_VDF=OFF \
-  -DRUSTAXA_ENABLE_STORAGE=OFF
+  -DRUSTAXA_ENABLE=OFF
 
 echo "[2/4] Configuring and building Rust storage shim mode..."
 configure_and_build "${RUST_BUILD_DIR}" \
-  -DRUSTAXA_ENABLE=ON \
-  -DRUSTAXA_ENABLE_VDF=OFF \
-  -DRUSTAXA_ENABLE_STORAGE=ON
+  -DRUSTAXA_ENABLE=ON
 
 echo "[3/4] Running conformance scenarios..."
 "${CPP_BUILD_DIR}/bin/storage_conformance_runner" --output "${OUT_DIR}/cpp.json" >/dev/null

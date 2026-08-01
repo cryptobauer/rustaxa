@@ -1,18 +1,5 @@
 add_subdirectory(network/rpc)
 
-set(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED OFF)
-if(RUSTAXA_ENABLE_VERIFIED_VOTES AND
-   (NOT RUSTAXA_ENABLE_STORAGE OR NOT RUSTAXA_ENABLE_FINAL_CHAIN OR
-    NOT RUSTAXA_ENABLE_PROPOSED_BLOCKS OR NOT RUSTAXA_ENABLE_SLASHING_MANAGER))
-    message(FATAL_ERROR
-            "RUSTAXA_ENABLE_VERIFIED_VOTES requires RUSTAXA_ENABLE_STORAGE, "
-            "RUSTAXA_ENABLE_FINAL_CHAIN, RUSTAXA_ENABLE_PROPOSED_BLOCKS, and "
-            "RUSTAXA_ENABLE_SLASHING_MANAGER")
-endif()
-if(RUSTAXA_ENABLE_VERIFIED_VOTES)
-    set(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED ON)
-endif()
-
 file(GLOB_RECURSE CONSENSUS_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.hpp)
 file(GLOB_RECURSE CONSENSUS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.cpp)
 list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
@@ -30,78 +17,41 @@ if(RUSTAXA_ENABLE)
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_queue\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/sortition_params_manager\\.cpp$")
-endif()
-if(RUSTAXA_ENABLE_SLASHING_MANAGER)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_SLASHING_MANAGER requires RUSTAXA_ENABLE")
-    endif()
-    if(NOT RUSTAXA_ENABLE_FINAL_CHAIN)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_SLASHING_MANAGER requires RUSTAXA_ENABLE_FINAL_CHAIN")
-    endif()
 
     # The Rust-mode SlashingManager overlay is fully standalone. Keep the
-    # untouched legacy implementation in module-disabled and pure C++ builds.
+    # untouched legacy implementation in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/gas_pricer\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/slashing_manager/slashing_manager\\.cpp$")
-endif()
-if(RUSTAXA_ENABLE_FINAL_CHAIN)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_FINAL_CHAIN requires RUSTAXA_ENABLE")
-    endif()
 
     # The Rust-mode FinalChain overlay is fully standalone. Rewards-stat
     # planning is owned by native FinalChain and has no Rust-mode C++ facade.
     # Keep the untouched legacy implementations only in pure C++ reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/final_chain/final_chain\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/rewards/rewards_stats\\.cpp$")
-endif()
-if(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED)
+
     # The Rust-mode VoteManager overlay is fully standalone. Keep the untouched
-    # legacy implementation only when the overlay is not enabled.
+    # legacy implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/vote_manager/vote_manager\\.cpp$")
-endif()
-if(RUSTAXA_ENABLE_VERIFIED_VOTES)
+
     # Native verified-vote ownership is consumed directly by the VoteManager
-    # overlay. Keep the untouched legacy implementation only in module-disabled
-    # and pure C++ reference builds.
+    # overlay. Keep the untouched legacy implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/vote_manager/verified_votes\\.cpp$")
-endif()
-if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
+
     # Native PBFT service ownership replaces the Rust-mode C++ ProposedBlocks
-    # facade. Keep the untouched legacy implementation only in module-disabled
-    # and pure C++ builds.
+    # facade. Keep the untouched legacy implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/proposed_blocks\\.cpp$")
-endif()
-if(RUSTAXA_ENABLE_PILLAR_VOTES)
-    if(NOT RUSTAXA_ENABLE_FINAL_CHAIN)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_PILLAR_VOTES requires RUSTAXA_ENABLE_FINAL_CHAIN")
-    endif()
 
     # The Rust-mode PillarChainManager facade and pillar-vote runtime are
-    # standalone. Keep the untouched legacy implementations only in
-    # module-disabled and pure C++ reference builds.
+    # standalone. Keep the untouched legacy implementations only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pillar_chain/pillar_chain_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pillar_chain/pillar_votes\\.cpp$")
-endif()
-if(RUSTAXA_ENABLE_PBFT_CHAIN)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_PBFT_CHAIN requires RUSTAXA_ENABLE")
-    endif()
-    if(NOT RUSTAXA_ENABLE_STORAGE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_PBFT_CHAIN requires RUSTAXA_ENABLE_STORAGE")
-    endif()
 
     # The Rust-mode PbftChain overlay is a standalone facade. Keep the
-    # untouched legacy implementation only in module-disabled and pure C++ builds.
+    # untouched legacy implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/pbft_chain\\.cpp$")
-endif()
-if((RUSTAXA_ENABLE_PROPOSED_BLOCKS OR RUSTAXA_ENABLE_PILLAR_VOTES) AND NOT RUSTAXA_ENABLE_PBFT_CHAIN)
-    message(FATAL_ERROR
-            "RUSTAXA_ENABLE_PROPOSED_BLOCKS and RUSTAXA_ENABLE_PILLAR_VOTES each require RUSTAXA_ENABLE_PBFT_CHAIN")
-endif()
-if(RUSTAXA_ENABLE_PILLAR_VOTES OR RUSTAXA_ENABLE_PROPOSED_BLOCKS)
+
     # The Rust-mode PbftManager overlay is a standalone facade. Keep the
-    # untouched legacy implementation only when neither consuming module is enabled.
+    # untouched legacy implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/pbft_manager\\.cpp$")
 endif()
 
@@ -168,10 +118,6 @@ if(TCMALLOC_LIB)
 endif()
 
 if(RUSTAXA_ENABLE)
-    if(NOT RUSTAXA_ENABLE_STORAGE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE requires RUSTAXA_ENABLE_STORAGE for Rust DagManager storage runtime wiring")
-    endif()
-
     target_link_libraries(core_libs PUBLIC rustaxa-bridge RocksDB::rocksdb)
 
     # In Rust mode, inject the standalone Rust-backed DagManager facade.
@@ -190,10 +136,7 @@ if(RUSTAXA_ENABLE)
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/src/key_manager_shim.cpp)
 
-endif()
-
-if(RUSTAXA_ENABLE_STORAGE)
-    # In Rust storage mode, inject a header overlay that remaps legacy DbStorage
+    # In Rust mode, inject a header overlay that remaps legacy DbStorage
     # to DbStorageOld and exposes a forwarding DbStorage shim facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/storage_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/storage_shim/src/storage_shim.cpp)
@@ -204,79 +147,35 @@ if(RUSTAXA_ENABLE_STORAGE)
         PROPERTIES
         COMPILE_DEFINITIONS "DbStorage=DbStorageOld"
     )
-endif()
 
-if(RUSTAXA_ENABLE_SLASHING_MANAGER)
-    # In Rust SlashingManager mode, inject the standalone Rust-planning facade.
+    # Inject the standalone Rust-planning SlashingManager facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/slashing_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/slashing_manager_shim/src/slashing_manager_shim.cpp)
-endif()
 
-if(RUSTAXA_ENABLE_FINAL_CHAIN)
-    if(NOT RUSTAXA_ENABLE_STORAGE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_FINAL_CHAIN requires RUSTAXA_ENABLE_STORAGE")
-    endif()
-
-    # In Rust final-chain mode, inject the standalone FinalChain facade.
+    # Inject the standalone Rust FinalChain facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/src/final_chain_shim.cpp)
-endif()
 
-if(RUSTAXA_ENABLE_PBFT_CHAIN)
-    # In Rust PBFT-chain mode, inject the standalone Rust-backed facade.
+    # Inject the standalone Rust-backed PBFT-chain facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_chain_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_chain_shim/src/pbft_chain_shim.cpp)
-endif()
 
-if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_PROPOSED_BLOCKS requires RUSTAXA_ENABLE")
-    endif()
-endif()
-
-if(RUSTAXA_ENABLE_VERIFIED_VOTES)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_VERIFIED_VOTES requires RUSTAXA_ENABLE")
-    endif()
-endif()
-
-if(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "VoteManager shim requires RUSTAXA_ENABLE")
-    endif()
-
-    # In storage-backed Rust verified-votes mode, inject the standalone
-    # Rust-compatible VoteManager shim facade for every consumer.
+    # Inject the standalone Rust-compatible VoteManager shim facade for every consumer.
     target_include_directories(core_libs BEFORE PUBLIC
                              ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/vote_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp)
-endif()
 
-if(RUSTAXA_ENABLE_PILLAR_VOTES)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_PILLAR_VOTES requires RUSTAXA_ENABLE")
-    endif()
-
-    # In Rust pillar-votes mode, inject the standalone PillarChainManager
-    # facade.
+    # Inject the standalone Rust PillarChainManager facade.
     target_include_directories(core_libs BEFORE PUBLIC
                              ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_chain_manager_shim/include)
     target_sources(core_libs PRIVATE
                   ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_chain_manager_shim/src/pillar_chain_manager_shim.cpp)
-endif()
 
-if(RUSTAXA_ENABLE_PILLAR_VOTES OR RUSTAXA_ENABLE_PROPOSED_BLOCKS)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_PILLAR_VOTES or RUSTAXA_ENABLE_PROPOSED_BLOCKS requires RUSTAXA_ENABLE")
-    endif()
-
-    # In Rust pillar-votes/proposed-blocks mode, inject the standalone PbftManager
-    # facade owned by the shim.
+    # Inject the standalone Rust PbftManager facade owned by the shim.
     target_include_directories(core_libs BEFORE PUBLIC
                              ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_manager_shim/include)
     target_sources(core_libs PRIVATE
                   ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp)
-
 endif()
 
 install(TARGETS core_libs

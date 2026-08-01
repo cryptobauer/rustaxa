@@ -10,7 +10,7 @@
 #include "pbft/pbft_manager.hpp"
 #include "slashing_manager/slashing_manager.hpp"
 #include "test_util/test_util.hpp"
-#ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
+#ifndef RUSTAXA_ENABLE
 #include "transaction/gas_pricer.hpp"
 #endif
 #include "vote_manager/vote_manager.hpp"
@@ -229,7 +229,7 @@ TEST_F(StateAPITest, slashing) {
   auto node_cfg = node_cfgs.begin();
   ASSERT_EQ(true, node->getFinalChain()->dposIsEligible(node->getFinalChain()->lastBlockNumber(), node->getAddress()));
 
-#ifdef RUSTAXA_ENABLE_SLASHING_MANAGER
+#ifdef RUSTAXA_ENABLE
   // Submit pre-activation evidence through the production vote-admission path.
   // The conflicting vote is rejected from verified state and the service-owned
   // slashing planner must not create a transaction before Magnolia.
@@ -250,16 +250,9 @@ TEST_F(StateAPITest, slashing) {
                    node_cfg->genesis.state.hardforks.magnolia_hf.block_num)
   });
 
-#ifndef RUSTAXA_ENABLE_SLASHING_MANAGER
-#ifdef RUSTAXA_ENABLE
-  auto gas_pricer = std::make_shared<GasPricer>(node_cfg->genesis, node_cfg->is_light_node, node_cfg->blocks_gas_pricer,
-                                                node->getTransactionManager(), node->getDB());
-  auto slashing_manager =
-      std::make_shared<SlashingManager>(*node_cfg, node->getFinalChain(), node->getTransactionManager(), gas_pricer);
-#else
+#ifndef RUSTAXA_ENABLE
   auto slashing_manager = std::make_shared<SlashingManager>(*node_cfg, node->getFinalChain(),
                                                             node->getTransactionManager(), node->getGasPricer());
-#endif
   auto preactivation_vote_a = node->getVoteManager()->generateVote(blk_hash_t{3}, PbftVoteTypes::cert_vote, 5, 1, 3,
                                                                    node_cfg->getFirstWallet());
   auto preactivation_vote_b = node->getVoteManager()->generateVote(blk_hash_t{4}, PbftVoteTypes::cert_vote, 5, 1, 3,
@@ -267,7 +260,7 @@ TEST_F(StateAPITest, slashing) {
   ASSERT_FALSE(slashing_manager->submitDoubleVotingProof(preactivation_vote_a, preactivation_vote_b));
 #endif
 
-#ifdef RUSTAXA_ENABLE_SLASHING_MANAGER
+#ifdef RUSTAXA_ENABLE
   // Submit post-activation evidence through the same production path. The
   // canonical SlashingManager executes the service-owned plan when admission
   // detects the conflict.

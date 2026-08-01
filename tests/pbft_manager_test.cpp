@@ -456,7 +456,7 @@ TEST_F(PbftManagerTest, propose_block_and_vote_broadcast) {
   ASSERT_TRUE(block1_from_node1);
   EXPECT_EQ(block1_from_node1->getJsonStr(), proposed_pbft_block->getJsonStr());
 
-#ifdef RUSTAXA_ENABLE_PROPOSED_BLOCKS
+#ifdef RUSTAXA_ENABLE
   auto proposed_block_is_persisted = [&] {
     const auto persisted_blocks = node1->getDB()->getProposedPbftBlocks();
     return std::any_of(persisted_blocks.begin(), persisted_blocks.end(), [&](const auto &block) {
@@ -697,7 +697,7 @@ TEST_F(PbftManagerWithDagCreation, produce_overweighted_block) {
   EXPECT_FALSE(node->getPbftManager()->checkBlockWeight(period_data->dag_blocks, period));
 }
 
-#ifndef RUSTAXA_ENABLE_PROPOSED_BLOCKS
+#ifndef RUSTAXA_ENABLE
 TEST_F(PbftManagerWithDagCreation, proposed_blocks) {
   auto db = std::make_shared<DbStorage>(data_dir);
   ProposedBlocks proposed_blocks(db);

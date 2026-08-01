@@ -1,4 +1,4 @@
-#if defined(RUSTAXA_ENABLE_PILLAR_VOTES) || defined(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
+#ifdef RUSTAXA_ENABLE
 
 #include <libdevcore/SHA3.h>
 
@@ -4251,4 +4251,4 @@ std::chrono::milliseconds PbftManager::getPbftDeadline() const {
 
 }  // namespace taraxa
 
-#endif  // defined(RUSTAXA_ENABLE_PILLAR_VOTES) || defined(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
+#endif  // RUSTAXA_ENABLE
