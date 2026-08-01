@@ -331,6 +331,14 @@ carrier sentinel. The stable CXX API and live C++ sidecar materialization
 remain unchanged. The duplicate happy-path lifecycle transition bridge
 transcript is also deleted; native transition coverage and the retained
 commit-before-cursor bridge fixture own that behavior.
+Lifecycle transition persistence is now composed by native `PbftService` as
+well. The service holds the manager serialization domain across planning,
+optional own-vote locking, durable manager/status/vote commit, cursor
+publication, and reset-provenance recording. The bridge only converts the
+stable request and projects typed external timer, sidecar, and vote-manager
+effects. Native application-root tests replace the bridge RocksDB transcript;
+the compact bridge rejection sentinel and CXX transition/period-advance cases
+retain boundary projection coverage.
 Missing Cacti dynamic-lambda startup rejection and storage non-mutation
 coverage now live with the native manager restore function rather than in a
 bridge-owned RocksDB fixture.

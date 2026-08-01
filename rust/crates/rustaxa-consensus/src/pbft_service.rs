@@ -13,8 +13,10 @@ use crate::pbft_finalize::{
 };
 use crate::pbft_manager::{
     PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
-    PbftFinalizationOwnedActionDrain, PbftManagerGuard, PbftManagerService,
-    PbftManagerStorageStartupFact, base_owned_finalization_live_report,
+    PbftFinalizationOwnedActionDrain, PbftManagerGuard, PbftManagerLifecycleTransitionRequest,
+    PbftManagerRuntimeSnapshot, PbftManagerService, PbftManagerStorageStartupFact,
+    PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
+    apply_pbft_manager_transition_storage, base_owned_finalization_live_report,
     create_pbft_manager_runtime_from_storage,
 };
 #[cfg(test)]
@@ -70,6 +72,39 @@ pub struct PbftFinalizationDynamicLambdaDecision {
     pub last_saved_period_lambda: PbftFinalizationPeriodLambdaLookup,
 }
 
+/// Native result of one planned, durably committed PBFT lifecycle transition.
+///
+/// `status` and `snapshot` describe the authoritative native commit. The
+/// Boolean fields are external executor effects that C++ may apply only when
+/// `status` is `Applied`; rejected outcomes clear every effect and preserve the
+/// pre-transition snapshot. Planning, own-vote cleanup, storage commit, and
+/// runtime publication occur under the manager serialization domain. Storage
+/// failures return an error before runtime publication.
+pub struct PbftManagerLifecycleTransitionOutcome {
+    /// Durable commit status; rejected outcomes publish no runtime mutation.
+    pub status: PbftManagerTransitionStorageStatus,
+    /// Authoritative manager snapshot after acceptance or before rejection.
+    pub snapshot: PbftManagerRuntimeSnapshot,
+    /// Drop the matching live C++ cert-voted block sidecar.
+    pub remove_cert_voted_sidecar: bool,
+    /// Clear live C++ broadcasted-vote sidecars.
+    pub clear_broadcasted_vote_sidecars: bool,
+    /// Apply the committed period/round to the external VoteManager.
+    pub set_vote_manager_period_round: bool,
+    /// Reset the external current-round timer.
+    pub reset_current_round_timer: bool,
+    /// Reset the external second-finish polling timer.
+    pub reset_second_finish_timer: bool,
+    /// Emit temporary certify-step compatibility diagnostics.
+    pub print_cert_step_info: bool,
+    /// Emit temporary second-finish compatibility diagnostics.
+    pub print_second_finish_step_info: bool,
+    /// Run the delayed executed-block external follow-up.
+    pub reset_executed_block_follow_up: bool,
+    /// Stable rejection detail; empty after an applied transition.
+    pub error_code: String,
+}
+
 /// CXX-free native owner of the complete PBFT application-service graph.
 ///
 /// Restoration validates storage-independent slashing configuration first,
@@ -89,6 +124,89 @@ pub struct PbftService {
 }
 
 impl PbftService {
+    fn rejected_lifecycle_transition(
+        snapshot: PbftManagerRuntimeSnapshot,
+        error_code: String,
+    ) -> PbftManagerLifecycleTransitionOutcome {
+        PbftManagerLifecycleTransitionOutcome {
+            status: PbftManagerTransitionStorageStatus::Rejected,
+            snapshot,
+            remove_cert_voted_sidecar: false,
+            clear_broadcasted_vote_sidecars: false,
+            set_vote_manager_period_round: false,
+            reset_current_round_timer: false,
+            reset_second_finish_timer: false,
+            print_cert_step_info: false,
+            print_second_finish_step_info: false,
+            reset_executed_block_follow_up: false,
+            error_code,
+        }
+    }
+
+    /// Plans, persists, and publishes one PBFT lifecycle transition.
+    ///
+    /// Invalid transition facts return a rejected outcome without storage or
+    /// runtime mutation. Ready transitions lock the own-vote family when
+    /// required, commit all manager/status/vote writes, then publish the native
+    /// cursor and reset provenance. Operational storage errors propagate before
+    /// publication. Returned effect flags are the only remaining C++ executor
+    /// work and are populated only after a successful native commit.
+    pub fn execute_lifecycle_transition(
+        &self,
+        request: PbftManagerLifecycleTransitionRequest,
+    ) -> Result<PbftManagerLifecycleTransitionOutcome> {
+        let mut manager = self.manager_state();
+        let plan = manager.state.plan_lifecycle_transition(request);
+        if plan.status != PbftManagerTransitionStatus::Ready {
+            return Ok(Self::rejected_lifecycle_transition(
+                manager.state.snapshot(),
+                plan.error_code,
+            ));
+        }
+
+        let own_votes_guard = if plan.clear_own_votes {
+            Some(manager.storage.lock_own_verified_votes()?)
+        } else {
+            None
+        };
+        let own_vote_hashes = if own_votes_guard.is_some() {
+            manager.storage.pbft().own_verified_vote_hashes()?
+        } else {
+            Vec::new()
+        };
+        let storage_result = apply_pbft_manager_transition_storage(
+            manager.storage.as_ref(),
+            &plan,
+            &own_vote_hashes,
+            false,
+        )?;
+        drop(own_votes_guard);
+        if storage_result.status != PbftManagerTransitionStorageStatus::Applied {
+            return Ok(Self::rejected_lifecycle_transition(
+                manager.state.snapshot(),
+                storage_result.error_code,
+            ));
+        }
+
+        manager.state.apply_committed_transition(&plan);
+        manager
+            .state
+            .record_committed_reset(request.target_period, &plan);
+        Ok(PbftManagerLifecycleTransitionOutcome {
+            status: PbftManagerTransitionStorageStatus::Applied,
+            snapshot: manager.state.snapshot(),
+            remove_cert_voted_sidecar: plan.remove_cert_voted_block,
+            clear_broadcasted_vote_sidecars: plan.clear_broadcasted_votes,
+            set_vote_manager_period_round: plan.set_vote_manager_period_round,
+            reset_current_round_timer: plan.reset_current_round_start,
+            reset_second_finish_timer: plan.reset_second_finish_start,
+            print_cert_step_info: plan.print_cert_step_info,
+            print_second_finish_step_info: plan.print_second_finish_step_info,
+            reset_executed_block_follow_up: plan.reset_executed_block_status,
+            error_code: String::new(),
+        })
+    }
+
     /// Returns a coherent snapshot of manager-owned period-data queue state.
     pub fn period_data_queue_snapshot(
         &self,
@@ -1079,6 +1197,97 @@ mod tests {
         assert!(service.clean_old_period_data_queue(2).is_empty());
         service.clear_period_data_queue();
         assert!(service.period_data_queue_snapshot(0, 1, H256::zero()).empty);
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn service_commits_lifecycle_storage_before_runtime_publication() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_lifecycle_commit");
+        storage.pbft().write_manager_field(0, 1).unwrap();
+        storage.pbft().write_manager_field(1, 1).unwrap();
+        storage.pbft().write_manager_field(2, 1_500).unwrap();
+        storage.pbft().write_manager_status(2, true).unwrap();
+        storage.pbft().write_manager_status(3, true).unwrap();
+        let service = PbftService::restore(storage.clone(), config(1)).expect("service restores");
+        crate::pbft_vote_storage::save_own_verified_vote(
+            storage.as_ref(),
+            crate::pbft_vote_storage::PbftVoteStorageRecord {
+                hash: H256::repeat_byte(0xbc),
+                vote_rlp: vec![0xc0],
+            },
+        )
+        .expect("own vote persists");
+
+        let outcome = service
+            .execute_lifecycle_transition(PbftManagerLifecycleTransitionRequest {
+                kind: crate::pbft_manager::PbftManagerTransitionKind::ResetConsensus,
+                target_period: 10,
+                target_round: 4,
+                has_network_next_voting_step: false,
+                network_next_voting_step: 0,
+            })
+            .expect("transition commits");
+
+        assert_eq!(outcome.status, PbftManagerTransitionStorageStatus::Applied);
+        assert_eq!((outcome.snapshot.round, outcome.snapshot.step), (4, 1));
+        assert!(!outcome.snapshot.already_next_voted_value);
+        assert!(!outcome.snapshot.already_next_voted_null);
+        assert_eq!(storage.pbft().manager_field(0).unwrap(), Some(4));
+        assert_eq!(storage.pbft().manager_field(1).unwrap(), Some(1));
+        assert_eq!(storage.pbft().manager_status(2).unwrap(), Some(false));
+        assert_eq!(storage.pbft().manager_status(3).unwrap(), Some(false));
+        assert!(
+            storage
+                .pbft()
+                .own_verified_vote_records()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(outcome.clear_broadcasted_vote_sidecars);
+        assert!(outcome.set_vote_manager_period_round);
+        assert!(outcome.reset_current_round_timer);
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn service_rejects_invalid_lifecycle_facts_without_mutation() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_lifecycle_reject");
+        let service = PbftService::restore(storage, config(1)).expect("service restores");
+        let before = service.manager_state().state.snapshot();
+
+        let unknown = service
+            .execute_lifecycle_transition(PbftManagerLifecycleTransitionRequest {
+                kind: crate::pbft_manager::PbftManagerTransitionKind::Unknown,
+                target_period: 10,
+                target_round: 4,
+                has_network_next_voting_step: false,
+                network_next_voting_step: 0,
+            })
+            .expect("unknown kind rejects");
+        assert_eq!(unknown.status, PbftManagerTransitionStorageStatus::Rejected);
+        assert_eq!(unknown.snapshot, before);
+        assert_eq!(unknown.error_code, "PBFT_MANAGER_TRANSITION_UNKNOWN_KIND");
+        assert!(!unknown.remove_cert_voted_sidecar);
+        assert!(!unknown.clear_broadcasted_vote_sidecars);
+
+        let mismatched_network_step = service
+            .execute_lifecycle_transition(PbftManagerLifecycleTransitionRequest {
+                kind: crate::pbft_manager::PbftManagerTransitionKind::ToFilter,
+                target_period: 10,
+                target_round: 4,
+                has_network_next_voting_step: true,
+                network_next_voting_step: 7,
+            })
+            .expect("network-step mismatch rejects");
+        assert_eq!(mismatched_network_step.snapshot, before);
+        assert_eq!(
+            mismatched_network_step.error_code,
+            "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH"
+        );
 
         drop(service);
         let _ = fs::remove_dir_all(path);

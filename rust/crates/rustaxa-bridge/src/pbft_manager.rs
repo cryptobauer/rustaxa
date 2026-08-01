@@ -87,7 +87,7 @@ use rustaxa_consensus::pbft_finalize::{
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
-    apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
+    apply_pbft_manager_cursor_field_storage,
     create_pbft_manager_proposal_session as create_domain_pbft_manager_proposal_session,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     create_pbft_manager_state_action_effect_session as create_domain_pbft_manager_state_action_effect_session,
@@ -129,8 +129,7 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerStartupReplayRangePlan, PbftManagerStateActionEffect,
     PbftManagerStateActionEffectReport, PbftManagerStateActionEffectResultCode,
     PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
-    PbftManagerStateActionSessionStep, PbftManagerTransitionKind, PbftManagerTransitionStatus,
-    PbftManagerTransitionStorageStatus,
+    PbftManagerStateActionSessionStep, PbftManagerTransitionKind,
 };
 #[cfg(test)]
 use rustaxa_consensus::pbft_manager::{
@@ -1357,80 +1356,28 @@ pub fn pbft_manager_runtime_execute_lifecycle_transition(
     runtime: &BridgePbftService,
     request: FfiPbftManagerLifecycleTransitionRequest,
 ) -> anyhow::Result<FfiPbftManagerLifecycleTransitionResult> {
-    let mut runtime = runtime.manager_state();
-    let kind = PbftManagerTransitionKind::from_u8(request.kind);
-    let plan = runtime
-        .state
-        .plan_lifecycle_transition(PbftManagerLifecycleTransitionRequest {
-            kind,
-            target_period: request.target_period,
-            target_round: request.target_round,
-            has_network_next_voting_step: request.has_network_next_voting_step,
-            network_next_voting_step: request.network_next_voting_step,
-        });
-    if plan.status != PbftManagerTransitionStatus::Ready {
-        return Ok(FfiPbftManagerLifecycleTransitionResult {
-            status: TRANSITION_STORAGE_STATUS_REJECTED,
-            snapshot: runtime.state.snapshot().into(),
-            remove_cert_voted_sidecar: false,
-            clear_broadcasted_vote_sidecars: false,
-            set_vote_manager_period_round: false,
-            reset_current_round_timer: false,
-            reset_second_finish_timer: false,
-            print_cert_step_info: false,
-            print_second_finish_step_info: false,
-            reset_executed_block_follow_up: false,
-            error_code: plan.error_code,
-        });
-    }
-    let own_votes_guard = if plan.clear_own_votes {
-        Some(runtime.storage.lock_own_verified_votes()?)
-    } else {
-        None
-    };
-    let own_vote_hashes = if own_votes_guard.is_some() {
-        runtime.storage.pbft().own_verified_vote_hashes()?
-    } else {
-        Vec::new()
-    };
-    let storage_result = apply_pbft_manager_transition_storage(
-        runtime.storage.as_ref(),
-        &plan,
-        &own_vote_hashes,
-        false,
-    )?;
-    drop(own_votes_guard);
-    if storage_result.status != PbftManagerTransitionStorageStatus::Applied {
-        return Ok(FfiPbftManagerLifecycleTransitionResult {
-            status: TRANSITION_STORAGE_STATUS_REJECTED,
-            snapshot: runtime.state.snapshot().into(),
-            remove_cert_voted_sidecar: false,
-            clear_broadcasted_vote_sidecars: false,
-            set_vote_manager_period_round: false,
-            reset_current_round_timer: false,
-            reset_second_finish_timer: false,
-            print_cert_step_info: false,
-            print_second_finish_step_info: false,
-            reset_executed_block_follow_up: false,
-            error_code: storage_result.error_code,
-        });
-    }
-    runtime.state.apply_committed_transition(&plan);
-    runtime
-        .state
-        .record_committed_reset(request.target_period, &plan);
+    let outcome =
+        runtime
+            .0
+            .execute_lifecycle_transition(PbftManagerLifecycleTransitionRequest {
+                kind: PbftManagerTransitionKind::from_u8(request.kind),
+                target_period: request.target_period,
+                target_round: request.target_round,
+                has_network_next_voting_step: request.has_network_next_voting_step,
+                network_next_voting_step: request.network_next_voting_step,
+            })?;
     Ok(FfiPbftManagerLifecycleTransitionResult {
-        status: TRANSITION_STORAGE_STATUS_APPLIED,
-        snapshot: runtime.state.snapshot().into(),
-        remove_cert_voted_sidecar: plan.remove_cert_voted_block,
-        clear_broadcasted_vote_sidecars: plan.clear_broadcasted_votes,
-        set_vote_manager_period_round: plan.set_vote_manager_period_round,
-        reset_current_round_timer: plan.reset_current_round_start,
-        reset_second_finish_timer: plan.reset_second_finish_start,
-        print_cert_step_info: plan.print_cert_step_info,
-        print_second_finish_step_info: plan.print_second_finish_step_info,
-        reset_executed_block_follow_up: plan.reset_executed_block_status,
-        error_code: String::new(),
+        status: outcome.status.as_u8(),
+        snapshot: outcome.snapshot.into(),
+        remove_cert_voted_sidecar: outcome.remove_cert_voted_sidecar,
+        clear_broadcasted_vote_sidecars: outcome.clear_broadcasted_vote_sidecars,
+        set_vote_manager_period_round: outcome.set_vote_manager_period_round,
+        reset_current_round_timer: outcome.reset_current_round_timer,
+        reset_second_finish_timer: outcome.reset_second_finish_timer,
+        print_cert_step_info: outcome.print_cert_step_info,
+        print_second_finish_step_info: outcome.print_second_finish_step_info,
+        reset_executed_block_follow_up: outcome.reset_executed_block_follow_up,
+        error_code: outcome.error_code,
     })
 }
 
@@ -2701,13 +2648,9 @@ mod period_data_queue_adapter_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::{BridgePbftStorageQueries, BridgeStorage};
-    use crate::storage::{
-        create_pbft_storage_queries, create_pbft_vote_storage_queries, create_storage,
-    };
+    use crate::storage::create_storage;
     use ethereum_types::H256;
     use rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStatus;
-    use rustaxa_consensus::{save_own_verified_vote, PbftVoteStorageRecord};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2739,10 +2682,6 @@ mod tests {
             .expect("system clock should be after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), nanos))
-    }
-
-    fn pbft_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
-        create_pbft_storage_queries(storage)
     }
 
     fn fact(state: u8) -> FfiPbftManagerRuntimeTickFact {
@@ -3141,78 +3080,6 @@ mod tests {
         ));
         assert!(dynamic_lambda.last_saved_period_lambda_found);
         assert_eq!(dynamic_lambda.last_saved_period_lambda, 1_234);
-    }
-
-    #[test]
-    fn bridge_runtime_applies_transition_storage_before_cursor_update() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_transition_apply");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let own_hash = [0xBC; 32];
-            storage
-                .0
-                .pbft()
-                .write_manager_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(1, 1)
-                .expect("step seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_status(2, true)
-                .expect("soft next status should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_status(3, true)
-                .expect("null next status should persist");
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-            save_own_verified_vote(
-                &storage.0,
-                PbftVoteStorageRecord {
-                    hash: H256::from(own_hash),
-                    vote_rlp: vec![0xC0],
-                },
-            )
-            .expect("own vote should persist after the service has restored");
-            let before = pbft_manager_runtime_snapshot(&runtime);
-            let result = pbft_manager_runtime_execute_lifecycle_transition(
-                &mut runtime,
-                lifecycle_transition_request(TRANSITION_RESET),
-            )
-            .expect("runtime apply should not throw");
-
-            assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
-            assert_eq!(result.snapshot.round, 4);
-            assert_eq!(result.snapshot.step, 1);
-            assert_eq!(result.snapshot.state, STATE_VALUE_PROPOSAL);
-            assert!(!result.snapshot.already_next_voted_value);
-            assert!(!result.snapshot.already_next_voted_null);
-            assert_ne!(before.round, result.snapshot.round);
-            let current = pbft_manager_runtime_snapshot(&runtime);
-            assert_eq!(current.round, result.snapshot.round);
-            assert_eq!(current.step, result.snapshot.step);
-            assert_eq!(current.state, result.snapshot.state);
-            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(0).unwrap(), 4);
-            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(1).unwrap(), 1);
-            assert!(!pbft_queries(&storage).get_pbft_mgr_status(2).unwrap());
-            assert!(!pbft_queries(&storage).get_pbft_mgr_status(3).unwrap());
-            let vote_queries = create_pbft_vote_storage_queries(&storage);
-            assert!(vote_queries.get_own_verified_votes().unwrap().is_empty());
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

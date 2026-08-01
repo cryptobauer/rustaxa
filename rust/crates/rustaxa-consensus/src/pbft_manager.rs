@@ -5022,9 +5022,9 @@ impl PbftManagerTransitionStatus {
 ///
 /// The fact bundle contains only scalar state, timing, and already-sourced
 /// network vote progress. Rust decides the resulting manager cursor, lambda,
-/// next-step deadline, and manager-status reset intents. C++ remains the
-/// executor for storage writes, VoteManager side effects, live status fields,
-/// timestamps, and compatibility logging.
+/// next-step deadline, manager-status resets, durable storage commit, and
+/// runtime publication. C++ remains the executor only for returned
+/// VoteManager, live-sidecar, timer, and compatibility logging effects.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerTransitionFact {
     /// Transition kind requested by the runtime cursor.

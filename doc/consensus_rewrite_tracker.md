@@ -1420,6 +1420,27 @@ the complete 49-test Rust-enabled `rust_consensus_tests` suite. Tier 3 is the
 Rust-enabled `taraxad` build. Independent review approves the final ownership,
 parity, visibility, and coverage shape. No upstream-owned C++ file changes.
 
+The next bounded `CRW-12` lifecycle-transition ownership contraction moves
+transition planning, own-vote family locking, durable manager/status/vote
+commit, runtime cursor publication, and reset-provenance recording from
+`rustaxa-bridge` into native `PbftService`. The bridge now only converts the
+stable request and projects typed C++ executor effects for timers, live
+sidecars, logging, and VoteManager period/round updates. Native application
+root tests cover commit-before-publication, own-vote cleanup, unknown-kind and
+network-step rejection, snapshot preservation, and cleared rejected effects.
+The duplicate bridge RocksDB transcript is deleted; its compact unknown-kind
+projection sentinel and the CXX lifecycle/period-advance cases remain. This
+removes a net 133 production bridge lines and lowers the checked budget to
+28,457. CXX functions, carriers, handles, shim lines/directories, flags,
+factories, constructors, production consumers, public signatures, and the
+named C++ external-effect boundary remain unchanged. Tier 1
+`rewrite-validate-fast`, the focused native service tests, retained bridge
+rejection sentinel, inventory/storage guards, and whitespace validation pass.
+Tier 2 is the complete 49-test Rust-enabled `rust_consensus_tests` suite. Tier
+3 is the Rust-enabled `taraxad` build. Independent review approves lock order,
+commit-before-publication, effect parity, and boundary conversion. No
+upstream-owned C++ file changes.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
