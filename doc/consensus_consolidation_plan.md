@@ -99,6 +99,9 @@ native application root retains those capabilities. Native
 the native root retains the service and the bridge exposes only a short-lived native guard to remaining DTO/effect
 adapters. Queue-drain, daemon-tick, state-action-effect, and proposal executor cursors now have lock-owning native root
 APIs; their fields are crate-private and the bridge can only convert facts, reports, and owned steps.
+Scalar snapshot capture, post-reset advance planning, broadcast-counter publication, cert-voted recovery,
+DAG-order-cache membership, and deadline sleep planning also enter through lock-owning native root tasks; the bridge no
+longer borrows manager state for those families.
 The native root also requires verified-vote, slashing, and pillar siblings by construction. C++ clients retain
 null-service and pillar-readiness checks, but no longer probe for capabilities that cannot be absent from a published
 service.

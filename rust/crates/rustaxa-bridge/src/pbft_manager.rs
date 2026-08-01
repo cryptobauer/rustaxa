@@ -97,10 +97,8 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_eligible_wallet_period_wait as plan_domain_pbft_manager_eligible_wallet_period_wait,
     plan_pbft_manager_finalization_wait as plan_domain_pbft_manager_finalization_wait,
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
-    plan_pbft_manager_runtime_sleep_until_next_step as plan_domain_pbft_manager_runtime_sleep_until_next_step,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
-    save_cert_voted_block_in_round_storage,
     validate_pbft_manager_advance_period_action_report as validate_domain_pbft_manager_advance_period_action_report,
     PbftManagerAdvancePeriodActionReport, PbftManagerAdvancePeriodActionReportResult,
     PbftManagerAdvancePeriodPlan, PbftManagerBlockValidationFact,
@@ -569,8 +567,7 @@ fn startup_replay_period_into_ffi(
 
 /// Returns the current Rust-owned PBFT manager runtime snapshot.
 pub fn pbft_manager_runtime_snapshot(runtime: &BridgePbftService) -> FfiPbftManagerRuntimeSnapshot {
-    let runtime = runtime.manager_state();
-    runtime.state.snapshot().into()
+    runtime.0.manager_snapshot().into()
 }
 
 /// Returns the Rust-owned PBFT sync period-data queue snapshot.
@@ -1030,9 +1027,8 @@ pub fn pbft_manager_runtime_plan_advance_period_after_reset(
     runtime: &BridgePbftService,
     pbft_chain_size: u64,
 ) -> FfiPbftManagerAdvancePeriodPlan {
-    let runtime = runtime.manager_state();
     runtime
-        .state
+        .0
         .plan_advance_period_after_reset(pbft_chain_size)
         .into()
 }
@@ -1102,10 +1098,9 @@ pub fn pbft_manager_runtime_apply_broadcast_counters(
     broadcast_reward_votes_counter: u32,
     rebroadcast_reward_votes_counter: u32,
 ) -> FfiPbftManagerRuntimeSnapshot {
-    let mut runtime = runtime.manager_state();
     runtime
-        .state
-        .apply_committed_broadcast_counters(
+        .0
+        .apply_broadcast_counters(
             broadcast_votes_counter,
             rebroadcast_votes_counter,
             broadcast_reward_votes_counter,
@@ -1134,12 +1129,7 @@ pub fn pbft_manager_runtime_apply_broadcast_counters(
 pub fn pbft_manager_runtime_cert_voted_block_in_round(
     runtime: &BridgePbftService,
 ) -> anyhow::Result<Vec<u8>> {
-    let runtime = runtime.manager_state();
-    Ok(runtime
-        .storage
-        .pbft()
-        .cert_voted_block_in_round_rlp()?
-        .unwrap_or_default())
+    runtime.0.cert_voted_block_in_round()
 }
 
 /// Persists the latest cert-voted PBFT block and records its runtime metadata.
@@ -1167,15 +1157,14 @@ pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
     block_hash: [u8; 32],
     block_rlp: Vec<u8>,
 ) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
-    let mut runtime = runtime.manager_state();
-    save_cert_voted_block_in_round_storage(runtime.storage.as_ref(), u64::from(round), &block_rlp)?;
     Ok(runtime
-        .state
-        .apply_committed_cert_voted_block(
+        .0
+        .save_cert_voted_block_in_round(
             period,
-            u64::from(round),
+            round,
             ethereum_types::H256::from(block_hash),
-        )
+            &block_rlp,
+        )?
         .into())
 }
 
@@ -1200,14 +1189,9 @@ pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
     round: u32,
     block_hash: [u8; 32],
 ) -> FfiPbftManagerRuntimeSnapshot {
-    let mut runtime = runtime.manager_state();
     runtime
-        .state
-        .apply_committed_cert_voted_block(
-            period,
-            u64::from(round),
-            ethereum_types::H256::from(block_hash),
-        )
+        .0
+        .apply_cert_voted_block_metadata(period, round, ethereum_types::H256::from(block_hash))
         .into()
 }
 
@@ -1230,9 +1214,8 @@ pub fn pbft_manager_runtime_has_cached_anchor_dag_order(
     runtime: &BridgePbftService,
     anchor_hash: &[u8; 32],
 ) -> bool {
-    let runtime = runtime.manager_state();
     runtime
-        .state
+        .0
         .has_cached_anchor_dag_order(ethereum_types::H256::from(*anchor_hash))
 }
 
@@ -1255,9 +1238,8 @@ pub fn pbft_manager_runtime_record_cached_anchor_dag_order(
     runtime: &BridgePbftService,
     anchor_hash: [u8; 32],
 ) -> FfiPbftManagerRuntimeSnapshot {
-    let mut runtime = runtime.manager_state();
     runtime
-        .state
+        .0
         .record_cached_anchor_dag_order(ethereum_types::H256::from(anchor_hash))
         .into()
 }
@@ -1280,9 +1262,8 @@ pub fn pbft_manager_runtime_remove_cached_anchor_dag_order(
     runtime: &BridgePbftService,
     anchor_hash: [u8; 32],
 ) -> FfiPbftManagerRuntimeSnapshot {
-    let mut runtime = runtime.manager_state();
     runtime
-        .state
+        .0
         .remove_cached_anchor_dag_order(ethereum_types::H256::from(anchor_hash))
         .into()
 }
@@ -1562,12 +1543,10 @@ pub fn plan_pbft_manager_runtime_sleep_until_next_step(
     runtime: &BridgePbftService,
     round_elapsed_ms: i64,
 ) -> FfiPbftManagerSleepPlan {
-    let runtime = runtime.manager_state();
-    plan_domain_pbft_manager_runtime_sleep_until_next_step(
-        &runtime.state.snapshot(),
-        round_elapsed_ms,
-    )
-    .into()
+    runtime
+        .0
+        .plan_runtime_sleep_until_next_step(round_elapsed_ms)
+        .into()
 }
 
 /// Plans the PBFT manager startup wait for FinalChain readiness.

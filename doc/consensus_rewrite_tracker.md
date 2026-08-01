@@ -1491,6 +1491,31 @@ deletion, tests, documentation, and inventory. Residual non-blocking risk is the
 absence of a dedicated concurrent replacement stress test; existing native
 domain transcripts cover normal and rejected reports.
 
+The following bounded `CRW-12` scalar-task contraction moves manager snapshot
+capture, post-reset advance planning, broadcast-counter publication, cert-voted
+recovery load/save/metadata, DAG-order sidecar membership, and deadline sleep
+planning behind lock-owning native `PbftService` methods. Cert-voted recovery
+keeps its durable-write-before-live-publication order in one manager lock epoch;
+all other tasks capture or mutate a single lock-consistent runtime view. The
+bridge now only converts unchanged CXX inputs and owned results. A native
+application-root test covers broadcast publication, snapshot projection,
+idempotent cache membership, durable cert-vote recovery, and elapsed-deadline
+sleep behavior. This removes a net 21 production bridge lines and lowers the
+checked budget to 28,281. CXX functions, carriers, handles, shim lines and
+directories, flags, factories, constructors, production consumers, CXX public
+signatures, and retained executor boundaries remain unchanged. No
+upstream-owned C++ file changes.
+
+Tier 1 `rewrite-validate-fast`, the focused native scalar/cache owner test,
+inventory and storage-boundary guards, and whitespace validation pass. Tier 2
+is the complete 49-test Rust-enabled `rust_consensus_tests` suite. Tier 3 is the
+`taraxad` build. Independent review approves lock consistency, cert-vote
+write-before-publication and failure semantics, thin projections, retained
+domain edge coverage, documentation, and the exact 28,281-line budget. The
+residual non-blocking risk is no service-level storage fault injection or
+concurrency stress test; structural ordering and lower-level rejection tests
+cover those contracts.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

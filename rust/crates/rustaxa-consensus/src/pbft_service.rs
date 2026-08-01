@@ -13,21 +13,22 @@ use crate::pbft_finalize::{
 };
 use crate::pbft_manager::{
     PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
-    PbftFinalizationOwnedActionDrain, PbftManagerGuard, PbftManagerLifecycleTransitionRequest,
-    PbftManagerProposalDagOrderReport, PbftManagerProposalInitialFact,
-    PbftManagerProposalSessionStep, PbftManagerRuntimeActionReport, PbftManagerRuntimeSessionStep,
-    PbftManagerRuntimeSnapshot, PbftManagerRuntimeTickFact, PbftManagerService,
-    PbftManagerStateActionEffectReport, PbftManagerStateActionFact,
-    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionStatus,
-    PbftManagerTransitionStorageStatus, abort_pbft_manager_runtime_session,
-    apply_executed_block_reset_storage, apply_next_voted_status_storage,
-    apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
-    base_owned_finalization_live_report, create_pbft_manager_proposal_session,
-    create_pbft_manager_runtime_from_storage, create_pbft_manager_runtime_session,
-    create_pbft_manager_state_action_effect_session, next_pbft_manager_proposal_session,
-    next_pbft_manager_runtime_action, next_pbft_manager_state_action_effect_session,
+    PbftFinalizationOwnedActionDrain, PbftManagerAdvancePeriodPlan, PbftManagerGuard,
+    PbftManagerLifecycleTransitionRequest, PbftManagerProposalDagOrderReport,
+    PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerRuntimeActionReport,
+    PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeTickFact,
+    PbftManagerService, PbftManagerSleepPlan, PbftManagerStateActionEffectReport,
+    PbftManagerStateActionFact, PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact,
+    PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
+    abort_pbft_manager_runtime_session, apply_executed_block_reset_storage,
+    apply_next_voted_status_storage, apply_pbft_manager_cursor_field_storage,
+    apply_pbft_manager_transition_storage, base_owned_finalization_live_report,
+    create_pbft_manager_proposal_session, create_pbft_manager_runtime_from_storage,
+    create_pbft_manager_runtime_session, create_pbft_manager_state_action_effect_session,
+    next_pbft_manager_proposal_session, next_pbft_manager_runtime_action,
+    next_pbft_manager_state_action_effect_session, plan_pbft_manager_runtime_sleep_until_next_step,
     report_pbft_manager_proposal_dag_order, report_pbft_manager_runtime_action,
-    report_pbft_manager_state_action_effect_session,
+    report_pbft_manager_state_action_effect_session, save_cert_voted_block_in_round_storage,
 };
 #[cfg(test)]
 use crate::pbft_period_cleanup::{PbftPeriodStateCleanupResult, cleanup_period_state_with_commit};
@@ -155,6 +156,138 @@ pub struct PbftService {
 }
 
 impl PbftService {
+    /// Returns an owned snapshot of the native PBFT manager scalar state.
+    ///
+    /// Snapshot capture occurs under the manager lock and the returned value
+    /// remains valid after the serialization domain is released.
+    pub fn manager_snapshot(&self) -> PbftManagerRuntimeSnapshot {
+        self.manager_state().state.snapshot()
+    }
+
+    /// Plans the ordered post-reset period-advance effects under the manager lock.
+    ///
+    /// The plan derives from the last committed native reset provenance and the
+    /// supplied PBFT-chain size; it performs no storage or external effects.
+    pub fn plan_advance_period_after_reset(
+        &self,
+        pbft_chain_size: u64,
+    ) -> PbftManagerAdvancePeriodPlan {
+        self.manager_state()
+            .state
+            .plan_advance_period_after_reset(pbft_chain_size)
+    }
+
+    /// Publishes validated live broadcast counters under the manager lock.
+    ///
+    /// Zero counters remain rejected by the scalar runtime without mutation.
+    /// This operation is process-local and performs no durable write.
+    pub fn apply_broadcast_counters(
+        &self,
+        broadcast_votes_counter: u32,
+        rebroadcast_votes_counter: u32,
+        broadcast_reward_votes_counter: u32,
+        rebroadcast_reward_votes_counter: u32,
+    ) -> PbftManagerRuntimeSnapshot {
+        self.manager_state()
+            .state
+            .apply_committed_broadcast_counters(
+                broadcast_votes_counter,
+                rebroadcast_votes_counter,
+                broadcast_reward_votes_counter,
+                rebroadcast_reward_votes_counter,
+            )
+    }
+
+    /// Loads the persisted cert-voted recovery payload through manager-owned storage.
+    ///
+    /// Missing data is represented by an empty byte vector. Storage failures
+    /// propagate and no live manager state is changed.
+    pub fn cert_voted_block_in_round(&self) -> Result<Vec<u8>> {
+        Ok(self
+            .manager_state()
+            .storage
+            .pbft()
+            .cert_voted_block_in_round_rlp()?
+            .unwrap_or_default())
+    }
+
+    /// Persists a cert-voted recovery payload before publishing its live metadata.
+    ///
+    /// The storage write and scalar publication share one manager lock epoch;
+    /// failures return before the runtime snapshot changes.
+    pub fn save_cert_voted_block_in_round(
+        &self,
+        period: u64,
+        round: u32,
+        block_hash: ethereum_types::H256,
+        block_rlp: &[u8],
+    ) -> Result<PbftManagerRuntimeSnapshot> {
+        let mut manager = self.manager_state();
+        save_cert_voted_block_in_round_storage(
+            manager.storage.as_ref(),
+            u64::from(round),
+            block_rlp,
+        )?;
+        Ok(manager
+            .state
+            .apply_committed_cert_voted_block(period, u64::from(round), block_hash))
+    }
+
+    /// Publishes already-persisted cert-voted metadata under the manager lock.
+    ///
+    /// This compatibility task performs no storage write and is used only when
+    /// a retained executor has already established durable ownership.
+    pub fn apply_cert_voted_block_metadata(
+        &self,
+        period: u64,
+        round: u32,
+        block_hash: ethereum_types::H256,
+    ) -> PbftManagerRuntimeSnapshot {
+        self.manager_state().state.apply_committed_cert_voted_block(
+            period,
+            u64::from(round),
+            block_hash,
+        )
+    }
+
+    /// Returns whether a C++ DAG-order sidecar is registered for an anchor.
+    pub fn has_cached_anchor_dag_order(&self, anchor_hash: ethereum_types::H256) -> bool {
+        self.manager_state()
+            .state
+            .has_cached_anchor_dag_order(anchor_hash)
+    }
+
+    /// Registers one live DAG-order sidecar identity under the manager lock.
+    pub fn record_cached_anchor_dag_order(
+        &self,
+        anchor_hash: ethereum_types::H256,
+    ) -> PbftManagerRuntimeSnapshot {
+        self.manager_state()
+            .state
+            .record_cached_anchor_dag_order(anchor_hash)
+    }
+
+    /// Removes one live DAG-order sidecar identity under the manager lock.
+    pub fn remove_cached_anchor_dag_order(
+        &self,
+        anchor_hash: ethereum_types::H256,
+    ) -> PbftManagerRuntimeSnapshot {
+        self.manager_state()
+            .state
+            .remove_cached_anchor_dag_order(anchor_hash)
+    }
+
+    /// Plans the manager's deadline sleep from one lock-consistent snapshot.
+    pub fn plan_runtime_sleep_until_next_step(
+        &self,
+        round_elapsed_ms: i64,
+    ) -> PbftManagerSleepPlan {
+        plan_pbft_manager_runtime_sleep_until_next_step(
+            &self.manager_state().state.snapshot(),
+            round_elapsed_ms,
+        )
+    }
+
     /// Resets the native PBFT sync queue-drain cursor after bootstrap.
     ///
     /// Calls made before readiness are ignored. The live period-data sidecars
@@ -1593,6 +1726,43 @@ mod tests {
             service.manager_state().state.snapshot(),
             before_rejected_cursor
         );
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn service_owns_manager_scalar_and_cache_tasks() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_scalar_owner");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+
+        let broadcast = service.apply_broadcast_counters(2, 3, 4, 5);
+        assert_eq!(broadcast.broadcast_votes_counter, 2);
+        assert_eq!(broadcast.rebroadcast_votes_counter, 3);
+        assert_eq!(broadcast.broadcast_reward_votes_counter, 4);
+        assert_eq!(broadcast.rebroadcast_reward_votes_counter, 5);
+        assert_eq!(service.manager_snapshot(), broadcast);
+
+        let anchor = H256::repeat_byte(0x44);
+        assert!(!service.has_cached_anchor_dag_order(anchor));
+        service.record_cached_anchor_dag_order(anchor);
+        assert!(service.has_cached_anchor_dag_order(anchor));
+        service.remove_cached_anchor_dag_order(anchor);
+        assert!(!service.has_cached_anchor_dag_order(anchor));
+
+        let block_hash = H256::repeat_byte(0x55);
+        let cert = service
+            .save_cert_voted_block_in_round(12, 3, block_hash, &[0xc0])
+            .unwrap();
+        assert!(cert.has_cert_voted_block);
+        assert_eq!(cert.cert_voted_block_period, 12);
+        assert_eq!(cert.cert_voted_block_round, 3);
+        assert_eq!(cert.cert_voted_block_hash, block_hash);
+        assert!(!service.cert_voted_block_in_round().unwrap().is_empty());
+
+        let sleep = service.plan_runtime_sleep_until_next_step(i64::MAX);
+        assert!(sleep.accepted);
+        assert!(!sleep.should_sleep);
 
         drop(service);
         let _ = fs::remove_dir_all(path);
