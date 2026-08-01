@@ -513,7 +513,7 @@ mod tests {
         let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
         let service = create_pillar_test_service_from_storage(&storage).unwrap();
         assert!(service.pbft_service_pillar_ready());
-        assert_eq!(service.manager_state().state.snapshot().period, 1);
+        assert_eq!(service.0.manager_snapshot().period, 1);
         assert_eq!(
             service.pbft_service_pillar_consensus_threshold(10).unwrap(),
             6

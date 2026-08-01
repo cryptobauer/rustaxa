@@ -102,6 +102,9 @@ APIs; their fields are crate-private and the bridge can only convert facts, repo
 Scalar snapshot capture, post-reset advance planning, broadcast-counter publication, cert-voted recovery,
 DAG-order-cache membership, and deadline sleep planning also enter through lock-owning native root tasks; the bridge no
 longer borrows manager state for those families.
+Startup replay, own-pillar-vote, finalized DAG-position, and PBFT-membership reads also route through native root tasks.
+With the callerless bridge guard accessor deleted, `rustaxa-bridge` has no remaining manager-lock or direct manager
+storage reach-through.
 The native root also requires verified-vote, slashing, and pillar siblings by construction. C++ clients retain
 null-service and pillar-readiness checks, but no longer probe for capabilities that cannot be absent from a published
 service.

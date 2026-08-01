@@ -146,13 +146,12 @@ pub struct BridgePillarChainStorage {
 pub struct BridgePbftService(pub(crate) PbftService);
 
 impl BridgePbftService {
-    /// Locks the native PBFT manager runtime for one bridge operation.
-    ///
-    /// The returned native guard preserves field-oriented bridge adapters while
-    /// keeping mutex ownership and poison handling inside `rustaxa-consensus`.
-    /// Callers must drop it before invoking any external C++ executor.
-    pub(crate) fn manager_state(&self) -> rustaxa_consensus::pbft_manager::PbftManagerGuard<'_> {
-        self.0.manager_state()
+    #[cfg(test)]
+    pub(crate) fn replace_manager_runtime_for_test(
+        &self,
+        runtime: rustaxa_consensus::pbft_manager::PbftManagerRuntime,
+    ) {
+        self.0.manager_state().state = runtime;
     }
 
     pub(crate) fn chain(&self) -> &rustaxa_consensus::pbft_chain::PbftChainService {

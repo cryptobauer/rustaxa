@@ -5,7 +5,8 @@
 //! domain; this root owns composition and bootstrap readiness only and never
 //! adds a root-wide lock.
 
-use crate::pbft_chain::PbftChainService;
+use crate::dag::{DagBlockPeriodStorageLookup, dag_block_period_from_storage};
+use crate::pbft_chain::{PbftChainService, pbft_block_exists_in_storage};
 use crate::pbft_finalize::{
     PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationPeriodLambdaLookup,
     PbftFinalizationRuntimeAction, PbftFinalizationStatus,
@@ -17,14 +18,15 @@ use crate::pbft_manager::{
     PbftManagerLifecycleTransitionRequest, PbftManagerProposalDagOrderReport,
     PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerRuntimeActionReport,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeTickFact,
-    PbftManagerService, PbftManagerSleepPlan, PbftManagerStateActionEffectReport,
-    PbftManagerStateActionFact, PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact,
-    PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
-    abort_pbft_manager_runtime_session, apply_executed_block_reset_storage,
-    apply_next_voted_status_storage, apply_pbft_manager_cursor_field_storage,
-    apply_pbft_manager_transition_storage, base_owned_finalization_live_report,
-    create_pbft_manager_proposal_session, create_pbft_manager_runtime_from_storage,
-    create_pbft_manager_runtime_session, create_pbft_manager_state_action_effect_session,
+    PbftManagerService, PbftManagerSleepPlan, PbftManagerStartupReplayPeriod,
+    PbftManagerStateActionEffectReport, PbftManagerStateActionFact,
+    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionStatus,
+    PbftManagerTransitionStorageStatus, abort_pbft_manager_runtime_session,
+    apply_executed_block_reset_storage, apply_next_voted_status_storage,
+    apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
+    base_owned_finalization_live_report, create_pbft_manager_proposal_session,
+    create_pbft_manager_runtime_from_storage, create_pbft_manager_runtime_session,
+    create_pbft_manager_state_action_effect_session, load_pbft_manager_startup_replay_period,
     next_pbft_manager_proposal_session, next_pbft_manager_runtime_action,
     next_pbft_manager_state_action_effect_session, plan_pbft_manager_runtime_sleep_until_next_step,
     report_pbft_manager_proposal_dag_order, report_pbft_manager_runtime_action,
@@ -46,6 +48,7 @@ use crate::period_data_queue::{
     PeriodDataQueueEntryRef, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
     PeriodDataQueuePushRequest, PeriodDataQueueSnapshot,
 };
+use crate::pillar_chain::load_own_pillar_block_vote_storage;
 use crate::pillar_chain_service::PillarChainService;
 use crate::proposed_blocks::ProposedBlocksService;
 use crate::slashing::SlashingProofService;
@@ -156,6 +159,49 @@ pub struct PbftService {
 }
 
 impl PbftService {
+    /// Loads one finalized startup-replay period through manager-owned storage.
+    ///
+    /// Missing periods remain explicit in the returned native payload. Optional
+    /// closest-lambda lookup, row decoding, and storage errors stay native.
+    pub fn load_startup_replay_period(
+        &self,
+        period: u64,
+        load_period_lambda: bool,
+    ) -> Result<PbftManagerStartupReplayPeriod> {
+        let manager = self.manager_state();
+        load_pbft_manager_startup_replay_period(
+            manager.storage.as_ref(),
+            period,
+            load_period_lambda,
+        )
+    }
+
+    /// Loads the local node's persisted pillar vote through manager-owned storage.
+    ///
+    /// Missing data follows the native storage contract; malformed rows and
+    /// operational failures propagate without mutating manager state.
+    pub fn own_pillar_block_vote(&self) -> Result<Vec<u8>> {
+        let manager = self.manager_state();
+        load_own_pillar_block_vote_storage(manager.storage.as_ref())
+    }
+
+    /// Resolves a finalized DAG block position through manager-owned storage.
+    pub fn dag_block_period(
+        &self,
+        hash: ethereum_types::H256,
+    ) -> Result<DagBlockPeriodStorageLookup> {
+        let manager = self.manager_state();
+        dag_block_period_from_storage(manager.storage.as_ref(), hash)
+    }
+
+    /// Checks finalized PBFT block membership through manager-owned storage.
+    ///
+    /// This query does not materialize a legacy PBFT block or mutate state.
+    pub fn pbft_block_in_db(&self, hash: ethereum_types::H256) -> Result<bool> {
+        let manager = self.manager_state();
+        pbft_block_exists_in_storage(manager.storage.as_ref(), hash)
+    }
+
     /// Returns an owned snapshot of the native PBFT manager scalar state.
     ///
     /// Snapshot capture occurs under the manager lock and the returned value
@@ -1763,6 +1809,16 @@ mod tests {
         let sleep = service.plan_runtime_sleep_until_next_step(i64::MAX);
         assert!(sleep.accepted);
         assert!(!sleep.should_sleep);
+
+        assert!(!service.load_startup_replay_period(99, true).unwrap().found);
+        assert!(service.own_pillar_block_vote().unwrap().is_empty());
+        assert!(
+            !service
+                .dag_block_period(H256::repeat_byte(0x66))
+                .unwrap()
+                .found
+        );
+        assert!(!service.pbft_block_in_db(H256::repeat_byte(0x77)).unwrap());
 
         drop(service);
         let _ = fs::remove_dir_all(path);

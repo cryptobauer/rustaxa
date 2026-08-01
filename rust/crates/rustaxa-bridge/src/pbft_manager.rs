@@ -73,8 +73,7 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::{BridgePbftService, BridgeStorage};
 use crate::transaction_manager::bridge_to_service_account_nonce_facts;
 use anyhow::anyhow;
-use rustaxa_consensus::dag::{dag_block_period_from_storage, DagBlockPeriodStorageLookup};
-use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
+use rustaxa_consensus::dag::DagBlockPeriodStorageLookup;
 #[cfg(test)]
 use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::pbft_finalize::{
@@ -90,7 +89,6 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerStorageStartupFact,
 };
 use rustaxa_consensus::pbft_manager::{
-    load_pbft_manager_startup_replay_period as load_domain_pbft_manager_startup_replay_period,
     plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
@@ -129,7 +127,6 @@ use rustaxa_consensus::pbft_sync::{
 use rustaxa_consensus::period_data_queue::{
     PeriodDataQueueEntryRef, PeriodDataQueuePushRequest, PeriodDataQueueTransactionIdentity,
 };
-use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
 use rustaxa_consensus::{PbftService, PbftServiceConfig};
 
 impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
@@ -513,7 +510,7 @@ pub fn create_pbft_manager_runtime_from_storage(
             polling_interval_ms: fact.polling_interval_ms,
         },
     )?;
-    service.manager_state().state = runtime;
+    service.replace_manager_runtime_for_test(runtime);
     pbft_service_complete_bootstrap(&service)?;
     Ok(service)
 }
@@ -540,12 +537,9 @@ pub fn pbft_manager_runtime_load_startup_replay_period(
     period: u64,
     load_period_lambda: bool,
 ) -> anyhow::Result<crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod> {
-    let runtime = runtime.manager_state();
-    let replay = load_domain_pbft_manager_startup_replay_period(
-        runtime.storage.as_ref(),
-        period,
-        load_period_lambda,
-    )?;
+    let replay = runtime
+        .0
+        .load_startup_replay_period(period, load_period_lambda)?;
     Ok(startup_replay_period_into_ffi(replay))
 }
 
@@ -1285,8 +1279,7 @@ pub fn pbft_manager_runtime_remove_cached_anchor_dag_order(
 pub fn pbft_manager_runtime_own_pillar_block_vote(
     runtime: &BridgePbftService,
 ) -> anyhow::Result<Vec<u8>> {
-    let runtime = runtime.manager_state();
-    load_own_pillar_block_vote_storage(runtime.storage.as_ref())
+    runtime.0.own_pillar_block_vote()
 }
 
 /// Plans, persists, and commits one lifecycle transition as a Rust-owned operation.
@@ -1411,9 +1404,9 @@ pub fn pbft_manager_runtime_dag_block_period(
     runtime: &BridgePbftService,
     hash: &[u8; 32],
 ) -> anyhow::Result<FfiBlockPeriodLookup> {
-    let runtime = runtime.manager_state();
-    let lookup =
-        dag_block_period_from_storage(runtime.storage.as_ref(), ethereum_types::H256::from(*hash))?;
+    let lookup = runtime
+        .0
+        .dag_block_period(ethereum_types::H256::from(*hash))?;
     Ok(dag_block_period_lookup_into_ffi(lookup))
 }
 
@@ -1441,8 +1434,9 @@ pub fn pbft_manager_runtime_pbft_block_in_db(
     runtime: &BridgePbftService,
     hash: &[u8; 32],
 ) -> anyhow::Result<bool> {
-    let runtime = runtime.manager_state();
-    pbft_block_exists_in_storage(runtime.storage.as_ref(), ethereum_types::H256::from(*hash))
+    runtime
+        .0
+        .pbft_block_in_db(ethereum_types::H256::from(*hash))
 }
 
 /// Plans one deterministic PBFT finalization intent through Rust for a PBFT
@@ -2801,7 +2795,7 @@ mod tests {
                     complete: false,
                     error_code: String::new(),
                 },
-                snapshot: runtime.manager_state().state.snapshot(),
+                snapshot: runtime.0.manager_snapshot(),
                 error_code: String::new(),
             },
         );

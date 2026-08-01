@@ -1516,6 +1516,32 @@ residual non-blocking risk is no service-level storage fault injection or
 concurrency stress test; structural ordering and lower-level rejection tests
 cover those contracts.
 
+The final bounded `CRW-12` manager-read contraction moves startup replay,
+own-pillar-vote, finalized DAG-position, and PBFT-membership reads behind native
+`PbftService`. Each task acquires the manager lock and reads its owned storage;
+the bridge only converts owned results. Deleting the now-callerless
+`BridgePbftService::manager_state` accessor leaves no manager-guard or direct
+manager-storage access in production `rustaxa-bridge`; one private `#[cfg(test)]`
+runtime replacement helper remains for boundary fixture construction. The native
+application-root owner test covers missing-row behavior for all four tasks,
+while existing native storage tests retain found/payload/lambda and error
+propagation coverage and the bridge sentinel retains carrier projection. This removes a net
+7 production bridge lines and lowers the checked budget to 28,274. CXX
+functions, carriers, handles, shim lines/directories, flags, factories,
+constructors, production consumers, and CXX public signatures remain unchanged.
+No upstream-owned C++ file changes.
+
+Tier 1 `rewrite-validate-fast`, the focused native missing-read owner test, the
+retained bridge storage-projection sentinel, exact inventory and storage
+boundary guards, and whitespace validation pass. Tier 2 is the complete
+49-test Rust-enabled `rust_consensus_tests` suite. Tier 3 is the `taraxad`
+build. Independent review approves storage-helper parity, lock ownership,
+missing/error propagation, projection, accessor deletion, test coverage, and
+inventory. The retained test-only runtime replacement helper is not compiled
+into production. Residual non-blocking risk is that `PbftService::manager_state`
+remains a public native API, so guards are absent from current bridge code but
+not type-system-inaccessible to a future adapter.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
