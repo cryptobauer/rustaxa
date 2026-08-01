@@ -170,10 +170,6 @@ impl BridgePbftService {
         self.0.verified_votes()
     }
 
-    pub(crate) fn pillar(&self) -> &rustaxa_consensus::PillarChainService {
-        self.0.pillar()
-    }
-
     pub(crate) fn complete_bootstrap(&self) {
         self.0.complete_bootstrap();
     }

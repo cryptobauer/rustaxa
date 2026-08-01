@@ -5,6 +5,7 @@
 //! domain; this root owns composition and bootstrap readiness only and never
 //! adds a root-wide lock.
 
+use crate::FinalChain;
 use crate::dag::{DagBlockPeriodStorageLookup, dag_block_period_from_storage};
 use crate::pbft_chain::{PbftChainService, pbft_block_exists_in_storage};
 use crate::pbft_finalize::{
@@ -48,8 +49,23 @@ use crate::period_data_queue::{
     PeriodDataQueueEntryRef, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
     PeriodDataQueuePushRequest, PeriodDataQueueSnapshot,
 };
-use crate::pillar_chain::load_own_pillar_block_vote_storage;
-use crate::pillar_chain_service::PillarChainService;
+use crate::pillar_chain::{
+    PillarBlockLinkagePlan, PillarCurrentAnchorDecisionRequest, PillarValidatorVoteCount,
+    load_own_pillar_block_vote_storage,
+};
+use crate::pillar_chain_service::{
+    PillarBlockCreationRequest, PillarBlockCreationWithVoteCountsPlan, PillarBlockLinkageRequest,
+    PillarChainService, PillarChainStartupBootstrap, PillarCurrentAnchorDecisionResult,
+};
+use crate::pillar_vote_service::{
+    PillarBlockFinalizationAcknowledgeRequest, PillarBlockFinalizationAcknowledgeResult,
+    PillarBlockFinalizationPrepareResult, PillarBlockFinalizationRequest,
+    PillarConsensusThresholdLookup, PillarVoteBundleWithFinalChainPlan,
+    PillarVoteNetworkBundleLookup, PillarVoteRelevancePlan, PillarVoteRlpPayload,
+    PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionContext,
+    PillarVoteSingleAdmissionValidationPlan, PillarVoteSingleAdmissionWithFinalChainPlan,
+    PillarVotesPayloadLookup,
+};
 use crate::proposed_blocks::ProposedBlocksService;
 use crate::slashing::{
     DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofSubmissionPlan,
@@ -1244,6 +1260,264 @@ impl PbftService {
         self.readiness.is_ready()
     }
 
+    /// Returns whether pillar startup restoration has been published complete.
+    ///
+    /// The result is an acquire-load of the pillar sibling's monotonic readiness
+    /// flag. It does not lock pillar state and cannot fail.
+    pub fn pillar_is_ready(&self) -> bool {
+        self.pillar().is_ready()
+    }
+
+    /// Verifies that live pillar work may enter the native serialization domain.
+    ///
+    /// This preflight exists for adapters that must preserve readiness and lock
+    /// failure precedence before decoding an external operation tag. It returns
+    /// no state or generation and never holds a guard across the caller boundary.
+    pub fn ensure_pillar_available(&self) -> Result<()> {
+        self.pillar().sample_anchor_generation().map(|_| ())
+    }
+
+    /// Publishes completed pillar bootstrap after proving state lockability.
+    ///
+    /// Success performs the monotonic readiness transition. A poisoned pillar
+    /// lock returns an error and leaves the service pending.
+    pub fn complete_pillar_bootstrap(&self) -> Result<()> {
+        self.pillar().complete_bootstrap()
+    }
+
+    /// Persists and publishes canonical current-pillar data for one generation.
+    ///
+    /// `data_rlp` must decode canonically and `expected_anchor_generation` must
+    /// match the live anchor. Persistence precedes publication; stale, malformed,
+    /// overflow, readiness, and storage failures leave the snapshot unchanged.
+    pub fn apply_pillar_current_block_data_for_generation(
+        &self,
+        data_rlp: Vec<u8>,
+        expected_anchor_generation: u64,
+    ) -> Result<()> {
+        self.pillar()
+            .apply_planned_current_block_data(data_rlp, expected_anchor_generation)
+    }
+
+    /// Persists one canonical own-pillar vote for startup recovery.
+    ///
+    /// Live readiness and a non-empty payload are required. Storage failures are
+    /// returned without changing pillar vote aggregation state.
+    pub fn apply_own_pillar_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
+        self.pillar().apply_own_vote(vote_rlp)
+    }
+
+    /// Loads the durable inputs needed to reconstruct the pillar manager shell.
+    ///
+    /// This task accepts pending readiness. Missing rows become empty byte
+    /// vectors; malformed state, period overflow, and storage failures propagate.
+    pub fn load_pillar_startup_bootstrap(&self) -> Result<PillarChainStartupBootstrap> {
+        self.pillar().load_startup_bootstrap()
+    }
+
+    /// Plans one current-anchor decision from the live native snapshot.
+    ///
+    /// `request` is already validated native input. The result carries the plan,
+    /// sampled anchor, and generation; readiness or lock failures are returned.
+    pub fn plan_pillar_current_anchor_decision(
+        &self,
+        request: PillarCurrentAnchorDecisionRequest,
+    ) -> Result<PillarCurrentAnchorDecisionResult> {
+        self.pillar().plan_current_anchor_decision(request)
+    }
+
+    /// Plans one pillar block using the authoritative FinalChain validator snapshot.
+    ///
+    /// The method samples the pillar generation, releases its lock for the
+    /// FinalChain query at `request.pillar_block_period`, then re-locks and
+    /// rejects generation drift. It returns the native creation plan plus ordered
+    /// current counts and deltas; query, readiness, arithmetic, and stale errors
+    /// propagate without publishing pillar state.
+    pub fn plan_pillar_block_creation_with_final_chain(
+        &self,
+        final_chain: &FinalChain,
+        request: PillarBlockCreationRequest,
+    ) -> Result<PillarBlockCreationWithVoteCountsPlan> {
+        let generation = self.pillar().sample_anchor_generation()?;
+        let current_vote_counts = final_chain
+            .dpos_validators_eligible_vote_counts(request.pillar_block_period.into())?
+            .into_iter()
+            .map(|value| PillarValidatorVoteCount {
+                address: value.address.into(),
+                vote_count: value.vote_count,
+            })
+            .collect();
+        self.pillar()
+            .plan_block_creation_for_generation(request, current_vote_counts, generation)
+    }
+
+    /// Validates candidate pillar linkage against native finalized state.
+    ///
+    /// Missing state and deterministic mismatches are represented in the plan's
+    /// status. Readiness, lock, and arithmetic failures are returned as errors.
+    pub fn plan_pillar_block_linkage(
+        &self,
+        request: PillarBlockLinkageRequest,
+    ) -> Result<PillarBlockLinkagePlan> {
+        self.pillar().plan_block_linkage(request)
+    }
+
+    /// Returns canonical latest-finalized pillar bytes for public materialization.
+    ///
+    /// Missing finalized state returns an empty vector. Live readiness and lock
+    /// failures are errors; returned bytes are cloned from the validated snapshot.
+    pub fn latest_finalized_pillar_block_rlp(&self) -> Result<Vec<u8>> {
+        self.pillar().latest_finalized_block_rlp()
+    }
+
+    /// Validates one canonical pillar vote against live FinalChain eligibility.
+    ///
+    /// Preparation and cleanup remain generation-bound, and no pillar lock is
+    /// held during the FinalChain query. Deterministic rejection is returned as a
+    /// typed plan; decoding, lock, or FinalChain infrastructure failures are errors.
+    pub fn validate_single_pillar_vote_with_final_chain(
+        &self,
+        final_chain: &FinalChain,
+        vote_rlp: Vec<u8>,
+        context: PillarVoteSingleAdmissionContext,
+    ) -> Result<PillarVoteSingleAdmissionValidationPlan> {
+        self.pillar()
+            .pbft_service_pillar_validate_single_vote_with_final_chain(
+                final_chain,
+                vote_rlp,
+                context,
+            )
+    }
+
+    /// Applies one incoming pillar vote through FinalChain-weighted preparation.
+    ///
+    /// Checked ingress uses `context`; trusted local/restart ingress is selected
+    /// explicitly. The method releases the pillar lock for weight/threshold reads
+    /// and consumes only the matching preparation on relock. Rejections remain
+    /// typed results, while decoding, lock, and infrastructure failures are errors.
+    pub fn apply_single_pillar_vote_with_final_chain(
+        &self,
+        final_chain: &FinalChain,
+        vote_rlp: Vec<u8>,
+        context: PillarVoteSingleAdmissionContext,
+        trusted_local_or_restore: bool,
+    ) -> Result<PillarVoteSingleAdmissionWithFinalChainPlan> {
+        self.pillar()
+            .pbft_service_pillar_apply_single_vote_with_final_chain(
+                final_chain,
+                vote_rlp,
+                context,
+                trusted_local_or_restore,
+            )
+    }
+
+    /// Resolves a pillar strict-majority threshold from FinalChain totals.
+    ///
+    /// `period` selects the DPoS snapshot. Future or unavailable snapshots are
+    /// represented by `available == false`; pillar readiness/lock failure is an error.
+    pub fn pillar_consensus_threshold_with_final_chain(
+        &self,
+        final_chain: &FinalChain,
+        period: u64,
+    ) -> Result<PillarConsensusThresholdLookup> {
+        self.pillar()
+            .pbft_service_pillar_consensus_threshold_with_final_chain(final_chain, period)
+    }
+
+    /// Evaluates one canonical pillar vote's relevance against live anchor state.
+    ///
+    /// The typed result preserves deterministic status and relevance. Readiness,
+    /// lock, or malformed-input failures follow the native pillar task contract.
+    pub fn plan_pillar_vote_relevance(
+        &self,
+        vote_rlp: Vec<u8>,
+        context: PillarVoteRuntimeRelevanceContext,
+    ) -> Result<PillarVoteRelevancePlan> {
+        self.pillar()
+            .pbft_service_pillar_plan_vote_relevance(vote_rlp, context)
+    }
+
+    /// Applies one synced pillar-vote bundle using FinalChain voting weights.
+    ///
+    /// Canonical inspection is generation-bound, the pillar lock is released for
+    /// ordered total/validator queries, and apply revalidates the generation.
+    /// Deterministic missing/zero-weight outcomes are typed; infrastructure errors
+    /// never mutate aggregation state.
+    pub fn apply_pillar_vote_bundle_with_final_chain(
+        &self,
+        final_chain: &FinalChain,
+        vote_rlps: Vec<PillarVoteRlpPayload>,
+        required_votes_period: u64,
+    ) -> Result<PillarVoteBundleWithFinalChainPlan> {
+        self.pillar()
+            .pbft_service_pillar_apply_rlp_bundle_with_final_chain(
+                final_chain,
+                vote_rlps,
+                required_votes_period,
+            )
+    }
+
+    /// Returns verified pillar-vote payloads from live or persisted native state.
+    ///
+    /// `period`, `block_hash`, and `above_threshold` select the exact ordered
+    /// payload set. Missing data is represented by the lookup; readiness, decode,
+    /// storage, or lock failures are returned.
+    pub fn pillar_verified_vote_payloads(
+        &self,
+        period: u64,
+        block_hash: &[u8; 32],
+        above_threshold: bool,
+    ) -> Result<PillarVotesPayloadLookup> {
+        self.pillar()
+            .pbft_service_pillar_get_verified_vote_payloads(period, block_hash, above_threshold)
+    }
+
+    /// Builds ordered canonical vote bundles for the tarcap transfer adapter.
+    ///
+    /// `max_votes_per_bundle` bounds chunk size without changing vote order.
+    /// Missing data is typed in the lookup; zero limits and native state/storage
+    /// failures retain the underlying task's error behavior.
+    pub fn build_pillar_vote_network_bundles(
+        &self,
+        period: u64,
+        block_hash: &[u8; 32],
+        max_votes_per_bundle: usize,
+    ) -> Result<PillarVoteNetworkBundleLookup> {
+        self.pillar()
+            .pbft_service_pillar_build_verified_vote_network_bundles(
+                period,
+                block_hash,
+                max_votes_per_bundle,
+            )
+    }
+
+    /// Prepares one pillar block for PBFT finalization under a one-shot token.
+    ///
+    /// The result contains deterministic request/emit effects, selected votes,
+    /// canonical bytes, anchor generation, and token. No persistence occurs;
+    /// readiness, decode, storage-fallback, and lock failures are returned.
+    pub fn prepare_pillar_block_finalization(
+        &self,
+        request: PillarBlockFinalizationRequest,
+    ) -> Result<PillarBlockFinalizationPrepareResult> {
+        self.pillar()
+            .pbft_service_pillar_prepare_finalized_block_for_pbft(request)
+    }
+
+    /// Acknowledges one prepared pillar finalization after external persistence.
+    ///
+    /// The request must match both anchor generation and one-shot preparation
+    /// token. Success publishes finalized state and cleanup. Stale generations,
+    /// missing/reused tokens, and lock failures are errors; persistence failures
+    /// preserve the preparation so the same token can be retried.
+    pub fn acknowledge_pillar_block_finalization(
+        &self,
+        request: PillarBlockFinalizationAcknowledgeRequest,
+    ) -> Result<PillarBlockFinalizationAcknowledgeResult> {
+        self.pillar()
+            .pbft_service_pillar_ack_finalize_block_for_pbft(request)
+    }
+
     /// Locks the native manager serialization domain.
     pub fn manager_state(&self) -> PbftManagerGuard<'_> {
         self.manager.lock()
@@ -1265,7 +1539,7 @@ impl PbftService {
     }
 
     /// Returns the native pillar sibling.
-    pub fn pillar(&self) -> &PillarChainService {
+    pub(crate) fn pillar(&self) -> &PillarChainService {
         &self.pillar
     }
 }
@@ -1288,7 +1562,9 @@ mod tests {
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
     use rustaxa_storage::Config;
-    use rustaxa_types::pillar::{CurrentPillarBlockDataDb, PillarBlock, ValidatorVoteCount};
+    use rustaxa_types::pillar::{
+        CurrentPillarBlockDataDb, PillarBlock, PillarVote, ValidatorVoteCount,
+    };
     use rustaxa_vdf::vrf;
     use std::fs;
     use std::path::PathBuf;
@@ -1402,6 +1678,82 @@ mod tests {
         hasher.update(&public_key.as_bytes()[1..]);
         hasher.finalize(&mut output);
         output[12..].try_into().unwrap()
+    }
+
+    fn signed_pillar_vote(
+        secret: [u8; 32],
+        period: u64,
+        block_hash: H256,
+    ) -> (PillarVote, [u8; 20]) {
+        let key = SigningKey::from_slice(&secret).unwrap();
+        let mut vote = PillarVote {
+            period,
+            block_hash,
+            signature: [0; 65],
+        };
+        let (signature, recovery_id) = key
+            .sign_prehash_recoverable(vote.hash(false).as_bytes())
+            .unwrap();
+        vote.signature[..64].copy_from_slice(&signature.to_bytes());
+        vote.signature[64] = recovery_id.to_byte();
+        (vote, voter_from_secret(&secret))
+    }
+
+    fn pillar_current_data(period: u64) -> (PillarBlock, Vec<u8>) {
+        let block = PillarBlock {
+            period,
+            state_root: H256::from_low_u64_be(1),
+            previous_pillar_block_hash: H256::from_low_u64_be(2),
+            bridge_root: H256::from_low_u64_be(3),
+            epoch: 4,
+            validator_vote_count_changes: Vec::new(),
+        };
+        let rlp = CurrentPillarBlockDataDb {
+            pillar_block: block.clone(),
+            vote_counts: Vec::new(),
+        }
+        .encode_rlp();
+        (block, rlp)
+    }
+
+    fn final_chain_with_pillar_voters(storage: Arc<Storage>, voters: &[[u8; 20]]) -> FinalChain {
+        use rustaxa_types::{
+            DposTokenAmount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
+        };
+
+        let stake = U256::from(5_000u64).to_big_endian().to_vec();
+        FinalChain::new(
+            storage,
+            0.into(),
+            0,
+            Vec::new(),
+            voters
+                .iter()
+                .map(|address| GenesisValidator {
+                    address: *address,
+                    vrf_key: [address[0]; 32],
+                    total_stake: stake.clone(),
+                    delegations: vec![(*address, stake.clone())],
+                    metadata: GenesisValidatorMetadata {
+                        owner: *address,
+                        commission: 0,
+                        description: String::new(),
+                        endpoint: String::new(),
+                    },
+                })
+                .collect(),
+            GenesisDposConfig {
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
+            },
+        )
+        .unwrap()
     }
 
     fn cert_vote_rlp(block_hash: H256, secret: [u8; 32]) -> Vec<u8> {
@@ -2324,7 +2676,7 @@ mod tests {
     fn pillar_state_restarts_through_the_same_native_root() {
         let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_pillar_restart");
         let service = PbftService::restore(storage.clone(), config(1)).unwrap();
-        service.pillar().complete_bootstrap().unwrap();
+        service.complete_pillar_bootstrap().unwrap();
         let data = CurrentPillarBlockDataDb {
             pillar_block: PillarBlock {
                 period: 1,
@@ -2340,25 +2692,202 @@ mod tests {
             }],
         }
         .encode_rlp();
-        let generation = service.pillar().sample_anchor_generation().unwrap();
         service
-            .pillar()
-            .apply_planned_current_block_data(data.clone(), generation)
+            .apply_pillar_current_block_data_for_generation(data.clone(), 0)
             .unwrap();
         drop(service);
 
         let restarted = PbftService::restore(storage, config(1)).unwrap();
-        assert!(!restarted.pillar().is_ready());
+        assert!(!restarted.pillar_is_ready());
         assert_eq!(
             restarted
-                .pillar()
-                .load_startup_bootstrap()
+                .load_pillar_startup_bootstrap()
                 .unwrap()
                 .current_block_data_rlp,
             data
         );
 
         let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn pillar_final_chain_composition_is_owned_by_the_native_root() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_pillar_final_chain");
+        let validator = [9; 20];
+        let final_chain = final_chain_with_pillar_voters(storage.clone(), &[validator]);
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        service.complete_pillar_bootstrap().unwrap();
+
+        let threshold = service
+            .pillar_consensus_threshold_with_final_chain(&final_chain, 0)
+            .unwrap();
+        assert!(threshold.available);
+        assert!(threshold.threshold > 0);
+
+        let plan = service
+            .plan_pillar_block_creation_with_final_chain(
+                &final_chain,
+                PillarBlockCreationRequest {
+                    pillar_block_period: 0,
+                    state_root: H256::repeat_byte(1),
+                    bridge_root: H256::repeat_byte(2),
+                    bridge_epoch: H256::zero(),
+                    first_pillar_block_period: 0,
+                    pillar_blocks_interval: 10,
+                },
+            )
+            .unwrap();
+        assert!(plan.creation.valid);
+        assert_eq!(plan.current_vote_counts.len(), 1);
+        assert_eq!(plan.current_vote_counts[0].address, validator.into());
+        assert!(plan.current_vote_counts[0].vote_count > 0);
+        assert_eq!(plan.vote_count_changes.len(), 1);
+
+        let replacement = CurrentPillarBlockDataDb {
+            pillar_block: PillarBlock {
+                period: 1,
+                state_root: H256::repeat_byte(3),
+                previous_pillar_block_hash: H256::zero(),
+                bridge_root: H256::repeat_byte(4),
+                epoch: 0,
+                validator_vote_count_changes: Vec::new(),
+            },
+            vote_counts: Vec::new(),
+        }
+        .encode_rlp();
+        service
+            .apply_pillar_current_block_data_for_generation(
+                replacement.clone(),
+                plan.anchor_generation,
+            )
+            .unwrap();
+        let stale = service
+            .apply_pillar_current_block_data_for_generation(replacement, plan.anchor_generation)
+            .unwrap_err();
+        assert!(format!("{stale:#}").contains("PILLAR_BLOCK_CREATION_STALE_ANCHOR"));
+
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn pillar_vote_final_chain_composition_is_owned_by_the_native_root() {
+        let context = PillarVoteSingleAdmissionContext {
+            first_pillar_block_period: 0,
+            pillar_blocks_interval: 10,
+        };
+
+        let (zero_path, zero_storage) =
+            temp_storage("rustaxa_consensus_pbft_service_pillar_vote_zero");
+        let zero_final_chain = final_chain_with_pillar_voters(zero_storage.clone(), &[]);
+        let zero_service = PbftService::restore(zero_storage, config(1)).unwrap();
+        zero_service.complete_pillar_bootstrap().unwrap();
+        let (zero_anchor, zero_anchor_rlp) = pillar_current_data(0);
+        zero_service
+            .apply_pillar_current_block_data_for_generation(zero_anchor_rlp, 0)
+            .unwrap();
+        let (zero_vote, _) = signed_pillar_vote([0x71; 32], 1, zero_anchor.hash());
+        let zero_plan = zero_service
+            .validate_single_pillar_vote_with_final_chain(
+                &zero_final_chain,
+                zero_vote.encode_rlp(),
+                context,
+            )
+            .unwrap();
+        assert_eq!(zero_plan.status, 7);
+        assert_eq!(zero_plan.vote_hash, zero_vote.hash(true).0);
+        let missing = zero_service
+            .pillar()
+            .pbft_service_pillar_apply_prepared_single_vote_admission(
+                crate::pillar_vote_service::PillarVoteSingleAdmissionApplyInput {
+                    vote_hash: zero_vote.hash(true).0,
+                    validator_vote_count: 5,
+                    has_threshold: false,
+                    threshold: 0,
+                },
+            )
+            .unwrap();
+        assert_eq!(missing.status, 11);
+        drop(zero_service);
+        let _ = fs::remove_dir_all(zero_path);
+
+        let (apply_path, apply_storage) =
+            temp_storage("rustaxa_consensus_pbft_service_pillar_vote_apply");
+        let apply_secret = [0x72; 32];
+        let apply_voter = voter_from_secret(&apply_secret);
+        let apply_final_chain =
+            final_chain_with_pillar_voters(apply_storage.clone(), &[apply_voter]);
+        let apply_service = PbftService::restore(apply_storage, config(1)).unwrap();
+        apply_service.complete_pillar_bootstrap().unwrap();
+        let (apply_anchor, apply_anchor_rlp) = pillar_current_data(0);
+        apply_service
+            .apply_pillar_current_block_data_for_generation(apply_anchor_rlp, 0)
+            .unwrap();
+        let (apply_vote, _) = signed_pillar_vote(apply_secret, 1, apply_anchor.hash());
+        let applied = apply_service
+            .apply_single_pillar_vote_with_final_chain(
+                &apply_final_chain,
+                apply_vote.encode_rlp(),
+                context,
+                false,
+            )
+            .unwrap();
+        assert_eq!(applied.status, 0);
+        assert!(applied.accepted);
+        assert!(applied.validator_vote_count > 0);
+        assert_eq!(applied.voter, apply_voter);
+        drop(apply_service);
+        let _ = fs::remove_dir_all(apply_path);
+
+        let (future_path, future_storage) =
+            temp_storage("rustaxa_consensus_pbft_service_pillar_bundle_future");
+        let future_secret = [0x73; 32];
+        let future_voter = voter_from_secret(&future_secret);
+        let future_final_chain =
+            final_chain_with_pillar_voters(future_storage.clone(), &[future_voter]);
+        let future_service = PbftService::restore(future_storage, config(1)).unwrap();
+        future_service.complete_pillar_bootstrap().unwrap();
+        let (future_anchor, future_anchor_rlp) = pillar_current_data(41);
+        future_service
+            .apply_pillar_current_block_data_for_generation(future_anchor_rlp, 0)
+            .unwrap();
+        let (future_vote, _) = signed_pillar_vote(future_secret, 42, future_anchor.hash());
+        let future_plan = future_service
+            .apply_pillar_vote_bundle_with_final_chain(
+                &future_final_chain,
+                vec![PillarVoteRlpPayload {
+                    vote_rlp: future_vote.encode_rlp(),
+                }],
+                42,
+            )
+            .unwrap();
+        assert!(future_plan.missing_threshold);
+        drop(future_service);
+        let _ = fs::remove_dir_all(future_path);
+
+        let (bundle_path, bundle_storage) =
+            temp_storage("rustaxa_consensus_pbft_service_pillar_bundle_zero");
+        let bundle_final_chain = final_chain_with_pillar_voters(bundle_storage.clone(), &[]);
+        let bundle_service = PbftService::restore(bundle_storage, config(1)).unwrap();
+        bundle_service.complete_pillar_bootstrap().unwrap();
+        let (bundle_anchor, bundle_anchor_rlp) = pillar_current_data(0);
+        bundle_service
+            .apply_pillar_current_block_data_for_generation(bundle_anchor_rlp, 0)
+            .unwrap();
+        let (bundle_vote, _) = signed_pillar_vote([0x74; 32], 1, bundle_anchor.hash());
+        let bundle_hash: [u8; 32] = bundle_vote.hash(true).into();
+        let bundle_plan = bundle_service
+            .apply_pillar_vote_bundle_with_final_chain(
+                &bundle_final_chain,
+                vec![PillarVoteRlpPayload {
+                    vote_rlp: bundle_vote.encode_rlp(),
+                }],
+                1,
+            )
+            .unwrap();
+        assert_eq!(bundle_plan.status, 5);
+        assert_eq!(bundle_plan.first_bad_vote_hash, bundle_hash);
+        drop(bundle_service);
+        let _ = fs::remove_dir_all(bundle_path);
     }
 
     #[test]

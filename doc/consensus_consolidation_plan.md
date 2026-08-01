@@ -111,6 +111,15 @@ service.
 The native PBFT root now exposes task-shaped slashing plan/report operations as well; bridge and native sibling
 accessors are deleted. Slashing planner, activation, and duplicate-cache behavior is tested at the native root, while
 the bridge retains only status-code and canonical ABI-byte conversion fixtures.
+The root now owns the complete pillar task surface too. `rustaxa-bridge` can no
+longer borrow `PillarChainService`; the bridge accessor is deleted and the
+native accessor is crate-private. Block creation now samples the pillar
+generation, releases the lock for the FinalChain validator query, and performs
+generation-bound planning inside `PbftService`. All other pillar chain/vote
+operations enter through root task APIs, while the bridge is limited to CXX
+conversion, FinalChain-handle unwrapping, readiness-before-tag preflight, and
+the separately classified pillar storage facade. FinalChain-composed single
+vote and bundle behavior moved from three bridge fixtures to native root tests.
 Native `rustaxa-consensus::pillar_chain_service::PillarChainService` now owns pillar storage and restoration,
 `PillarVotes`, the canonical anchor snapshot, both preparation registries and finalization token sequence, the outer
 serialization mutex, and bootstrap readiness. Native pillar-vote task methods own admission, relevance, weighted

@@ -1568,6 +1568,37 @@ that the application-root test does not stress concurrent submissions; the
 unchanged native mutex owner and lower-level clone/cache tests cover the shared
 lock contract.
 
+The next bounded `CRW-12` pillar-root contraction moves every live pillar chain
+and pillar-vote operation behind task-shaped native `PbftService` methods. The
+bridge pillar sibling accessor is deleted and the native accessor becomes
+crate-private, so `rustaxa-bridge` cannot borrow pillar state, its mutex,
+preparation registries, or generation counters. FinalChain-composed block
+creation now owns generation sampling, the unlocked validator query, and
+generation-bound planning in the native root. Current-anchor tag conversion
+retains its readiness/lock-error precedence through an explicit root preflight.
+Three FinalChain-composed bridge behavioral fixtures for zero-weight admission,
+accepted weighted admission, and missing-total versus zero-weight bundles move
+to native application-root coverage; the bridge retains stateless vote
+inspection, CXX carrier/error mapping, readiness precedence, FinalChain handle
+unwrapping, and the separately classified pillar storage compatibility facade.
+Test-only unplanned current-data, pure-threshold, and fact-injected block
+creation root/bridge APIs are deleted. This removes 341 net bridge
+lines and lowers the checked budget to 27,833. CXX functions, carriers, handles,
+shim lines/directories, flags, factories, constructors, production consumers,
+and public CXX signatures remain unchanged. No upstream-owned C++ file changes.
+
+Validation uses the Tier 2 subsystem path plus the Rust-enabled node smoke gate:
+`make rewrite-validate-fast`, 114 focused native pillar tests, 20 bridge pillar
+tests, all 49 `rust_consensus_tests`, the DAG and PBFT-chain C++ suites, both
+structural guards and their self-tests, whitespace validation, and the
+`taraxad` smoke build pass. The aggregate legacy manager/pillar runner remains
+non-isolated: its first manager case and the affected pillar cases pass in fresh
+processes, then live node/database resources under `/tmp/taraxa0` survive into
+later cases and cause same-process port or RocksDB-lock failures. No behavioral
+assertion failed before that resource leakage. Independent review required an
+exact-preparation cleanup assertion, corrected finalization-token error docs,
+accurate inventory wording, and removal of a dead conversion; all were applied.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
