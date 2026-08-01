@@ -146,24 +146,6 @@ pub struct BridgePillarChainStorage {
 pub struct BridgePbftService(pub(crate) PbftService);
 
 impl BridgePbftService {
-    #[cfg(test)]
-    pub(crate) fn replace_manager_runtime_for_test(
-        &self,
-        runtime: rustaxa_consensus::pbft_manager::PbftManagerRuntime,
-    ) {
-        self.0.manager_state().state = runtime;
-    }
-
-    pub(crate) fn chain(&self) -> &rustaxa_consensus::pbft_chain::PbftChainService {
-        self.0.chain()
-    }
-
-    pub(crate) fn proposed_blocks(
-        &self,
-    ) -> &rustaxa_consensus::proposed_blocks::ProposedBlocksService {
-        self.0.proposed_blocks()
-    }
-
     pub(crate) fn complete_bootstrap(&self) {
         self.0.complete_bootstrap();
     }

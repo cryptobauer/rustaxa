@@ -74,19 +74,12 @@ use crate::ffi::{BridgePbftService, BridgeStorage};
 use crate::transaction_manager::bridge_to_service_account_nonce_facts;
 use anyhow::anyhow;
 use rustaxa_consensus::dag::DagBlockPeriodStorageLookup;
-#[cfg(test)]
-use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::pbft_finalize::{
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent, PbftDynamicLambdaConfig,
     PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationPlan,
     PbftFinalizationPositionedHash, PbftFinalizationRuntimeAction, PbftFinalizationStatus,
     PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
-};
-#[cfg(test)]
-use rustaxa_consensus::pbft_manager::{
-    create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
-    PbftManagerStorageStartupFact,
 };
 use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
@@ -387,17 +380,14 @@ impl From<&FfiPbftFinalizationIntentPlan> for PbftFinalizationPlan {
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
 const RUNTIME_STATUS_COMPLETE: u8 = 1;
 const ACTION_NO_ACTION: u8 = 255;
-#[cfg(test)]
-/// Rust-only startup facts for tests that exercise manager restore independently
-/// from the production service's chain-derived bootstrap contract.
+/// Rust-only configuration facts for bridge tests that construct the full
+/// production PBFT service through its chain-derived restore path.
 #[cfg(test)]
 pub(crate) struct TestPbftManagerStartupFact {
-    pub current_period: u64,
     pub cacti_active_at_chain_size: bool,
     pub genesis_lambda_ms: u64,
     pub cacti_lambda_max_ms: u64,
     pub cacti_lambda_default_ms: u64,
-    pub cacti_block: u64,
     pub max_exponential_lambda_ms: u64,
     pub max_steps: u64,
     pub deadline_ms: u64,
@@ -492,25 +482,6 @@ pub fn create_pbft_manager_runtime_from_storage(
             magnolia_activation_period: 0,
         },
     )?;
-    let runtime = create_domain_pbft_manager_runtime_from_storage(
-        &storage.0,
-        PbftManagerStorageStartupFact {
-            current_period: fact.current_period,
-            cacti_active_at_chain_size: fact.cacti_active_at_chain_size,
-            genesis_lambda_ms: to_startup_u32(fact.genesis_lambda_ms, "GENESIS_LAMBDA")?,
-            cacti_lambda_max_ms: to_startup_u32(fact.cacti_lambda_max_ms, "CACTI_LAMBDA_MAX")?,
-            cacti_lambda_default_ms: to_startup_u32(
-                fact.cacti_lambda_default_ms,
-                "CACTI_LAMBDA_DEFAULT",
-            )?,
-            cacti_block: fact.cacti_block,
-            max_exponential_lambda_ms: fact.max_exponential_lambda_ms,
-            max_steps: fact.max_steps,
-            deadline_ms: fact.deadline_ms,
-            polling_interval_ms: fact.polling_interval_ms,
-        },
-    )?;
-    service.replace_manager_runtime_for_test(runtime);
     pbft_service_complete_bootstrap(&service)?;
     Ok(service)
 }
@@ -2635,12 +2606,10 @@ mod tests {
 
     fn startup_fact() -> TestPbftManagerStartupFact {
         TestPbftManagerStartupFact {
-            current_period: 10,
             cacti_active_at_chain_size: true,
             genesis_lambda_ms: 100,
             cacti_lambda_max_ms: 1_500,
             cacti_lambda_default_ms: 500,
-            cacti_block: 1,
             max_exponential_lambda_ms: 60_000,
             max_steps: 13,
             deadline_ms: 1_000,
@@ -2762,18 +2731,13 @@ mod tests {
         startup.cacti_active_at_chain_size = false;
         let runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
             .expect("runtime should initialize");
-        runtime
-            .chain()
-            .write()
-            .expect("PBFT chain lock should remain healthy")
-            .state = PbftChain::new(rustaxa_consensus::pbft_chain::PbftChainHead {
-            head_hash: ethereum_types::H256::from([8; 32]),
-            size: 9,
-            non_empty_size: 5,
-            last_pbft_block_hash: ethereum_types::H256::from([3; 32]),
-            last_non_null_pbft_dag_anchor_hash: ethereum_types::H256::from([2; 32]),
-        })
-        .expect("test PBFT chain head should be valid");
+        (1_u8..=9).for_each(|value| {
+            let block_hash = [value; 32];
+            let anchor_hash = if value <= 4 { [0_u8; 32] } else { [2_u8; 32] };
+            runtime
+                .pbft_chain_update(&block_hash, &anchor_hash)
+                .expect("test PBFT chain update should succeed");
+        });
         (temp_dir, runtime)
     }
 

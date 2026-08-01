@@ -7,7 +7,10 @@
 
 use crate::FinalChain;
 use crate::dag::{DagBlockPeriodStorageLookup, dag_block_period_from_storage};
-use crate::pbft_chain::{PbftChainService, pbft_block_exists_in_storage};
+use crate::pbft_chain::{
+    PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead, PbftChainService,
+    pbft_block_exists_in_storage,
+};
 use crate::pbft_finalize::{
     PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationPeriodLambdaLookup,
     PbftFinalizationRuntimeAction, PbftFinalizationStatus, PbftFinalizedPeriodApplyResult,
@@ -97,7 +100,7 @@ use crate::pillar_vote_service::{
     PillarVoteSingleAdmissionValidationPlan, PillarVoteSingleAdmissionWithFinalChainPlan,
     PillarVotesPayloadLookup,
 };
-use crate::proposed_blocks::ProposedBlocksService;
+use crate::proposed_blocks::{ProposedBlockEntry, ProposedBlocksService};
 use crate::slashing::{
     DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofSubmissionPlan,
     SlashingProofService,
@@ -875,6 +878,129 @@ impl PbftService {
             readiness: PbftServiceReadiness::pending(),
             pillar,
         })
+    }
+
+    /// Reports whether restoration created the default PBFT chain head.
+    ///
+    /// The query acquires the chain sibling's read lock and returns its
+    /// restoration marker without consulting storage or mutating live state.
+    /// A poisoned sibling lock follows the chain service's fatal panic policy.
+    pub fn pbft_chain_initialized_default(&self) -> bool {
+        self.chain().initialized_default()
+    }
+
+    /// Returns an owned snapshot of the current native PBFT chain head.
+    ///
+    /// The snapshot is coherent under the chain sibling's read lock and is
+    /// independent of later updates. A poisoned lock follows the chain
+    /// service's fatal panic policy.
+    pub fn pbft_chain_head(&self) -> PbftChainHead {
+        self.chain().head()
+    }
+
+    /// Projects the legacy JSON-facing PBFT head without mutation.
+    ///
+    /// `block_hash` becomes the projected last PBFT block and
+    /// `size` always advances by one, while `increments_non_empty_size`
+    /// controls whether `non_empty_size` advances. The result is derived from
+    /// one coherent chain snapshot; overflow is returned as an error and
+    /// neither live state nor storage is changed.
+    pub fn pbft_chain_project_legacy_json_head(
+        &self,
+        block_hash: H256,
+        increments_non_empty_size: bool,
+    ) -> Result<PbftChainHead> {
+        self.chain()
+            .project_legacy_json_head(block_hash, increments_non_empty_size)
+    }
+
+    /// Applies one in-memory PBFT head transition and returns the new snapshot.
+    ///
+    /// `block_hash` is the next finalized PBFT block and `anchor_hash` is its
+    /// DAG anchor, where zero denotes a null anchor. The chain sibling owns
+    /// checked size arithmetic and locking; overflow returns an error without
+    /// partial mutation. Linkage validation is intentionally a separate task,
+    /// and this operation performs no storage write because durable publication
+    /// is owned by finalization.
+    pub fn pbft_chain_update(&self, block_hash: H256, anchor_hash: H256) -> Result<PbftChainHead> {
+        self.chain().update(block_hash, anchor_hash)
+    }
+
+    /// Checks native storage for one finalized PBFT block hash.
+    ///
+    /// The query uses the storage handle owned by the chain sibling and does
+    /// not mutate its live head. Backend and index errors are propagated.
+    pub fn pbft_chain_block_exists(&self, block_hash: H256) -> Result<bool> {
+        self.chain().block_exists(block_hash)
+    }
+
+    /// Loads one canonical finalized PBFT block RLP payload from native storage.
+    ///
+    /// A missing hash is represented by `found = false` with empty bytes.
+    /// Backend, decoding, and hash-consistency failures are returned as errors;
+    /// the live chain head is not mutated.
+    pub fn pbft_chain_block_rlp(&self, block_hash: H256) -> Result<PbftBlockStorageLookup> {
+        self.chain().block_rlp(block_hash)
+    }
+
+    /// Validates whether a candidate period and previous hash extend the live head.
+    ///
+    /// The chain sibling samples one coherent head under its read lock and
+    /// returns a typed valid, period-mismatch, or previous-hash-mismatch result.
+    /// Validation is side-effect-free; poisoned locks follow the sibling's
+    /// fatal panic policy.
+    pub fn pbft_chain_validate_block(&self, period: u64, prev_hash: H256) -> PbftBlockValidation {
+        self.chain().validate_block(period, prev_hash)
+    }
+
+    /// Persists and publishes one proposed PBFT block through native service state.
+    ///
+    /// The supplied identity must match the canonical signed block RLP. The
+    /// proposal sibling holds one write lock across validation, an unconditional
+    /// durable overwrite, duplicate detection, and possible live insertion.
+    /// Storage commits before memory publication. The result is `true` only for
+    /// a new live entry; a duplicate returns `false` after repairing its durable
+    /// row. Validation, storage, and lock failures are returned without making
+    /// live state lead durable state.
+    pub fn publish_proposed_block(
+        &self,
+        period: u64,
+        block_hash: H256,
+        pivot_hash: H256,
+        block_rlp: Vec<u8>,
+    ) -> Result<bool> {
+        self.proposed_blocks()
+            .push_with_storage(period, block_hash, pivot_hash, block_rlp)
+    }
+
+    /// Marks one proposed PBFT block as valid in process-local state.
+    ///
+    /// The period and hash must identify an existing entry. Missing entries and
+    /// lock failure return errors without mutation. This task performs no block
+    /// validation and no storage write; callers invoke it only after the
+    /// retained external validator succeeds.
+    pub fn mark_proposed_block_valid(&self, period: u64, block_hash: H256) -> Result<()> {
+        self.proposed_blocks().mark_valid(period, block_hash)
+    }
+
+    /// Returns an owned proposed-block entry from process-local state.
+    ///
+    /// The lookup is side-effect-free and returns `None` for a missing period
+    /// and hash. Canonical RLP and the process-local validation bit are cloned
+    /// while the sibling read lock is held; lock poison follows its fatal panic
+    /// policy.
+    pub fn proposed_block(&self, period: u64, block_hash: H256) -> Option<ProposedBlockEntry> {
+        self.proposed_blocks().get(period, block_hash)
+    }
+
+    /// Returns an owned, deterministically ordered proposed-block snapshot.
+    ///
+    /// Entries preserve the native period/hash index order and include canonical
+    /// RLP plus process-local validation state. The snapshot is point-in-time,
+    /// independent of later mutations, and performs no storage I/O. Lock poison
+    /// follows the sibling service's fatal panic policy.
+    pub fn proposed_block_snapshot_entries(&self) -> Vec<ProposedBlockEntry> {
+        self.proposed_blocks().snapshot_entries()
     }
 
     /// Publishes completion of PBFT startup replay.
@@ -2130,17 +2256,17 @@ impl PbftService {
     }
 
     /// Locks the native manager serialization domain.
-    pub fn manager_state(&self) -> PbftManagerGuard<'_> {
+    pub(crate) fn manager_state(&self) -> PbftManagerGuard<'_> {
         self.manager.lock()
     }
 
     /// Returns the native PBFT-chain sibling.
-    pub fn chain(&self) -> &PbftChainService {
+    pub(crate) fn chain(&self) -> &PbftChainService {
         &self.chain
     }
 
     /// Returns the native proposed-block sibling.
-    pub fn proposed_blocks(&self) -> &ProposedBlocksService {
+    pub(crate) fn proposed_blocks(&self) -> &ProposedBlocksService {
         &self.proposed_blocks
     }
 
@@ -2373,6 +2499,7 @@ mod tests {
     use crate::dag_service::DagServiceConfig;
     use crate::dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig};
     use crate::gas_pricer::GasPricerConfig;
+    use crate::pbft_chain::{PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead};
     use crate::pbft_thresholds::PbftTwoTPlusOneThresholdStatus;
     use crate::pbft_vote_event::PbftVoteEventFactFlags;
     use crate::pbft_vote_generation::{
@@ -2389,10 +2516,13 @@ mod tests {
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
     use rustaxa_storage::Config;
+    use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+    use rustaxa_types::pbft::PbftBlockLink;
     use rustaxa_types::pillar::{
         CurrentPillarBlockDataDb, PillarBlock, PillarVote, ValidatorVoteCount,
     };
     use rustaxa_vdf::vrf;
+    use std::convert::TryFrom;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2434,6 +2564,22 @@ mod tests {
             report_malicious_behaviour: true,
             magnolia_activation_period: 0,
         }
+    }
+
+    fn pbft_block_rlp(period: u64, timestamp: u64) -> (Vec<u8>, PbftBlockLink) {
+        let mut stream = rlp::RlpStream::new_list(8);
+        stream.append(&H256::from_low_u64_be(period));
+        stream.append(&H256::from_low_u64_be(period + 1));
+        stream.append(&H256::from_low_u64_be(period + 2));
+        stream.append(&H256::from_low_u64_be(period + 3));
+        stream.append(&period);
+        stream.append(&timestamp);
+        stream.append(&H256::from_low_u64_be(period + 4));
+        stream.append(&vec![0u8; 65]);
+        let rlp = stream.out().to_vec();
+        let link =
+            PbftBlockLink::try_from(SignedPbftBlockRlp::new(&rlp)).expect("decode should succeed");
+        (rlp, link)
     }
 
     fn dynamic_lambda_fact(finalized_period: u64) -> PbftDynamicLambdaFact {
@@ -4060,6 +4206,138 @@ mod tests {
         assert!(service.proposal_session_next().is_some());
         service.begin_pbft_sync_queue_drain();
         assert!(service.pbft_sync_queue_drain_next(1, 10).is_some());
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn pbft_chain_task_methods_preserve_chain_semantics() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_chain_task_wrapper");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+
+        assert!(service.pbft_chain_initialized_default());
+        let initial = service.pbft_chain_head();
+        assert_eq!(initial.size, 0);
+        assert_eq!(initial.non_empty_size, 0);
+        assert_eq!(initial.last_pbft_block_hash, H256::zero());
+        assert_eq!(initial.last_non_null_pbft_dag_anchor_hash, H256::zero());
+
+        assert!(matches!(
+            service.pbft_chain_validate_block(1, H256::zero()),
+            PbftBlockValidation::Valid
+        ));
+
+        assert_eq!(
+            service
+                .pbft_chain_project_legacy_json_head(H256::from([0x11; 32]), true)
+                .unwrap(),
+            PbftChainHead {
+                head_hash: H256::zero(),
+                size: 1,
+                non_empty_size: 1,
+                last_pbft_block_hash: H256::from([0x11; 32]),
+                last_non_null_pbft_dag_anchor_hash: H256::zero(),
+            }
+        );
+        assert!(
+            !service
+                .pbft_chain_block_exists(H256::from_low_u64_be(7))
+                .unwrap()
+        );
+        assert_eq!(
+            service
+                .pbft_chain_block_rlp(H256::from_low_u64_be(7))
+                .unwrap(),
+            PbftBlockStorageLookup {
+                found: false,
+                block_rlp: Vec::new(),
+            }
+        );
+
+        let chain_update = service
+            .pbft_chain_update(H256::from_low_u64_be(11), H256::zero())
+            .unwrap();
+        assert_eq!(chain_update.size, 1);
+        assert_eq!(chain_update.last_pbft_block_hash, H256::from_low_u64_be(11));
+
+        assert_eq!(
+            service.pbft_chain_head(),
+            PbftChainHead {
+                head_hash: H256::zero(),
+                size: 1,
+                non_empty_size: 0,
+                last_pbft_block_hash: H256::from_low_u64_be(11),
+                last_non_null_pbft_dag_anchor_hash: H256::zero(),
+            }
+        );
+        assert!(matches!(
+            service.pbft_chain_validate_block(2, H256::from_low_u64_be(11)),
+            PbftBlockValidation::Valid
+        ));
+        assert!(matches!(
+            service.pbft_chain_validate_block(3, H256::from_low_u64_be(11)),
+            PbftBlockValidation::PeriodMismatch {
+                expected: 2,
+                actual: 3
+            }
+        ));
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn pbft_service_proposed_block_task_methods_preserve_semantics() {
+        let (path, storage) =
+            temp_storage("rustaxa_consensus_pbft_service_proposed_block_task_wrapper");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+
+        let (rlp, link) = pbft_block_rlp(13, 12_345);
+        assert!(
+            service
+                .publish_proposed_block(
+                    link.period,
+                    link.block_hash,
+                    link.pivot_dag_block_hash,
+                    rlp.clone()
+                )
+                .unwrap()
+        );
+        assert_eq!(storage.pbft().proposed_rlp().unwrap().len(), 1);
+        let first = service
+            .proposed_block(link.period, link.block_hash)
+            .expect("proposal should be published");
+        assert_eq!(first.block_hash, link.block_hash);
+        assert_eq!(first.pivot_hash, link.pivot_dag_block_hash);
+        assert!(!first.is_valid);
+
+        service
+            .mark_proposed_block_valid(link.period, link.block_hash)
+            .unwrap();
+        let marked = service
+            .proposed_block(link.period, link.block_hash)
+            .expect("proposal should still exist after mark");
+        assert!(marked.is_valid);
+        assert_eq!(service.proposed_block_snapshot_entries().len(), 1);
+        assert_eq!(service.proposed_block_snapshot_entries()[0].is_valid, true);
+        assert!(
+            service
+                .proposed_block(link.period, H256::from_low_u64_be(99))
+                .is_none()
+        );
+
+        assert!(
+            !service
+                .publish_proposed_block(
+                    link.period,
+                    link.block_hash,
+                    link.pivot_dag_block_hash,
+                    rlp
+                )
+                .unwrap()
+        );
+        assert_eq!(storage.pbft().proposed_rlp().unwrap().len(), 1);
 
         drop(service);
         let _ = fs::remove_dir_all(path);

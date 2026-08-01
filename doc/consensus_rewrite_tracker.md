@@ -1726,6 +1726,37 @@ system package installation under PEP 668 and has neither `virtualenv` nor
 missing-plan result was corrected to preserve the requested period and round
 through the stable CXX projection.
 
+The next bounded `CRW-12` PBFT root-closure slice moves all seven PBFT-chain
+and four production proposed-block operations behind task-shaped native
+`PbftService` methods. The bridge can no longer obtain chain or proposal
+siblings, and the native sibling accessors are crate-private. The remaining
+test-only manager replacement hook is deleted as well, making the native
+manager accessor crate-private and leaving `BridgePbftService` with no state,
+lock, storage, sibling, or mutation escape hatch. CXX declarations, carriers,
+signatures, and C++ callers are unchanged; chain status/sentinel projection and
+proposal DTO projection remain bridge-only. Two focused native root tests cover
+the eleven routes, including typed validation mismatches, missing storage
+lookups, durable proposal publication, duplicate behavior, validity mutation,
+and deterministic snapshots. Existing native sibling suites continue to own
+failure and restart behavior, while the bridge retains only boundary and the
+separately classified stateless storage/temporary-candidate fixtures. This
+removes a net 48 bridge lines and lowers the exact `bridge_lines` budget to
+23,875. CXX functions, carriers, handles, shim lines/directories, flags,
+factories, constructors, and production consumers are unchanged. No
+upstream-owned C++ file changes.
+
+Validation for this root-closure slice passed the full native consensus (1,073
+tests) and bridge (101 tests) suites, `rewrite-validate-fast`, both structural
+guards, the 49-case `rust_consensus_tests` binary, the two-case
+`pbft_chain_shim_test`, the storage-backed `PbftChainTest.pbft_db_test` in a
+fresh process, the focused single-node PBFT manager case, and
+`rewrite-validate-smoke` with `RUSTAXA_ENABLE=ON`. The aggregate consensus gate
+continues to expose the existing same-process `/tmp/taraxa0/db/db/LOCK` leak in
+multi-case binaries; an overlapping PBFT-manager run also encountered its
+existing fixed-port conflict. Focused affected cases pass when isolated.
+Independent review approved the native ownership, ABI stability, error and
+sentinel projection, documentation, and exact inventory contraction.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

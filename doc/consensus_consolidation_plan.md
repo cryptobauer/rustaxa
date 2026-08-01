@@ -97,6 +97,13 @@ configuration, duplicate-cache state, and its mutex; the slashing bridge now per
 task-oriented plan/report calls. Native `rustaxa-consensus::pbft_readiness::PbftServiceReadiness` also owns the
 independent monotonic PBFT and pillar-bootstrap readiness atomics plus their acquire/release publication contracts; the
 native application root retains those capabilities. Native
+PBFT chain and proposed-block production calls now enter through eleven
+task-shaped root methods as well. Their native sibling accessors, together with
+the manager accessor, are crate-private; the CXX adapter exposes no sibling or
+manager mutation hook, including in bridge tests. Chain and proposal bridge
+modules retain only stable carrier/status projection plus the separately
+classified stateless storage and temporary-candidate compatibility helpers.
+Native
 `rustaxa-consensus::pbft_manager::PbftManagerService` now owns the manager mutex and complete runtime/session container;
 the native root retains the service and the bridge exposes only a short-lived native guard to remaining DTO/effect
 adapters. Queue-drain, daemon-tick, state-action-effect, and proposal executor cursors now have lock-owning native root

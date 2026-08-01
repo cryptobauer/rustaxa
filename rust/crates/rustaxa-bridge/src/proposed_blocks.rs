@@ -23,7 +23,7 @@ impl BridgePbftService {
         pivot_hash: &[u8; 32],
         block_rlp: Vec<u8>,
     ) -> Result<bool, anyhow::Error> {
-        self.proposed_blocks().push_with_storage(
+        self.0.publish_proposed_block(
             period,
             H256::from(*block_hash),
             H256::from(*pivot_hash),
@@ -42,22 +42,22 @@ impl BridgePbftService {
         period: u64,
         block_hash: &[u8; 32],
     ) -> Result<(), anyhow::Error> {
-        self.proposed_blocks()
-            .mark_valid(period, H256::from(*block_hash))
+        self.0
+            .mark_proposed_block_valid(period, H256::from(*block_hash))
     }
 
-    /// Looks up one proposed PBFT block and its cached validation flag.
+    /// Loads one proposed PBFT block and its cached validation flag.
     ///
-    /// The returned carrier owns canonical RLP bytes for C++ compatibility
-    /// materialization. Missing entries produce `found = false` with empty
-    /// payload and do not mutate service state.
+    /// The returned carrier owns canonical block bytes for compatibility
+    /// materialization. Missing entries return `found = false` and do not mutate
+    /// service state.
     pub fn pbft_service_proposed_blocks_get(
         &self,
         period: u64,
         block_hash: &[u8; 32],
     ) -> ProposedBlockLookup {
-        self.proposed_blocks()
-            .get(period, H256::from(*block_hash))
+        self.0
+            .proposed_block(period, H256::from(*block_hash))
             .map(|entry| ProposedBlockLookup {
                 found: true,
                 is_valid: entry.is_valid,
@@ -72,14 +72,14 @@ impl BridgePbftService {
             })
     }
 
-    /// Returns an owned snapshot of all live proposed-block entries.
+    /// Returns an owned snapshot of all proposed-block entries.
     ///
     /// Canonical RLP and validation flags are copied for C++ materialization.
     /// The snapshot is point-in-time and subsequent service mutations do not
     /// change it.
     pub fn pbft_service_proposed_blocks_snapshot_entries(&self) -> Vec<ProposedBlockSnapshotEntry> {
-        self.proposed_blocks()
-            .snapshot_entries()
+        self.0
+            .proposed_block_snapshot_entries()
             .into_iter()
             .map(|entry| ProposedBlockSnapshotEntry {
                 period: entry.period,
