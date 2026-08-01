@@ -114,6 +114,7 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
     PbftManagerStateActionSessionStep, PbftManagerTransitionKind,
 };
+use rustaxa_consensus::pbft_service::PbftManagerLifecycleTransitionOutcome;
 use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
     PbftSyncQueueDrainStatus, PbftSyncQueueDrainStep,
@@ -381,19 +382,6 @@ impl From<&FfiPbftFinalizationIntentPlan> for PbftFinalizationPlan {
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
 const RUNTIME_STATUS_COMPLETE: u8 = 1;
 const ACTION_NO_ACTION: u8 = 255;
-/// Rust-only configuration facts for bridge tests that construct the full
-/// production PBFT service through its chain-derived restore path.
-#[cfg(test)]
-pub(crate) struct TestPbftManagerStartupFact {
-    pub cacti_active_at_chain_size: bool,
-    pub genesis_lambda_ms: u64,
-    pub cacti_lambda_max_ms: u64,
-    pub cacti_lambda_default_ms: u64,
-    pub max_exponential_lambda_ms: u64,
-    pub max_steps: u64,
-    pub deadline_ms: u64,
-    pub polling_interval_ms: u64,
-}
 
 fn to_startup_u32(value: u64, field: &str) -> anyhow::Result<u32> {
     u32::try_from(value).map_err(|_| anyhow!("PBFT_MANAGER_STARTUP_{field}_OVERFLOW"))
@@ -457,34 +445,6 @@ pub fn create_pbft_service_from_storage(
 pub fn pbft_service_complete_bootstrap(service: &BridgePbftService) -> anyhow::Result<()> {
     service.complete_bootstrap();
     Ok(())
-}
-
-#[cfg(test)]
-pub fn create_pbft_manager_runtime_from_storage(
-    storage: &BridgeStorage,
-    fact: TestPbftManagerStartupFact,
-) -> anyhow::Result<Box<BridgePbftService>> {
-    let service = create_pbft_service_from_storage(
-        storage,
-        FfiPbftServiceConfig {
-            genesis_lambda_ms: fact.genesis_lambda_ms,
-            cacti_lambda_max_ms: fact.cacti_lambda_max_ms,
-            cacti_lambda_default_ms: fact.cacti_lambda_default_ms,
-            cacti_block: if fact.cacti_active_at_chain_size {
-                0
-            } else {
-                u64::MAX
-            },
-            max_exponential_lambda_ms: fact.max_exponential_lambda_ms,
-            max_steps: fact.max_steps,
-            deadline_ms: fact.deadline_ms,
-            polling_interval_ms: fact.polling_interval_ms,
-            report_malicious_behaviour: false,
-            magnolia_activation_period: 0,
-        },
-    )?;
-    pbft_service_complete_bootstrap(&service)?;
-    Ok(service)
 }
 
 /// Loads one finalized period for PBFT manager startup replay through runtime-owned storage.
@@ -1259,17 +1219,28 @@ pub fn pbft_manager_runtime_execute_lifecycle_transition(
     runtime: &BridgePbftService,
     request: FfiPbftManagerLifecycleTransitionRequest,
 ) -> anyhow::Result<FfiPbftManagerLifecycleTransitionResult> {
-    let outcome =
-        runtime
-            .0
-            .execute_lifecycle_transition(PbftManagerLifecycleTransitionRequest {
-                kind: PbftManagerTransitionKind::from_u8(request.kind),
-                target_period: request.target_period,
-                target_round: request.target_round,
-                has_network_next_voting_step: request.has_network_next_voting_step,
-                network_next_voting_step: request.network_next_voting_step,
-            })?;
-    Ok(FfiPbftManagerLifecycleTransitionResult {
+    let outcome = runtime
+        .0
+        .execute_lifecycle_transition(lifecycle_transition_request_from_ffi(request))?;
+    Ok(lifecycle_transition_result_from_domain(outcome))
+}
+
+fn lifecycle_transition_request_from_ffi(
+    request: FfiPbftManagerLifecycleTransitionRequest,
+) -> PbftManagerLifecycleTransitionRequest {
+    PbftManagerLifecycleTransitionRequest {
+        kind: PbftManagerTransitionKind::from_u8(request.kind),
+        target_period: request.target_period,
+        target_round: request.target_round,
+        has_network_next_voting_step: request.has_network_next_voting_step,
+        network_next_voting_step: request.network_next_voting_step,
+    }
+}
+
+fn lifecycle_transition_result_from_domain(
+    outcome: PbftManagerLifecycleTransitionOutcome,
+) -> FfiPbftManagerLifecycleTransitionResult {
+    FfiPbftManagerLifecycleTransitionResult {
         status: outcome.status.as_u8(),
         snapshot: outcome.snapshot.into(),
         remove_cert_voted_sidecar: outcome.remove_cert_voted_sidecar,
@@ -1281,7 +1252,7 @@ pub fn pbft_manager_runtime_execute_lifecycle_transition(
         print_second_finish_step_info: outcome.print_second_finish_step_info,
         reset_executed_block_follow_up: outcome.reset_executed_block_follow_up,
         error_code: outcome.error_code,
-    })
+    }
 }
 
 /// Applies the delayed executed-block manager-status reset through Rust storage.
@@ -2510,89 +2481,19 @@ mod period_data_queue_adapter_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::create_storage;
     use ethereum_types::H256;
     use rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStatus;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use rustaxa_consensus::pbft_manager::{
+        PbftManagerRuntimeStateCode, PbftManagerStartupRestoreStatus, PbftManagerTransitionKind,
+    };
 
-    const STATE_VALUE_PROPOSAL: u8 = 0;
-    const STARTUP_STATUS_READY: u8 = 0;
-    const TRANSITION_RESET: u8 = 0;
     const TRANSITION_FILTER: u8 = 1;
-    const TRANSITION_STORAGE_STATUS_APPLIED: u8 = 0;
     const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
     const ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND: u8 = 2;
     const ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER: u8 = 3;
     const ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS: u8 = 4;
     const ADVANCE_ACTION_RESET_PERIOD_TIMER: u8 = 5;
     const ADVANCE_ACTION_UPDATE_WALLET_ELIGIBILITY: u8 = 6;
-
-    fn unique_temp_dir(prefix: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), nanos))
-    }
-
-    fn fact(state: u8) -> FfiPbftManagerRuntimeTickFact {
-        FfiPbftManagerRuntimeTickFact {
-            tick_id: 77,
-            state,
-            period: 10,
-            round: 2,
-            step: 3,
-            network_available: true,
-            network_pbft_syncing: false,
-            has_eligible_wallet: true,
-            polling_interval_ms: 100,
-        }
-    }
-
-    fn runtime_for_startup(name: &str) -> Box<BridgePbftService> {
-        let temp_path = unique_temp_dir(name);
-        let storage =
-            crate::storage::create_storage(temp_path.to_str().expect("utf-8 temp path")).unwrap();
-        let mut startup = startup_fact();
-        startup.cacti_active_at_chain_size = false;
-        create_pbft_manager_runtime_from_storage(&storage, startup).unwrap()
-    }
-
-    fn proposal_fact() -> FfiPbftManagerProposalInitialFact {
-        FfiPbftManagerProposalInitialFact {
-            period: 10,
-            round: 2,
-            previous_pbft_block_hash: [0x11; 32],
-            last_period_dag_anchor_hash: [0x01; 32],
-            dag_genesis_hash: [0x01; 32],
-            dag_blocks_size: 10,
-            ghost_path_move_back: 0,
-            pbft_gas_limit: 100,
-            extra_data_required: false,
-            extra_data_available: false,
-            wallets: vec![
-                FfiPbftManagerProposalWalletFact {
-                    wallet_index: 0,
-                    dpos_eligible: false,
-                    sortition_valid: true,
-                },
-                FfiPbftManagerProposalWalletFact {
-                    wallet_index: 1,
-                    dpos_eligible: true,
-                    sortition_valid: true,
-                },
-            ],
-            ghost_path: vec![
-                FfiPbftFinalizationHash { hash: [0x01; 32] },
-                FfiPbftFinalizationHash { hash: [0x02; 32] },
-                FfiPbftFinalizationHash { hash: [0x03; 32] },
-            ],
-            has_non_finalized_fallback: false,
-            non_finalized_fallback_hash: [0; 32],
-        }
-    }
 
     fn lifecycle_transition_request(kind: u8) -> FfiPbftManagerLifecycleTransitionRequest {
         FfiPbftManagerLifecycleTransitionRequest {
@@ -2604,147 +2505,98 @@ mod tests {
         }
     }
 
-    fn startup_fact() -> TestPbftManagerStartupFact {
-        TestPbftManagerStartupFact {
-            cacti_active_at_chain_size: true,
-            genesis_lambda_ms: 100,
-            cacti_lambda_max_ms: 1_500,
-            cacti_lambda_default_ms: 500,
-            max_exponential_lambda_ms: 60_000,
-            max_steps: 13,
-            deadline_ms: 1_000,
-            polling_interval_ms: 100,
+    fn runtime_snapshot() -> rustaxa_consensus::pbft_manager::PbftManagerRuntimeSnapshot {
+        rustaxa_consensus::pbft_manager::PbftManagerRuntimeSnapshot {
+            status: PbftManagerStartupRestoreStatus::Ready,
+            state: PbftManagerRuntimeStateCode::ValueProposal,
+            period: 10,
+            round: 2,
+            step: 3,
+            current_round_lambda_ms: 100,
+            next_step_time_ms: 99,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda_ms: 1000,
+            executed_pbft_block: false,
+            already_next_voted_value: false,
+            already_next_voted_null: false,
+            broadcast_votes_counter: 1,
+            rebroadcast_votes_counter: 1,
+            broadcast_reward_votes_counter: 1,
+            rebroadcast_reward_votes_counter: 1,
+            has_cert_voted_block: false,
+            cert_voted_block_period: 0,
+            cert_voted_block_round: 0,
+            cert_voted_block_hash: H256::repeat_byte(0x11),
+            persist_normalized_step: false,
+            reset_second_finish_start: false,
+            error_code: String::new(),
         }
     }
 
-    fn service_config(cacti_block: u64) -> FfiPbftServiceConfig {
-        let startup = startup_fact();
-        FfiPbftServiceConfig {
-            genesis_lambda_ms: startup.genesis_lambda_ms,
-            cacti_lambda_max_ms: startup.cacti_lambda_max_ms,
-            cacti_lambda_default_ms: startup.cacti_lambda_default_ms,
-            cacti_block,
-            max_exponential_lambda_ms: startup.max_exponential_lambda_ms,
-            max_steps: startup.max_steps,
-            deadline_ms: startup.deadline_ms,
-            polling_interval_ms: startup.polling_interval_ms,
-            report_malicious_behaviour: true,
-            magnolia_activation_period: 0,
-        }
+    fn applied_transition_result(effects: [bool; 8]) -> FfiPbftManagerLifecycleTransitionResult {
+        lifecycle_transition_result_from_domain(PbftManagerLifecycleTransitionOutcome {
+            status: rustaxa_consensus::pbft_manager::PbftManagerTransitionStorageStatus::Applied,
+            snapshot: runtime_snapshot(),
+            remove_cert_voted_sidecar: effects[0],
+            clear_broadcasted_vote_sidecars: effects[1],
+            set_vote_manager_period_round: effects[2],
+            reset_current_round_timer: effects[3],
+            reset_second_finish_timer: effects[4],
+            print_cert_step_info: effects[5],
+            print_second_finish_step_info: effects[6],
+            reset_executed_block_follow_up: effects[7],
+            error_code: String::new(),
+        })
     }
 
     #[test]
-    fn pbft_service_rejects_live_sessions_until_bootstrap_completes() {
-        let path = unique_temp_dir("rustaxa_bridge_pbft_service_bootstrap_phase");
-        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
-        let service = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
-
-        pbft_manager_runtime_begin_session(&service, fact(STATE_VALUE_PROPOSAL));
+    fn bootstrap_fallback_adapters_preserve_status_and_errors() {
+        let runtime_step = runtime_session_not_started_step();
         assert_eq!(
-            pbft_manager_runtime_session_next(&service).error_code,
+            runtime_step.error_code,
             "PBFT_MANAGER_RUNTIME_SESSION_NOT_STARTED"
         );
-        pbft_manager_runtime_begin_proposal_session_with_hash(
-            &service,
-            proposal_fact(),
-            Some([0x22; 32]),
-        );
         assert_eq!(
-            pbft_manager_proposal_session_next(&service).error_code,
+            runtime_step.status,
+            PbftManagerRuntimeStatus::ContractError.as_u8()
+        );
+        assert!(!runtime_step.can_continue);
+
+        let proposal_step = proposal_session_not_started_step();
+        assert_eq!(
+            proposal_step.error_code,
             "PBFT_MANAGER_PROPOSAL_SESSION_NOT_STARTED"
         );
-        crate::pbft_sync::pbft_manager_runtime_begin_pbft_sync_admission(
-            &service,
-            crate::ffi::rustaxa_ffi::PbftSyncAdmissionInitialFact {
-                block_period: 1,
-                block_prev_hash: [0; 32],
-                chain_last_hash: [0; 32],
-                chain_last_period: 0,
-                block_in_chain: false,
-                dag_transaction_hashes: Vec::new(),
-                period_data_transaction_hashes: Vec::new(),
-                extra_data_required: false,
-                extra_data_present: false,
-                extra_data_pillar_block_hash_present: false,
-                pillar_votes_required: false,
-                pillar_votes_present: false,
-                previous_cert_votes_present: true,
-                previous_cert_first_vote_has_weight: false,
-            },
-        );
         assert_eq!(
-            crate::pbft_sync::pbft_manager_runtime_pbft_sync_admission_next(&service).error_code,
-            "PBFT_SYNC_ADMISSION_SESSION_NOT_STARTED"
+            proposal_step.action,
+            PbftManagerProposalAction::ContractError.as_u8()
         );
-        pbft_manager_runtime_begin_pbft_sync_queue_drain(&service);
-        let blocked_drain = pbft_manager_runtime_pbft_sync_queue_drain_next(&service, 1, 1);
-        assert!(!blocked_drain.can_continue);
+
+        let blocked_drain = queue_drain_bootstrap_incomplete_step();
         assert_eq!(
             blocked_drain.error_code,
             "PBFT_SERVICE_BOOTSTRAP_INCOMPLETE"
         );
+        assert_eq!(
+            blocked_drain.status,
+            PbftSyncQueueDrainStatus::InvalidReport.as_u8()
+        );
+        assert!(!blocked_drain.can_continue);
 
-        pbft_service_complete_bootstrap(&service).unwrap();
-        pbft_manager_runtime_begin_session(&service, fact(STATE_VALUE_PROPOSAL));
-        assert!(pbft_manager_runtime_session_next(&service).can_continue);
-        pbft_manager_runtime_begin_proposal_session_with_hash(
-            &service,
-            proposal_fact(),
-            Some([0x22; 32]),
+        let blocked_report = queue_drain_bootstrap_incomplete_report();
+        assert_eq!(
+            blocked_report.error_code,
+            "PBFT_SERVICE_BOOTSTRAP_INCOMPLETE"
         );
-        assert!(pbft_manager_proposal_session_next(&service)
-            .error_code
-            .is_empty());
-        crate::pbft_sync::pbft_manager_runtime_begin_pbft_sync_admission(
-            &service,
-            crate::ffi::rustaxa_ffi::PbftSyncAdmissionInitialFact {
-                block_period: 1,
-                block_prev_hash: [0; 32],
-                chain_last_hash: [0; 32],
-                chain_last_period: 0,
-                block_in_chain: false,
-                dag_transaction_hashes: Vec::new(),
-                period_data_transaction_hashes: Vec::new(),
-                extra_data_required: false,
-                extra_data_present: false,
-                extra_data_pillar_block_hash_present: false,
-                pillar_votes_required: false,
-                pillar_votes_present: false,
-                previous_cert_votes_present: true,
-                previous_cert_first_vote_has_weight: false,
-            },
+        assert_eq!(
+            blocked_report.status,
+            PbftSyncQueueDrainStatus::InvalidReport.as_u8()
         );
-        assert!(
-            crate::pbft_sync::pbft_manager_runtime_pbft_sync_admission_next(&service).has_check
-        );
-        pbft_manager_runtime_begin_pbft_sync_queue_drain(&service);
-        let ready_drain = pbft_manager_runtime_pbft_sync_queue_drain_next(&service, 1, 1);
-        assert!(ready_drain.can_continue);
-        assert_ne!(ready_drain.error_code, "PBFT_SERVICE_BOOTSTRAP_INCOMPLETE");
-    }
-
-    fn runtime_for_finalization_test(name: &str) -> (PathBuf, Box<BridgePbftService>) {
-        let temp_dir = unique_temp_dir(name);
-        let storage = create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-            .expect("storage should initialize");
-        let mut startup = startup_fact();
-        startup.cacti_active_at_chain_size = false;
-        let runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
-            .expect("runtime should initialize");
-        (1_u8..=9).for_each(|value| {
-            let block_hash = [value; 32];
-            let anchor_hash = if value <= 4 { [0_u8; 32] } else { [2_u8; 32] };
-            runtime
-                .pbft_chain_update(&block_hash, &anchor_hash)
-                .expect("test PBFT chain update should succeed");
-        });
-        (temp_dir, runtime)
+        assert!(!blocked_report.can_continue);
     }
 
     #[test]
     fn manager_runtime_projects_native_owned_drain_compatibility_flags() {
-        let (_temp_dir, runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_owned_drain_projection");
         let state = finalization_executor_state_from_boundary(
             rustaxa_consensus::pbft_manager::PbftFinalizationExecutorBoundary {
                 cleared_anchor_dag_cache: true,
@@ -2759,7 +2611,7 @@ mod tests {
                     complete: false,
                     error_code: String::new(),
                 },
-                snapshot: runtime.0.manager_snapshot(),
+                snapshot: runtime_snapshot(),
                 error_code: String::new(),
             },
         );
@@ -2773,6 +2625,28 @@ mod tests {
             state.action,
             PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
         );
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert!(state.has_action);
+        assert!(!state.complete);
+        assert!(state.can_continue);
+        assert_eq!(
+            state.snapshot.status,
+            PbftManagerStartupRestoreStatus::Ready.as_u8()
+        );
+        assert_eq!(
+            state.snapshot.state,
+            PbftManagerRuntimeStateCode::ValueProposal.as_u8()
+        );
+        assert_eq!(
+            (
+                state.snapshot.period,
+                state.snapshot.round,
+                state.snapshot.step
+            ),
+            (10, 2, 3)
+        );
+        assert_eq!(state.snapshot.cert_voted_block_hash, [0x11; 32]);
+        assert!(state.error_code.is_empty());
     }
 
     #[test]
@@ -2929,7 +2803,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_plans_startup_replay_ranges_and_advance_period_commit() {
+    fn startup_replay_and_advance_period_adapters_preserve_boundary_codes() {
         let replay =
             plan_pbft_manager_startup_replay_ranges(FfiPbftManagerStartupReplayRangeFact {
                 final_chain_last_block: 8,
@@ -2958,137 +2832,133 @@ mod tests {
             "PBFT_MANAGER_STARTUP_REPLAY_FINAL_CHAIN_AHEAD"
         );
 
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_advance_period");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(1, 1)
-                .expect("step seed should persist");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
+        let plan_from_fixtures = FfiPbftManagerAdvancePeriodPlan {
+            accepted: true,
+            finalized_chain_size: 12,
+            new_period: 13,
+            actions: vec![
+                ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
+                ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER,
+                ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS,
+                ADVANCE_ACTION_RESET_PERIOD_TIMER,
+                ADVANCE_ACTION_UPDATE_WALLET_ELIGIBILITY,
+            ],
+            error_code: String::new(),
+        };
+        let accepted_report = validate_pbft_manager_advance_period_action_report(
+            &plan_from_fixtures,
+            FfiPbftManagerAdvancePeriodActionReport {
+                action_index: 0,
+                action: ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
+                succeeded: true,
+            },
+        );
+        assert!(accepted_report.accepted);
+        assert_eq!(accepted_report.status, 0);
+        assert!(accepted_report.error_code.is_empty());
 
-            let mut request = lifecycle_transition_request(TRANSITION_RESET);
-            request.target_period = 13;
-            request.target_round = 1;
-            let transition =
-                pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, request)
-                    .expect("reset transition should apply");
-            assert_eq!(transition.status, TRANSITION_STORAGE_STATUS_APPLIED);
-            assert_eq!(transition.snapshot.current_round_lambda_ms, 1_500);
+        let mismatch = validate_pbft_manager_advance_period_action_report(
+            &plan_from_fixtures,
+            FfiPbftManagerAdvancePeriodActionReport {
+                action_index: 1,
+                action: ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
+                succeeded: true,
+            },
+        );
+        assert!(!mismatch.accepted);
+        assert_eq!(mismatch.status, 4);
+        assert_eq!(
+            mismatch.error_code,
+            "PBFT_MANAGER_ADVANCE_PERIOD_REPORT_ACTION_MISMATCH"
+        );
 
-            let advance = pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 12);
-            assert!(advance.accepted);
-            assert_eq!(advance.finalized_chain_size, 12);
-            assert_eq!(advance.new_period, 13);
-            assert_eq!(
-                advance.actions,
-                vec![
-                    ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
-                    ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER,
-                    ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS,
-                    ADVANCE_ACTION_RESET_PERIOD_TIMER,
-                    ADVANCE_ACTION_UPDATE_WALLET_ELIGIBILITY,
-                ]
-            );
-
-            let report = validate_pbft_manager_advance_period_action_report(
-                &advance,
-                FfiPbftManagerAdvancePeriodActionReport {
-                    action_index: 0,
-                    action: ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
-                    succeeded: true,
-                },
-            );
-            assert!(report.accepted);
-            assert_eq!(report.status, 0);
-            assert!(report.error_code.is_empty());
-
-            let mismatch = validate_pbft_manager_advance_period_action_report(
-                &advance,
-                FfiPbftManagerAdvancePeriodActionReport {
-                    action_index: 1,
-                    action: ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
-                    succeeded: true,
-                },
-            );
-            assert!(!mismatch.accepted);
-            assert_eq!(mismatch.status, 4);
-            assert_eq!(
-                mismatch.error_code,
-                "PBFT_MANAGER_ADVANCE_PERIOD_REPORT_ACTION_MISMATCH"
-            );
-
-            let snapshot =
-                pbft_manager_runtime_apply_period_advance(&mut runtime, advance.new_period)
-                    .unwrap();
-            assert_eq!(snapshot.status, STARTUP_STATUS_READY);
-            assert_eq!(snapshot.period, 13);
-
-            let rejected_snapshot =
-                pbft_manager_runtime_apply_period_advance(&mut runtime, advance.new_period)
-                    .unwrap();
-            assert_ne!(rejected_snapshot.status, STARTUP_STATUS_READY);
-            assert_eq!(rejected_snapshot.period, 13);
-            assert_eq!(
-                rejected_snapshot.error_code,
-                "PBFT_MANAGER_ADVANCE_PERIOD_NON_INCREASING_PERIOD"
-            );
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
+        let rejected_script = validate_pbft_manager_advance_period_action_report(
+            &plan_from_fixtures,
+            FfiPbftManagerAdvancePeriodActionReport {
+                action_index: 0,
+                action: ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
+                succeeded: false,
+            },
+        );
+        assert!(!rejected_script.accepted);
+        assert_eq!(rejected_script.status, 5);
     }
 
     #[test]
-    fn bridge_runtime_maps_unknown_transition_without_mutation() {
-        let mut runtime = runtime_for_startup("rustaxa_bridge_unknown_transition");
-        let before = pbft_manager_runtime_snapshot(&runtime);
-        let result = pbft_manager_runtime_execute_lifecycle_transition(
-            &mut runtime,
-            lifecycle_transition_request(255),
-        )
-        .expect("unknown transition should map to a rejection");
+    fn lifecycle_transition_adapters_preserve_unknown_kind_fields_and_effects() {
+        let mut request = lifecycle_transition_request_from_ffi(lifecycle_transition_request(255));
+        assert_eq!(request.kind, PbftManagerTransitionKind::Unknown);
+        assert_eq!(request.target_period, 10);
+        assert_eq!(request.target_round, 4);
+        assert_eq!(request.has_network_next_voting_step, false);
 
-        assert_eq!(result.status, TRANSITION_STORAGE_STATUS_REJECTED);
-        assert_eq!(result.error_code, "PBFT_MANAGER_TRANSITION_UNKNOWN_KIND");
-        assert_eq!(result.snapshot.period, before.period);
-        assert_eq!(result.snapshot.round, before.round);
-        assert_eq!(result.snapshot.step, before.step);
-        assert_eq!(result.snapshot.state, before.state);
-        let current = pbft_manager_runtime_snapshot(&runtime);
-        assert_eq!(current.period, before.period);
-        assert_eq!(current.round, before.round);
-        assert_eq!(current.step, before.step);
-        assert_eq!(current.state, before.state);
+        let before = runtime_snapshot();
+        let unknown =
+            lifecycle_transition_result_from_domain(PbftManagerLifecycleTransitionOutcome {
+                status:
+                    rustaxa_consensus::pbft_manager::PbftManagerTransitionStorageStatus::Rejected,
+                snapshot: before.clone(),
+                remove_cert_voted_sidecar: false,
+                clear_broadcasted_vote_sidecars: false,
+                set_vote_manager_period_round: false,
+                reset_current_round_timer: false,
+                reset_second_finish_timer: false,
+                print_cert_step_info: false,
+                print_second_finish_step_info: false,
+                reset_executed_block_follow_up: false,
+                error_code: "PBFT_MANAGER_TRANSITION_UNKNOWN_KIND".to_string(),
+            });
+        assert_eq!(unknown.status, TRANSITION_STORAGE_STATUS_REJECTED);
+        assert_eq!(unknown.error_code, "PBFT_MANAGER_TRANSITION_UNKNOWN_KIND");
+        assert_eq!(unknown.snapshot.period, before.period);
+        assert_eq!(unknown.snapshot.round, before.round);
+        assert_eq!(unknown.snapshot.step, before.step);
+        assert_eq!(unknown.snapshot.state, before.state.as_u8());
+        assert!(!unknown.remove_cert_voted_sidecar);
+        assert!(!unknown.clear_broadcasted_vote_sidecars);
+        assert!(!unknown.set_vote_manager_period_round);
+        assert!(!unknown.reset_current_round_timer);
+        assert!(!unknown.reset_second_finish_timer);
+        assert!(!unknown.print_cert_step_info);
+        assert!(!unknown.print_second_finish_step_info);
+        assert!(!unknown.reset_executed_block_follow_up);
 
-        let mut network_step_request = lifecycle_transition_request(TRANSITION_FILTER);
-        network_step_request.has_network_next_voting_step = true;
-        network_step_request.network_next_voting_step = 7;
-        let network_step_result =
-            pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, network_step_request)
-                .expect("unexpected network step should map to a rejection");
-        assert_eq!(
-            network_step_result.error_code,
-            "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH"
-        );
-        let current = pbft_manager_runtime_snapshot(&runtime);
-        assert_eq!(current.period, before.period);
-        assert_eq!(current.round, before.round);
-        assert_eq!(current.step, before.step);
-        assert_eq!(current.state, before.state);
+        let mut network_request = lifecycle_transition_request(TRANSITION_FILTER);
+        network_request.has_network_next_voting_step = true;
+        network_request.network_next_voting_step = 7;
+        request = lifecycle_transition_request_from_ffi(network_request);
+        assert_eq!(request.kind, PbftManagerTransitionKind::ToFilter);
+        assert!(request.has_network_next_voting_step);
+        assert_eq!(request.network_next_voting_step, 7);
+        for expected in [
+            // Reachable reset with cert-voted and executed-block facts present.
+            [true, true, true, true, false, false, false, true],
+            // Reachable transition to certify.
+            [false, false, false, false, false, true, false, false],
+            // Reachable transition to finish polling.
+            [false, false, false, false, true, false, true, false],
+        ] {
+            let applied = applied_transition_result(expected);
+            assert_eq!(
+                applied.status,
+                rustaxa_consensus::pbft_manager::PbftManagerTransitionStorageStatus::Applied
+                    .as_u8()
+            );
+            assert!(applied.error_code.is_empty());
+            assert_eq!(
+                [
+                    applied.remove_cert_voted_sidecar,
+                    applied.clear_broadcasted_vote_sidecars,
+                    applied.set_vote_manager_period_round,
+                    applied.reset_current_round_timer,
+                    applied.reset_second_finish_timer,
+                    applied.print_cert_step_info,
+                    applied.print_second_finish_step_info,
+                    applied.reset_executed_block_follow_up,
+                ],
+                expected
+            );
+        }
     }
 
     #[test]

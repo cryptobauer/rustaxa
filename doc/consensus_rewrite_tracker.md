@@ -1815,6 +1815,42 @@ review approved the contraction after the retained storage sentinel proved
 cloned-handle lifetime and exact error identities and the FinalChain sentinel
 covered every material block-plan carrier field.
 
+The following bounded `CRW-12` PBFT-manager test-ownership slice removes the
+last storage-backed manager protocol fixtures from `rustaxa-bridge`. Native
+`PbftService` and `PbftManagerRuntime` tests provide the authoritative coverage
+for bootstrap gating, runtime/proposal/sync cursor activation, lifecycle
+rejection without mutation,
+startup replay ranges, reset-authenticated period advance, and owned
+finalization draining. The bridge deletes its temporary-directory, storage,
+startup-service, seeded-finalization fixtures, and the now-callerless
+test-only manager runtime factory/configuration; its retained tests now
+construct only plain domain/FFI values and cover bootstrap fallback DTOs,
+startup/advance status codes, lifecycle request/result conversion, manager
+session carriers, storage-read carriers, and external-finalization effect
+projection. Lifecycle request/result conversion is centralized in private
+helpers used by the unchanged production entrypoint. This removes 130 bridge
+lines and lowers the exact `bridge_lines` budget to 23,303. Production callers,
+CXX functions, carriers, handles, shim lines/directories, flags, factories,
+constructors, declarations, signatures, and C++ callers are unchanged. No
+upstream-owned C++ file changes.
+
+Validation for this PBFT-manager bridge test-ownership slice passed the nine
+focused manager adapter tests, the period-data-queue adapter sentinel, the full
+native consensus (1,077 tests) and bridge (88 tests) suites, three focused CXX
+startup/period-advance/finalization-tail transcripts,
+`rewrite-validate-fast`, the bridge inventory guard and self-test, the
+storage-boundary guard, `git diff --check`, and `rewrite-validate-smoke` with
+`RUSTAXA_ENABLE=ON`. The aggregate consensus target again reached the known
+`pillar_chain_test` same-process database-lock leak: 10 of 13 cases passed,
+while `votes_count_changes`, `pillar_chain_syncing`, and
+`finalize_root_in_pillar_block` could not reacquire `/tmp/taraxa0/db/db/LOCK`.
+The focused PBFT tests required by this slice passed independently. Closeout
+searches found no `Old::`, retired consensus-network-queue, native
+`BridgeStorage`, or deleted PBFT test-factory references. Independent review
+approved after the lifecycle sentinel covered the rejected path and reachable
+reset, certify, and finish-polling effect combinations without relying on a
+protocol runtime.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
