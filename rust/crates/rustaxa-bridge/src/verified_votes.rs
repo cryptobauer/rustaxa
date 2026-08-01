@@ -63,18 +63,19 @@ use rustaxa_consensus::pbft_thresholds::{
     PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdStatus,
 };
 use rustaxa_consensus::pbft_vote_event::PbftVoteEventFactFlags as DomainPbftVoteEventFactFlags;
+use rustaxa_consensus::pbft_vote_payload::build_optimized_pbft_vote_bundle;
 #[cfg(test)]
 use rustaxa_consensus::pbft_vote_payload::PbftVotePayloadRecord as DomainPbftVotePayloadRecord;
-use rustaxa_consensus::pbft_vote_payload::{
-    build_optimized_pbft_vote_bundle, build_weighted_pbft_vote_payload,
-};
 use rustaxa_consensus::pbft_vote_storage::{
     clear_own_verified_votes, persist_pbft_vote_progress, save_own_verified_vote,
 };
 use rustaxa_consensus::pbft_vote_validation::{
-    inspect_canonical_pbft_vote, validate_canonical_pbft_vote, PbftCanonicalVoteInspectionStatus,
-    PbftCanonicalVoteValidation,
+    inspect_canonical_pbft_vote, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,
     PbftVoteAdmissionValidationRequest as DomainPbftVoteAdmissionValidationRequest,
+};
+#[cfg(test)]
+use rustaxa_consensus::pbft_vote_validation::{
+    validate_canonical_pbft_vote,
     PbftVoteValidationExternalFacts as DomainPbftVoteValidationExternalFacts,
 };
 use rustaxa_consensus::verified_votes::{
@@ -144,7 +145,6 @@ struct AtomicVoteInsertOutcome {
 
 fn threshold_fact_from_request(
     fact: &FfiPbftTwoTPlusOneThresholdFact,
-    current_pbft_chain_size: u64,
 ) -> Result<PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan> {
     let vote_type =
         PbftVoteType::try_from(fact.vote_type).map_err(|_| PbftTwoTPlusOneThresholdPlan {
@@ -160,7 +160,7 @@ fn threshold_fact_from_request(
     Ok(PbftTwoTPlusOneThresholdFact {
         pbft_period: fact.pbft_period,
         vote_type,
-        current_pbft_chain_size,
+        current_pbft_chain_size: 0,
         committee_size: fact.committee_size,
         number_of_proposers: fact.number_of_proposers,
         has_total_dpos_votes_count: false,
@@ -340,14 +340,6 @@ impl VerifiedVotesAccess<'_> {
     /// Inserts `vote_hash` into runtime-owned validation replay protection.
     pub fn verified_votes_replay_insert(&mut self, vote_hash: &[u8; 32]) -> bool {
         self.runtime.replay_insert(H256::from(*vote_hash))
-    }
-
-    /// Returns a Rust-owned PBFT `2t+1` threshold plan.
-    pub fn verified_votes_two_t_plus_one_threshold(
-        &mut self,
-        fact: PbftTwoTPlusOneThresholdFact,
-    ) -> PbftTwoTPlusOneThresholdPlan {
-        self.runtime.plan_two_t_plus_one_threshold(fact)
     }
 
     /// Inserts `vote` into unique-voter tracking.
@@ -724,6 +716,7 @@ impl VerifiedVotesAccess<'_> {
     ///
     /// The caller must supply validation produced for the exact canonical vote bytes. This helper owns the bounded
     /// replay/round/payload checkpoint and commits required progress writes before publishing any mutation or effect.
+    #[cfg(test)]
     fn verified_votes_admit_prevalidated(
         &mut self,
         canonical_vote_rlp: &[u8],
@@ -965,10 +958,9 @@ impl BridgePbftService {
     fn publish_vote_validation(
         &self,
         validation: PbftCanonicalVoteValidation,
+        replay: rustaxa_consensus::pbft_vote_runtime::PbftVoteRuntimeReplayOutcome,
         weighted_vote_rlp: Vec<u8>,
     ) -> Result<PbftVoteRuntimeValidationResult, anyhow::Error> {
-        let replay = self
-            .with_verified_votes(|votes| Ok(votes.runtime.record_validation_replay(&validation)))?;
         Ok(PbftVoteRuntimeValidationResult {
             status: validation.status.as_u8(),
             error_code: validation.error_code.to_owned(),
@@ -1001,112 +993,17 @@ impl BridgePbftService {
         committee_size: u64,
         number_of_proposers: u64,
     ) -> Result<PbftVoteRuntimeValidationResult, anyhow::Error> {
-        let validation = self.pbft_service_verified_votes_validate_with_final_chain_internal(
-            final_chain,
-            canonical_vote_rlp,
-            strict_vrf,
-            committee_size,
-            number_of_proposers,
-            false,
-            0,
-        )?;
-        let weighted_vote_rlp = if validation.accepted && validation.weight_calculated {
-            build_weighted_pbft_vote_payload(canonical_vote_rlp, validation.calculated_weight)?
-                .vote_rlp
-        } else {
-            Vec::new()
-        };
-        self.publish_vote_validation(validation, weighted_vote_rlp)
-    }
-
-    fn pbft_service_verified_votes_validate_with_final_chain_internal(
-        &self,
-        final_chain: &BridgeFinalChain,
-        canonical_vote_rlp: &[u8],
-        strict_vrf: bool,
-        committee_size: u64,
-        number_of_proposers: u64,
-        has_preverified_weight: bool,
-        preverified_weight: u64,
-    ) -> Result<PbftCanonicalVoteValidation, anyhow::Error> {
-        let inspection = inspect_canonical_pbft_vote(canonical_vote_rlp)?;
         let request = admission_validation_request_to_domain(PbftVoteAdmissionValidationRequest {
             strict_vrf,
             committee_size,
             number_of_proposers,
-            has_preverified_weight,
-            preverified_weight,
+            has_preverified_weight: false,
+            preverified_weight: 0,
         });
-        let mut facts = admission_validation_request_to_facts(request);
-
-        if inspection.status != PbftCanonicalVoteInspectionStatus::Valid {
-            return validate_canonical_pbft_vote(canonical_vote_rlp, facts);
-        }
-
-        if facts.has_preverified_weight {
-            return validate_canonical_pbft_vote(canonical_vote_rlp, facts);
-        }
-
-        let Some(dpos_period) = inspection.period.checked_sub(1) else {
-            facts.unknown_error = true;
-            return validate_canonical_pbft_vote(canonical_vote_rlp, facts);
-        };
-        let voter = inspection.recovered_voter.0;
-        match final_chain
+        let (validation, replay, weighted_vote_rlp) = self
             .0
-            .pbft_dpos_eligible_vote_count(dpos_period, voter)
-        {
-            Ok(Some(votes)) => {
-                facts.voter_dpos_ready = true;
-                facts.voter_dpos_vote_count = votes;
-            }
-            Ok(None) => facts.future_dpos_state = true,
-            Err(_) => facts.unknown_error = true,
-        }
-        let validation = validate_canonical_pbft_vote(canonical_vote_rlp, facts)?;
-        if validation.rejected || facts.future_dpos_state || facts.unknown_error {
-            return Ok(validation);
-        }
-
-        let cached_key =
-            self.with_verified_votes(|votes| Ok(votes.runtime.validation_vrf_key(voter)))?;
-        let mut key_lookup_error = false;
-        if let Some(key) = cached_key {
-            facts.has_vrf_key = true;
-            facts.vrf_public_key = key;
-        } else {
-            match final_chain.0.pbft_vrf_key_with_fallback(dpos_period, voter) {
-                Ok(Some(key)) => {
-                    facts.has_vrf_key = true;
-                    facts.vrf_public_key = key;
-                    self.with_verified_votes(|votes| {
-                        votes.runtime.cache_validation_vrf_key(voter, key);
-                        Ok(())
-                    })?;
-                }
-                Ok(None) => {}
-                Err(_) => key_lookup_error = true,
-            }
-        }
-        facts.vrf_key_ready = !key_lookup_error;
-        facts.unknown_error = key_lookup_error;
-        let validation = validate_canonical_pbft_vote(canonical_vote_rlp, facts)?;
-        if validation.rejected || facts.unknown_error {
-            return Ok(validation);
-        }
-
-        match final_chain
-            .0
-            .pbft_dpos_eligible_total_vote_count(dpos_period)
-        {
-            Ok(Some(total)) => {
-                facts.total_dpos_ready = true;
-                facts.total_dpos_vote_count = total;
-            }
-            Ok(None) => facts.future_dpos_state = true,
-            Err(_) => facts.unknown_error = true,
-        }
-        validate_canonical_pbft_vote(canonical_vote_rlp, facts)
+            .validate_verified_vote_with_final_chain(&final_chain.0, canonical_vote_rlp, request)?;
+        self.publish_vote_validation(validation, replay, weighted_vote_rlp.unwrap_or_default())
     }
 
     /// Validates and persists one canonical PBFT vote against FinalChain state.
@@ -1122,18 +1019,15 @@ impl BridgePbftService {
         flags: PbftVoteEventFactFlags,
         context: FfiPbftVoteProgressContext,
     ) -> Result<PbftVoteAdmissionRuntimeResult, anyhow::Error> {
-        let validation = self.pbft_service_verified_votes_validate_with_final_chain_internal(
-            final_chain,
+        let request = admission_validation_request_to_domain(validation_request);
+        let (validation, transaction) = self.0.admit_and_persist_verified_vote_with_final_chain(
+            &final_chain.0,
             canonical_vote_rlp,
-            validation_request.strict_vrf,
-            validation_request.committee_size,
-            validation_request.number_of_proposers,
-            validation_request.has_preverified_weight,
-            validation_request.preverified_weight,
+            request,
+            flags_to_domain(flags),
+            context_to_domain(&context),
         )?;
-        self.with_verified_votes(|votes| {
-            votes.verified_votes_admit_prevalidated(canonical_vote_rlp, validation, flags, context)
-        })
+        Ok(runtime_outcome_to_ffi(validation, transaction))
     }
 
     /// Plans or resolves one PBFT `2t+1` threshold with Rust FinalChain composition.
@@ -1152,49 +1046,14 @@ impl BridgePbftService {
         final_chain: &BridgeFinalChain,
         fact: FfiPbftTwoTPlusOneThresholdFact,
     ) -> Result<FfiPbftTwoTPlusOneThresholdPlan, anyhow::Error> {
-        let current_pbft_chain_size = self
-            .chain()
-            .read()
-            .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?
-            .state
-            .head()
-            .size;
-        let initial_fact = match threshold_fact_from_request(&fact, current_pbft_chain_size) {
-            Ok(fact) => fact,
+        let request = match threshold_fact_from_request(&fact) {
+            Ok(request) => request,
             Err(plan) => return Ok(threshold_plan_to_ffi(plan)),
         };
-        let initial = self.with_verified_votes(|votes| {
-            Ok(votes.verified_votes_two_t_plus_one_threshold(initial_fact))
-        })?;
-        if !initial.needs_total_dpos_votes {
-            return Ok(threshold_plan_to_ffi(initial));
-        }
-
-        let mut enriched = initial_fact;
-        match final_chain
+        let plan = self
             .0
-            .pbft_dpos_eligible_total_vote_count(enriched.pbft_period)
-        {
-            Ok(Some(total)) => {
-                enriched.has_total_dpos_votes_count = true;
-                enriched.total_dpos_votes_count = total;
-            }
-            Ok(None) => enriched.future_dpos_state = true,
-            Err(_) => enriched.unknown_error = true,
-        }
-
-        enriched.current_pbft_chain_size = self
-            .chain()
-            .read()
-            .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?
-            .state
-            .head()
-            .size;
-
-        self.with_verified_votes(
-            |votes| Ok(votes.verified_votes_two_t_plus_one_threshold(enriched)),
-        )
-        .map(threshold_plan_to_ffi)
+            .verified_votes_two_t_plus_one_threshold_with_final_chain(&final_chain.0, request)?;
+        Ok(threshold_plan_to_ffi(plan))
     }
 
     /// Prepares an owned native leader-selection snapshot for CXX validation.
@@ -1595,27 +1454,6 @@ fn admission_validation_request_to_domain(
     value: PbftVoteAdmissionValidationRequest,
 ) -> DomainPbftVoteAdmissionValidationRequest {
     DomainPbftVoteAdmissionValidationRequest {
-        strict_vrf: value.strict_vrf,
-        committee_size: value.committee_size,
-        number_of_proposers: value.number_of_proposers,
-        has_preverified_weight: value.has_preverified_weight,
-        preverified_weight: value.preverified_weight,
-    }
-}
-
-fn admission_validation_request_to_facts(
-    value: DomainPbftVoteAdmissionValidationRequest,
-) -> DomainPbftVoteValidationExternalFacts {
-    DomainPbftVoteValidationExternalFacts {
-        voter_dpos_ready: false,
-        voter_dpos_vote_count: 0,
-        total_dpos_ready: false,
-        total_dpos_vote_count: 0,
-        future_dpos_state: false,
-        unknown_error: false,
-        vrf_key_ready: false,
-        has_vrf_key: false,
-        vrf_public_key: [0; 32],
         strict_vrf: value.strict_vrf,
         committee_size: value.committee_size,
         number_of_proposers: value.number_of_proposers,
@@ -2038,9 +1876,7 @@ impl From<VerifiedVote> for VerifiedVotePayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::rustaxa_ffi;
     use crate::ffi::rustaxa_ffi::PbftServiceConfig;
-    use crate::final_chain::create_final_chain;
     use crate::pillar_chain::create_pillar_test_service_from_storage as full_service;
     use rustaxa_consensus::pbft_finalize::PbftFinalizedPeriodApplyStatus;
     use rustaxa_consensus::pbft_vote_admission::{
@@ -2500,52 +2336,6 @@ mod tests {
         BridgeStorage(Arc::new(Storage::new(Config::new(path)).unwrap()))
     }
 
-    fn u256_be(value: u64) -> Vec<u8> {
-        ethereum_types::U256::from(value).to_big_endian().to_vec()
-    }
-
-    fn final_chain_with_one_validator(storage: &BridgeStorage) -> Box<BridgeFinalChain> {
-        final_chain_with_validator(storage, [0x51; 20], [0x52; 32], 5_000)
-    }
-
-    fn final_chain_with_validator(
-        storage: &BridgeStorage,
-        address: [u8; 20],
-        vrf_key: [u8; 32],
-        stake: u64,
-    ) -> Box<BridgeFinalChain> {
-        create_final_chain(
-            storage,
-            0,
-            0,
-            Vec::new(),
-            vec![rustaxa_ffi::GenesisValidator {
-                address,
-                owner: address,
-                vrf_key,
-                commission: 0,
-                description: String::new(),
-                endpoint: String::new(),
-                total_stake: u256_be(stake),
-                delegations: vec![rustaxa_ffi::GenesisDelegation {
-                    delegator: address,
-                    stake: u256_be(stake),
-                }],
-            }],
-            rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: u256_be(1_000),
-                vote_eligibility_balance_step: u256_be(1_000),
-                validator_maximum_stake: u256_be(30_000),
-                minimum_deposit: Vec::new(),
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .unwrap()
-    }
-
     fn voter_from_secret(secret: &[u8; 32]) -> [u8; 20] {
         let key = k256::ecdsa::SigningKey::from_slice(secret).unwrap();
         let public_key = key.verifying_key().to_encoded_point(false);
@@ -2643,149 +2433,6 @@ mod tests {
         }
     }
 
-    fn admission_validation_request(
-        has_preverified_weight: bool,
-        preverified_weight: u64,
-    ) -> PbftVoteAdmissionValidationRequest {
-        PbftVoteAdmissionValidationRequest {
-            strict_vrf: true,
-            committee_size: 100,
-            number_of_proposers: 20,
-            has_preverified_weight,
-            preverified_weight,
-        }
-    }
-
-    #[test]
-    fn one_shot_vote_admission_with_final_chain_accepts_preverified_weight() {
-        let storage = temp_bridge_storage("one_shot_vote_admission_preverified_weight");
-        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
-        let voter = voter_from_secret(&NODE_SECRET);
-        let vrf_key = vrf::public_key_from_secret(&VRF_SECRET).unwrap();
-        let final_chain = final_chain_with_validator(&storage, voter, vrf_key, 5_000);
-        let vote = generated_vote_at_period([0x73; 32], NODE_SECRET, PbftVoteType::Cert, 12, 3);
-
-        let result = service
-            .pbft_service_verified_votes_admit_and_persist_with_final_chain(
-                &final_chain,
-                &vote.vote_rlp,
-                admission_validation_request(true, 40),
-                runtime_flags(),
-                runtime_context(80),
-            )
-            .unwrap();
-
-        assert!(result.accepted);
-        assert!(result.transition_published);
-        assert!(!result.persistence_required);
-        assert!(result.has_vote);
-        assert_eq!(result.validation.calculated_weight, 40);
-        assert_eq!(result.validation.calculated_weight, result.vote.weight);
-    }
-
-    #[test]
-    fn one_shot_vote_admission_with_final_chain_rejects_zero_stake() {
-        let storage = temp_bridge_storage("one_shot_vote_admission_zero_stake");
-        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
-        let voter = voter_from_secret(&NODE_SECRET);
-        let final_chain = final_chain_with_validator(
-            &storage,
-            voter,
-            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
-            500,
-        );
-        let vote = generated_vote_at_period([0x74; 32], NODE_SECRET, PbftVoteType::Cert, 1, 3);
-
-        let result = service
-            .pbft_service_verified_votes_admit_and_persist_with_final_chain(
-                &final_chain,
-                &vote.vote_rlp,
-                admission_validation_request(false, 0),
-                runtime_flags(),
-                runtime_context(80),
-            )
-            .unwrap();
-
-        assert_eq!(
-            result.validation.status,
-            PbftVoteValidationStatus::ZeroStake.as_u8()
-        );
-        assert!(!result.accepted);
-        assert!(result.transition_published);
-        assert!(result.replay_inserted);
-        assert!(!result.persistence_required);
-        assert!(!result.has_verified_vote_add);
-        assert_eq!(result.validation.calculated_weight, 0);
-    }
-
-    #[test]
-    fn one_shot_vote_validation_uses_final_chain_and_marks_replay_once() {
-        let storage = temp_bridge_storage("one_shot_vote_validation");
-        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
-        let voter = voter_from_secret(&NODE_SECRET);
-        let vrf_key = vrf::public_key_from_secret(&VRF_SECRET).unwrap();
-        let final_chain = final_chain_with_validator(&storage, voter, vrf_key, 5_000);
-        let vote = generated_vote_at_period([0x71; 32], NODE_SECRET, PbftVoteType::Cert, 1, 3);
-
-        let first = service
-            .pbft_service_verified_votes_validate_with_final_chain(
-                &final_chain,
-                &vote.vote_rlp,
-                true,
-                100,
-                20,
-            )
-            .unwrap();
-        assert_eq!(first.status, PbftVoteValidationStatus::Valid.as_u8());
-        assert!(first.accepted);
-        assert!(first.validation.weight_calculated);
-        assert!(first.validation.calculated_weight > 0);
-        assert!(first.replay_should_mark);
-        assert!(first.replay_inserted);
-        assert!(!first.replay_already_present);
-
-        let repeated = service
-            .pbft_service_verified_votes_validate_with_final_chain(
-                &final_chain,
-                &vote.vote_rlp,
-                true,
-                100,
-                20,
-            )
-            .unwrap();
-        assert!(!repeated.replay_inserted);
-        assert!(repeated.replay_already_present);
-    }
-
-    #[test]
-    fn one_shot_vote_validation_stops_after_zero_voter_stake() {
-        let storage = temp_bridge_storage("one_shot_zero_stake");
-        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
-        let voter = voter_from_secret(&NODE_SECRET);
-        let final_chain = final_chain_with_validator(
-            &storage,
-            voter,
-            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
-            500,
-        );
-        let vote = generated_vote_at_period([0x72; 32], NODE_SECRET, PbftVoteType::Cert, 1, 3);
-
-        let result = service
-            .pbft_service_verified_votes_validate_with_final_chain(
-                &final_chain,
-                &vote.vote_rlp,
-                true,
-                100,
-                20,
-            )
-            .unwrap();
-        assert_eq!(result.status, PbftVoteValidationStatus::ZeroStake.as_u8());
-        assert!(result.rejected);
-        assert!(!result.validation.vrf_valid);
-        assert!(!result.validation.weight_calculated);
-        assert!(result.replay_inserted);
-    }
-
     fn runtime_flags() -> PbftVoteEventFactFlags {
         PbftVoteEventFactFlags {
             vote_already_known: false,
@@ -2803,108 +2450,6 @@ mod tests {
             require_proposed_block_sidecar: false,
             slashing_enabled: true,
         }
-    }
-
-    fn threshold_fact(has_total_dpos_votes_count: bool) -> PbftTwoTPlusOneThresholdFact {
-        PbftTwoTPlusOneThresholdFact {
-            pbft_period: 3,
-            vote_type: PbftVoteType::Cert,
-            current_pbft_chain_size: 3,
-            committee_size: 100,
-            number_of_proposers: 20,
-            has_total_dpos_votes_count,
-            total_dpos_votes_count: if has_total_dpos_votes_count { 100 } else { 0 },
-            future_dpos_state: false,
-            unknown_error: false,
-        }
-    }
-
-    fn threshold_request(pbft_period: u64) -> FfiPbftTwoTPlusOneThresholdFact {
-        FfiPbftTwoTPlusOneThresholdFact {
-            pbft_period,
-            vote_type: PbftVoteType::Cert.into(),
-            committee_size: 100,
-            number_of_proposers: 20,
-        }
-    }
-
-    fn plan_threshold_for_test(
-        service: &BridgePbftService,
-        fact: PbftTwoTPlusOneThresholdFact,
-    ) -> PbftTwoTPlusOneThresholdPlan {
-        service
-            .with_verified_votes(|votes| Ok(votes.verified_votes_two_t_plus_one_threshold(fact)))
-            .unwrap()
-    }
-
-    #[test]
-    fn composed_threshold_uses_rust_chain_and_final_chain_state() {
-        let storage = temp_bridge_storage("composed_threshold_ready");
-        let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
-        let final_chain = final_chain_with_one_validator(&storage);
-        let fact = threshold_request(0);
-
-        let plan = votes
-            .pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
-                &final_chain,
-                fact,
-            )
-            .unwrap();
-
-        assert_eq!(
-            plan.status,
-            PbftTwoTPlusOneThresholdStatus::Available.as_u8()
-        );
-        assert!(plan.has_threshold);
-        assert_eq!(plan.threshold, 4);
-    }
-
-    #[test]
-    fn composed_threshold_reports_future_final_chain_state() {
-        let storage = temp_bridge_storage("composed_threshold_future");
-        let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
-        let final_chain = final_chain_with_one_validator(&storage);
-        let fact = threshold_request(1);
-
-        let plan = votes
-            .pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
-                &final_chain,
-                fact,
-            )
-            .unwrap();
-
-        assert_eq!(
-            plan.status,
-            PbftTwoTPlusOneThresholdStatus::FutureDposState.as_u8()
-        );
-        assert!(!plan.has_threshold);
-        assert_eq!(plan.error_code, "PBFT_TWO_T_PLUS_ONE_FUTURE_DPOS_STATE");
-    }
-
-    #[test]
-    fn composed_threshold_cache_hit_does_not_require_final_chain_state() {
-        let storage = temp_bridge_storage("composed_threshold_cache");
-        let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
-        let final_chain = final_chain_with_one_validator(&storage);
-        let mut seeded_fact = threshold_fact(true);
-        seeded_fact.pbft_period = 1;
-        seeded_fact.current_pbft_chain_size = 1;
-        let seeded = plan_threshold_for_test(&votes, seeded_fact);
-        assert!(seeded.cached);
-
-        let composed_fact = threshold_request(1);
-        let cached = votes
-            .pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
-                &final_chain,
-                composed_fact,
-            )
-            .unwrap();
-
-        assert_eq!(
-            cached.status,
-            PbftTwoTPlusOneThresholdStatus::Available.as_u8()
-        );
-        assert_eq!(cached.threshold, seeded.threshold);
     }
 
     #[test]

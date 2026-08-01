@@ -44,7 +44,19 @@ use crate::pbft_sync::{
     create_pbft_sync_queue_drain_session, next_pbft_sync_queue_drain_step,
     report_pbft_sync_queue_drain_step,
 };
-use crate::pbft_vote_runtime::PbftVerifiedVotesService;
+use crate::pbft_thresholds::{PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan};
+use crate::pbft_vote_event::PbftVoteEventFactFlags;
+use crate::pbft_vote_payload::build_weighted_pbft_vote_payload;
+use crate::pbft_vote_progress::PbftVoteProgressContext;
+use crate::pbft_vote_runtime::{
+    PbftVerifiedVotesService, PbftVoteAdmissionTransactionResult, PbftVoteRuntimeReplayOutcome,
+};
+use crate::pbft_vote_storage::persist_pbft_vote_progress;
+use crate::pbft_vote_validation::{
+    PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,
+    PbftVoteAdmissionValidationRequest, PbftVoteValidationExternalFacts,
+    inspect_canonical_pbft_vote, validate_canonical_pbft_vote,
+};
 use crate::period_data_queue::{
     PeriodDataQueueEntryRef, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
     PeriodDataQueuePushRequest, PeriodDataQueueSnapshot,
@@ -178,6 +190,14 @@ pub struct PbftService {
 }
 
 impl PbftService {
+    const fn empty_replay_outcome() -> PbftVoteRuntimeReplayOutcome {
+        PbftVoteRuntimeReplayOutcome {
+            should_mark: false,
+            inserted: false,
+            already_present: false,
+        }
+    }
+
     /// Plans one double-voting proof through the application-owned slashing service.
     ///
     /// The native slashing service owns planner configuration, duplicate-cache
@@ -1518,6 +1538,294 @@ impl PbftService {
             .pbft_service_pillar_ack_finalize_block_for_pbft(request)
     }
 
+    /// Validates one canonical PBFT vote through Rust-owned FinalChain composition.
+    ///
+    /// The validation flow preserves bridge-compatible status precedence:
+    /// voter DPoS read first, VRF key lookup second, and total DPoS read last.
+    /// Replay-cache marking is applied only to the terminal validation decision and
+    /// never while FinalChain lookups are in flight.
+    ///
+    /// `canonical_vote_rlp` is the signed vote payload and `request` contains
+    /// immutable validation policy. The result contains the canonical validation,
+    /// replay-publication outcome, and an optional weighted payload ready for the
+    /// compatibility boundary. FinalChain lookup failures become terminal
+    /// `UnknownError` validations; decode, payload construction, and vote-lock
+    /// failures return an error.
+    pub fn validate_verified_vote_with_final_chain(
+        &self,
+        final_chain: &FinalChain,
+        canonical_vote_rlp: &[u8],
+        request: PbftVoteAdmissionValidationRequest,
+    ) -> Result<(
+        PbftCanonicalVoteValidation,
+        PbftVoteRuntimeReplayOutcome,
+        Option<Vec<u8>>,
+    )> {
+        let (validation, replay) = self.validate_verified_vote_with_final_chain_internal(
+            final_chain,
+            canonical_vote_rlp,
+            request,
+            true,
+        )?;
+        let weighted_vote_rlp = (validation.accepted && validation.weight_calculated)
+            .then(|| {
+                build_weighted_pbft_vote_payload(canonical_vote_rlp, validation.calculated_weight)
+                    .map(|payload| payload.vote_rlp)
+            })
+            .transpose()?;
+        Ok((validation, replay, weighted_vote_rlp))
+    }
+
+    /// Validates and persists one canonical PBFT vote through Rust-owned FinalChain
+    /// composition.
+    ///
+    /// Replay-cache marking is performed by the admission transaction so that
+    /// validation failures and persistence rejections keep one deterministic
+    /// replay mark per validation decision.
+    ///
+    /// The supplied canonical payload, validation policy, event flags, and
+    /// progress context are consumed as one operation. The result pairs the
+    /// terminal validation with the transactional admission report. Required
+    /// writes commit before runtime publication; a rejected write restores the
+    /// bounded runtime checkpoint and exposes no executor effects.
+    pub fn admit_and_persist_verified_vote_with_final_chain(
+        &self,
+        final_chain: &FinalChain,
+        canonical_vote_rlp: &[u8],
+        request: PbftVoteAdmissionValidationRequest,
+        flags: PbftVoteEventFactFlags,
+        context: PbftVoteProgressContext,
+    ) -> Result<(
+        PbftCanonicalVoteValidation,
+        PbftVoteAdmissionTransactionResult,
+    )> {
+        let (validation, _) = self.validate_verified_vote_with_final_chain_internal(
+            final_chain,
+            canonical_vote_rlp,
+            request,
+            false,
+        )?;
+        let transaction = self
+            .verified_votes()
+            .lock()?
+            .admit_validated_vote_transactional(
+                canonical_vote_rlp,
+                &validation,
+                flags,
+                context,
+                |write| persist_pbft_vote_progress(self.verified_votes().storage(), write),
+            )?;
+        Ok((validation, transaction))
+    }
+
+    /// Computes one PBFT `2t+1` threshold and resolves total eligible DPoS
+    /// through Rust-owned FinalChain composition when required.
+    ///
+    /// `fact` supplies only period, vote type, and committee policy; caller-owned
+    /// chain or DPoS values are overwritten. A cache hit returns without a
+    /// FinalChain lookup. A miss samples total stake without either the chain or
+    /// vote lock held, refreshes the chain head, and returns the typed planner
+    /// result; missing future state and lookup errors remain fail-closed statuses.
+    pub fn verified_votes_two_t_plus_one_threshold_with_final_chain(
+        &self,
+        final_chain: &FinalChain,
+        mut fact: PbftTwoTPlusOneThresholdFact,
+    ) -> Result<PbftTwoTPlusOneThresholdPlan> {
+        fact.has_total_dpos_votes_count = false;
+        fact.total_dpos_votes_count = 0;
+        fact.future_dpos_state = false;
+        fact.unknown_error = false;
+        fact.current_pbft_chain_size = self
+            .chain()
+            .read()
+            .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?
+            .state
+            .head()
+            .size;
+
+        let initial = {
+            let mut votes = self.verified_votes().lock()?;
+            votes.plan_two_t_plus_one_threshold(fact)
+        };
+        if !initial.needs_total_dpos_votes {
+            return Ok(initial);
+        }
+
+        match final_chain.pbft_dpos_eligible_total_vote_count(fact.pbft_period) {
+            Ok(Some(total)) => {
+                fact.has_total_dpos_votes_count = true;
+                fact.total_dpos_votes_count = total;
+            }
+            Ok(None) => fact.future_dpos_state = true,
+            Err(_) => fact.unknown_error = true,
+        }
+
+        fact.current_pbft_chain_size = self
+            .chain()
+            .read()
+            .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?
+            .state
+            .head()
+            .size;
+
+        let resolved = {
+            let mut votes = self.verified_votes().lock()?;
+            votes.plan_two_t_plus_one_threshold(fact)
+        };
+        Ok(resolved)
+    }
+
+    fn validate_verified_vote_with_final_chain_internal(
+        &self,
+        final_chain: &FinalChain,
+        canonical_vote_rlp: &[u8],
+        request: PbftVoteAdmissionValidationRequest,
+        record_replay: bool,
+    ) -> Result<(PbftCanonicalVoteValidation, PbftVoteRuntimeReplayOutcome)> {
+        let inspection = inspect_canonical_pbft_vote(canonical_vote_rlp)?;
+        let mut facts = PbftVoteValidationExternalFacts {
+            voter_dpos_ready: false,
+            voter_dpos_vote_count: 0,
+            total_dpos_ready: false,
+            total_dpos_vote_count: 0,
+            future_dpos_state: false,
+            unknown_error: false,
+            vrf_key_ready: false,
+            has_vrf_key: false,
+            vrf_public_key: [0; 32],
+            strict_vrf: request.strict_vrf,
+            committee_size: request.committee_size,
+            number_of_proposers: request.number_of_proposers,
+            has_preverified_weight: request.has_preverified_weight,
+            preverified_weight: request.preverified_weight,
+        };
+
+        let mut validation = validate_canonical_pbft_vote(canonical_vote_rlp, facts)?;
+        if inspection.status != PbftCanonicalVoteInspectionStatus::Valid
+            || request.has_preverified_weight
+        {
+            let replay = record_replay
+                .then(|| {
+                    self.verified_votes()
+                        .lock()
+                        .map(|mut votes| votes.record_validation_replay(&validation))
+                })
+                .transpose()?;
+            return Ok((
+                validation,
+                replay.unwrap_or_else(Self::empty_replay_outcome),
+            ));
+        }
+
+        let Some(dpos_period) = inspection.period.checked_sub(1) else {
+            facts.unknown_error = true;
+            let validation = validate_canonical_pbft_vote(canonical_vote_rlp, facts)?;
+            let replay = record_replay
+                .then(|| {
+                    self.verified_votes()
+                        .lock()
+                        .map(|mut votes| votes.record_validation_replay(&validation))
+                })
+                .transpose()?;
+            return Ok((
+                validation,
+                replay.unwrap_or_else(Self::empty_replay_outcome),
+            ));
+        };
+
+        let voter = inspection.recovered_voter.0;
+        match final_chain.pbft_dpos_eligible_vote_count(dpos_period, voter) {
+            Ok(Some(votes)) => {
+                facts.voter_dpos_ready = true;
+                facts.voter_dpos_vote_count = votes;
+            }
+            Ok(None) => facts.future_dpos_state = true,
+            Err(_) => facts.unknown_error = true,
+        }
+        validation = validate_canonical_pbft_vote(canonical_vote_rlp, facts)?;
+        if validation.rejected || facts.future_dpos_state || facts.unknown_error {
+            let replay = record_replay
+                .then(|| {
+                    self.verified_votes()
+                        .lock()
+                        .map(|mut votes| votes.record_validation_replay(&validation))
+                })
+                .transpose()?;
+            return Ok((
+                validation,
+                replay.unwrap_or_else(Self::empty_replay_outcome),
+            ));
+        }
+
+        let mut key_lookup_error = false;
+        let cached_key = {
+            let votes = self.verified_votes();
+            let runtime = votes.lock()?;
+            runtime.validation_vrf_key(voter)
+        };
+        if let Some(key) = cached_key {
+            facts.vrf_key_ready = true;
+            facts.has_vrf_key = true;
+            facts.vrf_public_key = key;
+        } else {
+            match final_chain.pbft_vrf_key_with_fallback(dpos_period, voter) {
+                Ok(Some(key)) => {
+                    facts.vrf_key_ready = true;
+                    facts.has_vrf_key = true;
+                    facts.vrf_public_key = key;
+                    self.verified_votes()
+                        .lock()?
+                        .cache_validation_vrf_key(voter, key);
+                }
+                Ok(None) => {}
+                Err(_) => key_lookup_error = true,
+            }
+        }
+
+        if key_lookup_error {
+            facts.unknown_error = true;
+        } else {
+            facts.vrf_key_ready = true;
+        }
+
+        validation = validate_canonical_pbft_vote(canonical_vote_rlp, facts)?;
+        if validation.rejected || facts.unknown_error {
+            let replay = record_replay
+                .then(|| {
+                    self.verified_votes()
+                        .lock()
+                        .map(|mut votes| votes.record_validation_replay(&validation))
+                })
+                .transpose()?;
+            return Ok((
+                validation,
+                replay.unwrap_or_else(Self::empty_replay_outcome),
+            ));
+        }
+
+        match final_chain.pbft_dpos_eligible_total_vote_count(dpos_period) {
+            Ok(Some(total)) => {
+                facts.total_dpos_ready = true;
+                facts.total_dpos_vote_count = total;
+            }
+            Ok(None) => facts.future_dpos_state = true,
+            Err(_) => facts.unknown_error = true,
+        }
+
+        validation = validate_canonical_pbft_vote(canonical_vote_rlp, facts)?;
+        let replay = record_replay
+            .then(|| {
+                self.verified_votes()
+                    .lock()
+                    .map(|mut votes| votes.record_validation_replay(&validation))
+            })
+            .transpose()?;
+        Ok((
+            validation,
+            replay.unwrap_or_else(Self::empty_replay_outcome),
+        ))
+    }
+
     /// Locks the native manager serialization domain.
     pub fn manager_state(&self) -> PbftManagerGuard<'_> {
         self.manager.lock()
@@ -1550,11 +1858,12 @@ mod tests {
     use crate::dag_service::DagServiceConfig;
     use crate::dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig};
     use crate::gas_pricer::GasPricerConfig;
+    use crate::pbft_thresholds::PbftTwoTPlusOneThresholdStatus;
     use crate::pbft_vote_event::PbftVoteEventFactFlags;
     use crate::pbft_vote_generation::{PbftVoteGenerationInput, generate_pbft_vote};
     use crate::pbft_vote_progress::PbftVoteProgressContext;
     use crate::pbft_vote_validation::{
-        PbftVoteValidationExternalFacts, validate_canonical_pbft_vote,
+        PbftVoteValidationExternalFacts, PbftVoteValidationStatus, validate_canonical_pbft_vote,
     };
     use crate::sortition::{SortitionConfig, SortitionParams, VdfParams, VrfParams};
     use crate::transaction_service::TransactionServiceConfig;
@@ -1754,6 +2063,344 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    fn final_chain_with_vote_validator(
+        storage: Arc<Storage>,
+        voter: [u8; 20],
+        vrf_key: [u8; 32],
+        stake: u64,
+    ) -> FinalChain {
+        use rustaxa_types::{
+            DposTokenAmount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
+        };
+
+        let stake = U256::from(stake).to_big_endian().to_vec();
+        FinalChain::new(
+            storage,
+            0.into(),
+            0,
+            Vec::new(),
+            vec![GenesisValidator {
+                address: voter,
+                vrf_key,
+                total_stake: stake.clone(),
+                delegations: vec![(voter, stake)],
+                metadata: GenesisValidatorMetadata {
+                    owner: voter,
+                    commission: 0,
+                    description: String::new(),
+                    endpoint: String::new(),
+                },
+            }],
+            GenesisDposConfig {
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn generated_vote_at_period(
+        block_hash: H256,
+        period: u64,
+    ) -> crate::pbft_vote_generation::PbftGeneratedVote {
+        generate_pbft_vote(PbftVoteGenerationInput {
+            block_hash,
+            vote_type: PbftVoteType::Cert,
+            period,
+            round: 2,
+            step: 3,
+            node_secret: NODE_SECRET,
+            vrf_secret: VRF_SECRET,
+            expected_voter: voter_from_secret(&NODE_SECRET).into(),
+            expected_vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+        })
+        .unwrap()
+    }
+
+    fn vote_validation_request(
+        has_preverified_weight: bool,
+        preverified_weight: u64,
+    ) -> PbftVoteAdmissionValidationRequest {
+        PbftVoteAdmissionValidationRequest {
+            strict_vrf: true,
+            committee_size: 100,
+            number_of_proposers: 20,
+            has_preverified_weight,
+            preverified_weight,
+        }
+    }
+
+    fn vote_progress_context(threshold: u64) -> PbftVoteProgressContext {
+        PbftVoteProgressContext {
+            current_period: 12,
+            current_round: 2,
+            max_future_period_delta: 0,
+            two_t_plus_one_threshold: Some(threshold),
+            require_proposed_block_sidecar: false,
+            slashing_enabled: true,
+        }
+    }
+
+    fn vote_event_flags() -> PbftVoteEventFactFlags {
+        PbftVoteEventFactFlags {
+            vote_already_known: false,
+            carries_proposed_block: true,
+            valid_stale_reward_vote: false,
+        }
+    }
+
+    #[test]
+    fn composed_vote_admission_accepts_preverified_weight() {
+        let (_path, storage) = temp_storage("pbft_service_vote_admission_preverified");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+        let vote = generated_vote_at_period(H256::repeat_byte(0x73), 12);
+
+        let (validation, result) = service
+            .admit_and_persist_verified_vote_with_final_chain(
+                &final_chain,
+                &vote.vote_rlp,
+                vote_validation_request(true, 40),
+                vote_event_flags(),
+                vote_progress_context(80),
+            )
+            .unwrap();
+
+        assert!(validation.accepted);
+        assert_eq!(validation.calculated_weight, 40);
+        assert!(result.transition_published);
+        assert!(!result.persistence_required);
+        assert_eq!(
+            result
+                .outcome
+                .precheck
+                .progress_fact
+                .expect("accepted vote fact")
+                .weight,
+            40
+        );
+    }
+
+    #[test]
+    fn composed_vote_admission_rejects_zero_stake() {
+        let (_path, storage) = temp_storage("pbft_service_vote_admission_zero_stake");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            500,
+        );
+        let vote = generated_vote_at_period(H256::repeat_byte(0x74), 1);
+
+        let (validation, result) = service
+            .admit_and_persist_verified_vote_with_final_chain(
+                &final_chain,
+                &vote.vote_rlp,
+                vote_validation_request(false, 0),
+                vote_event_flags(),
+                vote_progress_context(80),
+            )
+            .unwrap();
+
+        assert_eq!(validation.status, PbftVoteValidationStatus::ZeroStake);
+        assert!(result.transition_published);
+        assert!(!result.persistence_required);
+        assert!(result.outcome.add_outcome.is_none());
+        assert!(
+            service
+                .verified_votes()
+                .lock()
+                .unwrap()
+                .replay_contains(vote.vote_hash)
+        );
+    }
+
+    #[test]
+    fn composed_vote_validation_marks_replay_once() {
+        let (_path, storage) = temp_storage("pbft_service_vote_validation_replay");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+        let vote = generated_vote_at_period(H256::repeat_byte(0x71), 1);
+
+        let (first, first_replay, weighted_vote_rlp) = service
+            .validate_verified_vote_with_final_chain(
+                &final_chain,
+                &vote.vote_rlp,
+                vote_validation_request(false, 0),
+            )
+            .unwrap();
+        assert_eq!(first.status, PbftVoteValidationStatus::Valid);
+        assert!(first.accepted && first.weight_calculated && first.calculated_weight > 0);
+        assert_eq!(
+            weighted_vote_rlp,
+            Some(
+                build_weighted_pbft_vote_payload(&vote.vote_rlp, first.calculated_weight)
+                    .unwrap()
+                    .vote_rlp
+            )
+        );
+        assert!(first_replay.should_mark);
+        assert!(first_replay.inserted);
+        assert!(!first_replay.already_present);
+
+        let (_, repeated_replay, _) = service
+            .validate_verified_vote_with_final_chain(
+                &final_chain,
+                &vote.vote_rlp,
+                vote_validation_request(false, 0),
+            )
+            .unwrap();
+        assert!(!repeated_replay.inserted);
+        assert!(repeated_replay.already_present);
+    }
+
+    #[test]
+    fn composed_vote_validation_stops_after_zero_voter_stake() {
+        let (_path, storage) = temp_storage("pbft_service_vote_validation_zero_stake");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            500,
+        );
+        let vote = generated_vote_at_period(H256::repeat_byte(0x72), 1);
+
+        let (validation, replay, weighted_vote_rlp) = service
+            .validate_verified_vote_with_final_chain(
+                &final_chain,
+                &vote.vote_rlp,
+                vote_validation_request(false, 0),
+            )
+            .unwrap();
+
+        assert_eq!(validation.status, PbftVoteValidationStatus::ZeroStake);
+        assert!(validation.rejected);
+        assert!(!validation.vrf_valid);
+        assert!(!validation.weight_calculated);
+        assert!(weighted_vote_rlp.is_none());
+        assert!(replay.inserted);
+    }
+
+    fn threshold_fact(period: u64) -> PbftTwoTPlusOneThresholdFact {
+        PbftTwoTPlusOneThresholdFact {
+            pbft_period: period,
+            vote_type: PbftVoteType::Cert,
+            current_pbft_chain_size: 0,
+            committee_size: 100,
+            number_of_proposers: 20,
+            has_total_dpos_votes_count: false,
+            total_dpos_votes_count: 0,
+            future_dpos_state: false,
+            unknown_error: false,
+        }
+    }
+
+    #[test]
+    fn composed_threshold_uses_native_chain_and_final_chain_state() {
+        let (_path, storage) = temp_storage("pbft_service_threshold_ready");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+
+        let mut request = threshold_fact(0);
+        request.has_total_dpos_votes_count = true;
+        request.total_dpos_votes_count = 999;
+        request.future_dpos_state = true;
+        request.unknown_error = true;
+        let plan = service
+            .verified_votes_two_t_plus_one_threshold_with_final_chain(&final_chain, request)
+            .unwrap();
+
+        assert_eq!(plan.status, PbftTwoTPlusOneThresholdStatus::Available);
+        assert!(plan.has_threshold);
+        assert_eq!(plan.threshold, 4);
+    }
+
+    #[test]
+    fn composed_threshold_reports_future_final_chain_state() {
+        let (_path, storage) = temp_storage("pbft_service_threshold_future");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+
+        let plan = service
+            .verified_votes_two_t_plus_one_threshold_with_final_chain(
+                &final_chain,
+                threshold_fact(1),
+            )
+            .unwrap();
+
+        assert_eq!(plan.status, PbftTwoTPlusOneThresholdStatus::FutureDposState);
+        assert!(!plan.has_threshold);
+        assert_eq!(plan.error_code, "PBFT_TWO_T_PLUS_ONE_FUTURE_DPOS_STATE");
+    }
+
+    #[test]
+    fn composed_threshold_cache_hit_skips_final_chain_state() {
+        let (_path, storage) = temp_storage("pbft_service_threshold_cache");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+        let mut seeded = threshold_fact(1);
+        seeded.current_pbft_chain_size = 1;
+        seeded.has_total_dpos_votes_count = true;
+        seeded.total_dpos_votes_count = 100;
+        let seeded_plan = service
+            .verified_votes()
+            .lock()
+            .unwrap()
+            .plan_two_t_plus_one_threshold(seeded);
+        assert!(seeded_plan.cached);
+
+        let cached = service
+            .verified_votes_two_t_plus_one_threshold_with_final_chain(
+                &final_chain,
+                threshold_fact(1),
+            )
+            .unwrap();
+
+        assert_eq!(cached.status, PbftTwoTPlusOneThresholdStatus::Available);
+        assert_eq!(cached.threshold, seeded_plan.threshold);
+        assert!(cached.cache_hit);
     }
 
     fn cert_vote_rlp(block_hash: H256, secret: [u8; 32]) -> Vec<u8> {

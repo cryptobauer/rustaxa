@@ -1653,6 +1653,24 @@ sortition, and VDF application-root coverage plus crate-private verifier snapsho
 visibility, then approved the final lock order, cursor revalidation, cleanup,
 bridge contraction, and documentation shape.
 
+The next bounded `CRW-12` PBFT/FinalChain composition slice moves canonical
+vote validation, transactional admission, and cache-first `2t+1` threshold
+resolution behind task-shaped native `PbftService` methods. Native consensus
+now owns the ordered voter-stake, cached/fallback VRF-key, and total-stake
+lookups; releases the verified-vote mutex around every FinalChain read;
+publishes replay state only after the terminal validation decision; commits
+required vote-progress storage before publishing admission; and refreshes the
+PBFT-chain head before threshold cache publication. The three CXX operations
+and their carriers are unchanged, but `rustaxa-bridge` now performs only
+request/result conversion and unwraps the retained FinalChain leaf handle. The
+seven FinalChain-composed bridge behavior tests move beside the native
+application root, covering preverified and zero-stake admission, replay
+idempotence, early zero-stake rejection, ready/future threshold state, and a
+cache hit that needs no FinalChain state. This removes 455 bridge lines and
+lowers the exact budget to 26,017. CXX functions, carriers, handles, shim
+lines/directories, flags, factories, constructors, production consumers, and
+public CXX signatures are unchanged. No upstream-owned C++ file changes.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
