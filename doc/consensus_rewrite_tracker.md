@@ -1464,6 +1464,33 @@ test replacement, documentation, and the exact 28,353-line inventory budget;
 the residual non-blocking risk is the absence of injected RocksDB operational
 failure at the service layer, whose ordering remains structurally enforced.
 
+The next bounded `CRW-12` session-ownership contraction closes bridge access to
+the queue-drain, daemon-tick, state-action-effect, and proposal executor cursors. Native
+`PbftService` now owns readiness gating, cursor replacement, step advancement,
+report validation, abort publication, and every manager lock epoch for those
+four families. Their runtime fields are crate-private; the bridge only converts
+the unchanged CXX facts, reports, owned steps, and stable missing-session
+sentinels. A native application-root test covers fail-closed startup, state
+action availability, ready daemon/proposal publication, and observable abort.
+The now-callerless bridge and native readiness-object accessors are deleted;
+clients retain only task-shaped `is_ready` and `complete_bootstrap` operations.
+This removes a net 51 production bridge lines and lowers the checked budget to
+28,302. CXX functions, carriers, handles, shim lines/directories, flags,
+factories, constructors, production consumers, CXX public signatures, and retained
+FinalChain, DAG-order, signing, timer, and transport executor boundaries remain
+unchanged. No upstream-owned C++ file changes.
+
+Tier 1 `rewrite-validate-fast`, the focused native owner test, both retained
+bridge session/readiness projection tests, the exact inventory and storage
+boundary guards, and whitespace validation pass. Tier 2 is the complete
+49-test Rust-enabled `rust_consensus_tests` suite. Tier 3 is the `taraxad`
+build. Independent review caught and verified the constructor-under-lock
+ordering correction, then approved readiness parity, cursor/report/abort
+semantics, missing-session sentinels, visibility contraction, obsolete-accessor
+deletion, tests, documentation, and inventory. Residual non-blocking risk is the
+absence of a dedicated concurrent replacement stress test; existing native
+domain transcripts cover normal and rejected reports.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

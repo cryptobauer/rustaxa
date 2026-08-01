@@ -84,15 +84,13 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationPositionedHash, PbftFinalizationRuntimeAction, PbftFinalizationStatus,
     PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
 };
+#[cfg(test)]
 use rustaxa_consensus::pbft_manager::{
-    abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
-    create_pbft_manager_proposal_session as create_domain_pbft_manager_proposal_session,
-    create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
-    create_pbft_manager_state_action_effect_session as create_domain_pbft_manager_state_action_effect_session,
+    create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
+    PbftManagerStorageStartupFact,
+};
+use rustaxa_consensus::pbft_manager::{
     load_pbft_manager_startup_replay_period as load_domain_pbft_manager_startup_replay_period,
-    next_pbft_manager_proposal_session as next_domain_pbft_manager_proposal_session,
-    next_pbft_manager_runtime_action,
-    next_pbft_manager_state_action_effect_session as next_domain_pbft_manager_state_action_effect_session,
     plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
@@ -102,9 +100,6 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_runtime_sleep_until_next_step as plan_domain_pbft_manager_runtime_sleep_until_next_step,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
-    report_pbft_manager_proposal_dag_order as report_domain_pbft_manager_proposal_dag_order,
-    report_pbft_manager_runtime_action,
-    report_pbft_manager_state_action_effect_session as report_domain_pbft_manager_state_action_effect_session,
     save_cert_voted_block_in_round_storage,
     validate_pbft_manager_advance_period_action_report as validate_domain_pbft_manager_advance_period_action_report,
     PbftManagerAdvancePeriodActionReport, PbftManagerAdvancePeriodActionReportResult,
@@ -129,15 +124,7 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
     PbftManagerStateActionSessionStep, PbftManagerTransitionKind,
 };
-#[cfg(test)]
-use rustaxa_consensus::pbft_manager::{
-    create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
-    PbftManagerStorageStartupFact,
-};
 use rustaxa_consensus::pbft_sync::{
-    create_pbft_sync_queue_drain_session as create_domain_pbft_sync_queue_drain_session,
-    next_pbft_sync_queue_drain_step as next_domain_pbft_sync_queue_drain_step,
-    report_pbft_sync_queue_drain_step as report_domain_pbft_sync_queue_drain_step,
     PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
     PbftSyncQueueDrainStatus, PbftSyncQueueDrainStep,
 };
@@ -686,11 +673,7 @@ fn queue_drain_report_from_ffi(value: FfiPbftSyncQueueDrainReport) -> PbftSyncQu
 ///   pass. The live `PeriodData` sidecars remain C++-owned for now, but the
 ///   planner session no longer requires a standalone CXX bridge handle.
 pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgePbftService) {
-    if !runtime.readiness().is_ready() {
-        return;
-    }
-    let mut runtime = runtime.manager_state();
-    runtime.pbft_sync_queue_drain_session = create_domain_pbft_sync_queue_drain_session();
+    runtime.0.begin_pbft_sync_queue_drain();
 }
 
 /// Returns the next queue-drain step from the PBFT manager runtime-owned planner.
@@ -712,15 +695,11 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
     queue_size: usize,
     current_period: u64,
 ) -> FfiPbftSyncQueueDrainStep {
-    if !runtime.readiness().is_ready() {
-        return queue_drain_bootstrap_incomplete_step();
-    }
-    let mut runtime = runtime.manager_state();
-    queue_drain_step_into_ffi(next_domain_pbft_sync_queue_drain_step(
-        &mut runtime.pbft_sync_queue_drain_session,
-        queue_size,
-        current_period,
-    ))
+    runtime
+        .0
+        .pbft_sync_queue_drain_next(queue_size, current_period)
+        .map(queue_drain_step_into_ffi)
+        .unwrap_or_else(queue_drain_bootstrap_incomplete_step)
 }
 
 /// Reports one C++ queue-drain executor result to the runtime-owned planner.
@@ -740,14 +719,11 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
     runtime: &BridgePbftService,
     report: FfiPbftSyncQueueDrainReport,
 ) -> FfiPbftSyncQueueDrainReportResult {
-    if !runtime.readiness().is_ready() {
-        return queue_drain_bootstrap_incomplete_report();
-    }
-    let mut runtime = runtime.manager_state();
-    queue_drain_report_result_into_ffi(report_domain_pbft_sync_queue_drain_step(
-        &mut runtime.pbft_sync_queue_drain_session,
-        queue_drain_report_from_ffi(report),
-    ))
+    runtime
+        .0
+        .report_pbft_sync_queue_drain(queue_drain_report_from_ffi(report))
+        .map(queue_drain_report_result_into_ffi)
+        .unwrap_or_else(queue_drain_bootstrap_incomplete_report)
 }
 
 // Pure conversion carrier for the stable CXX push arguments. It exists so the
@@ -1554,22 +1530,18 @@ pub fn pbft_manager_runtime_begin_session(
     runtime: &BridgePbftService,
     fact: FfiPbftManagerRuntimeTickFact,
 ) {
-    if !runtime.readiness().is_ready() {
-        return;
-    }
-    let mut runtime = runtime.manager_state();
-    runtime.runtime_session = Some(create_domain_pbft_manager_runtime_session(fact.into()));
+    runtime.0.begin_runtime_session(fact.into());
 }
 
 /// Returns the next requested action for the runtime-owned tick session.
 pub fn pbft_manager_runtime_session_next(
     runtime: &BridgePbftService,
 ) -> FfiPbftManagerRuntimeSessionStep {
-    let runtime = runtime.manager_state();
-    let Some(session) = runtime.runtime_session.as_ref() else {
-        return runtime_session_not_started_step();
-    };
-    next_pbft_manager_runtime_action(session).into()
+    runtime
+        .0
+        .runtime_session_next()
+        .map(Into::into)
+        .unwrap_or_else(runtime_session_not_started_step)
 }
 
 /// Reports one C++-executed action back to the runtime-owned tick session.
@@ -1577,15 +1549,9 @@ pub fn pbft_manager_runtime_session_report(
     runtime: &BridgePbftService,
     report: FfiPbftManagerRuntimeActionReport,
 ) -> FfiPbftManagerRuntimeSessionStep {
-    let mut runtime = runtime.manager_state();
-    let Some(session) = runtime.runtime_session.take() else {
-        return runtime_session_not_started_step();
-    };
-    runtime.runtime_session = Some(report_pbft_manager_runtime_action(session, report.into()));
     runtime
-        .runtime_session
-        .as_ref()
-        .map(next_pbft_manager_runtime_action)
+        .0
+        .report_runtime_session(report.into())
         .map(Into::into)
         .unwrap_or_else(runtime_session_not_started_step)
 }
@@ -1628,10 +1594,7 @@ pub fn plan_pbft_manager_eligible_wallet_period_wait(
 
 /// Aborts the runtime-owned PBFT manager tick session.
 pub fn abort_pbft_manager_runtime_session(runtime: &BridgePbftService) {
-    let mut runtime = runtime.manager_state();
-    if let Some(session) = runtime.runtime_session.take() {
-        runtime.runtime_session = Some(abort_domain_pbft_manager_runtime_session(session));
-    }
+    runtime.0.abort_runtime_session();
 }
 
 fn runtime_session_not_started_step() -> FfiPbftManagerRuntimeSessionStep {
@@ -1672,21 +1635,18 @@ pub fn pbft_manager_runtime_begin_state_action_effect_session(
     runtime: &BridgePbftService,
     fact: FfiPbftManagerStateActionFact,
 ) {
-    let mut runtime = runtime.manager_state();
-    runtime.state_action_effect_session = Some(
-        create_domain_pbft_manager_state_action_effect_session(fact.into()),
-    );
+    runtime.0.begin_state_action_effect_session(fact.into());
 }
 
 /// Returns the next effect requested by the runtime-owned state-action session.
 pub fn pbft_manager_runtime_state_action_effect_session_next(
     runtime: &BridgePbftService,
 ) -> FfiPbftManagerStateActionSessionStep {
-    let mut runtime = runtime.manager_state();
-    let Some(session) = runtime.state_action_effect_session.as_mut() else {
-        return state_action_effect_session_not_started_step();
-    };
-    next_domain_pbft_manager_state_action_effect_session(session).into()
+    runtime
+        .0
+        .state_action_effect_session_next()
+        .map(Into::into)
+        .unwrap_or_else(state_action_effect_session_not_started_step)
 }
 
 /// Reports one C++-executed state-action effect to Rust and returns the next step.
@@ -1694,11 +1654,11 @@ pub fn pbft_manager_runtime_state_action_effect_session_report(
     runtime: &BridgePbftService,
     report: FfiPbftManagerStateActionEffectReport,
 ) -> FfiPbftManagerStateActionSessionStep {
-    let mut runtime = runtime.manager_state();
-    let Some(session) = runtime.state_action_effect_session.as_mut() else {
-        return state_action_effect_session_not_started_step();
-    };
-    report_domain_pbft_manager_state_action_effect_session(session, report.into()).into()
+    runtime
+        .0
+        .report_state_action_effect_session(report.into())
+        .map(Into::into)
+        .unwrap_or_else(state_action_effect_session_not_started_step)
 }
 
 fn state_action_effect_session_not_started_step() -> FfiPbftManagerStateActionSessionStep {
@@ -1743,27 +1703,20 @@ pub(crate) fn pbft_manager_runtime_begin_proposal_session_with_hash(
     fact: FfiPbftManagerProposalInitialFact,
     final_chain_hash: Option<[u8; 32]>,
 ) {
-    if !runtime.readiness().is_ready() {
-        return;
-    }
-    let mut runtime = runtime.manager_state();
-    runtime.proposal_session = Some(create_domain_pbft_manager_proposal_session(
-        proposal_initial_fact_from_ffi(fact, final_chain_hash),
-    ));
+    runtime
+        .0
+        .begin_proposal_session(proposal_initial_fact_from_ffi(fact, final_chain_hash));
 }
 
 /// Returns the next proposal-construction action or build command.
 pub fn pbft_manager_proposal_session_next(
     runtime: &BridgePbftService,
 ) -> FfiPbftManagerProposalSessionStep {
-    if !runtime.readiness().is_ready() {
-        return proposal_session_not_started_step();
-    }
-    let mut runtime = runtime.manager_state();
-    let Some(session) = runtime.proposal_session.as_mut() else {
-        return proposal_session_not_started_step();
-    };
-    next_domain_pbft_manager_proposal_session(session).into()
+    runtime
+        .0
+        .proposal_session_next()
+        .map(Into::into)
+        .unwrap_or_else(proposal_session_not_started_step)
 }
 
 /// Reports one C++-loaded DAG order to the runtime-owned proposal session.
@@ -1771,11 +1724,11 @@ pub fn pbft_manager_proposal_session_report_dag_order(
     runtime: &BridgePbftService,
     report: FfiPbftManagerProposalDagOrderReport,
 ) -> FfiPbftManagerProposalSessionStep {
-    let mut runtime = runtime.manager_state();
-    let Some(session) = runtime.proposal_session.as_mut() else {
-        return proposal_session_not_started_step();
-    };
-    report_domain_pbft_manager_proposal_dag_order(session, report.into()).into()
+    runtime
+        .0
+        .report_proposal_dag_order(report.into())
+        .map(Into::into)
+        .unwrap_or_else(proposal_session_not_started_step)
 }
 
 fn proposal_session_not_started_step() -> FfiPbftManagerProposalSessionStep {

@@ -14,11 +14,20 @@ use crate::pbft_finalize::{
 use crate::pbft_manager::{
     PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
     PbftFinalizationOwnedActionDrain, PbftManagerGuard, PbftManagerLifecycleTransitionRequest,
-    PbftManagerRuntimeSnapshot, PbftManagerService, PbftManagerStorageStartupFact,
-    PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
+    PbftManagerProposalDagOrderReport, PbftManagerProposalInitialFact,
+    PbftManagerProposalSessionStep, PbftManagerRuntimeActionReport, PbftManagerRuntimeSessionStep,
+    PbftManagerRuntimeSnapshot, PbftManagerRuntimeTickFact, PbftManagerService,
+    PbftManagerStateActionEffectReport, PbftManagerStateActionFact,
+    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionStatus,
+    PbftManagerTransitionStorageStatus, abort_pbft_manager_runtime_session,
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
     apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
-    base_owned_finalization_live_report, create_pbft_manager_runtime_from_storage,
+    base_owned_finalization_live_report, create_pbft_manager_proposal_session,
+    create_pbft_manager_runtime_from_storage, create_pbft_manager_runtime_session,
+    create_pbft_manager_state_action_effect_session, next_pbft_manager_proposal_session,
+    next_pbft_manager_runtime_action, next_pbft_manager_state_action_effect_session,
+    report_pbft_manager_proposal_dag_order, report_pbft_manager_runtime_action,
+    report_pbft_manager_state_action_effect_session,
 };
 #[cfg(test)]
 use crate::pbft_period_cleanup::{PbftPeriodStateCleanupResult, cleanup_period_state_with_commit};
@@ -26,6 +35,11 @@ use crate::pbft_period_cleanup::{
     PbftPeriodStateCleanupStatus, cleanup_period_state_with_commit_and_publish,
 };
 use crate::pbft_readiness::PbftServiceReadiness;
+use crate::pbft_sync::{
+    PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult, PbftSyncQueueDrainStep,
+    create_pbft_sync_queue_drain_session, next_pbft_sync_queue_drain_step,
+    report_pbft_sync_queue_drain_step,
+};
 use crate::pbft_vote_runtime::PbftVerifiedVotesService;
 use crate::period_data_queue::{
     PeriodDataQueueEntryRef, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
@@ -141,6 +155,193 @@ pub struct PbftService {
 }
 
 impl PbftService {
+    /// Resets the native PBFT sync queue-drain cursor after bootstrap.
+    ///
+    /// Calls made before readiness are ignored. The live period-data sidecars
+    /// remain external executor inputs, while action ordering and report state
+    /// stay within the manager lock domain.
+    pub fn begin_pbft_sync_queue_drain(&self) {
+        if !self.readiness.is_ready() {
+            return;
+        }
+        let mut manager = self.manager_state();
+        manager.pbft_sync_queue_drain_session = create_pbft_sync_queue_drain_session();
+    }
+
+    /// Returns the next native queue-drain executor step after bootstrap.
+    ///
+    /// `None` denotes incomplete bootstrap. Queue size and period are copied
+    /// facts; cursor advancement occurs under the manager lock.
+    pub fn pbft_sync_queue_drain_next(
+        &self,
+        queue_size: usize,
+        current_period: u64,
+    ) -> Option<PbftSyncQueueDrainStep> {
+        if !self.readiness.is_ready() {
+            return None;
+        }
+        let mut manager = self.manager_state();
+        Some(next_pbft_sync_queue_drain_step(
+            &mut manager.pbft_sync_queue_drain_session,
+            queue_size,
+            current_period,
+        ))
+    }
+
+    /// Applies one external queue-drain report under the manager lock.
+    ///
+    /// `None` denotes incomplete bootstrap. Mismatched or failed reports are
+    /// returned as native terminal results without exposing the cursor.
+    pub fn report_pbft_sync_queue_drain(
+        &self,
+        report: PbftSyncQueueDrainReport,
+    ) -> Option<PbftSyncQueueDrainReportResult> {
+        if !self.readiness.is_ready() {
+            return None;
+        }
+        let mut manager = self.manager_state();
+        Some(report_pbft_sync_queue_drain_step(
+            &mut manager.pbft_sync_queue_drain_session,
+            report,
+        ))
+    }
+
+    /// Starts or replaces the native daemon-tick executor cursor when bootstrap is complete.
+    ///
+    /// The supplied facts are consumed under the manager lock. Calls made
+    /// before bootstrap publication are ignored, preserving the live daemon's
+    /// fail-closed startup contract.
+    pub fn begin_runtime_session(&self, fact: PbftManagerRuntimeTickFact) {
+        if !self.readiness.is_ready() {
+            return;
+        }
+        let mut manager = self.manager_state();
+        manager.runtime_session = Some(create_pbft_manager_runtime_session(fact));
+    }
+
+    /// Returns the current daemon-tick executor step without advancing it.
+    ///
+    /// `None` means no cursor has been started. The returned step is owned and
+    /// remains valid after the manager lock is released.
+    pub fn runtime_session_next(&self) -> Option<PbftManagerRuntimeSessionStep> {
+        let manager = self.manager_state();
+        manager
+            .runtime_session
+            .as_ref()
+            .map(next_pbft_manager_runtime_action)
+    }
+
+    /// Applies one external daemon action report and returns the resulting step.
+    ///
+    /// The cursor is removed, advanced, and republished in one manager lock
+    /// epoch. `None` means no cursor was active; invalid reports remain encoded
+    /// in the returned native session step.
+    pub fn report_runtime_session(
+        &self,
+        report: PbftManagerRuntimeActionReport,
+    ) -> Option<PbftManagerRuntimeSessionStep> {
+        let mut manager = self.manager_state();
+        let session = manager.runtime_session.take()?;
+        manager.runtime_session = Some(report_pbft_manager_runtime_action(session, report));
+        manager
+            .runtime_session
+            .as_ref()
+            .map(next_pbft_manager_runtime_action)
+    }
+
+    /// Aborts the active daemon-tick cursor under the manager lock.
+    ///
+    /// An absent cursor is a no-op. The aborted terminal cursor is retained so
+    /// a subsequent query observes the stable native abort error.
+    pub fn abort_runtime_session(&self) {
+        let mut manager = self.manager_state();
+        if let Some(session) = manager.runtime_session.take() {
+            manager.runtime_session = Some(abort_pbft_manager_runtime_session(session));
+        }
+    }
+
+    /// Starts or replaces the native PBFT state-action effect cursor.
+    ///
+    /// Construction and publication occur in one manager lock epoch. C++ may
+    /// execute returned leaf effects but cannot access or mutate the cursor.
+    pub fn begin_state_action_effect_session(&self, fact: PbftManagerStateActionFact) {
+        let mut manager = self.manager_state();
+        manager.state_action_effect_session =
+            Some(create_pbft_manager_state_action_effect_session(fact));
+    }
+
+    /// Returns and advances the current state-action effect cursor.
+    ///
+    /// `None` means no cursor is active. Terminal and validation status remain
+    /// encoded in the owned native step.
+    pub fn state_action_effect_session_next(&self) -> Option<PbftManagerStateActionSessionStep> {
+        let mut manager = self.manager_state();
+        manager
+            .state_action_effect_session
+            .as_mut()
+            .map(next_pbft_manager_state_action_effect_session)
+    }
+
+    /// Applies one external state-action effect report and returns the next step.
+    ///
+    /// Report validation and cursor mutation share the manager lock. `None`
+    /// means no cursor is active; invalid reports are represented by the native
+    /// terminal step rather than bridge-owned state.
+    pub fn report_state_action_effect_session(
+        &self,
+        report: PbftManagerStateActionEffectReport,
+    ) -> Option<PbftManagerStateActionSessionStep> {
+        let mut manager = self.manager_state();
+        manager
+            .state_action_effect_session
+            .as_mut()
+            .map(|session| report_pbft_manager_state_action_effect_session(session, report))
+    }
+
+    /// Starts or replaces the native PBFT proposal cursor after bootstrap.
+    ///
+    /// Calls made before bootstrap completion are ignored. Proposal facts and
+    /// cursor publication remain inside the native manager serialization
+    /// domain; FinalChain, DAG-order, signing, and transport stay leaf effects.
+    pub fn begin_proposal_session(&self, fact: PbftManagerProposalInitialFact) {
+        if !self.readiness.is_ready() {
+            return;
+        }
+        let mut manager = self.manager_state();
+        manager.proposal_session = Some(create_pbft_manager_proposal_session(fact));
+    }
+
+    /// Returns and advances the current PBFT proposal cursor after bootstrap.
+    ///
+    /// `None` is returned before readiness or when no proposal cursor exists.
+    /// The owned step remains valid after releasing the manager lock.
+    pub fn proposal_session_next(&self) -> Option<PbftManagerProposalSessionStep> {
+        if !self.readiness.is_ready() {
+            return None;
+        }
+        let mut manager = self.manager_state();
+        manager
+            .proposal_session
+            .as_mut()
+            .map(next_pbft_manager_proposal_session)
+    }
+
+    /// Applies one DAG-order leaf report to the native proposal cursor.
+    ///
+    /// Report validation and cursor advancement occur under one manager lock.
+    /// `None` means no cursor is active; all protocol rejection details remain
+    /// encoded in the returned native step.
+    pub fn report_proposal_dag_order(
+        &self,
+        report: PbftManagerProposalDagOrderReport,
+    ) -> Option<PbftManagerProposalSessionStep> {
+        let mut manager = self.manager_state();
+        manager
+            .proposal_session
+            .as_mut()
+            .map(|session| report_pbft_manager_proposal_dag_order(session, report))
+    }
+
     /// Durably clears the delayed executed-block status and then publishes it.
     ///
     /// Storage rejection is returned as a rejected typed outcome because the
@@ -861,11 +1062,6 @@ impl PbftService {
         &self.slashing
     }
 
-    /// Returns the native readiness capability.
-    pub fn readiness(&self) -> &PbftServiceReadiness {
-        &self.readiness
-    }
-
     /// Returns the native pillar sibling.
     pub fn pillar(&self) -> &PillarChainService {
         &self.pillar
@@ -1473,6 +1669,91 @@ mod tests {
         assert!(service.is_ready());
         service.complete_bootstrap();
         assert!(service.is_ready());
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn service_owns_manager_executor_session_cursors() {
+        use crate::pbft_manager::{
+            PbftManagerProposalInitialFact, PbftManagerRuntimeStateCode, PbftManagerRuntimeStatus,
+            PbftManagerRuntimeTickFact, PbftManagerStateActionFact,
+        };
+
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_session_owner");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        let tick = PbftManagerRuntimeTickFact {
+            tick_id: 42,
+            state: PbftManagerRuntimeStateCode::Filter,
+            period: 10,
+            round: 2,
+            step: 3,
+            network_available: true,
+            network_pbft_syncing: false,
+            has_eligible_wallet: true,
+            polling_interval_ms: 100,
+        };
+        let proposal = PbftManagerProposalInitialFact {
+            period: 10,
+            round: 2,
+            previous_pbft_block_hash: H256::repeat_byte(1),
+            last_period_dag_anchor_hash: H256::repeat_byte(2),
+            dag_genesis_hash: H256::repeat_byte(2),
+            dag_blocks_size: 10,
+            ghost_path_move_back: 0,
+            pbft_gas_limit: 100,
+            extra_data_required: false,
+            extra_data_available: false,
+            final_chain_hash_valid: true,
+            final_chain_hash: H256::repeat_byte(3),
+            wallets: Vec::new(),
+            ghost_path: Vec::new(),
+            has_non_finalized_fallback: false,
+            non_finalized_fallback_hash: H256::zero(),
+        };
+
+        service.begin_runtime_session(tick);
+        service.begin_proposal_session(proposal.clone());
+        service.begin_pbft_sync_queue_drain();
+        assert!(service.runtime_session_next().is_none());
+        assert!(service.proposal_session_next().is_none());
+        assert!(service.pbft_sync_queue_drain_next(1, 10).is_none());
+
+        service.begin_state_action_effect_session(PbftManagerStateActionFact {
+            state: PbftManagerRuntimeStateCode::Filter,
+            period: 10,
+            round: 2,
+            step: 3,
+            elapsed_round_ms: 250,
+            deadline_ms: 1_000,
+            current_round_lambda_ms: 100,
+            polling_interval_ms: 100,
+            has_previous_round_next_null: false,
+            has_previous_round_next_value: false,
+            previous_round_next_value_hash: [0x11; 32],
+            has_current_round_soft_value: false,
+            current_round_soft_value_hash: [0x22; 32],
+            has_cert_voted_block: false,
+            cert_voted_block_hash: [0x33; 32],
+            already_next_voted_value: false,
+            already_next_voted_null: false,
+        });
+        assert!(service.state_action_effect_session_next().is_some());
+
+        service.complete_bootstrap();
+        service.begin_runtime_session(tick);
+        assert!(service.runtime_session_next().is_some());
+        service.abort_runtime_session();
+        assert_eq!(
+            service.runtime_session_next().unwrap().status,
+            PbftManagerRuntimeStatus::ContractError
+        );
+
+        service.begin_proposal_session(proposal);
+        assert!(service.proposal_session_next().is_some());
+        service.begin_pbft_sync_queue_drain();
+        assert!(service.pbft_sync_queue_drain_next(1, 10).is_some());
 
         drop(service);
         let _ = fs::remove_dir_all(path);

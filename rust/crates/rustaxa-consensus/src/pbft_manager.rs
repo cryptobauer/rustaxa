@@ -423,15 +423,15 @@ pub struct PbftManagerRuntimeState {
     /// Ordered finalized-period queue consumed by PBFT synchronization.
     pub(crate) period_data_queue: crate::period_data_queue::PeriodDataQueue,
     /// Active queue-drain cursor, reset whenever a new drain begins.
-    pub pbft_sync_queue_drain_session: crate::pbft_sync::PbftSyncQueueDrainSession,
+    pub(crate) pbft_sync_queue_drain_session: crate::pbft_sync::PbftSyncQueueDrainSession,
     /// Optional admission cursor for the PBFT sync item currently being checked.
     pub pbft_sync_admission_session: Option<crate::pbft_sync::PbftSyncAdmissionSession>,
     /// Optional cursor for applying one manager state-action effect sequence.
-    pub state_action_effect_session: Option<PbftManagerStateActionEffectSession>,
+    pub(crate) state_action_effect_session: Option<PbftManagerStateActionEffectSession>,
     /// Optional daemon-tick planning cursor.
-    pub runtime_session: Option<PbftManagerRuntimeSession>,
+    pub(crate) runtime_session: Option<PbftManagerRuntimeSession>,
     /// Optional PBFT block-proposal planning cursor.
-    pub proposal_session: Option<PbftManagerProposalSession>,
+    pub(crate) proposal_session: Option<PbftManagerProposalSession>,
     /// Optional finalization executor state for the current PBFT block.
     pub finalization_runtime_session: Option<crate::pbft_finalize::PbftFinalizationRuntimeState>,
     /// Optional immutable plan paired with the active finalization executor.

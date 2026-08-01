@@ -96,7 +96,9 @@ task-oriented plan/report calls. Native `rustaxa-consensus::pbft_readiness::Pbft
 independent monotonic PBFT and pillar-bootstrap readiness atomics plus their acquire/release publication contracts; the
 native application root retains those capabilities. Native
 `rustaxa-consensus::pbft_manager::PbftManagerService` now owns the manager mutex and complete runtime/session container;
-the native root retains the service and the bridge exposes only a short-lived native guard to DTO/effect adapters.
+the native root retains the service and the bridge exposes only a short-lived native guard to remaining DTO/effect
+adapters. Queue-drain, daemon-tick, state-action-effect, and proposal executor cursors now have lock-owning native root
+APIs; their fields are crate-private and the bridge can only convert facts, reports, and owned steps.
 The native root also requires verified-vote, slashing, and pillar siblings by construction. C++ clients retain
 null-service and pillar-readiness checks, but no longer probe for capabilities that cannot be absent from a published
 service.

@@ -175,10 +175,6 @@ impl BridgePbftService {
         self.0.slashing()
     }
 
-    pub(crate) fn readiness(&self) -> &rustaxa_consensus::PbftServiceReadiness {
-        self.0.readiness()
-    }
-
     pub(crate) fn pillar(&self) -> &rustaxa_consensus::PillarChainService {
         self.0.pillar()
     }
