@@ -4972,6 +4972,76 @@ mod tests {
     }
 
     #[test]
+    fn proposer_worker_command_owns_attempt_and_backoff_order() {
+        let cases = [
+            (
+                DagProposerWorkerCommandInput {
+                    pbft_syncing: true,
+                    packet_queue_over_limit: true,
+                    has_attempt_result: false,
+                    attempt_returned_proposed: false,
+                },
+                (false, true, DAG_PROPOSER_REASON_WORKER_PBFT_SYNCING),
+            ),
+            (
+                DagProposerWorkerCommandInput {
+                    pbft_syncing: false,
+                    packet_queue_over_limit: true,
+                    has_attempt_result: false,
+                    attempt_returned_proposed: false,
+                },
+                (
+                    false,
+                    true,
+                    DAG_PROPOSER_REASON_WORKER_PACKET_QUEUE_OVER_LIMIT,
+                ),
+            ),
+            (
+                DagProposerWorkerCommandInput {
+                    pbft_syncing: false,
+                    packet_queue_over_limit: false,
+                    has_attempt_result: true,
+                    attempt_returned_proposed: false,
+                },
+                (false, true, DAG_PROPOSER_REASON_WORKER_NO_BLOCK_PROPOSED),
+            ),
+            (
+                DagProposerWorkerCommandInput {
+                    pbft_syncing: false,
+                    packet_queue_over_limit: false,
+                    has_attempt_result: true,
+                    attempt_returned_proposed: true,
+                },
+                (false, false, DAG_PROPOSER_REASON_OK),
+            ),
+            (
+                DagProposerWorkerCommandInput {
+                    pbft_syncing: false,
+                    packet_queue_over_limit: false,
+                    has_attempt_result: false,
+                    attempt_returned_proposed: false,
+                },
+                (true, false, DAG_PROPOSER_REASON_OK),
+            ),
+        ];
+
+        for (input, expected) in cases {
+            let command = plan_dag_proposer_worker_command(input);
+            assert_eq!(command.attempt_proposal, expected.0);
+            assert_eq!(command.sleep_after_tick, expected.1);
+            assert_eq!(command.reason_code, expected.2);
+            assert_eq!(
+                command.sleep_ms,
+                if expected.1 {
+                    DAG_PROPOSER_WORKER_RETRY_DELAY_MS
+                } else {
+                    0
+                }
+            );
+        }
+    }
+
+    #[test]
     fn dag_vdf_sortition_from_block_verifies_embedded_inputs() {
         let proposal_period_hash = h(77);
         let transactions = vec![h(12), h(13)];

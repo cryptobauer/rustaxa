@@ -91,18 +91,19 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
     validate_pbft_manager_advance_period_action_report as validate_domain_pbft_manager_advance_period_action_report,
-    PbftManagerAdvancePeriodActionReport, PbftManagerAdvancePeriodActionReportResult,
-    PbftManagerAdvancePeriodPlan, PbftManagerBlockValidationFact,
-    PbftManagerBlockValidationFactStatus, PbftManagerBlockValidationPlan,
-    PbftManagerBroadcastAction, PbftManagerBroadcastFact, PbftManagerBroadcastPlan,
-    PbftManagerBroadcastReport, PbftManagerBroadcastReportResult, PbftManagerBroadcastStatus,
-    PbftManagerCandidateAdmissionFact, PbftManagerCandidateAdmissionPlan,
-    PbftManagerCandidateAdmissionValidationStatus, PbftManagerEligibleWalletPeriodWaitFact,
-    PbftManagerEligibleWalletPeriodWaitPlan, PbftManagerFinalizationWaitFact,
-    PbftManagerFinalizationWaitPlan, PbftManagerLeaderBlockValidationStatus,
-    PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
-    PbftManagerLeaderValidBlockCommand, PbftManagerLifecycleTransitionRequest,
-    PbftManagerProposalAction, PbftManagerProposalDagBlockFact, PbftManagerProposalDagOrderReport,
+    PbftFinalizationExecutorStartRequest, PbftManagerAdvancePeriodActionReport,
+    PbftManagerAdvancePeriodActionReportResult, PbftManagerAdvancePeriodPlan,
+    PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
+    PbftManagerBlockValidationPlan, PbftManagerBroadcastAction, PbftManagerBroadcastFact,
+    PbftManagerBroadcastPlan, PbftManagerBroadcastReport, PbftManagerBroadcastReportResult,
+    PbftManagerBroadcastStatus, PbftManagerCandidateAdmissionFact,
+    PbftManagerCandidateAdmissionPlan, PbftManagerCandidateAdmissionValidationStatus,
+    PbftManagerEligibleWalletPeriodWaitFact, PbftManagerEligibleWalletPeriodWaitPlan,
+    PbftManagerFinalizationWaitFact, PbftManagerFinalizationWaitPlan,
+    PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateInputFact,
+    PbftManagerLeaderCandidatePlan, PbftManagerLeaderValidBlockCommand,
+    PbftManagerLifecycleTransitionRequest, PbftManagerProposalAction,
+    PbftManagerProposalDagBlockFact, PbftManagerProposalDagOrderReport,
     PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerProposalStatus,
     PbftManagerProposalWalletFact, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
     PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
@@ -1855,9 +1856,9 @@ pub fn pbft_manager_runtime_start_finalization_executor(
         }
         _ => rustaxa_consensus::pbft_manager::PbftFinalizationExecutorStartMode::Unknown,
     };
-    let boundary = runtime.0.start_finalization_executor(
-        dag_transaction_service.native(),
-        rustaxa_consensus::pbft_manager::PbftFinalizationExecutorStartRequest {
+    let boundary = dag_transaction_service.start_finalization_executor(
+        runtime,
+        PbftFinalizationExecutorStartRequest {
             plan: PbftFinalizationPlan::from(&request.plan),
             mode,
         },
@@ -1918,10 +1919,9 @@ pub fn pbft_manager_runtime_advance_finalization_action(
     retention_window: u64,
     account_nonce_facts: Vec<FfiTransactionQueueAccountNonceFact>,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    runtime
-        .0
+    dag_transaction_service
         .advance_finalization_action(
-            dag_transaction_service.native(),
+            runtime,
             cursor,
             action,
             last_block,

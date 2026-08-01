@@ -87,66 +87,16 @@ pub(crate) fn legacy_sortition_params(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlp::RlpStream;
 
     #[test]
-    fn proposer_worker_command_converts_native_attempt_and_backoff_plans() {
-        let attempt = dag_plan_proposer_worker_command(DagProposerWorkerCommandInput {
-            pbft_syncing: false,
-            packet_queue_over_limit: false,
-            has_attempt_result: false,
-            attempt_returned_proposed: false,
-        });
-        assert!(attempt.attempt_proposal);
-        assert!(!attempt.sleep_after_tick);
-
-        let throttle = dag_plan_proposer_worker_command(DagProposerWorkerCommandInput {
-            pbft_syncing: true,
-            packet_queue_over_limit: false,
-            has_attempt_result: false,
-            attempt_returned_proposed: false,
-        });
-        assert!(!throttle.attempt_proposal);
-        assert!(throttle.sleep_after_tick);
-        assert_eq!(throttle.sleep_ms, 100);
-
-        let no_block = dag_plan_proposer_worker_command(DagProposerWorkerCommandInput {
-            pbft_syncing: false,
-            packet_queue_over_limit: false,
-            has_attempt_result: true,
-            attempt_returned_proposed: false,
-        });
-        assert!(!no_block.attempt_proposal);
-        assert!(no_block.sleep_after_tick);
-        assert_eq!(no_block.sleep_ms, 100);
-
-        let proposed = dag_plan_proposer_worker_command(DagProposerWorkerCommandInput {
-            pbft_syncing: false,
-            packet_queue_over_limit: false,
-            has_attempt_result: true,
-            attempt_returned_proposed: true,
-        });
-        assert!(!proposed.attempt_proposal);
-        assert!(!proposed.sleep_after_tick);
-    }
-
-    #[test]
-    fn vdf_message_conversion_preserves_legacy_rlp_order() {
+    fn vdf_message_conversion_preserves_ffi_hash_order() {
         let pivot = [0x11_u8; 32];
-        let tx_hashes = vec![
-            DagHash {
-                hash: [0x22_u8; 32],
-            },
-            DagHash {
-                hash: [0x33_u8; 32],
-            },
-        ];
-
-        let mut expected = RlpStream::new();
+        let hashes = vec![DagHash { hash: [0x22; 32] }, DagHash { hash: [0x33; 32] }];
+        let mut expected = rlp::RlpStream::new();
         expected.append(&H256::from(pivot));
-        expected.append(&H256::from(tx_hashes[0].hash));
-        expected.append(&H256::from(tx_hashes[1].hash));
+        expected.append(&H256::from(hashes[0].hash));
+        expected.append(&H256::from(hashes[1].hash));
 
-        assert_eq!(dag_vdf_message(&pivot, tx_hashes), expected.out().to_vec());
+        assert_eq!(dag_vdf_message(&pivot, hashes), expected.out().to_vec());
     }
 }

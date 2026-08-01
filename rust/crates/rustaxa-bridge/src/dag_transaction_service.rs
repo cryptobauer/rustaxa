@@ -1,5 +1,5 @@
 use crate::ffi::rustaxa_ffi::*;
-use crate::ffi::{BridgeFinalChain, BridgeStorage};
+use crate::ffi::{BridgeFinalChain, BridgePbftService, BridgeStorage};
 use crate::transaction_manager::{
     bridge_to_service_account_nonce_facts, bridge_to_service_final_chain_admission_fact,
     bridge_to_service_gas_estimation_request, bridge_to_service_queue_entry,
@@ -32,6 +32,9 @@ use rustaxa_consensus::dag_transaction_service::{
     DagVerifyBlockTransactionCompletionReport as NativeDagVerifyBlockTransactionCompletionReport,
     DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
 };
+use rustaxa_consensus::pbft_manager::{
+    PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
+};
 use rustaxa_consensus::transaction_packing_service::{
     TransactionPackingEstimate, TransactionPackingSelection,
 };
@@ -59,9 +62,48 @@ pub struct BridgeDagTransactionService {
 }
 
 impl BridgeDagTransactionService {
-    /// Returns the CXX-free application root for task-oriented native composition.
-    pub(crate) fn native(&self) -> &DagTransactionService {
-        &self.root
+    /// Starts or resumes PBFT finalization against the privately owned DAG root.
+    ///
+    /// The PBFT service owns executor serialization and the supplied request;
+    /// this adapter only composes it with the DAG/transaction sibling without
+    /// exposing that sibling to another bridge module. Native locks and guards
+    /// remain inside the two application services, and errors propagate without
+    /// publishing a partial executor boundary.
+    pub(crate) fn start_finalization_executor(
+        &self,
+        runtime: &BridgePbftService,
+        request: PbftFinalizationExecutorStartRequest,
+    ) -> anyhow::Result<PbftFinalizationExecutorBoundary> {
+        runtime.0.start_finalization_executor(&self.root, request)
+    }
+
+    /// Advances one cursor-bound PBFT finalization action against private state.
+    ///
+    /// The supplied action and leaf facts are interpreted by the native PBFT
+    /// service. DAG, sortition, or transaction mutation is reached only through
+    /// this task adapter; the native root, its locks, and its guards cannot
+    /// escape into the PBFT bridge. Cursor, action, storage, and leaf failures
+    /// are returned unchanged in the native executor result.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn advance_finalization_action(
+        &self,
+        runtime: &BridgePbftService,
+        cursor: u32,
+        action: u8,
+        last_block: u64,
+        request_period: u64,
+        retention_window: u64,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+    ) -> anyhow::Result<PbftFinalizationExecutorBoundary> {
+        runtime.0.advance_finalization_action(
+            &self.root,
+            cursor,
+            action,
+            last_block,
+            request_period,
+            retention_window,
+            account_nonce_facts,
+        )
     }
 }
 

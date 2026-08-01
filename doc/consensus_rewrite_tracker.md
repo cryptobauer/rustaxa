@@ -1757,6 +1757,32 @@ existing fixed-port conflict. Focused affected cases pass when isolated.
 Independent review approved the native ownership, ABI stability, error and
 sentinel projection, documentation, and exact inventory contraction.
 
+The next bounded `CRW-12` DAG/PBFT composition slice closes the last raw
+`DagTransactionService` escape from `rustaxa-bridge`. The two PBFT
+finalization routes now enter through operation-specific, crate-private
+delegates on `BridgeDagTransactionService`, which compose the retained CXX
+two-handle contract without returning the native root, a lock, or a guard to
+the PBFT bridge. Finalization cursor validation, action dispatch, lock order,
+terminal cleanup, and error propagation remain unchanged inside native
+`PbftService`; CXX declarations, carriers, signatures, and callers are
+unchanged. The bridge-local DAG worker-planner behavioral fixture moves to the
+native DAG owner, while a focused bridge fixture retains FFI hash conversion
+and byte-order coverage for the exported VDF adapter. This removes a net 8
+bridge lines and lowers the exact `bridge_lines` budget to 23,867. CXX functions,
+carriers, handles, shim lines/directories, flags, factories, constructors, and
+production consumers are unchanged. No upstream-owned C++ file changes.
+
+Validation for this DAG/PBFT root-closure slice passed the full native
+consensus (1,074 tests) and bridge (100 tests) suites,
+`rewrite-validate-fast`, both structural guards, nine focused CXX PBFT
+finalization start/advance/resume cases, and `rewrite-validate-smoke` with
+`RUSTAXA_ENABLE=ON`. A strict ad hoc `clippy -D warnings` remains blocked by
+pre-existing workspace warnings outside this slice; the repository clippy gate
+passes and the new multi-argument boundary delegate carries a focused lint
+allowance matching the retained CXX operation shape. Independent review
+approved the ownership closure after focused FFI VDF conversion coverage was
+retained at the bridge boundary.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
