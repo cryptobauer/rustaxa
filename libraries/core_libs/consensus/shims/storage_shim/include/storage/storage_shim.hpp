@@ -251,9 +251,7 @@ class DbStorage : public DbStorageOld {
   std::string lookupFinalChainReceiptByTrxHash(const Slice& key) const;
 
   std::optional<::rust::Box<rustaxa::BridgeStorage>> rust_storage_;
-  std::optional<::rust::Box<rustaxa::BridgePillarChainStorage>> pillar_storage_;
   std::optional<::rust::Box<rustaxa::BridgeDagStorageQueries>> dag_queries_;
-  std::optional<::rust::Box<rustaxa::BridgeMetadataStorageQueries>> metadata_queries_;
   std::optional<::rust::Box<rustaxa::BridgePbftStorageQueries>> pbft_queries_;
   std::optional<::rust::Box<rustaxa::BridgePbftVoteStorageQueries>> pbft_vote_queries_;
   std::optional<::rust::Box<rustaxa::BridgeTransactionStorageQueries>> transaction_queries_;

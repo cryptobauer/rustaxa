@@ -175,27 +175,25 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
 
   auto storage = rustaxa::create_storage(db_path.string());
   auto dag_queries = rustaxa::create_dag_storage_queries(*storage);
-  auto metadata_queries = rustaxa::create_metadata_storage_queries(*storage);
   auto pbft_queries = rustaxa::create_pbft_storage_queries(*storage);
   auto final_chain_queries = rustaxa::create_final_chain_storage_queries(*storage);
   auto transaction_queries = rustaxa::create_transaction_storage_queries(*storage);
   auto period_queries = rustaxa::create_period_storage_queries(*storage);
 
   // Baseline API coverage
-  transcript.add("status_default_executed_blk",
-                 toString(metadata_queries->get_status_field(kStatusFieldExecutedBlkCount)));
+  transcript.add("status_default_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
   transcript.add("pbft_mgr_field_default_round", toString(pbft_queries->get_pbft_mgr_field(kPbftMgrFieldRound)));
   transcript.add("pbft_mgr_status_default_executed_block",
                  toString(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock)));
   transcript.add("proposal_period_missing",
                  optionalToString(toOptional(dag_queries->get_proposal_period_for_dag_level(100))));
-  transcript.add("period_lambda_missing", optionalToString(toOptional(metadata_queries->get_period_lambda(7, false))));
-  transcript.add("rounds_count_dynamic_lambda_default", toString(metadata_queries->get_rounds_count_dynamic_lambda()));
-  transcript.add("genesis_missing_before", toString(metadata_queries->get_genesis_hash().empty()));
+  transcript.add("period_lambda_missing", optionalToString(toOptional(storage->get_period_lambda(7, false))));
+  transcript.add("rounds_count_dynamic_lambda_default", toString(storage->get_rounds_count_dynamic_lambda()));
+  transcript.add("genesis_missing_before", toString(storage->get_genesis_hash().empty()));
 
   auto genesis_hash = h256Array(0xAB);
   rustaxa::storage_shim_set_genesis_hash(*storage, genesis_hash);
-  transcript.add("genesis_after_set_len", toString(metadata_queries->get_genesis_hash().size()));
+  transcript.add("genesis_after_set_len", toString(storage->get_genesis_hash().size()));
 
   auto status_batch = rustaxa::create_storage_shim_batch(*storage);
   rustaxa::storage_shim_save_status_field(*status_batch, kStatusFieldTrxCount, 11);
@@ -212,18 +210,15 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   rustaxa::storage_shim_save_rounds_count_dynamic_lambda(*dynamic_lambda_batch, 23);
   rustaxa::storage_shim_commit_batch(std::move(dynamic_lambda_batch), false);
 
-  transcript.add("status_trx_count_after_save", toString(metadata_queries->get_status_field(kStatusFieldTrxCount)));
+  transcript.add("status_trx_count_after_save", toString(storage->get_status_field(kStatusFieldTrxCount)));
   transcript.add("pbft_mgr_field_round_after_save", toString(pbft_queries->get_pbft_mgr_field(kPbftMgrFieldRound)));
   transcript.add("pbft_mgr_status_next_voted_soft_after_save",
                  toString(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusNextVotedSoftValue)));
   transcript.add("proposal_period_level_100_after_save",
                  optionalToString(toOptional(dag_queries->get_proposal_period_for_dag_level(100))));
-  transcript.add("period_lambda_exact_after_save",
-                 optionalToString(toOptional(metadata_queries->get_period_lambda(7, false))));
-  transcript.add("period_lambda_closest_after_save",
-                 optionalToString(toOptional(metadata_queries->get_period_lambda(8, true))));
-  transcript.add("rounds_count_dynamic_lambda_after_save",
-                 toString(metadata_queries->get_rounds_count_dynamic_lambda()));
+  transcript.add("period_lambda_exact_after_save", optionalToString(toOptional(storage->get_period_lambda(7, false))));
+  transcript.add("period_lambda_closest_after_save", optionalToString(toOptional(storage->get_period_lambda(8, true))));
+  transcript.add("rounds_count_dynamic_lambda_after_save", toString(storage->get_rounds_count_dynamic_lambda()));
 
   // DAG missing + save/update/remove paths
   auto dag_hash_1 = h256Array(0x11);
@@ -258,8 +253,8 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   dag_counter_updates.push_back(rustaxa::DagCounterUpdate{dag_hash_3, 2, 2});
   rustaxa::storage_shim_update_dag_block_counters(*dag_counter_batch, std::move(dag_counter_updates), 3, 6);
   rustaxa::storage_shim_commit_batch(std::move(dag_counter_batch), false);
-  transcript.add("dag_counters_nonzero", toString(metadata_queries->get_status_field(kStatusFieldDagBlkCount) > 0 &&
-                                                  metadata_queries->get_status_field(kStatusFieldDagEdgeCount) > 0));
+  transcript.add("dag_counters_nonzero", toString(storage->get_status_field(kStatusFieldDagBlkCount) > 0 &&
+                                                  storage->get_status_field(kStatusFieldDagEdgeCount) > 0));
 
   auto dag_remove_batch = rustaxa::create_storage_shim_batch(*storage);
   rustaxa::storage_shim_remove_dag_block(*dag_remove_batch, dag_hash_2);

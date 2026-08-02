@@ -20,15 +20,12 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCount as FfiPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
-use crate::ffi::{BridgeFinalChain, BridgePbftService, BridgePillarChainStorage, BridgeStorage};
+#[cfg(test)]
+use crate::ffi::BridgeStorage;
+use crate::ffi::{BridgeFinalChain, BridgePbftService};
 use anyhow::{bail, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::{
-    load_current_pillar_block_data_storage as consensus_load_current_pillar_block_data_storage,
-    load_latest_pillar_block_storage as consensus_load_latest_pillar_block_storage,
-    load_own_pillar_block_vote_storage as consensus_load_own_pillar_block_vote_storage,
-    save_current_pillar_block_data_storage, save_finalized_pillar_block_storage,
-    save_own_pillar_block_vote_storage,
     PillarBlockCreationRequest as ConsensusPillarBlockCreationRequest,
     PillarBlockCreationWithVoteCountsPlan as ConsensusPillarBlockCreationWithVoteCountsPlan,
     PillarBlockLinkagePlan as ConsensusPillarBlockLinkagePlan,
@@ -38,18 +35,6 @@ use rustaxa_consensus::{
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
 };
-
-/// Creates a typed pillar-chain storage handle from the generic CXX storage
-/// facade.
-///
-/// The returned handle clones the underlying `Arc<rustaxa_storage::Storage>`.
-/// Production C++ pillar-chain code should keep this typed handle and use its
-/// methods instead of retaining or passing `BridgeStorage` after construction.
-pub fn create_pillar_chain_storage(storage: &BridgeStorage) -> Box<BridgePillarChainStorage> {
-    Box::new(BridgePillarChainStorage {
-        storage: storage.0.clone(),
-    })
-}
 
 /// Creates a Rust-owned pillar-chain runtime for the C++ PillarChainManager
 /// shim.
@@ -85,53 +70,6 @@ fn create_pending_pillar_test_service_from_storage(
             magnolia_activation_period: 0,
         },
     )
-}
-
-impl BridgePillarChainStorage {
-    /// Persists current pillar-block sidecar data through consensus-owned
-    /// storage.
-    pub fn pillar_chain_storage_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
-        save_current_pillar_block_data_storage(self.storage.as_ref(), &data_rlp)
-    }
-
-    /// Persists this node's own pillar-block vote through consensus-owned
-    /// storage.
-    pub fn pillar_chain_storage_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
-        save_own_pillar_block_vote_storage(self.storage.as_ref(), &vote_rlp)
-    }
-
-    /// Persists a finalized pillar block through consensus-owned storage.
-    pub fn pillar_chain_storage_apply_finalized_block(
-        &self,
-        period: u64,
-        pillar_block_rlp: Vec<u8>,
-    ) -> Result<()> {
-        save_finalized_pillar_block_storage(self.storage.as_ref(), period, &pillar_block_rlp)
-    }
-
-    /// Loads this node's own pillar-block vote bytes, returning empty bytes when
-    /// no vote is stored.
-    pub fn pillar_chain_storage_load_own_vote(&self) -> Result<Vec<u8>> {
-        consensus_load_own_pillar_block_vote_storage(self.storage.as_ref())
-    }
-
-    /// Loads current pillar-block sidecar bytes, returning empty bytes when
-    /// missing.
-    pub fn pillar_chain_storage_load_current_block_data(&self) -> Result<Vec<u8>> {
-        consensus_load_current_pillar_block_data_storage(self.storage.as_ref())
-    }
-
-    /// Loads the latest finalized pillar block bytes, returning empty bytes when
-    /// no finalized pillar block is stored.
-    pub fn pillar_chain_storage_load_latest_block(&self) -> Result<Vec<u8>> {
-        consensus_load_latest_pillar_block_storage(self.storage.as_ref())
-    }
-
-    /// Loads a finalized pillar block by period, returning empty bytes when no
-    /// block is stored for that period.
-    pub fn pillar_chain_storage_load_block(&self, period: u64) -> Result<Vec<u8>> {
-        Ok(self.storage.pillar().rlp(period)?.unwrap_or_default())
-    }
 }
 
 impl BridgePbftService {
@@ -455,75 +393,75 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("UTF-8 temp path"))
                 .expect("storage should initialize");
-            let pillar = create_pillar_chain_storage(&storage);
+            let storage_for_ops = BridgeStorage(storage.0.clone());
             drop(storage);
-            assert!(pillar
+            assert!(storage_for_ops
                 .pillar_chain_storage_load_current_block_data()
                 .expect("missing current read")
                 .is_empty());
-            assert!(pillar
+            assert!(storage_for_ops
                 .pillar_chain_storage_load_own_vote()
                 .expect("missing own-vote read")
                 .is_empty());
-            assert!(pillar
+            assert!(storage_for_ops
                 .pillar_chain_storage_load_latest_block()
                 .expect("missing latest read")
                 .is_empty());
-            assert!(pillar
+            assert!(storage_for_ops
                 .pillar_chain_storage_load_block(42)
                 .expect("missing period read")
                 .is_empty());
 
-            pillar
+            storage_for_ops
                 .pillar_chain_storage_apply_current_block_data(vec![0xc1, 0x01])
                 .expect("current bytes should persist");
-            pillar
+            storage_for_ops
                 .pillar_chain_storage_apply_own_vote(vec![0xc1, 0x02])
                 .expect("own-vote bytes should persist");
-            pillar
+            storage_for_ops
                 .pillar_chain_storage_apply_finalized_block(42, vec![0xc1, 0x03])
                 .expect("finalized bytes should persist");
             assert_eq!(
-                pillar
+                storage_for_ops
                     .pillar_chain_storage_load_current_block_data()
                     .expect("current bytes should load"),
                 vec![0xc1, 0x01]
             );
             assert_eq!(
-                pillar
+                storage_for_ops
                     .pillar_chain_storage_load_own_vote()
                     .expect("own-vote bytes should load"),
                 vec![0xc1, 0x02]
             );
             assert_eq!(
-                pillar
+                storage_for_ops
                     .pillar_chain_storage_load_latest_block()
                     .expect("latest bytes should load"),
                 vec![0xc1, 0x03]
             );
             assert_eq!(
-                pillar
+                storage_for_ops
                     .pillar_chain_storage_load_block(42)
                     .expect("period bytes should load"),
                 vec![0xc1, 0x03]
             );
 
             assert_eq!(
-                pillar
+                storage_for_ops
                     .pillar_chain_storage_apply_current_block_data(Vec::new())
                     .expect_err("empty current payload must reject")
                     .to_string(),
                 "PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"
             );
             assert_eq!(
-                pillar
+                storage_for_ops
                     .pillar_chain_storage_apply_own_vote(Vec::new())
                     .expect_err("empty own-vote payload must reject")
                     .to_string(),
                 "PILLAR_OWN_VOTE_EMPTY_PAYLOAD"
             );
             assert_eq!(
-                pillar
+                storage_for_ops
                     .pillar_chain_storage_apply_finalized_block(43, Vec::new())
                     .expect_err("empty finalized payload must reject")
                     .to_string(),

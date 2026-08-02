@@ -44,11 +44,11 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 22643 |
-| `shim_lines` | 17019 |
-| `cxx_functions` | 382 |
+| `bridge_lines` | 22575 |
+| `shim_lines` | 17013 |
+| `cxx_functions` | 380 |
 | `cxx_carriers` | 336 |
-| `cxx_handles` | 20 |
+| `cxx_handles` | 18 |
 | `shim_directories` | 11 |
 | `granular_flags` | 0 |
 | `partial_service_factories` | 0 |
@@ -87,11 +87,9 @@ not compatibility promises. The guard requires exact set equality with the parse
 | `create_storage` | Production root debt | `DbStorage`/`App` bootstrap | Native application storage construction replaces broad C++ bootstrap ownership. |
 | `create_dag_storage_queries` | Compatibility facade | storage shim | Native DAG/query fixtures replace it. |
 | `create_final_chain_storage_queries` | Compatibility facade | storage shim | FinalChain/query APIs replace it. |
-| `create_metadata_storage_queries` | Compatibility facade | storage shim | Native metadata/query fixtures replace it. |
 | `create_pbft_storage_queries` | Compatibility facade | storage shim | Native PBFT/query fixtures replace it. |
 | `create_pbft_vote_storage_queries` | Compatibility facade | storage shim | Native vote/query fixtures replace it. |
 | `create_period_storage_queries` | Compatibility facade | storage shim | PBFT/query APIs replace it. |
-| `create_pillar_chain_storage` | Compatibility facade | storage shim | Native pillar APIs replace it. |
 | `create_storage_shim_batch` | Compatibility facade | storage shim | No named client requires the legacy batch lifecycle. |
 | `create_transaction_storage_queries` | Compatibility facade | storage shim | Native transaction/query fixtures replace it. |
 | `make_cancellation_token_with_atomic` | Supported boundary | VDF executor | Keep only dedicated VDF cancellation execution. |
@@ -131,13 +129,13 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | CXX conversion over native sync admission/egress tasks plus cert-vote bundle validation conversion | PBFT manager and tarcap | Internal bridge route | Native `PbftService` owns admission cursor lifecycle, report validation, terminal cleanup, bootstrap gating, storage-backed egress, and behavioral coverage; the bridge retains pure carrier/status/error conversion sentinels until the PBFT/network pipeline clients migrate. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_generation.rs` | DTO adapters over native PBFT vote/FinalChain tasks plus the standalone signing entrypoint | Vote/PBFT shims | Internal bridge route | Signing becomes a leaf port; retained CXX carriers are removed with the vote/PBFT shim clients. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_progress.rs` | progress adapter | PBFT/vote shims | Internal bridge route | Fold into native PBFT service. |
-| `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | CXX conversion plus typed storage-compatibility adapters over native PBFT-root pillar tasks | pillar and storage shims | Internal bridge route | Native `PbftService` owns current-anchor mutation/decisions, startup bootstrap, FinalChain-composed block planning, linkage, latest-finalized lookup, readiness, and access to private pillar state; retain only CXX conversion, focused tag/status and FinalChain-handle sentinels, and the separately named storage compatibility facade and its byte/error sentinel. |
+| `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | CXX conversion over native PBFT-root pillar tasks | pillar shim | Internal bridge route | Native `PbftService` owns current-anchor mutation/decisions, startup bootstrap, FinalChain-composed block planning, linkage, latest-finalized lookup, readiness, and access to private pillar state; retain only CXX conversion plus focused tag/status and FinalChain-handle sentinels. |
 | `rust/crates/rustaxa-bridge/src/pillar_votes.rs` | CXX conversion and FinalChain-handle unwrapping over native PBFT-root pillar-vote tasks | pillar/PBFT shims | Internal bridge route | Native `PbftService` owns admission, FinalChain composition, relevance, weighted bundles, payload/network lookup, finalization prepare/ack, and behavioral tests; retain only CXX conversion until the named C++ pillar/PBFT clients migrate. |
 | `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | PBFT DTO adapters over root `PbftService` proposal tasks | PBFT manager shim | Internal bridge route | Native state, storage, restoration, lock ownership, and standalone behavior live in `rustaxa-consensus`; production calls cannot borrow the proposal sibling, and the C++ proposed-block facade and temporary-candidate bridge are deleted. Delete the remaining DTO projection when PBFT manager clients consume native proposal views. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi` | RPC, GraphQL, light plugin | External boundary | Keep a client-oriented read API; remove manager/storage construction elsewhere. |
 | `rust/crates/rustaxa-bridge/src/slashing.rs` | DTO adapters over native `SlashingProofService` | slashing/vote shims | Internal bridge route | Native service owns planner configuration, duplicate cache, and mutex; retain only the transaction-executor conversion boundary until the C++ slashing facade contracts to signing/submission effects. |
 | `rust/crates/rustaxa-bridge/src/sortition.rs` | CXX configuration conversion for native `SortitionService` construction | DAG application bootstrap | Bootstrap adapter | Delete or inline the conversion when native application construction no longer accepts the legacy CXX configuration carrier. |
-| `rust/crates/rustaxa-bridge/src/storage.rs` | storage facade, queries including proposed-block compatibility, and batch | storage shim, conformance, bootstrap | Compatibility facade | Native bootstrap/query/test fixtures replace broad storage handles; proposed-block save/read methods retire with the storage-shim compatibility client. |
+| `rust/crates/rustaxa-bridge/src/storage.rs` | storage facade, queries including metadata, proposed-block, and pillar compatibility, and batch | storage shim, conformance, bootstrap | Compatibility facade | Native bootstrap/query/test fixtures replace broad storage handles; metadata, proposed-block, and pillar compatibility methods retire with the storage-shim client. |
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | legacy transaction inspection | PBFT/transaction materializers | Internal bridge route | Use native codec internally; retain only if a named C++ client remains. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | DTO and report conversion over native transaction ownership; DAG-save, finalized-status, admission, read, packing, finalized filtering/verification, recovery, cache, sidecar-removal, and queue-finalization tasks call lock-owning native services directly | transaction/DAG/PBFT shims | Internal bridge route | Retain only submission/materialization conversion, the focused status-mapping ABI test, and unlocked EVM leaf adapters. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF operations/cancellation | VDF and proposer C++ | External boundary | Keep until VDF execution is a native or dedicated external API. |
@@ -151,10 +149,8 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `BridgeConsensusNetworkApi` | `network.rs` | tarcap handlers | External boundary | `CRW-N01` leaves a transport-only API. |
 | `BridgeDagTransactionService` | `dag_transaction_service.rs` | App and DAG/transaction/sortition/gas shims | Native service wrapper | Delete after named C++ clients use narrow lifecycle, query, EVM, VDF, signing, and transport adapters over native `DagTransactionService`. |
 | `BridgePbftService` | `pbft_manager.rs` | App and PBFT/vote/pillar shims | Native service wrapper | This one-field CXX adapter wraps native `PbftService`; delete it when named C++ clients use narrower lifecycle, transport, execution, and query APIs. |
-| `BridgePillarChainStorage` | `pillar_chain.rs` | storage shim | Compatibility facade | Replace remaining pillar storage compatibility calls. |
 | `BridgeStorage` | `storage.rs` | storage shim, bootstrap, tests | Compatibility facade | Native construction and narrow query/admin APIs replace it. |
 | `BridgeDagStorageQueries` | `storage.rs` | storage shim/tests | Compatibility facade | Native DAG/query fixtures replace it. |
-| `BridgeMetadataStorageQueries` | `storage.rs` | storage shim/tests | Compatibility facade | Native metadata/query fixtures replace it. |
 | `BridgePbftStorageQueries` | `storage.rs` | storage shim/tests | Compatibility facade | Native PBFT/query fixtures replace it. |
 | `BridgePbftVoteStorageQueries` | `storage.rs` | storage shim/tests | Compatibility facade | Native vote/query fixtures replace it. |
 | `BridgeTransactionStorageQueries` | `storage.rs` | storage shim/tests | Compatibility facade | Native transaction/query fixtures replace it. |

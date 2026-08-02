@@ -92,9 +92,7 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
                    node_addr, rebuild) {
   try {
     rust_storage_ = rustaxa::create_storage(path.string());
-    pillar_storage_ = rustaxa::create_pillar_chain_storage(*rust_storage_.value());
     dag_queries_ = rustaxa::create_dag_storage_queries(*rust_storage_.value());
-    metadata_queries_ = rustaxa::create_metadata_storage_queries(*rust_storage_.value());
     pbft_queries_ = rustaxa::create_pbft_storage_queries(*rust_storage_.value());
     pbft_vote_queries_ = rustaxa::create_pbft_vote_storage_queries(*rust_storage_.value());
     transaction_queries_ = rustaxa::create_transaction_storage_queries(*rust_storage_.value());
@@ -276,7 +274,7 @@ void DbStorage::setGenesisHash(const h256& genesis_hash) {
 }
 
 std::optional<h256> DbStorage::getGenesisHash() {
-  auto rust_hash = metadata_queries_.value()->get_genesis_hash();
+  auto rust_hash = rust_storage_.value()->get_genesis_hash();
   if (!rust_hash.empty()) {
     return h256(dev::bytes(rust_hash.begin(), rust_hash.end()));
   }
@@ -414,7 +412,7 @@ void DbStorage::saveSortitionParamsChange(PbftPeriod period, const SortitionPara
 std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count) {
   std::deque<SortitionParamsChange> changes;
 
-  auto rust_changes = metadata_queries_.value()->get_last_sortition_params(static_cast<uint64_t>(count));
+  auto rust_changes = rust_storage_.value()->get_last_sortition_params(static_cast<uint64_t>(count));
   for (auto const& change_rlp : rust_changes) {
     auto bytes = dev::bytes(change_rlp.data.begin(), change_rlp.data.end());
     changes.emplace_back(SortitionParamsChange::from_rlp(dev::RLP(bytes)));
@@ -423,7 +421,7 @@ std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count
 }
 
 std::optional<SortitionParamsChange> DbStorage::getParamsChangeForPeriod(PbftPeriod period) {
-  auto rust_change = metadata_queries_.value()->get_params_change_for_period(period);
+  auto rust_change = rust_storage_.value()->get_params_change_for_period(period);
   if (rust_change.empty()) {
     return {};
   }
@@ -558,11 +556,11 @@ std::vector<std::shared_ptr<PillarVote>> DbStorage::getPeriodPillarVotes(PbftPer
 void DbStorage::savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>& pillar_block) {
   auto pillar_rlp_bytes = pillar_block->getRlp();
   auto pillar_rlp = into_rust_vec(pillar_rlp_bytes);
-  pillar_storage_.value()->pillar_chain_storage_apply_finalized_block(pillar_block->getPeriod(), std::move(pillar_rlp));
+  rust_storage_.value()->pillar_chain_storage_apply_finalized_block(pillar_block->getPeriod(), std::move(pillar_rlp));
 }
 
 std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getPillarBlock(PbftPeriod period) const {
-  auto data = pillar_storage_.value()->pillar_chain_storage_load_block(period);
+  auto data = rust_storage_.value()->pillar_chain_storage_load_block(period);
   if (data.empty()) {
     return {};
   }
@@ -572,7 +570,7 @@ std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getPillarBlock(PbftPeriod 
 }
 
 std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getLatestPillarBlock() const {
-  auto data = pillar_storage_.value()->pillar_chain_storage_load_latest_block();
+  auto data = rust_storage_.value()->pillar_chain_storage_load_latest_block();
   if (data.empty()) {
     return {};
   }
@@ -584,11 +582,11 @@ std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getLatestPillarBlock() con
 void DbStorage::saveOwnPillarBlockVote(const std::shared_ptr<PillarVote>& vote) {
   auto vote_bytes = util::rlp_enc(vote);
   auto vote_rlp = into_rust_vec(vote_bytes);
-  pillar_storage_.value()->pillar_chain_storage_apply_own_vote(std::move(vote_rlp));
+  rust_storage_.value()->pillar_chain_storage_apply_own_vote(std::move(vote_rlp));
 }
 
 std::shared_ptr<PillarVote> DbStorage::getOwnPillarBlockVote() const {
-  auto data = pillar_storage_.value()->pillar_chain_storage_load_own_vote();
+  auto data = rust_storage_.value()->pillar_chain_storage_load_own_vote();
   if (data.empty()) {
     return nullptr;
   }
@@ -600,11 +598,11 @@ std::shared_ptr<PillarVote> DbStorage::getOwnPillarBlockVote() const {
 void DbStorage::saveCurrentPillarBlockData(const pillar_chain::CurrentPillarBlockDataDb& current_pillar_block_data) {
   auto data_bytes = util::rlp_enc(current_pillar_block_data);
   auto data_rlp = into_rust_vec(data_bytes);
-  pillar_storage_.value()->pillar_chain_storage_apply_current_block_data(std::move(data_rlp));
+  rust_storage_.value()->pillar_chain_storage_apply_current_block_data(std::move(data_rlp));
 }
 
 std::optional<pillar_chain::CurrentPillarBlockDataDb> DbStorage::getCurrentPillarBlockData() const {
-  auto data = pillar_storage_.value()->pillar_chain_storage_load_current_block_data();
+  auto data = rust_storage_.value()->pillar_chain_storage_load_current_block_data();
   if (data.empty()) {
     return {};
   }
@@ -655,9 +653,9 @@ void DbStorage::saveProposedPbftBlock(const std::shared_ptr<PbftBlock>& block) {
   auto block_hash = block->getBlockHash();
   auto block_bytes = block->rlp(true);
   auto block_rlp = into_rust_vec(block_bytes);
-  (void)pbft_queries_.value()->save_proposed_pbft_block(
-      block->getPeriod(), into_bytes_array(block_hash), into_bytes_array(block->getPivotDagBlockHash()),
-      std::move(block_rlp));
+  (void)pbft_queries_.value()->save_proposed_pbft_block(block->getPeriod(), into_bytes_array(block_hash),
+                                                        into_bytes_array(block->getPivotDagBlockHash()),
+                                                        std::move(block_rlp));
 }
 
 void DbStorage::removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& write_batch) {
@@ -794,7 +792,7 @@ bool DbStorage::transactionFinalized(trx_hash_t const& hash) {
 }
 
 uint64_t DbStorage::getStatusField(StatusDbField const& field) {
-  return metadata_queries_.value()->get_status_field(static_cast<uint8_t>(field));
+  return rust_storage_.value()->get_status_field(static_cast<uint8_t>(field));
 }
 
 uint64_t DbStorage::getNumTransactionExecuted() { return getStatusField(StatusDbField::ExecutedTrxCount); }
@@ -1074,7 +1072,7 @@ void DbStorage::savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batc
 }
 
 std::optional<uint32_t> DbStorage::getPeriodLambda(PbftPeriod period, bool find_closest) {
-  auto rust_value = metadata_queries_.value()->get_period_lambda(period, find_closest);
+  auto rust_value = rust_storage_.value()->get_period_lambda(period, find_closest);
   if (rust_value.found) {
     return rust_value.value;
   }
@@ -1085,14 +1083,12 @@ void DbStorage::saveRoundsCountDynamicLambda(uint32_t rounds_count, Batch& write
   rustaxa::storage_shim_save_rounds_count_dynamic_lambda(getOrCreateRustBatch(write_batch), rounds_count);
 }
 
-uint32_t DbStorage::getRoundsCountDynamicLambda() {
-  return metadata_queries_.value()->get_rounds_count_dynamic_lambda();
-}
+uint32_t DbStorage::getRoundsCountDynamicLambda() { return rust_storage_.value()->get_rounds_count_dynamic_lambda(); }
 
 std::unordered_map<PbftPeriod, rewards::BlockStats> DbStorage::getBlocksRewardsStats() const {
   std::unordered_map<PbftPeriod, rewards::BlockStats> rewards_stats;
 
-  auto rust_stats = metadata_queries_.value()->get_blocks_rewards_stats();
+  auto rust_stats = rust_storage_.value()->get_blocks_rewards_stats();
   rewards_stats.reserve(rust_stats.size());
   for (auto const& stat : rust_stats) {
     auto bytes = dev::bytes(stat.data.begin(), stat.data.end());

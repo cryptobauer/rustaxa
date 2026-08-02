@@ -1211,7 +1211,6 @@ mod tests {
         let storage =
             crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
         let api = create_consensus_query_api(&storage);
-        let pillar_storage = crate::pillar_chain::create_pillar_chain_storage(&storage);
         let block = PillarBlock {
             period: 10,
             state_root: H256::from_low_u64_be(0x10),
@@ -1231,7 +1230,7 @@ mod tests {
         let votes_bundle_rlp =
             encode_optimized_pillar_votes_bundle_rlp(std::slice::from_ref(&vote)).unwrap();
 
-        pillar_storage
+        storage
             .pillar_chain_storage_apply_finalized_block(10, block.encode_rlp())
             .unwrap();
         storage

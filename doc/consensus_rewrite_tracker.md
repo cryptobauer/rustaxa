@@ -2019,6 +2019,67 @@ Rust storage lock already held by the current process. The focused three-node
 PBFT case passed in a fresh process before this aggregate run, so the failure is
 recorded as harness cleanup debt rather than a slice regression.
 
+The next bounded `CRW-12`/`CRW-07` lifetime contraction deletes the complete
+`BridgePillarChainStorage` handle and owned-handle factory family. Its sole
+production client, the Rust-mode `DbStorage` overlay, now invokes the same seven
+pillar compatibility operations through its already-owned `BridgeStorage`
+root. Native pillar services remain PBFT-owned protocol authority; this slice
+does not broaden or complete blocked `CRW-17`. Stable C++ `DbStorage` block,
+own-vote, and current-block-data APIs retain identical canonical RLP, missing
+read, and error behavior while one cloned storage lifetime disappears. Native
+pillar storage tests retain persistence, missing-read, empty-input, and
+restart coverage; the focused bridge storage sentinel retains byte/error
+projection coverage. The change removes 29 bridge lines, 2 shim lines, one CXX
+function, one opaque handle, and one owned-handle factory, lowering exact
+budgets to 22,614 bridge lines, 17,017 shim lines, 381 CXX functions, and 19
+handles. Carriers remain 336; shim directories, flags, partial factories,
+compatibility constructors, and 39 production bridge consumers are unchanged.
+
+Validation passed the three focused native pillar-storage tests, the focused
+bridge storage and public-query sentinels, all 9 `rust_storage_tests`,
+`rewrite-validate-fast` (1,080 native consensus and 81 bridge tests),
+`rewrite-validate-smoke`, targeted C++ formatting, the inventory/storage
+guards, and whitespace validation with `RUSTAXA_ENABLE=ON`. The complete
+`pillar_chain_test` again passed 10 of 13 cases and reproduced the known
+same-process `/tmp/taraxa0/db/db/LOCK` leak in the three later node-constructing
+cases; its direct `pillar_chain_db` compatibility round trip passed before the
+leak. Both changed C++ files are main-only storage overlay paths, so no original
+upstream-owned C++ file or pure-C++ source selection changed. Independent
+review approved the seven-operation semantic and lifetime parity, CXX
+completeness, metrics, tests, and upstream audit with no blocking or medium
+findings.
+
+The adjacent `CRW-12`/`CRW-07` storage-lifetime contraction deletes the
+complete `BridgeMetadataStorageQueries` handle and owned-handle factory family.
+Its sole production client, the storage overlay, and its storage-conformance
+client now use the already-owned `BridgeStorage` root for the same seven
+immutable genesis, sortition, status, lambda, and rewards-stat projections.
+Rust bridge fixtures likewise retain the root storage owner instead of testing
+a detached cloned lifetime. Missing values, closest-period selection,
+u64-to-usize saturation, ordering, canonical bytes, and storage error identity
+remain unchanged. This is another isolated lifetime deletion alongside active
+`CRW-12`/`CRW-07`, not completion of blocked `CRW-17`. The change removes 39
+bridge lines, 4 shim lines, one CXX function, one opaque handle, and one
+owned-handle factory, lowering exact budgets to 22,575 bridge lines, 17,013
+shim lines, 380 CXX functions, and 18 handles. Carriers remain 336; shim
+directories, flags, partial factories, compatibility constructors, and 39
+production bridge consumers are unchanged.
+
+Validation passed the focused genesis/rewards metadata bridge tests, the
+FinalChain rewards-publication fixture that reads metadata through the root,
+all 9 `rust_storage_tests`, the full C++-reference-versus-Rust storage
+conformance differential, `rewrite-validate-fast` (1,080 native consensus and
+81 bridge tests), `rewrite-validate-smoke`, the inventory/storage guards,
+targeted C++ formatting, and whitespace validation with `RUSTAXA_ENABLE=ON`.
+This read-only family owns no
+write batch or restart sidecar; the differential proves the stable metadata
+transcript is byte-identical after the receiver-lifetime deletion. The storage
+overlay and conformance runner are main-only paths absent from `upstream-main`,
+so no original upstream-owned C++ file or pure-C++ source selection changed.
+Independent review approved semantic and lifetime parity, CXX completeness,
+inventory accuracy, conformance coverage, and the upstream ownership audit with
+no blocking or medium findings.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
@@ -2975,8 +3036,8 @@ same state and completes a pillar-specific readiness transition before live call
 tests. Production App injects its existing service, `BridgePillarChainRuntime` and its factory are deleted, and all pillar
 receivers use sibling service locking without crossing C++ FinalChain, signing, network, event, or materialization
 effects. PBFT's four pure current-anchor decisions now call the shared service directly; the public manager wrappers
-remain compatibility adapters. `BridgePillarChainStorage` remains separately classified as a stable `DbStorage`
-compatibility implementation and is not production pillar storage authority.
+remain compatibility adapters. The later storage-lifetime contraction deletes the separate
+`BridgePillarChainStorage` handle while preserving stable `DbStorage` methods on the existing root storage adapter.
 
 The next bounded `CRW-05`/`CRW-07` slice internalizes the PBFT-finalization sortition commit across the two
 application-owned services. C++ still derives the finalized DAG/transaction counts needed by the Rust operation and
@@ -3020,7 +3081,7 @@ migrations complete, the final CRW-06 storage-authority audit became dependency-
 
 The bounded CRW-06 closeout found no remaining unclassified production consensus storage route. Native consensus and
 storage crates contain no bridge-shaped storage handles, `rustBatchId` has no code call sites, and remaining
-`BridgeStorage`, `BridgeStorageBatch`, storage-query-family, `BridgePillarChainStorage`, and `DbStorage` references are
+`BridgeStorage`, `BridgeStorageBatch`, storage-query-family, and `DbStorage` references are
 limited to typed application/bootstrap construction, stable public compatibility, network/query, external FinalChain/EVM,
 admin/migration, conformance, and test boundaries. `BridgeStorageBatch` is an opaque carrier inside the stable
 `DbStorage::Batch` lifecycle; C++ compatibility callers still sequence typed append operations, while Rust owns

@@ -5,7 +5,6 @@ use crate::network::*;
 use crate::pbft_manager::*;
 use crate::pbft_sync::*;
 use crate::pbft_vote_generation::*;
-use crate::pillar_chain::*;
 use crate::pillar_votes::*;
 use crate::query::*;
 use crate::storage::*;
@@ -38,15 +37,6 @@ pub struct BridgePbftVoteStorageQueries {
 /// and PBFT head payload reads grouped under the PBFT storage boundary instead
 /// of exposing them as generic `BridgeStorage` methods.
 pub struct BridgePbftStorageQueries {
-    pub storage: Arc<Storage>,
-}
-
-/// Typed metadata/rewards query handle for C++ compatibility materializers.
-///
-/// This wrapper keeps metadata, status, lambda, sortition, genesis, and block
-/// rewards reads grouped under the metadata storage boundary instead of exposing
-/// them as generic `BridgeStorage` methods.
-pub struct BridgeMetadataStorageQueries {
     pub storage: Arc<Storage>,
 }
 
@@ -124,15 +114,6 @@ pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
 /// network module.
 pub struct BridgeConsensusNetworkApi {
     pub api: Mutex<ConsensusNetworkApi>,
-}
-
-/// Pillar-chain storage wrapper used by the C++ manager shim.
-///
-/// The wrapper owns a cloned Rust storage handle so production pillar-chain
-/// reads and writes do not retain or pass the generic `BridgeStorage` facade
-/// after construction.
-pub struct BridgePillarChainStorage {
-    pub storage: Arc<Storage>,
 }
 
 /// Thin CXX adapter over the CXX-free native PBFT application root.
@@ -4722,39 +4703,42 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
         ) -> Result<Vec<u8>>;
 
-        type BridgePillarChainStorage;
-
-        pub fn create_pillar_chain_storage(
-            storage: &BridgeStorage,
-        ) -> Box<BridgePillarChainStorage>;
         pub fn pbft_service_pillar_ready(self: &BridgePbftService) -> bool;
         pub fn pbft_service_complete_pillar_bootstrap(self: &BridgePbftService) -> Result<()>;
         pub fn pillar_chain_storage_apply_current_block_data(
-            self: &BridgePillarChainStorage,
+            self: &BridgeStorage,
             data_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn pillar_chain_storage_apply_own_vote(
-            self: &BridgePillarChainStorage,
+            self: &BridgeStorage,
             vote_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn pillar_chain_storage_apply_finalized_block(
-            self: &BridgePillarChainStorage,
+            self: &BridgeStorage,
             period: u64,
             pillar_block_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn pillar_chain_storage_load_own_vote(
-            self: &BridgePillarChainStorage,
-        ) -> Result<Vec<u8>>;
+        pub fn pillar_chain_storage_load_own_vote(self: &BridgeStorage) -> Result<Vec<u8>>;
         pub fn pillar_chain_storage_load_current_block_data(
-            self: &BridgePillarChainStorage,
+            self: &BridgeStorage,
         ) -> Result<Vec<u8>>;
-        pub fn pillar_chain_storage_load_latest_block(
-            self: &BridgePillarChainStorage,
-        ) -> Result<Vec<u8>>;
+        pub fn pillar_chain_storage_load_latest_block(self: &BridgeStorage) -> Result<Vec<u8>>;
         pub fn pillar_chain_storage_load_block(
-            self: &BridgePillarChainStorage,
+            self: &BridgeStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
+        pub fn get_genesis_hash(self: &BridgeStorage) -> Result<Vec<u8>>;
+        pub fn get_last_sortition_params(self: &BridgeStorage, count: u64)
+            -> Result<Vec<BlockRlp>>;
+        pub fn get_params_change_for_period(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
+        pub fn get_status_field(self: &BridgeStorage, field: u8) -> Result<u64>;
+        pub fn get_period_lambda(
+            self: &BridgeStorage,
+            period: u64,
+            find_closest: bool,
+        ) -> Result<PeriodLambda>;
+        pub fn get_rounds_count_dynamic_lambda(self: &BridgeStorage) -> Result<u32>;
+        pub fn get_blocks_rewards_stats(self: &BridgeStorage) -> Result<Vec<PeriodRlp>>;
         pub fn pbft_service_pillar_apply_planned_current_block_data(
             self: &BridgePbftService,
             data_rlp: Vec<u8>,
@@ -4825,7 +4809,6 @@ pub mod rustaxa_ffi {
 
         type BridgeStorage;
         type BridgeDagStorageQueries;
-        type BridgeMetadataStorageQueries;
         type BridgePbftStorageQueries;
         type BridgePbftVoteStorageQueries;
         type BridgeTransactionStorageQueries;
@@ -4837,9 +4820,6 @@ pub mod rustaxa_ffi {
         pub fn create_pbft_storage_queries(
             storage: &BridgeStorage,
         ) -> Box<BridgePbftStorageQueries>;
-        pub fn create_metadata_storage_queries(
-            storage: &BridgeStorage,
-        ) -> Box<BridgeMetadataStorageQueries>;
         pub fn create_dag_storage_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries>;
         pub fn create_pbft_vote_storage_queries(
             storage: &BridgeStorage,
@@ -5049,25 +5029,6 @@ pub mod rustaxa_ffi {
         /// Typed by-period receipts lookup.
         pub fn get_block_receipt(self: &BridgePeriodStorageQueries, period: u64)
             -> Result<Vec<u8>>;
-        pub fn get_genesis_hash(self: &BridgeMetadataStorageQueries) -> Result<Vec<u8>>;
-        pub fn get_last_sortition_params(
-            self: &BridgeMetadataStorageQueries,
-            count: u64,
-        ) -> Result<Vec<BlockRlp>>;
-        pub fn get_params_change_for_period(
-            self: &BridgeMetadataStorageQueries,
-            period: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn get_status_field(self: &BridgeMetadataStorageQueries, field: u8) -> Result<u64>;
-        pub fn get_period_lambda(
-            self: &BridgeMetadataStorageQueries,
-            period: u64,
-            find_closest: bool,
-        ) -> Result<PeriodLambda>;
-        pub fn get_rounds_count_dynamic_lambda(self: &BridgeMetadataStorageQueries) -> Result<u32>;
-        pub fn get_blocks_rewards_stats(
-            self: &BridgeMetadataStorageQueries,
-        ) -> Result<Vec<PeriodRlp>>;
         pub fn pbft_block_in_db(self: &BridgePbftStorageQueries, hash: &[u8; 32]) -> Result<bool>;
         pub fn get_pbft_mgr_field(self: &BridgePbftStorageQueries, field: u8) -> Result<u32>;
         pub fn get_pbft_mgr_status(self: &BridgePbftStorageQueries, field: u8) -> Result<bool>;

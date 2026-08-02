@@ -1085,11 +1085,9 @@ impl BridgePbftService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::{BridgeDagStorageQueries, BridgeMetadataStorageQueries, BridgeStorage};
+    use crate::ffi::{BridgeDagStorageQueries, BridgeStorage};
     use crate::pbft_manager::create_pbft_service_from_storage;
-    use crate::storage::{
-        create_dag_storage_queries, create_metadata_storage_queries, create_storage,
-    };
+    use crate::storage::{create_dag_storage_queries, create_storage};
     use ethereum_types::{H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
@@ -1242,10 +1240,6 @@ mod tests {
             has_non_finalized_fallback: false,
             non_finalized_fallback_hash: [0; 32],
         }
-    }
-
-    fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
-        create_metadata_storage_queries(storage)
     }
 
     fn dag_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries> {
@@ -3354,9 +3348,7 @@ mod tests {
         drop(session);
         drop(final_chain);
         let storage = create_storage(storage_path).expect("storage should reopen");
-        let persisted_stats = metadata_queries(&storage)
-            .get_blocks_rewards_stats()
-            .unwrap();
+        let persisted_stats = storage.get_blocks_rewards_stats().unwrap();
         assert_eq!(persisted_stats.len(), 1);
         assert_eq!(persisted_stats[0].period, 1);
         assert_eq!(persisted_stats[0].data, rewards_stats_rlp);
@@ -3367,9 +3359,7 @@ mod tests {
         drop(reloaded);
         let storage =
             create_storage(storage_path).expect("storage should reopen after final chain");
-        let persisted_stats = metadata_queries(&storage)
-            .get_blocks_rewards_stats()
-            .unwrap();
+        let persisted_stats = storage.get_blocks_rewards_stats().unwrap();
         assert_eq!(persisted_stats.len(), 1);
         assert_eq!(persisted_stats[0].period, 1);
         assert_eq!(persisted_stats[0].data, vec![0xc3, 0x01, 0x02, 0x03]);
