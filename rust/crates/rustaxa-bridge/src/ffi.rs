@@ -5,7 +5,6 @@ use crate::network::*;
 use crate::pbft_manager::*;
 use crate::pbft_sync::*;
 use crate::pbft_vote_generation::*;
-use crate::pbft_vote_payload::*;
 use crate::pbft_vote_validation::*;
 use crate::pillar_chain::*;
 use crate::pillar_votes::*;
@@ -838,30 +837,20 @@ pub mod rustaxa_ffi {
         votes_bundle_rlp: Vec<u8>,
     }
 
-    /// Latest-round 2t+1 vote bundle crossing the CXX bridge for storage persistence.
-    ///
-    /// `kind` matches C++ `TwoTPlusOneVotedBlockType` discriminants:
-    /// soft = 0, cert = 1, next = 2, and next-null = 3. The metadata fields
-    /// describe the live VoteManager facts that selected the bundle; the DB key
-    /// remains only `kind` to preserve legacy latest-round semantics.
-    struct PbftTwoTPlusOneVoteBundle {
-        kind: u8,
-        period: u64,
-        round: u64,
-        step: u64,
-        block_hash: [u8; 32],
-        votes_bundle_rlp: Vec<u8>,
-    }
-
     /// Operation-level VoteManager persistence request for one accepted vote.
     ///
-    /// The bridge applies both optional writes through a single Rust storage
+    /// C++ supplies identities only. Rust resolves the authoritative retained
+    /// weighted payloads and applies both optional writes through one storage
     /// batch so replacing a 2t+1 bundle is delete-plus-put atomic.
     struct PbftVoteProgressPersistenceWrite {
         has_extra_reward_vote: bool,
-        extra_reward_vote: PbftVoteStorageRecord,
+        extra_reward_vote_hash: [u8; 32],
         has_two_t_plus_one_bundle: bool,
-        two_t_plus_one_bundle: PbftTwoTPlusOneVoteBundle,
+        two_t_plus_one_kind: u8,
+        two_t_plus_one_period: u64,
+        two_t_plus_one_round: u64,
+        two_t_plus_one_step: u64,
+        two_t_plus_one_block_hash: [u8; 32],
     }
 
     /// Result for VoteManager PBFT vote persistence bridge operations.
@@ -1976,6 +1965,8 @@ pub mod rustaxa_ffi {
         drive_pbft_progress: bool,
         progress_period: u64,
         progress_round: u64,
+        /// Canonical weighted vote bytes retained by native admission.
+        weighted_vote_rlp: Vec<u8>,
     }
 
     /// Runtime-owned validation result for callers that validate without
@@ -4740,7 +4731,8 @@ pub mod rustaxa_ffi {
         ) -> Result<RewardVotePayloadSnapshot>;
         pub fn pbft_service_verified_votes_save_own_verified_vote(
             self: &BridgePbftService,
-            record: PbftVoteStorageRecord,
+            canonical_vote_rlp: &[u8],
+            weight: u64,
         ) -> Result<PbftVotePersistenceResult>;
         pub fn pbft_service_verified_votes_clear_own_verified_votes(
             self: &BridgePbftService,
@@ -4779,14 +4771,6 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             request: PbftProposerSortitionRequest,
         ) -> Result<PbftProposerSortitionResult>;
-        pub fn pbft_vote_weighted_payload_from_canonical_vote(
-            canonical_vote_rlp: &[u8],
-            weight: u64,
-        ) -> Result<PbftVoteStorageRecord>;
-        pub fn pbft_vote_bundle_payload_from_records(
-            records: Vec<PbftVoteStorageRecord>,
-        ) -> Result<Vec<u8>>;
-
         // Consensus pillar votes
 
         pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection>;

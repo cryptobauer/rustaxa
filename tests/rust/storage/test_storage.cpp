@@ -118,35 +118,17 @@ TEST_F(StorageTest, DagBlockPeriodLookupReflectsFoundState) {
   EXPECT_EQ(found.position, 4u);
 }
 
-TEST_F(StorageTest, PersistPbftVoteProgressGroupsRewardAndTwoTPlusOneWrites) {
+TEST_F(StorageTest, PersistPbftVoteProgressRejectsMissingRetainedRewardPayload) {
   auto storage = create_storage(test_dir.string());
 
   PbftVoteProgressPersistenceWrite write{};
   write.has_extra_reward_vote = true;
-  write.extra_reward_vote.hash = h256(0x44);
-  write.extra_reward_vote.vote_rlp = bytes({0x71});
-  write.has_two_t_plus_one_bundle = true;
-  write.two_t_plus_one_bundle.kind = 0;
-  write.two_t_plus_one_bundle.period = 10;
-  write.two_t_plus_one_bundle.round = 2;
-  write.two_t_plus_one_bundle.step = 3;
-  write.two_t_plus_one_bundle.block_hash = h256(0x55);
-  write.two_t_plus_one_bundle.votes_bundle_rlp = bytes({0xC2, 0x01, 0x02});
+  write.extra_reward_vote_hash = h256(0x44);
 
-  auto result = pbftService(storage)->pbft_service_verified_votes_persist_pbft_vote_progress(write);
-  EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
-  EXPECT_EQ(result.applied_writes, 2u);
-  EXPECT_TRUE(result.error_code.empty());
+  EXPECT_THROW(pbftService(storage)->pbft_service_verified_votes_persist_pbft_vote_progress(write), std::exception);
 
   auto vote_queries = voteQueries(storage);
-  auto reward_votes = vote_queries->get_reward_votes();
-  ASSERT_EQ(reward_votes.size(), 1u);
-  EXPECT_EQ(to_std_vec(reward_votes[0].data), std::vector<uint8_t>({0x71}));
-
-  auto two_t_plus_one_votes = vote_queries->get_all_two_t_plus_one_votes();
-  ASSERT_EQ(two_t_plus_one_votes.size(), 2u);
-  EXPECT_EQ(to_std_vec(two_t_plus_one_votes[0].data), std::vector<uint8_t>({0x01}));
-  EXPECT_EQ(to_std_vec(two_t_plus_one_votes[1].data), std::vector<uint8_t>({0x02}));
+  EXPECT_TRUE(vote_queries->get_reward_votes().empty());
 }
 
 TEST_F(StorageTest, PersistPbftVoteProgressRejectsInvalidTwoTPlusOneKind) {
@@ -154,8 +136,7 @@ TEST_F(StorageTest, PersistPbftVoteProgressRejectsInvalidTwoTPlusOneKind) {
 
   PbftVoteProgressPersistenceWrite write{};
   write.has_two_t_plus_one_bundle = true;
-  write.two_t_plus_one_bundle.kind = 99;
-  write.two_t_plus_one_bundle.votes_bundle_rlp = bytes({0xC1, 0x01});
+  write.two_t_plus_one_kind = 99;
 
   auto result = pbftService(storage)->pbft_service_verified_votes_persist_pbft_vote_progress(write);
   EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
@@ -164,17 +145,18 @@ TEST_F(StorageTest, PersistPbftVoteProgressRejectsInvalidTwoTPlusOneKind) {
   EXPECT_TRUE(vote_queries->get_all_two_t_plus_one_votes().empty());
 }
 
-TEST_F(StorageTest, PersistPbftVoteProgressRejectsMalformedTwoTPlusOneBundle) {
+TEST_F(StorageTest, PersistPbftVoteProgressRejectsMissingNativeTwoTPlusOneMapping) {
   auto storage = create_storage(test_dir.string());
 
   PbftVoteProgressPersistenceWrite write{};
   write.has_two_t_plus_one_bundle = true;
-  write.two_t_plus_one_bundle.kind = 0;
-  write.two_t_plus_one_bundle.votes_bundle_rlp = bytes({0x01});
+  write.two_t_plus_one_kind = 0;
+  write.two_t_plus_one_period = 10;
+  write.two_t_plus_one_round = 2;
+  write.two_t_plus_one_step = 3;
+  write.two_t_plus_one_block_hash = h256(0x55);
 
-  auto result = pbftService(storage)->pbft_service_verified_votes_persist_pbft_vote_progress(write);
-  EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
-  EXPECT_FALSE(result.error_code.empty());
+  EXPECT_THROW(pbftService(storage)->pbft_service_verified_votes_persist_pbft_vote_progress(write), std::exception);
   auto vote_queries = voteQueries(storage);
   EXPECT_TRUE(vote_queries->get_all_two_t_plus_one_votes().empty());
 }

@@ -2415,14 +2415,17 @@ impl PbftService {
 
     /// Persists one latest-round own verified vote.
     ///
-    /// Validation, storage serialization, typed rejection, and errors follow
+    /// The canonical signed bytes and authoritative weight are encoded and
+    /// validated inside the verified-vote service. Storage serialization,
+    /// typed rejection, and errors follow
     /// [`PbftVerifiedVotesService::verified_votes_save_own_verified_vote`].
     pub fn verified_votes_save_own_verified_vote(
         &self,
-        record: PbftVoteStorageRecord,
+        canonical_vote_rlp: &[u8],
+        weight: u64,
     ) -> Result<PbftVotePersistenceResult> {
         self.verified_votes()
-            .verified_votes_save_own_verified_vote(record)
+            .verified_votes_save_own_verified_vote(canonical_vote_rlp, weight)
     }
 
     /// Clears all latest-round own verified vote records.
@@ -2436,8 +2439,9 @@ impl PbftService {
 
     /// Persists generated vote-progress effects.
     ///
-    /// Typed inputs, runtime-to-storage serialization, result statuses, and
-    /// errors follow [`PbftVerifiedVotesService::verified_votes_persist_pbft_vote_progress`].
+    /// Typed vote/mapping identities, retained-payload resolution,
+    /// runtime-to-storage serialization, result statuses, and errors follow
+    /// [`PbftVerifiedVotesService::verified_votes_persist_pbft_vote_progress`].
     pub fn verified_votes_persist_pbft_vote_progress(
         &self,
         write: PbftVerifiedVoteProgressPersistenceWrite,

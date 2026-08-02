@@ -6,7 +6,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
     PbftRewardVotesResetRequest as FfiPbftRewardVotesResetRequest,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
-    PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneVoteBundle,
+    PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan,
     PbftVoteAdmissionRuntimeResult, PbftVoteAdmissionValidationRequest, PbftVoteEventFactFlags,
     PbftVoteProgressContext as FfiPbftVoteProgressContext, PbftVoteRuntimeValidationResult,
     PbftVoteStorageRecord, RewardVoteCursorSnapshot as FfiRewardVoteCursorSnapshot,
@@ -44,6 +44,7 @@ use rustaxa_consensus::verified_votes::{
     TwoTPlusOneVotedBlockType, VerifiedVote,
 };
 use rustaxa_consensus::{
+    build_weighted_pbft_vote_payload,
     PbftNextVotesBundleEgressPlan as ConsensusPbftNextVotesBundleEgressPlan,
     PbftOptimizedVoteBundleBuildRequest as ConsensusPbftOptimizedVoteBundleBuildRequest,
     PbftOptimizedVoteBundleBuildResult as ConsensusPbftOptimizedVoteBundleBuildResult,
@@ -51,7 +52,7 @@ use rustaxa_consensus::{
     PbftRewardVotePayloadSelection,
     PbftVerifiedVoteProgressBundle as DomainPbftVerifiedVoteProgressBundle,
     PbftVerifiedVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
-    PbftVoteAdmissionTransactionResult,
+    PbftVoteAdmissionTransactionResult, PbftVotePayloadRecord,
     PbftVotePersistenceResult as DomainPbftVotePersistenceResult, PbftVotePersistenceStatus,
     PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
     RewardVoteCursorSnapshot as DomainRewardVoteCursorSnapshot,
@@ -112,13 +113,6 @@ fn pbft_finalization_apply_result_to_ffi(
     }
 }
 
-fn vote_storage_record_to_domain(value: PbftVoteStorageRecord) -> DomainPbftVoteStorageRecord {
-    DomainPbftVoteStorageRecord {
-        hash: H256::from(value.hash),
-        vote_rlp: value.vote_rlp,
-    }
-}
-
 fn vote_storage_record_to_ffi(value: DomainPbftVoteStorageRecord) -> PbftVoteStorageRecord {
     PbftVoteStorageRecord {
         hash: value.hash.0,
@@ -126,23 +120,32 @@ fn vote_storage_record_to_ffi(value: DomainPbftVoteStorageRecord) -> PbftVoteSto
     }
 }
 
+fn vote_payload_record_to_ffi(value: PbftVotePayloadRecord) -> PbftVoteStorageRecord {
+    PbftVoteStorageRecord {
+        hash: value.hash.0,
+        vote_rlp: value.vote_rlp,
+    }
+}
+
 fn two_t_plus_one_bundle_to_domain(
-    value: PbftTwoTPlusOneVoteBundle,
+    kind: u8,
+    period: u64,
+    round: u64,
+    step: u64,
+    block_hash: [u8; 32],
 ) -> Result<DomainPbftVerifiedVoteProgressBundle, DomainPbftVotePersistenceResult> {
-    let kind = TwoTPlusOneVotedBlockType::try_from(value.kind).map_err(|_| {
-        DomainPbftVotePersistenceResult {
+    let kind =
+        TwoTPlusOneVotedBlockType::try_from(kind).map_err(|_| DomainPbftVotePersistenceResult {
             status: PbftVotePersistenceStatus::Rejected,
             applied_writes: 0,
             error_code: "PBFT_VOTE_PERSIST_INVALID_TWO_T_PLUS_ONE_KIND".to_owned(),
-        }
-    })?;
+        })?;
     Ok(DomainPbftVerifiedVoteProgressBundle {
         kind,
-        period: value.period,
-        round: value.round,
-        step: value.step,
-        block_hash: H256::from(value.block_hash),
-        votes_bundle_rlp: value.votes_bundle_rlp,
+        period,
+        round,
+        step,
+        block_hash: H256::from(block_hash),
     })
 }
 
@@ -150,12 +153,16 @@ fn vote_progress_write_to_domain(
     value: crate::ffi::rustaxa_ffi::PbftVoteProgressPersistenceWrite,
 ) -> Result<DomainPbftVoteProgressPersistenceWrite, DomainPbftVotePersistenceResult> {
     Ok(DomainPbftVoteProgressPersistenceWrite {
-        extra_reward_vote: value
+        extra_reward_vote_hash: value
             .has_extra_reward_vote
-            .then(|| vote_storage_record_to_domain(value.extra_reward_vote)),
+            .then(|| H256::from(value.extra_reward_vote_hash)),
         two_t_plus_one_bundle: if value.has_two_t_plus_one_bundle {
             Some(two_t_plus_one_bundle_to_domain(
-                value.two_t_plus_one_bundle,
+                value.two_t_plus_one_kind,
+                value.two_t_plus_one_period,
+                value.two_t_plus_one_round,
+                value.two_t_plus_one_step,
+                value.two_t_plus_one_block_hash,
             )?)
         } else {
             None
@@ -237,7 +244,17 @@ impl BridgePbftService {
             flags_to_domain(flags),
             context_to_domain(&context),
         )?;
-        Ok(runtime_outcome_to_ffi(validation, transaction))
+        let weighted_vote_rlp = if validation.accepted && validation.weight_calculated {
+            build_weighted_pbft_vote_payload(canonical_vote_rlp, validation.calculated_weight)?
+                .vote_rlp
+        } else {
+            Vec::new()
+        };
+        Ok(runtime_outcome_to_ffi(
+            validation,
+            transaction,
+            weighted_vote_rlp,
+        ))
     }
 
     /// Plans or resolves one PBFT `2t+1` threshold with Rust FinalChain composition.
@@ -400,15 +417,7 @@ mod tests {
 
     #[test]
     fn raw_invalid_persistence_kind_stays_typed_rejection() {
-        let result = two_t_plus_one_bundle_to_domain(PbftTwoTPlusOneVoteBundle {
-            kind: u8::MAX,
-            period: 1,
-            round: 2,
-            step: 3,
-            block_hash: [0x44; 32],
-            votes_bundle_rlp: vec![0xc0],
-        })
-        .unwrap_err();
+        let result = two_t_plus_one_bundle_to_domain(u8::MAX, 1, 2, 3, [0x44; 32]).unwrap_err();
         assert_eq!(result.status, PbftVotePersistenceStatus::Rejected);
         assert_eq!(result.applied_writes, 0);
         assert_eq!(
@@ -573,6 +582,7 @@ mod tests {
                 transition_published: true,
                 persistence_error_code: String::new(),
             },
+            Vec::new(),
         );
         assert!(result.accepted);
         assert!(result.mark_vote_known);
@@ -811,6 +821,7 @@ fn reward_votes_reset_apply_request_to_domain(
 fn runtime_outcome_to_ffi(
     validation: PbftCanonicalVoteValidation,
     transaction: PbftVoteAdmissionTransactionResult,
+    weighted_vote_rlp: Vec<u8>,
 ) -> PbftVoteAdmissionRuntimeResult {
     let transition_published = transaction.transition_published;
     let persistence_required = transaction.persistence_required;
@@ -850,7 +861,10 @@ fn runtime_outcome_to_ffi(
     });
     let (slashing_incoming_vote, slashing_conflicting_vote) = if transition_published {
         if let Some(payloads) = outcome.slashing_payloads {
-            (payloads.incoming.into(), payloads.conflicting.into())
+            (
+                vote_payload_record_to_ffi(payloads.incoming),
+                vote_payload_record_to_ffi(payloads.conflicting),
+            )
         } else {
             (empty_storage_record(), empty_storage_record())
         }
@@ -945,6 +959,7 @@ fn runtime_outcome_to_ffi(
             .as_ref()
             .map(|progress| progress.progress_round)
             .unwrap_or_default(),
+        weighted_vote_rlp,
     }
 }
 
@@ -1319,13 +1334,19 @@ impl BridgePbftService {
             .collect())
     }
 
-    /// Persists one latest-round own verified vote.
+    /// Persists one latest-round own verified vote from canonical signed bytes
+    /// and an authoritative nonzero weight.
+    ///
+    /// Rust builds and validates the weighted storage record. Codec and storage
+    /// failures cross CXX as bridge errors; durable write rejection remains a
+    /// typed persistence result.
     pub fn pbft_service_verified_votes_save_own_verified_vote(
         &self,
-        record: PbftVoteStorageRecord,
+        canonical_vote_rlp: &[u8],
+        weight: u64,
     ) -> Result<crate::ffi::rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
         self.0
-            .verified_votes_save_own_verified_vote(vote_storage_record_to_domain(record))
+            .verified_votes_save_own_verified_vote(canonical_vote_rlp, weight)
             .map(pbft_vote_persistence_to_ffi)
     }
 
@@ -1338,7 +1359,13 @@ impl BridgePbftService {
             .map(pbft_vote_persistence_to_ffi)
     }
 
-    /// Persists generated vote-progress storage effects.
+    /// Persists generated vote-progress storage effects from CXX identities.
+    ///
+    /// The request contains no weighted vote or bundle bytes. Rust resolves the
+    /// retained extra-reward payload and exact native 2t+1 mapping, constructs
+    /// the canonical bundle, and returns a typed atomic-write result. Invalid
+    /// raw kinds return a typed rejection; missing native state is a bridge
+    /// error and no write is applied.
     pub fn pbft_service_verified_votes_persist_pbft_vote_progress(
         &self,
         write: crate::ffi::rustaxa_ffi::PbftVoteProgressPersistenceWrite,

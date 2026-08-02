@@ -206,38 +206,6 @@ rust::Slice<const uint8_t> toBridgeByteSlice(const rust::Vec<uint8_t>& bytes) {
   return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
 }
 
-rustaxa::PbftVoteStorageRecord makeVoteStorageRecord(const std::shared_ptr<PbftVote>& vote) {
-  if (!vote) {
-    throw std::runtime_error("VoteManager cannot persist a null PBFT vote");
-  }
-  const auto weight = vote->getWeight();
-  if (!weight.has_value()) {
-    throw std::runtime_error("VoteManager cannot persist an unweighted PBFT vote");
-  }
-
-  auto canonical_vote_rlp = toBridgeBytes(vote->rlp(true, false));
-  auto record = rustaxa::pbft_vote_weighted_payload_from_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), *weight);
-  if (record.hash != toBridgeHash(vote->getHash())) {
-    throw std::runtime_error("Rust PBFT vote storage payload hash mismatches live vote hash");
-  }
-  return record;
-}
-
-rust::Vec<rustaxa::PbftVoteStorageRecord> makeVoteStorageRecords(const std::vector<std::shared_ptr<PbftVote>>& votes,
-                                                                 const char* operation) {
-  rust::Vec<rustaxa::PbftVoteStorageRecord> records;
-  records.reserve(votes.size());
-  for (const auto& vote : votes) {
-    if (!vote) {
-      std::stringstream err;
-      err << "VoteManager cannot persist " << operation << " with null votes";
-      throw std::runtime_error(err.str());
-    }
-    records.push_back(makeVoteStorageRecord(vote));
-  }
-  return records;
-}
-
 rustaxa::PbftRewardVotesResetRequest makeRewardResetRequest(PbftPeriod period, PbftRound round, PbftStep step,
                                                             const blk_hash_t& block_hash, bool sync) {
   rustaxa::PbftRewardVotesResetRequest request{};
@@ -249,22 +217,16 @@ rustaxa::PbftRewardVotesResetRequest makeRewardResetRequest(PbftPeriod period, P
   return request;
 }
 
-rustaxa::PbftTwoTPlusOneVoteBundle makeTwoTPlusOneVoteBundle(TwoTPlusOneVotedBlockType type,
-                                                             const std::vector<std::shared_ptr<PbftVote>>& votes) {
+void setTwoTPlusOneVoteBundleIdentity(rustaxa::PbftVoteProgressPersistenceWrite& write, TwoTPlusOneVotedBlockType type,
+                                      const std::vector<std::shared_ptr<PbftVote>>& votes) {
   if (votes.empty() || !votes.front()) {
     throw std::runtime_error("VoteManager cannot persist an empty 2t+1 PBFT vote bundle");
   }
-
-  auto records = makeVoteStorageRecords(votes, "2t+1 PBFT vote bundle");
-
-  rustaxa::PbftTwoTPlusOneVoteBundle bundle{};
-  bundle.kind = static_cast<uint8_t>(type);
-  bundle.period = votes.front()->getPeriod();
-  bundle.round = votes.front()->getRound();
-  bundle.step = votes.front()->getStep();
-  bundle.block_hash = toBridgeHash(votes.front()->getBlockHash());
-  bundle.votes_bundle_rlp = rustaxa::pbft_vote_bundle_payload_from_records(std::move(records));
-  return bundle;
+  write.two_t_plus_one_kind = static_cast<uint8_t>(type);
+  write.two_t_plus_one_period = votes.front()->getPeriod();
+  write.two_t_plus_one_round = votes.front()->getRound();
+  write.two_t_plus_one_step = votes.front()->getStep();
+  write.two_t_plus_one_block_hash = toBridgeHash(votes.front()->getBlockHash());
 }
 
 void requireApplied(const rustaxa::PbftVotePersistenceResult& result, const char* operation) {
@@ -284,12 +246,12 @@ void persistVoteProgressToRustStorage(const SharedPbftService& pbft_service,
   rustaxa::PbftVoteProgressPersistenceWrite write{};
   if (extra_reward_vote) {
     write.has_extra_reward_vote = true;
-    write.extra_reward_vote = makeVoteStorageRecord(extra_reward_vote);
+    write.extra_reward_vote_hash = toBridgeHash(extra_reward_vote->getHash());
   }
 
   if (two_t_plus_one_type.has_value()) {
     write.has_two_t_plus_one_bundle = true;
-    write.two_t_plus_one_bundle = makeTwoTPlusOneVoteBundle(*two_t_plus_one_type, two_t_plus_one_votes);
+    setTwoTPlusOneVoteBundleIdentity(write, *two_t_plus_one_type, two_t_plus_one_votes);
   }
 
   requireApplied(pbft_service->service().pbft_service_verified_votes_persist_pbft_vote_progress(std::move(write)),
@@ -699,11 +661,8 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
   }
   requireRuntimeAdmissionVoteMatches(runtime_result.vote, vote, runtime_result.validation.calculated_weight);
   if (!preverified_weight.has_value()) {
-    auto weighted_record = rustaxa::pbft_vote_weighted_payload_from_canonical_vote(
-        toBridgeByteSlice(canonical_vote_rlp), runtime_result.validation.calculated_weight);
-    PbftVote weighted_vote(fromBridgeBytes(weighted_record.vote_rlp));
-    if (weighted_record.hash != toBridgeHash(vote->getHash()) ||
-        weighted_vote.rlp(true, false) != fromBridgeBytes(canonical_vote_rlp) ||
+    PbftVote weighted_vote(fromBridgeBytes(runtime_result.weighted_vote_rlp));
+    if (weighted_vote.rlp(true, false) != fromBridgeBytes(canonical_vote_rlp) ||
         weighted_vote.getHash() != vote->getHash() || weighted_vote.getBlockHash() != vote->getBlockHash() ||
         weighted_vote.getPeriod() != vote->getPeriod() || weighted_vote.getRound() != vote->getRound() ||
         weighted_vote.getStep() != vote->getStep() || weighted_vote.getType() != vote->getType() ||
@@ -1235,8 +1194,13 @@ void VoteManager::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   if (!vote) {
     throw std::runtime_error("VoteManager cannot persist a null own verified vote");
   }
-  auto record = makeVoteStorageRecord(vote);
-  requireApplied(pbft_service_->service().pbft_service_verified_votes_save_own_verified_vote(std::move(record)),
+  const auto weight = vote->getWeight();
+  if (!weight.has_value()) {
+    throw std::runtime_error("VoteManager cannot persist an unweighted own verified vote");
+  }
+  const auto canonical_vote_rlp = toBridgeBytes(vote->rlp(true, false));
+  requireApplied(pbft_service_->service().pbft_service_verified_votes_save_own_verified_vote(
+                     toBridgeByteSlice(canonical_vote_rlp), *weight),
                  "own verified vote");
 }
 

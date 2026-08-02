@@ -251,12 +251,11 @@ pub struct PbftOptimizedVoteBundleBuildRequest {
     pub vote_hashes: Vec<H256>,
 }
 
-/// Native latest-round `2t+1` bundle requested by direct vote-progress persistence.
+/// Native identity for a latest-round `2t+1` bundle persistence request.
 ///
-/// The bundle family is domain-typed; raw compatibility discriminants are
-/// accepted only below this service boundary when the request is encoded for
-/// storage. Payload bytes must be the canonical weighted-vote bundle selected
-/// for the supplied PBFT coordinates.
+/// The native runtime resolves the authoritative ordered weighted payloads
+/// from its retained mapping. Callers cannot supply or materialize bundle
+/// bytes across the service boundary.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftVerifiedVoteProgressBundle {
     /// Domain bundle family.
@@ -269,8 +268,6 @@ pub struct PbftVerifiedVoteProgressBundle {
     pub step: u64,
     /// Block selected by the threshold family.
     pub block_hash: H256,
-    /// Canonical RLP list of weighted vote payloads.
-    pub votes_bundle_rlp: Vec<u8>,
 }
 
 /// Native direct persistence request for PBFT vote-progress effects.
@@ -280,8 +277,9 @@ pub struct PbftVerifiedVoteProgressBundle {
 /// serializes the operation with admission persistence.
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct PbftVerifiedVoteProgressPersistenceWrite {
-    /// Optional accepted stale cert vote stored for reward selection.
-    pub extra_reward_vote: Option<PbftVoteStorageRecord>,
+    /// Optional accepted stale cert vote stored for reward selection, selected
+    /// from the runtime's retained weighted payloads by canonical vote hash.
+    pub extra_reward_vote_hash: Option<H256>,
     /// Optional latest-round `2t+1` bundle replacement.
     pub two_t_plus_one_bundle: Option<PbftVerifiedVoteProgressBundle>,
 }
@@ -920,14 +918,25 @@ impl PbftVerifiedVotesService {
 
     /// Persists one latest-round own verified vote through this service.
     ///
-    /// The record is signature, weight, and hash validated before the own-vote
-    /// storage transaction. Validation/lock errors are `Err`; write failures use
-    /// the stable rejected persistence result.
+    /// `canonical_vote_rlp` is the signed, unweighted legacy vote encoding and
+    /// `weight` is the authoritative nonzero sortition weight. Rust constructs
+    /// the canonical weighted record, validates its signature, embedded weight,
+    /// and derived hash, then commits it through the own-vote storage
+    /// transaction. Malformed bytes, invalid signatures, and zero weight are
+    /// `Err`; write failures use the stable rejected persistence result.
     pub fn verified_votes_save_own_verified_vote(
         &self,
-        record: PbftVoteStorageRecord,
+        canonical_vote_rlp: &[u8],
+        weight: u64,
     ) -> Result<PbftVotePersistenceResult> {
-        save_own_verified_vote(self.storage(), validate_own_vote_storage_record(record)?)
+        let record = build_weighted_pbft_vote_payload(canonical_vote_rlp, weight)?;
+        save_own_verified_vote(
+            self.storage(),
+            validate_own_vote_storage_record(PbftVoteStorageRecord {
+                hash: record.hash,
+                vote_rlp: record.vote_rlp,
+            })?,
+        )
     }
 
     /// Clears all latest-round own verified votes through this service.
@@ -940,28 +949,60 @@ impl PbftVerifiedVotesService {
 
     /// Persists generated vote-progress writes through this service.
     ///
-    /// The typed optional writes are converted only at the storage boundary.
-    /// One runtime guard serializes the complete commit with admission; lock or
-    /// storage access errors propagate and write failures remain typed results.
+    /// The optional extra-reward hash and 2t+1 coordinates identify payloads
+    /// already retained by this runtime. Under one runtime guard, Rust resolves
+    /// the reward record, validates the exact mapped block and step, builds the
+    /// ordered canonical bundle, and commits both effects atomically. Missing
+    /// payloads, mappings, or identity mismatches are `Err`; storage write
+    /// failures remain typed rejected results. An empty request is a successful
+    /// zero-write transaction.
     pub fn verified_votes_persist_pbft_vote_progress(
         &self,
         write: PbftVerifiedVoteProgressPersistenceWrite,
     ) -> Result<PbftVotePersistenceResult> {
-        let _runtime = self.lock()?;
+        let runtime = self.lock()?;
+        let extra_reward_vote = write
+            .extra_reward_vote_hash
+            .map(|vote_hash| {
+                runtime
+                    .weighted_payload(vote_hash)
+                    .cloned()
+                    .map(|record| PbftVoteStorageRecord {
+                        hash: record.hash,
+                        vote_rlp: record.vote_rlp,
+                    })
+                    .ok_or_else(|| anyhow!("PBFT_VOTE_PROGRESS_EXTRA_REWARD_PAYLOAD_MISSING"))
+            })
+            .transpose()?;
+        let two_t_plus_one_bundle = write
+            .two_t_plus_one_bundle
+            .map(|bundle| {
+                let mapping = runtime
+                    .verified_votes()
+                    .get_two_t_plus_one_voted_block(bundle.period, bundle.round, bundle.kind)
+                    .ok_or_else(|| anyhow!("PBFT_VOTE_PROGRESS_TWO_T_PLUS_ONE_MAPPING_MISSING"))?;
+                ensure!(
+                    mapping.hash == bundle.block_hash && mapping.step == bundle.step,
+                    "PBFT_VOTE_PROGRESS_TWO_T_PLUS_ONE_IDENTITY_MISMATCH"
+                );
+                let records = runtime
+                    .two_t_plus_one_weighted_payloads(bundle.period, bundle.round, bundle.kind)?
+                    .ok_or_else(|| anyhow!("PBFT_VOTE_PROGRESS_TWO_T_PLUS_ONE_MAPPING_MISSING"))?;
+                Ok(PbftTwoTPlusOneVoteBundle {
+                    kind: bundle.kind.into(),
+                    period: bundle.period,
+                    round: bundle.round,
+                    step: bundle.step,
+                    block_hash: bundle.block_hash,
+                    votes_bundle_rlp: build_weighted_pbft_vote_bundle(&records)?,
+                })
+            })
+            .transpose()?;
         persist_pbft_vote_progress(
             self.storage(),
             PbftVoteProgressPersistenceWrite {
-                extra_reward_vote: write.extra_reward_vote,
-                two_t_plus_one_bundle: write.two_t_plus_one_bundle.map(|bundle| {
-                    PbftTwoTPlusOneVoteBundle {
-                        kind: bundle.kind.into(),
-                        period: bundle.period,
-                        round: bundle.round,
-                        step: bundle.step,
-                        block_hash: bundle.block_hash,
-                        votes_bundle_rlp: bundle.votes_bundle_rlp,
-                    }
-                }),
+                extra_reward_vote,
+                two_t_plus_one_bundle,
             },
         )
     }
@@ -3072,6 +3113,79 @@ mod tests {
     }
 
     #[test]
+    fn service_persists_vote_progress_from_native_payload_identities() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rustaxa_vote_progress_identity_{nonce}"));
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+        let first = vote_rlp([2; 32], 3);
+        let second = vote_rlp_from_secret([2; 32], 3, NODE_SECRET_TWO);
+        let first_validation = validation(&first);
+        let second_validation = validation(&second);
+        runtime
+            .admit_validated_vote(&first, &first_validation, flags(), context(Some(80)))
+            .unwrap();
+        runtime
+            .admit_validated_vote(&second, &second_validation, flags(), context(Some(80)))
+            .unwrap();
+        let service = PbftVerifiedVotesService::from_runtime(storage.clone(), runtime);
+
+        let mismatch = service
+            .verified_votes_persist_pbft_vote_progress(PbftVerifiedVoteProgressPersistenceWrite {
+                extra_reward_vote_hash: Some(first_validation.vote_hash),
+                two_t_plus_one_bundle: Some(PbftVerifiedVoteProgressBundle {
+                    kind: TwoTPlusOneVotedBlockType::CertVotedBlock,
+                    period: 12,
+                    round: 2,
+                    step: 4,
+                    block_hash: H256::from([2; 32]),
+                }),
+            })
+            .unwrap_err();
+        assert!(
+            mismatch
+                .to_string()
+                .contains("PBFT_VOTE_PROGRESS_TWO_T_PLUS_ONE_IDENTITY_MISMATCH")
+        );
+        assert!(storage.pbft().reward_votes_rlp().unwrap().is_empty());
+        assert!(
+            storage
+                .pbft()
+                .all_two_t_plus_one_votes_rlp()
+                .unwrap()
+                .is_empty()
+        );
+
+        let result = service
+            .verified_votes_persist_pbft_vote_progress(PbftVerifiedVoteProgressPersistenceWrite {
+                extra_reward_vote_hash: Some(first_validation.vote_hash),
+                two_t_plus_one_bundle: Some(PbftVerifiedVoteProgressBundle {
+                    kind: TwoTPlusOneVotedBlockType::CertVotedBlock,
+                    period: 12,
+                    round: 2,
+                    step: 3,
+                    block_hash: H256::from([2; 32]),
+                }),
+            })
+            .unwrap();
+
+        assert_eq!(result.status, PbftVotePersistenceStatus::Applied);
+        assert_eq!(result.applied_writes, 2);
+        assert_eq!(storage.pbft().reward_votes_rlp().unwrap().len(), 1);
+        assert_eq!(
+            storage.pbft().all_two_t_plus_one_votes_rlp().unwrap().len(),
+            2
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn runtime_selects_reward_payloads_from_reverse_round_in_requested_order() {
         let mut runtime = PbftVoteAdmissionRuntime::new();
         let reward_block = [6; 32];
@@ -4581,26 +4695,12 @@ mod tests {
             storage.clone(),
             PbftVoteAdmissionRuntime::new(),
         );
-        let first =
-            build_weighted_pbft_vote_payload(&vote_rlp_from_secret([0x81; 32], 3, NODE_SECRET), 4)
-                .unwrap();
-        let first = PbftVoteStorageRecord {
-            hash: first.hash,
-            vote_rlp: first.vote_rlp,
-        };
-        let second = build_weighted_pbft_vote_payload(
-            &vote_rlp_from_secret([0x82; 32], 3, NODE_SECRET_TWO),
-            5,
-        )
-        .unwrap();
-        let second = PbftVoteStorageRecord {
-            hash: second.hash,
-            vote_rlp: second.vote_rlp,
-        };
-        for record in [second.clone(), first.clone()] {
+        let first_canonical = vote_rlp_from_secret([0x81; 32], 3, NODE_SECRET);
+        let second_canonical = vote_rlp_from_secret([0x82; 32], 3, NODE_SECRET_TWO);
+        for (canonical, weight) in [(&second_canonical, 5), (&first_canonical, 4)] {
             assert_eq!(
                 service
-                    .verified_votes_save_own_verified_vote(record)
+                    .verified_votes_save_own_verified_vote(canonical, weight)
                     .unwrap()
                     .status,
                 PbftVotePersistenceStatus::Applied
@@ -4610,14 +4710,12 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(records.windows(2).all(|pair| pair[0].hash < pair[1].hash));
 
-        let mut mismatched = first;
-        mismatched.hash = H256::from([0x83; 32]);
         assert!(
             service
-                .verified_votes_save_own_verified_vote(mismatched)
+                .verified_votes_save_own_verified_vote(&first_canonical, 0)
                 .unwrap_err()
                 .to_string()
-                .contains("VERIFIED_VOTES_OWN_VOTE_HASH_MISMATCH")
+                .contains("non-zero weight")
         );
         assert_eq!(
             service

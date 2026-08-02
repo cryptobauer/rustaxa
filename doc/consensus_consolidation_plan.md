@@ -339,7 +339,13 @@ consensus tests own insert prechecks, stale reward persistence, threshold
 progress, slashing, and proposed-block sidecar decisions. The bridge consumes
 only the returned native plan, without relaying duplicate progress facts or
 contexts into projection, and retains one focused effect/status projection
-sentinel instead of a parallel planner suite.
+sentinel instead of a parallel planner suite. Direct progress persistence now
+crosses CXX as vote and threshold-mapping identities only: the native runtime
+resolves its retained weighted payloads, validates the exact 2t+1 mapping, and
+builds the canonical storage bundle under the vote-runtime lock. Own-vote
+persistence likewise sends canonical signed bytes plus weight to the existing
+service call, so C++ no longer requests standalone weighted-record or bundle
+codec exports.
 PBFT queue-drain and state-action sessions now follow that boundary as well.
 Native consensus tests own action ordering, restart, executor failure,
 report-validation, sidecar, and completion behavior. The bridge retains one

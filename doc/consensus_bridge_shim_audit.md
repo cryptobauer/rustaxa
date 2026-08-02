@@ -44,10 +44,10 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 23157 |
-| `shim_lines` | 17080 |
-| `cxx_functions` | 388 |
-| `cxx_carriers` | 339 |
+| `bridge_lines` | 23020 |
+| `shim_lines` | 17044 |
+| `cxx_functions` | 386 |
+| `cxx_carriers` | 338 |
 | `cxx_handles` | 20 |
 | `shim_directories` | 11 |
 | `granular_flags` | 0 |
@@ -131,7 +131,6 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | CXX conversion over native sync admission/egress tasks plus cert-vote bundle validation conversion | PBFT manager and tarcap | Internal bridge route | Native `PbftService` owns admission cursor lifecycle, report validation, terminal cleanup, bootstrap gating, storage-backed egress, and behavioral coverage; the bridge retains pure carrier/status/error conversion sentinels until the PBFT/network pipeline clients migrate. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_generation.rs` | DTO adapters over native PBFT vote/FinalChain tasks plus the standalone signing entrypoint | Vote/PBFT shims | Internal bridge route | Signing becomes a leaf port; retained CXX carriers are removed with the vote/PBFT shim clients. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_ingress.rs` | ingress adapter | network/vote path | Internal bridge route | Complete network pipeline migration. |
-| `rust/crates/rustaxa-bridge/src/pbft_vote_payload.rs` | payload conversion | PBFT/vote shims | Internal bridge route | Call native codecs directly or keep conversion private to FFI. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_progress.rs` | progress adapter | PBFT/vote shims | Internal bridge route | Fold into native PBFT service. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_validation.rs` | validation conversion | PBFT/vote shims | Internal bridge route | Fold into native PBFT service. |
 | `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | CXX conversion plus typed storage-compatibility adapters over native PBFT-root pillar tasks | pillar and storage shims | Internal bridge route | Native `PbftService` owns current-anchor mutation/decisions, startup bootstrap, FinalChain-composed block planning, linkage, latest-finalized lookup, readiness, and access to private pillar state; retain only CXX conversion, focused tag/status and FinalChain-handle sentinels, and the separately named storage compatibility facade and its byte/error sentinel. |
@@ -144,7 +143,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | legacy transaction inspection | PBFT/transaction materializers | Internal bridge route | Use native codec internally; retain only if a named C++ client remains. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | DTO and report conversion over native transaction ownership; DAG-save, finalized-status, admission, read, packing, finalized filtering/verification, recovery, cache, sidecar-removal, and queue-finalization tasks call lock-owning native services directly | transaction/DAG/PBFT shims | Internal bridge route | Retain only submission/materialization conversion, the focused status-mapping ABI test, and unlocked EVM leaf adapters. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF operations/cancellation | VDF and proposer C++ | External boundary | Keep until VDF execution is a native or dedicated external API. |
-| `rust/crates/rustaxa-bridge/src/verified_votes.rs` | DTO/effect adapters over task-shaped native `PbftService` methods | vote and PBFT adapters | Internal bridge route | Native storage lifetime, restoration, vote-runtime lock ownership, replay/query/cleanup tasks, own-vote and progress persistence, optimized-bundle planning/building, coherent snapshots, FinalChain-composed validation/admission/threshold tasks, reward finalization, leader selection, and behavioral tests live in `rustaxa-consensus`; retain only carrier conversion at named executor boundaries. |
+| `rust/crates/rustaxa-bridge/src/verified_votes.rs` | DTO/effect adapters over task-shaped native `PbftService` methods | vote and PBFT adapters | Internal bridge route | Native storage lifetime, restoration, vote-runtime lock ownership, replay/query/cleanup tasks, canonical own-vote encoding, identity-resolved progress persistence, optimized-bundle planning/building, coherent snapshots, FinalChain-composed validation/admission/threshold tasks, reward finalization, leader selection, and behavioral tests live in `rustaxa-consensus`; retain only carrier conversion at named executor boundaries. |
 
 ## Exported CXX Bridge Handles
 
