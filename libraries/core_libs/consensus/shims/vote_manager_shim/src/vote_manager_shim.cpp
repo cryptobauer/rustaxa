@@ -29,9 +29,6 @@ constexpr uint8_t kPbftVoteValidationStatusInvalidSignature = 4;
 constexpr uint8_t kPbftVoteValidationStatusInvalidVrfProof = 5;
 constexpr uint8_t kPbftVoteValidationStatusZeroWeight = 6;
 constexpr uint8_t kPbftVoteValidationStatusInvalidVoteType = 9;
-constexpr uint8_t kPbftCanonicalVoteInspectionStatusValid = 0;
-constexpr uint8_t kPbftCanonicalVoteInspectionStatusMalformedRlp = 1;
-constexpr uint8_t kPbftCanonicalVoteInspectionStatusInvalidSignature = 2;
 constexpr uint8_t kPbftVoteGenerationStatusGenerated = 0;
 constexpr uint8_t kPbftVoteGenerationStatusZeroStake = 4;
 constexpr uint8_t kPbftVoteGenerationStatusZeroTotalDpos = 5;
@@ -383,13 +380,7 @@ void requireRustVoteGenerationMatches(const std::shared_ptr<PbftVote>& vote,
     throw std::runtime_error(err.str());
   }
 
-  const auto canonical_vote_rlp = toBridgeBytes(vote->rlp(true, false));
-  const auto inspection = rustaxa::pbft_inspect_canonical_vote(toBridgeByteSlice(canonical_vote_rlp));
-  if (inspection.status != kPbftCanonicalVoteInspectionStatusValid) {
-    throw std::runtime_error("Rust PBFT vote generation parity cannot inspect the legacy-generated vote");
-  }
-
-  if (toBridgeHash(vote->getHash()) != generated.vote_hash || inspection.signing_hash != generated.signing_hash ||
+  if (toBridgeHash(vote->getHash()) != generated.vote_hash ||
       toBridgeHash(vote->getBlockHash()) != generated.block_hash || vote->getPeriod() != generated.period ||
       vote->getRound() != generated.round || vote->getStep() != generated.step ||
       static_cast<uint8_t>(vote->getType()) != generated.vote_type ||
@@ -580,24 +571,6 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
   const auto progress_context = makeVoteProgressContext(current_pbft_period_, current_pbft_round_, two_t_plus_one);
 
   const auto canonical_vote_rlp = toBridgeBytes(vote->rlp(true, false));
-  const auto inspection = rustaxa::pbft_inspect_canonical_vote(toBridgeByteSlice(canonical_vote_rlp));
-  if (inspection.status != kPbftCanonicalVoteInspectionStatusValid) {
-    LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << hash
-                 << " during canonical inspection, status: " << static_cast<uint32_t>(inspection.status)
-                 << ", error: " << static_cast<std::string>(inspection.error_code);
-    if (inspection.status == kPbftCanonicalVoteInspectionStatusInvalidSignature) {
-      pbft_service_->service().pbft_service_verified_votes_replay_insert(inspection.vote_hash);
-    }
-    return report;
-  }
-  if (toBridgeHash(vote->getHash()) != inspection.vote_hash ||
-      toBridgeHash(vote->getBlockHash()) != inspection.block_hash || vote->getPeriod() != inspection.period ||
-      vote->getRound() != inspection.round || vote->getStep() != inspection.step ||
-      static_cast<uint8_t>(vote->getType()) != inspection.vote_type ||
-      toBridgeAddress(vote->getVoterAddr()) != inspection.recovered_voter) {
-    throw std::runtime_error("VoteManager Rust PBFT vote admission inspection mismatched live vote sidecar");
-  }
-
   auto admission_request = makeVoteAdmissionValidationRequest(vote, kPbftConfig);
   const auto preverified_weight = vote->getWeight();
   if (preverified_weight.has_value()) {
@@ -610,6 +583,21 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
   const auto runtime_result = pbft_service_->service().pbft_service_verified_votes_admit_and_persist_with_final_chain(
       final_chain_->rustFinalChain(), toBridgeByteSlice(canonical_vote_rlp), std::move(admission_request),
       makeVoteEventFactFlags(), progress_context);
+  if (!runtime_result.has_validation) {
+    LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()
+                 << " without runtime validation details, status: " << static_cast<uint32_t>(runtime_result.status)
+                 << ", error: " << static_cast<std::string>(runtime_result.error_code);
+    return report;
+  }
+  if (runtime_result.validation.vote_hash != toBridgeHash(vote->getHash()) ||
+      runtime_result.validation.block_hash != toBridgeHash(vote->getBlockHash()) ||
+      runtime_result.validation.period != vote->getPeriod() || runtime_result.validation.round != vote->getRound() ||
+      runtime_result.validation.step != vote->getStep() ||
+      runtime_result.validation.vote_type != static_cast<uint8_t>(vote->getType()) ||
+      (runtime_result.validation.signature_valid &&
+       toBridgeAddress(vote->getVoterAddr()) != runtime_result.validation.recovered_voter)) {
+    throw std::runtime_error("VoteManager Rust PBFT vote admission validation mismatched live vote sidecar");
+  }
   if (runtime_result.persistence_status == kPbftVoteAdmissionPersistenceRejected) {
     std::stringstream err;
     err << "Rust PBFT vote admission persistence rejected vote " << hash << ": "
@@ -1317,34 +1305,6 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
 
   std::stringstream err_msg;
   const auto canonical_vote_rlp = toBridgeBytes(vote->rlp(true, false));
-  const auto inspection = rustaxa::pbft_inspect_canonical_vote(toBridgeByteSlice(canonical_vote_rlp));
-  if (inspection.status == kPbftCanonicalVoteInspectionStatusMalformedRlp) {
-    err_msg << "Invalid vote " << vote->getHash() << ": malformed canonical PBFT vote RLP";
-    return {false, err_msg.str()};
-  }
-
-  if (toBridgeHash(vote->getHash()) != inspection.vote_hash ||
-      toBridgeHash(vote->getBlockHash()) != inspection.block_hash || vote->getPeriod() != inspection.period ||
-      vote->getRound() != inspection.round || vote->getStep() != inspection.step ||
-      static_cast<uint8_t>(vote->getType()) != inspection.vote_type) {
-    err_msg << "Invalid vote " << vote->getHash()
-            << ": Rust canonical PBFT vote inspection mismatched C++ vote identity";
-    return {false, err_msg.str()};
-  }
-
-  if (inspection.status == kPbftCanonicalVoteInspectionStatusInvalidSignature) {
-    pbft_service_->service().pbft_service_verified_votes_replay_insert(inspection.vote_hash);
-    err_msg << "Invalid vote " << vote->getHash() << ": invalid signature";
-    return {false, err_msg.str()};
-  }
-
-  if (inspection.status != kPbftCanonicalVoteInspectionStatusValid) {
-    err_msg << "Invalid vote " << vote->getHash() << ": unknown Rust canonical PBFT vote inspection status "
-            << static_cast<uint32_t>(inspection.status);
-    return {false, err_msg.str()};
-  }
-
-  const auto recovered_voter = fromBridgeAddress(inspection.recovered_voter);
   rustaxa::PbftVoteRuntimeValidationResult validation_result{};
   rustaxa::PbftCanonicalVoteValidation validation{};
 
@@ -1353,6 +1313,21 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
         final_chain_->rustFinalChain(), toBridgeByteSlice(canonical_vote_rlp), strict, kPbftConfig.committee_size,
         kPbftConfig.number_of_proposers);
     validation = validation_result.validation;
+
+    if (static_cast<std::string>(validation.error_code) == "PBFT_CANONICAL_VOTE_MALFORMED_RLP") {
+      err_msg << "Invalid vote " << vote->getHash() << ": malformed canonical PBFT vote RLP";
+      return {false, err_msg.str()};
+    }
+
+    if (toBridgeHash(vote->getHash()) != validation.vote_hash ||
+        toBridgeHash(vote->getBlockHash()) != validation.block_hash || vote->getPeriod() != validation.period ||
+        vote->getRound() != validation.round || vote->getStep() != validation.step ||
+        static_cast<uint8_t>(vote->getType()) != validation.vote_type) {
+      err_msg << "Invalid vote " << vote->getHash()
+              << ": Rust canonical PBFT vote validation mismatched C++ vote identity";
+      return {false, err_msg.str()};
+    }
+    const auto recovered_voter = fromBridgeAddress(validation.recovered_voter);
 
     if (validation.status == kPbftVoteValidationStatusZeroStake) {
       err_msg << "Invalid vote " << vote->getHash() << ": author " << recovered_voter << " has zero stake";

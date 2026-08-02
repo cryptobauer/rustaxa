@@ -961,8 +961,8 @@ The current Rust consensus footprint is broad but still incomplete:
   known/admit/slashing/gossip/progress intents, a side-effect-free PBFT vote ingress planner for deterministic
   single-vote and bundle relevance/window/sync-hint/drop decisions, and exposes operation-specific CXX bridge surfaces for Rust-mode
   `VoteManager::addVerifiedVote` execution, Rust-owned PBFT vote validation
-  planning with replay-cache storage,
-  canonical PBFT vote RLP inspection, signed/unsigned vote hashing, signature recovery, VRF proof verification,
+  planning with replay-cache storage and composed canonical PBFT vote validation, signed/unsigned vote hashing,
+  signature recovery, VRF proof verification,
   Rust-composed received-vote enrichment through borrowed FinalChain state, address-keyed VRF-key fallback caching,
   Rust-computed received-vote weight and canonical weighted-payload construction, sortition-threshold calculation,
   Rust-owned PBFT `2t+1` threshold cache, local

@@ -5,7 +5,6 @@ use crate::network::*;
 use crate::pbft_manager::*;
 use crate::pbft_sync::*;
 use crate::pbft_vote_generation::*;
-use crate::pbft_vote_validation::*;
 use crate::pillar_chain::*;
 use crate::pillar_votes::*;
 use crate::proposed_blocks::*;
@@ -2020,25 +2019,6 @@ pub mod rustaxa_ffi {
         threshold: u64,
     }
 
-    /// Result of inspecting canonical legacy PBFT vote RLP in Rust.
-    struct PbftCanonicalVoteInspection {
-        status: u8,
-        error_code: String,
-        vote_hash: [u8; 32],
-        signing_hash: [u8; 32],
-        block_hash: [u8; 32],
-        period: u64,
-        round: u64,
-        step: u64,
-        vote_type: u8,
-        recovered_public_key: [u8; 64],
-        recovered_voter: [u8; 20],
-        signature_valid: bool,
-        vrf_proof: [u8; 80],
-        has_embedded_weight: bool,
-        embedded_weight: u64,
-    }
-
     /// External request facts used for FinalChain-backed PBFT admission.
     struct PbftVoteAdmissionValidationRequest {
         strict_vrf: bool,
@@ -2056,7 +2036,6 @@ pub mod rustaxa_ffi {
         rejected: bool,
         mark_validated_replay: bool,
         vote_hash: [u8; 32],
-        signing_hash: [u8; 32],
         block_hash: [u8; 32],
         period: u64,
         round: u64,
@@ -2100,7 +2079,6 @@ pub mod rustaxa_ffi {
         error_code: String,
         accepted: bool,
         vote_hash: [u8; 32],
-        signing_hash: [u8; 32],
         block_hash: [u8; 32],
         voter: [u8; 20],
         voter_public_key: [u8; 64],
@@ -4651,10 +4629,6 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             vote_hash: &[u8; 32],
         ) -> Result<bool>;
-        pub fn pbft_service_verified_votes_replay_insert(
-            self: &BridgePbftService,
-            vote_hash: &[u8; 32],
-        ) -> Result<bool>;
         pub fn pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
             self: &BridgePbftService,
             final_chain: &BridgeFinalChain,
@@ -4755,7 +4729,6 @@ pub mod rustaxa_ffi {
             request: PbftLeaderSelectionFinishRequest,
         ) -> Result<PbftLeaderSelectionResult>;
 
-        pub fn pbft_inspect_canonical_vote(vote_rlp: &[u8]) -> Result<PbftCanonicalVoteInspection>;
         pub fn pbft_generate_signed_vote(
             input: PbftVoteGenerationInput,
         ) -> Result<PbftGeneratedVote>;

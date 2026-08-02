@@ -1,8 +1,9 @@
 use crate::ffi::rustaxa_ffi::{
-    DetermineNewRoundOutcome, PbftFinalizationHash, PbftLeaderCandidateSnapshot,
-    PbftLeaderSelectionFinishRequest, PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot,
-    PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
-    PbftOptimizedVoteBundleBuildResult, PbftOptimizedVoteBundlePlan,
+    DetermineNewRoundOutcome, PbftCanonicalVoteValidation as FfiPbftCanonicalVoteValidation,
+    PbftFinalizationHash, PbftLeaderCandidateSnapshot, PbftLeaderSelectionFinishRequest,
+    PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot, PbftNextVotesBundleEgressPlan,
+    PbftOptimizedVoteBundleBuildRequest, PbftOptimizedVoteBundleBuildResult,
+    PbftOptimizedVoteBundlePlan,
     PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
     PbftRewardVotesResetRequest as FfiPbftRewardVotesResetRequest,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
@@ -18,8 +19,6 @@ use crate::ffi::rustaxa_ffi::{
 };
 use crate::ffi::{BridgeFinalChain, BridgePbftService};
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
-
-use crate::pbft_vote_validation::threshold_plan_to_ffi;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::PbftFinalizedPeriodApplyResult;
 use rustaxa_consensus::pbft_leader_selection::{
@@ -59,6 +58,42 @@ use rustaxa_consensus::{
     RewardVotePayloadSnapshot as DomainRewardVotePayloadSnapshot, RewardVoteResetApplyRequest,
     VerifiedVotesStateSnapshot as ConsensusVerifiedVotesStateSnapshot,
 };
+
+fn threshold_plan_to_ffi(plan: PbftTwoTPlusOneThresholdPlan) -> FfiPbftTwoTPlusOneThresholdPlan {
+    FfiPbftTwoTPlusOneThresholdPlan {
+        status: plan.status.as_u8(),
+        error_code: plan.error_code.to_owned(),
+        has_threshold: plan.has_threshold,
+        threshold: plan.threshold,
+    }
+}
+
+impl From<PbftCanonicalVoteValidation> for FfiPbftCanonicalVoteValidation {
+    fn from(value: PbftCanonicalVoteValidation) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            error_code: value.error_code.to_owned(),
+            accepted: value.accepted,
+            rejected: value.rejected,
+            mark_validated_replay: value.mark_validated_replay,
+            vote_hash: value.vote_hash.0,
+            block_hash: value.block_hash.0,
+            period: value.period,
+            round: value.round,
+            step: value.step,
+            vote_type: value.vote_type.into(),
+            recovered_voter: value.recovered_voter.0,
+            recovered_public_key: value.recovered_public_key,
+            signature_valid: value.signature_valid,
+            vrf_valid: value.vrf_valid,
+            has_sortition_threshold: value.has_sortition_threshold,
+            sortition_threshold: value.sortition_threshold,
+            weight_calculated: value.weight_calculated,
+            calculated_weight: value.calculated_weight,
+            vrf_output: value.vrf_output,
+        }
+    }
+}
 
 fn threshold_fact_from_request(
     fact: &FfiPbftTwoTPlusOneThresholdFact,
@@ -1184,14 +1219,6 @@ impl BridgePbftService {
     ) -> Result<bool, anyhow::Error> {
         self.0
             .verified_votes_replay_contains(H256::from(*vote_hash))
-    }
-
-    /// Inserts one replay-protection membership bit.
-    pub fn pbft_service_verified_votes_replay_insert(
-        &self,
-        vote_hash: &[u8; 32],
-    ) -> Result<bool, anyhow::Error> {
-        self.0.verified_votes_replay_insert(H256::from(*vote_hash))
     }
 
     /// Determines the next round from next-vote 2t+1 state.

@@ -2519,6 +2519,7 @@ mod tests {
     use crate::verified_votes::PbftVoteType;
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
+    use rlp::{Rlp, RlpStream};
     use rustaxa_storage::Config;
     use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
     use rustaxa_types::pbft::PbftBlockLink;
@@ -2807,6 +2808,18 @@ mod tests {
         }
     }
 
+    fn invalid_signature_vote(block_hash: H256, period: u64) -> Vec<u8> {
+        let vote = generated_vote_at_period(block_hash, period);
+        let vote_rlp = Rlp::new(&vote.vote_rlp);
+        let mut invalid_signature_vote = RlpStream::new_list(3);
+        let block_hash: H256 = vote_rlp.val_at(0).unwrap();
+        let sortition_rlp: Vec<u8> = vote_rlp.val_at(1).unwrap();
+        invalid_signature_vote.append(&block_hash);
+        invalid_signature_vote.append(&sortition_rlp);
+        invalid_signature_vote.append(&vec![0_u8; 65]);
+        invalid_signature_vote.out().to_vec()
+    }
+
     fn service_with_test_chain(stake: u64, voter_secret: [u8; 32]) -> (PbftService, FinalChain) {
         let (_, storage) = temp_storage("pbft_service_vote_generation_chain");
         let service = PbftService::restore(storage.clone(), config(0)).unwrap();
@@ -2998,6 +3011,87 @@ mod tests {
             .unwrap();
         assert!(!repeated_replay.inserted);
         assert!(repeated_replay.already_present);
+    }
+
+    #[test]
+    fn composed_vote_validation_malformed_canonical_rlp_no_replay_mark() {
+        let (_path, storage) = temp_storage("pbft_service_vote_validation_malformed_no_replay");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+
+        let malformed = vec![0x01, 0x02, 0x03];
+        let (first, first_replay, weighted_vote_rlp) = service
+            .validate_verified_vote_with_final_chain(
+                &final_chain,
+                &malformed,
+                vote_validation_request(false, 0),
+            )
+            .unwrap();
+        assert_eq!(first.status, PbftVoteValidationStatus::InvalidVoteType);
+        assert_eq!(first.error_code, "PBFT_CANONICAL_VOTE_MALFORMED_RLP");
+        assert!(!first.mark_validated_replay);
+        assert!(!first_replay.should_mark);
+        assert!(!first_replay.inserted);
+        assert!(!first_replay.already_present);
+        assert!(weighted_vote_rlp.is_none());
+
+        let (_, second_replay, _) = service
+            .validate_verified_vote_with_final_chain(
+                &final_chain,
+                &malformed,
+                vote_validation_request(false, 0),
+            )
+            .unwrap();
+        assert!(!second_replay.should_mark);
+        assert!(!second_replay.inserted);
+        assert!(!second_replay.already_present);
+    }
+
+    #[test]
+    fn composed_vote_validation_invalid_signature_replay_marked_once() {
+        let (_path, storage) =
+            temp_storage("pbft_service_vote_validation_invalid_signature_replay");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+
+        let invalid_signature = invalid_signature_vote(H256::repeat_byte(0x73), 1);
+        let (first, first_replay, weighted_vote_rlp) = service
+            .validate_verified_vote_with_final_chain(
+                &final_chain,
+                &invalid_signature,
+                vote_validation_request(false, 0),
+            )
+            .unwrap();
+        assert_eq!(first.status, PbftVoteValidationStatus::InvalidSignature);
+        assert_eq!(first.error_code, "PBFT_VOTE_VALIDATION_INVALID_SIGNATURE");
+        assert!(first.mark_validated_replay);
+        assert!(first_replay.should_mark);
+        assert!(first_replay.inserted);
+        assert!(!first_replay.already_present);
+        assert!(weighted_vote_rlp.is_none());
+
+        let (_, second_replay, _) = service
+            .validate_verified_vote_with_final_chain(
+                &final_chain,
+                &invalid_signature,
+                vote_validation_request(false, 0),
+            )
+            .unwrap();
+        assert!(second_replay.should_mark);
+        assert!(!second_replay.inserted);
+        assert!(second_replay.already_present);
     }
 
     #[test]

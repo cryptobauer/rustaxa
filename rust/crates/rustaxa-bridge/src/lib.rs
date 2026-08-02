@@ -9,7 +9,6 @@ mod pbft_sync;
 mod pbft_vote_generation;
 mod pbft_vote_ingress;
 mod pbft_vote_progress;
-mod pbft_vote_validation;
 mod pillar_chain;
 mod pillar_votes;
 mod proposed_blocks;

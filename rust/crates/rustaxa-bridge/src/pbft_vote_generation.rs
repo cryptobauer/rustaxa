@@ -205,7 +205,6 @@ impl From<PbftGeneratedVote> for FfiPbftGeneratedVote {
             error_code: value.error_code.to_owned(),
             accepted: value.accepted,
             vote_hash: value.vote_hash.into(),
-            signing_hash: value.signing_hash.into(),
             block_hash: value.block_hash.into(),
             voter: value.voter.0,
             voter_public_key: value.voter_public_key,
