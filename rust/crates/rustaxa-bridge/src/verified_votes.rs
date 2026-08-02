@@ -12,14 +12,16 @@ use crate::ffi::rustaxa_ffi::{
     PbftVoteProgressContext as FfiPbftVoteProgressContext, PbftVoteRuntimeValidationResult,
     PbftVoteStorageRecord, RewardVoteCursorSnapshot as FfiRewardVoteCursorSnapshot,
     RewardVotePayloadSnapshot as FfiRewardVotePayloadSnapshot, RoundMarkerSnapshot,
-    TwoTPlusOneSnapshotEntry, TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup,
+    SlashingSubmitterIdentity as FfiSlashingSubmitterIdentity,
+    SlashingTransactionEffect as FfiSlashingTransactionEffect, TwoTPlusOneSnapshotEntry,
+    TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup,
     VerifiedStepVotePayloadEntry, VerifiedStepVotePayloadsLookup,
     VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome, VerifiedVotePayload,
     VerifiedVoteStateSnapshotEntry, VerifiedVotesStateSnapshot,
 };
 use crate::ffi::{BridgeFinalChain, BridgePbftService};
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
-use ethereum_types::H256;
+use ethereum_types::{H256, U256};
 use rustaxa_consensus::pbft_finalize::PbftFinalizedPeriodApplyResult;
 use rustaxa_consensus::pbft_leader_selection::{
     PbftLeaderCandidateSnapshot as DomainPbftLeaderCandidateSnapshot,
@@ -51,11 +53,13 @@ use rustaxa_consensus::{
     PbftRewardVotePayloadSelection,
     PbftVerifiedVoteProgressBundle as DomainPbftVerifiedVoteProgressBundle,
     PbftVerifiedVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
-    PbftVoteAdmissionTransactionResult, PbftVotePayloadRecord,
+    PbftVoteAdmissionTransactionResult,
     PbftVotePersistenceResult as DomainPbftVotePersistenceResult, PbftVotePersistenceStatus,
     PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
     RewardVoteCursorSnapshot as DomainRewardVoteCursorSnapshot,
     RewardVotePayloadSnapshot as DomainRewardVotePayloadSnapshot, RewardVoteResetApplyRequest,
+    SlashingSubmitterIdentity as DomainSlashingSubmitterIdentity,
+    SlashingTransactionEffect as DomainSlashingTransactionEffect,
     VerifiedVotesStateSnapshot as ConsensusVerifiedVotesStateSnapshot,
 };
 
@@ -155,10 +159,44 @@ fn vote_storage_record_to_ffi(value: DomainPbftVoteStorageRecord) -> PbftVoteSto
     }
 }
 
-fn vote_payload_record_to_ffi(value: PbftVotePayloadRecord) -> PbftVoteStorageRecord {
-    PbftVoteStorageRecord {
-        hash: value.hash.0,
-        vote_rlp: value.vote_rlp,
+fn slashing_submitter_identity_to_domain(
+    value: FfiSlashingSubmitterIdentity,
+) -> DomainSlashingSubmitterIdentity {
+    DomainSlashingSubmitterIdentity {
+        wallet_index: value.wallet_index,
+        address: value.address,
+    }
+}
+
+fn u256_to_bytes(value: U256) -> [u8; 32] {
+    value.to_big_endian()
+}
+
+fn slashing_transaction_effect_to_ffi(
+    value: DomainSlashingTransactionEffect,
+) -> FfiSlashingTransactionEffect {
+    FfiSlashingTransactionEffect {
+        status: value.status.as_u8(),
+        proof_hash: value.proof_hash.0,
+        wallet_index: value.wallet_index,
+        nonce: u256_to_bytes(value.nonce),
+        contract_address: value.contract_address,
+        value: u256_to_bytes(value.value),
+        gas_limit: value.gas_limit,
+        call_data: value.call_data,
+    }
+}
+
+fn empty_slashing_transaction_effect() -> FfiSlashingTransactionEffect {
+    FfiSlashingTransactionEffect {
+        status: 0,
+        proof_hash: [0; 32],
+        wallet_index: 0,
+        nonce: [0; 32],
+        contract_address: [0; 20],
+        value: [0; 32],
+        gas_limit: 0,
+        call_data: Vec::new(),
     }
 }
 
@@ -270,26 +308,60 @@ impl BridgePbftService {
         validation_request: PbftVoteAdmissionValidationRequest,
         flags: PbftVoteEventFactFlags,
         context: FfiPbftVoteProgressContext,
+        slashing_submitters: Vec<FfiSlashingSubmitterIdentity>,
     ) -> Result<PbftVoteAdmissionRuntimeResult, anyhow::Error> {
         let request = admission_validation_request_to_domain(validation_request);
-        let (validation, transaction) = self.0.admit_and_persist_verified_vote_with_final_chain(
-            &final_chain.0,
-            canonical_vote_rlp,
-            request,
-            flags_to_domain(flags),
-            context_to_domain(&context),
-        )?;
-        let weighted_vote_rlp = if validation.accepted && validation.weight_calculated {
-            build_weighted_pbft_vote_payload(canonical_vote_rlp, validation.calculated_weight)?
-                .vote_rlp
+        let slashing_submitters = slashing_submitters
+            .into_iter()
+            .map(slashing_submitter_identity_to_domain)
+            .collect::<Vec<_>>();
+        let result = self
+            .0
+            .admit_and_persist_verified_vote_with_final_chain(
+                &final_chain.0,
+                canonical_vote_rlp,
+                request,
+                flags_to_domain(flags),
+                context_to_domain(&context),
+                &slashing_submitters,
+            )?;
+        let weighted_vote_rlp = if result.validation.accepted
+            && result.validation.weight_calculated
+        {
+            build_weighted_pbft_vote_payload(
+                canonical_vote_rlp,
+                result.validation.calculated_weight,
+            )?
+            .vote_rlp
         } else {
             Vec::new()
         };
         Ok(runtime_outcome_to_ffi(
-            validation,
-            transaction,
+            result.validation,
+            result.transaction,
+            result.slashing_transaction_effect,
             weighted_vote_rlp,
         ))
+    }
+
+    /// Reports execution of one slashing effect emitted by verified-vote admission.
+    ///
+    /// `transaction_inserted == true` commits native duplicate suppression
+    /// exactly once; false leaves the proof retryable. The report contains only
+    /// the canonical proof hash and executor outcome and never reintroduces raw
+    /// vote evidence or a standalone planning API.
+    pub fn pbft_service_verified_votes_report_slashing_transaction_submission(
+        &self,
+        proof_hash: &[u8; 32],
+        transaction_inserted: bool,
+    ) -> Result<bool, anyhow::Error> {
+        Ok(self
+            .0
+            .report_verified_vote_slashing_transaction_submission(
+                H256::from(*proof_hash),
+                transaction_inserted,
+            )?
+            .submitted)
     }
 
     /// Plans or resolves one PBFT `2t+1` threshold with Rust FinalChain composition.
@@ -617,6 +689,7 @@ mod tests {
                 transition_published: true,
                 persistence_error_code: String::new(),
             },
+            None,
             Vec::new(),
         );
         assert!(result.accepted);
@@ -856,6 +929,7 @@ fn reward_votes_reset_apply_request_to_domain(
 fn runtime_outcome_to_ffi(
     validation: PbftCanonicalVoteValidation,
     transaction: PbftVoteAdmissionTransactionResult,
+    slashing_transaction_effect: Option<DomainSlashingTransactionEffect>,
     weighted_vote_rlp: Vec<u8>,
 ) -> PbftVoteAdmissionRuntimeResult {
     let transition_published = transaction.transition_published;
@@ -894,17 +968,14 @@ fn runtime_outcome_to_ffi(
             empty_step_vote_payload_entry(),
         )
     });
-    let (slashing_incoming_vote, slashing_conflicting_vote) = if transition_published {
-        if let Some(payloads) = outcome.slashing_payloads {
-            (
-                vote_payload_record_to_ffi(payloads.incoming),
-                vote_payload_record_to_ffi(payloads.conflicting),
-            )
-        } else {
-            (empty_storage_record(), empty_storage_record())
-        }
+    let has_slashing_transaction_effect = transition_published
+        && slashing_transaction_effect.is_some();
+    let slashing_transaction_effect = if transition_published {
+        slashing_transaction_effect
+            .map(slashing_transaction_effect_to_ffi)
+            .unwrap_or_else(empty_slashing_transaction_effect)
     } else {
-        (empty_storage_record(), empty_storage_record())
+        empty_slashing_transaction_effect()
     };
 
     PbftVoteAdmissionRuntimeResult {
@@ -974,8 +1045,8 @@ fn runtime_outcome_to_ffi(
                 .as_ref()
                 .map(|progress| progress.report_slashing)
                 .unwrap_or(false),
-        slashing_incoming_vote,
-        slashing_conflicting_vote,
+        has_slashing_transaction_effect,
+        slashing_transaction_effect,
         network_t_plus_one_step_updated: transition_published
             && progress
                 .as_ref()

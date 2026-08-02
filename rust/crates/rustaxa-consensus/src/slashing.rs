@@ -1,12 +1,12 @@
-//! Deterministic slashing-proof planning for Rust-backed consensus shims.
+//! Deterministic slashing-proof planning for native PBFT vote admission.
 //!
 //! The planner owns the consensus-facing decision for double-vote proof
 //! submission: it validates that two votes describe the same PBFT slot,
 //! canonicalizes their hashes, builds the slashing contract calldata, and
-//! tracks proofs already submitted by this node. It deliberately does not own
-//! wallet/account lookup, gas pricing, transaction signing, or transaction pool
-//! insertion; those remain live-node responsibilities on the C++ side until the
-//! surrounding transaction pipeline is moved to Rust.
+//! tracks proofs already submitted by this node. PBFT admission resolves
+//! configured submitter identities through the borrowed native FinalChain view;
+//! gas pricing, transaction signing, and transaction-pool insertion remain
+//! explicit external executor responsibilities.
 
 use anyhow::{Result, anyhow, ensure};
 use ethereum_types::{H160, H256, U256};
@@ -357,9 +357,28 @@ fn legacy_pbft_vote_hash(block_hash: H256, vrf_sortition_rlp: &[u8]) -> H256 {
 /// returns the selected wallet index to C++ for signing.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlashingSubmitterFact {
+    /// Stable index into the application-configured wallet sequence.
     pub wallet_index: usize,
+    /// Latest FinalChain account nonce, or zero when the account is absent.
     pub nonce: U256,
+    /// Latest FinalChain account balance, or zero when the account is absent.
     pub balance: U256,
+}
+
+/// Ordered application identity eligible to submit a planned slashing proof.
+///
+/// The application supplies identities in configured wallet order. Native PBFT
+/// admission borrows FinalChain to resolve each address into nonce and balance
+/// facts before invoking the deterministic planner. Missing accounts become
+/// zero-valued facts; FinalChain lookup failures abort the composed admission
+/// call after the already-committed vote transition, matching the former leaf
+/// executor boundary's ordering.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SlashingSubmitterIdentity {
+    /// Stable index into the application-owned signing wallet sequence.
+    pub wallet_index: usize,
+    /// Canonical account address whose latest nonce and balance are sampled.
+    pub address: [u8; 20],
 }
 
 /// Concurrency-safe service boundary for slashing proof planning.
@@ -489,6 +508,25 @@ pub enum DoubleVotingProofPlanStatus {
     NoFundedSubmitter,
 }
 
+impl DoubleVotingProofPlanStatus {
+    /// Returns the stable CXX executor status code.
+    ///
+    /// Code zero is the only executable effect. Non-zero codes preserve legacy
+    /// decision precedence: disabled, coordinate mismatch, duplicate, no funded
+    /// submitter, and pre-Magnolia respectively.
+    #[must_use]
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Planned => 0,
+            Self::Disabled => 1,
+            Self::MismatchedVoteCoordinates => 2,
+            Self::DuplicateProof => 3,
+            Self::NoFundedSubmitter => 4,
+            Self::BeforeMagnoliaActivation => 5,
+        }
+    }
+}
+
 /// Result code after the transaction executor reports a planned slashing proof
 /// insertion attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -523,6 +561,53 @@ pub struct DoubleVotingProofPlan {
     pub call_data: Vec<u8>,
     pub wallet_index: usize,
     pub nonce: U256,
+}
+
+/// Typed external transaction effect emitted by published PBFT conflicts.
+///
+/// Purpose:
+/// - Carry the complete Rust-owned slashing decision to the signing and
+///   transaction-insertion leaf executor without exposing raw vote evidence.
+///
+/// Invariants and edge behavior:
+/// - `status == Planned` is the only executable effect.
+/// - `proof_hash`, transaction fields, and calldata are copied from the
+///   deterministic canonical plan after ordered FinalChain account lookup.
+/// - Non-planned statuses remain effects so the boundary can observe why a
+///   published conflict produced no transaction while receiving no evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SlashingTransactionEffect {
+    /// Deterministic planner status; only `Planned` is executable.
+    pub status: DoubleVotingProofPlanStatus,
+    /// Canonical order-independent duplicate-suppression key.
+    pub proof_hash: H256,
+    /// Stable configured signing-wallet index selected by account order.
+    pub wallet_index: usize,
+    /// Latest nonce for the selected wallet, or zero for a non-planned effect.
+    pub nonce: U256,
+    /// Fixed slashing precompile/contract address.
+    pub contract_address: [u8; 20],
+    /// Transaction value, currently always zero.
+    pub value: U256,
+    /// Canonical slashing transaction gas limit.
+    pub gas_limit: u64,
+    /// Canonical `commitDoubleVotingProof(bytes,bytes)` ABI calldata.
+    pub call_data: Vec<u8>,
+}
+
+impl From<DoubleVotingProofPlan> for SlashingTransactionEffect {
+    fn from(plan: DoubleVotingProofPlan) -> Self {
+        Self {
+            status: plan.status,
+            proof_hash: plan.proof_hash,
+            wallet_index: plan.wallet_index,
+            nonce: plan.nonce,
+            contract_address: plan.contract_address,
+            value: plan.value,
+            gas_limit: plan.gas_limit,
+            call_data: plan.call_data,
+        }
+    }
 }
 
 /// Typed Rust-owned classification for a slashing transaction executor report.
@@ -735,7 +820,10 @@ fn double_voting_proof_hash(vote_a_hash: H256, vote_b_hash: H256) -> H256 {
     keccak256(&stream.out())
 }
 
-fn commit_double_voting_proof_call_data(vote_a_rlp: &[u8], vote_b_rlp: &[u8]) -> Vec<u8> {
+pub(crate) fn commit_double_voting_proof_call_data(
+    vote_a_rlp: &[u8],
+    vote_b_rlp: &[u8],
+) -> Vec<u8> {
     let tail_a = solidity_bytes(vote_a_rlp);
     let tail_b = solidity_bytes(vote_b_rlp);
     let offset_a = WORD_SIZE * 2;

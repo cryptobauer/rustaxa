@@ -14,7 +14,6 @@
 #include "network/tarcap/tarcap_version.hpp"
 #include "network/threadpool/tarcap_thread_pool.hpp"
 #include "pbft/pbft_chain.hpp"
-#include "slashing_manager/slashing_manager.hpp"
 
 namespace taraxa {
 #ifndef RUSTAXA_ENABLE
@@ -25,7 +24,9 @@ class PbftChain;
 class VoteManager;
 class DagManager;
 class TransactionManager;
+#ifndef RUSTAXA_ENABLE
 class SlashingManager;
+#endif
 enum class TransactionStatus;
 
 namespace pillar_chain {
@@ -65,7 +66,10 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
 #endif
       const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
       const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
-      const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
+      const std::shared_ptr<TransactionManager> &trx_mgr,
+#ifndef RUSTAXA_ENABLE
+      const std::shared_ptr<SlashingManager> &slashing_manager,
+#endif
       const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
       const std::shared_ptr<final_chain::FinalChain> &final_chain, TarcapVersion version, const addr_t &node_addr)>;
 
@@ -86,7 +90,10 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
 #endif
                    std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
                    std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
-                   std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
+                   std::shared_ptr<TransactionManager> trx_mgr,
+#ifndef RUSTAXA_ENABLE
+                   std::shared_ptr<SlashingManager> slashing_manager,
+#endif
                    std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
                    std::shared_ptr<final_chain::FinalChain> final_chain,
                    InitPacketsHandlers init_packets_handlers = kInitLatestVersionHandlers);

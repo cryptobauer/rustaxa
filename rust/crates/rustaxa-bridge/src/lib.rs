@@ -12,7 +12,6 @@ mod pillar_chain;
 mod pillar_votes;
 mod proposed_blocks;
 mod query;
-mod slashing;
 mod sortition;
 mod storage;
 mod transaction;

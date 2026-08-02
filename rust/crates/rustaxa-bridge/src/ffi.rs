@@ -688,46 +688,30 @@ pub mod rustaxa_ffi {
         price: [u8; 32],
     }
 
-    /// One configured wallet/account candidate for slashing proof submission.
-    struct SlashingSubmitterFact {
+    /// One configured signing identity for native slashing account lookup.
+    ///
+    /// Entries preserve application wallet order. Rust borrows FinalChain to
+    /// resolve the address into the latest nonce and balance and returns only
+    /// the selected wallet index in a transaction effect.
+    struct SlashingSubmitterIdentity {
+        wallet_index: usize,
+        address: [u8; 20],
+    }
+
+    /// Typed Rust-owned slashing transaction effect.
+    ///
+    /// Status zero is the only executable effect. Non-zero statuses describe
+    /// why a published double-vote conflict produced no transaction. Raw vote
+    /// evidence never crosses this boundary.
+    struct SlashingTransactionEffect {
+        status: u8,
+        proof_hash: [u8; 32],
         wallet_index: usize,
         nonce: [u8; 32],
-        balance: [u8; 32],
-    }
-
-    /// C++-originated evidence for planning a double-voting proof transaction.
-    ///
-    /// The two vote payloads must belong to the shared PBFT slot described by
-    /// `period`, `round`, and `step`. Rust consensus still validates the
-    /// canonical vote bytes before generating contract call data.
-    struct DoubleVotingProofInput {
-        vote_a_hash: [u8; 32],
-        vote_b_hash: [u8; 32],
-        period: u64,
-        round: u64,
-        step: u64,
-        vote_a_rlp: Vec<u8>,
-        vote_b_rlp: Vec<u8>,
-        submitters: Vec<SlashingSubmitterFact>,
-    }
-
-    /// Rust slashing proof plan consumed by the C++ shim.
-    struct DoubleVotingProofPlan {
-        status: u8,
-        should_submit: bool,
-        proof_hash: [u8; 32],
         contract_address: [u8; 20],
         value: [u8; 32],
         gas_limit: u64,
         call_data: Vec<u8>,
-        wallet_index: usize,
-        nonce: [u8; 32],
-    }
-
-    /// Executor report after C++ attempts to insert a planned slashing transaction.
-    struct DoubleVotingProofSubmissionReport {
-        proof_hash: [u8; 32],
-        transaction_inserted: bool,
     }
 
     struct HashPeriod {
@@ -1922,8 +1906,8 @@ pub mod rustaxa_ffi {
         gossip_vote: bool,
         gossip_vote_hash: [u8; 32],
         report_slashing: bool,
-        slashing_incoming_vote: PbftVoteStorageRecord,
-        slashing_conflicting_vote: PbftVoteStorageRecord,
+        has_slashing_transaction_effect: bool,
+        slashing_transaction_effect: SlashingTransactionEffect,
         network_t_plus_one_step_updated: bool,
         drive_pbft_progress: bool,
         progress_period: u64,
@@ -4404,17 +4388,6 @@ pub mod rustaxa_ffi {
         pub fn pbft_service_proposed_blocks_snapshot_entries(
             self: &BridgePbftService,
         ) -> Vec<ProposedBlockSnapshotEntry>;
-        // Consensus slashing proof planner owned by the PBFT service
-
-        pub fn slashing_plan_double_voting_proof(
-            self: &BridgePbftService,
-            input: DoubleVotingProofInput,
-        ) -> Result<DoubleVotingProofPlan>;
-        pub fn slashing_report_double_voting_proof_submission(
-            self: &BridgePbftService,
-            report: DoubleVotingProofSubmissionReport,
-        ) -> Result<bool>;
-
         // Consensus transaction manager planning
 
         pub fn transaction_manager_runtime_gas_price_bid(
@@ -4592,7 +4565,13 @@ pub mod rustaxa_ffi {
             validation_request: PbftVoteAdmissionValidationRequest,
             flags: PbftVoteEventFactFlags,
             context: PbftVoteProgressContext,
+            slashing_submitters: Vec<SlashingSubmitterIdentity>,
         ) -> Result<PbftVoteAdmissionRuntimeResult>;
+        pub fn pbft_service_verified_votes_report_slashing_transaction_submission(
+            self: &BridgePbftService,
+            proof_hash: &[u8; 32],
+            transaction_inserted: bool,
+        ) -> Result<bool>;
         pub fn pbft_service_verified_votes_determine_new_round(
             self: &BridgePbftService,
             period: u64,

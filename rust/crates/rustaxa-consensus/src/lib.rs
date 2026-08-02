@@ -221,7 +221,9 @@ pub use pbft_reward_votes::{
     PbftRewardVoteRoundCandidate, PbftRewardVoteSelectionFact, PbftRewardVoteSelectionPlan,
     PbftRewardVotesStatus, plan_pbft_reward_votes,
 };
-pub use pbft_service::{PbftService, PbftServiceConfig};
+pub use pbft_service::{
+    PbftService, PbftServiceConfig, PbftVoteAdmissionWithSlashingResult,
+};
 pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,
     PbftSyncPeriodAdmissionFact, PbftSyncPeriodAdmissionPlan, PbftSyncPeriodAdmissionStatus,
@@ -343,7 +345,8 @@ pub use rustaxa_types::{
 pub use slashing::{
     DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofPlanStatus,
     DoubleVotingProofSubmissionPlan, DoubleVotingProofSubmissionStatus, SlashingProofPlanner,
-    SlashingProofService, SlashingSubmitterFact,
+    SlashingProofService, SlashingSubmitterFact, SlashingSubmitterIdentity,
+    SlashingTransactionEffect,
 };
 pub use transaction_manager::{
     DagTransactionSaveFact, DagTransactionSavePayload, DagTransactionSavePlan,

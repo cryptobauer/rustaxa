@@ -27,7 +27,6 @@
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
-#include "slashing_manager/slashing_manager.hpp"
 #include "transaction/transaction_manager.hpp"
 
 #ifdef RUSTAXA_ENABLE
@@ -85,7 +84,9 @@ TaraxaCapability::TaraxaCapability(
 #endif
     std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
     std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
+#ifndef RUSTAXA_ENABLE
     std::shared_ptr<SlashingManager> slashing_manager,
+#endif
     std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
     std::shared_ptr<final_chain::FinalChain> final_chain, InitPacketsHandlers init_packets_handlers)
     : version_(version),
@@ -110,7 +111,11 @@ TaraxaCapability::TaraxaCapability(
 #ifndef RUSTAXA_ENABLE
                             db,
 #endif
-                            pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr, slashing_manager, pillar_chain_mgr,
+                            pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr,
+#ifndef RUSTAXA_ENABLE
+                            slashing_manager,
+#endif
+                            pillar_chain_mgr,
                             final_chain, version, node_addr);
 
   // Must be called after init_packets_handlers
@@ -337,17 +342,20 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
 #endif
        const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
        const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
-       const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
+       const std::shared_ptr<TransactionManager> &trx_mgr,
+#ifndef RUSTAXA_ENABLE
+       const std::shared_ptr<SlashingManager> & /*slashing_manager*/,
+#endif
        const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
        const std::shared_ptr<final_chain::FinalChain> &final_chain, TarcapVersion, const addr_t &node_addr) {
       auto packets_handlers = std::make_shared<PacketsHandler>();
       // Consensus packets with high processing priority
       packets_handlers->registerHandler<VotePacketHandler>(config, peers_state, packets_stats, pbft_mgr, pbft_chain,
-                                                           vote_mgr, slashing_manager, node_addr, logs_prefix);
+                                                           vote_mgr, node_addr, logs_prefix);
       packets_handlers->registerHandler<GetNextVotesBundlePacketHandler>(
-          config, peers_state, packets_stats, pbft_mgr, pbft_chain, vote_mgr, slashing_manager, node_addr, logs_prefix);
+          config, peers_state, packets_stats, pbft_mgr, pbft_chain, vote_mgr, node_addr, logs_prefix);
       packets_handlers->registerHandler<VotesBundlePacketHandler>(
-          config, peers_state, packets_stats, pbft_mgr, pbft_chain, vote_mgr, slashing_manager, node_addr, logs_prefix);
+          config, peers_state, packets_stats, pbft_mgr, pbft_chain, vote_mgr, node_addr, logs_prefix);
 
       // Standard packets with mid processing priority
       packets_handlers->registerHandler<DagBlockPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
@@ -395,17 +403,20 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
 #endif
        const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
        const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
-       const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
+       const std::shared_ptr<TransactionManager> &trx_mgr,
+#ifndef RUSTAXA_ENABLE
+       const std::shared_ptr<SlashingManager> & /*slashing_manager*/,
+#endif
        const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
        const std::shared_ptr<final_chain::FinalChain> & /*final_chain*/, TarcapVersion, const addr_t &node_addr) {
       auto packets_handlers = std::make_shared<PacketsHandler>();
       // Consensus packets with high processing priority
       packets_handlers->registerHandler<VotePacketHandler>(config, peers_state, packets_stats, pbft_mgr, pbft_chain,
-                                                           vote_mgr, slashing_manager, node_addr, logs_prefix);
+                                                           vote_mgr, node_addr, logs_prefix);
       packets_handlers->registerHandler<GetNextVotesBundlePacketHandler>(
-          config, peers_state, packets_stats, pbft_mgr, pbft_chain, vote_mgr, slashing_manager, node_addr, logs_prefix);
+          config, peers_state, packets_stats, pbft_mgr, pbft_chain, vote_mgr, node_addr, logs_prefix);
       packets_handlers->registerHandler<VotesBundlePacketHandler>(
-          config, peers_state, packets_stats, pbft_mgr, pbft_chain, vote_mgr, slashing_manager, node_addr, logs_prefix);
+          config, peers_state, packets_stats, pbft_mgr, pbft_chain, vote_mgr, node_addr, logs_prefix);
 
       // Standard packets with mid processing priority
       packets_handlers->registerHandler<DagBlockPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,

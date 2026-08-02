@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -12,10 +13,10 @@
 #include "pbft/pbft_manager.hpp"
 #include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
-#include "slashing_manager/slashing_manager.hpp"
 #include "storage/storage.hpp"
 #include "vote/pbft_vote.hpp"
 #include "vote_manager/vote_manager.hpp"
+#include "transaction/transaction.hpp"
 
 namespace taraxa {
 namespace {
@@ -58,6 +59,20 @@ uint256_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
 
 std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) { return address.asArray(); }
 
+std::array<uint8_t, 32> toBridgeU256(const u256& value) {
+  std::array<uint8_t, 32> out{};
+  const auto bytes = dev::toBigEndian(value);
+  if (bytes.size() > out.size()) {
+    throw std::overflow_error("u256 value cannot be represented in 32 bridge bytes");
+  }
+  std::copy(bytes.begin(), bytes.end(), out.begin() + (out.size() - bytes.size()));
+  return out;
+}
+
+u256 fromBridgeU256(const std::array<uint8_t, 32>& value) {
+  return dev::fromBigEndian<u256>(dev::bytes(value.begin(), value.end()));
+}
+
 template <size_t N, typename FixedHash>
 std::array<uint8_t, N> toBridgeFixedBytes(const FixedHash& value) {
   std::array<uint8_t, N> out{};
@@ -80,6 +95,57 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
     out.push_back(byte);
   }
   return out;
+}
+
+rust::Vec<uint8_t> toBridgeBytes(const std::vector<uint8_t>& bytes) {
+  rust::Vec<uint8_t> out;
+  out.reserve(bytes.size());
+  for (const auto byte : bytes) {
+    out.push_back(byte);
+  }
+  return out;
+}
+
+rust::Vec<uint8_t> cloneBridgeBytes(const rust::Vec<uint8_t>& bytes) {
+  rust::Vec<uint8_t> out;
+  out.reserve(bytes.size());
+  for (const auto byte : bytes) {
+    out.push_back(byte);
+  }
+  return out;
+}
+
+rust::Vec<rustaxa::SlashingSubmitterFact> makeSlashingSubmitterFacts(const FullNodeConfig& config,
+                                                                   const std::shared_ptr<final_chain::FinalChain>& final_chain) {
+  rust::Vec<rustaxa::SlashingSubmitterFact> submitters;
+  submitters.reserve(config.wallets.size());
+  for (size_t index = 0; index < config.wallets.size(); ++index) {
+    const auto& wallet = config.wallets[index];
+    rustaxa::SlashingSubmitterFact fact{};
+    fact.wallet_index = index;
+    const auto account = final_chain->getAccount(wallet.node_addr);
+    fact.nonce = account.has_value() ? toBridgeU256(account->nonce) : std::array<uint8_t, 32>{};
+    fact.balance = account.has_value() ? toBridgeU256(account->balance) : std::array<uint8_t, 32>{};
+    submitters.push_back(std::move(fact));
+  }
+  return submitters;
+}
+
+rustaxa::DoubleVotingProofInput makeSlashingProofInput(const rustaxa::PbftVoteStorageRecord& incoming_vote,
+                                                      const rustaxa::PbftVoteStorageRecord& conflicting_vote,
+                                                      const FullNodeConfig& config,
+                                                      const std::shared_ptr<final_chain::FinalChain>& final_chain,
+                                                      PbftPeriod period, PbftRound round, PbftStep step) {
+  rustaxa::DoubleVotingProofInput input;
+  input.vote_a_hash = incoming_vote.hash;
+  input.vote_b_hash = conflicting_vote.hash;
+  input.period = period;
+  input.round = round;
+  input.step = step;
+  input.vote_a_rlp = cloneBridgeBytes(incoming_vote.vote_rlp);
+  input.vote_b_rlp = cloneBridgeBytes(conflicting_vote.vote_rlp);
+  input.submitters = makeSlashingSubmitterFacts(config, final_chain);
+  return input;
 }
 
 dev::bytes fromBridgeBytes(const rust::Vec<uint8_t>& bytes) {
@@ -435,12 +501,19 @@ std::shared_ptr<PbftVote> materializeOwnVoteRecord(const rustaxa::PbftVoteStorag
 
 VoteManager::VoteManager(const FullNodeConfig& config, SharedPbftService pbft_service,
                          std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-                         std::shared_ptr<KeyManager> key_manager, std::shared_ptr<SlashingManager> slashing_manager)
+                         std::shared_ptr<KeyManager> key_manager, std::shared_ptr<TransactionManager> trx_manager)
     : kPbftConfig(config.genesis.pbft),
       pbft_chain_(std::move(pbft_chain)),
       final_chain_(std::move(final_chain)),
-      slashing_manager_(std::move(slashing_manager)),
+      kConfig(config),
+      trx_manager_(std::move(trx_manager)),
       pbft_service_(std::move(pbft_service)) {
+  if (!trx_manager_) {
+    throw std::invalid_argument("VoteManager requires TransactionManager in Rust mode");
+  }
+  if (!final_chain_) {
+    throw std::invalid_argument("VoteManager requires FinalChain in Rust mode");
+  }
   (void)key_manager;
   const auto node_addr = dev::toAddress(config.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("VOTE_MGR");
@@ -663,13 +736,8 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
 
   if (runtime_result.report_slashing) {
     LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
-    SlashingDoubleVoteEvidence evidence;
-    evidence.incoming_vote = runtime_result.slashing_incoming_vote;
-    evidence.conflicting_vote = runtime_result.slashing_conflicting_vote;
-    evidence.period = vote->getPeriod();
-    evidence.round = vote->getRound();
-    evidence.step = vote->getStep();
-    submitRustPlannedSlashingProof(evidence);
+    submitRustPlannedSlashingProof(runtime_result.slashing_incoming_vote, runtime_result.slashing_conflicting_vote,
+                                   vote->getPeriod(), vote->getRound(), vote->getStep());
     return report;
   }
 
@@ -1650,8 +1718,33 @@ StepVotes VoteManager::getStepVotes(PbftPeriod period, PbftRound round, PbftStep
   return materializeStepVotes(lookup, period, round, step);
 }
 
-bool VoteManager::submitRustPlannedSlashingProof(const SlashingDoubleVoteEvidence& evidence) {
-  return slashing_manager_->submitDoubleVotingProof(evidence);
+bool VoteManager::submitRustPlannedSlashingProof(const rustaxa::PbftVoteStorageRecord& incoming_vote,
+                                                const rustaxa::PbftVoteStorageRecord& conflicting_vote,
+                                                PbftPeriod period, PbftRound round, PbftStep step) {
+  if (incoming_vote.vote_rlp.empty() || conflicting_vote.vote_rlp.empty()) {
+    return false;
+  }
+
+  const auto input = makeSlashingProofInput(incoming_vote, conflicting_vote, kConfig, final_chain_, period, round, step);
+  const auto plan = pbft_service_->service().slashing_plan_double_voting_proof(std::move(input));
+  if (!plan.should_submit) {
+    return false;
+  }
+
+  if (plan.wallet_index >= kConfig.wallets.size()) {
+    throw std::runtime_error("Rust slashing planner returned an invalid wallet index");
+  }
+
+  const auto& wallet = kConfig.wallets[plan.wallet_index];
+  bytes call_data(plan.call_data.begin(), plan.call_data.end());
+  auto trx = std::make_shared<Transaction>(fromBridgeU256(plan.nonce), fromBridgeU256(plan.value), trx_manager_->gasPriceBid(),
+                                           plan.gas_limit, std::move(call_data), wallet.node_secret,
+                                           fromBridgeAddress(plan.contract_address), kConfig.genesis.chain_id);
+
+  rustaxa::DoubleVotingProofSubmissionReport report;
+  report.proof_hash = plan.proof_hash;
+  report.transaction_inserted = trx_manager_->insertTransaction(trx).first;
+  return pbft_service_->service().slashing_report_double_voting_proof_submission(std::move(report));
 }
 
 void VoteManager::setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound pbft_round) {

@@ -21,10 +21,10 @@
 #include "metrics/transaction_queue_metrics.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
-#include "slashing_manager/slashing_manager.hpp"
 #include "storage/migration/block_stats.hpp"
 #include "storage/migration/migration_manager.hpp"
 #ifndef RUSTAXA_ENABLE
+#include "slashing_manager/slashing_manager.hpp"
 #include "transaction/gas_pricer.hpp"
 #endif
 #include "transaction/transaction_manager.hpp"
@@ -190,14 +190,9 @@ void App::init(const cli::Config &cli_conf) {
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
 #endif
 #ifdef RUSTAXA_ENABLE
-  auto slashing_manager = std::make_shared<SlashingManager>(conf_, pbft_service_, final_chain_, trx_mgr_);
+  vote_mgr_ = std::make_shared<VoteManager>(conf_, pbft_service_, pbft_chain_, final_chain_, key_manager_, trx_mgr_);
 #else
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
-#endif
-#ifdef RUSTAXA_ENABLE
-  vote_mgr_ =
-      std::make_shared<VoteManager>(conf_, pbft_service_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
-#else
   vote_mgr_ = std::make_shared<VoteManager>(conf_, db_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
 #endif
 #ifdef RUSTAXA_ENABLE
@@ -224,8 +219,8 @@ void App::init(const cli::Config &cli_conf) {
 #ifndef RUSTAXA_ENABLE
                                        db_,
 #endif
-                                       pbft_mgr_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_,
-                                       std::move(slashing_manager), pillar_chain_mgr_, final_chain_);
+                                       pbft_mgr_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, pillar_chain_mgr_,
+                                       final_chain_);
   auto cli_options = cli_conf.getCliOptions();
   for (auto &plugin : active_plugins_) {
     plugin.second->init(cli_options);

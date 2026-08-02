@@ -64,7 +64,7 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #endif
                  std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
                  std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
-                 std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
+                 std::shared_ptr<TransactionManager> trx_mgr,
                  std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
                  std::shared_ptr<final_chain::FinalChain> final_chain)
     : kConf(config),
@@ -123,7 +123,7 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
         db,
 #endif
-        pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr, slashing_manager, pillar_chain_mgr, final_chain);
+        pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr, pillar_chain_mgr, final_chain);
     capabilities.emplace_back(latest_tarcap);
 
     // Register previous (v5) version of taraxa capability
@@ -133,7 +133,7 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
         db,
 #endif
-        pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr, slashing_manager, pillar_chain_mgr, final_chain,
+        pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr, pillar_chain_mgr, final_chain,
         network::tarcap::TaraxaCapability::kInitV5VersionHandlers);
     capabilities.emplace_back(v5_tarcap);
 

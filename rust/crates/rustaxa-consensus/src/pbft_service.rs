@@ -102,17 +102,50 @@ use crate::pillar_vote_service::{
 };
 use crate::proposed_blocks::{ProposedBlockEntry, ProposedBlocksService};
 use crate::slashing::{
-    DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofSubmissionPlan,
-    SlashingProofService,
+    DoubleVotingProofInput, DoubleVotingProofSubmissionPlan, SlashingProofService,
+    SlashingSubmitterFact, SlashingSubmitterIdentity, SlashingTransactionEffect,
 };
 use crate::verified_votes::{DetermineNewRoundOutcome, TwoTPlusOneVotedBlockType};
 use anyhow::{Context, Result};
-use ethereum_types::H256;
+use ethereum_types::{H256, U256};
 use rustaxa_storage::{Storage, StorageWriteBatch};
 use std::sync::Arc;
 
 const SLASHING_PROOF_CACHE_MAX_SIZE: usize = 1000;
 const SLASHING_PROOF_CACHE_DELETE_STEP: usize = 100;
+
+fn final_chain_nonce_as_u256(nonce: &rustaxa_types::FinalChainNonce) -> Result<U256> {
+    let bytes = nonce.to_bytes();
+    anyhow::ensure!(
+        bytes.len() <= 32,
+        "PBFT_SERVICE_SLASHING_ACCOUNT_NONCE_EXCEEDS_U256"
+    );
+    Ok(U256::from_big_endian(&bytes))
+}
+
+fn resolve_slashing_submitter_facts(
+    final_chain: &FinalChain,
+    identities: &[SlashingSubmitterIdentity],
+) -> Result<Vec<SlashingSubmitterFact>> {
+    identities
+        .iter()
+        .map(|identity| {
+            let account = final_chain.account(identity.address)?;
+            let (nonce, balance) = match account {
+                Some(account) => (
+                    final_chain_nonce_as_u256(&account.nonce)?,
+                    *account.balance.as_u256(),
+                ),
+                None => (U256::zero(), U256::zero()),
+            };
+            Ok(SlashingSubmitterFact {
+                wallet_index: identity.wallet_index,
+                nonce,
+                balance,
+            })
+        })
+        .collect()
+}
 
 /// Validated immutable configuration for native PBFT service restoration.
 ///
@@ -195,6 +228,30 @@ pub struct PbftManagerRuntimeStorageApplyOutcome {
     pub error_code: String,
 }
 
+/// Complete native result of validation-backed PBFT vote admission.
+///
+/// Purpose:
+/// - Publish the transactional vote-admission result together with the optional
+///   Rust-owned slashing transaction effect for one composed operation.
+///
+/// Invariants and edge behavior:
+/// - `slashing_transaction_effect` is present only for a published
+///   duplicate-voter conflict with retained canonical payloads.
+/// - The effect contains no signing key and no raw vote evidence; signing and
+///   transaction insertion remain external leaf operations.
+/// - Persistence rejection or an unpublished transition never exposes an
+///   effect. FinalChain account lookup errors propagate after admission has
+///   already committed, matching the external-effect ordering.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftVoteAdmissionWithSlashingResult {
+    /// Terminal canonical vote validation.
+    pub validation: PbftCanonicalVoteValidation,
+    /// Transactional runtime/persistence publication result.
+    pub transaction: PbftVoteAdmissionTransactionResult,
+    /// Typed slashing transaction effect for a published conflict, when any.
+    pub slashing_transaction_effect: Option<SlashingTransactionEffect>,
+}
+
 /// CXX-free native owner of the complete PBFT application-service graph.
 ///
 /// Restoration validates storage-independent slashing configuration first,
@@ -222,24 +279,13 @@ impl PbftService {
         }
     }
 
-    /// Plans one double-voting proof through the application-owned slashing service.
-    ///
-    /// The native slashing service owns planner configuration, duplicate-cache
-    /// locking, validation, and canonical ABI bytes. External account facts are
-    /// already present in `input`; no executor runs during this call.
-    pub fn plan_double_voting_proof(
-        &self,
-        input: DoubleVotingProofInput,
-    ) -> Result<DoubleVotingProofPlan> {
-        self.slashing.plan_double_voting_proof(input)
-    }
-
-    /// Applies one external slashing-transaction insertion report.
+    /// Applies one verified-vote slashing transaction insertion report.
     ///
     /// Accepted insertions update the bounded native duplicate cache; rejected
-    /// insertions remain retryable. Signing and transaction insertion remain
-    /// explicit C++ leaf effects.
-    pub fn report_double_voting_proof_submission(
+    /// insertions leave the proof retryable. Repeated accepted reports classify
+    /// as duplicates and never count as a second submission. Signing and
+    /// transaction insertion remain explicit external leaf effects.
+    pub fn report_verified_vote_slashing_transaction_submission(
         &self,
         proof_hash: ethereum_types::H256,
         transaction_inserted: bool,
@@ -2024,10 +2070,8 @@ impl PbftService {
         request: PbftVoteAdmissionValidationRequest,
         flags: PbftVoteEventFactFlags,
         context: PbftVoteProgressContext,
-    ) -> Result<(
-        PbftCanonicalVoteValidation,
-        PbftVoteAdmissionTransactionResult,
-    )> {
+        slashing_submitters: &[SlashingSubmitterIdentity],
+    ) -> Result<PbftVoteAdmissionWithSlashingResult> {
         let (validation, _) = self.validate_verified_vote_with_final_chain_internal(
             final_chain,
             canonical_vote_rlp,
@@ -2044,7 +2088,53 @@ impl PbftService {
                 context,
                 |write| persist_pbft_vote_progress(self.verified_votes().storage(), write),
             )?;
-        Ok((validation, transaction))
+
+        let slashing_transaction_effect = if transaction.transition_published {
+            transaction
+                .outcome
+                .slashing_payloads
+                .as_ref()
+                .map(|payloads| {
+                    let progress_fact = transaction
+                        .outcome
+                        .precheck
+                        .progress_fact
+                        .as_ref()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "PBFT_SERVICE_SLASHING_CONFLICT_MISSING_PROGRESS_FACT"
+                            )
+                        })?;
+                    let submitters = resolve_slashing_submitter_facts(
+                        final_chain,
+                        slashing_submitters,
+                    )?;
+                    self.slashing
+                        .plan_double_voting_proof(DoubleVotingProofInput {
+                            vote_a_hash: payloads.incoming.hash,
+                            vote_b_hash: payloads.conflicting.hash,
+                            vote_a_period: progress_fact.identity.period,
+                            vote_b_period: progress_fact.identity.period,
+                            vote_a_round: progress_fact.identity.round,
+                            vote_b_round: progress_fact.identity.round,
+                            vote_a_step: progress_fact.identity.step,
+                            vote_b_step: progress_fact.identity.step,
+                            vote_a_rlp: payloads.incoming.vote_rlp.clone(),
+                            vote_b_rlp: payloads.conflicting.vote_rlp.clone(),
+                            submitters,
+                        })
+                        .map(Into::into)
+                })
+                .transpose()?
+        } else {
+            None
+        };
+
+        Ok(PbftVoteAdmissionWithSlashingResult {
+            validation,
+            transaction,
+            slashing_transaction_effect,
+        })
     }
 
     /// Computes one PBFT `2t+1` threshold and resolves total eligible DPoS
@@ -2907,22 +2997,24 @@ mod tests {
         );
         let vote = generated_vote_at_period(H256::repeat_byte(0x73), 12);
 
-        let (validation, result) = service
+        let result = service
             .admit_and_persist_verified_vote_with_final_chain(
                 &final_chain,
                 &vote.vote_rlp,
                 vote_validation_request(true, 40),
                 vote_event_flags(),
                 vote_progress_context(80),
+                &[],
             )
             .unwrap();
 
-        assert!(validation.accepted);
-        assert_eq!(validation.calculated_weight, 40);
-        assert!(result.transition_published);
-        assert!(!result.persistence_required);
+        assert!(result.validation.accepted);
+        assert_eq!(result.validation.calculated_weight, 40);
+        assert!(result.transaction.transition_published);
+        assert!(!result.transaction.persistence_required);
         assert_eq!(
             result
+                .transaction
                 .outcome
                 .precheck
                 .progress_fact
@@ -2945,20 +3037,24 @@ mod tests {
         );
         let vote = generated_vote_at_period(H256::repeat_byte(0x74), 1);
 
-        let (validation, result) = service
+        let result = service
             .admit_and_persist_verified_vote_with_final_chain(
                 &final_chain,
                 &vote.vote_rlp,
                 vote_validation_request(false, 0),
                 vote_event_flags(),
                 vote_progress_context(80),
+                &[],
             )
             .unwrap();
 
-        assert_eq!(validation.status, PbftVoteValidationStatus::ZeroStake);
-        assert!(result.transition_published);
-        assert!(!result.persistence_required);
-        assert!(result.outcome.add_outcome.is_none());
+        assert_eq!(
+            result.validation.status,
+            PbftVoteValidationStatus::ZeroStake
+        );
+        assert!(result.transaction.transition_published);
+        assert!(!result.transaction.persistence_required);
+        assert!(result.transaction.outcome.add_outcome.is_none());
         assert!(
             service
                 .verified_votes()

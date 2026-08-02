@@ -148,10 +148,6 @@ if(RUSTAXA_ENABLE)
         COMPILE_DEFINITIONS "DbStorage=DbStorageOld"
     )
 
-    # Inject the standalone Rust-planning SlashingManager facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/slashing_manager_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/slashing_manager_shim/src/slashing_manager_shim.cpp)
-
     # Inject the standalone Rust FinalChain facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/src/final_chain_shim.cpp)

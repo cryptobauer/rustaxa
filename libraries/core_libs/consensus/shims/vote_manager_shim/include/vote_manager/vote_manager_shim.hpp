@@ -24,8 +24,7 @@ class Network;
 class PbftBlock;
 class PbftService;
 class KeyManager;
-class SlashingManager;
-struct SlashingDoubleVoteEvidence;
+class TransactionManager;
 
 /**
  * Rust-mode VoteManager overlay.
@@ -181,7 +180,7 @@ class VoteManager {
    */
   VoteManager(const FullNodeConfig& config, SharedPbftService pbft_service, std::shared_ptr<PbftChain> pbft_chain,
               std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<KeyManager> key_manager,
-              std::shared_ptr<SlashingManager> slashing_manager);
+              std::shared_ptr<TransactionManager> trx_manager);
   ~VoteManager() = default;
   VoteManager(const VoteManager&) = delete;
   VoteManager(VoteManager&&) = delete;
@@ -846,12 +845,15 @@ class VoteManager {
    * - This is a temporary executor boundary until slashing proof submission has
    *   a Rust-owned port.
    */
-  bool submitRustPlannedSlashingProof(const SlashingDoubleVoteEvidence& evidence);
+  bool submitRustPlannedSlashingProof(const rustaxa::PbftVoteStorageRecord& incoming_vote,
+                                     const rustaxa::PbftVoteStorageRecord& conflicting_vote, PbftPeriod period,
+                                     PbftRound round, PbftStep step);
   const PbftConfig& kPbftConfig;
+  const FullNodeConfig& kConfig;
   std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::weak_ptr<Network> network_;
-  std::shared_ptr<SlashingManager> slashing_manager_;
+  std::shared_ptr<TransactionManager> trx_manager_;
   SharedPbftService pbft_service_;
 
   std::atomic<PbftPeriod> current_pbft_period_{0};

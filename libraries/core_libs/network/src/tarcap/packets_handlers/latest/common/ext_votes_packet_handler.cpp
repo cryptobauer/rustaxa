@@ -51,16 +51,14 @@ ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::sh
                                              std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                              std::shared_ptr<PbftManager> pbft_mgr,
                                              std::shared_ptr<PbftChain> pbft_chain,
-                                             std::shared_ptr<VoteManager> vote_mgr,
-                                             std::shared_ptr<SlashingManager> slashing_manager, const addr_t &node_addr,
+                                             std::shared_ptr<VoteManager> vote_mgr, const addr_t &node_addr,
                                              const std::string &log_channel_name)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel_name),
       last_votes_sync_request_time_(std::chrono::system_clock::now()),
       last_pbft_block_sync_request_time_(std::chrono::system_clock::now()),
       pbft_mgr_(std::move(pbft_mgr)),
       pbft_chain_(std::move(pbft_chain)),
-      vote_mgr_(std::move(vote_mgr)),
-      slashing_manager_(std::move(slashing_manager)) {
+      vote_mgr_(std::move(vote_mgr)) {
 #ifdef RUSTAXA_ENABLE
   rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
 #endif
@@ -153,7 +151,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   }
 
   return result;
-#endif
+#else
 
   if (vote_mgr_->voteInVerifiedMap(vote)) {
     LOG(this->log_dg_) << "Vote " << vote->getHash() << " already inserted in verified queue";
@@ -191,6 +189,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   }
 
   return {.accepted = true, .mark_vote_known = true, .gossip_vote = true};
+#endif
 }
 
 std::pair<bool, std::string> ExtVotesPacketHandler::validateVotePeriodRoundStep(const std::shared_ptr<PbftVote> &vote,
