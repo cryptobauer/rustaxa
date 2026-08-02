@@ -17,20 +17,7 @@ namespace taraxa::core_tests {
 namespace {
 
 std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage>& db) {
-#ifdef RUSTAXA_ENABLE
-  rustaxa::PbftServiceConfig config{};
-  config.genesis_lambda_ms = 1000;
-  config.cacti_lambda_max_ms = 1000;
-  config.cacti_lambda_default_ms = 1000;
-  config.max_exponential_lambda_ms = 60000;
-  config.max_steps = 13;
-  config.deadline_ms = 4000;
-  config.polling_interval_ms = 100;
-  auto service = std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
-  return std::make_shared<PbftChain>(addr_t(), std::move(service));
-#else
   return std::make_shared<PbftChain>(addr_t(), db);
-#endif
 }
 
 }  // namespace

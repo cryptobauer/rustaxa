@@ -63,12 +63,6 @@ target_link_libraries(pbft_chain_test test_util)
 add_test(pbft_chain_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_chain_test)
 
 if(RUSTAXA_ENABLE)
-    add_executable(pbft_chain_shim_test pbft_chain_shim_test.cpp)
-    target_link_libraries(pbft_chain_shim_test test_util)
-    add_test(pbft_chain_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_chain_shim_test)
-endif()
-
-if(RUSTAXA_ENABLE)
     add_executable(transaction_manager_shim_test transaction_manager_shim_test.cpp)
     target_link_libraries(transaction_manager_shim_test test_util)
     add_test(transaction_manager_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/transaction_manager_shim_test)

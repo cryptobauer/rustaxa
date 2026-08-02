@@ -179,10 +179,8 @@ void App::init(const cli::Config &cli_conf) {
   pbft_manager_config.magnolia_activation_period = conf_.genesis.state.hardforks.magnolia_hf.block_num;
   pbft_service_ =
       std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db_->rustStorage(), pbft_manager_config));
-  pbft_chain_ = std::make_shared<PbftChain>(node_addr, pbft_service_);
-#else
-  pbft_chain_ = std::make_shared<PbftChain>(node_addr, db_);
 #endif
+  pbft_chain_ = std::make_shared<PbftChain>(node_addr, db_);
 #ifdef RUSTAXA_ENABLE
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_,
                                           dag_transaction_service_);
