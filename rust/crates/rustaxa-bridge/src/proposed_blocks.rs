@@ -1,10 +1,8 @@
-use crate::ffi::rustaxa_ffi::{
-    ProposedBlockIdentity, ProposedBlockLookup, ProposedBlockSnapshotEntry,
-};
+use crate::ffi::rustaxa_ffi::{ProposedBlockLookup, ProposedBlockSnapshotEntry};
 use crate::ffi::{BridgePbftService, BridgeStorage};
 use ethereum_types::H256;
 use rustaxa_consensus::proposed_blocks::{
-    restore_proposed_blocks_from_storage, save_proposed_block_storage, ProposedBlocks,
+    restore_proposed_blocks_from_storage, save_proposed_block_storage,
 };
 
 impl BridgePbftService {
@@ -129,39 +127,6 @@ pub fn proposed_blocks_storage_snapshot_entries(
         .collect())
 }
 
-/// Looks up ordered identities in a temporary, non-persisted Rust candidate set.
-///
-/// Candidate entries and requested identities are consumed; one owned lookup is
-/// returned for each identity in the same order. Carrier `is_valid` values are
-/// intentionally ignored: tentative wallet candidates must pass the external
-/// block-validation callback before leader selection. The local index is dropped
-/// before return, never acquires a PBFT service lock, and cannot publish into
-/// authoritative or durable proposed-block state.
-pub fn proposed_blocks_local_candidate_lookups(
-    candidates: Vec<ProposedBlockSnapshotEntry>,
-    identities: Vec<ProposedBlockIdentity>,
-) -> Vec<ProposedBlockLookup> {
-    let mut local = ProposedBlocks::new();
-    for candidate in candidates {
-        let hash = H256::from(candidate.block_hash);
-        local.push(
-            candidate.period,
-            hash,
-            H256::from(candidate.pivot_hash),
-            candidate.block_rlp,
-        );
-    }
-    identities
-        .into_iter()
-        .map(|identity| {
-            local
-                .get(identity.period, H256::from(identity.block_hash))
-                .map(proposed_entry_into_lookup)
-                .unwrap_or_else(missing_lookup)
-        })
-        .collect()
-}
-
 fn storage_entry_into_snapshot(
     entry: rustaxa_consensus::proposed_blocks::ProposedBlockStorageEntry,
 ) -> ProposedBlockSnapshotEntry {
@@ -171,26 +136,6 @@ fn storage_entry_into_snapshot(
         pivot_hash: entry.pivot_hash.into(),
         block_rlp: entry.block_rlp,
         is_valid: false,
-    }
-}
-
-fn proposed_entry_into_lookup(
-    entry: rustaxa_consensus::proposed_blocks::ProposedBlockEntry,
-) -> ProposedBlockLookup {
-    ProposedBlockLookup {
-        found: true,
-        is_valid: entry.is_valid,
-        pivot_hash: entry.pivot_hash.into(),
-        block_rlp: entry.block_rlp,
-    }
-}
-
-fn missing_lookup() -> ProposedBlockLookup {
-    ProposedBlockLookup {
-        found: false,
-        is_valid: false,
-        pivot_hash: [0; 32],
-        block_rlp: Vec::new(),
     }
 }
 
@@ -241,71 +186,6 @@ mod tests {
             rlp,
         )
         .expect("proposed block should save");
-    }
-
-    fn service(storage: &BridgeStorage) -> Box<BridgePbftService> {
-        crate::pbft_manager::create_pbft_service_from_storage(
-            storage,
-            crate::ffi::rustaxa_ffi::PbftServiceConfig {
-                genesis_lambda_ms: 100,
-                cacti_lambda_max_ms: 100,
-                cacti_lambda_default_ms: 100,
-                cacti_block: u64::MAX,
-                max_exponential_lambda_ms: 60_000,
-                max_steps: 13,
-                deadline_ms: 400,
-                polling_interval_ms: 100,
-                report_malicious_behaviour: false,
-                magnolia_activation_period: 0,
-            },
-        )
-        .expect("service should restore")
-    }
-
-    #[test]
-    fn local_candidate_lookup_does_not_publish_authoritative_state() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_local_candidates");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let (rlp, link) = proposed_link_and_hash(17, 12_348);
-            let service = service(&storage);
-
-            let lookups = proposed_blocks_local_candidate_lookups(
-                vec![ProposedBlockSnapshotEntry {
-                    period: link.period,
-                    block_hash: link.block_hash.0,
-                    pivot_hash: link.pivot_dag_block_hash.0,
-                    block_rlp: rlp.clone(),
-                    is_valid: true,
-                }],
-                vec![
-                    ProposedBlockIdentity {
-                        period: link.period,
-                        block_hash: link.block_hash.0,
-                    },
-                    ProposedBlockIdentity {
-                        period: link.period,
-                        block_hash: H256::from_low_u64_be(404).0,
-                    },
-                ],
-            );
-
-            assert_eq!(lookups.len(), 2);
-            let lookup = &lookups[0];
-            assert!(lookup.found);
-            assert!(!lookup.is_valid);
-            assert_eq!(lookup.block_rlp, rlp);
-            assert!(!lookups[1].found);
-            assert!(
-                !service
-                    .pbft_service_proposed_blocks_get(link.period, &link.block_hash.0)
-                    .found
-            );
-            assert!(storage.0.pbft().proposed_rlp().unwrap().is_empty());
-        }
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

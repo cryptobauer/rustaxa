@@ -949,27 +949,6 @@ VoteManager::identifyLeaderBlockFromLocalCandidates(
   rust::Vec<rustaxa::PbftManagerLeaderCandidateInputFact> candidate_facts;
   candidate_facts.reserve(propose_votes.size());
   std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> materialized_candidates;
-  rust::Vec<rustaxa::ProposedBlockLookup> local_lookups;
-  rust::Vec<rustaxa::ProposedBlockSnapshotEntry> candidate_entries;
-  candidate_entries.reserve(local_candidates.size());
-  for (const auto& candidate : local_candidates) {
-    rustaxa::ProposedBlockSnapshotEntry entry;
-    entry.period = candidate.first->getPeriod();
-    entry.block_hash = toBridgeHash(candidate.first->getBlockHash());
-    entry.pivot_hash = toBridgeHash(candidate.first->getPivotDagBlockHash());
-    entry.block_rlp = toBridgeBytes(candidate.first->rlp(true));
-    entry.is_valid = false;
-    candidate_entries.push_back(std::move(entry));
-  }
-  rust::Vec<rustaxa::ProposedBlockIdentity> identities;
-  identities.reserve(propose_votes.size());
-  for (const auto& vote : propose_votes) {
-    identities.push_back(rustaxa::ProposedBlockIdentity{vote->getPeriod(), toBridgeHash(vote->getBlockHash())});
-  }
-  local_lookups = rustaxa::proposed_blocks_local_candidate_lookups(std::move(candidate_entries), std::move(identities));
-  if (local_lookups.size() != propose_votes.size()) {
-    throw std::runtime_error("Rust local proposed-block lookup returned a misaligned result set");
-  }
 
   for (size_t vote_index = 0; vote_index < propose_votes.size(); ++vote_index) {
     auto&& vote = propose_votes[vote_index];
@@ -1007,26 +986,24 @@ VoteManager::identifyLeaderBlockFromLocalCandidates(
       continue;
     }
 
-    auto proposed_block = std::move(local_lookups[vote_index]);
-    if (!proposed_block.found) {
-      LOG(log_er_) << "Unable to get proposed block " << proposed_block_hash;
+    auto proposed_block = local_candidates[vote_index].first;
+    if (!proposed_block || proposed_block->getPeriod() != vote->getPeriod() ||
+        proposed_block->getBlockHash() != proposed_block_hash) {
+      LOG(log_er_) << "Local proposed block/vote pair has mismatched identity for block " << proposed_block_hash;
       candidate_facts.push_back(fact);
       continue;
     }
     fact.proposed_block_found = true;
-    fact.pivot_hash = proposed_block.pivot_hash;
-    auto materialized_block = std::make_shared<PbftBlock>(fromBridgeBytes(proposed_block.block_rlp));
+    fact.pivot_hash = toBridgeHash(proposed_block->getPivotDagBlockHash());
 
-    if (proposed_block.is_valid) {
-      fact.block_validation_status = kPbftManagerLeaderBlockAlreadyValid;
-    } else if (validate_block(materialized_block)) {
+    if (validate_block(proposed_block)) {
       fact.block_validation_status = kPbftManagerLeaderBlockValidated;
     } else {
       fact.block_validation_status = kPbftManagerLeaderBlockRejected;
     }
 
     if (fact.block_validation_status != kPbftManagerLeaderBlockRejected) {
-      materialized_candidates.emplace_back(std::move(materialized_block), std::move(vote));
+      materialized_candidates.emplace_back(std::move(proposed_block), std::move(vote));
     }
     candidate_facts.push_back(fact);
   }

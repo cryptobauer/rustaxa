@@ -278,13 +278,15 @@ class VoteManager {
    *   candidate fact builder.
    *
    * Inputs and outputs match the period/round overload, except tentative block/vote pairs are supplied by the caller
-   * and normalized by a stateless Rust local-candidate API.
+   * and passed directly into Rust-owned candidate status and ranking after identity validation.
    *
    * Invariants:
    * - The caller remains responsible for local proposal vote generation and
    *   uniqueness checks.
-   * - Tentative candidates never enter authoritative service or storage state.
-   * - Rust still owns candidate lookup, status derivation, and deterministic leader ranking.
+   * - Each block/vote pair must match by period and block hash; mismatches fail closed before validation or ranking.
+   * - Tentative candidates never enter authoritative service or storage state and are not serialized through a
+   *   compatibility candidate map.
+   * - Rust still owns candidate status derivation and deterministic leader ranking.
    */
   std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlock(
       std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>&& local_candidates,

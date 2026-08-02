@@ -1757,17 +1757,6 @@ pub mod rustaxa_ffi {
         is_valid: bool,
     }
 
-    /// Ordered identity queried against a temporary local candidate set.
-    ///
-    /// `period` and `block_hash` select one caller-supplied candidate. Rust
-    /// returns one lookup per input identity in the same order. The carrier
-    /// has no validation or persistence authority and is used only by the
-    /// non-persisted local PBFT leader-selection adapter.
-    struct ProposedBlockIdentity {
-        period: u64,
-        block_hash: [u8; 32],
-    }
-
     /// Compact transaction identity retained by the Rust period-data queue for
     /// sync finalized-status checks.
     struct PeriodDataQueueTransactionIdentity {
@@ -4503,11 +4492,6 @@ pub mod rustaxa_ffi {
         pub fn proposed_blocks_storage_snapshot_entries(
             storage: &BridgeStorage,
         ) -> Result<Vec<ProposedBlockSnapshotEntry>>;
-        pub fn proposed_blocks_local_candidate_lookups(
-            candidates: Vec<ProposedBlockSnapshotEntry>,
-            identities: Vec<ProposedBlockIdentity>,
-        ) -> Vec<ProposedBlockLookup>;
-
         // Consensus slashing proof planner owned by the PBFT service
 
         pub fn slashing_plan_double_voting_proof(

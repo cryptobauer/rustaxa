@@ -322,11 +322,11 @@ The first bounded `CRW-12` PBFT sibling ownership moves are implemented for prop
 `rustaxa-consensus::proposed_blocks::ProposedBlocksService` now owns the shared storage handle, restoration, sibling
 `RwLock`, storage-before-memory publication, validation-cache mutation, reads, snapshots, and stale-period cleanup.
 `BridgePbftService` embeds that CXX-free owner, and `rustaxa-bridge/src/proposed_blocks.rs` retains only FFI DTO
-conversion plus the separately classified stateless storage and temporary-candidate adapters. Cross-domain leader
+conversion plus the separately classified stateless storage adapters. Cross-domain leader
 selection and combined vote/proposal cleanup still borrow native proposal guards from bridge orchestration and remain
 explicit PBFT-owner migration debt. Five duplicated protocol
-behavior tests moved out of the bridge suite into native owner coverage; the two remaining bridge tests cover only FFI
-adapter semantics. Native `rustaxa-consensus::pbft_chain::PbftChainService` likewise owns its storage lifetime,
+behavior tests moved out of the bridge suite into native owner coverage; the remaining bridge test covers the focused
+storage compatibility projection. Native `rustaxa-consensus::pbft_chain::PbftChainService` likewise owns its storage lifetime,
 restoration/default initialization, sibling lock, head projection/update, next-block validation, and finalized-block
 lookup. The production bridge constructor publishes that native owner; the old bridge chain-state struct,
 bridge-owned `Arc<RwLock<_>>`, and chain-only constructor are deleted. Cross-domain finalization and leader-selection code temporarily borrow
@@ -1873,6 +1873,37 @@ deleted fixture helpers, `Old::`, retired consensus-network-queue, or native
 routing and CXX declarations are unchanged, the existing native behavior and
 CXX external-finalization suites remain the correctly scoped boundary coverage.
 
+The next bounded `CRW-12` compatibility contraction deletes the complete
+temporary proposed-block candidate bridge used by local PBFT leader selection.
+`VoteManager` now consumes its already paired caller-owned block/vote objects
+directly, rejects period/hash mismatches before validation, and passes only
+typed candidate facts to the existing native Rust status/ranking planner. The
+path no longer serializes live blocks into a temporary Rust candidate map,
+performs an identity lookup, or rematerializes the same block RLP into C++.
+`proposed_blocks_local_candidate_lookups`, its `ProposedBlockIdentity` carrier,
+the bridge-only helpers, and the duplicated storage/service isolation fixture
+are deleted. Native proposed-block and leader-planner suites retain behavioral
+ownership; the bridge keeps only its two named storage compatibility functions
+and focused projection sentinel. This removes 136 bridge lines, 21 shim lines,
+one CXX function, and one CXX carrier, lowering the exact budgets to 23,157,
+17,080, 388, and 339. Handles, shim directories, flags, partial factories,
+compatibility constructors, and production bridge consumers are unchanged.
+
+Validation passed the full native consensus (1,077 tests) and bridge (90
+tests) suites, `rewrite-validate-fast`, bridge inventory and storage-boundary
+guards with self-tests, `rewrite-validate-smoke` with `RUSTAXA_ENABLE=ON`, the
+two CXX proposed-block cases, both focused Rust-authoritative leader-selection
+cases when run in fresh processes, PBFT proposal/broadcast integration, and
+`FullNodeTest.multiple_wallets_support`. The aggregate consensus gate again
+reached the known `pillar_chain_test` same-process `/tmp/taraxa0/db/db/LOCK`
+leak: 10 of 13 cases passed and the same three node-constructing cases could
+not reacquire the shared database. The changed local-candidate path passed its
+focused and full-node coverage. Closeout searches found no deleted export or
+carrier references, retired consensus-network-queue, native `BridgeStorage`,
+or legacy `Old::` calls in the touched shim. Independent review approved the
+identity-preserving direct-pair route and confirmed the touched C++ files are
+main-only overlay files with no upstream-owned intersection.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
@@ -2995,8 +3026,8 @@ diff evidence is recorded in the consolidation plan closeout for this slice.
 `CRW-03` is complete after dependency-ordered implementation sub-slices. The first moved proposed-block state into the
 application-owned `BridgePbftService`, migrates production callers in the PBFT and vote-manager facades, replaces the
 storage shim's independent proposed-block handle with storage-only compatibility operations, and deletes
-`BridgeProposedBlocks`. Tentative wallet candidates remain a non-persisted Rust-local candidate set until leader
-selection; they must never enter the authoritative proposed-block index before selection.
+`BridgeProposedBlocks`. Tentative wallet candidates remain caller-owned block/vote pairs until leader selection; they
+enter the Rust planner only as identity-checked facts and never enter the authoritative proposed-block index.
 
 The second ownership sub-slice is implemented: verified-vote/admission state is restored into the same service before
 publication, `BridgeVerifiedVotes` and its factory are deleted, and the retained C++ vote/network facades are service

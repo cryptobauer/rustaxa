@@ -102,7 +102,10 @@ task-shaped root methods as well. Their native sibling accessors, together with
 the manager accessor, are crate-private; the CXX adapter exposes no sibling or
 manager mutation hook, including in bridge tests. Chain and proposal bridge
 modules retain only stable carrier/status projection plus the separately
-classified stateless storage and temporary-candidate compatibility helpers.
+classified stateless storage compatibility helpers. Caller-owned tentative
+block/vote pairs now enter the existing Rust leader planner directly after a
+fail-closed identity check, without a temporary bridge candidate map or RLP
+rematerialization.
 Native
 `rustaxa-consensus::pbft_manager::PbftManagerService` now owns the manager mutex and complete runtime/session container;
 the native root retains the service and the bridge exposes only a short-lived native guard to remaining DTO/effect
