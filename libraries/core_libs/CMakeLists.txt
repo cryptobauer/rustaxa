@@ -46,6 +46,10 @@ if(RUSTAXA_ENABLE)
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pillar_chain/pillar_chain_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pillar_chain/pillar_votes\\.cpp$")
 
+    # The Rust-mode PbftChain overlay is a standalone facade. Keep the
+    # untouched legacy implementation only in pure C++ builds.
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/pbft_chain\\.cpp$")
+
     # The Rust-mode PbftManager overlay is a standalone facade. Keep the
     # untouched legacy implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/pbft_manager\\.cpp$")
@@ -132,9 +136,6 @@ if(RUSTAXA_ENABLE)
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/src/key_manager_shim.cpp)
 
-    # In Rust mode, expose shared PbftService holder API used by Rust-owned overlays.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_chain_shim/include)
-
     # In Rust mode, inject a header overlay that remaps legacy DbStorage
     # to DbStorageOld and exposes a forwarding DbStorage shim facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/storage_shim/include)
@@ -154,6 +155,10 @@ if(RUSTAXA_ENABLE)
     # Inject the standalone Rust FinalChain facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/src/final_chain_shim.cpp)
+
+    # Inject the standalone Rust-backed PBFT-chain facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_chain_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_chain_shim/src/pbft_chain_shim.cpp)
 
     # Inject the standalone Rust-compatible VoteManager shim facade for every consumer.
     target_include_directories(core_libs BEFORE PUBLIC
