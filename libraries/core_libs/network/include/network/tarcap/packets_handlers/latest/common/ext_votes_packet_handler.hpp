@@ -70,11 +70,6 @@ class ExtVotesPacketHandler : public PacketHandler {
   void requestPbftNextVotesAtPeriodRound(const dev::p2p::NodeID& peerID, PbftPeriod pbft_period, PbftRound pbft_round);
 
 #ifdef RUSTAXA_ENABLE
-  rustaxa::PbftVoteIngressPlan planPbftVoteIngress(const rustaxa::PbftVoteIngressFact& fact,
-                                                   const rustaxa::PbftVoteIngressContext& context) const;
-  rustaxa::PbftVoteIngressPlan planPbftVoteBundleIngress(const rustaxa::PbftVoteIngressFact& reference,
-                                                         const rustaxa::PbftVoteIngressFact& vote,
-                                                         const rustaxa::PbftVoteIngressContext& context) const;
   rustaxa::NetworkIngressDecision ingestPbftVote(const rustaxa::PbftVoteIngressFact& fact,
                                                  const rustaxa::NetworkPbftVoteIngressContext& context);
   rustaxa::NetworkIngressDecision ingestPbftVoteBundleMember(const rustaxa::PbftVoteIngressFact& reference,

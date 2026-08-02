@@ -7,7 +7,6 @@ use crate::pbft_sync::*;
 use crate::pbft_vote_generation::*;
 use crate::pillar_chain::*;
 use crate::pillar_votes::*;
-use crate::proposed_blocks::*;
 use crate::query::*;
 use crate::storage::*;
 use crate::transaction::*;
@@ -1893,22 +1892,6 @@ pub mod rustaxa_ffi {
         can_request_next_votes_sync: bool,
     }
 
-    /// Side-effect-free PBFT vote ingress plan.
-    ///
-    /// C++ executes returned sync hints and continues to admission only when
-    /// `accepted` is true. `status` matches `PbftVoteIngressStatus::as_u8()` in
-    /// `rustaxa-consensus`.
-    struct PbftVoteIngressPlan {
-        status: u8,
-        error_code: String,
-        accepted: bool,
-        relevant: bool,
-        request_pbft_sync: bool,
-        request_next_votes_sync: bool,
-        checking_round: u64,
-        checking_step: u64,
-    }
-
     /// Scalar context for one PBFT vote-progress planning pass.
     ///
     /// `has_two_t_plus_one_threshold` gates whether the threshold value should
@@ -3774,17 +3757,6 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             results: Vec<NetworkEffectResult>,
         ) -> Result<NetworkEffectAck>;
-        pub fn consensus_network_plan_pbft_vote_ingress(
-            self: &BridgeConsensusNetworkApi,
-            fact: PbftVoteIngressFact,
-            context: PbftVoteIngressContext,
-        ) -> Result<PbftVoteIngressPlan>;
-        pub fn consensus_network_plan_pbft_vote_bundle_ingress(
-            self: &BridgeConsensusNetworkApi,
-            reference: PbftVoteIngressFact,
-            vote: PbftVoteIngressFact,
-            context: PbftVoteIngressContext,
-        ) -> Result<PbftVoteIngressPlan>;
         pub fn consensus_network_ingest_pbft_vote(
             self: &BridgeConsensusNetworkApi,
             fact: PbftVoteIngressFact,
@@ -4451,16 +4423,6 @@ pub mod rustaxa_ffi {
         pub fn pbft_service_proposed_blocks_snapshot_entries(
             self: &BridgePbftService,
         ) -> Vec<ProposedBlockSnapshotEntry>;
-        pub fn proposed_blocks_storage_push_with_storage(
-            storage: &BridgeStorage,
-            period: u64,
-            block_hash: &[u8; 32],
-            pivot_hash: &[u8; 32],
-            block_rlp: Vec<u8>,
-        ) -> Result<bool>;
-        pub fn proposed_blocks_storage_snapshot_entries(
-            storage: &BridgeStorage,
-        ) -> Result<Vec<ProposedBlockSnapshotEntry>>;
         // Consensus slashing proof planner owned by the PBFT service
 
         pub fn slashing_plan_double_voting_proof(
@@ -5111,6 +5073,14 @@ pub mod rustaxa_ffi {
         pub fn get_pbft_mgr_status(self: &BridgePbftStorageQueries, field: u8) -> Result<bool>;
         pub fn get_pbft_head(self: &BridgePbftStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
         pub fn get_cert_voted_block_in_round(self: &BridgePbftStorageQueries) -> Result<Vec<u8>>;
+        pub fn save_proposed_pbft_block(
+            self: &BridgePbftStorageQueries,
+            expected_period: u64,
+            expected_hash: &[u8; 32],
+            expected_pivot_hash: &[u8; 32],
+            block_rlp: Vec<u8>,
+        ) -> Result<bool>;
+        pub fn get_proposed_pbft_blocks(self: &BridgePbftStorageQueries) -> Result<Vec<BlockRlp>>;
         pub fn get_own_verified_votes(self: &BridgePbftVoteStorageQueries) -> Result<Vec<VoteRlp>>;
         pub fn get_all_two_t_plus_one_votes(
             self: &BridgePbftVoteStorageQueries,

@@ -318,19 +318,6 @@ void ExtVotesPacketHandler::requestPbftNextVotesAtPeriodRound(const dev::p2p::No
 }
 
 #ifdef RUSTAXA_ENABLE
-rustaxa::PbftVoteIngressPlan ExtVotesPacketHandler::planPbftVoteIngress(
-    const rustaxa::PbftVoteIngressFact &fact, const rustaxa::PbftVoteIngressContext &context) const {
-  assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api->consensus_network_plan_pbft_vote_ingress(fact, context);
-}
-
-rustaxa::PbftVoteIngressPlan ExtVotesPacketHandler::planPbftVoteBundleIngress(
-    const rustaxa::PbftVoteIngressFact &reference, const rustaxa::PbftVoteIngressFact &vote,
-    const rustaxa::PbftVoteIngressContext &context) const {
-  assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api->consensus_network_plan_pbft_vote_bundle_ingress(reference, vote, context);
-}
-
 rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVote(
     const rustaxa::PbftVoteIngressFact &fact, const rustaxa::NetworkPbftVoteIngressContext &context) {
   assert(rust_consensus_network_api_);

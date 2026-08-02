@@ -655,9 +655,9 @@ void DbStorage::saveProposedPbftBlock(const std::shared_ptr<PbftBlock>& block) {
   auto block_hash = block->getBlockHash();
   auto block_bytes = block->rlp(true);
   auto block_rlp = into_rust_vec(block_bytes);
-  (void)rustaxa::proposed_blocks_storage_push_with_storage(
-      *rust_storage_.value(), block->getPeriod(), into_bytes_array(block_hash),
-      into_bytes_array(block->getPivotDagBlockHash()), std::move(block_rlp));
+  (void)pbft_queries_.value()->save_proposed_pbft_block(
+      block->getPeriod(), into_bytes_array(block_hash), into_bytes_array(block->getPivotDagBlockHash()),
+      std::move(block_rlp));
 }
 
 void DbStorage::removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& write_batch) {
@@ -667,10 +667,10 @@ void DbStorage::removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& wri
 
 std::vector<std::shared_ptr<PbftBlock>> DbStorage::getProposedPbftBlocks() {
   std::vector<std::shared_ptr<PbftBlock>> res;
-  auto blocks = rustaxa::proposed_blocks_storage_snapshot_entries(*rust_storage_.value());
+  auto blocks = pbft_queries_.value()->get_proposed_pbft_blocks();
   res.reserve(blocks.size());
   for (auto const& block : blocks) {
-    res.emplace_back(std::make_shared<PbftBlock>(dev::bytes(block.block_rlp.begin(), block.block_rlp.end())));
+    res.emplace_back(std::make_shared<PbftBlock>(dev::bytes(block.data.begin(), block.data.end())));
   }
   return res;
 }

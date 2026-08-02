@@ -959,7 +959,7 @@ The current Rust consensus footprint is broad but still incomplete:
   plus a Rust-owned PBFT vote pipeline session that stages
   verified-vote insertion reports into typed
   known/admit/slashing/gossip/progress intents, a side-effect-free PBFT vote ingress planner for deterministic
-  single-vote and bundle relevance/window/sync-hint/drop decisions, and exposes operation-specific CXX bridge surfaces for Rust-mode
+  single-vote and bundle relevance/window/sync-hint/drop decisions reached only through the composed network ingress/effect API, and exposes operation-specific CXX bridge surfaces for Rust-mode
   `VoteManager::addVerifiedVote` execution, Rust-owned PBFT vote validation
   planning with replay-cache storage and composed canonical PBFT vote validation, signed/unsigned vote hashing,
   signature recovery, VRF proof verification,

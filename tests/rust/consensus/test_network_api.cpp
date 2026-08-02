@@ -210,32 +210,6 @@ TEST(ConsensusNetworkApiBridgeTest, reportEffectResultsAcceptsMatchingEffectIden
   EXPECT_TRUE(ack.error_code.empty());
 }
 
-TEST(ConsensusNetworkApiBridgeTest, voteIngressPlanningRoutesThroughNetworkApi) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
-
-  const auto accepted = network_api->consensus_network_plan_pbft_vote_ingress(voteFact(10, 3, 2, 2), voteContext());
-  EXPECT_TRUE(accepted.accepted);
-  EXPECT_EQ(accepted.status, 0);
-  EXPECT_TRUE(accepted.error_code.empty());
-
-  const auto rejected = network_api->consensus_network_plan_pbft_vote_ingress(voteFact(14, 3, 1, 2), voteContext());
-  EXPECT_FALSE(rejected.accepted);
-  EXPECT_EQ(rejected.status, 3);
-  EXPECT_TRUE(rejected.request_pbft_sync);
-  EXPECT_EQ(rejected.error_code, "PBFT_VOTE_INGRESS_INVALID_PERIOD_TOO_BIG");
-}
-
-TEST(ConsensusNetworkApiBridgeTest, voteBundleIngressPlanningRoutesThroughNetworkApi) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
-
-  const auto plan = network_api->consensus_network_plan_pbft_vote_bundle_ingress(voteFact(10, 3, 2, 2),
-                                                                                 voteFact(10, 3, 3, 2), voteContext());
-
-  EXPECT_FALSE(plan.accepted);
-  EXPECT_EQ(plan.status, 8);
-  EXPECT_EQ(plan.error_code, "PBFT_VOTE_INGRESS_BUNDLE_VOTE_MISMATCH");
-}
-
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressQueuesSyncEffectThroughNetworkApi) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
@@ -254,6 +228,20 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressQueuesSyncEffectThroughNetwor
   EXPECT_EQ(batch.effects[0].sync_kind, 0);
   EXPECT_EQ(batch.effects[0].sync_start, 13);
   EXPECT_EQ(batch.effects[0].source_payload_id, 99);
+}
+
+TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressAcceptsCurrentVoteWithoutNetworkEffects) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(10, 3, 2, 2), networkVoteContext());
+
+  EXPECT_TRUE(decision.routed);
+  EXPECT_EQ(decision.status, 0);
+  EXPECT_TRUE(decision.error_code.empty());
+  EXPECT_EQ(decision.queued_effect_count, 0);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  EXPECT_TRUE(batch.effects.empty());
 }
 
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteBundleIngressQueuesReportAndDisconnectEffects) {

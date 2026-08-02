@@ -11,6 +11,9 @@ use crate::ffi::BridgeTransactionStorageQueries;
 #[cfg(test)]
 use anyhow::Context;
 use ethereum_types::H256;
+use rustaxa_consensus::proposed_blocks::{
+    restore_proposed_blocks_from_storage, save_proposed_block_storage,
+};
 use rustaxa_storage::Config;
 use rustaxa_storage::Storage;
 use std::path::PathBuf;
@@ -279,6 +282,45 @@ impl BridgePbftStorageQueries {
             .pbft()
             .cert_voted_block_in_round_rlp()?
             .unwrap_or_default())
+    }
+
+    /// Validates and persists one canonical proposed PBFT block for the legacy
+    /// `DbStorage` compatibility client.
+    ///
+    /// The supplied period, block hash, and pivot hash must match the decoded
+    /// signed block bytes. Success returns `true`; malformed bytes, identity
+    /// mismatches, and storage failures are returned without publishing a
+    /// process-local proposal state.
+    pub fn save_proposed_pbft_block(
+        &self,
+        expected_period: u64,
+        expected_hash: &[u8; 32],
+        expected_pivot_hash: &[u8; 32],
+        block_rlp: Vec<u8>,
+    ) -> Result<bool, anyhow::Error> {
+        save_proposed_block_storage(
+            self.storage.as_ref(),
+            expected_period,
+            H256::from(*expected_hash),
+            H256::from(*expected_pivot_hash),
+            block_rlp.as_slice(),
+        )?;
+        Ok(true)
+    }
+
+    /// Loads canonical proposed PBFT block bytes for legacy storage reads.
+    ///
+    /// Results preserve storage iteration order and contain only validated RLP
+    /// payloads. Decode, key-identity, iterator, and storage failures are
+    /// returned to C++; live proposal validation flags are intentionally not
+    /// materialized by this compatibility query.
+    pub fn get_proposed_pbft_blocks(&self) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
+        Ok(restore_proposed_blocks_from_storage(self.storage.as_ref())?
+            .into_iter()
+            .map(|entry| rustaxa_ffi::BlockRlp {
+                data: entry.block_rlp,
+            })
+            .collect())
     }
 }
 
