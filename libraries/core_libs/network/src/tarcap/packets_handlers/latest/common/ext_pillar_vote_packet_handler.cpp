@@ -17,33 +17,24 @@ constexpr uint8_t kPillarVoteRelevanceStatusMissingCurrentPillarBlock = 2;
 constexpr uint8_t kPillarVoteRelevanceStatusVotePeriodMismatch = 3;
 constexpr uint8_t kPillarVoteRelevanceStatusVoteBlockHashMismatch = 4;
 
-rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
-  rustaxa::NetworkApiConfig config{};
-  config.max_payload_bytes = 64 * 1024 * 1024;
-  config.max_retained_payloads = 4096;
-  config.max_effects_per_drain = 1024;
-  return config;
-}
-
 }  // namespace
-
-struct ExtPillarVotePacketHandler::RustConsensusNetworkApiHolder {
-  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
-
-  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
-};
 #endif
 
 ExtPillarVotePacketHandler::ExtPillarVotePacketHandler(
     const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-    std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager, const addr_t &node_addr,
-    const std::string &log_channel)
-    : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel),
-      pillar_chain_manager_{std::move(pillar_chain_manager)} {
+    std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
 #ifdef RUSTAXA_ENABLE
-  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
+    network::ConsensusNetworkApiShared consensus_network_api,
 #endif
+    const addr_t &node_addr, const std::string &log_channel)
+    : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel),
+      pillar_chain_manager_{std::move(pillar_chain_manager)}
+#ifdef RUSTAXA_ENABLE
+      ,
+      rust_consensus_network_api_(std::move(consensus_network_api))
+#endif
+{
 }
 
 bool ExtPillarVotePacketHandler::processPillarVote(const std::shared_ptr<PillarVote> &vote,
@@ -134,7 +125,7 @@ rustaxa::PillarVoteRelevancePlan ExtPillarVotePacketHandler::planPillarVoteRelev
     fact.current_pillar_block_hash = current_pillar_block->getHash().asArray();
   }
 
-  return rust_consensus_network_api_->api->consensus_network_plan_pillar_vote_relevance(fact);
+  return rust_consensus_network_api_->api().consensus_network_plan_pillar_vote_relevance(fact);
 }
 #endif
 

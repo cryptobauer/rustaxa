@@ -10,6 +10,9 @@ class PillarVotesBundlePacketHandler : public ExtPillarVotePacketHandler {
   PillarVotesBundlePacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                  std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                  std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
+#ifdef RUSTAXA_ENABLE
+                                 network::ConsensusNetworkApiShared consensus_network_api,
+#endif
                                  const addr_t& node_addr, const std::string& logs_prefix = "");
 
   // Packet type that is processed by this handler

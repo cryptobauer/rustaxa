@@ -30,38 +30,36 @@ constexpr uint8_t kNetworkObjectKindPbftVote = 0;
 constexpr uint8_t kNetworkObjectKindPbftBlock = 1;
 constexpr uint32_t kNetworkPacketKindPbftVote = 1;
 
-rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
-  rustaxa::NetworkApiConfig config{};
-  config.max_payload_bytes = 64 * 1024 * 1024;
-  config.max_retained_payloads = 4096;
-  config.max_effects_per_drain = 1024;
-  return config;
-}
-
 }  // namespace
-
-struct ExtVotesPacketHandler::RustConsensusNetworkApiHolder {
-  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
-
-  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
-};
 #endif
 
 ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                              std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                              std::shared_ptr<PbftManager> pbft_mgr,
                                              std::shared_ptr<PbftChain> pbft_chain,
-                                             std::shared_ptr<VoteManager> vote_mgr, const addr_t &node_addr,
-                                             const std::string &log_channel_name)
+                                             std::shared_ptr<VoteManager> vote_mgr,
+#ifndef RUSTAXA_ENABLE
+                                             std::shared_ptr<SlashingManager> slashing_manager,
+#else
+                                             network::ConsensusNetworkApiShared consensus_network_api,
+                                             TarcapVersion transport_lane,
+#endif
+                                             const addr_t &node_addr, const std::string &log_channel_name)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel_name),
       last_votes_sync_request_time_(std::chrono::system_clock::now()),
       last_pbft_block_sync_request_time_(std::chrono::system_clock::now()),
       pbft_mgr_(std::move(pbft_mgr)),
       pbft_chain_(std::move(pbft_chain)),
-      vote_mgr_(std::move(vote_mgr)) {
-#ifdef RUSTAXA_ENABLE
-  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
+      vote_mgr_(std::move(vote_mgr))
+#ifndef RUSTAXA_ENABLE
+      ,
+      slashing_manager_(std::move(slashing_manager))
+#else
+      ,
+      rust_consensus_network_api_(std::move(consensus_network_api)),
+      transport_lane_(transport_lane)
 #endif
+{
 }
 
 ExtVotesPacketHandler::~ExtVotesPacketHandler() = default;
@@ -101,6 +99,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
 
   rustaxa::NetworkPbftVoteIngressContext network_ingress_context{};
   network_ingress_context.ingress = ingress_context;
+  network_ingress_context.transport_lane = transport_lane_;
   network_ingress_context.peer_id = peer->getId().asArray();
   network_ingress_context.peer_pbft_chain_size = peer->pbft_chain_size_.load();
   network_ingress_context.source_payload_id = 0;
@@ -320,30 +319,27 @@ void ExtVotesPacketHandler::requestPbftNextVotesAtPeriodRound(const dev::p2p::No
 rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVote(
     const rustaxa::PbftVoteIngressFact &fact, const rustaxa::NetworkPbftVoteIngressContext &context) {
   assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api->consensus_network_ingest_pbft_vote(fact, context);
+  return rust_consensus_network_api_->api().consensus_network_ingest_pbft_vote(fact, context);
 }
 
 rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVoteBundleMember(
     const rustaxa::PbftVoteIngressFact &reference, const rustaxa::PbftVoteIngressFact &vote,
     const rustaxa::NetworkPbftVoteIngressContext &context) {
   assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api->consensus_network_ingest_pbft_vote_bundle_member(reference, vote, context);
+  return rust_consensus_network_api_->api().consensus_network_ingest_pbft_vote_bundle_member(reference, vote, context);
 }
 
 rustaxa::NetworkIngressDecision ExtVotesPacketHandler::gossipPbftVote(
     const rustaxa::NetworkPbftVoteGossipEffects &effects) {
   assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api->consensus_network_gossip_pbft_vote(effects);
+  return rust_consensus_network_api_->api().consensus_network_gossip_pbft_vote(effects);
 }
 
 void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
-  executeConsensusNetworkEffects(budget, nullptr, nullptr);
-}
-
-void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget, const std::shared_ptr<PbftVote> &gossip_vote,
-                                                           const std::shared_ptr<PbftBlock> &gossip_block) {
   assert(rust_consensus_network_api_);
-  const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(static_cast<uint32_t>(budget));
+  auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(transport_lane_);
+  const auto batch = rust_consensus_network_api_->api().consensus_network_drain_work(
+      static_cast<uint32_t>(transport_lane_), static_cast<uint32_t>(budget));
   rust::Vec<rustaxa::NetworkEffectResult> results;
   results.reserve(batch.effects.size());
 
@@ -364,8 +360,17 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget, const 
                     encodePacketRlp(GetPbftSyncPacket{effect.sync_start}));
         last_pbft_block_sync_request_time_ = std::chrono::system_clock::now();
       } else if (effect.kind == kNetworkEffectKindGossipPacket && effect.packet_kind == kNetworkPacketKindPbftVote) {
-        if (!gossip_vote || gossip_vote->getHash().asArray() != effect.object_hash) {
-          throw std::runtime_error("Network API PBFT vote gossip effect missing matching live vote");
+        auto gossip_vote = std::make_shared<PbftVote>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
+        if (gossip_vote->getHash().asArray() != effect.object_hash) {
+          throw std::runtime_error("Network API PBFT vote gossip effect has mismatched vote payload");
+        }
+        std::shared_ptr<PbftBlock> gossip_block;
+        if (!effect.related_payload_bytes.empty()) {
+          gossip_block = std::make_shared<PbftBlock>(
+              bytes(effect.related_payload_bytes.begin(), effect.related_payload_bytes.end()));
+          if (gossip_block->getBlockHash() != gossip_vote->getBlockHash()) {
+            throw std::runtime_error("Network API PBFT vote gossip effect has mismatched PBFT block payload");
+          }
         }
         for (const auto &peer : peers_state_->getAllPeers()) {
           if (peer.second->syncing_) {
@@ -438,7 +443,7 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget, const 
   }
 
   if (!results.empty()) {
-    (void)rust_consensus_network_api_->api->consensus_network_report_effect_results(std::move(results));
+    (void)rust_consensus_network_api_->api().consensus_network_report_effect_results(std::move(results));
   }
 }
 

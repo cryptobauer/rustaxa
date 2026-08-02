@@ -3,6 +3,7 @@
 #include "packet_handler.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 #ifdef RUSTAXA_ENABLE
+#include "network/consensus_network_api.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
 
@@ -13,6 +14,9 @@ class ExtPillarVotePacketHandler : public PacketHandler {
   ExtPillarVotePacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                              std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                              std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
+#ifdef RUSTAXA_ENABLE
+                             network::ConsensusNetworkApiShared consensus_network_api,
+#endif
                              const addr_t& node_addr, const std::string& log_channel);
   ~ExtPillarVotePacketHandler() override;
 
@@ -27,8 +31,7 @@ class ExtPillarVotePacketHandler : public PacketHandler {
  protected:
   std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager_;
 #ifdef RUSTAXA_ENABLE
-  struct RustConsensusNetworkApiHolder;
-  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+  network::ConsensusNetworkApiShared rust_consensus_network_api_;
 #endif
 };
 

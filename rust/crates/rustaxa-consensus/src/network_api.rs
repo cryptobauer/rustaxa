@@ -235,6 +235,8 @@ pub struct NetworkEffect {
     pub effect_id: u64,
     /// Ingress payload id that caused this effect, when known.
     pub source_payload_id: u64,
+    /// Tarcap version/lane that owns physical execution of this effect.
+    pub transport_lane: u32,
     /// Stable effect kind.
     pub kind: u8,
     /// Target peer id when the effect applies to one peer.
@@ -243,6 +245,8 @@ pub struct NetworkEffect {
     pub packet_kind: u32,
     /// Packet payload bytes for send/gossip effects.
     pub payload_bytes: Vec<u8>,
+    /// Optional canonical companion payload required to execute the effect.
+    pub related_payload_bytes: Vec<u8>,
     /// Peers excluded from gossip effects.
     pub exclude_peers: Vec<[u8; 64]>,
     /// Optional object kind for known-peer effects.
@@ -315,6 +319,8 @@ pub struct NetworkEffectAck {
 pub struct NetworkPbftVoteIngressContext {
     /// Existing side-effect-free PBFT vote ingress context.
     pub ingress: PbftVoteIngressContext,
+    /// Tarcap version/lane that owns any effects emitted for this vote.
+    pub transport_lane: u32,
     /// Sending peer id. The network executor uses this for sync/report effects.
     pub peer_id: [u8; 64],
     /// Peer PBFT chain size known by tarcap at ingress time.
@@ -345,12 +351,17 @@ pub struct NetworkIngressDecision {
 /// Accepted-vote gossip effects derived after verified-vote admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkPbftVoteGossipEffects {
+    /// Tarcap version/lane that must execute the gossip effect.
+    pub transport_lane: u32,
     /// Peer that supplied the accepted vote. The network executor may use this
     /// identity for exclusion or peer-cache checks.
     pub peer_id: [u8; 64],
-    /// Accepted vote hash used to correlate the gossip intent with the live
-    /// vote object at the network boundary.
+    /// Accepted vote hash used to validate the canonical vote payload.
     pub vote_hash: [u8; 32],
+    /// Canonical unweighted signed PBFT vote RLP.
+    pub vote_rlp: Vec<u8>,
+    /// Optional canonical signed PBFT block RLP carried with a propose vote.
+    pub pbft_block_rlp: Vec<u8>,
     /// Optional retained packet payload id.
     pub source_payload_id: u64,
     /// Whether the network executor should gossip the accepted vote.
@@ -713,29 +724,38 @@ impl ConsensusNetworkApi {
         }
     }
 
-    /// Drains up to `budget` pending network effects in FIFO order.
+    /// Drains up to `budget` effects for one transport lane in lane-local FIFO order.
     ///
-    /// A zero budget is valid and returns an empty batch. The first slice does
-    /// not yet produce effects from ingress, so this method is primarily the
-    /// stable executor contract for later packet-specific routing.
+    /// A zero budget is valid. Effects owned by other lanes remain queued, and
+    /// `more_available` reports only work remaining for the requested lane.
     #[must_use]
-    pub fn drain_work(&mut self, budget: u32) -> NetworkEffectBatch {
+    pub fn drain_work(&mut self, transport_lane: u32, budget: u32) -> NetworkEffectBatch {
         let mut effects = Vec::new();
         let capped_budget = usize::try_from(budget)
             .unwrap_or(usize::MAX)
             .min(self.config.max_effects_per_drain);
-        for _ in 0..capped_budget {
+        let mut retained = VecDeque::new();
+        while effects.len() < capped_budget {
             let Some(effect) = self.pending_effects.pop_front() else {
                 break;
             };
+            if effect.transport_lane != transport_lane {
+                retained.push_back(effect);
+                continue;
+            }
             self.outstanding_effects
                 .insert(effect.effect_id, effect.clone());
             effects.push(effect);
         }
+        retained.append(&mut self.pending_effects);
+        self.pending_effects = retained;
         NetworkEffectBatch {
             status: NETWORK_EFFECT_BATCH_STATUS_OK,
             effects,
-            more_available: !self.pending_effects.is_empty(),
+            more_available: self
+                .pending_effects
+                .iter()
+                .any(|effect| effect.transport_lane == transport_lane),
             error_code: ERROR_NONE.to_owned(),
         }
     }
@@ -921,9 +941,9 @@ impl ConsensusNetworkApi {
     /// Queues network effects derived from accepted PBFT vote gossip.
     ///
     /// Rust owns the decision that an accepted vote should be gossiped. The
-    /// network executor still owns peer filtering, packet wrapping, and
-    /// transport, so this effect carries only the stable packet kind and vote
-    /// identity needed to execute the live boundary action.
+    /// network executor still owns materialization, peer filtering, packet
+    /// wrapping, and transport. Canonical payloads make the queued effect
+    /// independent of the handler-local objects that produced it.
     pub fn gossip_pbft_vote(
         &mut self,
         effects: NetworkPbftVoteGossipEffects,
@@ -933,10 +953,12 @@ impl ConsensusNetworkApi {
             self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
                 source_payload_id: effects.source_payload_id,
+                transport_lane: effects.transport_lane,
                 kind: NETWORK_EFFECT_KIND_GOSSIP_PACKET,
                 peer_id: effects.peer_id,
                 packet_kind: NETWORK_PACKET_KIND_PBFT_VOTE,
-                payload_bytes: Vec::new(),
+                payload_bytes: effects.vote_rlp,
+                related_payload_bytes: effects.pbft_block_rlp,
                 exclude_peers: vec![effects.peer_id],
                 object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
                 object_hash: effects.vote_hash,
@@ -993,10 +1015,12 @@ impl ConsensusNetworkApi {
             self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
                 source_payload_id: context.source_payload_id,
+                transport_lane: context.transport_lane,
                 kind: NETWORK_EFFECT_KIND_REQUEST_SYNC,
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
                 exclude_peers: Vec::new(),
                 object_kind: 0,
                 object_hash: [0; 32],
@@ -1012,10 +1036,12 @@ impl ConsensusNetworkApi {
             self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
                 source_payload_id: context.source_payload_id,
+                transport_lane: context.transport_lane,
                 kind: NETWORK_EFFECT_KIND_REQUEST_SYNC,
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
                 exclude_peers: Vec::new(),
                 object_kind: 0,
                 object_hash: [0; 32],
@@ -1032,10 +1058,12 @@ impl ConsensusNetworkApi {
                 self.enqueue_effect(NetworkEffect {
                     effect_id: 0,
                     source_payload_id: context.source_payload_id,
+                    transport_lane: context.transport_lane,
                     kind: NETWORK_EFFECT_KIND_REPORT_PEER,
                     peer_id: context.peer_id,
                     packet_kind: 0,
                     payload_bytes: Vec::new(),
+                    related_payload_bytes: Vec::new(),
                     exclude_peers: Vec::new(),
                     object_kind: 0,
                     object_hash: [0; 32],
@@ -1049,10 +1077,12 @@ impl ConsensusNetworkApi {
                 self.enqueue_effect(NetworkEffect {
                     effect_id: 0,
                     source_payload_id: context.source_payload_id,
+                    transport_lane: context.transport_lane,
                     kind: NETWORK_EFFECT_KIND_DISCONNECT_PEER,
                     peer_id: context.peer_id,
                     packet_kind: 0,
                     payload_bytes: Vec::new(),
+                    related_payload_bytes: Vec::new(),
                     exclude_peers: Vec::new(),
                     object_kind: 0,
                     object_hash: [0; 32],
@@ -1068,10 +1098,12 @@ impl ConsensusNetworkApi {
                 self.enqueue_effect(NetworkEffect {
                     effect_id: 0,
                     source_payload_id: context.source_payload_id,
+                    transport_lane: context.transport_lane,
                     kind: NETWORK_EFFECT_KIND_REPORT_PEER,
                     peer_id: context.peer_id,
                     packet_kind: 0,
                     payload_bytes: Vec::new(),
+                    related_payload_bytes: Vec::new(),
                     exclude_peers: Vec::new(),
                     object_kind: 0,
                     object_hash: [0; 32],
@@ -1559,6 +1591,7 @@ mod tests {
                 can_request_pbft_sync: true,
                 can_request_next_votes_sync: true,
             },
+            transport_lane: 6,
             peer_id: peer(7),
             peer_pbft_chain_size: 11,
             source_payload_id: 99,
@@ -1671,10 +1704,12 @@ mod tests {
         let first = NetworkEffect {
             effect_id: 0,
             source_payload_id: 0,
+            transport_lane: 6,
             kind: NETWORK_EFFECT_KIND_REQUEST_SYNC,
             peer_id: peer(1),
             packet_kind: 0,
             payload_bytes: Vec::new(),
+            related_payload_bytes: Vec::new(),
             exclude_peers: Vec::new(),
             object_kind: 0,
             object_hash: [0; 32],
@@ -1688,10 +1723,12 @@ mod tests {
         let second = NetworkEffect {
             effect_id: 0,
             source_payload_id: 0,
+            transport_lane: 6,
             kind: NETWORK_EFFECT_KIND_DRIVE_CONSENSUS_PROGRESS,
             peer_id: [0; 64],
             packet_kind: 0,
             payload_bytes: Vec::new(),
+            related_payload_bytes: Vec::new(),
             exclude_peers: Vec::new(),
             object_kind: 0,
             object_hash: [0; 32],
@@ -1705,7 +1742,7 @@ mod tests {
         api.enqueue_effect(first);
         api.enqueue_effect(second);
 
-        let first_batch = api.drain_work(1);
+        let first_batch = api.drain_work(6, 1);
         assert_eq!(first_batch.status, NETWORK_EFFECT_BATCH_STATUS_OK);
         assert_eq!(first_batch.effects.len(), 1);
         assert!(first_batch.more_available);
@@ -1715,7 +1752,7 @@ mod tests {
             NETWORK_EFFECT_KIND_REQUEST_SYNC
         );
 
-        let second_batch = api.drain_work(10);
+        let second_batch = api.drain_work(6, 10);
         assert_eq!(second_batch.effects.len(), 1);
         assert!(!second_batch.more_available);
         assert_eq!(second_batch.effects[0].effect_id, 2);
@@ -1765,10 +1802,12 @@ mod tests {
         api.enqueue_effect(NetworkEffect {
             effect_id: 0,
             source_payload_id: 1,
+            transport_lane: 6,
             kind: NETWORK_EFFECT_KIND_SEND_PACKET,
             peer_id: peer(1),
             packet_kind: 1,
             payload_bytes: vec![1],
+            related_payload_bytes: Vec::new(),
             exclude_peers: Vec::new(),
             object_kind: 0,
             object_hash: [0; 32],
@@ -1779,7 +1818,7 @@ mod tests {
             period: 0,
             round: 0,
         });
-        let batch = api.drain_work(1);
+        let batch = api.drain_work(6, 1);
         assert_eq!(batch.effects[0].effect_id, 1);
 
         let ack = api.report_effect_results(vec![effect_result(
@@ -1800,10 +1839,12 @@ mod tests {
         api.enqueue_effect(NetworkEffect {
             effect_id: 0,
             source_payload_id: 1,
+            transport_lane: 6,
             kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
             peer_id: peer(1),
             packet_kind: 0,
             payload_bytes: Vec::new(),
+            related_payload_bytes: Vec::new(),
             exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
             object_hash: hash(0xAA),
@@ -1814,7 +1855,7 @@ mod tests {
             period: 0,
             round: 0,
         });
-        let batch = api.drain_work(1);
+        let batch = api.drain_work(6, 1);
         let mut result = effect_result(&batch.effects[0], NETWORK_EFFECT_RESULT_STATUS_OK);
         result.object_hash = hash(0xBB);
 
@@ -2268,7 +2309,7 @@ mod tests {
         );
         assert_eq!(decision.queued_effect_count, 1);
 
-        let batch = api.drain_work(10);
+        let batch = api.drain_work(6, 10);
         assert_eq!(batch.effects.len(), 1);
         let effect = &batch.effects[0];
         assert_eq!(effect.kind, NETWORK_EFFECT_KIND_REQUEST_SYNC);
@@ -2294,7 +2335,7 @@ mod tests {
         );
         assert_eq!(decision.queued_effect_count, 2);
 
-        let batch = api.drain_work(10);
+        let batch = api.drain_work(6, 10);
         assert_eq!(batch.effects.len(), 2);
         assert_eq!(batch.effects[0].kind, NETWORK_EFFECT_KIND_REPORT_PEER);
         assert_eq!(
@@ -2311,10 +2352,15 @@ mod tests {
     #[test]
     fn gossip_pbft_vote_gossips_vote_packet() {
         let mut api = ConsensusNetworkApi::new();
+        let vote_rlp = vec![0xc3, 1, 2, 3];
+        let block_rlp = vec![0xc2, 4, 5];
 
         let decision = api.gossip_pbft_vote(NetworkPbftVoteGossipEffects {
+            transport_lane: 6,
             peer_id: peer(10),
             vote_hash: hash(0xEF),
+            vote_rlp: vote_rlp.clone(),
+            pbft_block_rlp: block_rlp.clone(),
             source_payload_id: 79,
             gossip_vote: true,
         });
@@ -2323,7 +2369,7 @@ mod tests {
         assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
         assert_eq!(decision.queued_effect_count, 1);
 
-        let batch = api.drain_work(10);
+        let batch = api.drain_work(6, 10);
         assert_eq!(batch.effects.len(), 1);
         assert_eq!(batch.effects[0].kind, NETWORK_EFFECT_KIND_GOSSIP_PACKET);
         assert_eq!(batch.effects[0].peer_id, peer(10));
@@ -2331,6 +2377,71 @@ mod tests {
         assert_eq!(batch.effects[0].exclude_peers, vec![peer(10)]);
         assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_VOTE);
         assert_eq!(batch.effects[0].object_hash, hash(0xEF));
+        assert_eq!(batch.effects[0].payload_bytes, vote_rlp);
+        assert_eq!(batch.effects[0].related_payload_bytes, block_rlp);
         assert_eq!(batch.effects[0].source_payload_id, 79);
+    }
+
+    #[test]
+    fn gossip_payloads_survive_producer_scope_and_drain_fifo() {
+        let mut api = ConsensusNetworkApi::new();
+        for byte in [1, 2] {
+            api.gossip_pbft_vote(NetworkPbftVoteGossipEffects {
+                transport_lane: 6,
+                peer_id: peer(byte),
+                vote_hash: hash(byte),
+                vote_rlp: vec![0xc1, byte],
+                pbft_block_rlp: Vec::new(),
+                source_payload_id: u64::from(byte),
+                gossip_vote: true,
+            });
+        }
+
+        let batch = api.drain_work(6, 2);
+        assert_eq!(batch.effects.len(), 2);
+        assert_eq!(batch.effects[0].payload_bytes, vec![0xc1, 1]);
+        assert_eq!(batch.effects[1].payload_bytes, vec![0xc1, 2]);
+        assert!(
+            batch
+                .effects
+                .iter()
+                .all(|effect| effect.related_payload_bytes.is_empty())
+        );
+    }
+
+    #[test]
+    fn drain_work_isolates_interleaved_transport_lanes() {
+        let mut api = ConsensusNetworkApi::new();
+        for (transport_lane, byte) in [(6, 1), (5, 2), (6, 3), (5, 4)] {
+            api.gossip_pbft_vote(NetworkPbftVoteGossipEffects {
+                transport_lane,
+                peer_id: peer(byte),
+                vote_hash: hash(byte),
+                vote_rlp: vec![0xc1, byte],
+                pbft_block_rlp: Vec::new(),
+                source_payload_id: u64::from(byte),
+                gossip_vote: true,
+            });
+        }
+
+        let first_v5 = api.drain_work(5, 1);
+        assert_eq!(first_v5.effects.len(), 1);
+        assert_eq!(first_v5.effects[0].effect_id, 2);
+        assert_eq!(first_v5.effects[0].payload_bytes, vec![0xc1, 2]);
+        assert!(first_v5.more_available);
+
+        let latest = api.drain_work(6, 10);
+        assert_eq!(latest.effects.len(), 2);
+        assert_eq!(latest.effects[0].effect_id, 1);
+        assert_eq!(latest.effects[0].payload_bytes, vec![0xc1, 1]);
+        assert_eq!(latest.effects[1].effect_id, 3);
+        assert_eq!(latest.effects[1].payload_bytes, vec![0xc1, 3]);
+        assert!(!latest.more_available);
+
+        let second_v5 = api.drain_work(5, 10);
+        assert_eq!(second_v5.effects.len(), 1);
+        assert_eq!(second_v5.effects[0].effect_id, 4);
+        assert_eq!(second_v5.effects[0].payload_bytes, vec![0xc1, 4]);
+        assert!(!second_v5.more_available);
     }
 }

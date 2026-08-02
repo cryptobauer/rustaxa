@@ -6,14 +6,39 @@
 
 namespace taraxa::network::tarcap {
 
+#ifdef RUSTAXA_ENABLE
+namespace {
+rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &input) {
+  rust::Vec<uint8_t> out;
+  out.reserve(input.size());
+  for (const auto byte : input) {
+    out.push_back(static_cast<uint8_t>(byte));
+  }
+  return out;
+}
+}  // namespace
+#endif
+
 VotePacketHandler::VotePacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                      std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
-                                     std::shared_ptr<VoteManager> vote_mgr, const addr_t &node_addr,
-                                     const std::string &logs_prefix)
+                                     std::shared_ptr<VoteManager> vote_mgr,
+#ifndef RUSTAXA_ENABLE
+                                     std::shared_ptr<SlashingManager> slashing_manager,
+#else
+                                     network::ConsensusNetworkApiShared consensus_network_api,
+                                     TarcapVersion transport_lane,
+#endif
+                                     const addr_t &node_addr, const std::string &logs_prefix)
     : IVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_mgr),
-                         std::move(pbft_chain), std::move(vote_mgr), node_addr,
-                         logs_prefix + "PBFT_VOTE_PH") {}
+                         std::move(pbft_chain), std::move(vote_mgr),
+#ifndef RUSTAXA_ENABLE
+                         std::move(slashing_manager),
+#else
+                         std::move(consensus_network_api), transport_lane,
+#endif
+                         node_addr, logs_prefix + "PBFT_VOTE_PH") {
+}
 
 void VotePacketHandler::process(const threadpool::PacketData &packet_data, const std::shared_ptr<TaraxaPeer> &peer) {
   // Decode packet rlp into packet object
@@ -89,12 +114,17 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
 #ifdef RUSTAXA_ENABLE
   if (process_result.gossip_vote) {
     rustaxa::NetworkPbftVoteGossipEffects effects{};
+    effects.transport_lane = transport_lane_;
     effects.peer_id = peer->getId().asArray();
     effects.vote_hash = vote_hash.asArray();
+    effects.vote_rlp = toBridgeBytes(packet.vote->rlp(true, false));
+    if (pbft_block) {
+      effects.pbft_block_rlp = toBridgeBytes(pbft_block->rlp(true));
+    }
     effects.source_payload_id = 0;
     effects.gossip_vote = true;
     (void)gossipPbftVote(effects);
-    executeConsensusNetworkEffects(16, packet.vote, pbft_block);
+    executeConsensusNetworkEffects(16);
   }
 #else
   if (process_result.gossip_vote) {

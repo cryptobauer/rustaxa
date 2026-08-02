@@ -5,12 +5,14 @@
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 #include "network/tarcap/packets/latest/votes_bundle_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/common/exceptions.hpp"
+#include "network/tarcap/tarcap_version.hpp"
 #include "packet_handler.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "vote/pbft_vote.hpp"
 #include "vote/votes_bundle_rlp.hpp"
 #include "vote_manager/vote_manager.hpp"
 #ifdef RUSTAXA_ENABLE
+#include "network/consensus_network_api.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
 
@@ -39,8 +41,12 @@ class ExtVotesPacketHandler : public PacketHandler {
   ExtVotesPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                         std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftManager> pbft_mgr,
                         std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
-                        const addr_t& node_addr,
-                        const std::string& log_channel_name);
+#ifndef RUSTAXA_ENABLE
+                        std::shared_ptr<SlashingManager> slashing_manager,
+#else
+                        network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
+#endif
+                        const addr_t& node_addr, const std::string& log_channel_name);
 
   virtual ~ExtVotesPacketHandler();
   ExtVotesPacketHandler(const ExtVotesPacketHandler&) = delete;
@@ -77,8 +83,6 @@ class ExtVotesPacketHandler : public PacketHandler {
                                                              const rustaxa::NetworkPbftVoteIngressContext& context);
   rustaxa::NetworkIngressDecision gossipPbftVote(const rustaxa::NetworkPbftVoteGossipEffects& effects);
   void executeConsensusNetworkEffects(size_t budget);
-  void executeConsensusNetworkEffects(size_t budget, const std::shared_ptr<PbftVote>& gossip_vote,
-                                      const std::shared_ptr<PbftBlock>& gossip_block);
 #endif
 
  private:
@@ -118,8 +122,8 @@ class ExtVotesPacketHandler : public PacketHandler {
 #endif
 
 #ifdef RUSTAXA_ENABLE
-  struct RustConsensusNetworkApiHolder;
-  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+  network::ConsensusNetworkApiShared rust_consensus_network_api_;
+  const TarcapVersion transport_lane_;
 #endif
 };
 

@@ -1,11 +1,5 @@
-//! CXX bridge for the external network/tarcap consensus API.
-//!
-//! This module exposes a direct Rust-owned `BridgeConsensusNetworkApi` facade
-//! for network and tarcap callers. It is intentionally independent of consensus shim
-//! classes: callers pass canonical packet bytes and receive typed executor
-//! effects or acknowledgements. Packet-specific consensus planning can be added
-//! behind this facade without giving network code access to consensus managers,
-//! `DbStorage`, bridge batch ids, or legacy C++ sidecars.
+//! CXX conversion and lock-error mapping for the Rust-owned network/tarcap API; native consensus owns canonical
+//! payload retention, lane-local queue ordering, and effect-result validation while callers execute typed effects.
 
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeConsensusNetworkApi;
@@ -86,20 +80,17 @@ impl BridgeConsensusNetworkApi {
         })
     }
 
-    /// Drains up to `budget` pending network effects for external execution.
-    ///
-    /// Effects are returned in the order produced by Rust consensus. The first
-    /// API slice may return an empty batch because packet-specific pipelines
-    /// are not routed behind the facade yet.
+    /// Drains lane-owned effects in FIFO order, leaving other lanes queued.
     pub fn consensus_network_drain_work(
         &self,
+        transport_lane: u32,
         budget: u32,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEffectBatch> {
         let mut api = self
             .api
             .lock()
             .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
-        let batch = api.drain_work(budget);
+        let batch = api.drain_work(transport_lane, budget);
         Ok(rustaxa_ffi::NetworkEffectBatch {
             status: batch.status,
             effects: batch
@@ -278,12 +269,7 @@ impl BridgeConsensusNetworkApi {
         })
     }
 
-    /// Requests PBFT vote gossip through the external network/tarcap API.
-    ///
-    /// Rust owns the decision that an accepted vote should be gossiped. The
-    /// network executor still owns peer filtering, packet wrapping, and
-    /// transport, so this API exposes the action directly instead of the old
-    /// temporary queue-helper naming.
+    /// Queues canonical PBFT vote and optional block bytes whose lifetime is independent of the C++ producer.
     pub fn consensus_network_gossip_pbft_vote(
         &self,
         effects: rustaxa_ffi::NetworkPbftVoteGossipEffects,
@@ -312,10 +298,12 @@ fn to_bridge_network_effect(
     rustaxa_ffi::NetworkEffect {
         effect_id: effect.effect_id,
         source_payload_id: effect.source_payload_id,
+        transport_lane: effect.transport_lane,
         kind: effect.kind,
         peer_id: effect.peer_id,
         packet_kind: effect.packet_kind,
         payload_bytes: effect.payload_bytes,
+        related_payload_bytes: effect.related_payload_bytes,
         exclude_peers: effect
             .exclude_peers
             .into_iter()
@@ -337,6 +325,7 @@ fn to_domain_pbft_vote_ingress_context(
 ) -> rustaxa_consensus::NetworkPbftVoteIngressContext {
     rustaxa_consensus::NetworkPbftVoteIngressContext {
         ingress: vote_ingress_context_to_domain(value.ingress),
+        transport_lane: value.transport_lane,
         peer_id: value.peer_id,
         peer_pbft_chain_size: value.peer_pbft_chain_size,
         source_payload_id: value.source_payload_id,
@@ -578,8 +567,11 @@ fn to_domain_pbft_vote_gossip_effects(
     value: rustaxa_ffi::NetworkPbftVoteGossipEffects,
 ) -> rustaxa_consensus::NetworkPbftVoteGossipEffects {
     rustaxa_consensus::NetworkPbftVoteGossipEffects {
+        transport_lane: value.transport_lane,
         peer_id: value.peer_id,
         vote_hash: value.vote_hash,
+        vote_rlp: value.vote_rlp,
+        pbft_block_rlp: value.pbft_block_rlp,
         source_payload_id: value.source_payload_id,
         gossip_vote: value.gossip_vote,
     }

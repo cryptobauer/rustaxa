@@ -18,26 +18,13 @@
 #include "network/tarcap/stats/time_period_packets_stats.hpp"
 #include "network/tarcap/taraxa_capability.hpp"
 #include "pbft/pbft_manager.hpp"
-#ifdef RUSTAXA_ENABLE
-#include "rustaxa-bridge/ffi.rs.h"
-#endif
 
 namespace taraxa {
 
 #ifdef RUSTAXA_ENABLE
 namespace {
-
-rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
-  rustaxa::NetworkApiConfig config{};
-  config.max_payload_bytes = 64 * 1024 * 1024;
-  config.max_retained_payloads = 4096;
-  config.max_effects_per_drain = 1024;
-  return config;
-}
-
-rustaxa::NetworkPbftSyncPeerCandidate toNetworkSyncPeerCandidate(
-    const std::shared_ptr<network::tarcap::TaraxaPeer> &peer) {
-  rustaxa::NetworkPbftSyncPeerCandidate candidate{};
+network::ConsensusPeerCandidate toNetworkSyncPeerCandidate(const std::shared_ptr<network::tarcap::TaraxaPeer> &peer) {
+  network::ConsensusPeerCandidate candidate{};
   candidate.peer_id = peer->getId().asArray();
   candidate.pbft_chain_size = peer->pbft_chain_size_.load();
   candidate.dag_level = peer->dag_level_.load();
@@ -51,11 +38,6 @@ rustaxa::NetworkPbftSyncPeerCandidate toNetworkSyncPeerCandidate(
 
 }  // namespace
 
-struct Network::RustConsensusNetworkApiHolder {
-  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
-
-  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
-};
 #endif
 
 Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const std::filesystem::path &network_file_path,
@@ -65,6 +47,9 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
                  std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
                  std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
                  std::shared_ptr<TransactionManager> trx_mgr,
+#ifndef RUSTAXA_ENABLE
+                 std::shared_ptr<SlashingManager> slashing_manager,
+#endif
                  std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
                  std::shared_ptr<final_chain::FinalChain> final_chain)
     : kConf(config),
@@ -81,7 +66,7 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
   LOG(log_nf_) << "Read Network Config: " << std::endl << config.network << std::endl;
 
 #ifdef RUSTAXA_ENABLE
-  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
+  rust_consensus_network_api_ = std::make_shared<network::ConsensusNetworkApi>();
 #endif
 
   all_packets_stats_ = std::make_shared<network::tarcap::TimePeriodPacketsStats>(
@@ -123,7 +108,16 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
         db,
 #endif
-        pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr, pillar_chain_mgr, final_chain);
+        pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr,
+#ifndef RUSTAXA_ENABLE
+        slashing_manager,
+#endif
+        pillar_chain_mgr, final_chain
+#ifdef RUSTAXA_ENABLE
+        ,
+        rust_consensus_network_api_
+#endif
+    );
     capabilities.emplace_back(latest_tarcap);
 
     // Register previous (v5) version of taraxa capability
@@ -133,7 +127,14 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
         db,
 #endif
-        pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr, pillar_chain_mgr, final_chain,
+        pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr,
+#ifndef RUSTAXA_ENABLE
+        slashing_manager,
+#endif
+        pillar_chain_mgr, final_chain,
+#ifdef RUSTAXA_ENABLE
+        rust_consensus_network_api_,
+#endif
         network::tarcap::TaraxaCapability::kInitV5VersionHandlers);
     capabilities.emplace_back(v5_tarcap);
 
@@ -380,22 +381,20 @@ void Network::handleMaliciousSyncPeer(const dev::p2p::NodeID &node_id) {
 
 std::shared_ptr<network::tarcap::TaraxaPeer> Network::getMaxChainPeer() const {
 #ifdef RUSTAXA_ENABLE
-  rustaxa::NetworkPeerSelectionFacts facts{};
-  facts.local_pbft_syncing_period = pbft_mgr_->pbftSyncingPeriod();
+  std::vector<network::ConsensusPeerCandidate> candidates;
   for (const auto &tarcap : tarcaps_) {
     for (const auto &peer_entry : tarcap.second->getPeersState()->getAllPeers()) {
-      facts.candidates.push_back(toNetworkSyncPeerCandidate(peer_entry.second));
+      candidates.push_back(toNetworkSyncPeerCandidate(peer_entry.second));
     }
   }
 
-  const auto peer_selection_plan =
-      rust_consensus_network_api_->api->consensus_network_plan_max_chain_peer_selection(facts);
-  if (!peer_selection_plan.has_peer) {
+  const auto selected_peer =
+      rust_consensus_network_api_->selectMaxChainPeer(pbft_mgr_->pbftSyncingPeriod(), candidates);
+  if (!selected_peer) {
     return nullptr;
   }
 
-  const auto selected_peer_id =
-      dev::p2p::NodeID(peer_selection_plan.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
+  const auto selected_peer_id = dev::p2p::NodeID(selected_peer->data(), dev::p2p::NodeID::ConstructFromPointer);
   for (const auto &tarcap : tarcaps_) {
     if (auto peer = tarcap.second->getPeersState()->getPeer(selected_peer_id); peer) {
       return peer;

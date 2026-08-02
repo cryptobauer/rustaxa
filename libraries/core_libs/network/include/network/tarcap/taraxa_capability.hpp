@@ -14,6 +14,12 @@
 #include "network/tarcap/tarcap_version.hpp"
 #include "network/threadpool/tarcap_thread_pool.hpp"
 #include "pbft/pbft_chain.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "network/consensus_network_api.hpp"
+#endif
+#ifndef RUSTAXA_ENABLE
+#include "slashing_manager/slashing_manager.hpp"
+#endif
 
 namespace taraxa {
 #ifndef RUSTAXA_ENABLE
@@ -61,6 +67,9 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
       const std::shared_ptr<PeersState> &peers_state, const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
 
       const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats,
+#ifdef RUSTAXA_ENABLE
+      const network::ConsensusNetworkApiShared &consensus_network_api,
+#endif
 #ifndef RUSTAXA_ENABLE
       const std::shared_ptr<DbStorage> &db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
@@ -96,6 +105,9 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
 #endif
                    std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
                    std::shared_ptr<final_chain::FinalChain> final_chain,
+#ifdef RUSTAXA_ENABLE
+                   network::ConsensusNetworkApiShared consensus_network_api,
+#endif
                    InitPacketsHandlers init_packets_handlers = kInitLatestVersionHandlers);
 
   virtual ~TaraxaCapability();
@@ -129,7 +141,6 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
   bool filterSyncIrrelevantPackets(SubprotocolPacketType packet_type) const;
   void handlePacketQueueOverLimit(std::shared_ptr<dev::p2p::Host> host, dev::p2p::NodeID node_id, size_t tp_queue_size);
 #ifdef RUSTAXA_ENABLE
-  struct RustConsensusNetworkApiHolder;
   void shadowIngestConsensusNetworkPacket(SubprotocolPacketType packet_type, const dev::p2p::NodeID &node_id,
                                           const dev::bytes &payload_bytes) const;
 #endif
@@ -163,7 +174,7 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
   uint32_t last_disconnect_number_of_peers_ = 0;
 
 #ifdef RUSTAXA_ENABLE
-  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+  network::ConsensusNetworkApiShared rust_consensus_network_api_;
 #endif
 
   LOG_OBJECTS_DEFINE

@@ -12,6 +12,8 @@ class StatusPacketHandler : public ISyncPacketHandler {
                       std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE
                       std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy status handler.
+#else
+                      network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                       h256 genesis_hash, const addr_t& node_addr, const std::string& logs_prefix = "");
 

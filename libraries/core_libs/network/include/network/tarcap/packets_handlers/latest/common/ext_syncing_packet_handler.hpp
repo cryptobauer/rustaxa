@@ -6,6 +6,7 @@
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
 #ifdef RUSTAXA_ENABLE
+#include "network/consensus_network_api.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
 
@@ -30,6 +31,8 @@ class ExtSyncingPacketHandler : public PacketHandler {
                           std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE
                           std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler.
+#else
+                          network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                           const addr_t &node_addr, const std::string &log_channel_name);
 
@@ -41,10 +44,10 @@ class ExtSyncingPacketHandler : public PacketHandler {
   void requestPendingDagBlocks(std::shared_ptr<TaraxaPeer> peer = nullptr);
 
  protected:
- #ifdef RUSTAXA_ENABLE
+#ifdef RUSTAXA_ENABLE
   void requestPbftNextVotesAtPeriodRound(const dev::p2p::NodeID &peer_id, PbftPeriod peer_pbft_period,
-                                        PbftRound peer_pbft_round);
- #endif
+                                         PbftRound peer_pbft_round);
+#endif
 
   std::shared_ptr<PbftSyncingState> pbft_syncing_state_{nullptr};
 
@@ -54,11 +57,7 @@ class ExtSyncingPacketHandler : public PacketHandler {
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<DbStorage> db_{nullptr};  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler storage.
 #else
-  struct RustConsensusNetworkApiHolder {
-    RustConsensusNetworkApiHolder();
-    rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
-  };
-  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+  network::ConsensusNetworkApiShared rust_consensus_network_api_;
 #endif
 };
 

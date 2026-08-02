@@ -11,8 +11,12 @@ class VotesBundlePacketHandler : public IVotePacketHandler {
   VotesBundlePacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                            std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftManager> pbft_mgr,
                            std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
-                           const addr_t& node_addr,
-                           const std::string& logs_prefix = "");
+#ifndef RUSTAXA_ENABLE
+                           std::shared_ptr<SlashingManager> slashing_manager,
+#else
+                           network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
+#endif
+                           const addr_t& node_addr, const std::string& logs_prefix = "");
 
   // Packet type that is processed by this handler
   static constexpr SubprotocolPacketType kPacketType_ = SubprotocolPacketType::kVotesBundlePacket;

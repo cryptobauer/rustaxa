@@ -3260,6 +3260,26 @@ EVM/`state_db` execution remain leaf C++ boundaries.
 | `CRW-N01` | `active` | Implement application-owned network ingress/egress pipelines, finish PBFT gossip effect-drain integration, fix deferred vote duplicate-with-block delivery, and migrate consensus routing/queueing decisions out of tarcap handlers. | Aggressive network consensus cutover is authorized in `PLAN.md`; coordinate with `CRW-12` and `CRW-16`. | Rust owns packet inspection, admission/routing, consensus queues, peer/gossip/send decisions, typed effects, and result validation; C++ tarcap owns only socket/peer mechanics, wrapping, physical transport/disconnect execution, and lane scheduling. |
 | `CRW-E01` | `ready` | Contract the external EVM/StateAPI boundary: move execution orchestration, canonical rewards payloads, result/receipt validation, commit ordering, recovery, and publication into Rust while retaining concrete EVM and `state_db/` operations as leaf C++ calls. | Aggressive execution-orchestration cutover is authorized in `PLAN.md`; coordinate with `CRW-17`. Moving concrete EVM execution itself remains out of scope. | `ConsensusExecutionApi` presents typed leaf operations; StateAPI consumes Rust-native/canonical requests and rewards data without C++ consensus materialization; no C++ manager owns execution sequencing or publication decisions. |
 
+The latest `CRW-N01` contraction replaces five independently constructed network bridge owners with one
+`Network`-owned `BridgeConsensusNetworkApi`, shared by both tarcap capabilities and their vote, sync, DAG-status, and
+pillar-vote handler families. Queued effects are partitioned by a capability transport lane so latest and v5 handlers
+cannot execute one another's work, while preserving FIFO order within each lane. PBFT gossip effects now own canonical
+vote RLP and optional PBFT-block RLP, so execution no longer depends on caller-local C++ object lifetimes. Tarcap remains
+the leaf executor for peer state, packet wrapping, physical sends, disconnects, and lane scheduling; the shared wrapper
+serializes each lane's complete drain/execution/acknowledgement cycle across concurrent packet workers. Vote admission still
+enters the C++ VoteManager and other handler-local consensus routing remains active `CRW-N01` debt. The exact bridge
+budgets are 22,430 bridge lines, 16,752 shim lines, 379 CXX functions, 334 carriers, 18 handles, 10 shim directories,
+and 38 non-test generated-header consumers.
+
+Validation passes `rewrite-validate-fast`, `rewrite-validate-smoke`, all 40 focused native network tests, all 17 CXX
+network bridge tests, the concurrent lane-execution test, Rust-enabled and pure-C++ `network_test` builds, and the focused
+peer-cache/PBFT-sync packet cases
+in both modes. Inventory and storage-boundary guards, inventory self-test, targeted C++ formatting, and whitespace checks
+also pass. The aggregate consensus gate reaches the existing `pillar_chain_test` same-process RocksDB lock leak: 10 of
+13 cases pass, while the same three later node-constructing cases cannot reacquire `/tmp/taraxa0/db/db/LOCK`; the
+network-root tests do not fail. Original upstream-owned network files change only to inject the guarded Rust-mode shared
+root and keep the separately built pure-C++ route operational; the new wrapper source itself is feature guarded.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

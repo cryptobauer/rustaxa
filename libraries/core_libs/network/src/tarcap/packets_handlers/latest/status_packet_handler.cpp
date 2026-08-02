@@ -33,12 +33,16 @@ StatusPacketHandler::StatusPacketHandler(const FullNodeConfig& conf, std::shared
 #ifndef RUSTAXA_ENABLE
                                          std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
                                                                          // legacy status handler.
+#else
+                                         network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                          h256 genesis_hash, const addr_t& node_addr, const std::string& logs_prefix)
     : ISyncPacketHandler(conf, peers_state, packets_stats, std::move(pbft_syncing_state), std::move(pbft_chain),
                          std::move(pbft_mgr), std::move(dag_mgr),
 #ifndef RUSTAXA_ENABLE
                          std::move(db),
+#else
+                         std::move(consensus_network_api),
 #endif
                          node_addr, logs_prefix + "STATUS_PH"),
       kGenesisHash(genesis_hash) {
@@ -75,7 +79,7 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
     initial_status_facts.peer_is_light_node = packet.initial_data->is_light_node;
     initial_status_facts.peer_light_node_history = packet.initial_data->node_history;
     const auto initial_status_plan =
-        rust_consensus_network_api_->api->consensus_network_plan_initial_status(initial_status_facts);
+        rust_consensus_network_api_->api().consensus_network_plan_initial_status(initial_status_facts);
     if (!initial_status_plan.accept_peer) {
       if (initial_status_plan.status == kNetworkStatusPlanStatusChainIdMismatch) {
         LOG((peers_state_->getPeersCount()) ? log_nf_ : log_er_)
@@ -182,7 +186,7 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
     sync_facts.peer_pbft_round = selected_peer->pbft_round_;
     sync_facts.peer_dag_synced = selected_peer->peer_dag_synced_;
     sync_facts.peer_last_status_pbft_chain_size = selected_peer->last_status_pbft_chain_size_.load();
-    const auto sync_plan = rust_consensus_network_api_->api->consensus_network_plan_status_sync(sync_facts);
+    const auto sync_plan = rust_consensus_network_api_->api().consensus_network_plan_status_sync(sync_facts);
     if (sync_plan.request_pbft_sync) {
       LOG(log_nf_) << "Restart PBFT chain syncing. Own synced PBFT at period " << pbft_synced_period
                    << ", peer PBFT chain size " << selected_peer->pbft_chain_size_;
@@ -192,7 +196,8 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
     }
 
     if (sync_plan.request_next_votes) {
-      requestPbftNextVotesAtPeriodRound(selected_peer->getId(), sync_plan.next_votes_period, sync_plan.next_votes_round);
+      requestPbftNextVotesAtPeriodRound(selected_peer->getId(), sync_plan.next_votes_period,
+                                        sync_plan.next_votes_round);
     }
 #else
     // TODO: Address malicious status

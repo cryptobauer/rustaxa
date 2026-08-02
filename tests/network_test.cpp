@@ -3,7 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <future>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 #include "app/app.hpp"
@@ -13,6 +15,9 @@
 #include "dag/dag.hpp"
 #include "dag/dag_block_proposer.hpp"
 #include "logger/logger.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "network/consensus_network_api.hpp"
+#endif
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/dag_block_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/get_dag_sync_packet_handler.hpp"
@@ -1859,6 +1864,37 @@ TEST_F(NetworkTest, peer_cache_test) {
     EXPECT_EQ(known_transactions_with_block_number.size(), expected_known_transactions_with_block_number);
   }
 }
+
+#ifdef RUSTAXA_ENABLE
+TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane) {
+  auto network_api = std::make_shared<network::ConsensusNetworkApi>();
+  auto first_lane_lock = network_api->lockTransportLane(6);
+
+  std::promise<void> same_lane_attempted;
+  std::promise<void> same_lane_acquired;
+  auto same_lane_attempted_future = same_lane_attempted.get_future();
+  auto same_lane_acquired_future = same_lane_acquired.get_future();
+  std::thread same_lane_worker([&] {
+    same_lane_attempted.set_value();
+    auto lock = network_api->lockTransportLane(6);
+    same_lane_acquired.set_value();
+  });
+
+  same_lane_attempted_future.wait();
+  EXPECT_EQ(same_lane_acquired_future.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
+
+  auto other_lane_future = std::async(std::launch::async, [&] {
+    auto lock = network_api->lockTransportLane(5);
+    return true;
+  });
+  EXPECT_EQ(other_lane_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  EXPECT_TRUE(other_lane_future.get());
+
+  first_lane_lock.unlock();
+  EXPECT_EQ(same_lane_acquired_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  same_lane_worker.join();
+}
+#endif
 
 TEST_F(NetworkTest, pbft_sync_packet_rlp_encoding) {
   auto node_cfgs = make_node_cfgs(1, 1, 5);

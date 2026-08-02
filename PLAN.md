@@ -856,6 +856,9 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
 - Network/tarcap transport: peer connections, packet wrapping, gossip fanout, send policy, known-peer marking,
   disconnect/report mechanics, and packet queue ownership stay outside the consensus manager migration. Rust may return
   typed egress, mark-known, sync-request, and peer-report effects for the existing network executor to perform.
+  The current Rust-enabled route uses one `Network`-owned consensus-network API shared by the latest and v5 capability
+  handler families. Its effect queue is partitioned by transport lane and PBFT gossip effects own canonical vote/block
+  payloads; tarcap still owns physical execution and remaining handler-local admission/routing is tracked by `CRW-N01`.
 - EVM/FinalChain execution: transaction execution, receipt/log bloom construction, gas execution, state transition
   execution, and external contract execution stay in the existing FinalChain/EVM boundary until that execution layer is
   migrated. Rust PBFT logic may plan finalization, validate facts, and request execution/finalization effects, but it
@@ -974,16 +977,15 @@ The current Rust consensus footprint is broad but still incomplete:
   `GasPricer` oracle for finalized-block history, minimum-price
   flooring, and percentile bid selection.
   Rust mode no longer exposes a standalone `GasPricer` facade or feature flag. App finalization and metrics, Eth RPC,
-  GraphQL, and SlashingManager use the App-owned `TransactionManager` gas-price query/update operations directly.
-  Pure-C++ configurations retain the untouched original implementation for the legacy SlashingManager and reference
-  tests.
-  The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
-  cache decisions, unweighted vote evidence payload normalization, submitter selection, and slashing contract calldata
-  construction through Rust; the PBFT vote admission route now passes Rust-normalized unweighted payload records, while
-  C++ keeps account reads, gas bidding, transaction signing, transaction-pool insertion, and the live-vote overload for
-  remaining compatibility callers. The standalone facade no longer imports or compiles `SlashingManagerOld`; the
-  pure-C++ routes retain the untouched original implementation. The shim supplies Magnolia activation
-  once at planner construction, so Rust owns the legacy vote-A-period submission gate with activation equality allowed.
+  GraphQL, and the native slashing transaction planner use the App-owned transaction service directly.
+  Pure-C++ configurations retain the untouched original `SlashingManager` implementation and reference tests.
+  Rust mode no longer exposes a `SlashingManager` facade or slashing bridge module. Verified-vote admission composes
+  deterministic double-voting evidence, the native FinalChain account view, configured submitter identities, nonce
+  selection, duplicate protection, and canonical transaction construction inside `PbftService`. The Rust result is one
+  typed transaction effect containing the exact selected wallet index, nonce, contract, value, gas, and calldata; C++
+  retains only secret-key signing, transaction-pool insertion, acknowledgement, and logging. No raw proof evidence,
+  account facts, gas planner inputs, or Rust-mode manager wiring cross CXX. Magnolia activation is supplied once at
+  native service construction, so Rust owns the legacy vote-A-period submission gate with activation equality allowed.
   Rust FinalChain also treats Magnolia and Cacti activation block zero as active from genesis, matching the plain legacy
   hardfork comparison while keeping transaction-inclusion activation separate from local proof-evidence admission.
 - `rustaxa-types` contains shared Rust domain and codec types, including the legacy transaction envelope used by

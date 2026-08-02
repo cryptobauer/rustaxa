@@ -383,10 +383,12 @@ pub mod rustaxa_ffi {
     struct NetworkEffect {
         effect_id: u64,
         source_payload_id: u64,
+        transport_lane: u32,
         kind: u8,
         peer_id: [u8; 64],
         packet_kind: u32,
         payload_bytes: Vec<u8>,
+        related_payload_bytes: Vec<u8>,
         exclude_peers: Vec<NetworkPeerId>,
         object_kind: u8,
         object_hash: [u8; 32],
@@ -429,6 +431,7 @@ pub mod rustaxa_ffi {
     /// Scalar context for authoritative PBFT vote ingress through Network/Tarcap.
     struct NetworkPbftVoteIngressContext {
         ingress: PbftVoteIngressContext,
+        transport_lane: u32,
         peer_id: [u8; 64],
         peer_pbft_chain_size: u64,
         source_payload_id: u64,
@@ -588,8 +591,11 @@ pub mod rustaxa_ffi {
 
     /// PBFT vote gossip request supplied after admission.
     struct NetworkPbftVoteGossipEffects {
+        transport_lane: u32,
         peer_id: [u8; 64],
         vote_hash: [u8; 32],
+        vote_rlp: Vec<u8>,
+        pbft_block_rlp: Vec<u8>,
         source_payload_id: u64,
         gossip_vote: bool,
     }
@@ -3716,6 +3722,7 @@ pub mod rustaxa_ffi {
         ) -> Result<NetworkIngressReceipt>;
         pub fn consensus_network_drain_work(
             self: &BridgeConsensusNetworkApi,
+            transport_lane: u32,
             budget: u32,
         ) -> Result<NetworkEffectBatch>;
         pub fn consensus_network_report_effect_results(

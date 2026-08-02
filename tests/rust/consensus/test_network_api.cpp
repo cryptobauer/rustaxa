@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 #include "rustaxa-bridge/ffi.rs.h"
 
@@ -57,6 +58,7 @@ rustaxa::PbftVoteIngressContext voteContext() {
 rustaxa::NetworkPbftVoteIngressContext networkVoteContext() {
   rustaxa::NetworkPbftVoteIngressContext context{};
   context.ingress = voteContext();
+  context.transport_lane = 6;
   context.peer_id = nodeId(0x44);
   context.peer_pbft_chain_size = 11;
   context.source_payload_id = 99;
@@ -169,7 +171,7 @@ TEST(ConsensusNetworkApiBridgeTest, ingestPacketRejectsUnsupportedPacketType) {
 TEST(ConsensusNetworkApiBridgeTest, drainWorkAndReportResultsExposeExecutorContract) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
-  const auto batch = network_api->consensus_network_drain_work(10);
+  const auto batch = network_api->consensus_network_drain_work(6, 10);
   EXPECT_EQ(batch.status, 0);
   EXPECT_TRUE(batch.effects.empty());
   EXPECT_FALSE(batch.more_available);
@@ -189,7 +191,7 @@ TEST(ConsensusNetworkApiBridgeTest, reportEffectResultsAcceptsMatchingEffectIden
   const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(14, 3, 1, 2), networkVoteContext());
   ASSERT_EQ(decision.queued_effect_count, 1);
 
-  const auto batch = network_api->consensus_network_drain_work(10);
+  const auto batch = network_api->consensus_network_drain_work(6, 10);
   ASSERT_EQ(batch.effects.size(), 1);
 
   rustaxa::NetworkEffectResult result{};
@@ -221,7 +223,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressQueuesSyncEffectThroughNetwor
   EXPECT_EQ(decision.status, 3);
   EXPECT_EQ(decision.queued_effect_count, 1);
 
-  const auto batch = network_api->consensus_network_drain_work(10);
+  const auto batch = network_api->consensus_network_drain_work(6, 10);
   ASSERT_EQ(batch.effects.size(), 1);
   EXPECT_EQ(batch.effects[0].kind, 3);
   EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x44));
@@ -240,7 +242,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressAcceptsCurrentVoteWithoutNetw
   EXPECT_TRUE(decision.error_code.empty());
   EXPECT_EQ(decision.queued_effect_count, 0);
 
-  const auto batch = network_api->consensus_network_drain_work(10);
+  const auto batch = network_api->consensus_network_drain_work(6, 10);
   EXPECT_TRUE(batch.effects.empty());
 }
 
@@ -253,7 +255,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteBundleIngressQueuesReportAndDisconne
   EXPECT_EQ(decision.status, 7);
   EXPECT_EQ(decision.queued_effect_count, 2);
 
-  const auto batch = network_api->consensus_network_drain_work(10);
+  const auto batch = network_api->consensus_network_drain_work(6, 10);
   ASSERT_EQ(batch.effects.size(), 2);
   EXPECT_EQ(batch.effects[0].kind, 4);
   EXPECT_EQ(batch.effects[0].reason_code, 0);
@@ -480,18 +482,23 @@ TEST(ConsensusNetworkApiBridgeTest, pendingDagBlocksRequestPlanningRoutesThrough
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteGossipRequestsGossipPacketEffect) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
-  rustaxa::NetworkPbftVoteGossipEffects effects{};
-  effects.peer_id = nodeId(0x77);
-  effects.vote_hash = hash(0xEF);
-  effects.source_payload_id = 103;
-  effects.gossip_vote = true;
+  {
+    rustaxa::NetworkPbftVoteGossipEffects effects{};
+    effects.transport_lane = 6;
+    effects.peer_id = nodeId(0x77);
+    effects.vote_hash = hash(0xEF);
+    effects.vote_rlp = bytes({0xC3, 1, 2, 3});
+    effects.pbft_block_rlp = bytes({0xC2, 4, 5});
+    effects.source_payload_id = 103;
+    effects.gossip_vote = true;
 
-  const auto decision = network_api->consensus_network_gossip_pbft_vote(effects);
-  EXPECT_TRUE(decision.routed);
-  EXPECT_EQ(decision.status, 0);
-  EXPECT_EQ(decision.queued_effect_count, 1);
+    const auto decision = network_api->consensus_network_gossip_pbft_vote(effects);
+    EXPECT_TRUE(decision.routed);
+    EXPECT_EQ(decision.status, 0);
+    EXPECT_EQ(decision.queued_effect_count, 1);
+  }
 
-  const auto batch = network_api->consensus_network_drain_work(10);
+  const auto batch = network_api->consensus_network_drain_work(6, 10);
   ASSERT_EQ(batch.effects.size(), 1);
   EXPECT_EQ(batch.effects[0].kind, 1);
   EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x77));
@@ -500,5 +507,49 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteGossipRequestsGossipPacketEffect) {
   EXPECT_EQ(batch.effects[0].exclude_peers[0].id, nodeId(0x77));
   EXPECT_EQ(batch.effects[0].object_kind, 0);
   EXPECT_EQ(batch.effects[0].object_hash, hash(0xEF));
+  EXPECT_EQ(std::vector<uint8_t>(batch.effects[0].payload_bytes.begin(), batch.effects[0].payload_bytes.end()),
+            (std::vector<uint8_t>{0xC3, 1, 2, 3}));
+  EXPECT_EQ(std::vector<uint8_t>(batch.effects[0].related_payload_bytes.begin(),
+                                 batch.effects[0].related_payload_bytes.end()),
+            (std::vector<uint8_t>{0xC2, 4, 5}));
   EXPECT_EQ(batch.effects[0].source_payload_id, 103);
+}
+
+TEST(ConsensusNetworkApiBridgeTest, sharedRootDrainsOnlyRequestedTransportLane) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  const auto enqueue_gossip = [&network_api](uint32_t transport_lane, uint8_t byte) {
+    rustaxa::NetworkPbftVoteGossipEffects effects{};
+    effects.transport_lane = transport_lane;
+    effects.peer_id = nodeId(byte);
+    effects.vote_hash = hash(byte);
+    effects.vote_rlp = bytes({0xC1, byte});
+    effects.source_payload_id = byte;
+    effects.gossip_vote = true;
+    return network_api->consensus_network_gossip_pbft_vote(effects);
+  };
+
+  EXPECT_TRUE(enqueue_gossip(6, 1).routed);
+  EXPECT_TRUE(enqueue_gossip(5, 2).routed);
+  EXPECT_TRUE(enqueue_gossip(6, 3).routed);
+  EXPECT_TRUE(enqueue_gossip(5, 4).routed);
+
+  const auto first_v5 = network_api->consensus_network_drain_work(5, 1);
+  ASSERT_EQ(first_v5.effects.size(), 1);
+  EXPECT_EQ(first_v5.effects[0].effect_id, 2);
+  EXPECT_EQ(first_v5.effects[0].transport_lane, 5);
+  EXPECT_TRUE(first_v5.more_available);
+
+  const auto latest = network_api->consensus_network_drain_work(6, 10);
+  ASSERT_EQ(latest.effects.size(), 2);
+  EXPECT_EQ(latest.effects[0].effect_id, 1);
+  EXPECT_EQ(latest.effects[1].effect_id, 3);
+  EXPECT_EQ(latest.effects[0].transport_lane, 6);
+  EXPECT_EQ(latest.effects[1].transport_lane, 6);
+  EXPECT_FALSE(latest.more_available);
+
+  const auto second_v5 = network_api->consensus_network_drain_work(5, 10);
+  ASSERT_EQ(second_v5.effects.size(), 1);
+  EXPECT_EQ(second_v5.effects[0].effect_id, 4);
+  EXPECT_EQ(second_v5.effects[0].transport_lane, 5);
+  EXPECT_FALSE(second_v5.more_available);
 }

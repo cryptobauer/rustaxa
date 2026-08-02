@@ -32,10 +32,22 @@ VotesBundlePacketHandler::VotesBundlePacketHandler(const FullNodeConfig &conf, s
                                                    std::shared_ptr<PbftManager> pbft_mgr,
                                                    std::shared_ptr<PbftChain> pbft_chain,
                                                    std::shared_ptr<VoteManager> vote_mgr,
+#ifndef RUSTAXA_ENABLE
+                                                   std::shared_ptr<SlashingManager> slashing_manager,
+#else
+                                                   network::ConsensusNetworkApiShared consensus_network_api,
+                                                   TarcapVersion transport_lane,
+#endif
                                                    const addr_t &node_addr, const std::string &logs_prefix)
     : IVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_mgr),
-                         std::move(pbft_chain), std::move(vote_mgr), node_addr,
-                         logs_prefix + "VOTES_BUNDLE_PH") {}
+                         std::move(pbft_chain), std::move(vote_mgr),
+#ifndef RUSTAXA_ENABLE
+                         std::move(slashing_manager),
+#else
+                         std::move(consensus_network_api), transport_lane,
+#endif
+                         node_addr, logs_prefix + "VOTES_BUNDLE_PH") {
+}
 
 void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data,
                                        const std::shared_ptr<TaraxaPeer> &peer) {
@@ -69,6 +81,7 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
 
   rustaxa::NetworkPbftVoteIngressContext network_ingress_context{};
   network_ingress_context.ingress = ingress_context;
+  network_ingress_context.transport_lane = transport_lane_;
   network_ingress_context.peer_id = peer->getId().asArray();
   network_ingress_context.peer_pbft_chain_size = peer->pbft_chain_size_.load();
   network_ingress_context.source_payload_id = 0;

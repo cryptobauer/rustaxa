@@ -20,6 +20,8 @@ class DagSyncPacketHandler : public ISyncPacketHandler {
                        std::shared_ptr<TransactionManager> trx_mgr,
 #ifndef RUSTAXA_ENABLE
                        std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy DAG sync handler.
+#else
+                       network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                        const addr_t& node_addr, const std::string& logs_prefix = "");
   ~DagSyncPacketHandler() override;

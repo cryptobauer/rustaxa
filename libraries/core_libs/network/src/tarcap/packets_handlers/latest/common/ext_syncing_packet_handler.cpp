@@ -1,8 +1,8 @@
 #include "network/tarcap/packets_handlers/latest/common/ext_syncing_packet_handler.hpp"
 
 #include "network/tarcap/packets/latest/get_dag_sync_packet.hpp"
-#include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
+#include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
@@ -19,14 +19,6 @@ constexpr uint8_t kNetworkStatusPlanStatusNoEligiblePeer = 2;
 constexpr uint8_t kNetworkStatusPlanStatusDagAlreadySynced = 4;
 constexpr uint8_t kNetworkStatusPlanStatusDagPeriodMismatch = 5;
 
-rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
-  rustaxa::NetworkApiConfig config{};
-  config.max_payload_bytes = 64 * 1024 * 1024;
-  config.max_retained_payloads = 4096;
-  config.max_effects_per_drain = 1024;
-  return config;
-}
-
 rustaxa::NetworkPbftSyncPeerCandidate toNetworkSyncPeerCandidate(const std::shared_ptr<TaraxaPeer> &peer) {
   rustaxa::NetworkPbftSyncPeerCandidate candidate{};
   candidate.peer_id = peer->getId().asArray();
@@ -42,8 +34,6 @@ rustaxa::NetworkPbftSyncPeerCandidate toNetworkSyncPeerCandidate(const std::shar
 
 }  // namespace
 
-ExtSyncingPacketHandler::RustConsensusNetworkApiHolder::RustConsensusNetworkApiHolder()
-    : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
 #endif
 
 ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
@@ -55,6 +45,8 @@ ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std
 #ifndef RUSTAXA_ENABLE
                                                  std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
                                                                                  // legacy sync handler.
+#else
+                                                 network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                                  const addr_t &node_addr, const std::string &log_channel_name)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel_name),
@@ -65,11 +57,11 @@ ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std
 #ifndef RUSTAXA_ENABLE
       ,
       db_(std::move(db))
+#else
+      ,
+      rust_consensus_network_api_(std::move(consensus_network_api))
 #endif
 {
-#ifdef RUSTAXA_ENABLE
-  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
-#endif
 }
 
 ExtSyncingPacketHandler::~ExtSyncingPacketHandler() = default;
@@ -88,7 +80,7 @@ void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer
   }
 
   const auto dag_request_plan =
-      rust_consensus_network_api_->api->consensus_network_plan_pending_dag_blocks_request(facts);
+      rust_consensus_network_api_->api().consensus_network_plan_pending_dag_blocks_request(facts);
   if (!dag_request_plan.request_pending_dag_blocks) {
     if (dag_request_plan.status == kNetworkStatusPlanStatusNoEligiblePeer) {
       LOG(this->log_nf_) << "requestPendingDagBlocks not possible since no peers are matching conditions";
@@ -104,9 +96,9 @@ void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer
     return;
   }
 
-  auto selected_peer =
-      peer ? peer : peers_state_->getPeer(
-                         dev::p2p::NodeID(dag_request_plan.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer));
+  auto selected_peer = peer ? peer
+                            : peers_state_->getPeer(dev::p2p::NodeID(dag_request_plan.peer_id.data(),
+                                                                     dev::p2p::NodeID::ConstructFromPointer));
   if (!selected_peer) {
     LOG(this->log_nf_) << "requestPendingDagBlocks not possible since no connected peers";
     return;
@@ -187,10 +179,11 @@ void ExtSyncingPacketHandler::requestDagBlocks(const dev::p2p::NodeID &_nodeID, 
 
 #ifdef RUSTAXA_ENABLE
 void ExtSyncingPacketHandler::requestPbftNextVotesAtPeriodRound(const dev::p2p::NodeID &peer_id,
-                                                              PbftPeriod peer_pbft_period,
-                                                              PbftRound peer_pbft_round) {
+                                                                PbftPeriod peer_pbft_period,
+                                                                PbftRound peer_pbft_round) {
   LOG(log_dg_) << "Sending GetNextVotesSyncPacket with period:" << peer_pbft_period << ", round:" << peer_pbft_round;
-  const auto packet = GetNextVotesBundlePacket{.peer_pbft_period = peer_pbft_period, .peer_pbft_round = peer_pbft_round};
+  const auto packet =
+      GetNextVotesBundlePacket{.peer_pbft_period = peer_pbft_period, .peer_pbft_round = peer_pbft_round};
   sealAndSend(peer_id, SubprotocolPacketType::kGetNextVotesSyncPacket, encodePacketRlp(packet));
 }
 

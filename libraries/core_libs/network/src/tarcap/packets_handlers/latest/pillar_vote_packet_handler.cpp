@@ -7,9 +7,16 @@ namespace taraxa::network::tarcap {
 PillarVotePacketHandler::PillarVotePacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                                  std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                                  std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
+#ifdef RUSTAXA_ENABLE
+                                                 network::ConsensusNetworkApiShared consensus_network_api,
+#endif
                                                  const addr_t &node_addr, const std::string &logs_prefix)
     : IPillarVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pillar_chain_manager),
-                               node_addr, logs_prefix + "PILLAR_VOTE_PH") {}
+#ifdef RUSTAXA_ENABLE
+                               std::move(consensus_network_api),
+#endif
+                               node_addr, logs_prefix + "PILLAR_VOTE_PH") {
+}
 
 void PillarVotePacketHandler::process(const threadpool::PacketData &packet_data,
                                       const std::shared_ptr<TaraxaPeer> &peer) {

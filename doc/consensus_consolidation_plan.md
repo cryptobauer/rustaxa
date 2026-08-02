@@ -532,6 +532,15 @@ Completion condition: internal C++ code cannot obtain mutable consensus-domain o
 Completion condition: `pbft_manager_shim` and `vote_manager_shim` are leaf executor adapters rather than alternate
 application runtimes; completing `CRW-N01` makes them deletable or replaces them with a transport adapter.
 
+Current network-root progress: `Network` owns the single `BridgeConsensusNetworkApi` lifetime and injects it through
+both tarcap capabilities into the vote, sync, DAG-status, and pillar-vote handler families. The shared queue is
+transport-lane aware, preventing latest/v5 cross-drain while preserving lane-local FIFO, and PBFT gossip effects carry
+their canonical vote and optional block payloads rather than borrowing handler-local objects. Tarcap still executes peer
+state, wrapping, send, disconnect, and scheduling leaves; a shared per-lane lock serializes drain, execution, and
+acknowledgement across packet workers. Moving remaining admission and handler-local consensus routing
+decisions behind the native pipeline is the next `CRW-N01` work, so this is a contraction milestone rather than item
+completion.
+
 ### 7. Contract DAG and transaction shims
 
 - Move worker-neutral orchestration behind the native DAG/transaction service.

@@ -15,6 +15,9 @@
 #include "network/tarcap/taraxa_capability.hpp"
 #include "network/tarcap/tarcap_version.hpp"
 #include "transaction/transaction.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "network/consensus_network_api.hpp"
+#endif
 
 namespace taraxa {
 
@@ -107,10 +110,6 @@ class Network {
   void addBootNodes(bool initial = false);
 
  private:
-#ifdef RUSTAXA_ENABLE
-  struct RustConsensusNetworkApiHolder;
-#endif
-
   // Node config
   const FullNodeConfig &kConf;
 
@@ -141,7 +140,7 @@ class Network {
   util::ThreadPool periodic_events_tp_;
 
 #ifdef RUSTAXA_ENABLE
-  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+  network::ConsensusNetworkApiShared rust_consensus_network_api_;
 #endif
 
   LOG_OBJECTS_DEFINE

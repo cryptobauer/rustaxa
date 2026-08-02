@@ -18,6 +18,8 @@ class PbftSyncPacketHandler : public ISyncPacketHandler {
                         std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
                         std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy PBFT sync handler.
+#else
+                        network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                         const addr_t& node_addr, const std::string& logs_prefix = "");
   ~PbftSyncPacketHandler() override;

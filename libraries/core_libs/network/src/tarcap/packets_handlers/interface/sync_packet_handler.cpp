@@ -23,12 +23,16 @@ ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_p
 #ifndef RUSTAXA_ENABLE
                                        std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
                                                                        // legacy sync handler.
+#else
+                                       network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                        const addr_t& node_addr, const std::string& logs_prefix)
     : ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
                               std::move(pbft_chain), std::move(pbft_mgr), std::move(dag_mgr),
 #ifndef RUSTAXA_ENABLE
                               std::move(db),
+#else
+                              std::move(consensus_network_api),
 #endif
                               node_addr, logs_prefix),
       kGenesisHash(kConf.genesis.genesisHash()) {
@@ -55,7 +59,7 @@ void ISyncPacketHandler::startSyncingPbft() {
     facts.candidates.push_back(candidate);
   }
 
-  const auto sync_start_plan = rust_consensus_network_api_->api->consensus_network_plan_pbft_sync_start(facts);
+  const auto sync_start_plan = rust_consensus_network_api_->api().consensus_network_plan_pbft_sync_start(facts);
   if (!sync_start_plan.start_sync) {
     if (sync_start_plan.enable_snapshot_creation) {
       pbft_mgr_->setPbftSyncSnapshotCreationEnabled(true);
@@ -94,8 +98,8 @@ void ISyncPacketHandler::startSyncingPbft() {
   if (sync_start_plan.request_period > selected_peer->pbft_chain_size_) {
     pbft_syncing_state_->setPbftSyncing(false);
     LOG(this->log_wr_) << "Unable to start PBFT sync from peer " << selected_peer->getId().abridged()
-                       << ", peer chain size " << selected_peer->pbft_chain_size_.load()
-                       << ", requested period " << sync_start_plan.request_period;
+                       << ", peer chain size " << selected_peer->pbft_chain_size_.load() << ", requested period "
+                       << sync_start_plan.request_period;
     return;
   }
 
@@ -210,7 +214,7 @@ bool ISyncPacketHandler::sendStatus(const dev::p2p::NodeID& node_id, bool initia
   facts.pbft_syncing = pbft_syncing_state_->isPbftSyncing();
   facts.deep_pbft_syncing = pbft_syncing_state_->isDeepPbftSyncing();
 
-  const auto status_plan = rust_consensus_network_api_->api->consensus_network_plan_status_egress(facts);
+  const auto status_plan = rust_consensus_network_api_->api().consensus_network_plan_status_egress(facts);
   if (status_plan.include_initial_data) {
     success = sealAndSend(
         node_id, SubprotocolPacketType::kStatusPacket,
