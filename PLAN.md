@@ -855,7 +855,7 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
   proposed-block publication, peer-known, and gossip effects or returning the typed slashing outcome. Exact duplicate votes may still carry a
   previously unseen block without being regossiped. Bundle shape preflight completes before any member admission. The
   no-consumer generic shadow-ingress arena and its capacity configuration are deleted. Tarcap still owns physical
-  execution; bundle aggregation and remaining handler-local routing are tracked by `CRW-N01`.
+  execution; accepted-only bundle aggregation is native, while remaining handler-local routing is tracked by `CRW-N01`.
 - EVM/FinalChain execution: transaction execution, receipt/log bloom construction, gas execution, state transition
   execution, and external contract execution stay in the existing FinalChain/EVM boundary until that execution layer is
   migrated. Rust PBFT logic may plan finalization, validate facts, and request execution/finalization effects, but it

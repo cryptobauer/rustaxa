@@ -84,14 +84,17 @@ class ExtVotesPacketHandler : public PacketHandler {
 #ifdef RUSTAXA_ENABLE
   rustaxa::NetworkIngressDecision ingestPbftVote(const rustaxa::PbftVoteIngressFact& fact,
                                                  const rustaxa::NetworkPbftVoteIngressContext& context);
-  rustaxa::NetworkIngressDecision ingestPbftVoteBundleMember(const rustaxa::PbftVoteIngressFact& reference,
-                                                             const rustaxa::PbftVoteIngressFact& vote,
-                                                             const rustaxa::NetworkPbftVoteIngressContext& context);
+  rust::Vec<rustaxa::NetworkIngressDecision> ingestPbftVoteBundle(
+      const rustaxa::PbftVoteIngressFact& reference, rust::Vec<rustaxa::PbftVoteIngressFact> votes,
+      rust::Vec<rustaxa::NetworkPbftVoteIngressContext> contexts);
   /**
    * Executes Rust-owned effects and returns the matching vote-admission leaf result, if any.
    * The caller must retain this handler's transport-lane lock from ingress through completion.
+   * A matching executor failure is acknowledged to Rust so dependent work is cancelled, then
+   * surfaced as an exception; callers must not request later admission IDs from that operation.
    */
-  VoteProcessingResult executeConsensusNetworkEffects(size_t budget, std::optional<uint64_t> admission_effect_id);
+  VoteProcessingResult executeConsensusNetworkEffects(size_t budget, std::optional<uint64_t> admission_effect_id,
+                                                      bool stop_after_correlated_admission = false);
 #endif
 
  private:

@@ -189,8 +189,14 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressAcceptsCurrentVoteWithoutNetw
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteBundleIngressQueuesReportAndDisconnectEffects) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
-  const auto decision = network_api->consensus_network_ingest_pbft_vote_bundle_member(
-      voteFact(10, 3, 2, 1), voteFact(10, 3, 2, 1), networkVoteContext());
+  rust::Vec<rustaxa::PbftVoteIngressFact> votes;
+  votes.push_back(voteFact(10, 3, 2, 1));
+  rust::Vec<rustaxa::NetworkPbftVoteIngressContext> contexts;
+  contexts.push_back(networkVoteContext());
+  const auto decisions = network_api->consensus_network_ingest_pbft_vote_bundle(voteFact(10, 3, 2, 1), std::move(votes),
+                                                                                std::move(contexts));
+  ASSERT_EQ(decisions.size(), 1);
+  const auto& decision = decisions.front();
 
   EXPECT_EQ(decision.status, 7);
   EXPECT_EQ(decision.queued_effect_count, 2);

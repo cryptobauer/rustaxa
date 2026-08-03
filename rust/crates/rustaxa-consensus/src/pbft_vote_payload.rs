@@ -160,8 +160,8 @@ pub fn build_weighted_pbft_vote_bundle(records: &[PbftVotePayloadRecord]) -> Res
 /// Builds a legacy optimized PBFT votes-bundle for network egress.
 ///
 /// Inputs:
-/// - `records`: retained weighted PBFT vote payload records in the exact order
-///   the caller wants to send.
+/// - `records`: canonical signed or storage-weighted PBFT vote payload records
+///   in the exact order the caller wants to send.
 /// - `block_hash`, `period`, `round`, and `step`: explicit 2t+1 mapping
 ///   metadata selected by the verified-vote index.
 ///
@@ -172,8 +172,9 @@ pub fn build_weighted_pbft_vote_bundle(records: &[PbftVotePayloadRecord]) -> Res
 /// Invariants and edge behavior:
 /// - Empty bundles are rejected because legacy optimized bundle decoding
 ///   expects shared metadata derived from at least one vote.
-/// - Every record must be a weighted retained payload whose canonical hash
-///   matches the record key.
+/// - Every record must be a canonical signed payload whose canonical hash
+///   matches the record key. An embedded storage weight is accepted but not
+///   required because network ingress retains unweighted canonical bytes.
 /// - Every decoded payload must match the requested block/period/round/step so
 ///   callers cannot accidentally build a mixed-header network bundle.
 pub fn build_optimized_pbft_vote_bundle(
@@ -191,9 +192,12 @@ pub fn build_optimized_pbft_vote_bundle(
     let mut vote_hashes = Vec::with_capacity(records.len());
     let mut optimized_votes = Vec::with_capacity(records.len());
     for record in records {
-        ensure_weighted_vote_payload(record)?;
         let fields = decode_signed_vote_fields(&record.vote_rlp)?;
         let inspection = inspect_canonical_pbft_vote(&record.vote_rlp)?;
+        ensure!(
+            inspection.vote_hash == record.hash,
+            "PBFT optimized vote payload hash mismatches record key"
+        );
         ensure!(
             inspection.block_hash == block_hash
                 && inspection.period == period

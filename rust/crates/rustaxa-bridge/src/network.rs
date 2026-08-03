@@ -6,7 +6,7 @@ use crate::ffi::BridgeConsensusNetworkApi;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_vote_ingress::{PbftVoteIngressContext, PbftVoteIngressFact};
 use rustaxa_consensus::verified_votes::PbftVoteType;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 fn vote_ingress_fact_to_domain(
     value: rustaxa_ffi::PbftVoteIngressFact,
@@ -52,16 +52,19 @@ pub fn create_consensus_network_api(
 }
 
 impl BridgeConsensusNetworkApi {
+    fn lock_api(&self) -> anyhow::Result<MutexGuard<'_, rustaxa_consensus::ConsensusNetworkApi>> {
+        self.api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))
+    }
+
     /// Drains dependency-ready lane-owned effects in queue order, leaving other lanes queued.
     pub fn consensus_network_drain_work(
         &self,
         transport_lane: u32,
         budget: u32,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEffectBatch> {
-        let mut api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let mut api = self.lock_api()?;
         let batch = api.drain_work(transport_lane, budget);
         Ok(rustaxa_ffi::NetworkEffectBatch {
             status: batch.status,
@@ -84,10 +87,7 @@ impl BridgeConsensusNetworkApi {
         &self,
         results: Vec<rustaxa_ffi::NetworkEffectResult>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEffectAck> {
-        let mut api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let mut api = self.lock_api()?;
         let ack =
             api.report_effect_results(results.into_iter().map(from_bridge_effect_result).collect());
         Ok(rustaxa_ffi::NetworkEffectAck {
@@ -103,10 +103,7 @@ impl BridgeConsensusNetworkApi {
         &self,
         facts: rustaxa_ffi::NetworkStatusSyncFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkStatusSyncPlan> {
-        let api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let api = self.lock_api()?;
         Ok(to_bridge_network_status_sync_plan(api.plan_status_sync(
             to_domain_network_status_sync_facts(facts),
         )))
@@ -117,10 +114,7 @@ impl BridgeConsensusNetworkApi {
         &self,
         facts: rustaxa_ffi::NetworkStatusEgressFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkStatusEgressPlan> {
-        let api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let api = self.lock_api()?;
         Ok(to_bridge_network_status_egress_plan(
             api.plan_status_egress(to_domain_network_status_egress_facts(facts)),
         ))
@@ -131,10 +125,7 @@ impl BridgeConsensusNetworkApi {
         &self,
         facts: rustaxa_ffi::NetworkInitialStatusFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkInitialStatusPlan> {
-        let api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let api = self.lock_api()?;
         Ok(to_bridge_network_initial_status_plan(
             api.plan_initial_status(to_domain_network_initial_status_facts(facts)),
         ))
@@ -145,10 +136,7 @@ impl BridgeConsensusNetworkApi {
         &self,
         facts: rustaxa_ffi::NetworkPbftSyncStartFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPbftSyncStartPlan> {
-        let api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let api = self.lock_api()?;
         Ok(to_bridge_network_pbft_sync_start_plan(
             api.plan_pbft_sync_start(to_domain_network_pbft_sync_start_facts(facts)),
         ))
@@ -159,10 +147,7 @@ impl BridgeConsensusNetworkApi {
         &self,
         facts: rustaxa_ffi::NetworkPeerSelectionFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPeerSelectionPlan> {
-        let api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let api = self.lock_api()?;
         Ok(to_bridge_network_peer_selection_plan(
             api.plan_max_chain_peer_selection(to_domain_network_peer_selection_facts(facts)),
         ))
@@ -173,10 +158,7 @@ impl BridgeConsensusNetworkApi {
         &self,
         facts: rustaxa_ffi::NetworkPendingDagBlocksRequestFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPendingDagBlocksRequestPlan> {
-        let api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let api = self.lock_api()?;
         Ok(to_bridge_network_pending_dag_blocks_request_plan(
             api.plan_pending_dag_blocks_request(
                 to_domain_network_pending_dag_blocks_request_facts(facts),
@@ -195,34 +177,37 @@ impl BridgeConsensusNetworkApi {
         fact: rustaxa_ffi::PbftVoteIngressFact,
         context: rustaxa_ffi::NetworkPbftVoteIngressContext,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        let mut api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let mut api = self.lock_api()?;
         Ok(to_bridge_network_ingress_decision(api.ingest_pbft_vote(
             vote_ingress_fact_to_domain(fact)?,
             to_domain_pbft_vote_ingress_context(context),
         )))
     }
 
-    /// Routes one vote-bundle member through PBFT ingress and queues network effects.
-    pub fn consensus_network_ingest_pbft_vote_bundle_member(
+    /// Preflights one complete vote bundle and queues its grouped admission effects.
+    pub fn consensus_network_ingest_pbft_vote_bundle(
         &self,
         reference: rustaxa_ffi::PbftVoteIngressFact,
-        vote: rustaxa_ffi::PbftVoteIngressFact,
-        context: rustaxa_ffi::NetworkPbftVoteIngressContext,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        let mut api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
-        Ok(to_bridge_network_ingress_decision(
-            api.ingest_pbft_vote_bundle_member(
+        votes: Vec<rustaxa_ffi::PbftVoteIngressFact>,
+        contexts: Vec<rustaxa_ffi::NetworkPbftVoteIngressContext>,
+    ) -> anyhow::Result<Vec<rustaxa_ffi::NetworkIngressDecision>> {
+        let mut api = self.lock_api()?;
+        let votes = votes
+            .into_iter()
+            .map(vote_ingress_fact_to_domain)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(api
+            .ingest_pbft_vote_bundle(
                 vote_ingress_fact_to_domain(reference)?,
-                vote_ingress_fact_to_domain(vote)?,
-                to_domain_pbft_vote_ingress_context(context),
-            ),
-        ))
+                votes,
+                contexts
+                    .into_iter()
+                    .map(to_domain_pbft_vote_ingress_context)
+                    .collect(),
+            )
+            .into_iter()
+            .map(to_bridge_network_ingress_decision)
+            .collect())
     }
 
     /// Plans pillar-vote relevance through the external network/tarcap API.
@@ -230,10 +215,7 @@ impl BridgeConsensusNetworkApi {
         &self,
         fact: rustaxa_ffi::PillarVoteRelevanceFact,
     ) -> anyhow::Result<rustaxa_ffi::PillarVoteRelevancePlan> {
-        let api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let api = self.lock_api()?;
         let plan = api.plan_pillar_vote_relevance(to_domain_pillar_vote_relevance_fact(fact)?)?;
         Ok(rustaxa_ffi::PillarVoteRelevancePlan {
             status: plan.status_code(),

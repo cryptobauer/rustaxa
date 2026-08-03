@@ -31,6 +31,7 @@ constexpr uint8_t kNetworkSyncKindPbftNextVotes = 1;
 constexpr uint8_t kNetworkObjectKindPbftVote = 0;
 constexpr uint8_t kNetworkObjectKindPbftBlock = 1;
 constexpr uint32_t kNetworkPacketKindPbftVote = 1;
+constexpr uint32_t kNetworkPacketKindPbftVotesBundle = 3;
 
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &input) {
   rust::Vec<uint8_t> out;
@@ -122,7 +123,6 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
     network_ingress_context.pbft_block_hash = pbft_block->getBlockHash().asArray();
     network_ingress_context.pbft_block_period = pbft_block->getPeriod();
   }
-
   auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(transport_lane_);
   const auto ingress_decision = ingestPbftVote(ingress_fact, network_ingress_context);
   if (ingress_decision.status != 0) {
@@ -316,18 +316,20 @@ rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVote(
   return rust_consensus_network_api_->api().consensus_network_ingest_pbft_vote(fact, context);
 }
 
-rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVoteBundleMember(
-    const rustaxa::PbftVoteIngressFact &reference, const rustaxa::PbftVoteIngressFact &vote,
-    const rustaxa::NetworkPbftVoteIngressContext &context) {
+rust::Vec<rustaxa::NetworkIngressDecision> ExtVotesPacketHandler::ingestPbftVoteBundle(
+    const rustaxa::PbftVoteIngressFact &reference, rust::Vec<rustaxa::PbftVoteIngressFact> votes,
+    rust::Vec<rustaxa::NetworkPbftVoteIngressContext> contexts) {
   assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api().consensus_network_ingest_pbft_vote_bundle_member(reference, vote, context);
+  return rust_consensus_network_api_->api().consensus_network_ingest_pbft_vote_bundle(reference, std::move(votes),
+                                                                                      std::move(contexts));
 }
 
 ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsensusNetworkEffects(
-    size_t budget, std::optional<uint64_t> admission_effect_id) {
+    size_t budget, std::optional<uint64_t> admission_effect_id, bool stop_after_correlated_admission) {
   assert(rust_consensus_network_api_);
   VoteProcessingResult admission_result{};
   bool admission_effect_completed = false;
+  std::optional<std::string> admission_failure;
   while (true) {
     const auto batch = rust_consensus_network_api_->api().consensus_network_drain_work(
         static_cast<uint32_t>(transport_lane_), static_cast<uint32_t>(budget));
@@ -424,6 +426,33 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
               }
             }
           }
+        } else if (effect.kind == kNetworkEffectKindGossipPacket &&
+                   effect.packet_kind == kNetworkPacketKindPbftVotesBundle) {
+          const auto optimized_bundle_rlp = bytes(effect.payload_bytes.begin(), effect.payload_bytes.end());
+          const auto votes = decodePbftVotesBundleRlp(dev::RLP(optimized_bundle_rlp));
+          for (const auto &target : peers_state_->getAllPeers()) {
+            if (target.second->syncing_ || target.first == peer_id) {
+              continue;
+            }
+
+            std::vector<std::shared_ptr<PbftVote>> unknown_votes;
+            unknown_votes.reserve(votes.size());
+            for (const auto &vote : votes) {
+              if (!target.second->isPbftVoteKnown(vote->getHash())) {
+                unknown_votes.push_back(vote);
+              }
+            }
+            if (unknown_votes.empty()) {
+              continue;
+            }
+
+            auto packet = VotesBundlePacket{OptimizedPbftVotesBundle{.votes = std::move(unknown_votes)}};
+            if (sealAndSend(target.first, SubprotocolPacketType::kVotesBundlePacket, encodePacketRlp(packet))) {
+              for (const auto &vote : packet.votes_bundle.votes) {
+                target.second->markPbftVoteAsKnown(vote->getHash());
+              }
+            }
+          }
         } else if (effect.kind == kNetworkEffectKindRecordConsensusObject &&
                    effect.object_kind == kNetworkObjectKindPbftBlock) {
           auto proposed_block =
@@ -456,6 +485,9 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
       } catch (const std::exception &e) {
         result.status = kNetworkEffectResultStatusFailed;
         result.diagnostic = e.what();
+        if (admission_effect_id && effect.effect_id == *admission_effect_id) {
+          admission_failure = e.what();
+        }
       }
 
       results.push_back(std::move(result));
@@ -467,6 +499,9 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
       throw std::runtime_error("Network API rejected an executor result batch: " +
                                static_cast<std::string>(acknowledgement.error_code));
     }
+    if (admission_failure) {
+      throw std::runtime_error("Network API PBFT vote admission executor failed: " + *admission_failure);
+    }
     if (reported_admission) {
       admission_result = *reported_admission;
     }
@@ -474,6 +509,9 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
         admission_effect_completed || std::any_of(batch.effects.begin(), batch.effects.end(), [&](const auto &effect) {
           return admission_effect_id && *admission_effect_id == effect.effect_id;
         });
+    if (admission_effect_completed && stop_after_correlated_admission) {
+      break;
+    }
   }
   if (admission_effect_id && !admission_effect_completed) {
     throw std::runtime_error("Network API did not execute the correlated PBFT vote admission effect");

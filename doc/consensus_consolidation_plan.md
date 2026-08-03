@@ -546,9 +546,12 @@ execution, correlates the synchronous result by the exact effect ID, and reports
 Rust releases dependent work. Bundle handlers preflight every member under that same lane lock before admitting any
 member, preserving all-or-nothing shape validation and the malicious-peer slashing report path.
 The unused generic packet shadow-ingress export, retained byte arena, payload-id allocator, and two partial capacity
-settings are deleted; packet families cross only through authoritative operation-specific routes. Moving remaining
-bundle aggregation/rebroadcast and handler-local consensus routing decisions behind the native pipeline is the next
-`CRW-N01` work, so this is a contraction milestone rather than item completion.
+settings are deleted; packet families cross only through authoritative operation-specific routes. Complete PBFT vote
+bundles now preflight through one operation call, retain exact member admission identities in a unique Rust session,
+cancel aggregation on executor failure or slashing, and emit one accepted-only optimized-bundle gossip effect in input
+order. C++ no longer collects accepted bundle members or decides rebroadcast. Moving the remaining handler-local
+consensus routes behind the native pipeline is the next `CRW-N01` work, so this remains a contraction milestone rather
+than item completion.
 
 ### 7. Contract DAG and transaction shims
 

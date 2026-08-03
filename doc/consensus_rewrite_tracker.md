@@ -3322,6 +3322,30 @@ and isolated behind-round/same-round PBFT-sync plus peer-cache cases in both Rus
 Inventory, formatting, and whitespace guards pass. The isolated node-backed runs also confirm that no packet worker
 loses its correlated admission effect to another worker.
 
+The next `CRW-N01` contraction replaces member-at-a-time bundle ingress with one operation-specific complete-bundle
+call. Rust preflights every member before queuing admission, allocates a unique aggregation session, correlates each
+application result by exact effect id, preserves accepted-member input order, and emits one optimized bundle gossip
+effect only after clean completion. Ordinary rejection and exact duplicates are omitted; executor failure or slashing
+cancels remaining queued admissions and suppresses aggregate gossip without rolling back earlier admissions. The
+Rust-mode packet handler no longer builds an accepted `PbftVote` vector or invokes its handler-local rebroadcast route;
+tarcap retains peer-known filtering, packet wrapping, physical send, and successful-send marking. The member ingress
+export is replaced rather than supplemented, CXX function/carrier counts remain 377/331, and shared bridge lock-error
+mapping lowers bridge lines to 22,342. Shim lines, handles, shim directories, and non-test consumers remain 16,752, 18,
+10, and 38. `CRW-N01` remains active for the other handler-local routing families.
+
+Validation passes `rewrite-validate-fast`, `rewrite-validate-smoke`, all 45 focused native network tests, all 18 focused
+CXX network bridge tests, the Rust-enabled network target, and isolated behind-round/same-round PBFT-sync plus
+serialized transport-lane cases. The fresh pure-C++ network target and isolated behind-round/same-round cases also
+pass. Inventory, storage-boundary, formatting, and whitespace guards pass. The aggregate consensus gate again reaches
+the known `pillar_chain_test` same-process RocksDB lock leak after 10 of 13 cases pass. The broader CTest run is not a
+slice gate in this partial build tree: it additionally reports unbuilt test binaries, the same shared-database lock
+failures, and unavailable static zlib/snappy libraries for Go tests. Python integration is unavailable because the
+environment lacks `virtualenv` and `pytest`.
+Independent review found that a failed correlated admission was acknowledged to Rust but not surfaced back to the C++
+bundle loop. The executor now reports the failure first so Rust cancels dependent and remaining bundle work, then throws
+the original diagnostic before the handler can request another admission ID; this also makes final-member failure
+observable instead of silently returning an empty result.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

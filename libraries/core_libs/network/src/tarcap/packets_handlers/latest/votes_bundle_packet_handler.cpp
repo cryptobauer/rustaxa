@@ -24,6 +24,15 @@ rustaxa::PbftVoteIngressFact makeVoteIngressFact(const std::shared_ptr<PbftVote>
   return fact;
 }
 
+rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &input) {
+  rust::Vec<uint8_t> out;
+  out.reserve(input.size());
+  for (const auto byte : input) {
+    out.push_back(static_cast<uint8_t>(byte));
+  }
+  return out;
+}
+
 }  // namespace
 #endif
 
@@ -79,45 +88,52 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
   ingress_context.can_request_next_votes_sync =
       std::chrono::system_clock::now() - last_votes_sync_request_time_ > kSyncRequestInterval;
 
-  rustaxa::NetworkPbftVoteIngressContext network_ingress_context{};
-  network_ingress_context.ingress = ingress_context;
-  network_ingress_context.transport_lane = transport_lane_;
-  network_ingress_context.peer_id = peer->getId().asArray();
-  network_ingress_context.peer_pbft_chain_size = peer->pbft_chain_size_.load();
-  network_ingress_context.source_payload_id = 0;
   // Validate the complete bundle shape before any member reaches the
-  // application leaf. Individual members enqueue admission only in
-  // processVote after this preflight succeeds for the whole bundle.
-  network_ingress_context.enqueue_admission = false;
+  // application leaf. The operation-specific Rust call queues admissions only
+  // after this preflight succeeds for the whole bundle.
 
-  {
-    auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(transport_lane_);
-    const auto reference_fact = makeVoteIngressFact(reference_vote);
-    for (const auto &vote : packet.votes_bundle.votes) {
-      const auto ingress_decision =
-          ingestPbftVoteBundleMember(reference_fact, makeVoteIngressFact(vote), network_ingress_context);
-      if (ingress_decision.status == 0) {
-        continue;
-      }
-
-      (void)executeConsensusNetworkEffects(16, std::nullopt);
-      if (ingress_decision.status == kPbftVoteIngressStatusUnsupportedBundleProposeVote) {
-        LOG(log_er_) << "Dropping votes bundle packet due to received \"propose\" votes from " << peer->getId()
-                     << ". The peer may be a malicious player, will be disconnected";
-        return;
-      }
-      if (ingress_decision.status == kPbftVoteIngressStatusBundleVoteMismatch) {
-        throw MaliciousPeerException("Received PBFT votes bundle with mixed vote identity");
-      }
-
-      LOG(log_wr_) << "Drop votes sync bundle as Rust ingress plan rejected it. Votes (period, round, step) = ("
-                   << reference_vote->getPeriod() << ", " << reference_vote->getRound() << ", "
-                   << reference_vote->getStep() << "). Current PBFT (period, round, step) = (" << current_pbft_period
-                   << ", " << current_pbft_round << ", " << pbft_mgr_->getPbftStep()
-                   << "), status: " << static_cast<uint32_t>(ingress_decision.status)
-                   << ", error: " << static_cast<std::string>(ingress_decision.error_code);
+  auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(transport_lane_);
+  rust::Vec<rustaxa::PbftVoteIngressFact> bundle_facts;
+  rust::Vec<rustaxa::NetworkPbftVoteIngressContext> bundle_contexts;
+  bundle_facts.reserve(packet.votes_bundle.votes.size());
+  bundle_contexts.reserve(packet.votes_bundle.votes.size());
+  for (const auto &vote : packet.votes_bundle.votes) {
+    bundle_facts.push_back(makeVoteIngressFact(vote));
+    rustaxa::NetworkPbftVoteIngressContext member_context{};
+    member_context.ingress = ingress_context;
+    member_context.transport_lane = transport_lane_;
+    member_context.peer_id = peer->getId().asArray();
+    member_context.peer_pbft_chain_size = peer->pbft_chain_size_.load();
+    member_context.enqueue_admission = true;
+    member_context.allow_gossip = false;
+    member_context.vote_hash = vote->getHash().asArray();
+    member_context.vote_rlp = toBridgeBytes(vote->rlp(true, false));
+    bundle_contexts.push_back(std::move(member_context));
+  }
+  const auto bundle_decisions =
+      ingestPbftVoteBundle(makeVoteIngressFact(reference_vote), std::move(bundle_facts), std::move(bundle_contexts));
+  if (bundle_decisions.size() != packet.votes_bundle.votes.size()) {
+    if (bundle_decisions.empty()) {
+      throw std::runtime_error("Rust network API rejected malformed PBFT bundle admission inputs");
+    }
+    const auto &ingress_decision = bundle_decisions.front();
+    (void)executeConsensusNetworkEffects(16, std::nullopt);
+    if (ingress_decision.status == kPbftVoteIngressStatusUnsupportedBundleProposeVote) {
+      LOG(log_er_) << "Dropping votes bundle packet due to received \"propose\" votes from " << peer->getId()
+                   << ". The peer may be a malicious player, will be disconnected";
       return;
     }
+    if (ingress_decision.status == kPbftVoteIngressStatusBundleVoteMismatch) {
+      throw MaliciousPeerException("Received PBFT votes bundle with mixed vote identity");
+    }
+
+    LOG(log_wr_) << "Drop votes sync bundle as Rust ingress plan rejected it. Votes (period, round, step) = ("
+                 << reference_vote->getPeriod() << ", " << reference_vote->getRound() << ", "
+                 << reference_vote->getStep() << "). Current PBFT (period, round, step) = (" << current_pbft_period
+                 << ", " << current_pbft_round << ", " << pbft_mgr_->getPbftStep()
+                 << "), status: " << static_cast<uint32_t>(ingress_decision.status)
+                 << ", error: " << static_cast<std::string>(ingress_decision.error_code);
+    return;
   }
 #else
   // Votes sync bundles are allowed to contain only votes bundles of the same type, period, round and step so if first
@@ -141,15 +157,16 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
 
   // Process processStandardVote is called with false in case of next votes bundle -> does not check max boundaries
   // for round and step to actually being able to sync the current round in case network is stalled
+#ifndef RUSTAXA_ENABLE
   bool check_max_round_step = true;
   if (votes_bundle_votes_type == PbftVoteTypes::cert_vote || votes_bundle_votes_type == PbftVoteTypes::next_vote) {
     check_max_round_step = false;
   }
+#endif
 
   size_t processed_votes_count = 0;
 #ifdef RUSTAXA_ENABLE
-  std::vector<std::shared_ptr<PbftVote>> processed_votes;
-  processed_votes.reserve(packet.votes_bundle.votes.size());
+  size_t bundle_member_index = 0;
 #endif
   for (const auto &vote : packet.votes_bundle.votes) {
 #ifndef RUSTAXA_ENABLE
@@ -169,7 +186,13 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
                  << vote->getRound() << ", step " << vote->getStep() << ", voter " << vote->getVoterAddr()
                  << " as part of votes bundle";
 
+#ifdef RUSTAXA_ENABLE
+    const auto process_result =
+        executeConsensusNetworkEffects(1, bundle_decisions[bundle_member_index].application_effect_id, true);
+    ++bundle_member_index;
+#else
     const auto process_result = processVote(vote, nullptr, peer, check_max_round_step, false);
+#endif
     if (process_result.report_slashing) {
       throw MaliciousPeerException("Received double vote", vote->getVoter());
     }
@@ -177,9 +200,6 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
       continue;
     }
 
-#ifdef RUSTAXA_ENABLE
-    processed_votes.emplace_back(vote);
-#endif
     processed_votes_count++;
   }
 
@@ -187,10 +207,10 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
                << " ) sync votes from peer " << peer->getId() << ". Votes period " << reference_vote->getPeriod()
                << ", round " << reference_vote->getRound() << ", step " << reference_vote->getStep();
 
-#ifdef RUSTAXA_ENABLE
-  onNewPbftVotesBundle(processed_votes, false, peer->getId());
-#else
+#ifndef RUSTAXA_ENABLE
   onNewPbftVotesBundle(packet.votes_bundle.votes, false, peer->getId());
+#else
+  (void)executeConsensusNetworkEffects(16, std::nullopt);
 #endif
 }
 

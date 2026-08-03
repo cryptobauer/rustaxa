@@ -3713,12 +3713,12 @@ pub mod rustaxa_ffi {
             fact: PbftVoteIngressFact,
             context: NetworkPbftVoteIngressContext,
         ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_ingest_pbft_vote_bundle_member(
+        pub fn consensus_network_ingest_pbft_vote_bundle(
             self: &BridgeConsensusNetworkApi,
             reference: PbftVoteIngressFact,
-            vote: PbftVoteIngressFact,
-            context: NetworkPbftVoteIngressContext,
-        ) -> Result<NetworkIngressDecision>;
+            votes: Vec<PbftVoteIngressFact>,
+            contexts: Vec<NetworkPbftVoteIngressContext>,
+        ) -> Result<Vec<NetworkIngressDecision>>;
         pub fn consensus_network_plan_pillar_vote_relevance(
             self: &BridgeConsensusNetworkApi,
             fact: PillarVoteRelevanceFact,

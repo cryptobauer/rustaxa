@@ -44,7 +44,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 22360 |
+| `bridge_lines` | 22342 |
 | `shim_lines` | 16752 |
 | `cxx_functions` | 377 |
 | `cxx_carriers` | 331 |
@@ -123,7 +123,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | CXX conversion, FinalChain-handle unwrapping, and retained external leaf adapters over native `DagTransactionService` | App, DAG, transaction, gas, sortition shims | Native service wrapper | Retain only CXX conversion, focused external-leaf/ABI tests, FinalChain handle unwrapping, and EVM, signing, VDF-generation, and transport leaf execution; proposer/verifier FinalChain composition and transaction-resolution protocol behavior are native; delete with native application bootstrap and executor ports. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | FinalChain and execution APIs | FinalChain shim, execution adapters | External boundary | Split native ownership, public query, and a narrow external-EVM executor API. |
-| `rust/crates/rustaxa-bridge/src/network.rs` | One `Network`-owned operation-specific effect root with transport-lane-partitioned queues, effect-ID-correlated PBFT vote admission, dependency-checked PBFT block publication/gossip, and no generic shadow-ingress arena | latest/v5 tarcap handler families | External boundary | Complete `CRW-N01`; retain transport-only execution API while `VoteManager` is a typed application leaf. |
+| `rust/crates/rustaxa-bridge/src/network.rs` | One `Network`-owned operation-specific effect root with transport-lane-partitioned queues, effect-ID-correlated single and grouped PBFT vote admission, accepted-only bundle aggregation, dependency-checked PBFT block publication/gossip, and no generic shadow-ingress arena | latest/v5 tarcap handler families | External boundary | Complete `CRW-N01`; retain transport-only execution API while `VoteManager` is a typed application leaf. |
 | `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | Thin DTO adapters over root `PbftService` chain tasks | PBFT chain/manager shims | Internal bridge route | Native storage, restoration, lock ownership, transitions, validation, and lookup live behind task-shaped `rustaxa-consensus` root methods; migrate named C++ readers and delete the facade. |
 | `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | Thin `BridgePbftService` adapter plus manager DTO/effect adapters | App, PBFT/vote/pillar shims | Native service wrapper | Native `PbftService` owns coherent sibling restoration, composition, bootstrap readiness, finalization start/resume, all typed executor advancement, owned-action draining, terminal cleanup, and lock-coherent snapshots; the bridge has no manager, chain, proposed-block, verified-vote, slashing, or pillar accessor and no storage-backed manager protocol fixture. Retain pure FFI/error-mapping/external-leaf sentinels while contracting the remaining C++ executor leaves. |
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | CXX conversion over native sync admission/egress tasks plus cert-vote bundle validation conversion | PBFT manager and tarcap | Internal bridge route | Native `PbftService` owns admission cursor lifecycle, report validation, terminal cleanup, bootstrap gating, storage-backed egress, and behavioral coverage; the bridge retains pure carrier/status/error conversion sentinels until the PBFT/network pipeline clients migrate. |
@@ -145,7 +145,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | Handle | Implementing module | Named consumers | Classification | Delete or narrow when |
 | --- | --- | --- | --- | --- |
 | `BridgeConsensusQueryApi` | `query.rs` | RPC, GraphQL, light plugin | External boundary | Keep only client-oriented public reads. |
-| `BridgeConsensusNetworkApi` | `network.rs` | One `Network` owner shared by latest/v5 tarcap handler families | External boundary | `CRW-N01` leaves a transport-only API after bundle aggregation and remaining handler-local routing decisions move native. |
+| `BridgeConsensusNetworkApi` | `network.rs` | One `Network` owner shared by latest/v5 tarcap handler families | External boundary | `CRW-N01` leaves a transport-only API after remaining handler-local routing decisions move native. |
 | `BridgeDagTransactionService` | `dag_transaction_service.rs` | App and DAG/transaction/sortition/gas shims | Native service wrapper | Delete after named C++ clients use narrow lifecycle, query, EVM, VDF, signing, and transport adapters over native `DagTransactionService`. |
 | `BridgePbftService` | `pbft_manager.rs` | App and PBFT/vote/pillar shims | Native service wrapper | This one-field CXX adapter wraps native `PbftService`; delete it when named C++ clients use narrower lifecycle, transport, execution, and query APIs. |
 | `BridgeStorage` | `storage.rs` | storage shim, bootstrap, tests | Compatibility facade | Native construction and narrow query/admin APIs replace it. |
