@@ -350,28 +350,9 @@ pub mod rustaxa_ffi {
         sender: [u8; 20],
     }
 
-    /// Result of accepting packet bytes at the Rust consensus ingress boundary.
-    struct NetworkIngressReceipt {
-        accepted: bool,
-        payload_id: u64,
-        status: u8,
-        error_code: String,
-    }
-
-    /// Capacity limits for the external network/tarcap facade.
+    /// Effect-drain limit for the external network/tarcap facade.
     struct NetworkApiConfig {
-        max_payload_bytes: u64,
-        max_retained_payloads: u64,
         max_effects_per_drain: u32,
-    }
-
-    /// Canonical packet bytes submitted by network/tarcap.
-    struct NetworkIngressPacket {
-        packet_type: u32,
-        peer_id: [u8; 64],
-        payload_bytes: Vec<u8>,
-        received_at_mono_ms: u64,
-        source_packet_id: u64,
     }
 
     /// Fixed-size peer id used by network effect payloads.
@@ -589,15 +570,20 @@ pub mod rustaxa_ffi {
         request_period: u64,
     }
 
-    /// PBFT vote gossip request supplied after admission.
-    struct NetworkPbftVoteGossipEffects {
+    /// PBFT vote post-admission facts used for ordered network effect routing.
+    struct NetworkPbftVoteAdmissionEffects {
         transport_lane: u32,
         peer_id: [u8; 64],
         vote_hash: [u8; 32],
         vote_rlp: Vec<u8>,
-        pbft_block_rlp: Vec<u8>,
-        source_payload_id: u64,
+        accepted: bool,
+        already_present: bool,
+        mark_vote_known: bool,
         gossip_vote: bool,
+        pbft_block_rlp: Vec<u8>,
+        pbft_block_hash: [u8; 32],
+        pbft_block_period: u64,
+        source_payload_id: u64,
     }
 
     /// Gas-estimation request supplied before C++ may call FinalChain/EVM.
@@ -3716,10 +3702,6 @@ pub mod rustaxa_ffi {
         pub fn create_consensus_network_api(
             config: NetworkApiConfig,
         ) -> Box<BridgeConsensusNetworkApi>;
-        pub fn consensus_network_ingest_packet(
-            self: &BridgeConsensusNetworkApi,
-            packet: NetworkIngressPacket,
-        ) -> Result<NetworkIngressReceipt>;
         pub fn consensus_network_drain_work(
             self: &BridgeConsensusNetworkApi,
             transport_lane: u32,
@@ -3768,9 +3750,9 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             facts: NetworkPendingDagBlocksRequestFacts,
         ) -> Result<NetworkPendingDagBlocksRequestPlan>;
-        pub fn consensus_network_gossip_pbft_vote(
+        pub fn consensus_network_route_pbft_vote_admission(
             self: &BridgeConsensusNetworkApi,
-            effects: NetworkPbftVoteGossipEffects,
+            effects: NetworkPbftVoteAdmissionEffects,
         ) -> Result<NetworkIngressDecision>;
 
         type WesolowskiVdf;

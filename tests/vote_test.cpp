@@ -335,6 +335,10 @@ TEST_F(VoteTest, rust_add_vote_with_missing_weight_composes_final_chain) {
   EXPECT_TRUE(unweighted_vote->getWeight().has_value());
   EXPECT_GT(*unweighted_vote->getWeight(), 0);
   EXPECT_EQ(*unweighted_vote->getWeight(), *weighted_vote->getWeight());
+
+  const auto duplicate_report = vote_mgr->addVerifiedVoteWithReport(unweighted_vote);
+  EXPECT_FALSE(duplicate_report.accepted);
+  EXPECT_TRUE(duplicate_report.already_present);
 }
 
 TEST_F(VoteTest, rust_generate_weighted_vote_is_deterministic) {

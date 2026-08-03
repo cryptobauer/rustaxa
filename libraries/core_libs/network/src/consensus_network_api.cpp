@@ -15,8 +15,6 @@ class ConsensusNetworkApi::Impl final {
 
   static rustaxa::NetworkApiConfig config() {
     rustaxa::NetworkApiConfig value{};
-    value.max_payload_bytes = 64 * 1024 * 1024;
-    value.max_retained_payloads = 4096;
     value.max_effects_per_drain = 1024;
     return value;
   }

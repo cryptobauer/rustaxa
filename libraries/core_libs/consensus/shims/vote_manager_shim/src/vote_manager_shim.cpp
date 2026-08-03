@@ -721,6 +721,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     return report;
   }
   requireRuntimeAdmissionVoteMatches(runtime_result.vote, vote, runtime_result.validation.calculated_weight);
+  report.already_present = runtime_result.has_verified_vote_add && runtime_result.verified_vote_add.duplicate_vote_hash;
   if (!preverified_weight.has_value()) {
     PbftVote weighted_vote(fromBridgeBytes(runtime_result.weighted_vote_rlp));
     if (weighted_vote.rlp(true, false) != fromBridgeBytes(canonical_vote_rlp) ||

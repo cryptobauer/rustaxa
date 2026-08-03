@@ -166,6 +166,11 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
     if (process_result.report_slashing) {
       throw MaliciousPeerException("Received double vote", vote->getVoter());
     }
+#ifdef RUSTAXA_ENABLE
+    if (process_result.accepted || process_result.already_present) {
+      publishPbftVoteAdmission(vote, nullptr, peer, process_result, false);
+    }
+#endif
     if (!process_result.accepted) {
       continue;
     }

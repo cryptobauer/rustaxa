@@ -1,5 +1,5 @@
-//! CXX conversion and lock-error mapping for the Rust-owned network/tarcap API; native consensus owns canonical
-//! payload retention, lane-local queue ordering, and effect-result validation while callers execute typed effects.
+//! CXX conversion and lock-error mapping for the Rust-owned network/tarcap API; native consensus owns operation-specific
+//! routing, lane-local queue ordering, and effect-result validation while callers execute typed effects.
 
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeConsensusNetworkApi;
@@ -38,9 +38,9 @@ const fn vote_ingress_context_to_domain(
 
 /// Creates an empty Rust-owned network/tarcap consensus API facade.
 ///
-/// The returned handle owns ingress payload bytes and pending network effects.
-/// It does not own peer transport, packet framing, gossip fanout, or network
-/// scheduling; those remain external executor responsibilities.
+/// The returned handle owns pending typed network effects and their dependency
+/// state. It does not own peer transport, packet framing, gossip fanout, or
+/// network scheduling; those remain external executor responsibilities.
 pub fn create_consensus_network_api(
     config: rustaxa_ffi::NetworkApiConfig,
 ) -> Box<BridgeConsensusNetworkApi> {
@@ -52,35 +52,7 @@ pub fn create_consensus_network_api(
 }
 
 impl BridgeConsensusNetworkApi {
-    /// Accepts canonical packet bytes into Rust-owned consensus ingress storage.
-    ///
-    /// A successful receipt means only that the bytes were retained for later
-    /// packet-specific processing. It is not a protocol-validity or consensus
-    /// admission result.
-    pub fn consensus_network_ingest_packet(
-        &self,
-        packet: rustaxa_ffi::NetworkIngressPacket,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressReceipt> {
-        let mut api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
-        let receipt = api.ingest_packet(rustaxa_consensus::NetworkIngressPacket {
-            packet_type: packet.packet_type,
-            peer_id: packet.peer_id,
-            payload_bytes: packet.payload_bytes,
-            received_at_mono_ms: packet.received_at_mono_ms,
-            source_packet_id: packet.source_packet_id,
-        });
-        Ok(rustaxa_ffi::NetworkIngressReceipt {
-            accepted: receipt.accepted,
-            payload_id: receipt.payload_id.0,
-            status: receipt.status,
-            error_code: receipt.error_code,
-        })
-    }
-
-    /// Drains lane-owned effects in FIFO order, leaving other lanes queued.
+    /// Drains dependency-ready lane-owned effects in queue order, leaving other lanes queued.
     pub fn consensus_network_drain_work(
         &self,
         transport_lane: u32,
@@ -269,25 +241,23 @@ impl BridgeConsensusNetworkApi {
         })
     }
 
-    /// Queues canonical PBFT vote and optional block bytes whose lifetime is independent of the C++ producer.
-    pub fn consensus_network_gossip_pbft_vote(
+    /// Routes post-admission PBFT vote and optional block effects in dependency order.
+    pub fn consensus_network_route_pbft_vote_admission(
         &self,
-        effects: rustaxa_ffi::NetworkPbftVoteGossipEffects,
+        effects: rustaxa_ffi::NetworkPbftVoteAdmissionEffects,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         let mut api = self
             .api
             .lock()
             .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
-        Ok(to_bridge_network_ingress_decision(api.gossip_pbft_vote(
-            to_domain_pbft_vote_gossip_effects(effects),
-        )))
+        Ok(to_bridge_network_ingress_decision(
+            api.route_pbft_vote_admission(to_domain_pbft_vote_admission_effects(effects)),
+        ))
     }
 }
 
 fn to_domain_config(config: rustaxa_ffi::NetworkApiConfig) -> rustaxa_consensus::NetworkApiConfig {
     rustaxa_consensus::NetworkApiConfig {
-        max_payload_bytes: usize::try_from(config.max_payload_bytes).unwrap_or(usize::MAX),
-        max_retained_payloads: usize::try_from(config.max_retained_payloads).unwrap_or(usize::MAX),
         max_effects_per_drain: usize::try_from(config.max_effects_per_drain).unwrap_or(usize::MAX),
     }
 }
@@ -563,17 +533,22 @@ fn to_bridge_network_ingress_decision(
     }
 }
 
-fn to_domain_pbft_vote_gossip_effects(
-    value: rustaxa_ffi::NetworkPbftVoteGossipEffects,
-) -> rustaxa_consensus::NetworkPbftVoteGossipEffects {
-    rustaxa_consensus::NetworkPbftVoteGossipEffects {
+fn to_domain_pbft_vote_admission_effects(
+    value: rustaxa_ffi::NetworkPbftVoteAdmissionEffects,
+) -> rustaxa_consensus::NetworkPbftVoteAdmissionEffects {
+    rustaxa_consensus::NetworkPbftVoteAdmissionEffects {
         transport_lane: value.transport_lane,
         peer_id: value.peer_id,
         vote_hash: value.vote_hash,
         vote_rlp: value.vote_rlp,
-        pbft_block_rlp: value.pbft_block_rlp,
-        source_payload_id: value.source_payload_id,
+        accepted: value.accepted,
+        already_present: value.already_present,
+        mark_vote_known: value.mark_vote_known,
         gossip_vote: value.gossip_vote,
+        pbft_block_rlp: value.pbft_block_rlp,
+        pbft_block_hash: value.pbft_block_hash,
+        pbft_block_period: value.pbft_block_period,
+        source_payload_id: value.source_payload_id,
     }
 }
 

@@ -6,19 +6,6 @@
 
 namespace taraxa::network::tarcap {
 
-#ifdef RUSTAXA_ENABLE
-namespace {
-rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &input) {
-  rust::Vec<uint8_t> out;
-  out.reserve(input.size());
-  for (const auto byte : input) {
-    out.push_back(static_cast<uint8_t>(byte));
-  }
-  return out;
-}
-}  // namespace
-#endif
-
 VotePacketHandler::VotePacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                      std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
@@ -60,9 +47,8 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
                  << packet.vote->getVoterAddr();
   }
 
-  const auto vote_hash = packet.vote->getHash();
-
 #ifndef RUSTAXA_ENABLE
+  const auto vote_hash = packet.vote->getHash();
   const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
   if (!isPbftRelevantVote(packet.vote)) {
     LOG(log_dg_) << "Drop irrelevant vote " << vote_hash << " for current pbft state. Vote (period, round, step) = ("
@@ -99,34 +85,23 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
   if (process_result.report_slashing) {
     throw MaliciousPeerException("Received double vote", packet.vote->getVoter());
   }
+#ifdef RUSTAXA_ENABLE
+  if (process_result.accepted || process_result.already_present) {
+    publishPbftVoteAdmission(packet.vote, pbft_block, peer, process_result, true);
+  }
+#endif
   if (!process_result.accepted) {
     return;
   }
 
-#ifdef RUSTAXA_ENABLE
-#endif
-
   // Do not mark it before, as peers have small caches of known votes. Only mark gossiping votes
+#ifndef RUSTAXA_ENABLE
   if (process_result.mark_vote_known) {
     peer->markPbftVoteAsKnown(vote_hash);
   }
+#endif
 
-#ifdef RUSTAXA_ENABLE
-  if (process_result.gossip_vote) {
-    rustaxa::NetworkPbftVoteGossipEffects effects{};
-    effects.transport_lane = transport_lane_;
-    effects.peer_id = peer->getId().asArray();
-    effects.vote_hash = vote_hash.asArray();
-    effects.vote_rlp = toBridgeBytes(packet.vote->rlp(true, false));
-    if (pbft_block) {
-      effects.pbft_block_rlp = toBridgeBytes(pbft_block->rlp(true));
-    }
-    effects.source_payload_id = 0;
-    effects.gossip_vote = true;
-    (void)gossipPbftVote(effects);
-    executeConsensusNetworkEffects(16);
-  }
-#else
+#ifndef RUSTAXA_ENABLE
   if (process_result.gossip_vote) {
     pbft_mgr_->gossipVote(packet.vote, pbft_block);
   }

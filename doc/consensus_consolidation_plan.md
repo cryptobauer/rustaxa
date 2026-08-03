@@ -534,10 +534,16 @@ application runtimes; completing `CRW-N01` makes them deletable or replaces them
 
 Current network-root progress: `Network` owns the single `BridgeConsensusNetworkApi` lifetime and injects it through
 both tarcap capabilities into the vote, sync, DAG-status, and pillar-vote handler families. The shared queue is
-transport-lane aware, preventing latest/v5 cross-drain while preserving lane-local FIFO, and PBFT gossip effects carry
+transport-lane aware, preventing latest/v5 cross-drain while preserving queue order among dependency-ready effects, and
+PBFT gossip effects carry
 their canonical vote and optional block payloads rather than borrowing handler-local objects. Tarcap still executes peer
 state, wrapping, send, disconnect, and scheduling leaves; a shared per-lane lock serializes drain, execution, and
-acknowledgement across packet workers. Moving remaining admission and handler-local consensus routing
+acknowledgement across packet workers. Rust now orders post-admission proposed-block publication, peer-known updates,
+and gossip through dependency-checked effects; an exact verified-vote duplicate can therefore deliver a previously
+missing block without regossiping the vote. Failed block publication cancels dependent block-known and gossip effects.
+The unused generic packet shadow-ingress export, retained byte arena, payload-id allocator, and two partial capacity
+settings are deleted; packet families cross only through authoritative operation-specific routes. Moving remaining
+admission and handler-local consensus routing
 decisions behind the native pipeline is the next `CRW-N01` work, so this is a contraction milestone rather than item
 completion.
 

@@ -1,16 +1,16 @@
-//! External network/tarcap facade for Rust-owned consensus ingress.
+//! External network/tarcap facade for Rust-owned consensus routing.
 //!
 //! This module defines the narrow API that network/tarcap code should call
 //! instead of reaching into consensus managers or C++ shim classes. The facade
-//! accepts canonical packet bytes into a Rust-owned ingress arena and exposes an
-//! executor-facing effect queue. It deliberately does not own peer transport,
-//! packet wrapping, gossip fanout, disconnect execution, or tarcap scheduling.
+//! accepts operation-specific packet facts and exposes an executor-facing typed
+//! effect queue. It deliberately does not own peer transport, packet wrapping,
+//! gossip fanout, disconnect execution, or tarcap scheduling.
 //!
-//! Inputs are packet type ids, peer ids, canonical payload bytes, and executor
-//! result reports. Outputs are stable ingress receipts, ordered network effects,
-//! and acknowledgement summaries. The current first slice records ingress bytes
-//! and leaves effect production empty until packet-specific consensus pipelines
-//! are routed behind this API.
+//! Inputs are packet-family facts, peer/source context, canonical object bytes,
+//! and executor result reports. Outputs are stable routing decisions, ordered
+//! network effects, and acknowledgement summaries. Canonical bytes live only in
+//! the packet-family carrier or its queued effects; this API has no generic
+//! shadow-ingress arena.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -20,18 +20,8 @@ use crate::{
     plan_pbft_vote_ingress, plan_pillar_vote_relevance,
 };
 
-/// Network/tarcap packet bytes were accepted into the ingress arena.
+/// Network/tarcap packet facts were accepted for operation-specific routing.
 pub const NETWORK_INGRESS_STATUS_ACCEPTED: u8 = 0;
-/// Network/tarcap supplied an empty packet payload.
-pub const NETWORK_INGRESS_STATUS_REJECTED_EMPTY_PAYLOAD: u8 = 1;
-/// Network/tarcap supplied a packet type not routed by this first facade slice.
-pub const NETWORK_INGRESS_STATUS_UNSUPPORTED_PACKET_TYPE: u8 = 2;
-/// Network/tarcap supplied a payload larger than the configured boundary.
-pub const NETWORK_INGRESS_STATUS_PAYLOAD_TOO_LARGE: u8 = 3;
-/// Network/tarcap supplied bytes while the retained ingress arena was full.
-pub const NETWORK_INGRESS_STATUS_QUEUE_FULL: u8 = 4;
-/// Network/tarcap supplied bytes after payload ids were exhausted.
-pub const NETWORK_INGRESS_STATUS_PAYLOAD_ID_EXHAUSTED: u8 = 5;
 
 /// Network status/sync planner accepted the facts.
 pub const NETWORK_STATUS_PLAN_STATUS_OK: u8 = 0;
@@ -87,6 +77,8 @@ pub const NETWORK_EFFECT_KIND_DISCONNECT_PEER: u8 = 5;
 pub const NETWORK_EFFECT_KIND_BLOCK_PEER_ORDER: u8 = 6;
 /// Network effect asks the executor to drive PBFT progress.
 pub const NETWORK_EFFECT_KIND_DRIVE_CONSENSUS_PROGRESS: u8 = 7;
+/// Network effect asks the executor to publish one consensus object through its narrow application boundary.
+pub const NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT: u8 = 8;
 
 /// Network sync effect requests PBFT chain synchronization.
 pub const NETWORK_SYNC_KIND_PBFT_CHAIN: u8 = 0;
@@ -147,23 +139,14 @@ pub const NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE: u32 = 15;
 pub const NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE: u32 = 16;
 
 const ERROR_NONE: &str = "";
-const ERROR_REJECTED_EMPTY_PAYLOAD: &str = "NETWORK_INGRESS_REJECTED_EMPTY_PAYLOAD";
-const ERROR_UNSUPPORTED_PACKET_TYPE: &str = "NETWORK_INGRESS_UNSUPPORTED_PACKET_TYPE";
-const ERROR_PAYLOAD_TOO_LARGE: &str = "NETWORK_INGRESS_PAYLOAD_TOO_LARGE";
-const ERROR_QUEUE_FULL: &str = "NETWORK_INGRESS_QUEUE_FULL";
-const ERROR_PAYLOAD_ID_EXHAUSTED: &str = "NETWORK_INGRESS_PAYLOAD_ID_EXHAUSTED";
 const ERROR_UNKNOWN_EFFECT_ID: &str = "NETWORK_EFFECT_RESULT_UNKNOWN_EFFECT_ID";
 const ERROR_DUPLICATE_EFFECT_RESULT: &str = "NETWORK_EFFECT_RESULT_DUPLICATE_EFFECT_ID";
 const ERROR_INVALID_RESULT_STATUS: &str = "NETWORK_EFFECT_RESULT_INVALID_STATUS";
 const ERROR_MISMATCHED_EFFECT_RESULT: &str = "NETWORK_EFFECT_RESULT_MISMATCHED_EFFECT";
 
-/// Capacity limits for the external network/tarcap facade.
+/// Effect-drain limit for the external network/tarcap facade.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NetworkApiConfig {
-    /// Maximum accepted canonical packet payload size in bytes.
-    pub max_payload_bytes: usize,
-    /// Maximum number of retained ingress payloads.
-    pub max_retained_payloads: usize,
     /// Maximum number of effects returned by one drain call.
     pub max_effects_per_drain: usize,
 }
@@ -171,61 +154,9 @@ pub struct NetworkApiConfig {
 impl Default for NetworkApiConfig {
     fn default() -> Self {
         Self {
-            max_payload_bytes: 2 * 1024 * 1024,
-            max_retained_payloads: 8192,
             max_effects_per_drain: 1024,
         }
     }
-}
-
-/// Canonical packet bytes submitted by network/tarcap.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkIngressPacket {
-    /// Latest-tarcap packet type id.
-    pub packet_type: u32,
-    /// Sending node id as fixed 64-byte public key bytes.
-    pub peer_id: [u8; 64],
-    /// Canonical packet payload bytes.
-    pub payload_bytes: Vec<u8>,
-    /// Boundary-supplied monotonic receive timestamp in milliseconds.
-    pub received_at_mono_ms: u64,
-    /// Optional network-owned packet id for diagnostics. Rust stores and echoes
-    /// it only as ingress metadata.
-    pub source_packet_id: u64,
-}
-
-/// Opaque id for canonical payload bytes accepted from network/tarcap.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct NetworkPayloadId(pub u64);
-
-/// Canonical packet bytes accepted into Rust-owned ingress storage.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkIngressPayload {
-    /// Opaque payload id assigned by the facade.
-    pub payload_id: NetworkPayloadId,
-    /// Latest-tarcap packet type id.
-    pub packet_type: u32,
-    /// Sending node id as fixed 64-byte public key bytes.
-    pub peer_id: [u8; 64],
-    /// Canonical packet payload bytes.
-    pub payload_bytes: Vec<u8>,
-    /// Boundary-supplied monotonic receive timestamp in milliseconds.
-    pub received_at_mono_ms: u64,
-    /// Optional network-owned packet id for diagnostics.
-    pub source_packet_id: u64,
-}
-
-/// Result of accepting or rejecting packet bytes at the consensus boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkIngressReceipt {
-    /// Whether payload bytes were accepted into the Rust-owned ingress arena.
-    pub accepted: bool,
-    /// Opaque payload id. Zero is reserved for rejected ingress.
-    pub payload_id: NetworkPayloadId,
-    /// Stable ingress status code.
-    pub status: u8,
-    /// Stable textual status for boundary logs and tests.
-    pub error_code: String,
 }
 
 /// Executor-visible network effect planned by Rust consensus.
@@ -325,8 +256,7 @@ pub struct NetworkPbftVoteIngressContext {
     pub peer_id: [u8; 64],
     /// Peer PBFT chain size known by tarcap at ingress time.
     pub peer_pbft_chain_size: u64,
-    /// Optional retained packet payload id when this decision follows
-    /// [`ConsensusNetworkApi::ingest_packet`].
+    /// Optional network-owned source payload id for effect correlation.
     pub source_payload_id: u64,
 }
 
@@ -348,24 +278,34 @@ pub struct NetworkIngressDecision {
     pub queued_effect_count: u32,
 }
 
-/// Accepted-vote gossip effects derived after verified-vote admission.
+/// Authoritative post-admission routing facts for one PBFT vote.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkPbftVoteGossipEffects {
+pub struct NetworkPbftVoteAdmissionEffects {
     /// Tarcap version/lane that must execute the gossip effect.
     pub transport_lane: u32,
     /// Peer that supplied the accepted vote. The network executor may use this
     /// identity for exclusion or peer-cache checks.
     pub peer_id: [u8; 64],
-    /// Accepted vote hash used to validate the canonical vote payload.
+    /// Vote hash used to validate the canonical vote payload.
     pub vote_hash: [u8; 32],
     /// Canonical unweighted signed PBFT vote RLP.
     pub vote_rlp: Vec<u8>,
+    /// Whether native verified-vote admission inserted the vote.
+    pub accepted: bool,
+    /// Whether the exact vote was already present in native replay state.
+    pub already_present: bool,
+    /// Whether the supplying peer should record the vote as known.
+    pub mark_vote_known: bool,
+    /// Whether accepted-vote gossip should be queued.
+    pub gossip_vote: bool,
     /// Optional canonical signed PBFT block RLP carried with a propose vote.
     pub pbft_block_rlp: Vec<u8>,
+    /// Optional PBFT block hash matching `pbft_block_rlp`.
+    pub pbft_block_hash: [u8; 32],
+    /// Optional PBFT block period matching `pbft_block_rlp`.
+    pub pbft_block_period: u64,
     /// Optional retained packet payload id.
     pub source_payload_id: u64,
-    /// Whether the network executor should gossip the accepted vote.
-    pub gossip_vote: bool,
 }
 
 /// Compact local and peer facts needed to plan status-triggered sync work.
@@ -616,19 +556,17 @@ pub struct NetworkPendingDagBlocksRequestPlan {
 
 /// Rust-owned external network/tarcap API facade.
 ///
-/// The facade owns canonical ingress payload bytes and an ordered network
-/// effect queue. It is intentionally small: packet-specific decoding and
+/// The facade owns an ordered network effect queue. It is intentionally small: packet-specific decoding and
 /// consensus planning should be added behind this type without exposing
 /// consensus managers, C++ sidecars, storage handles, or shim routes to the
 /// network module.
 #[derive(Debug, Default)]
 pub struct ConsensusNetworkApi {
     config: NetworkApiConfig,
-    next_payload_id: u64,
     next_effect_id: u64,
-    ingress_payloads: Vec<NetworkIngressPayload>,
     pending_effects: VecDeque<NetworkEffect>,
     outstanding_effects: HashMap<u64, NetworkEffect>,
+    completed_dependency_status: HashMap<u64, bool>,
     effect_results: Vec<NetworkEffectResult>,
 }
 
@@ -645,89 +583,20 @@ impl ConsensusNetworkApi {
     pub fn with_config(config: NetworkApiConfig) -> Self {
         Self {
             config,
-            next_payload_id: 1,
             next_effect_id: 1,
-            ingress_payloads: Vec::new(),
             pending_effects: VecDeque::new(),
             outstanding_effects: HashMap::new(),
+            completed_dependency_status: HashMap::new(),
             effect_results: Vec::new(),
         }
     }
 
-    /// Accepts canonical packet bytes into the Rust-owned ingress arena.
+    /// Drains up to `budget` dependency-ready effects for one transport lane.
     ///
-    /// Empty payloads are rejected at the boundary because there are no
-    /// canonical bytes for later packet-specific planners to inspect. A
-    /// successful receipt means only that bytes were stored; it does not mean
-    /// the packet is protocol-valid or consensus-accepted.
-    pub fn ingest_packet(&mut self, packet: NetworkIngressPacket) -> NetworkIngressReceipt {
-        if !is_supported_ingress_packet(packet.packet_type) {
-            return NetworkIngressReceipt {
-                accepted: false,
-                payload_id: NetworkPayloadId(0),
-                status: NETWORK_INGRESS_STATUS_UNSUPPORTED_PACKET_TYPE,
-                error_code: ERROR_UNSUPPORTED_PACKET_TYPE.to_owned(),
-            };
-        }
-
-        if packet.payload_bytes.is_empty() {
-            return NetworkIngressReceipt {
-                accepted: false,
-                payload_id: NetworkPayloadId(0),
-                status: NETWORK_INGRESS_STATUS_REJECTED_EMPTY_PAYLOAD,
-                error_code: ERROR_REJECTED_EMPTY_PAYLOAD.to_owned(),
-            };
-        }
-
-        if packet.payload_bytes.len() > self.config.max_payload_bytes {
-            return NetworkIngressReceipt {
-                accepted: false,
-                payload_id: NetworkPayloadId(0),
-                status: NETWORK_INGRESS_STATUS_PAYLOAD_TOO_LARGE,
-                error_code: ERROR_PAYLOAD_TOO_LARGE.to_owned(),
-            };
-        }
-
-        if self.ingress_payloads.len() >= self.config.max_retained_payloads {
-            return NetworkIngressReceipt {
-                accepted: false,
-                payload_id: NetworkPayloadId(0),
-                status: NETWORK_INGRESS_STATUS_QUEUE_FULL,
-                error_code: ERROR_QUEUE_FULL.to_owned(),
-            };
-        }
-
-        let payload_id = NetworkPayloadId(self.next_payload_id);
-        let Some(next_payload_id) = self.next_payload_id.checked_add(1) else {
-            return NetworkIngressReceipt {
-                accepted: false,
-                payload_id: NetworkPayloadId(0),
-                status: NETWORK_INGRESS_STATUS_PAYLOAD_ID_EXHAUSTED,
-                error_code: ERROR_PAYLOAD_ID_EXHAUSTED.to_owned(),
-            };
-        };
-        self.next_payload_id = next_payload_id;
-        self.ingress_payloads.push(NetworkIngressPayload {
-            payload_id,
-            packet_type: packet.packet_type,
-            peer_id: packet.peer_id,
-            payload_bytes: packet.payload_bytes,
-            received_at_mono_ms: packet.received_at_mono_ms,
-            source_packet_id: packet.source_packet_id,
-        });
-
-        NetworkIngressReceipt {
-            accepted: true,
-            payload_id,
-            status: NETWORK_INGRESS_STATUS_ACCEPTED,
-            error_code: ERROR_NONE.to_owned(),
-        }
-    }
-
-    /// Drains up to `budget` effects for one transport lane in lane-local FIFO order.
-    ///
-    /// A zero budget is valid. Effects owned by other lanes remain queued, and
-    /// `more_available` reports only work remaining for the requested lane.
+    /// Ready effects retain queue order, but an unresolved dependency may be
+    /// overtaken by later independent work in the same lane. A zero budget is
+    /// valid. Effects owned by other lanes remain queued, and `more_available`
+    /// reports only work remaining for the requested lane.
     #[must_use]
     pub fn drain_work(&mut self, transport_lane: u32, budget: u32) -> NetworkEffectBatch {
         let mut effects = Vec::new();
@@ -735,7 +604,11 @@ impl ConsensusNetworkApi {
             .unwrap_or(usize::MAX)
             .min(self.config.max_effects_per_drain);
         let mut retained = VecDeque::new();
-        while effects.len() < capped_budget {
+        let queued_count = self.pending_effects.len();
+        for _ in 0..queued_count {
+            if effects.len() >= capped_budget {
+                break;
+            }
             let Some(effect) = self.pending_effects.pop_front() else {
                 break;
             };
@@ -743,12 +616,29 @@ impl ConsensusNetworkApi {
                 retained.push_back(effect);
                 continue;
             }
+            if effect.dependency_id != 0 {
+                match self.completed_dependency_status.get(&effect.dependency_id) {
+                    Some(true) => {}
+                    Some(false) => {
+                        continue;
+                    }
+                    None => {
+                        retained.push_back(effect);
+                        continue;
+                    }
+                }
+            }
             self.outstanding_effects
                 .insert(effect.effect_id, effect.clone());
             effects.push(effect);
         }
         retained.append(&mut self.pending_effects);
         self.pending_effects = retained;
+        self.completed_dependency_status.retain(|effect_id, _| {
+            self.pending_effects
+                .iter()
+                .any(|effect| effect.dependency_id == *effect_id)
+        });
         NetworkEffectBatch {
             status: NETWORK_EFFECT_BATCH_STATUS_OK,
             effects,
@@ -805,6 +695,16 @@ impl ConsensusNetworkApi {
         if status == NETWORK_EFFECT_ACK_STATUS_ACCEPTED {
             for result in &results {
                 self.outstanding_effects.remove(&result.effect_id);
+                if self
+                    .pending_effects
+                    .iter()
+                    .any(|effect| effect.dependency_id == result.effect_id)
+                {
+                    self.completed_dependency_status.insert(
+                        result.effect_id,
+                        result.status == NETWORK_EFFECT_RESULT_STATUS_OK,
+                    );
+                }
             }
             self.effect_results.extend(results);
         }
@@ -938,18 +838,96 @@ impl ConsensusNetworkApi {
         self.decision_from_vote_plan(plan, vote, context)
     }
 
-    /// Queues network effects derived from accepted PBFT vote gossip.
+    /// Queues ordered network effects after native PBFT vote admission.
     ///
-    /// Rust owns the decision that an accepted vote should be gossiped. The
-    /// network executor still owns materialization, peer filtering, packet
-    /// wrapping, and transport. Canonical payloads make the queued effect
-    /// independent of the handler-local objects that produced it.
-    pub fn gossip_pbft_vote(
+    /// Exact replay duplicates may still deliver an attached proposed block,
+    /// closing the historical case where an already-known vote caused the
+    /// handler to discard a previously unseen block sidecar. Proposed-block
+    /// publication remains an application leaf effect; gossip and block-known
+    /// publication depend on that effect succeeding.
+    pub fn route_pbft_vote_admission(
         &mut self,
-        effects: NetworkPbftVoteGossipEffects,
+        effects: NetworkPbftVoteAdmissionEffects,
     ) -> NetworkIngressDecision {
         let before_effects = self.pending_effects.len();
-        if effects.gossip_vote {
+        if !effects.accepted && !effects.already_present {
+            return NetworkIngressDecision {
+                payload_id: effects.source_payload_id,
+                payload_accepted: effects.source_payload_id != 0,
+                routed: true,
+                status: NETWORK_INGRESS_STATUS_ACCEPTED,
+                error_code: ERROR_NONE.to_owned(),
+                queued_effect_count: 0,
+            };
+        }
+
+        let block_effect_id = if effects.pbft_block_rlp.is_empty() {
+            0
+        } else {
+            let effect_id = self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                transport_lane: effects.transport_lane,
+                kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+                peer_id: effects.peer_id,
+                packet_kind: 0,
+                payload_bytes: effects.pbft_block_rlp.clone(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,
+                object_hash: effects.pbft_block_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: effects.pbft_block_period,
+                round: 0,
+            });
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                transport_lane: effects.transport_lane,
+                kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                peer_id: effects.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,
+                object_hash: effects.pbft_block_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: effect_id,
+                period: effects.pbft_block_period,
+                round: 0,
+            });
+            effect_id
+        };
+
+        if effects.mark_vote_known || effects.already_present {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                transport_lane: effects.transport_lane,
+                kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                peer_id: effects.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+                object_hash: effects.vote_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+
+        if effects.accepted && effects.gossip_vote {
             self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
                 source_payload_id: effects.source_payload_id,
@@ -965,7 +943,7 @@ impl ConsensusNetworkApi {
                 sync_kind: 0,
                 sync_start: 0,
                 reason_code: 0,
-                dependency_id: 0,
+                dependency_id: block_effect_id,
                 period: 0,
                 round: 0,
             });
@@ -1119,23 +1097,11 @@ impl ConsensusNetworkApi {
         }
     }
 
-    /// Returns the number of accepted ingress payloads retained by the facade.
-    #[must_use]
-    pub fn ingress_len(&self) -> usize {
-        self.ingress_payloads.len()
-    }
-
-    /// Returns the latest accepted ingress payload.
-    #[must_use]
-    pub fn latest_ingress(&self) -> Option<&NetworkIngressPayload> {
-        self.ingress_payloads.last()
-    }
-
     /// Enqueues an executor effect for tests and future packet-specific
     /// planners.
     pub fn enqueue_effect(&mut self, mut effect: NetworkEffect) -> u64 {
         let effect_id = self.next_effect_id;
-        self.next_effect_id = self.next_effect_id.checked_add(1).unwrap_or(u64::MAX);
+        self.next_effect_id = self.next_effect_id.saturating_add(1);
         effect.effect_id = effect_id;
         self.pending_effects.push_back(effect);
         effect_id
@@ -1432,30 +1398,6 @@ fn select_serviceable_max_chain_peer(
         })
 }
 
-fn is_supported_ingress_packet(packet_type: u32) -> bool {
-    // Keep this first direct network facade slice intentionally narrow. The
-    // current latest-tarcap packet ids come from `SubprotocolPacketType`:
-    // `kVotePacket = 1`, `kGetNextVotesSyncPacket = 2`, `kVotesBundlePacket = 3`, `kDagBlockPacket = 5`,
-    // `kDagSyncPacket = 6`, `kTransactionPacket = 7`,
-    // `kGetPbftSyncPacket = 10`, `kPbftSyncPacket = 11`, `kGetDagSyncPacket = 12`, `kPillarVotePacket = 13`,
-    // `kGetPillarVotesBundlePacket = 14`, `kPillarVotesBundlePacket = 15`, and `kPbftBlocksBundlePacket = 16`.
-    matches!(
-        packet_type,
-        1 | NETWORK_PACKET_KIND_GET_NEXT_VOTES_SYNC
-            | 3
-            | NETWORK_PACKET_KIND_DAG_BLOCK
-            | NETWORK_PACKET_KIND_DAG_SYNC
-            | NETWORK_PACKET_KIND_TRANSACTION
-            | NETWORK_PACKET_KIND_GET_PBFT_SYNC
-            | NETWORK_PACKET_KIND_PBFT_SYNC
-            | NETWORK_PACKET_KIND_GET_DAG_SYNC
-            | NETWORK_PACKET_KIND_PILLAR_VOTE
-            | NETWORK_PACKET_KIND_GET_PILLAR_VOTES_BUNDLE
-            | NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE
-            | NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE
-    )
-}
-
 fn effect_result_matches_effect(result: &NetworkEffectResult, effect: &NetworkEffect) -> bool {
     result.kind == effect.kind
         && result.peer_id == effect.peer_id
@@ -1489,16 +1431,6 @@ mod tests {
 
     fn peer(byte: u8) -> [u8; 64] {
         [byte; 64]
-    }
-
-    fn packet(packet_type: u32, payload_bytes: Vec<u8>) -> NetworkIngressPacket {
-        NetworkIngressPacket {
-            packet_type,
-            peer_id: peer(3),
-            payload_bytes,
-            received_at_mono_ms: 44,
-            source_packet_id: 99,
-        }
     }
 
     const fn vote_fact(
@@ -1613,89 +1545,6 @@ mod tests {
             status,
             diagnostic: String::new(),
         }
-    }
-
-    #[test]
-    fn ingest_packet_accepts_canonical_bytes_without_protocol_acceptance() {
-        let mut api = ConsensusNetworkApi::new();
-
-        let receipt = api.ingest_packet(packet(1, vec![1, 2, 3]));
-
-        assert!(receipt.accepted);
-        assert_eq!(receipt.status, NETWORK_INGRESS_STATUS_ACCEPTED);
-        assert_eq!(receipt.error_code, "");
-        assert_eq!(receipt.payload_id, NetworkPayloadId(1));
-        assert_eq!(api.ingress_len(), 1);
-
-        let latest = api.latest_ingress().expect("accepted ingress payload");
-        assert_eq!(latest.packet_type, 1);
-        assert_eq!(latest.peer_id, peer(3));
-        assert_eq!(latest.payload_bytes, vec![1, 2, 3]);
-        assert_eq!(latest.received_at_mono_ms, 44);
-        assert_eq!(latest.source_packet_id, 99);
-    }
-
-    #[test]
-    fn ingest_packet_rejects_empty_payload_without_allocating_id() {
-        let mut api = ConsensusNetworkApi::new();
-
-        let receipt = api.ingest_packet(packet(1, Vec::new()));
-
-        assert!(!receipt.accepted);
-        assert_eq!(
-            receipt.status,
-            NETWORK_INGRESS_STATUS_REJECTED_EMPTY_PAYLOAD
-        );
-        assert_eq!(receipt.error_code, ERROR_REJECTED_EMPTY_PAYLOAD);
-        assert_eq!(receipt.payload_id, NetworkPayloadId(0));
-        assert_eq!(api.ingress_len(), 0);
-    }
-
-    #[test]
-    fn ingest_packet_rejects_unsupported_packet_type() {
-        let mut api = ConsensusNetworkApi::new();
-
-        let receipt = api.ingest_packet(packet(9, vec![1]));
-
-        assert!(!receipt.accepted);
-        assert_eq!(
-            receipt.status,
-            NETWORK_INGRESS_STATUS_UNSUPPORTED_PACKET_TYPE
-        );
-        assert_eq!(receipt.error_code, ERROR_UNSUPPORTED_PACKET_TYPE);
-        assert_eq!(receipt.payload_id, NetworkPayloadId(0));
-        assert_eq!(api.ingress_len(), 0);
-    }
-
-    #[test]
-    fn ingest_packet_rejects_over_capacity_payloads() {
-        let mut api = ConsensusNetworkApi::with_config(NetworkApiConfig {
-            max_payload_bytes: 1,
-            max_retained_payloads: 10,
-            max_effects_per_drain: 10,
-        });
-
-        let receipt = api.ingest_packet(packet(1, vec![1, 2]));
-
-        assert!(!receipt.accepted);
-        assert_eq!(receipt.status, NETWORK_INGRESS_STATUS_PAYLOAD_TOO_LARGE);
-        assert_eq!(receipt.error_code, ERROR_PAYLOAD_TOO_LARGE);
-    }
-
-    #[test]
-    fn ingest_packet_rejects_full_arena() {
-        let mut api = ConsensusNetworkApi::with_config(NetworkApiConfig {
-            max_payload_bytes: 10,
-            max_retained_payloads: 1,
-            max_effects_per_drain: 10,
-        });
-
-        assert!(api.ingest_packet(packet(1, vec![1])).accepted);
-        let receipt = api.ingest_packet(packet(3, vec![2]));
-
-        assert!(!receipt.accepted);
-        assert_eq!(receipt.status, NETWORK_INGRESS_STATUS_QUEUE_FULL);
-        assert_eq!(receipt.error_code, ERROR_QUEUE_FULL);
     }
 
     #[test]
@@ -2350,50 +2199,175 @@ mod tests {
     }
 
     #[test]
-    fn gossip_pbft_vote_gossips_vote_packet() {
+    fn post_admission_route_orders_block_publication_before_gossip() {
         let mut api = ConsensusNetworkApi::new();
         let vote_rlp = vec![0xc3, 1, 2, 3];
         let block_rlp = vec![0xc2, 4, 5];
 
-        let decision = api.gossip_pbft_vote(NetworkPbftVoteGossipEffects {
+        let decision = api.route_pbft_vote_admission(NetworkPbftVoteAdmissionEffects {
             transport_lane: 6,
             peer_id: peer(10),
             vote_hash: hash(0xEF),
             vote_rlp: vote_rlp.clone(),
-            pbft_block_rlp: block_rlp.clone(),
-            source_payload_id: 79,
+            accepted: true,
+            already_present: false,
+            mark_vote_known: false,
             gossip_vote: true,
+            pbft_block_rlp: block_rlp.clone(),
+            pbft_block_hash: hash(0xAB),
+            pbft_block_period: 42,
+            source_payload_id: 79,
         });
 
         assert!(decision.routed);
         assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
-        assert_eq!(decision.queued_effect_count, 1);
+        assert_eq!(decision.queued_effect_count, 3);
 
-        let batch = api.drain_work(6, 10);
-        assert_eq!(batch.effects.len(), 1);
-        assert_eq!(batch.effects[0].kind, NETWORK_EFFECT_KIND_GOSSIP_PACKET);
-        assert_eq!(batch.effects[0].peer_id, peer(10));
-        assert_eq!(batch.effects[0].packet_kind, NETWORK_PACKET_KIND_PBFT_VOTE);
-        assert_eq!(batch.effects[0].exclude_peers, vec![peer(10)]);
-        assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_VOTE);
-        assert_eq!(batch.effects[0].object_hash, hash(0xEF));
-        assert_eq!(batch.effects[0].payload_bytes, vote_rlp);
-        assert_eq!(batch.effects[0].related_payload_bytes, block_rlp);
-        assert_eq!(batch.effects[0].source_payload_id, 79);
+        let publication = api.drain_work(6, 10);
+        assert_eq!(publication.effects.len(), 1);
+        assert_eq!(
+            publication.effects[0].kind,
+            NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+        );
+        assert_eq!(publication.effects[0].object_hash, hash(0xAB));
+        assert_eq!(publication.effects[0].payload_bytes, block_rlp);
+        let publication_id = publication.effects[0].effect_id;
+        api.report_effect_results(vec![effect_result(
+            &publication.effects[0],
+            NETWORK_EFFECT_RESULT_STATUS_OK,
+        )]);
+
+        let dependents = api.drain_work(6, 10);
+        assert_eq!(dependents.effects.len(), 2);
+        assert_eq!(
+            dependents.effects[0].kind,
+            NETWORK_EFFECT_KIND_MARK_PEER_KNOWN
+        );
+        assert_eq!(
+            dependents.effects[0].object_kind,
+            NETWORK_OBJECT_KIND_PBFT_BLOCK
+        );
+        assert_eq!(dependents.effects[0].dependency_id, publication_id);
+        assert_eq!(
+            dependents.effects[1].kind,
+            NETWORK_EFFECT_KIND_GOSSIP_PACKET
+        );
+        assert_eq!(dependents.effects[1].peer_id, peer(10));
+        assert_eq!(
+            dependents.effects[1].packet_kind,
+            NETWORK_PACKET_KIND_PBFT_VOTE
+        );
+        assert_eq!(dependents.effects[1].exclude_peers, vec![peer(10)]);
+        assert_eq!(
+            dependents.effects[1].object_kind,
+            NETWORK_OBJECT_KIND_PBFT_VOTE
+        );
+        assert_eq!(dependents.effects[1].object_hash, hash(0xEF));
+        assert_eq!(dependents.effects[1].payload_bytes, vote_rlp);
+        assert_eq!(
+            dependents.effects[1].related_payload_bytes,
+            vec![0xc2, 4, 5]
+        );
+        assert_eq!(dependents.effects[1].source_payload_id, 79);
+        assert_eq!(dependents.effects[1].dependency_id, publication_id);
+    }
+
+    #[test]
+    fn exact_duplicate_still_routes_attached_proposed_block_without_gossip() {
+        let mut api = ConsensusNetworkApi::new();
+        let decision = api.route_pbft_vote_admission(NetworkPbftVoteAdmissionEffects {
+            transport_lane: 6,
+            peer_id: peer(9),
+            vote_hash: hash(0xAA),
+            vote_rlp: vec![0xc1, 1],
+            accepted: false,
+            already_present: true,
+            mark_vote_known: false,
+            gossip_vote: true,
+            pbft_block_rlp: vec![0xc1, 2],
+            pbft_block_hash: hash(0xBB),
+            pbft_block_period: 11,
+            source_payload_id: 0,
+        });
+
+        assert_eq!(decision.queued_effect_count, 3);
+        let first = api.drain_work(6, 10);
+        assert_eq!(first.effects.len(), 2);
+        // The block-known effect was queued second but remains dependency-blocked;
+        // the independent vote-known effect may overtake it by contract.
+        assert_eq!(first.effects[0].effect_id, 1);
+        assert_eq!(first.effects[1].effect_id, 3);
+        assert_eq!(
+            first.effects[0].kind,
+            NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+        );
+        assert_eq!(first.effects[1].object_kind, NETWORK_OBJECT_KIND_PBFT_VOTE);
+        assert!(
+            first
+                .effects
+                .iter()
+                .all(|effect| effect.kind != NETWORK_EFFECT_KIND_GOSSIP_PACKET)
+        );
+        api.report_effect_results(vec![effect_result(
+            &first.effects[0],
+            NETWORK_EFFECT_RESULT_STATUS_OK,
+        )]);
+        let dependent = api.drain_work(6, 10);
+        assert_eq!(dependent.effects.len(), 1);
+        assert_eq!(dependent.effects[0].effect_id, 2);
+        assert_eq!(
+            dependent.effects[0].object_kind,
+            NETWORK_OBJECT_KIND_PBFT_BLOCK
+        );
+    }
+
+    #[test]
+    fn failed_block_publication_cancels_dependent_known_and_gossip_effects() {
+        let mut api = ConsensusNetworkApi::new();
+        api.route_pbft_vote_admission(NetworkPbftVoteAdmissionEffects {
+            transport_lane: 6,
+            peer_id: peer(9),
+            vote_hash: hash(0xAA),
+            vote_rlp: vec![0xc1, 1],
+            accepted: true,
+            already_present: false,
+            mark_vote_known: false,
+            gossip_vote: true,
+            pbft_block_rlp: vec![0xc1, 2],
+            pbft_block_hash: hash(0xBB),
+            pbft_block_period: 11,
+            source_payload_id: 0,
+        });
+
+        let publication = api.drain_work(6, 10);
+        assert_eq!(publication.effects.len(), 1);
+        api.report_effect_results(vec![effect_result(
+            &publication.effects[0],
+            NETWORK_EFFECT_RESULT_STATUS_FAILED,
+        )]);
+
+        let cancelled = api.drain_work(6, 10);
+        assert!(cancelled.effects.is_empty());
+        assert!(!cancelled.more_available);
     }
 
     #[test]
     fn gossip_payloads_survive_producer_scope_and_drain_fifo() {
         let mut api = ConsensusNetworkApi::new();
         for byte in [1, 2] {
-            api.gossip_pbft_vote(NetworkPbftVoteGossipEffects {
+            api.route_pbft_vote_admission(NetworkPbftVoteAdmissionEffects {
                 transport_lane: 6,
                 peer_id: peer(byte),
                 vote_hash: hash(byte),
                 vote_rlp: vec![0xc1, byte],
-                pbft_block_rlp: Vec::new(),
-                source_payload_id: u64::from(byte),
+                accepted: true,
+                already_present: false,
+                mark_vote_known: false,
                 gossip_vote: true,
+                pbft_block_rlp: Vec::new(),
+                pbft_block_hash: [0; 32],
+                pbft_block_period: 0,
+                source_payload_id: u64::from(byte),
             });
         }
 
@@ -2413,14 +2387,19 @@ mod tests {
     fn drain_work_isolates_interleaved_transport_lanes() {
         let mut api = ConsensusNetworkApi::new();
         for (transport_lane, byte) in [(6, 1), (5, 2), (6, 3), (5, 4)] {
-            api.gossip_pbft_vote(NetworkPbftVoteGossipEffects {
+            api.route_pbft_vote_admission(NetworkPbftVoteAdmissionEffects {
                 transport_lane,
                 peer_id: peer(byte),
                 vote_hash: hash(byte),
                 vote_rlp: vec![0xc1, byte],
-                pbft_block_rlp: Vec::new(),
-                source_payload_id: u64::from(byte),
+                accepted: true,
+                already_present: false,
+                mark_vote_known: false,
                 gossip_vote: true,
+                pbft_block_rlp: Vec::new(),
+                pbft_block_hash: [0; 32],
+                pbft_block_period: 0,
+                source_payload_id: u64::from(byte),
             });
         }
 

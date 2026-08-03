@@ -30,6 +30,15 @@ constexpr uint8_t kNetworkObjectKindPbftVote = 0;
 constexpr uint8_t kNetworkObjectKindPbftBlock = 1;
 constexpr uint32_t kNetworkPacketKindPbftVote = 1;
 
+rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &input) {
+  rust::Vec<uint8_t> out;
+  out.reserve(input.size());
+  for (const auto byte : input) {
+    out.push_back(static_cast<uint8_t>(byte));
+  }
+  return out;
+}
+
 }  // namespace
 #endif
 
@@ -117,9 +126,14 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   }
 
   VoteProcessingResult result{};
+  if (vote_mgr_->voteInVerifiedMap(vote)) {
+    result.already_present = true;
+    return result;
+  }
   try {
     const auto admission_report = vote_mgr_->addVerifiedVoteWithReport(vote);
     result.accepted = admission_report.accepted;
+    result.already_present = admission_report.already_present;
     result.mark_vote_known = admission_report.mark_vote_known;
     result.gossip_vote = admission_report.gossip_vote;
     result.report_slashing = admission_report.report_slashing;
@@ -129,24 +143,9 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
     return {};
   }
 
-  if (!result.accepted) {
+  if (!result.accepted && !result.already_present) {
     LOG(this->log_dg_) << "Vote " << vote->getHash() << " was not admitted by Rust vote transition";
     return result;
-  }
-
-  if (result.mark_vote_known) {
-    peer->markPbftVoteAsKnown(vote->getHash());
-  }
-
-  if (pbft_block) {
-    try {
-      pbft_mgr_->processProposedBlock(pbft_block);
-      peer->markPbftBlockAsKnown(pbft_block->getBlockHash());
-    } catch (const std::exception &e) {
-      LOG(this->log_wr_) << "Unable to process PBFT proposed-block sidecar from vote " << vote->getHash()
-                         << ". Err msg: " << e.what();
-      return {};
-    }
   }
 
   return result;
@@ -329,120 +328,151 @@ rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVoteBundleMembe
   return rust_consensus_network_api_->api().consensus_network_ingest_pbft_vote_bundle_member(reference, vote, context);
 }
 
-rustaxa::NetworkIngressDecision ExtVotesPacketHandler::gossipPbftVote(
-    const rustaxa::NetworkPbftVoteGossipEffects &effects) {
+rustaxa::NetworkIngressDecision ExtVotesPacketHandler::routePbftVoteAdmission(
+    const rustaxa::NetworkPbftVoteAdmissionEffects &effects) {
   assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api().consensus_network_gossip_pbft_vote(effects);
+  return rust_consensus_network_api_->api().consensus_network_route_pbft_vote_admission(effects);
+}
+
+void ExtVotesPacketHandler::publishPbftVoteAdmission(const std::shared_ptr<PbftVote> &vote,
+                                                     const std::shared_ptr<PbftBlock> &pbft_block,
+                                                     const std::shared_ptr<TaraxaPeer> &peer,
+                                                     const VoteProcessingResult &result, bool gossip_vote) {
+  rustaxa::NetworkPbftVoteAdmissionEffects effects{};
+  effects.transport_lane = transport_lane_;
+  effects.peer_id = peer->getId().asArray();
+  effects.vote_hash = vote->getHash().asArray();
+  effects.vote_rlp = toBridgeBytes(vote->rlp(true, false));
+  effects.accepted = result.accepted;
+  effects.already_present = result.already_present;
+  effects.mark_vote_known = result.mark_vote_known;
+  effects.gossip_vote = gossip_vote && result.gossip_vote;
+  if (pbft_block) {
+    effects.pbft_block_rlp = toBridgeBytes(pbft_block->rlp(true));
+    effects.pbft_block_hash = pbft_block->getBlockHash().asArray();
+    effects.pbft_block_period = pbft_block->getPeriod();
+  }
+  effects.source_payload_id = 0;
+  (void)routePbftVoteAdmission(effects);
+  executeConsensusNetworkEffects(16);
 }
 
 void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
   assert(rust_consensus_network_api_);
   auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(transport_lane_);
-  const auto batch = rust_consensus_network_api_->api().consensus_network_drain_work(
-      static_cast<uint32_t>(transport_lane_), static_cast<uint32_t>(budget));
-  rust::Vec<rustaxa::NetworkEffectResult> results;
-  results.reserve(batch.effects.size());
+  auto remaining_budget = budget;
+  while (remaining_budget != 0) {
+    const auto batch = rust_consensus_network_api_->api().consensus_network_drain_work(
+        static_cast<uint32_t>(transport_lane_), static_cast<uint32_t>(remaining_budget));
+    if (batch.effects.empty()) {
+      break;
+    }
+    rust::Vec<rustaxa::NetworkEffectResult> results;
+    results.reserve(batch.effects.size());
 
-  for (const auto &effect : batch.effects) {
-    rustaxa::NetworkEffectResult result{};
-    result.effect_id = effect.effect_id;
-    result.kind = effect.kind;
-    result.peer_id = effect.peer_id;
-    result.packet_kind = effect.packet_kind;
-    result.object_kind = effect.object_kind;
-    result.object_hash = effect.object_hash;
-    result.status = kNetworkEffectResultStatusOk;
+    for (const auto &effect : batch.effects) {
+      rustaxa::NetworkEffectResult result{};
+      result.effect_id = effect.effect_id;
+      result.kind = effect.kind;
+      result.peer_id = effect.peer_id;
+      result.packet_kind = effect.packet_kind;
+      result.object_kind = effect.object_kind;
+      result.object_hash = effect.object_hash;
+      result.status = kNetworkEffectResultStatusOk;
 
-    try {
-      const dev::p2p::NodeID peer_id(effect.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
-      if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftChain) {
-        sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
-                    encodePacketRlp(GetPbftSyncPacket{effect.sync_start}));
-        last_pbft_block_sync_request_time_ = std::chrono::system_clock::now();
-      } else if (effect.kind == kNetworkEffectKindGossipPacket && effect.packet_kind == kNetworkPacketKindPbftVote) {
-        auto gossip_vote = std::make_shared<PbftVote>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
-        if (gossip_vote->getHash().asArray() != effect.object_hash) {
-          throw std::runtime_error("Network API PBFT vote gossip effect has mismatched vote payload");
-        }
-        std::shared_ptr<PbftBlock> gossip_block;
-        if (!effect.related_payload_bytes.empty()) {
-          gossip_block = std::make_shared<PbftBlock>(
-              bytes(effect.related_payload_bytes.begin(), effect.related_payload_bytes.end()));
-          if (gossip_block->getBlockHash() != gossip_vote->getBlockHash()) {
-            throw std::runtime_error("Network API PBFT vote gossip effect has mismatched PBFT block payload");
+      try {
+        const dev::p2p::NodeID peer_id(effect.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
+        if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftChain) {
+          sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
+                      encodePacketRlp(GetPbftSyncPacket{effect.sync_start}));
+          last_pbft_block_sync_request_time_ = std::chrono::system_clock::now();
+        } else if (effect.kind == kNetworkEffectKindGossipPacket && effect.packet_kind == kNetworkPacketKindPbftVote) {
+          auto gossip_vote =
+              std::make_shared<PbftVote>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
+          if (gossip_vote->getHash().asArray() != effect.object_hash) {
+            throw std::runtime_error("Network API PBFT vote gossip effect has mismatched vote payload");
           }
-        }
-        for (const auto &peer : peers_state_->getAllPeers()) {
-          if (peer.second->syncing_) {
-            LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " not sent to " << peer.first << " peer syncing";
-            continue;
-          }
-
-          bool excluded = false;
-          for (const auto &excluded_peer : effect.exclude_peers) {
-            if (dev::p2p::NodeID(excluded_peer.id.data(), dev::p2p::NodeID::ConstructFromPointer) == peer.first) {
-              excluded = true;
-              break;
+          std::shared_ptr<PbftBlock> gossip_block;
+          if (!effect.related_payload_bytes.empty()) {
+            gossip_block = std::make_shared<PbftBlock>(
+                bytes(effect.related_payload_bytes.begin(), effect.related_payload_bytes.end()));
+            if (gossip_block->getBlockHash() != gossip_vote->getBlockHash()) {
+              throw std::runtime_error("Network API PBFT vote gossip effect has mismatched PBFT block payload");
             }
           }
-          if (excluded || peer.second->isPbftVoteKnown(gossip_vote->getHash())) {
-            continue;
-          }
+          for (const auto &peer : peers_state_->getAllPeers()) {
+            if (peer.second->syncing_) {
+              LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " not sent to " << peer.first
+                           << " peer syncing";
+              continue;
+            }
 
-          std::optional<VotePacket::OptionalData> optional_packet_data;
-          if (gossip_block && !peer.second->isPbftBlockKnown(gossip_vote->getBlockHash())) {
-            optional_packet_data = VotePacket::OptionalData{gossip_block, pbft_chain_->getPbftChainSize()};
-          }
+            bool excluded = false;
+            for (const auto &excluded_peer : effect.exclude_peers) {
+              if (dev::p2p::NodeID(excluded_peer.id.data(), dev::p2p::NodeID::ConstructFromPointer) == peer.first) {
+                excluded = true;
+                break;
+              }
+            }
+            if (excluded || peer.second->isPbftVoteKnown(gossip_vote->getHash())) {
+              continue;
+            }
 
-          if (sealAndSend(peer.first, SubprotocolPacketType::kVotePacket,
-                          encodePacketRlp(VotePacket(gossip_vote, std::move(optional_packet_data))))) {
-            peer.second->markPbftVoteAsKnown(gossip_vote->getHash());
-            if (optional_packet_data.has_value()) {
-              peer.second->markPbftBlockAsKnown(gossip_block->getBlockHash());
-              LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " together with block "
-                           << gossip_block->getBlockHash() << " sent to " << peer.first;
-            } else {
-              LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " sent to " << peer.first;
+            std::optional<VotePacket::OptionalData> optional_packet_data;
+            if (gossip_block && !peer.second->isPbftBlockKnown(gossip_vote->getBlockHash())) {
+              optional_packet_data = VotePacket::OptionalData{gossip_block, pbft_chain_->getPbftChainSize()};
+            }
+
+            if (sealAndSend(peer.first, SubprotocolPacketType::kVotePacket,
+                            encodePacketRlp(VotePacket(gossip_vote, std::move(optional_packet_data))))) {
+              peer.second->markPbftVoteAsKnown(gossip_vote->getHash());
+              if (optional_packet_data.has_value()) {
+                peer.second->markPbftBlockAsKnown(gossip_block->getBlockHash());
+                LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " together with block "
+                             << gossip_block->getBlockHash() << " sent to " << peer.first;
+              } else {
+                LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " sent to " << peer.first;
+              }
             }
           }
+        } else if (effect.kind == kNetworkEffectKindRecordConsensusObject &&
+                   effect.object_kind == kNetworkObjectKindPbftBlock) {
+          auto proposed_block =
+              std::make_shared<PbftBlock>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
+          if (proposed_block->getPeriod() != effect.period ||
+              proposed_block->getBlockHash().asArray() != effect.object_hash) {
+            throw std::runtime_error("Network API proposed PBFT block sidecar effect has mismatched block payload");
+          }
+          pbft_mgr_->processProposedBlock(proposed_block);
+        } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftNextVotes) {
+          requestPbftNextVotesAtPeriodRound(peer_id, effect.period, effect.round);
+          last_votes_sync_request_time_ = std::chrono::system_clock::now();
+        } else if (effect.kind == kNetworkEffectKindMarkPeerKnown && effect.object_kind == kNetworkObjectKindPbftVote) {
+          const auto peer = peers_state_->getPeer(peer_id);
+          if (peer) {
+            peer->markPbftVoteAsKnown(vote_hash_t(effect.object_hash.data(), vote_hash_t::ConstructFromPointer));
+          }
+        } else if (effect.kind == kNetworkEffectKindMarkPeerKnown &&
+                   effect.object_kind == kNetworkObjectKindPbftBlock) {
+          const auto peer = peers_state_->getPeer(peer_id);
+          if (peer) {
+            peer->markPbftBlockAsKnown(blk_hash_t(effect.object_hash.data(), blk_hash_t::ConstructFromPointer));
+          }
+        } else if (effect.kind == kNetworkEffectKindDisconnectPeer) {
+          disconnect(peer_id, dev::p2p::UserReason);
+        } else if (effect.kind == kNetworkEffectKindReportPeer) {
+          LOG(log_wr_) << "Network API reported peer " << peer_id
+                       << " with reason: " << static_cast<uint32_t>(effect.reason_code);
         }
-      } else if (effect.kind == kNetworkEffectKindRecordConsensusObject &&
-                 effect.object_kind == kNetworkObjectKindPbftBlock) {
-        auto proposed_block =
-            std::make_shared<PbftBlock>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
-        if (proposed_block->getPeriod() != effect.period ||
-            proposed_block->getBlockHash().asArray() != effect.object_hash) {
-          throw std::runtime_error("Network API proposed PBFT block sidecar effect has mismatched block payload");
-        }
-        pbft_mgr_->processProposedBlock(proposed_block);
-      } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftNextVotes) {
-        requestPbftNextVotesAtPeriodRound(peer_id, effect.period, effect.round);
-        last_votes_sync_request_time_ = std::chrono::system_clock::now();
-      } else if (effect.kind == kNetworkEffectKindMarkPeerKnown && effect.object_kind == kNetworkObjectKindPbftVote) {
-        const auto peer = peers_state_->getPeer(peer_id);
-        if (peer) {
-          peer->markPbftVoteAsKnown(vote_hash_t(effect.object_hash.data(), vote_hash_t::ConstructFromPointer));
-        }
-      } else if (effect.kind == kNetworkEffectKindMarkPeerKnown && effect.object_kind == kNetworkObjectKindPbftBlock) {
-        const auto peer = peers_state_->getPeer(peer_id);
-        if (peer) {
-          peer->markPbftBlockAsKnown(blk_hash_t(effect.object_hash.data(), blk_hash_t::ConstructFromPointer));
-        }
-      } else if (effect.kind == kNetworkEffectKindDisconnectPeer) {
-        disconnect(peer_id, dev::p2p::UserReason);
-      } else if (effect.kind == kNetworkEffectKindReportPeer) {
-        LOG(log_wr_) << "Network API reported peer " << peer_id
-                     << " with reason: " << static_cast<uint32_t>(effect.reason_code);
+      } catch (const std::exception &e) {
+        result.status = kNetworkEffectResultStatusFailed;
+        result.diagnostic = e.what();
       }
-    } catch (const std::exception &e) {
-      result.status = kNetworkEffectResultStatusFailed;
-      result.diagnostic = e.what();
+
+      results.push_back(std::move(result));
     }
 
-    results.push_back(std::move(result));
-  }
-
-  if (!results.empty()) {
+    remaining_budget -= batch.effects.size();
     (void)rust_consensus_network_api_->api().consensus_network_report_effect_results(std::move(results));
   }
 }

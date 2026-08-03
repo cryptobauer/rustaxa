@@ -33,6 +33,7 @@ class ExtVotesPacketHandler : public PacketHandler {
    */
   struct VoteProcessingResult {
     bool accepted = false;
+    bool already_present = false;
     bool mark_vote_known = false;
     bool gossip_vote = false;
     bool report_slashing = false;
@@ -81,7 +82,11 @@ class ExtVotesPacketHandler : public PacketHandler {
   rustaxa::NetworkIngressDecision ingestPbftVoteBundleMember(const rustaxa::PbftVoteIngressFact& reference,
                                                              const rustaxa::PbftVoteIngressFact& vote,
                                                              const rustaxa::NetworkPbftVoteIngressContext& context);
-  rustaxa::NetworkIngressDecision gossipPbftVote(const rustaxa::NetworkPbftVoteGossipEffects& effects);
+  rustaxa::NetworkIngressDecision routePbftVoteAdmission(const rustaxa::NetworkPbftVoteAdmissionEffects& effects);
+  /** Queues and executes Rust-owned post-admission effects for one decoded vote. */
+  void publishPbftVoteAdmission(const std::shared_ptr<PbftVote>& vote, const std::shared_ptr<PbftBlock>& pbft_block,
+                                const std::shared_ptr<TaraxaPeer>& peer, const VoteProcessingResult& result,
+                                bool gossip_vote);
   void executeConsensusNetworkEffects(size_t budget);
 #endif
 

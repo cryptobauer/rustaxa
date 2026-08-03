@@ -3263,7 +3263,8 @@ EVM/`state_db` execution remain leaf C++ boundaries.
 The latest `CRW-N01` contraction replaces five independently constructed network bridge owners with one
 `Network`-owned `BridgeConsensusNetworkApi`, shared by both tarcap capabilities and their vote, sync, DAG-status, and
 pillar-vote handler families. Queued effects are partitioned by a capability transport lane so latest and v5 handlers
-cannot execute one another's work, while preserving FIFO order within each lane. PBFT gossip effects now own canonical
+cannot execute one another's work, while preserving queue order among dependency-ready effects in each lane. PBFT gossip
+effects now own canonical
 vote RLP and optional PBFT-block RLP, so execution no longer depends on caller-local C++ object lifetimes. Tarcap remains
 the leaf executor for peer state, packet wrapping, physical sends, disconnects, and lane scheduling; the shared wrapper
 serializes each lane's complete drain/execution/acknowledgement cycle across concurrent packet workers. Vote admission still
@@ -3279,6 +3280,26 @@ also pass. The aggregate consensus gate reaches the existing `pillar_chain_test`
 13 cases pass, while the same three later node-constructing cases cannot reacquire `/tmp/taraxa0/db/db/LOCK`; the
 network-root tests do not fail. Original upstream-owned network files change only to inject the guarded Rust-mode shared
 root and keep the separately built pure-C++ route operational; the new wrapper source itself is feature guarded.
+
+The next `CRW-N01` contraction moves post-admission PBFT vote routing into that shared root. Rust queues proposed-block
+publication before dependent block-known and gossip effects and advances those effects only after the application leaf
+reports success. Exact verified-vote duplicates still publish an attached previously unseen proposed block but do not
+regossip the vote; failed publication cancels dependent work. The vote handler no longer directly processes or marks
+the proposed-block sidecar. The same slice deletes the ignored generic packet shadow-ingress call, its retained byte
+arena and payload-id allocator, two partial capacity settings, one CXX function, and two CXX carriers. Exact budgets
+fall to 22,387 bridge lines, 16,752 shim lines, 378 CXX functions, and 332 carriers; handles and shim directories remain
+18 and 10. `CRW-N01` remains active for composing verified-vote admission and the other handler-local routes behind the
+application-owned network pipeline.
+
+Validation for this contraction passes `rewrite-validate-fast`, `rewrite-validate-smoke`, all 37 focused native network
+tests, all 15 focused CXX network bridge tests, the serialized transport-lane executor case, and focused Rust-enabled and
+pure-C++ peer-cache/PBFT-sync packet cases. The pure-C++ `network_test` target builds from a fresh
+`RUSTAXA_ENABLE=OFF` tree. Inventory and whitespace guards pass. The aggregate consensus gate again reaches the known
+`pillar_chain_test` same-process RocksDB lock leak: 10 of 13 pillar cases pass, while the same three later
+node-constructing cases cannot reacquire `/tmp/taraxa0/db/db/LOCK`; no network-root test fails.
+Independent review also drove an atomic duplicate-outcome assertion through `VoteManager`, closing the race between the
+fast verified-map check and admission. A handler-level injected publication-failure/duplicate-sidecar integration case
+remains `CRW-N01` validation debt; native dependency cancellation and the atomic duplicate report are covered separately.
 
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and

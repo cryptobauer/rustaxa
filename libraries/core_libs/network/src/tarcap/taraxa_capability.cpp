@@ -45,27 +45,6 @@ namespace taraxa::network::tarcap {
 #define RUSTAXA_VOTE_NETWORK_ARGS
 #endif
 
-#ifdef RUSTAXA_ENABLE
-namespace {
-
-rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &input) {
-  rust::Vec<uint8_t> out;
-  out.reserve(input.size());
-  for (const auto byte : input) {
-    out.push_back(static_cast<uint8_t>(byte));
-  }
-  return out;
-}
-
-uint64_t steadyClockMillis() {
-  const auto now = std::chrono::steady_clock::now().time_since_epoch();
-  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
-}
-
-}  // namespace
-
-#endif
-
 TaraxaCapability::TaraxaCapability(
     TarcapVersion version, const FullNodeConfig &conf, const h256 &genesis_hash, std::weak_ptr<dev::p2p::Host> host,
     std::shared_ptr<network::threadpool::PacketsThreadPool> threadpool,
@@ -250,35 +229,8 @@ void TaraxaCapability::interpretCapabilityPacket(std::weak_ptr<dev::p2p::Session
   // TODO: we are making a copy here for each packet bytes(toBytes()), which is pretty significant. Check why RLP does
   //       not support move semantics so we can take advantage of it...
   auto packet_bytes = _r.data().toBytes();
-#ifdef RUSTAXA_ENABLE
-  shadowIngestConsensusNetworkPacket(packet_type, node_id, packet_bytes);
-#endif
   thread_pool_->push({version(), threadpool::PacketData(packet_type, node_id, std::move(packet_bytes))});
 }
-
-#ifdef RUSTAXA_ENABLE
-void TaraxaCapability::shadowIngestConsensusNetworkPacket(SubprotocolPacketType packet_type,
-                                                          const dev::p2p::NodeID &node_id,
-                                                          const dev::bytes &payload_bytes) const {
-  if (!rust_consensus_network_api_) {
-    return;
-  }
-
-  rustaxa::NetworkIngressPacket packet{};
-  packet.packet_type = static_cast<uint32_t>(packet_type);
-  packet.peer_id = node_id.asArray();
-  packet.payload_bytes = toBridgeBytes(payload_bytes);
-  packet.received_at_mono_ms = steadyClockMillis();
-  packet.source_packet_id = 0;
-
-  try {
-    (void)rust_consensus_network_api_->api().consensus_network_ingest_packet(std::move(packet));
-  } catch (const std::exception &e) {
-    LOG(log_wr_) << "Rust consensus network shadow ingest failed for " << convertPacketTypeToString(packet_type)
-                 << " from " << node_id << ": " << e.what();
-  }
-}
-#endif
 
 void TaraxaCapability::handlePacketQueueOverLimit(std::shared_ptr<dev::p2p::Host> host, dev::p2p::NodeID node_id,
                                                   size_t tp_queue_size) {

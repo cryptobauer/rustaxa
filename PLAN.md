@@ -83,17 +83,11 @@ Core rules:
   handles, and existing storage/FinalChain/DAG/transaction/vote coverage for reuse opportunities. Prefer connecting the
   new path to those Rust implementations, even if that makes the slice slightly larger, when it reduces future C++
   ownership and keeps behavior on the path to full Rust replacement.
-- Future network ingress will use an application-owned arena/data pipeline: the latest tarcap payload bytes enter Rust
-  once, receive a long-lived payload reference id, and then move through single-owner pipeline stages by payload
-  reference id. Large derived facts may live in additional arenas and be referenced from small payload-reference
-  metadata. Until that API lands, new consensus rewrite work should still be shaped for it: preserve canonical bytes,
-  decode late, avoid unnecessary copies, avoid eager C++ object materialization, and return typed decisions/effects that
-  a future network egress pipeline can execute.
-  The planned initial CXX bridge entry point is:
-  `pub fn ingest_network_packet(self: &mut BridgeNetwork, packet_type: u8, from_node: [u8; 64], data: Vec<u8>) -> Result<bool>;`.
-  This latest-tarcap-only API reports ingestion success only: `true` means the payload bytes were accepted into the
-  application arena/pipeline, while later protocol, consensus, peer, gossip, drop, or disconnect outcomes are emitted by
-  downstream pipeline stages.
+- Network ingress uses operation-specific application pipelines, not a generic shadow byte arena. Each routed packet
+  family should cross once with its canonical payload and compact transport facts, then return typed decisions/effects.
+  Preserve canonical bytes, decode late, avoid eager C++ object materialization, and retain payloads only when a concrete
+  pipeline cursor or queued effect owns them. Do not add an ingestion-success-only CXX call, long-lived payload-id arena,
+  or capacity configuration that has no authoritative downstream consumer.
 - The arena direction is not a single consensus pipeline. Current tarcap scheduling has three priority lanes, but the
   rewrite should model seven logical data pipelines over those lanes: peer status/sync control, transaction gossip and
   admission, DAG block gossip and admission, DAG sync, PBFT vote and round progress, PBFT chain sync/finalized-period
@@ -101,7 +95,7 @@ Core rules:
   filters most traffic, transaction ingress can peer-order block later DAG blocks from the same peer, DAG gaps trigger
   DAG sync, status can trigger PBFT or DAG sync, votes drive PBFT round/finalization progress and slashing, PBFT sync
   feeds the PBFT manager period-data queue, and pillar votes/data affect PBFT period validation.
-  The intended stage shape is network ingress -> prefilter -> dispatcher -> pipeline-specific ring buffers -> effect
+  The intended stage shape is packet-family ingress -> prefilter -> dispatcher -> pipeline-specific queues -> effect
   executors. `NetworkEvent`, prefilter decisions, dispatcher classification, and ring-buffer allocation belong in the
   network crate or a dedicated pipeline crate. The consensus crate should define only consensus event/effect types such
   as `ConsensusEvent`, `PbftVoteEvent`, `ConsensusEffect`, and opaque ingress payload references used to decode arena
@@ -819,14 +813,12 @@ Rules:
 - Ignore logging when deciding whether behavior can move to Rust. Logs are boundary observability, not consensus
   ownership. Keep temporary C++ logging only as an executor/reporting detail while moving the underlying decision,
   state transition, or persistence logic into Rust.
-- Shape new ingress-adjacent consensus APIs for the upcoming application-owned arena pipeline even before the concrete
-  API exists. Prefer functions that can consume raw payload bytes or compact arena-backed facts, produce small
+- Shape new ingress-adjacent consensus APIs as operation-specific application pipelines. Prefer functions that consume
+  canonical payload bytes or compact facts only when their pipeline can make an authoritative decision, produce small
   protocol plans/effects, and defer C++ `PbftVote`, `PbftBlock`, `DagBlock`, `PeriodData`, and `Transaction`
   materialization until a compatibility executor truly needs those objects.
-- The first network-to-Rust call is expected to be
-  `pub fn ingest_network_packet(self: &mut BridgeNetwork, packet_type: u8, from_node: [u8; 64], data: Vec<u8>) -> Result<bool>;`.
-  Consensus code must not interpret its `bool` as payload validity or consensus acceptance; it only indicates whether
-  the network ingress payload was accepted into the arena-backed data pipeline.
+- Do not add a generic `ingest_network_packet` shadow call whose result is ignored. Network-to-Rust entry points must be
+  packet-family-specific and return protocol status or typed effects consumed by the live handler.
 - Treat ingress processing as multiple logical pipelines, not one monolithic consensus loop. Ingress-adjacent Rust APIs
   should keep pipeline-specific facts and effects separate for peer status/sync control, transaction admission, DAG
   admission, DAG sync, PBFT vote progress, PBFT sync/finalized-period intake, and pillar votes. When one pipeline must
@@ -834,7 +826,7 @@ Rules:
   malicious, enqueue-period-data, or drive-PBFT-progress instead of mutating another pipeline implicitly.
 - Shape consensus pipeline units around ingress-payload-backed events. The dispatcher owns ingress-message routing outside
   the consensus crate, and passes typed consensus units such as `PbftVoteEvent` into consensus pipelines. Those units may
-  carry compact facts or enrichment ids while preserving canonical bytes in the arena. Ring buffers should transfer
+  carry compact facts or enrichment ids while preserving canonical bytes under the active pipeline owner. Queues should transfer
   ownership of these event units between stages instead of exposing shared mutable message objects. The current event
   names and payload shapes are deliberately open to change while the first production pipeline integration proves the
   right boundaries.
@@ -858,7 +850,10 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
   typed egress, mark-known, sync-request, and peer-report effects for the existing network executor to perform.
   The current Rust-enabled route uses one `Network`-owned consensus-network API shared by the latest and v5 capability
   handler families. Its effect queue is partitioned by transport lane and PBFT gossip effects own canonical vote/block
-  payloads; tarcap still owns physical execution and remaining handler-local admission/routing is tracked by `CRW-N01`.
+  payloads. Post-admission routing orders proposed-block publication before dependent peer-known and gossip effects,
+  including exact duplicate votes carrying a previously unseen block. The no-consumer generic shadow-ingress arena and
+  its capacity configuration are deleted. Tarcap still owns physical execution and remaining handler-local
+  admission/routing is tracked by `CRW-N01`.
 - EVM/FinalChain execution: transaction execution, receipt/log bloom construction, gas execution, state transition
   execution, and external contract execution stay in the existing FinalChain/EVM boundary until that execution layer is
   migrated. Rust PBFT logic may plan finalization, validate facts, and request execution/finalization effects, but it

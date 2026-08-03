@@ -56,13 +56,11 @@ class VoteManager {
  public:
   /**
    * Network-facing executor report for Rust PBFT vote admission.
-   *
    * Purpose:
    * - Carries the Rust-planned ingress/network effects that are safe for the
    *   temporary packet-handler executor to apply after `VoteManager` has
    *   validated, inserted, and persisted the vote through Rust-owned runtime
    *   state.
-   *
    * Invariants:
    * - `accepted` means the vote was admitted and any VoteManager-owned storage
    *   or slashing side effects have already been applied.
@@ -72,6 +70,7 @@ class VoteManager {
    */
   struct PbftVoteAdmissionReport {
     bool accepted = false;
+    bool already_present = false;
     bool mark_vote_known = false;
     vote_hash_t mark_vote_known_hash;
     bool gossip_vote = false;
