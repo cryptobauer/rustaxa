@@ -541,11 +541,14 @@ state, wrapping, send, disconnect, and scheduling leaves; a shared per-lane lock
 acknowledgement across packet workers. Rust now orders post-admission proposed-block publication, peer-known updates,
 and gossip through dependency-checked effects; an exact verified-vote duplicate can therefore deliver a previously
 missing block without regossiping the vote. Failed block publication cancels dependent block-known and gossip effects.
+Verified-vote admission itself is now a typed application effect: the caller retains the lane lock across ingress and
+execution, correlates the synchronous result by the exact effect ID, and reports the `VoteManager` leaf outcome before
+Rust releases dependent work. Bundle handlers preflight every member under that same lane lock before admitting any
+member, preserving all-or-nothing shape validation and the malicious-peer slashing report path.
 The unused generic packet shadow-ingress export, retained byte arena, payload-id allocator, and two partial capacity
 settings are deleted; packet families cross only through authoritative operation-specific routes. Moving remaining
-admission and handler-local consensus routing
-decisions behind the native pipeline is the next `CRW-N01` work, so this is a contraction milestone rather than item
-completion.
+bundle aggregation/rebroadcast and handler-local consensus routing decisions behind the native pipeline is the next
+`CRW-N01` work, so this is a contraction milestone rather than item completion.
 
 ### 7. Contract DAG and transaction shims
 

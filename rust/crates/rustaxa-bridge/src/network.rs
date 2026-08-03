@@ -240,20 +240,6 @@ impl BridgeConsensusNetworkApi {
             is_relevant: plan.is_relevant,
         })
     }
-
-    /// Routes post-admission PBFT vote and optional block effects in dependency order.
-    pub fn consensus_network_route_pbft_vote_admission(
-        &self,
-        effects: rustaxa_ffi::NetworkPbftVoteAdmissionEffects,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        let mut api = self
-            .api
-            .lock()
-            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
-        Ok(to_bridge_network_ingress_decision(
-            api.route_pbft_vote_admission(to_domain_pbft_vote_admission_effects(effects)),
-        ))
-    }
 }
 
 fn to_domain_config(config: rustaxa_ffi::NetworkApiConfig) -> rustaxa_consensus::NetworkApiConfig {
@@ -299,6 +285,13 @@ fn to_domain_pbft_vote_ingress_context(
         peer_id: value.peer_id,
         peer_pbft_chain_size: value.peer_pbft_chain_size,
         source_payload_id: value.source_payload_id,
+        enqueue_admission: value.enqueue_admission,
+        allow_gossip: value.allow_gossip,
+        vote_hash: value.vote_hash,
+        vote_rlp: value.vote_rlp,
+        pbft_block_rlp: value.pbft_block_rlp,
+        pbft_block_hash: value.pbft_block_hash,
+        pbft_block_period: value.pbft_block_period,
     }
 }
 
@@ -530,25 +523,7 @@ fn to_bridge_network_ingress_decision(
         status: decision.status,
         error_code: decision.error_code,
         queued_effect_count: decision.queued_effect_count,
-    }
-}
-
-fn to_domain_pbft_vote_admission_effects(
-    value: rustaxa_ffi::NetworkPbftVoteAdmissionEffects,
-) -> rustaxa_consensus::NetworkPbftVoteAdmissionEffects {
-    rustaxa_consensus::NetworkPbftVoteAdmissionEffects {
-        transport_lane: value.transport_lane,
-        peer_id: value.peer_id,
-        vote_hash: value.vote_hash,
-        vote_rlp: value.vote_rlp,
-        accepted: value.accepted,
-        already_present: value.already_present,
-        mark_vote_known: value.mark_vote_known,
-        gossip_vote: value.gossip_vote,
-        pbft_block_rlp: value.pbft_block_rlp,
-        pbft_block_hash: value.pbft_block_hash,
-        pbft_block_period: value.pbft_block_period,
-        source_payload_id: value.source_payload_id,
+        application_effect_id: decision.application_effect_id,
     }
 }
 
@@ -564,5 +539,10 @@ fn from_bridge_effect_result(
         object_hash: result.object_hash,
         status: result.status,
         diagnostic: result.diagnostic,
+        admission_accepted: result.admission_accepted,
+        admission_already_present: result.admission_already_present,
+        admission_mark_vote_known: result.admission_mark_vote_known,
+        admission_gossip_vote: result.admission_gossip_vote,
+        admission_report_slashing: result.admission_report_slashing,
     }
 }

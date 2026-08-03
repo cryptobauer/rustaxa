@@ -1,5 +1,7 @@
 #include "network/tarcap/packets_handlers/latest/common/ext_votes_packet_handler.hpp"
 
+#include <algorithm>
+
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
 #include "network/tarcap/packets/latest/vote_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/common/exceptions.hpp"
@@ -75,16 +77,15 @@ ExtVotesPacketHandler::~ExtVotesPacketHandler() = default;
 
 ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
     const std::shared_ptr<PbftVote> &vote, const std::shared_ptr<PbftBlock> &pbft_block,
-    const std::shared_ptr<TaraxaPeer> &peer, bool validate_max_round_step) {
+    const std::shared_ptr<TaraxaPeer> &peer, bool validate_max_round_step, [[maybe_unused]] bool allow_gossip) {
   if (pbft_block && !validateVoteAndBlock(vote, pbft_block)) {
     throw MaliciousPeerException("Received vote's voted value != received pbft block");
   }
 
 #ifdef RUSTAXA_ENABLE
-  // TODO(rustaxa): move this temporary network-handler hook into the future
-  // tarcap/network pipeline overlay. Rust decides deterministic PBFT vote
-  // ingress gates here; C++ still executes peer sync requests, gossiping, and
-  // typed network effects.
+  // Rust owns ingress, application-leaf ordering, and every dependent routing
+  // decision. Tarcap supplies the decoded canonical payload and executes the
+  // typed VoteManager/transport effects returned by the shared network root.
   const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
   rustaxa::PbftVoteIngressFact ingress_fact{};
   ingress_fact.period = vote->getPeriod();
@@ -112,10 +113,20 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   network_ingress_context.peer_id = peer->getId().asArray();
   network_ingress_context.peer_pbft_chain_size = peer->pbft_chain_size_.load();
   network_ingress_context.source_payload_id = 0;
+  network_ingress_context.enqueue_admission = true;
+  network_ingress_context.allow_gossip = allow_gossip;
+  network_ingress_context.vote_hash = vote->getHash().asArray();
+  network_ingress_context.vote_rlp = toBridgeBytes(vote->rlp(true, false));
+  if (pbft_block) {
+    network_ingress_context.pbft_block_rlp = toBridgeBytes(pbft_block->rlp(true));
+    network_ingress_context.pbft_block_hash = pbft_block->getBlockHash().asArray();
+    network_ingress_context.pbft_block_period = pbft_block->getPeriod();
+  }
 
+  auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(transport_lane_);
   const auto ingress_decision = ingestPbftVote(ingress_fact, network_ingress_context);
   if (ingress_decision.status != 0) {
-    executeConsensusNetworkEffects(16);
+    (void)executeConsensusNetworkEffects(16, std::nullopt);
   }
   if (!ingress_decision.routed || ingress_decision.status != 0) {
     LOG(this->log_wr_) << "Network API rejected vote " << vote->getHash()
@@ -125,23 +136,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
     return {};
   }
 
-  VoteProcessingResult result{};
-  if (vote_mgr_->voteInVerifiedMap(vote)) {
-    result.already_present = true;
-    return result;
-  }
-  try {
-    const auto admission_report = vote_mgr_->addVerifiedVoteWithReport(vote);
-    result.accepted = admission_report.accepted;
-    result.already_present = admission_report.already_present;
-    result.mark_vote_known = admission_report.mark_vote_known;
-    result.gossip_vote = admission_report.gossip_vote;
-    result.report_slashing = admission_report.report_slashing;
-  } catch (const std::exception &e) {
-    LOG(this->log_dg_) << "Vote " << vote->getHash()
-                       << " admission failed in Rust-backed vote manager. Err msg: " << e.what();
-    return {};
-  }
+  const auto result = executeConsensusNetworkEffects(16, ingress_decision.application_effect_id);
 
   if (!result.accepted && !result.already_present) {
     LOG(this->log_dg_) << "Vote " << vote->getHash() << " was not admitted by Rust vote transition";
@@ -328,47 +323,20 @@ rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVoteBundleMembe
   return rust_consensus_network_api_->api().consensus_network_ingest_pbft_vote_bundle_member(reference, vote, context);
 }
 
-rustaxa::NetworkIngressDecision ExtVotesPacketHandler::routePbftVoteAdmission(
-    const rustaxa::NetworkPbftVoteAdmissionEffects &effects) {
+ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsensusNetworkEffects(
+    size_t budget, std::optional<uint64_t> admission_effect_id) {
   assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api().consensus_network_route_pbft_vote_admission(effects);
-}
-
-void ExtVotesPacketHandler::publishPbftVoteAdmission(const std::shared_ptr<PbftVote> &vote,
-                                                     const std::shared_ptr<PbftBlock> &pbft_block,
-                                                     const std::shared_ptr<TaraxaPeer> &peer,
-                                                     const VoteProcessingResult &result, bool gossip_vote) {
-  rustaxa::NetworkPbftVoteAdmissionEffects effects{};
-  effects.transport_lane = transport_lane_;
-  effects.peer_id = peer->getId().asArray();
-  effects.vote_hash = vote->getHash().asArray();
-  effects.vote_rlp = toBridgeBytes(vote->rlp(true, false));
-  effects.accepted = result.accepted;
-  effects.already_present = result.already_present;
-  effects.mark_vote_known = result.mark_vote_known;
-  effects.gossip_vote = gossip_vote && result.gossip_vote;
-  if (pbft_block) {
-    effects.pbft_block_rlp = toBridgeBytes(pbft_block->rlp(true));
-    effects.pbft_block_hash = pbft_block->getBlockHash().asArray();
-    effects.pbft_block_period = pbft_block->getPeriod();
-  }
-  effects.source_payload_id = 0;
-  (void)routePbftVoteAdmission(effects);
-  executeConsensusNetworkEffects(16);
-}
-
-void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
-  assert(rust_consensus_network_api_);
-  auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(transport_lane_);
-  auto remaining_budget = budget;
-  while (remaining_budget != 0) {
+  VoteProcessingResult admission_result{};
+  bool admission_effect_completed = false;
+  while (true) {
     const auto batch = rust_consensus_network_api_->api().consensus_network_drain_work(
-        static_cast<uint32_t>(transport_lane_), static_cast<uint32_t>(remaining_budget));
+        static_cast<uint32_t>(transport_lane_), static_cast<uint32_t>(budget));
     if (batch.effects.empty()) {
       break;
     }
     rust::Vec<rustaxa::NetworkEffectResult> results;
     results.reserve(batch.effects.size());
+    std::optional<VoteProcessingResult> reported_admission;
 
     for (const auto &effect : batch.effects) {
       rustaxa::NetworkEffectResult result{};
@@ -379,10 +347,31 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
       result.object_kind = effect.object_kind;
       result.object_hash = effect.object_hash;
       result.status = kNetworkEffectResultStatusOk;
+      const bool is_requested_admission = admission_effect_id && *admission_effect_id == effect.effect_id;
 
       try {
         const dev::p2p::NodeID peer_id(effect.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
-        if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftChain) {
+        if (effect.kind == kNetworkEffectKindRecordConsensusObject &&
+            effect.object_kind == kNetworkObjectKindPbftVote) {
+          auto admitted_vote =
+              std::make_shared<PbftVote>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
+          if (admitted_vote->getHash().asArray() != effect.object_hash) {
+            throw std::runtime_error("Network API PBFT vote admission effect has mismatched vote payload");
+          }
+          const auto report = vote_mgr_->addVerifiedVoteWithReport(admitted_vote);
+          result.admission_accepted = report.accepted;
+          result.admission_already_present = report.already_present;
+          result.admission_mark_vote_known = report.mark_vote_known;
+          result.admission_gossip_vote = report.gossip_vote;
+          result.admission_report_slashing = report.report_slashing;
+          if (is_requested_admission) {
+            reported_admission = VoteProcessingResult{.accepted = report.accepted,
+                                                      .already_present = report.already_present,
+                                                      .mark_vote_known = report.mark_vote_known,
+                                                      .gossip_vote = report.gossip_vote,
+                                                      .report_slashing = report.report_slashing};
+          }
+        } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftChain) {
           sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
                       encodePacketRlp(GetPbftSyncPacket{effect.sync_start}));
           last_pbft_block_sync_request_time_ = std::chrono::system_clock::now();
@@ -472,9 +461,24 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
       results.push_back(std::move(result));
     }
 
-    remaining_budget -= batch.effects.size();
-    (void)rust_consensus_network_api_->api().consensus_network_report_effect_results(std::move(results));
+    const auto acknowledgement =
+        rust_consensus_network_api_->api().consensus_network_report_effect_results(std::move(results));
+    if (acknowledgement.status != 0) {
+      throw std::runtime_error("Network API rejected an executor result batch: " +
+                               static_cast<std::string>(acknowledgement.error_code));
+    }
+    if (reported_admission) {
+      admission_result = *reported_admission;
+    }
+    admission_effect_completed =
+        admission_effect_completed || std::any_of(batch.effects.begin(), batch.effects.end(), [&](const auto &effect) {
+          return admission_effect_id && *admission_effect_id == effect.effect_id;
+        });
   }
+  if (admission_effect_id && !admission_effect_completed) {
+    throw std::runtime_error("Network API did not execute the correlated PBFT vote admission effect");
+  }
+  return admission_result;
 }
 
 #endif

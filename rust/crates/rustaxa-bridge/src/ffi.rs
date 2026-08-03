@@ -399,6 +399,11 @@ pub mod rustaxa_ffi {
         object_hash: [u8; 32],
         status: u8,
         diagnostic: String,
+        admission_accepted: bool,
+        admission_already_present: bool,
+        admission_mark_vote_known: bool,
+        admission_gossip_vote: bool,
+        admission_report_slashing: bool,
     }
 
     /// Summary returned after Rust records network effect results.
@@ -416,6 +421,13 @@ pub mod rustaxa_ffi {
         peer_id: [u8; 64],
         peer_pbft_chain_size: u64,
         source_payload_id: u64,
+        enqueue_admission: bool,
+        allow_gossip: bool,
+        vote_hash: [u8; 32],
+        vote_rlp: Vec<u8>,
+        pbft_block_rlp: Vec<u8>,
+        pbft_block_hash: [u8; 32],
+        pbft_block_period: u64,
     }
 
     /// Packet-specific network ingress decision with queued-effect summary.
@@ -426,6 +438,7 @@ pub mod rustaxa_ffi {
         status: u8,
         error_code: String,
         queued_effect_count: u32,
+        application_effect_id: u64,
     }
 
     /// Compact facts for status-triggered network sync planning.
@@ -568,22 +581,6 @@ pub mod rustaxa_ffi {
         has_peer: bool,
         peer_id: [u8; 64],
         request_period: u64,
-    }
-
-    /// PBFT vote post-admission facts used for ordered network effect routing.
-    struct NetworkPbftVoteAdmissionEffects {
-        transport_lane: u32,
-        peer_id: [u8; 64],
-        vote_hash: [u8; 32],
-        vote_rlp: Vec<u8>,
-        accepted: bool,
-        already_present: bool,
-        mark_vote_known: bool,
-        gossip_vote: bool,
-        pbft_block_rlp: Vec<u8>,
-        pbft_block_hash: [u8; 32],
-        pbft_block_period: u64,
-        source_payload_id: u64,
     }
 
     /// Gas-estimation request supplied before C++ may call FinalChain/EVM.
@@ -3750,10 +3747,6 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             facts: NetworkPendingDagBlocksRequestFacts,
         ) -> Result<NetworkPendingDagBlocksRequestPlan>;
-        pub fn consensus_network_route_pbft_vote_admission(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPbftVoteAdmissionEffects,
-        ) -> Result<NetworkIngressDecision>;
 
         type WesolowskiVdf;
         type CancellationToken;

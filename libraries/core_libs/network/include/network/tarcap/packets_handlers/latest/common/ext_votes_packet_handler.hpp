@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 #include "network/tarcap/packets/latest/votes_bundle_packet.hpp"
@@ -25,11 +26,13 @@ namespace taraxa::network::tarcap {
 class ExtVotesPacketHandler : public PacketHandler {
  public:
   /**
-   * Result returned by the temporary vote packet executor.
+   * Outcome returned by the PBFT vote application-effect executor.
    *
-   * Rust-enabled builds populate network-facing effect flags from the
-   * Rust-owned VoteManager admission report. Legacy builds use only
-   * `accepted`; callers keep the existing legacy mark/gossip behavior.
+   * Rust-enabled builds populate these fields from the exact-ID-correlated
+   * VoteManager application effect. `accepted` and `already_present` are
+   * mutually exclusive; the remaining flags describe dependent work that
+   * Rust may release after the application result is acknowledged. Legacy
+   * builds use only `accepted` and retain their existing mark/gossip path.
    */
   struct VoteProcessingResult {
     bool accepted = false;
@@ -62,10 +65,12 @@ class ExtVotesPacketHandler : public PacketHandler {
    * @param pbft_block
    * @param peer
    * @param validate_max_round_step
-   * @return vote processing result and Rust-planned temporary network effects
+   * @param allow_gossip whether an accepted vote may be regossiped
+   * @return result reported by the VoteManager application leaf
    */
   VoteProcessingResult processVote(const std::shared_ptr<PbftVote>& vote, const std::shared_ptr<PbftBlock>& pbft_block,
-                                   const std::shared_ptr<TaraxaPeer>& peer, bool validate_max_round_step);
+                                   const std::shared_ptr<TaraxaPeer>& peer, bool validate_max_round_step,
+                                   bool allow_gossip);
 
   /**
    * @brief Checks is vote is relevant for current pbft state in terms of period, round and type
@@ -82,12 +87,11 @@ class ExtVotesPacketHandler : public PacketHandler {
   rustaxa::NetworkIngressDecision ingestPbftVoteBundleMember(const rustaxa::PbftVoteIngressFact& reference,
                                                              const rustaxa::PbftVoteIngressFact& vote,
                                                              const rustaxa::NetworkPbftVoteIngressContext& context);
-  rustaxa::NetworkIngressDecision routePbftVoteAdmission(const rustaxa::NetworkPbftVoteAdmissionEffects& effects);
-  /** Queues and executes Rust-owned post-admission effects for one decoded vote. */
-  void publishPbftVoteAdmission(const std::shared_ptr<PbftVote>& vote, const std::shared_ptr<PbftBlock>& pbft_block,
-                                const std::shared_ptr<TaraxaPeer>& peer, const VoteProcessingResult& result,
-                                bool gossip_vote);
-  void executeConsensusNetworkEffects(size_t budget);
+  /**
+   * Executes Rust-owned effects and returns the matching vote-admission leaf result, if any.
+   * The caller must retain this handler's transport-lane lock from ingress through completion.
+   */
+  VoteProcessingResult executeConsensusNetworkEffects(size_t budget, std::optional<uint64_t> admission_effect_id);
 #endif
 
  private:

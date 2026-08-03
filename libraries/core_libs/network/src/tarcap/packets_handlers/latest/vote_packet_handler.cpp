@@ -81,15 +81,10 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
     pbft_block = packet.optional_data->pbft_block;
   }
 
-  const auto process_result = processVote(packet.vote, pbft_block, peer, true);
+  const auto process_result = processVote(packet.vote, pbft_block, peer, true, true);
   if (process_result.report_slashing) {
     throw MaliciousPeerException("Received double vote", packet.vote->getVoter());
   }
-#ifdef RUSTAXA_ENABLE
-  if (process_result.accepted || process_result.already_present) {
-    publishPbftVoteAdmission(packet.vote, pbft_block, peer, process_result, true);
-  }
-#endif
   if (!process_result.accepted) {
     return;
   }

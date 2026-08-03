@@ -3301,6 +3301,27 @@ Independent review also drove an atomic duplicate-outcome assertion through `Vot
 fast verified-map check and admission. A handler-level injected publication-failure/duplicate-sidecar integration case
 remains `CRW-N01` validation debt; native dependency cancellation and the atomic duplicate report are covered separately.
 
+The following `CRW-N01` slice moves verified-vote admission sequencing into the shared network effect pipeline. Accepted
+ingress queues a canonical PBFT-vote application effect, and Rust retains the admission context until C++ reports the
+typed `VoteManager` leaf result. The packet worker holds the lane lock across ingress, drain, execution, and
+acknowledgement and correlates synchronous completion by the exact effect ID, preventing another worker from draining
+the result. Rust validates impossible admission reports and releases block publication, peer-known, and gossip effects
+or returns the typed slashing outcome only from a successful matching result. Bundle handlers preflight the complete bundle under the lane lock before
+admitting any member, preserving atomic shape rejection. The standalone admission-route function and carrier are
+deleted; exact budgets fall to 22,360 bridge lines, 377 CXX functions, and 331 carriers, while shim lines, handles, shim
+directories, and non-test consumers remain 16,752, 18, 10, and 38. `CRW-N01` remains active for native bundle
+aggregation/rebroadcast and the other handler-local routes.
+
+The upstream-owned latest-tarcap header and handler sources retain a guarded Rust-only integration exception for this
+slice. Pure-C++ compilation selects the unchanged legacy admission/routing body; the guarded methods are temporary
+network-overlay debt until a complete tarcap pipeline overlay can own the Rust route without original-file changes.
+
+Validation passes `rewrite-validate-fast`, `rewrite-validate-smoke`, all 39 focused native network tests, all 50 CXX
+consensus bridge tests (including 18 network cases), the focused verified-vote test, the serialized lane-executor case,
+and isolated behind-round/same-round PBFT-sync plus peer-cache cases in both Rust-enabled and fresh pure-C++ builds.
+Inventory, formatting, and whitespace guards pass. The isolated node-backed runs also confirm that no packet worker
+loses its correlated admission effect to another worker.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

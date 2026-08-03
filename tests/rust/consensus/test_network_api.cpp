@@ -54,6 +54,8 @@ rustaxa::PbftVoteIngressContext voteContext() {
   return context;
 }
 
+std::array<uint8_t, 32> hash(uint8_t byte);
+
 rustaxa::NetworkPbftVoteIngressContext networkVoteContext() {
   rustaxa::NetworkPbftVoteIngressContext context{};
   context.ingress = voteContext();
@@ -61,6 +63,13 @@ rustaxa::NetworkPbftVoteIngressContext networkVoteContext() {
   context.peer_id = nodeId(0x44);
   context.peer_pbft_chain_size = 11;
   context.source_payload_id = 99;
+  context.enqueue_admission = false;
+  context.allow_gossip = true;
+  context.vote_hash = hash(0xEF);
+  context.vote_rlp = bytes({0xC3, 1, 2, 3});
+  context.pbft_block_rlp = bytes({0xC2, 4, 5});
+  context.pbft_block_hash = hash(0xAB);
+  context.pbft_block_period = 42;
   return context;
 }
 
@@ -79,6 +88,17 @@ rustaxa::NetworkEffectResult successfulResult(const rustaxa::NetworkEffect& effe
   result.object_kind = effect.object_kind;
   result.object_hash = effect.object_hash;
   result.status = 0;
+  return result;
+}
+
+rustaxa::NetworkEffectResult voteAdmissionResult(const rustaxa::NetworkEffect& effect, bool admission_accepted,
+                                                 bool admission_already_present, bool admission_mark_vote_known,
+                                                 bool admission_gossip_vote) {
+  rustaxa::NetworkEffectResult result = successfulResult(effect);
+  result.admission_accepted = admission_accepted;
+  result.admission_already_present = admission_already_present;
+  result.admission_mark_vote_known = admission_mark_vote_known;
+  result.admission_gossip_vote = admission_gossip_vote;
   return result;
 }
 
@@ -104,7 +124,9 @@ TEST(ConsensusNetworkApiBridgeTest, drainWorkAndReportResultsExposeExecutorContr
 TEST(ConsensusNetworkApiBridgeTest, reportEffectResultsAcceptsMatchingEffectIdentity) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
-  const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(14, 3, 1, 2), networkVoteContext());
+  auto context = networkVoteContext();
+  context.enqueue_admission = true;
+  const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(14, 3, 1, 2), context);
   ASSERT_EQ(decision.queued_effect_count, 1);
 
   const auto batch = network_api->consensus_network_drain_work(6, 10);
@@ -131,7 +153,9 @@ TEST(ConsensusNetworkApiBridgeTest, reportEffectResultsAcceptsMatchingEffectIden
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressQueuesSyncEffectThroughNetworkApi) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
-  const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(14, 3, 1, 2), networkVoteContext());
+  auto context = networkVoteContext();
+  context.enqueue_admission = true;
+  const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(14, 3, 1, 2), context);
 
   EXPECT_TRUE(decision.routed);
   EXPECT_TRUE(decision.payload_accepted);
@@ -398,36 +422,42 @@ TEST(ConsensusNetworkApiBridgeTest, pendingDagBlocksRequestPlanningRoutesThrough
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteAdmissionOrdersBlockPublicationBeforeGossip) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
-  {
-    rustaxa::NetworkPbftVoteAdmissionEffects effects{};
-    effects.transport_lane = 6;
-    effects.peer_id = nodeId(0x77);
-    effects.vote_hash = hash(0xEF);
-    effects.vote_rlp = bytes({0xC3, 1, 2, 3});
-    effects.accepted = true;
-    effects.gossip_vote = true;
-    effects.pbft_block_rlp = bytes({0xC2, 4, 5});
-    effects.pbft_block_hash = hash(0xAB);
-    effects.pbft_block_period = 42;
-    effects.source_payload_id = 103;
+  auto context = networkVoteContext();
+  context.enqueue_admission = true;
+  context.allow_gossip = true;
+  context.peer_id = nodeId(0x77);
+  context.source_payload_id = 103;
 
-    const auto decision = network_api->consensus_network_route_pbft_vote_admission(effects);
-    EXPECT_TRUE(decision.routed);
-    EXPECT_EQ(decision.status, 0);
-    EXPECT_EQ(decision.queued_effect_count, 3);
-  }
+  const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(10, 3, 2, 2), context);
+  EXPECT_TRUE(decision.routed);
+  EXPECT_EQ(decision.status, 0);
+  EXPECT_EQ(decision.queued_effect_count, 1);
 
-  const auto publication = network_api->consensus_network_drain_work(6, 10);
-  ASSERT_EQ(publication.effects.size(), 1);
-  EXPECT_EQ(publication.effects[0].kind, 8);
-  EXPECT_EQ(publication.effects[0].object_kind, 1);
-  EXPECT_EQ(publication.effects[0].object_hash, hash(0xAB));
-  rust::Vec<rustaxa::NetworkEffectResult> publication_result;
-  publication_result.push_back(successfulResult(publication.effects[0]));
-  EXPECT_EQ(network_api->consensus_network_report_effect_results(std::move(publication_result)).status, 0);
+  const auto admission = network_api->consensus_network_drain_work(6, 10);
+  ASSERT_EQ(admission.effects.size(), 1);
+  EXPECT_EQ(decision.application_effect_id, admission.effects[0].effect_id);
+  EXPECT_EQ(admission.effects[0].kind, 8);
+  EXPECT_EQ(admission.effects[0].object_kind, 0);
+  EXPECT_EQ(admission.effects[0].object_hash, hash(0xEF));
+  EXPECT_EQ(std::vector<uint8_t>(admission.effects[0].payload_bytes.begin(), admission.effects[0].payload_bytes.end()),
+            (std::vector<uint8_t>{0xC3, 1, 2, 3}));
+  rust::Vec<rustaxa::NetworkEffectResult> admission_result;
+  admission_result.push_back(voteAdmissionResult(admission.effects[0], true, false, false, true));
+  EXPECT_EQ(network_api->consensus_network_report_effect_results(std::move(admission_result)).status, 0);
+
+  const auto block_publication = network_api->consensus_network_drain_work(6, 10);
+  ASSERT_EQ(block_publication.effects.size(), 1);
+  EXPECT_EQ(block_publication.effects[0].kind, 8);
+  EXPECT_EQ(block_publication.effects[0].object_kind, 1);
+  EXPECT_EQ(block_publication.effects[0].object_hash, hash(0xAB));
+  rust::Vec<rustaxa::NetworkEffectResult> block_result;
+  block_result.push_back(successfulResult(block_publication.effects[0]));
+  EXPECT_EQ(network_api->consensus_network_report_effect_results(std::move(block_result)).status, 0);
 
   const auto dependents = network_api->consensus_network_drain_work(6, 10);
   ASSERT_EQ(dependents.effects.size(), 2);
+  EXPECT_EQ(dependents.effects[0].kind, 2);
+  EXPECT_EQ(dependents.effects[0].dependency_id, block_publication.effects[0].effect_id);
   EXPECT_EQ(dependents.effects[1].kind, 1);
   EXPECT_EQ(dependents.effects[1].peer_id, nodeId(0x77));
   EXPECT_EQ(dependents.effects[1].packet_kind, 1);
@@ -446,41 +476,153 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteAdmissionOrdersBlockPublicationBefor
 
 TEST(ConsensusNetworkApiBridgeTest, duplicateVoteStillRoutesAttachedProposedBlockWithoutGossip) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
-  rustaxa::NetworkPbftVoteAdmissionEffects effects{};
-  effects.transport_lane = 6;
-  effects.peer_id = nodeId(0x77);
-  effects.vote_hash = hash(0xEF);
-  effects.vote_rlp = bytes({0xC3, 1, 2, 3});
-  effects.already_present = true;
-  effects.gossip_vote = true;
-  effects.pbft_block_rlp = bytes({0xC2, 4, 5});
-  effects.pbft_block_hash = hash(0xAB);
-  effects.pbft_block_period = 42;
+  auto context = networkVoteContext();
+  context.enqueue_admission = true;
+  context.peer_id = nodeId(0x77);
+  context.vote_hash = hash(0xEF);
+  context.vote_rlp = bytes({0xC3, 1, 2, 3});
+  context.pbft_block_rlp = bytes({0xC2, 4, 5});
+  context.pbft_block_hash = hash(0xAB);
+  context.pbft_block_period = 42;
 
-  const auto decision = network_api->consensus_network_route_pbft_vote_admission(effects);
-  EXPECT_EQ(decision.queued_effect_count, 3);
+  const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(10, 3, 2, 2), context);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+  const auto admission = network_api->consensus_network_drain_work(6, 10);
+  ASSERT_EQ(admission.effects.size(), 1);
+  rust::Vec<rustaxa::NetworkEffectResult> admission_result;
+  admission_result.push_back(voteAdmissionResult(admission.effects[0], false, true, false, false));
+  EXPECT_EQ(network_api->consensus_network_report_effect_results(std::move(admission_result)).status, 0);
+
+  const auto first = network_api->consensus_network_drain_work(6, 10);
+  EXPECT_TRUE(
+      std::none_of(first.effects.begin(), first.effects.end(), [](const auto& effect) { return effect.kind == 1; }));
+  EXPECT_TRUE(std::any_of(first.effects.begin(), first.effects.end(),
+                          [](const auto& effect) { return effect.kind == 8 && effect.object_kind == 1; }));
+  EXPECT_TRUE(
+      std::any_of(first.effects.begin(), first.effects.end(), [](const auto& effect) { return effect.kind == 2; }));
+}
+
+TEST(ConsensusNetworkApiBridgeTest, failedAdmissionCancelsDependentKnownAndGossipEffects) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto context = networkVoteContext();
+  context.enqueue_admission = true;
+  context.peer_id = nodeId(0x77);
+  context.pbft_block_rlp = bytes({0xC2, 4, 5});
+  context.pbft_block_hash = hash(0xAB);
+  context.pbft_block_period = 42;
+
+  const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(10, 3, 2, 2), context);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+  const auto admission = network_api->consensus_network_drain_work(6, 10);
+  ASSERT_EQ(admission.effects.size(), 1);
+  rust::Vec<rustaxa::NetworkEffectResult> admission_result;
+  admission_result.push_back(successfulResult(admission.effects[0]));
+  admission_result[0].status = 1;
+  EXPECT_EQ(network_api->consensus_network_report_effect_results(std::move(admission_result)).status, 0);
+
+  const auto cancelled = network_api->consensus_network_drain_work(6, 10);
+  EXPECT_TRUE(cancelled.effects.empty());
+  EXPECT_FALSE(cancelled.more_available);
+}
+
+TEST(ConsensusNetworkApiBridgeTest, gossipPayloadsSurviveProducerScopeAndDrainFifo) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  for (uint8_t byte : {1, 2}) {
+    auto context = networkVoteContext();
+    context.enqueue_admission = true;
+    context.peer_id = nodeId(byte);
+    context.vote_hash = hash(byte);
+    context.vote_rlp = bytes({0xC1, byte});
+    context.pbft_block_rlp = rust::Vec<uint8_t>();
+    context.pbft_block_hash = std::array<uint8_t, 32>{};
+    context.pbft_block_period = 0;
+    context.source_payload_id = byte;
+    context.allow_gossip = true;
+    const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(10, 3, 2, 2), context);
+    EXPECT_TRUE(decision.routed);
+    EXPECT_EQ(decision.queued_effect_count, 1);
+  }
+
   const auto first = network_api->consensus_network_drain_work(6, 10);
   ASSERT_EQ(first.effects.size(), 2);
   EXPECT_EQ(first.effects[0].kind, 8);
-  EXPECT_EQ(first.effects[0].object_kind, 1);
-  EXPECT_EQ(first.effects[1].kind, 2);
-  EXPECT_EQ(first.effects[1].object_kind, 0);
-  EXPECT_TRUE(
-      std::none_of(first.effects.begin(), first.effects.end(), [](const auto& effect) { return effect.kind == 1; }));
+  EXPECT_EQ(first.effects[1].kind, 8);
+  EXPECT_TRUE(first.effects[0].object_hash == hash(1) || first.effects[0].object_hash == hash(2));
+
+  rust::Vec<rustaxa::NetworkEffectResult> admission_results;
+  admission_results.push_back(voteAdmissionResult(first.effects[0], true, false, false, true));
+  admission_results.push_back(voteAdmissionResult(first.effects[1], true, false, false, true));
+  EXPECT_EQ(network_api->consensus_network_report_effect_results(std::move(admission_results)).status, 0);
+
+  const auto second = network_api->consensus_network_drain_work(6, 10);
+  ASSERT_EQ(second.effects.size(), 2);
+  EXPECT_EQ(second.effects[0].kind, 1);
+  EXPECT_EQ(second.effects[1].kind, 1);
+  EXPECT_TRUE(std::vector<uint8_t>(second.effects[0].payload_bytes.begin(), second.effects[0].payload_bytes.end()) ==
+              (std::vector<uint8_t>{0xC1, 1}));
+  EXPECT_TRUE(std::vector<uint8_t>(second.effects[1].payload_bytes.begin(), second.effects[1].payload_bytes.end()) ==
+              (std::vector<uint8_t>{0xC1, 2}));
 }
 
 TEST(ConsensusNetworkApiBridgeTest, sharedRootDrainsOnlyRequestedTransportLane) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
   const auto enqueue_gossip = [&network_api](uint32_t transport_lane, uint8_t byte) {
-    rustaxa::NetworkPbftVoteAdmissionEffects effects{};
-    effects.transport_lane = transport_lane;
-    effects.peer_id = nodeId(byte);
-    effects.vote_hash = hash(byte);
-    effects.vote_rlp = bytes({0xC1, byte});
-    effects.accepted = true;
-    effects.source_payload_id = byte;
-    effects.gossip_vote = true;
-    return network_api->consensus_network_route_pbft_vote_admission(effects);
+    auto context = networkVoteContext();
+    context.enqueue_admission = true;
+    context.transport_lane = transport_lane;
+    context.peer_id = nodeId(byte);
+    context.vote_hash = hash(byte);
+    context.vote_rlp = bytes({0xC1, byte});
+    context.source_payload_id = byte;
+    context.pbft_block_rlp = rust::Vec<uint8_t>();
+    context.pbft_block_hash = std::array<uint8_t, 32>{};
+    context.pbft_block_period = 0;
+    const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(10, 3, 2, 2), context);
+    return decision;
+  };
+
+  EXPECT_TRUE(enqueue_gossip(6, 1).routed);
+  EXPECT_TRUE(enqueue_gossip(5, 2).routed);
+  EXPECT_TRUE(enqueue_gossip(6, 3).routed);
+  EXPECT_TRUE(enqueue_gossip(5, 4).routed);
+
+  const auto first_v5 = network_api->consensus_network_drain_work(5, 1);
+  ASSERT_EQ(first_v5.effects.size(), 1);
+  EXPECT_EQ(first_v5.effects[0].effect_id, 2);
+  EXPECT_EQ(first_v5.effects[0].transport_lane, 5);
+  EXPECT_TRUE(first_v5.more_available);
+
+  const auto latest = network_api->consensus_network_drain_work(6, 10);
+  ASSERT_EQ(latest.effects.size(), 2);
+  EXPECT_EQ(latest.effects[0].effect_id, 1);
+  EXPECT_EQ(latest.effects[1].effect_id, 3);
+  EXPECT_EQ(latest.effects[0].transport_lane, 6);
+  EXPECT_EQ(latest.effects[1].transport_lane, 6);
+  EXPECT_FALSE(latest.more_available);
+
+  const auto second_v5 = network_api->consensus_network_drain_work(5, 10);
+  ASSERT_EQ(second_v5.effects.size(), 1);
+  EXPECT_EQ(second_v5.effects[0].effect_id, 4);
+  EXPECT_EQ(second_v5.effects[0].transport_lane, 5);
+  EXPECT_FALSE(second_v5.more_available);
+}
+
+TEST(ConsensusNetworkApiBridgeTest, drainWorkIsolatesInterleavedTransportLanes) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  const auto enqueue_gossip = [&network_api](uint32_t transport_lane, uint8_t byte) {
+    auto context = networkVoteContext();
+    context.enqueue_admission = true;
+    context.transport_lane = transport_lane;
+    context.peer_id = nodeId(byte);
+    context.vote_hash = hash(byte);
+    context.vote_rlp = bytes({0xC1, byte});
+    context.source_payload_id = byte;
+    context.pbft_block_rlp = rust::Vec<uint8_t>();
+    context.pbft_block_hash = std::array<uint8_t, 32>{};
+    context.pbft_block_period = 0;
+    const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(10, 3, 2, 2), context);
+    return decision;
   };
 
   EXPECT_TRUE(enqueue_gossip(6, 1).routed);

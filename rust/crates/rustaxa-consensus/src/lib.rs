@@ -160,8 +160,8 @@ pub use network_api::{
     NETWORK_SYNC_KIND_PBFT_NEXT_VOTES, NetworkApiConfig, NetworkEffect, NetworkEffectAck,
     NetworkEffectBatch, NetworkEffectResult, NetworkIngressDecision, NetworkInitialStatusFacts,
     NetworkInitialStatusPlan, NetworkPbftSyncPeerCandidate, NetworkPbftSyncStartFacts,
-    NetworkPbftSyncStartPlan, NetworkPbftVoteAdmissionEffects, NetworkPbftVoteIngressContext,
-    NetworkPeerSelectionFacts, NetworkPeerSelectionPlan, NetworkPendingDagBlocksRequestFacts,
+    NetworkPbftSyncStartPlan, NetworkPbftVoteIngressContext, NetworkPeerSelectionFacts,
+    NetworkPeerSelectionPlan, NetworkPendingDagBlocksRequestFacts,
     NetworkPendingDagBlocksRequestPlan, NetworkStatusEgressFacts, NetworkStatusEgressPlan,
     NetworkStatusSyncFacts, NetworkStatusSyncPlan,
 };

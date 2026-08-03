@@ -850,10 +850,12 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
   typed egress, mark-known, sync-request, and peer-report effects for the existing network executor to perform.
   The current Rust-enabled route uses one `Network`-owned consensus-network API shared by the latest and v5 capability
   handler families. Its effect queue is partitioned by transport lane and PBFT gossip effects own canonical vote/block
-  payloads. Post-admission routing orders proposed-block publication before dependent peer-known and gossip effects,
-  including exact duplicate votes carrying a previously unseen block. The no-consumer generic shadow-ingress arena and
-  its capacity configuration are deleted. Tarcap still owns physical execution and remaining handler-local
-  admission/routing is tracked by `CRW-N01`.
+  payloads. Verified-vote admission is an operation-specific application effect correlated by exact effect ID while the
+  packet worker retains the transport-lane lock; Rust consumes the typed `VoteManager` leaf result before releasing
+  proposed-block publication, peer-known, and gossip effects or returning the typed slashing outcome. Exact duplicate votes may still carry a
+  previously unseen block without being regossiped. Bundle shape preflight completes before any member admission. The
+  no-consumer generic shadow-ingress arena and its capacity configuration are deleted. Tarcap still owns physical
+  execution; bundle aggregation and remaining handler-local routing are tracked by `CRW-N01`.
 - EVM/FinalChain execution: transaction execution, receipt/log bloom construction, gas execution, state transition
   execution, and external contract execution stay in the existing FinalChain/EVM boundary until that execution layer is
   migrated. Rust PBFT logic may plan finalization, validate facts, and request execution/finalization effects, but it
@@ -945,9 +947,10 @@ The current Rust consensus footprint is broad but still incomplete:
   read helpers, a canonical PBFT vote event fact boundary, a Rust-owned validation-backed PBFT vote admission runtime
   that composes canonical validation, event-fact derivation, verified-vote mutation, threshold planning, retained
   storage/slashing vote payload sidecars, and typed executor intents for peer-known marking, proposed-block sidecar
-  routing, gossip, and PBFT progress. The Rust-mode `VoteManager` shim exposes those intents through a temporary
-  admission report consumed by latest-tarcap vote handlers, so single-vote and bundle paths mark peers/votes known,
-  report slashing, and gossip only after Rust admission has accepted the vote. VoteManager's compatibility snapshot and
+  routing, gossip, and PBFT progress. Latest-tarcap vote handlers request admission through the shared Rust network
+  effect root; C++ calls the Rust-mode `VoteManager` only as a typed application leaf and reports its outcome under the
+  same lane lock, so single-vote and bundle paths mark peers/votes known, report slashing, and gossip only after Rust
+  admission has accepted the vote. VoteManager's compatibility snapshot and
   2t+1 materializers consume direct native-service payloads to build temporary `PbftVote` sidecars instead of skipping
   missing live sidecars. Reward-vote validation and materialization now enter the same runtime:
   Rust builds preferred-round and reverse-period candidates from Rust-owned verified-vote metadata and returns selected
@@ -1026,8 +1029,10 @@ The current Rust consensus footprint is broad but still incomplete:
    weight into compact progress facts, mutates the single Rust-owned `VerifiedVotes` runtime, retains weighted storage
    payloads and unweighted slashing evidence payloads, and returns one terminal executor report with Rust-planned
    peer-known, proposed-block sidecar, gossip, storage, slashing, threshold, and PBFT-progress intents. Latest-tarcap
-   single-vote and bundle handlers now execute those peer-known, slashing, and gossip intents from a shim-owned
-   admission report after Rust admission accepts the vote; bundle rebroadcast in Rust mode is limited to accepted votes.
+   single-vote and bundle handlers execute admission as an exact-ID-correlated application effect and return its typed
+   outcome to Rust before dependent peer-known and gossip work advances or the handler acts on typed slashing;
+   bundle shape preflight is complete
+   before any member admission, and bundle rebroadcast in Rust mode is limited to accepted votes.
    PBFT vote packet ingress now has a compact-fact Rust planner for relevance, period/round/step windows, proposed-vote bundle rejection,
    bundle identity consistency, and PBFT/next-vote sync hints. Latest-tarcap packet handlers currently call this planner
    through guarded temporary hooks in Rust-enabled builds, while C++ still decodes packets, supplies live peer/sidecar
