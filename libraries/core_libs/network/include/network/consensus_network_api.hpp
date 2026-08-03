@@ -2,14 +2,17 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace rustaxa {
 class BridgeConsensusNetworkApi;
-}
+class BridgePbftService;
+}  // namespace rustaxa
 
 namespace taraxa::network {
 
@@ -25,17 +28,33 @@ struct ConsensusPeerCandidate {
   bool dag_sync_allowed = false;
 };
 
+/** Physical tarcap leaves for one native pillar-vote bundle response. */
+struct PillarVotesBundleExecutor {
+  std::function<bool(const std::vector<uint8_t>&)> send_bundle;
+  std::function<void(const std::array<uint8_t, 32>&)> mark_vote_known;
+  std::function<void(uint8_t)> report_peer;
+  std::function<void()> disconnect_peer;
+};
+
+/** Terminal native decision for one pillar-vote bundle request. */
+struct PillarVotesBundleRequestOutcome {
+  uint8_t status = 0;
+  uint32_t queued_effect_count = 0;
+  std::string error_code;
+};
+
 /**
  * Owns the main-only Rust consensus network facade for one Network instance.
  *
- * Construction applies the sole production queue limits. Destruction releases
- * the opaque Rust handle after all shared users have released this wrapper.
- * The facade is internally synchronized, so capability and packet-handler
- * callers may share it without additional C++ locking.
+ * Construction clones the network service already owned by the application
+ * PBFT root; it cannot create a second protocol runtime or queue. Destruction
+ * releases only this opaque adapter. Native state access is synchronized in
+ * Rust, while callers retain the lane lock across physical transport and
+ * acknowledgement.
  */
 class ConsensusNetworkApi final {
  public:
-  ConsensusNetworkApi();
+  explicit ConsensusNetworkApi(const rustaxa::BridgePbftService& service);
   ~ConsensusNetworkApi();
 
   ConsensusNetworkApi(const ConsensusNetworkApi&) = delete;
@@ -55,6 +74,20 @@ class ConsensusNetworkApi final {
    * returned lock releases the lane when destroyed.
    */
   std::unique_lock<std::mutex> lockTransportLane(uint32_t transport_lane);
+
+  /**
+   * Routes and executes one pillar-vote bundle request on its transport lane.
+   *
+   * Rust owns schedule validation, vote lookup/validation, chunking, effect
+   * ordering, and dependency acknowledgement. The callbacks perform only
+   * packet transport and peer bookkeeping; a failed chunk send suppresses its
+   * marks without preventing later independent chunks.
+   */
+  PillarVotesBundleRequestOutcome servePillarVotesBundleRequest(uint32_t transport_lane,
+                                                                const std::array<uint8_t, 64>& peer_id, uint64_t period,
+                                                                const std::array<uint8_t, 32>& pillar_block_hash,
+                                                                uint64_t source_payload_id,
+                                                                const PillarVotesBundleExecutor& executor);
 
   /**
    * Selects a serviceable max-chain peer from network-owned facts.

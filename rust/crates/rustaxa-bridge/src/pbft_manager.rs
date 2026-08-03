@@ -429,6 +429,8 @@ pub fn create_pbft_service_from_storage(
         polling_interval_ms: config.polling_interval_ms,
         report_malicious_behaviour: config.report_malicious_behaviour,
         magnolia_activation_period: config.magnolia_activation_period,
+        ficus_activation_period: config.ficus_activation_period,
+        pillar_blocks_interval: config.pillar_blocks_interval,
     };
     Ok(Box::new(BridgePbftService(PbftService::restore(
         storage.0.clone(),

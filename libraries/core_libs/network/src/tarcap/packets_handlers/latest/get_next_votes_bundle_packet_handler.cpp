@@ -45,8 +45,8 @@ void GetNextVotesBundlePacketHandler::process(const threadpool::PacketData& pack
   const auto decision = rust_consensus_network_api_->api().consensus_network_ingest_pbft_next_votes_bundle_request(
       static_cast<uint32_t>(transport_lane_), peer->getId().asArray(), packet.peer_pbft_period, packet.peer_pbft_round,
       pbft_period, pbft_round, packet_data.id_);
-  if (decision.application_effect_id != 0) {
-    (void)executeConsensusNetworkEffects(16, decision.application_effect_id);
+  if (decision.queued_effect_count != 0) {
+    (void)executeConsensusNetworkEffects(static_cast<size_t>(decision.queued_effect_count), std::nullopt);
   }
   return;
 #endif

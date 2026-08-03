@@ -2259,6 +2259,8 @@ mod tests {
                 polling_interval_ms: 100,
                 report_malicious_behaviour: true,
                 magnolia_activation_period: 0,
+                ficus_activation_period: 0,
+                pillar_blocks_interval: 10,
             },
         )
         .expect("PBFT service should initialize");
@@ -2343,6 +2345,8 @@ mod tests {
                 polling_interval_ms: 100,
                 report_malicious_behaviour: true,
                 magnolia_activation_period: 0,
+                ficus_activation_period: 0,
+                pillar_blocks_interval: 10,
             },
         )
         .expect("PBFT service should initialize");

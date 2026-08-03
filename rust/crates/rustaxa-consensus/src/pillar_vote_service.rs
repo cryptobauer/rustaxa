@@ -19,10 +19,9 @@ use anyhow::{Result, anyhow, ensure};
 use ethereum_types::H256;
 use rlp::Rlp;
 use rustaxa_storage::Storage;
-use rustaxa_types::{
-    PillarBlock, PillarVote, decode_optimized_pillar_votes_bundle_rlp,
-    encode_optimized_pillar_votes_bundle_rlp,
-};
+#[cfg(test)]
+use rustaxa_types::encode_optimized_pillar_votes_bundle_rlp;
+use rustaxa_types::{PillarBlock, PillarVote, decode_optimized_pillar_votes_bundle_rlp};
 use std::collections::HashMap;
 
 const PILLAR_VOTE_BUNDLE_STATUS_VALID: u8 = 0;
@@ -117,26 +116,6 @@ pub struct PillarVotesPayloadLookup {
     pub block_weight: u64,
     pub selected_weight: u64,
     pub votes: Vec<PillarVoteRecord>,
-}
-
-/// Vote hash associated with one optimized network bundle entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PillarVoteBundleHash {
-    pub hash: [u8; 32],
-}
-
-/// One packet-sized optimized vote bundle and its ordered hashes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PillarVoteNetworkBundleChunk {
-    pub vote_hashes: Vec<PillarVoteBundleHash>,
-    pub votes_bundle_rlp: Vec<u8>,
-}
-
-/// Network lookup indicating whether durable fallback supplied its chunks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PillarVoteNetworkBundleLookup {
-    pub from_storage: bool,
-    pub chunks: Vec<PillarVoteNetworkBundleChunk>,
 }
 
 /// Complete result of native bundle prepare, weighting, and apply.
@@ -615,58 +594,6 @@ impl PillarChainState {
         let stored_votes =
             load_stored_period_pillar_votes(self.storage.as_ref(), period, requested_hash)?;
         Ok(stored_votes_to_payload_lookup(stored_votes))
-    }
-
-    /// Builds packet-ready pillar-vote bundle chunks for network serving.
-    ///
-    /// Inputs:
-    /// - `period` and `block_hash` identify the requested pillar-vote set.
-    /// - `max_votes_per_bundle` is the tarcap packet limit supplied by C++.
-    ///
-    /// Outputs:
-    /// - Returns optimized pillar-vote bundle RLP chunks plus the vote hashes
-    ///   included in each chunk, in the same order as the signatures.
-    /// - Uses live runtime-owned votes first. If none are retained after
-    ///   restart, falls back to the stored `PeriodData` pillar-vote bundle.
-    ///
-    /// Invariants and edge behavior:
-    /// - The returned `votes_bundle_rlp` is the inner
-    ///   `OptimizedPillarVotesBundle` payload, not the tarcap packet wrapper.
-    /// - Empty lookups return an empty chunk list.
-    /// - Storage fallback verifies the embedded period and block hash before
-    ///   returning chunks, so network serving cannot answer a request with a
-    ///   different finalized pillar-vote bundle.
-    fn pbft_service_pillar_build_verified_vote_network_bundles(
-        &self,
-        period: u64,
-        block_hash: &[u8; 32],
-        max_votes_per_bundle: usize,
-    ) -> Result<PillarVoteNetworkBundleLookup> {
-        ensure!(
-            max_votes_per_bundle > 0,
-            "pillar vote network bundle chunk size must be non-zero"
-        );
-
-        let requested_hash = H256::from(*block_hash);
-        let runtime_lookup = self.votes.get_verified_votes(period, requested_hash, false);
-        if !runtime_lookup.votes.is_empty() {
-            let votes = runtime_lookup
-                .votes
-                .into_iter()
-                .map(|vote| (vote.vote, vote.vote_hash))
-                .collect::<Vec<_>>();
-            return Ok(PillarVoteNetworkBundleLookup {
-                from_storage: false,
-                chunks: build_network_bundle_chunks(votes, max_votes_per_bundle)?,
-            });
-        }
-
-        let stored_votes =
-            load_stored_period_pillar_votes(self.storage.as_ref(), period, requested_hash)?;
-        Ok(PillarVoteNetworkBundleLookup {
-            from_storage: true,
-            chunks: build_network_bundle_chunks(stored_votes, max_votes_per_bundle)?,
-        })
     }
 
     /// Prepares one pillar block for PBFT finalization.
@@ -1265,20 +1192,6 @@ impl PillarChainService {
             .pbft_service_pillar_get_verified_vote_payloads(period, block_hash, above_threshold)
     }
 
-    pub fn pbft_service_pillar_build_verified_vote_network_bundles(
-        &self,
-        period: u64,
-        block_hash: &[u8; 32],
-        max_votes_per_bundle: usize,
-    ) -> Result<PillarVoteNetworkBundleLookup> {
-        self.lock(true)?
-            .pbft_service_pillar_build_verified_vote_network_bundles(
-                period,
-                block_hash,
-                max_votes_per_bundle,
-            )
-    }
-
     pub fn pbft_service_pillar_prepare_finalized_block_for_pbft(
         &self,
         request: PillarBlockFinalizationRequest,
@@ -1342,34 +1255,6 @@ fn bundle_with_final_chain_rejection(
         insert_failed_vote_hash: [0; 32],
         applied_votes: 0,
     }
-}
-
-fn build_network_bundle_chunks(
-    votes: Vec<(PillarVote, H256)>,
-    max_votes_per_bundle: usize,
-) -> Result<Vec<PillarVoteNetworkBundleChunk>> {
-    if votes.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut chunks = Vec::with_capacity(votes.len().div_ceil(max_votes_per_bundle));
-    for vote_chunk in votes.chunks(max_votes_per_bundle) {
-        let vote_hashes = vote_chunk
-            .iter()
-            .map(|(_, vote_hash)| PillarVoteBundleHash {
-                hash: (*vote_hash).into(),
-            })
-            .collect();
-        let chunk_votes = vote_chunk
-            .iter()
-            .map(|(vote, _)| vote.clone())
-            .collect::<Vec<_>>();
-        chunks.push(PillarVoteNetworkBundleChunk {
-            vote_hashes,
-            votes_bundle_rlp: encode_optimized_pillar_votes_bundle_rlp(&chunk_votes)?,
-        });
-    }
-    Ok(chunks)
 }
 
 fn load_stored_period_pillar_votes(
@@ -2250,20 +2135,6 @@ mod protocol_tests {
                 block_hash,
                 above_threshold,
             )
-        }
-
-        fn pbft_service_pillar_build_verified_vote_network_bundles(
-            &self,
-            period: u64,
-            block_hash: &[u8; 32],
-            max_votes_per_bundle: usize,
-        ) -> Result<PillarVoteNetworkBundleLookup> {
-            self.pillar
-                .pbft_service_pillar_build_verified_vote_network_bundles(
-                    period,
-                    block_hash,
-                    max_votes_per_bundle,
-                )
         }
 
         fn pbft_service_pillar_prepare_finalized_block_for_pbft(
@@ -3828,122 +3699,6 @@ mod protocol_tests {
         assert!(lookup.threshold_met);
         assert_eq!(lookup.selected_weight, 7);
         assert_eq!(lookup.votes.len(), 2);
-    }
-
-    #[test]
-    fn network_bundle_chunks_use_runtime_votes_without_materializing_cpp_votes() {
-        let dir = unique_temp_dir("pillar_network_runtime_bundle");
-        let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let runtime = create_pillar_test_service_from_storage(&storage)
-            .expect("pillar runtime should initialize");
-        let period = 92;
-        let (current_block, current_data_rlp) = current_data(period - 1);
-        runtime
-            .pbft_service_pillar_apply_current_block_data(current_data_rlp)
-            .expect("current block should apply");
-        let block = current_block.hash();
-        let first_key = SigningKey::from_slice(&[0x61; 32]).unwrap();
-        let second_key = SigningKey::from_slice(&[0x62; 32]).unwrap();
-        let (first, _) = signed_vote_with_key_and_hash(&first_key, period, block);
-        let (second, _) = signed_vote_with_key_and_hash(&second_key, period, block);
-        let votes = vec![
-            PillarVoteWeightedRlpPayload {
-                vote_rlp: first.encode_rlp(),
-                weight: 5,
-            },
-            PillarVoteWeightedRlpPayload {
-                vote_rlp: second.encode_rlp(),
-                weight: 4,
-            },
-        ];
-
-        runtime
-            .pbft_service_pillar_apply_weighted_rlp_bundle(PillarVoteWeightedBundleApplyInput {
-                votes,
-                required_votes_period: period,
-                threshold: 1,
-                anchor_generation: 1,
-            })
-            .unwrap();
-        let lookup = runtime
-            .pbft_service_pillar_build_verified_vote_network_bundles(
-                period,
-                block.as_fixed_bytes(),
-                1,
-            )
-            .unwrap();
-
-        assert!(!lookup.from_storage);
-        assert_eq!(lookup.chunks.len(), 2);
-        let first_decoded =
-            decode_optimized_pillar_votes_bundle_rlp(&lookup.chunks[0].votes_bundle_rlp).unwrap();
-        let second_decoded =
-            decode_optimized_pillar_votes_bundle_rlp(&lookup.chunks[1].votes_bundle_rlp).unwrap();
-        assert_eq!(first_decoded.len(), 1);
-        assert_eq!(second_decoded.len(), 1);
-        assert_eq!(first_decoded[0].period, period);
-        assert_eq!(first_decoded[0].block_hash, block);
-        assert_eq!(second_decoded[0].period, period);
-        assert_eq!(second_decoded[0].block_hash, block);
-        assert_eq!(
-            lookup.chunks[0].vote_hashes[0].hash,
-            <[u8; 32]>::from(first_decoded[0].hash(true))
-        );
-        assert_eq!(
-            lookup.chunks[1].vote_hashes[0].hash,
-            <[u8; 32]>::from(second_decoded[0].hash(true))
-        );
-        fs::remove_dir_all(dir).ok();
-    }
-
-    #[test]
-    fn network_bundle_chunks_fall_back_to_matching_stored_period_data() {
-        let dir = unique_temp_dir("pillar_network_storage_bundle");
-        let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let runtime = create_pillar_test_service_from_storage(&storage)
-            .expect("pillar runtime should initialize");
-        let period = 93;
-        let block = H256::from_low_u64_be(9300);
-        let (first, _) = signed_vote(0x63, period, 9300);
-        let (second, _) = signed_vote(0x64, period, 9300);
-        storage
-            .0
-            .period()
-            .write(
-                period,
-                &period_data_with_pillar_votes(&[first.clone(), second.clone()]),
-            )
-            .unwrap();
-
-        let lookup = runtime
-            .pbft_service_pillar_build_verified_vote_network_bundles(
-                period,
-                block.as_fixed_bytes(),
-                250,
-            )
-            .unwrap();
-
-        assert!(lookup.from_storage);
-        assert_eq!(lookup.chunks.len(), 1);
-        assert_eq!(lookup.chunks[0].vote_hashes.len(), 2);
-        let decoded =
-            decode_optimized_pillar_votes_bundle_rlp(&lookup.chunks[0].votes_bundle_rlp).unwrap();
-        assert_eq!(decoded, vec![first, second]);
-
-        let mismatched = match runtime.pbft_service_pillar_build_verified_vote_network_bundles(
-            period,
-            H256::from_low_u64_be(9301).as_fixed_bytes(),
-            250,
-        ) {
-            Ok(_) => panic!("mismatched storage bundle should be rejected"),
-            Err(err) => err,
-        };
-        assert!(
-            mismatched
-                .to_string()
-                .contains("stored pillar vote bundle does not match")
-        );
-        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

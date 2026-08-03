@@ -23,6 +23,8 @@ SharedPbftService makeInjectedPillarTestService(const std::shared_ptr<DbStorage>
   service_config.max_steps = 13;
   service_config.deadline_ms = 4000;
   service_config.polling_interval_ms = 100;
+  service_config.ficus_activation_period = 0;
+  service_config.pillar_blocks_interval = 10;
   return std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), service_config));
 }
 #endif

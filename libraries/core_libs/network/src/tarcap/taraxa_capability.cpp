@@ -353,7 +353,12 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
       packets_handlers->registerHandler<PillarVotePacketHandler>(config, peers_state, packets_stats, pillar_chain_mgr,
                                                                  RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
       packets_handlers->registerHandler<GetPillarVotesBundlePacketHandler>(config, peers_state, packets_stats,
-                                                                           pillar_chain_mgr, node_addr, logs_prefix);
+#ifndef RUSTAXA_ENABLE
+                                                                           pillar_chain_mgr,
+#else
+                                                                           consensus_network_api, version,
+#endif
+                                                                           node_addr, logs_prefix);
       packets_handlers->registerHandler<PillarVotesBundlePacketHandler>(
           config, peers_state, packets_stats, pillar_chain_mgr, RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
       packets_handlers->registerHandler<PbftBlocksBundlePacketHandler>(
@@ -430,7 +435,12 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
       packets_handlers->registerHandler<PillarVotePacketHandler>(config, peers_state, packets_stats, pillar_chain_mgr,
                                                                  RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
       packets_handlers->registerHandler<GetPillarVotesBundlePacketHandler>(config, peers_state, packets_stats,
-                                                                           pillar_chain_mgr, node_addr, logs_prefix);
+#ifndef RUSTAXA_ENABLE
+                                                                           pillar_chain_mgr,
+#else
+                                                                           consensus_network_api, version,
+#endif
+                                                                           node_addr, logs_prefix);
       packets_handlers->registerHandler<PillarVotesBundlePacketHandler>(
           config, peers_state, packets_stats, pillar_chain_mgr, RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
       return packets_handlers;

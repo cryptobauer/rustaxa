@@ -1,6 +1,7 @@
 #include "network/tarcap/packets_handlers/latest/get_pillar_votes_bundle_packet_handler.hpp"
 
 #include <sstream>
+#include <stdexcept>
 
 #include "network/tarcap/packets/latest/pillar_votes_bundle_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/pillar_votes_bundle_packet_handler.hpp"
@@ -10,11 +11,29 @@ namespace taraxa::network::tarcap {
 GetPillarVotesBundlePacketHandler::GetPillarVotesBundlePacketHandler(
     const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-    std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager, const addr_t &node_addr,
-    const std::string &logs_prefix)
+#ifndef RUSTAXA_ENABLE
+    std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
+#else
+    network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
+#endif
+    const addr_t &node_addr, const std::string &logs_prefix)
     : IGetPillarVotesBundlePacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr,
-                                         logs_prefix + "GET_PILLAR_VOTES_BUNDLE_PH"),
-      pillar_chain_manager_(std::move(pillar_chain_manager)) {}
+                                         logs_prefix + "GET_PILLAR_VOTES_BUNDLE_PH")
+#ifndef RUSTAXA_ENABLE
+      ,
+      pillar_chain_manager_(std::move(pillar_chain_manager))
+#else
+      ,
+      rust_consensus_network_api_(std::move(consensus_network_api)),
+      transport_lane_(transport_lane)
+#endif
+{
+#ifdef RUSTAXA_ENABLE
+  if (!rust_consensus_network_api_) {
+    throw std::invalid_argument("Rust consensus network API must be provided");
+  }
+#endif
+}
 
 GetPillarVotesBundlePacketHandler::~GetPillarVotesBundlePacketHandler() = default;
 
@@ -25,6 +44,35 @@ void GetPillarVotesBundlePacketHandler::process(const threadpool::PacketData &pa
 
   LOG(log_dg_) << "GetPillarVotesBundlePacketHandler received from peer " << peer->getId();
 
+#ifdef RUSTAXA_ENABLE
+  const auto outcome = rust_consensus_network_api_->servePillarVotesBundleRequest(
+      static_cast<uint32_t>(transport_lane_), peer->getId().asArray(), packet.period,
+      packet.pillar_block_hash.asArray(), packet_data.id_,
+      network::PillarVotesBundleExecutor{
+          .send_bundle =
+              [this, &peer](const std::vector<uint8_t> &payload) {
+                dev::RLPStream packet_rlp(1);
+                packet_rlp.appendRaw(dev::bytes(payload.begin(), payload.end()));
+                return sealAndSend(peer->getId(), SubprotocolPacketType::kPillarVotesBundlePacket,
+                                   packet_rlp.invalidate());
+              },
+          .mark_vote_known =
+              [&peer](const std::array<uint8_t, 32> &hash) {
+                peer->markPillarVoteAsKnown(vote_hash_t(hash.data(), vote_hash_t::ConstructFromPointer));
+              },
+          .report_peer =
+              [this, &peer](uint8_t reason) {
+                peers_state_->set_peer_malicious(peer->getId());
+                LOG(log_wr_) << "Network API reported malicious pillar-vote requester " << peer->getId()
+                             << " with reason: " << static_cast<uint32_t>(reason);
+              },
+          .disconnect_peer = [this, &peer] { disconnect(peer->getId(), dev::p2p::UserReason); },
+      });
+
+  if (outcome.status != 0 && outcome.queued_effect_count == 0) {
+    LOG(log_dg_) << "Native pillar-vote bundle request produced no network work: " << outcome.error_code;
+  }
+#else
   if (!kConf.genesis.state.hardforks.ficus_hf.isFicusHardfork(packet.period)) {
     std::ostringstream err_msg;
     err_msg << "Pillar votes bundle request for period " << packet.period << ", ficus hardfork block num "
@@ -38,30 +86,6 @@ void GetPillarVotesBundlePacketHandler::process(const threadpool::PacketData &pa
     throw MaliciousPeerException(err_msg.str());
   }
 
-#ifdef RUSTAXA_ENABLE
-  const auto chunks = pillar_chain_manager_->buildVerifiedPillarVoteNetworkBundles(
-      packet.period, packet.pillar_block_hash, PillarVotesBundlePacketHandler::kMaxPillarVotesInBundleRlp);
-  if (chunks.empty()) {
-    LOG(log_dg_) << "No pillar votes for period " << packet.period << "and pillar block hash "
-                 << packet.pillar_block_hash;
-    return;
-  }
-
-  for (size_t chunk_index = 0; chunk_index < chunks.size(); ++chunk_index) {
-    const auto &chunk = chunks[chunk_index];
-    dev::RLPStream packet_rlp(1);
-    packet_rlp.appendRaw(chunk.optimized_bundle_rlp);
-
-    if (sealAndSend(peer->getId(), SubprotocolPacketType::kPillarVotesBundlePacket, packet_rlp.invalidate())) {
-      for (const auto &vote_hash : chunk.vote_hashes) {
-        peer->markPillarVoteAsKnown(vote_hash);
-      }
-
-      LOG(log_nf_) << "Pillar votes bundle for period " << packet.period << ", hash " << packet.pillar_block_hash
-                   << " sent to " << peer->getId() << " (Chunk " << chunk_index + 1 << "/" << chunks.size() << ")";
-    }
-  }
-#else
   const auto votes = pillar_chain_manager_->getVerifiedPillarVotes(packet.period, packet.pillar_block_hash);
   if (votes.empty()) {
     LOG(log_dg_) << "No pillar votes for period " << packet.period << "and pillar block hash "

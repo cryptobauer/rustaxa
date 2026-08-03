@@ -79,6 +79,8 @@ rustaxa::PbftServiceConfig makePbftServiceConfig() {
   config.max_steps = 13;
   config.deadline_ms = 4000;
   config.polling_interval_ms = 100;
+  config.ficus_activation_period = 0;
+  config.pillar_blocks_interval = 10;
   return config;
 }
 

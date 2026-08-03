@@ -3389,6 +3389,32 @@ all-Rust-disabled tree compiles every changed network source through `core_libs`
 registration source, and guarded test additions remain explicit Rust-only integration exceptions; their pure-C++ bodies
 select the legacy route until a complete packet-family overlay can own the cutover.
 
+The following `CRW-N01`/`CRW-12` slice moves network-runtime ownership into native `PbftService` and internalizes both
+remaining vote-response queries. `ConsensusNetworkService` is constructed once from the root's pillar and verified-vote
+siblings; bridge adapters clone that service and therefore share one queue, effect sequence, dependency state, and
+schedule. `rustaxa-bridge` no longer constructs or locks a standalone network API, accepts a partial queue-capacity
+configuration, or carries application-result payload pairs. Get-next-votes queries the native verified-vote sibling
+directly. Get-pillar-votes validates the immutable Ficus schedule, performs live-first/stored-period fallback lookup,
+revalidates canonical vote identity/signatures/hashes/order, chunks at 250, and queues a send followed by exact dependent
+known-vote effects. Invalid peer requests queue report then disconnect; local lookup, empty, and invariant outcomes are
+typed zero-effect decisions. C++ retains only lane serialization, packet wrapping, physical transport, peer bookkeeping,
+and acknowledgement. The obsolete VoteManager/PillarChainManager egress helpers, five CXX carriers, one export, and 61
+shim lines are deleted. Exact budgets are 22,006 bridge lines, 16,667 shim lines, 376 CXX functions, 323 carriers, 18
+handles, 10 shim directories, and 38 non-test consumers. `CRW-N01` remains active for the other handler-local routes.
+
+Validation passes `rewrite-validate-fast`, `rewrite-validate-smoke`, all 1,101 native consensus tests (including the
+disabled-Ficus zero-interval request regression), all 77 bridge tests, the bridge inventory and storage-boundary guards,
+Rust-enabled `network_test`, `pillar_chain_test`, and `pbft_chain_shim_test` builds, the isolated peer-cache and
+multi-node pillar-sync cases, and both PBFT-chain shim cases. Independent review found and closed two production
+blockers before approval: executor acknowledgements are no longer retained in an unbounded peer-amplifiable journal,
+and disabled Ficus schedules short-circuit before interval validation or modulo arithmetic. The Tier 3 CTest attempt
+records the established partial-tree baseline: five binaries are not built, aggregate node suites retain same-process
+`/tmp/taraxa0` RocksDB locks, and Go contract tests lack static zlib/snappy; 9 of 21 registered tests pass. Python
+integration remains unavailable because the environment lacks `virtualenv` and `pytest`. A fresh all-Rust-disabled tree
+compiles every changed network source through `core_libs`, then reaches the previously tracked `App`/`Network`
+constructor mismatch before linking `network_test`. The aggregate CXX bridge target still stops at the untouched
+`test_pbft_sync.cpp` five-argument call to the current six-argument admission API.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

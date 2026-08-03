@@ -13,17 +13,24 @@
 //! shadow-ingress arena.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::pbft_vote_payload::build_optimized_pbft_vote_bundle;
+use crate::pbft_vote_runtime::{PbftNextVotesBundleEgressPayloads, PbftVerifiedVotesService};
+use crate::pillar_chain_service::PillarChainService;
+use crate::pillar_vote_service::PillarVoteRecord;
 use crate::{
     PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,
     PbftVotePayloadRecord, inspect_canonical_pbft_vote, inspect_pillar_vote_from_rlp,
     plan_pbft_vote_bundle_ingress, plan_pbft_vote_ingress,
 };
+use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::H256;
 use rlp::{Rlp, RlpStream};
+use rustaxa_types::{PillarVote, encode_optimized_pillar_votes_bundle_rlp};
 
 const MAX_PILLAR_VOTES_PER_BUNDLE_PACKET: usize = 250;
+const MAX_EFFECTS_PER_DRAIN: usize = 1024;
 
 const ERROR_PILLAR_VOTE_INGRESS_MALFORMED_RLP: &str = "PILLAR_VOTE_INGRESS_MALFORMED_RLP";
 const ERROR_PILLAR_VOTE_INGRESS_INVALID_CONTEXT: &str = "PILLAR_VOTE_INGRESS_INVALID_CONTEXT";
@@ -38,6 +45,16 @@ pub const NETWORK_INGRESS_STATUS_NEXT_VOTES_PERIOD_MISMATCH: u8 = 1;
 pub const NETWORK_INGRESS_STATUS_NEXT_VOTES_NO_PREVIOUS_ROUND: u8 = 2;
 /// The requester claims a PBFT round ahead of the local snapshot.
 pub const NETWORK_INGRESS_STATUS_NEXT_VOTES_PEER_ROUND_AHEAD: u8 = 3;
+/// A get-pillar-votes request predates Ficus activation.
+pub const NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE: u8 = 6;
+/// A get-pillar-votes request does not target an exact pillar PBFT period.
+pub const NETWORK_INGRESS_STATUS_PILLAR_VOTES_INVALID_PERIOD: u8 = 7;
+/// A valid pillar-vote request found no live or stored votes.
+pub const NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA: u8 = 8;
+/// A native sibling lookup failed locally without implicating the peer.
+pub const NETWORK_INGRESS_STATUS_LOCAL_LOOKUP_FAILED: u8 = 9;
+/// A native sibling returned payloads that violated the network contract.
+pub const NETWORK_INGRESS_STATUS_INVALID_NATIVE_RESULT: u8 = 10;
 
 /// Network status/sync planner accepted the facts.
 pub const NETWORK_STATUS_PLAN_STATUS_OK: u8 = 0;
@@ -105,6 +122,8 @@ pub const NETWORK_SYNC_KIND_PBFT_NEXT_VOTES: u8 = 1;
 pub const NETWORK_REASON_UNSUPPORTED_BUNDLE_PROPOSE_VOTE: u8 = 0;
 /// Network peer report reason for mixed vote identity in a bundle.
 pub const NETWORK_REASON_BUNDLE_VOTE_MISMATCH: u8 = 1;
+/// Network peer report/disconnect reason for an invalid pillar-vote request schedule.
+pub const NETWORK_REASON_INVALID_PILLAR_VOTES_REQUEST: u8 = 2;
 
 /// Network known-object effect identifies a PBFT vote hash.
 pub const NETWORK_OBJECT_KIND_PBFT_VOTE: u8 = 0;
@@ -120,12 +139,8 @@ pub const NETWORK_OBJECT_KIND_PBFT_PERIOD_DATA: u8 = 4;
 pub const NETWORK_OBJECT_KIND_PILLAR_VOTE: u8 = 5;
 /// Network object effect identifies a pillar vote validation request.
 pub const NETWORK_OBJECT_KIND_PILLAR_VOTE_VALIDATION: u8 = 6;
-/// Network object effect identifies a PBFT next-votes bundle egress request.
-pub const NETWORK_OBJECT_KIND_PBFT_NEXT_VOTES_BUNDLE_EGRESS_REQUEST: u8 = 7;
 /// Network object effect identifies a PBFT sync egress request.
 pub const NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST: u8 = 8;
-/// Network object effect identifies a pillar votes bundle egress request.
-pub const NETWORK_OBJECT_KIND_PILLAR_VOTES_BUNDLE_EGRESS_REQUEST: u8 = 9;
 /// Network object effect identifies a DAG sync egress request.
 pub const NETWORK_OBJECT_KIND_DAG_SYNC_EGRESS_REQUEST: u8 = 10;
 
@@ -164,22 +179,14 @@ const ERROR_MISMATCHED_EFFECT_RESULT: &str = "NETWORK_EFFECT_RESULT_MISMATCHED_E
 const ERROR_NEXT_VOTES_PERIOD_MISMATCH: &str = "NETWORK_NEXT_VOTES_PERIOD_MISMATCH";
 const ERROR_NEXT_VOTES_NO_PREVIOUS_ROUND: &str = "NETWORK_NEXT_VOTES_NO_PREVIOUS_ROUND";
 const ERROR_NEXT_VOTES_PEER_ROUND_AHEAD: &str = "NETWORK_NEXT_VOTES_PEER_ROUND_AHEAD";
+const ERROR_PILLAR_VOTES_INACTIVE: &str = "NETWORK_PILLAR_VOTES_REQUEST_BEFORE_FICUS";
+const ERROR_PILLAR_VOTES_INVALID_PERIOD: &str = "NETWORK_PILLAR_VOTES_REQUEST_INVALID_PERIOD";
+const ERROR_PILLAR_VOTES_NO_DATA: &str = "NETWORK_PILLAR_VOTES_NO_DATA";
+const ERROR_NEXT_VOTES_LOOKUP_FAILED: &str = "NETWORK_NEXT_VOTES_LOCAL_LOOKUP_FAILED";
+const ERROR_NEXT_VOTES_INVALID_NATIVE_RESULT: &str = "NETWORK_NEXT_VOTES_INVALID_NATIVE_RESULT";
+const ERROR_PILLAR_VOTES_LOOKUP_FAILED: &str = "NETWORK_PILLAR_VOTES_LOCAL_LOOKUP_FAILED";
+const ERROR_PILLAR_VOTES_INVALID_NATIVE_RESULT: &str = "NETWORK_PILLAR_VOTES_INVALID_NATIVE_RESULT";
 const MAX_VOTES_PER_BUNDLE_PACKET: usize = 1000;
-
-/// Effect-drain limit for the external network/tarcap facade.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NetworkApiConfig {
-    /// Maximum number of effects returned by one drain call.
-    pub max_effects_per_drain: usize,
-}
-
-impl Default for NetworkApiConfig {
-    fn default() -> Self {
-        Self {
-            max_effects_per_drain: 1024,
-        }
-    }
-}
 
 /// Executor-visible network effect planned by Rust consensus.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -252,10 +259,6 @@ pub struct NetworkEffectResult {
     pub status: u8,
     /// Optional diagnostic text for logging at the boundary.
     pub diagnostic: String,
-    /// Primary payload returned by an operation-shaped application effect.
-    pub payload_bytes: Vec<u8>,
-    /// Secondary payload returned by an operation-shaped application effect.
-    pub related_payload_bytes: Vec<u8>,
     /// Whether verified-vote admission inserted the vote.
     pub admission_accepted: bool,
     /// Whether verified-vote admission found the vote already present.
@@ -344,6 +347,26 @@ pub struct NetworkPbftNextVotesBundleRequest {
     pub source_payload_id: u64,
 }
 
+/// Scalar request facts for one get-pillar-votes-bundle packet.
+///
+/// The request carries only transport identity and the exact native pillar
+/// vote lookup coordinates. Schedule policy comes from the restored PBFT
+/// service configuration; callers cannot override activation or interval
+/// checks per packet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkGetPillarVotesBundleRequest {
+    /// Tarcap version/lane that owns physical packet sends.
+    pub transport_lane: u32,
+    /// Peer that requested the pillar votes.
+    pub peer_id: [u8; 64],
+    /// Requested PBFT period containing the pillar block hash.
+    pub period: u64,
+    /// Pillar block hash whose votes should be served.
+    pub pillar_block_hash: [u8; 32],
+    /// Optional network-owned packet identity for effect correlation.
+    pub source_payload_id: u64,
+}
+
 /// Result of routing PBFT vote ingress through the network/tarcap API.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkIngressDecision {
@@ -404,15 +427,6 @@ struct PendingVoteBundle {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct PendingNextVotesBundleEgress {
-    transport_lane: u32,
-    peer_id: [u8; 64],
-    source_payload_id: u64,
-    period: u64,
-    round: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingPillarVoteAdmissionContext {
     transport_lane: u32,
     peer_id: [u8; 64],
@@ -421,6 +435,12 @@ struct PendingPillarVoteAdmissionContext {
     period: u64,
     source_payload_id: u64,
     allow_gossip: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PillarVoteNetworkChunk {
+    vote_hashes: Vec<[u8; 32]>,
+    payload_bytes: Vec<u8>,
 }
 
 /// Compact local and peer facts needed to plan status-triggered sync work.
@@ -669,50 +689,299 @@ pub struct NetworkPendingDagBlocksRequestPlan {
     pub request_period: u64,
 }
 
+/// Cloneable native owner of consensus network routing and sibling queries.
+///
+/// Every clone shares one ordered network-effect queue while retaining handles
+/// to the PBFT verified-vote and pillar siblings restored by the same
+/// [`crate::PbftService`]. Operation methods never hold the network mutex while
+/// querying a sibling: request policy is checked first, sibling payloads are
+/// copied and fully validated next, and only then are packet-ready effects
+/// appended under the network lock. Poisoned locks return errors; local
+/// lookup and payload-invariant failures return typed zero-effect decisions.
+#[derive(Clone)]
+pub struct ConsensusNetworkService {
+    api: Arc<Mutex<ConsensusNetworkApi>>,
+    pillar: PillarChainService,
+    verified_votes: PbftVerifiedVotesService,
+}
+
+impl ConsensusNetworkService {
+    /// Constructs the single native network service for a restored PBFT root.
+    ///
+    /// `pillar_blocks_interval` must be greater than one while Ficus is
+    /// enabled. A `u64::MAX` activation preserves the legacy disabled-Ficus
+    /// configuration, where the interval is ignored. The sibling handles must
+    /// come from the same restoration graph; clones then observe their shared
+    /// native state.
+    pub(crate) fn new(
+        pillar: PillarChainService,
+        verified_votes: PbftVerifiedVotesService,
+        ficus_activation_period: u64,
+        pillar_blocks_interval: u64,
+    ) -> Result<Self> {
+        ensure!(
+            ficus_activation_period == u64::MAX || pillar_blocks_interval > 1,
+            "PBFT_SERVICE_PILLAR_BLOCKS_INTERVAL_MUST_EXCEED_ONE"
+        );
+        Ok(Self {
+            api: Arc::new(Mutex::new(ConsensusNetworkApi::with_pillar_schedule(
+                ficus_activation_period,
+                pillar_blocks_interval,
+            ))),
+            pillar,
+            verified_votes,
+        })
+    }
+
+    fn lock_api(&self) -> Result<MutexGuard<'_, ConsensusNetworkApi>> {
+        self.api
+            .lock()
+            .map_err(|_| anyhow!("CONSENSUS_NETWORK_SERVICE_LOCK_POISONED"))
+    }
+
+    /// Drains at most the fixed native limit of dependency-ready lane effects.
+    pub fn drain_work(&self, transport_lane: u32, budget: u32) -> Result<NetworkEffectBatch> {
+        Ok(self.lock_api()?.drain_work(transport_lane, budget))
+    }
+
+    /// Validates and records scalar executor results for previously drained effects.
+    pub fn report_effect_results(
+        &self,
+        results: Vec<NetworkEffectResult>,
+    ) -> Result<NetworkEffectAck> {
+        Ok(self.lock_api()?.report_effect_results(results))
+    }
+
+    /// Plans status-triggered sync work from caller-owned scalar snapshots.
+    pub fn plan_status_sync(&self, facts: NetworkStatusSyncFacts) -> Result<NetworkStatusSyncPlan> {
+        Ok(self.lock_api()?.plan_status_sync(facts))
+    }
+
+    /// Plans one local status packet from caller-owned scalar snapshots.
+    pub fn plan_status_egress(
+        &self,
+        facts: NetworkStatusEgressFacts,
+    ) -> Result<NetworkStatusEgressPlan> {
+        Ok(self.lock_api()?.plan_status_egress(facts))
+    }
+
+    /// Validates one initial status packet without mutating peer transport state.
+    pub fn plan_initial_status(
+        &self,
+        facts: NetworkInitialStatusFacts,
+    ) -> Result<NetworkInitialStatusPlan> {
+        Ok(self.lock_api()?.plan_initial_status(facts))
+    }
+
+    /// Selects and plans one PBFT sync start from compact peer facts.
+    pub fn plan_pbft_sync_start(
+        &self,
+        facts: NetworkPbftSyncStartFacts,
+    ) -> Result<NetworkPbftSyncStartPlan> {
+        Ok(self.lock_api()?.plan_pbft_sync_start(facts))
+    }
+
+    /// Selects the best serviceable max-chain peer from compact peer facts.
+    pub fn plan_max_chain_peer_selection(
+        &self,
+        facts: NetworkPeerSelectionFacts,
+    ) -> Result<NetworkPeerSelectionPlan> {
+        Ok(self.lock_api()?.plan_max_chain_peer_selection(facts))
+    }
+
+    /// Plans a pending-DAG request without executing peer or packet operations.
+    pub fn plan_pending_dag_blocks_request(
+        &self,
+        facts: NetworkPendingDagBlocksRequestFacts,
+    ) -> Result<NetworkPendingDagBlocksRequestPlan> {
+        Ok(self.lock_api()?.plan_pending_dag_blocks_request(facts))
+    }
+
+    /// Routes one PBFT vote and appends its ordered network/application effects.
+    pub fn ingest_pbft_vote(
+        &self,
+        fact: PbftVoteIngressFact,
+        context: NetworkPbftVoteIngressContext,
+    ) -> Result<NetworkIngressDecision> {
+        Ok(self.lock_api()?.ingest_pbft_vote(fact, context))
+    }
+
+    /// Atomically preflights one PBFT vote bundle before queueing admissions.
+    pub fn ingest_pbft_vote_bundle(
+        &self,
+        reference: PbftVoteIngressFact,
+        votes: Vec<PbftVoteIngressFact>,
+        contexts: Vec<NetworkPbftVoteIngressContext>,
+    ) -> Result<Vec<NetworkIngressDecision>> {
+        Ok(self
+            .lock_api()?
+            .ingest_pbft_vote_bundle(reference, votes, contexts))
+    }
+
+    /// Atomically preflights one pillar-vote bundle before queueing admissions.
+    pub fn ingest_pillar_vote_bundle(
+        &self,
+        context: NetworkPillarVoteIngressContext,
+        votes: Vec<Vec<u8>>,
+    ) -> Result<Vec<NetworkIngressDecision>> {
+        Ok(self.lock_api()?.ingest_pillar_vote_bundle(context, votes))
+    }
+
+    /// Serves one eligible previous-round next-vote request directly.
+    ///
+    /// Eligibility is resolved without a lock. The verified-vote sibling then
+    /// returns both complete bundle families in one sibling lock epoch. Rust
+    /// validates and chunks those canonical payloads before acquiring the
+    /// network lock to append ordered send effects. Missing families and an
+    /// empty pair succeeds with no effects; local lookup or payload-invariant
+    /// failures return typed zero-effect decisions. Lock poisoning propagates.
+    pub fn ingest_pbft_next_votes_bundle_request(
+        &self,
+        request: NetworkPbftNextVotesBundleRequest,
+    ) -> Result<NetworkIngressDecision> {
+        if let Some(decision) = next_votes_request_rejection(&request) {
+            return Ok(decision);
+        }
+        let period = request.current_period;
+        let round = request.current_round - 1;
+        let payloads = match self
+            .verified_votes
+            .verified_votes_build_next_votes_bundle_egress(period, round)
+        {
+            Ok(payloads) => payloads,
+            Err(error) if native_lock_poisoned(&error) => return Err(error),
+            Err(_) => {
+                return Ok(local_network_decision(
+                    request.source_payload_id,
+                    NETWORK_INGRESS_STATUS_LOCAL_LOOKUP_FAILED,
+                    ERROR_NEXT_VOTES_LOOKUP_FAILED,
+                ));
+            }
+        };
+        let chunks = match validate_next_votes_payloads(payloads, period, round) {
+            Ok(chunks) => chunks,
+            Err(_) => {
+                return Ok(local_network_decision(
+                    request.source_payload_id,
+                    NETWORK_INGRESS_STATUS_INVALID_NATIVE_RESULT,
+                    ERROR_NEXT_VOTES_INVALID_NATIVE_RESULT,
+                ));
+            }
+        };
+        Ok(self
+            .lock_api()?
+            .enqueue_next_votes_bundle_send_effects(request, chunks))
+    }
+
+    /// Serves one schedule-valid pillar-vote bundle request directly.
+    ///
+    /// Before Ficus or off the exact pillar PBFT schedule, the peer is reported
+    /// and then disconnected through a dependent effect. Valid requests query
+    /// the pillar sibling for ordered live-first, stored-period-fallback full
+    /// vote payloads. Every payload is revalidated for canonical encoding,
+    /// period, block hash, signature, retained hash, uniqueness, and output
+    /// order before the network queue is locked. Empty lookups and local
+    /// failures return distinct typed zero-effect decisions; lock poisoning
+    /// propagates as an error.
+    pub fn ingest_get_pillar_votes_bundle_request(
+        &self,
+        request: NetworkGetPillarVotesBundleRequest,
+    ) -> Result<NetworkIngressDecision> {
+        {
+            let mut api = self.lock_api()?;
+            if let Some(decision) = api.reject_invalid_pillar_votes_request(&request) {
+                return Ok(decision);
+            }
+        }
+
+        let records = match self.pillar.pbft_service_pillar_get_verified_vote_payloads(
+            request.period,
+            &request.pillar_block_hash,
+            false,
+        ) {
+            Ok(lookup) => lookup.votes,
+            Err(error) if native_lock_poisoned(&error) => return Err(error),
+            Err(_) => {
+                return Ok(local_network_decision(
+                    request.source_payload_id,
+                    NETWORK_INGRESS_STATUS_LOCAL_LOOKUP_FAILED,
+                    ERROR_PILLAR_VOTES_LOOKUP_FAILED,
+                ));
+            }
+        };
+        if records.is_empty() {
+            return Ok(local_network_decision(
+                request.source_payload_id,
+                NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA,
+                ERROR_PILLAR_VOTES_NO_DATA,
+            ));
+        }
+        let chunks = match validate_and_chunk_pillar_votes(
+            records,
+            request.period,
+            request.pillar_block_hash,
+        ) {
+            Ok(chunks) => chunks,
+            Err(_) => {
+                return Ok(local_network_decision(
+                    request.source_payload_id,
+                    NETWORK_INGRESS_STATUS_INVALID_NATIVE_RESULT,
+                    ERROR_PILLAR_VOTES_INVALID_NATIVE_RESULT,
+                ));
+            }
+        };
+        Ok(self
+            .lock_api()?
+            .enqueue_pillar_vote_bundle_send_effects(request, chunks))
+    }
+}
+
 /// Rust-owned external network/tarcap API facade.
 ///
 /// The facade owns an ordered network effect queue. It is intentionally small: packet-specific decoding and
 /// consensus planning should be added behind this type without exposing
 /// consensus managers, C++ sidecars, storage handles, or shim routes to the
 /// network module.
-#[derive(Debug, Default)]
-pub struct ConsensusNetworkApi {
-    config: NetworkApiConfig,
+#[derive(Debug)]
+pub(crate) struct ConsensusNetworkApi {
+    ficus_activation_period: u64,
+    pillar_blocks_interval: u64,
     next_effect_id: u64,
     next_vote_bundle_id: u64,
     pending_effects: VecDeque<NetworkEffect>,
     pending_vote_admissions: HashMap<u64, PendingVoteAdmissionContext>,
     pending_vote_bundles: HashMap<u64, PendingVoteBundle>,
     pending_pillar_vote_admissions: HashMap<u64, PendingPillarVoteAdmissionContext>,
-    pending_next_votes_bundle_egress: HashMap<u64, PendingNextVotesBundleEgress>,
     outstanding_effects: HashMap<u64, NetworkEffect>,
     completed_dependency_status: HashMap<u64, bool>,
-    effect_results: Vec<NetworkEffectResult>,
+}
+
+impl Default for ConsensusNetworkApi {
+    fn default() -> Self {
+        Self::with_pillar_schedule(0, 10)
+    }
 }
 
 impl ConsensusNetworkApi {
     /// Creates an empty network/tarcap API facade.
     #[must_use]
-    pub fn new() -> Self {
-        Self::with_config(NetworkApiConfig::default())
+    #[cfg(test)]
+    fn new() -> Self {
+        Self::default()
     }
 
-    /// Creates an empty network/tarcap API facade with explicit capacity
-    /// limits.
-    #[must_use]
-    pub fn with_config(config: NetworkApiConfig) -> Self {
+    fn with_pillar_schedule(ficus_activation_period: u64, pillar_blocks_interval: u64) -> Self {
         Self {
-            config,
+            ficus_activation_period,
+            pillar_blocks_interval,
             next_effect_id: 1,
             next_vote_bundle_id: 1,
             pending_effects: VecDeque::new(),
             pending_vote_admissions: HashMap::new(),
             pending_vote_bundles: HashMap::new(),
             pending_pillar_vote_admissions: HashMap::new(),
-            pending_next_votes_bundle_egress: HashMap::new(),
             outstanding_effects: HashMap::new(),
             completed_dependency_status: HashMap::new(),
-            effect_results: Vec::new(),
         }
     }
 
@@ -727,7 +996,7 @@ impl ConsensusNetworkApi {
         let mut effects = Vec::new();
         let capped_budget = usize::try_from(budget)
             .unwrap_or(usize::MAX)
-            .min(self.config.max_effects_per_drain);
+            .min(MAX_EFFECTS_PER_DRAIN);
         let mut retained = VecDeque::new();
         let queued_count = self.pending_effects.len();
         for _ in 0..queued_count {
@@ -777,10 +1046,9 @@ impl ConsensusNetworkApi {
 
     /// Records network executor result reports.
     ///
-    /// Accepted reports retain only scalar identity and status metadata. Any
-    /// response payloads are consumed while applying the result and discarded
-    /// before archival so peer-triggered application responses cannot grow the
-    /// diagnostic journal by their encoded bundle size.
+    /// Accepted reports update dependency and admission state, then are
+    /// discarded. Keeping a production result journal would let peers grow
+    /// memory indefinitely by repeatedly requesting valid response bundles.
     pub fn report_effect_results(&mut self, results: Vec<NetworkEffectResult>) -> NetworkEffectAck {
         let mut accepted_results = 0u64;
         let mut seen = HashSet::new();
@@ -814,14 +1082,6 @@ impl ConsensusNetworkApi {
                 error_code = ERROR_MISMATCHED_EFFECT_RESULT;
                 break;
             }
-            if effect.kind == NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
-                && effect.object_kind == NETWORK_OBJECT_KIND_PBFT_NEXT_VOTES_BUNDLE_EGRESS_REQUEST
-                && !next_votes_bundle_result_is_valid(result, effect.period, effect.round)
-            {
-                status = NETWORK_EFFECT_ACK_STATUS_MISMATCHED_EFFECT_RESULT;
-                error_code = ERROR_MISMATCHED_EFFECT_RESULT;
-                break;
-            }
             accepted_results += 1;
         }
 
@@ -850,17 +1110,6 @@ impl ConsensusNetworkApi {
                 {
                     self.enqueue_pillar_vote_admission_follow_ups(context, result);
                 }
-                if let Some(effect) = effect.as_ref()
-                    && effect.kind == NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
-                    && effect.object_kind
-                        == NETWORK_OBJECT_KIND_PBFT_NEXT_VOTES_BUNDLE_EGRESS_REQUEST
-                    && let Some(context) = self
-                        .pending_next_votes_bundle_egress
-                        .remove(&result.effect_id)
-                    && result.status == NETWORK_EFFECT_RESULT_STATUS_OK
-                {
-                    self.enqueue_next_votes_bundle_send_effects(context, result);
-                }
                 if self
                     .pending_effects
                     .iter()
@@ -872,12 +1121,6 @@ impl ConsensusNetworkApi {
                     );
                 }
             }
-            self.effect_results
-                .extend(results.into_iter().map(|mut result| {
-                    result.payload_bytes = Vec::new();
-                    result.related_payload_bytes = Vec::new();
-                    result
-                }));
         }
 
         NetworkEffectAck {
@@ -1192,84 +1435,81 @@ impl ConsensusNetworkApi {
             .collect()
     }
 
-    /// Routes one get-next-votes request through an application leaf.
-    ///
-    /// Rust owns request eligibility, the exact previous-round query, and all
-    /// follow-up send/chunk ordering. The executor returns packet-ready inner
-    /// optimized bundle payloads from the native verified-vote service.
-    pub fn ingest_pbft_next_votes_bundle_request(
+    fn reject_invalid_pillar_votes_request(
         &mut self,
-        request: NetworkPbftNextVotesBundleRequest,
-    ) -> NetworkIngressDecision {
-        let rejection = if request.current_period != request.peer_period {
-            Some((
-                NETWORK_INGRESS_STATUS_NEXT_VOTES_PERIOD_MISMATCH,
-                ERROR_NEXT_VOTES_PERIOD_MISMATCH,
-            ))
-        } else if request.current_round <= 1 {
-            Some((
-                NETWORK_INGRESS_STATUS_NEXT_VOTES_NO_PREVIOUS_ROUND,
-                ERROR_NEXT_VOTES_NO_PREVIOUS_ROUND,
-            ))
-        } else if request.current_round < request.peer_round {
-            Some((
-                NETWORK_INGRESS_STATUS_NEXT_VOTES_PEER_ROUND_AHEAD,
-                ERROR_NEXT_VOTES_PEER_ROUND_AHEAD,
-            ))
+        request: &NetworkGetPillarVotesBundleRequest,
+    ) -> Option<NetworkIngressDecision> {
+        let inactive = self.ficus_activation_period == u64::MAX
+            || request.period < self.ficus_activation_period;
+        let first_pillar_period = if self.ficus_activation_period == 0 {
+            self.pillar_blocks_interval
         } else {
-            None
+            self.ficus_activation_period
         };
-        if let Some((status, error_code)) = rejection {
-            return NetworkIngressDecision {
-                payload_id: request.source_payload_id,
-                payload_accepted: request.source_payload_id != 0,
-                routed: true,
-                status,
-                error_code: error_code.to_owned(),
-                queued_effect_count: 0,
-                application_effect_id: 0,
-            };
-        }
+        let wrong_period = !inactive
+            && (request.period < first_pillar_period
+                || request.period % self.pillar_blocks_interval != 1);
+        let (status, error_code) = if inactive {
+            (
+                NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE,
+                ERROR_PILLAR_VOTES_INACTIVE,
+            )
+        } else if wrong_period {
+            (
+                NETWORK_INGRESS_STATUS_PILLAR_VOTES_INVALID_PERIOD,
+                ERROR_PILLAR_VOTES_INVALID_PERIOD,
+            )
+        } else {
+            return None;
+        };
 
-        let period = request.current_period;
-        let round = request.current_round - 1;
-        let context = PendingNextVotesBundleEgress {
-            transport_lane: request.transport_lane,
-            peer_id: request.peer_id,
-            source_payload_id: request.source_payload_id,
-            period,
-            round,
-        };
-        let effect_id = self.enqueue_effect(NetworkEffect {
+        let report_id = self.enqueue_effect(NetworkEffect {
             effect_id: 0,
             source_payload_id: request.source_payload_id,
             transport_lane: request.transport_lane,
-            kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+            kind: NETWORK_EFFECT_KIND_REPORT_PEER,
             peer_id: request.peer_id,
             packet_kind: 0,
             payload_bytes: Vec::new(),
             related_payload_bytes: Vec::new(),
             exclude_peers: Vec::new(),
-            object_kind: NETWORK_OBJECT_KIND_PBFT_NEXT_VOTES_BUNDLE_EGRESS_REQUEST,
-            object_hash: [0; 32],
+            object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
+            object_hash: request.pillar_block_hash,
             sync_kind: 0,
             sync_start: 0,
-            reason_code: 0,
+            reason_code: NETWORK_REASON_INVALID_PILLAR_VOTES_REQUEST,
             dependency_id: 0,
-            period,
-            round,
+            period: request.period,
+            round: 0,
         });
-        self.pending_next_votes_bundle_egress
-            .insert(effect_id, context);
-        NetworkIngressDecision {
+        self.enqueue_effect(NetworkEffect {
+            effect_id: 0,
+            source_payload_id: request.source_payload_id,
+            transport_lane: request.transport_lane,
+            kind: NETWORK_EFFECT_KIND_DISCONNECT_PEER,
+            peer_id: request.peer_id,
+            packet_kind: 0,
+            payload_bytes: Vec::new(),
+            related_payload_bytes: Vec::new(),
+            exclude_peers: Vec::new(),
+            object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
+            object_hash: request.pillar_block_hash,
+            sync_kind: 0,
+            sync_start: 0,
+            reason_code: NETWORK_REASON_INVALID_PILLAR_VOTES_REQUEST,
+            dependency_id: report_id,
+            period: request.period,
+            round: 0,
+        });
+        Some(NetworkIngressDecision {
             payload_id: request.source_payload_id,
             payload_accepted: request.source_payload_id != 0,
             routed: true,
-            status: NETWORK_INGRESS_STATUS_ACCEPTED,
-            error_code: ERROR_NONE.to_owned(),
-            queued_effect_count: 1,
-            application_effect_id: effect_id,
-        }
+            status,
+            error_code: error_code.to_owned(),
+            queued_effect_count: 2,
+            application_effect_id: 0,
+        })
     }
 
     fn decision_from_vote_plan(
@@ -1658,30 +1898,18 @@ impl ConsensusNetworkApi {
 
     fn enqueue_next_votes_bundle_send_effects(
         &mut self,
-        context: PendingNextVotesBundleEgress,
-        result: &NetworkEffectResult,
-    ) {
-        let next_chunks = validate_and_chunk_next_votes_bundle(
-            &result.payload_bytes,
-            context.period,
-            context.round,
-            false,
-        )
-        .expect("next-votes result was validated before acknowledgement");
-        let next_null_chunks = validate_and_chunk_next_votes_bundle(
-            &result.related_payload_bytes,
-            context.period,
-            context.round,
-            true,
-        )
-        .expect("next-null result was validated before acknowledgement");
-        for payload_bytes in next_chunks.into_iter().chain(next_null_chunks) {
+        request: NetworkPbftNextVotesBundleRequest,
+        chunks: Vec<Vec<u8>>,
+    ) -> NetworkIngressDecision {
+        let queued_effect_count = u32::try_from(chunks.len()).unwrap_or(u32::MAX);
+        let round = request.current_round - 1;
+        for payload_bytes in chunks {
             self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
-                source_payload_id: context.source_payload_id,
-                transport_lane: context.transport_lane,
+                source_payload_id: request.source_payload_id,
+                transport_lane: request.transport_lane,
                 kind: NETWORK_EFFECT_KIND_SEND_PACKET,
-                peer_id: context.peer_id,
+                peer_id: request.peer_id,
                 packet_kind: NETWORK_PACKET_KIND_PBFT_VOTES_BUNDLE,
                 payload_bytes,
                 related_payload_bytes: Vec::new(),
@@ -1692,9 +1920,81 @@ impl ConsensusNetworkApi {
                 sync_start: 0,
                 reason_code: 0,
                 dependency_id: 0,
-                period: context.period,
-                round: context.round,
+                period: request.current_period,
+                round,
             });
+        }
+        NetworkIngressDecision {
+            payload_id: request.source_payload_id,
+            payload_accepted: request.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count,
+            application_effect_id: 0,
+        }
+    }
+
+    fn enqueue_pillar_vote_bundle_send_effects(
+        &mut self,
+        request: NetworkGetPillarVotesBundleRequest,
+        chunks: Vec<PillarVoteNetworkChunk>,
+    ) -> NetworkIngressDecision {
+        let queued_effect_count = chunks.iter().fold(0_u32, |count, chunk| {
+            count.saturating_add(
+                1_u32.saturating_add(u32::try_from(chunk.vote_hashes.len()).unwrap_or(u32::MAX)),
+            )
+        });
+        for chunk in chunks {
+            let send_id = self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: request.source_payload_id,
+                transport_lane: request.transport_lane,
+                kind: NETWORK_EFFECT_KIND_SEND_PACKET,
+                peer_id: request.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE,
+                payload_bytes: chunk.payload_bytes,
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
+                object_hash: request.pillar_block_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: request.period,
+                round: 0,
+            });
+            for vote_hash in chunk.vote_hashes {
+                self.enqueue_effect(NetworkEffect {
+                    effect_id: 0,
+                    source_payload_id: request.source_payload_id,
+                    transport_lane: request.transport_lane,
+                    kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                    peer_id: request.peer_id,
+                    packet_kind: 0,
+                    payload_bytes: Vec::new(),
+                    related_payload_bytes: Vec::new(),
+                    exclude_peers: Vec::new(),
+                    object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
+                    object_hash: vote_hash,
+                    sync_kind: 0,
+                    sync_start: 0,
+                    reason_code: 0,
+                    dependency_id: send_id,
+                    period: request.period,
+                    round: 0,
+                });
+            }
+        }
+        NetworkIngressDecision {
+            payload_id: request.source_payload_id,
+            payload_accepted: request.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count,
+            application_effect_id: 0,
         }
     }
 
@@ -1825,25 +2125,79 @@ impl ConsensusNetworkApi {
         self.pending_effects.push_back(effect);
         effect_id
     }
+}
 
-    /// Returns the number of retained executor result reports.
-    #[must_use]
-    pub fn effect_result_len(&self) -> usize {
-        self.effect_results.len()
+fn next_votes_request_rejection(
+    request: &NetworkPbftNextVotesBundleRequest,
+) -> Option<NetworkIngressDecision> {
+    let (status, error_code) = if request.current_period != request.peer_period {
+        (
+            NETWORK_INGRESS_STATUS_NEXT_VOTES_PERIOD_MISMATCH,
+            ERROR_NEXT_VOTES_PERIOD_MISMATCH,
+        )
+    } else if request.current_round <= 1 {
+        (
+            NETWORK_INGRESS_STATUS_NEXT_VOTES_NO_PREVIOUS_ROUND,
+            ERROR_NEXT_VOTES_NO_PREVIOUS_ROUND,
+        )
+    } else if request.current_round < request.peer_round {
+        (
+            NETWORK_INGRESS_STATUS_NEXT_VOTES_PEER_ROUND_AHEAD,
+            ERROR_NEXT_VOTES_PEER_ROUND_AHEAD,
+        )
+    } else {
+        return None;
+    };
+    Some(NetworkIngressDecision {
+        payload_id: request.source_payload_id,
+        payload_accepted: request.source_payload_id != 0,
+        routed: true,
+        status,
+        error_code: error_code.to_owned(),
+        queued_effect_count: 0,
+        application_effect_id: 0,
+    })
+}
+
+fn local_network_decision(
+    source_payload_id: u64,
+    status: u8,
+    error_code: &str,
+) -> NetworkIngressDecision {
+    NetworkIngressDecision {
+        payload_id: source_payload_id,
+        payload_accepted: source_payload_id != 0,
+        routed: true,
+        status,
+        error_code: error_code.to_owned(),
+        queued_effect_count: 0,
+        application_effect_id: 0,
     }
 }
 
-fn next_votes_bundle_result_is_valid(
-    result: &NetworkEffectResult,
+fn native_lock_poisoned(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("LOCK_POISONED") || message.contains("lock poisoned")
+    })
+}
+
+fn validate_next_votes_payloads(
+    payloads: PbftNextVotesBundleEgressPayloads,
     period: u64,
     round: u64,
-) -> bool {
-    if result.status == NETWORK_EFFECT_RESULT_STATUS_FAILED {
-        return result.payload_bytes.is_empty() && result.related_payload_bytes.is_empty();
-    }
-    validate_and_chunk_next_votes_bundle(&result.payload_bytes, period, round, false).is_some()
-        && validate_and_chunk_next_votes_bundle(&result.related_payload_bytes, period, round, true)
-            .is_some()
+) -> Result<Vec<Vec<u8>>> {
+    let next =
+        validate_and_chunk_next_votes_bundle(&payloads.next_votes_bundle_rlp, period, round, false)
+            .ok_or_else(|| anyhow!("NETWORK_NEXT_VOTES_NATIVE_PAYLOAD_INVALID"))?;
+    let next_null = validate_and_chunk_next_votes_bundle(
+        &payloads.next_null_votes_bundle_rlp,
+        period,
+        round,
+        true,
+    )
+    .ok_or_else(|| anyhow!("NETWORK_NEXT_NULL_VOTES_NATIVE_PAYLOAD_INVALID"))?;
+    Ok(next.into_iter().chain(next_null).collect())
 }
 
 fn validate_and_chunk_next_votes_bundle(
@@ -1928,6 +2282,66 @@ fn validate_and_chunk_next_votes_bundle(
             })
             .collect(),
     )
+}
+
+fn validate_and_chunk_pillar_votes(
+    records: Vec<PillarVoteRecord>,
+    expected_period: u64,
+    expected_block_hash: [u8; 32],
+) -> Result<Vec<PillarVoteNetworkChunk>> {
+    let expected_block_hash = H256::from(expected_block_hash);
+    let mut seen = HashSet::with_capacity(records.len());
+    let mut validated = Vec::with_capacity(records.len());
+    for record in records {
+        let vote = PillarVote::decode_rlp(&record.vote_rlp)
+            .context("NETWORK_PILLAR_VOTE_NATIVE_PAYLOAD_DECODE_FAILED")?;
+        ensure!(
+            vote.encode_rlp() == record.vote_rlp,
+            "NETWORK_PILLAR_VOTE_NATIVE_PAYLOAD_NONCANONICAL"
+        );
+        ensure!(
+            vote.period == expected_period && vote.block_hash == expected_block_hash,
+            "NETWORK_PILLAR_VOTE_NATIVE_PAYLOAD_IDENTITY_MISMATCH"
+        );
+        let inspection = inspect_pillar_vote_from_rlp(&record.vote_rlp)
+            .context("NETWORK_PILLAR_VOTE_NATIVE_PAYLOAD_INSPECTION_FAILED")?;
+        ensure!(
+            inspection.signature_valid,
+            "NETWORK_PILLAR_VOTE_NATIVE_PAYLOAD_INVALID_SIGNATURE"
+        );
+        let vote_hash = inspection.vote_hash.to_fixed_bytes();
+        ensure!(
+            vote_hash == record.vote_hash,
+            "NETWORK_PILLAR_VOTE_NATIVE_PAYLOAD_HASH_MISMATCH"
+        );
+        ensure!(
+            seen.insert(vote_hash),
+            "NETWORK_PILLAR_VOTE_NATIVE_PAYLOAD_DUPLICATE_HASH"
+        );
+        validated.push((vote, vote_hash));
+    }
+
+    let mut chunks =
+        Vec::with_capacity(validated.len().div_ceil(MAX_PILLAR_VOTES_PER_BUNDLE_PACKET));
+    for entries in validated.chunks(MAX_PILLAR_VOTES_PER_BUNDLE_PACKET) {
+        let votes = entries
+            .iter()
+            .map(|(vote, _)| vote.clone())
+            .collect::<Vec<_>>();
+        let payload_bytes = encode_optimized_pillar_votes_bundle_rlp(&votes)
+            .context("NETWORK_PILLAR_VOTE_NATIVE_BUNDLE_ENCODING_FAILED")?;
+        let decoded = rustaxa_types::decode_optimized_pillar_votes_bundle_rlp(&payload_bytes)
+            .context("NETWORK_PILLAR_VOTE_NATIVE_BUNDLE_REVALIDATION_FAILED")?;
+        ensure!(
+            decoded == votes,
+            "NETWORK_PILLAR_VOTE_NATIVE_BUNDLE_ORDER_MISMATCH"
+        );
+        chunks.push(PillarVoteNetworkChunk {
+            vote_hashes: entries.iter().map(|(_, hash)| *hash).collect(),
+            payload_bytes,
+        });
+    }
+    Ok(chunks)
 }
 
 fn plan_status_sync(facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
@@ -2434,6 +2848,24 @@ mod tests {
         vote
     }
 
+    fn pillar_request(period: u64, block_hash: H256) -> NetworkGetPillarVotesBundleRequest {
+        NetworkGetPillarVotesBundleRequest {
+            transport_lane: 6,
+            peer_id: peer(8),
+            period,
+            pillar_block_hash: block_hash.into(),
+            source_payload_id: 102,
+        }
+    }
+
+    fn pillar_record(vote: &PillarVote) -> PillarVoteRecord {
+        PillarVoteRecord {
+            vote_hash: vote.hash(true).into(),
+            weight: 0,
+            vote_rlp: vote.encode_rlp(),
+        }
+    }
+
     fn hash(byte: u8) -> [u8; 32] {
         [byte; 32]
     }
@@ -2507,8 +2939,6 @@ mod tests {
             object_hash: effect.object_hash,
             status,
             diagnostic: String::new(),
-            payload_bytes: Vec::new(),
-            related_payload_bytes: Vec::new(),
             admission_accepted: false,
             admission_already_present: false,
             admission_mark_vote_known: false,
@@ -2669,8 +3099,143 @@ mod tests {
     }
 
     #[test]
-    fn next_votes_request_gate_queues_only_eligible_previous_round_leaf() {
-        let mut api = ConsensusNetworkApi::new();
+    fn invalid_pillar_request_reports_before_dependent_disconnect() {
+        let mut api = ConsensusNetworkApi::with_pillar_schedule(10, 10);
+        let request = pillar_request(9, H256::from_low_u64_be(90));
+        let decision = api.reject_invalid_pillar_votes_request(&request).unwrap();
+        assert_eq!(
+            decision.status,
+            NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE
+        );
+        assert_eq!(decision.queued_effect_count, 2);
+
+        let report = api.drain_work(6, 10);
+        assert_eq!(report.effects.len(), 1);
+        assert_eq!(report.effects[0].kind, NETWORK_EFFECT_KIND_REPORT_PEER);
+        assert!(report.more_available);
+        assert_eq!(
+            api.report_effect_results(vec![effect_result(
+                &report.effects[0],
+                NETWORK_EFFECT_RESULT_STATUS_OK,
+            )])
+            .status,
+            NETWORK_EFFECT_ACK_STATUS_ACCEPTED
+        );
+
+        let disconnect = api.drain_work(6, 10);
+        assert_eq!(disconnect.effects.len(), 1);
+        assert_eq!(
+            disconnect.effects[0].kind,
+            NETWORK_EFFECT_KIND_DISCONNECT_PEER
+        );
+        assert_eq!(
+            disconnect.effects[0].dependency_id,
+            report.effects[0].effect_id
+        );
+    }
+
+    #[test]
+    fn pillar_request_requires_exact_pbft_with_pillar_period() {
+        let mut api = ConsensusNetworkApi::with_pillar_schedule(10, 10);
+        assert!(
+            api.reject_invalid_pillar_votes_request(&pillar_request(11, H256::from_low_u64_be(90)))
+                .is_none()
+        );
+        let decision = api
+            .reject_invalid_pillar_votes_request(&pillar_request(12, H256::from_low_u64_be(90)))
+            .unwrap();
+        assert_eq!(
+            decision.status,
+            NETWORK_INGRESS_STATUS_PILLAR_VOTES_INVALID_PERIOD
+        );
+    }
+
+    #[test]
+    fn pillar_native_payloads_send_then_mark_each_vote_known_in_order() {
+        let block_hash = H256::from_low_u64_be(91);
+        let first = signed_pillar_vote(0x46, 11, 91);
+        let second = signed_pillar_vote(0x47, 11, 91);
+        let chunks = validate_and_chunk_pillar_votes(
+            vec![pillar_record(&first), pillar_record(&second)],
+            11,
+            block_hash.into(),
+        )
+        .unwrap();
+        assert_eq!(chunks.len(), 1);
+
+        let mut api = ConsensusNetworkApi::with_pillar_schedule(10, 10);
+        let decision =
+            api.enqueue_pillar_vote_bundle_send_effects(pillar_request(11, block_hash), chunks);
+        assert_eq!(decision.queued_effect_count, 3);
+        let send = api.drain_work(6, 10);
+        assert_eq!(send.effects.len(), 1);
+        assert_eq!(send.effects[0].kind, NETWORK_EFFECT_KIND_SEND_PACKET);
+        assert_eq!(
+            send.effects[0].packet_kind,
+            NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE
+        );
+        assert_eq!(
+            rustaxa_types::decode_optimized_pillar_votes_bundle_rlp(&send.effects[0].payload_bytes)
+                .unwrap(),
+            vec![first.clone(), second.clone()]
+        );
+        api.report_effect_results(vec![effect_result(
+            &send.effects[0],
+            NETWORK_EFFECT_RESULT_STATUS_OK,
+        )]);
+        let marks = api.drain_work(6, 10).effects;
+        assert_eq!(marks.len(), 2);
+        assert_eq!(marks[0].object_hash, <[u8; 32]>::from(first.hash(true)));
+        assert_eq!(marks[1].object_hash, <[u8; 32]>::from(second.hash(true)));
+        assert!(marks.iter().all(|effect| {
+            effect.kind == NETWORK_EFFECT_KIND_MARK_PEER_KNOWN
+                && effect.dependency_id == send.effects[0].effect_id
+        }));
+    }
+
+    #[test]
+    fn pillar_native_payload_invariant_failure_queues_nothing() {
+        let vote = signed_pillar_vote(0x48, 11, 92);
+        let mut duplicate = pillar_record(&vote);
+        duplicate.weight = 99;
+        assert!(
+            validate_and_chunk_pillar_votes(
+                vec![pillar_record(&vote), duplicate],
+                11,
+                H256::from_low_u64_be(92).into(),
+            )
+            .is_err()
+        );
+        let mut api = ConsensusNetworkApi::with_pillar_schedule(10, 10);
+        assert!(api.drain_work(6, 10).effects.is_empty());
+    }
+
+    #[test]
+    fn local_failure_decisions_are_typed_and_never_claim_effects() {
+        for (status, error_code) in [
+            (
+                NETWORK_INGRESS_STATUS_LOCAL_LOOKUP_FAILED,
+                ERROR_NEXT_VOTES_LOOKUP_FAILED,
+            ),
+            (
+                NETWORK_INGRESS_STATUS_INVALID_NATIVE_RESULT,
+                ERROR_PILLAR_VOTES_INVALID_NATIVE_RESULT,
+            ),
+            (
+                NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA,
+                ERROR_PILLAR_VOTES_NO_DATA,
+            ),
+        ] {
+            let decision = local_network_decision(77, status, error_code);
+            assert_eq!(decision.status, status);
+            assert_eq!(decision.error_code, error_code);
+            assert_eq!(decision.queued_effect_count, 0);
+            assert_eq!(decision.application_effect_id, 0);
+        }
+    }
+
+    #[test]
+    fn next_votes_request_gate_accepts_only_eligible_previous_round_query() {
         for (request, expected_status) in [
             (
                 NetworkPbftNextVotesBundleRequest {
@@ -2694,42 +3259,30 @@ mod tests {
                 NETWORK_INGRESS_STATUS_NEXT_VOTES_PEER_ROUND_AHEAD,
             ),
         ] {
-            let decision = api.ingest_pbft_next_votes_bundle_request(request);
+            let decision = next_votes_request_rejection(&request).unwrap();
             assert!(decision.routed);
             assert_eq!(decision.status, expected_status);
             assert_eq!(decision.queued_effect_count, 0);
             assert_eq!(decision.application_effect_id, 0);
         }
-
-        let decision = api.ingest_pbft_next_votes_bundle_request(next_votes_request());
-        assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
-        assert_eq!(decision.queued_effect_count, 1);
-        let batch = api.drain_work(6, 4);
-        assert_eq!(batch.effects.len(), 1);
-        let effect = &batch.effects[0];
-        assert_eq!(effect.effect_id, decision.application_effect_id);
-        assert_eq!(effect.source_payload_id, 99);
-        assert_eq!(effect.peer_id, peer(7));
-        assert_eq!(effect.period, 10);
-        assert_eq!(effect.round, 2);
-        assert_eq!(
-            effect.object_kind,
-            NETWORK_OBJECT_KIND_PBFT_NEXT_VOTES_BUNDLE_EGRESS_REQUEST
-        );
+        assert!(next_votes_request_rejection(&next_votes_request()).is_none());
     }
 
     #[test]
-    fn next_votes_result_chunks_and_orders_next_before_next_null_sends() {
+    fn next_votes_native_payloads_chunk_and_order_next_before_next_null_sends() {
         let mut api = ConsensusNetworkApi::new();
-        api.ingest_pbft_next_votes_bundle_request(next_votes_request());
-        let application = api.drain_work(6, 1).effects.remove(0);
-        let mut result = effect_result(&application, NETWORK_EFFECT_RESULT_STATUS_OK);
-        result.payload_bytes = optimized_bundle([0x44; 32], 10, 2, 1001, 1);
-        result.related_payload_bytes = optimized_bundle([0; 32], 10, 2, 1, 9);
-        let ack = api.report_effect_results(vec![result]);
-        assert_eq!(ack.status, NETWORK_EFFECT_ACK_STATUS_ACCEPTED);
-        assert!(api.effect_results[0].payload_bytes.is_empty());
-        assert!(api.effect_results[0].related_payload_bytes.is_empty());
+        let chunks = validate_next_votes_payloads(
+            PbftNextVotesBundleEgressPayloads {
+                next_votes_bundle_rlp: optimized_bundle([0x44; 32], 10, 2, 1001, 1),
+                next_null_votes_bundle_rlp: optimized_bundle([0; 32], 10, 2, 1, 9),
+            },
+            10,
+            2,
+        )
+        .unwrap();
+        let decision = api.enqueue_next_votes_bundle_send_effects(next_votes_request(), chunks);
+        assert_eq!(decision.application_effect_id, 0);
+        assert_eq!(decision.queued_effect_count, 3);
 
         let sends = api.drain_work(6, 8).effects;
         assert_eq!(sends.len(), 3);
@@ -2764,44 +3317,18 @@ mod tests {
     }
 
     #[test]
-    fn next_votes_result_rejects_swapped_family_atomically_then_accepts_retry() {
+    fn next_votes_native_payload_validation_rejects_swapped_family_atomically() {
         let mut api = ConsensusNetworkApi::new();
-        api.ingest_pbft_next_votes_bundle_request(next_votes_request());
-        let application = api.drain_work(6, 1).effects.remove(0);
-        let mut invalid = effect_result(&application, NETWORK_EFFECT_RESULT_STATUS_OK);
-        invalid.payload_bytes = optimized_bundle([0; 32], 10, 2, 1, 1);
-        invalid.related_payload_bytes = optimized_bundle([0x55; 32], 10, 2, 1, 2);
-        let ack = api.report_effect_results(vec![invalid]);
-        assert_eq!(
-            ack.status,
-            NETWORK_EFFECT_ACK_STATUS_MISMATCHED_EFFECT_RESULT
-        );
-        assert!(api.drain_work(6, 8).effects.is_empty());
-
-        let mut retry = effect_result(&application, NETWORK_EFFECT_RESULT_STATUS_OK);
-        retry.payload_bytes = optimized_bundle([0x55; 32], 10, 2, 1, 1);
-        retry.related_payload_bytes = optimized_bundle([0; 32], 10, 2, 1, 2);
-        let ack = api.report_effect_results(vec![retry]);
-        assert_eq!(ack.status, NETWORK_EFFECT_ACK_STATUS_ACCEPTED);
-        assert_eq!(api.drain_work(6, 8).effects.len(), 2);
-    }
-
-    #[test]
-    fn next_votes_failed_leaf_requires_empty_payloads_and_emits_no_sends() {
-        let mut api = ConsensusNetworkApi::new();
-        api.ingest_pbft_next_votes_bundle_request(next_votes_request());
-        let application = api.drain_work(6, 1).effects.remove(0);
-        let mut invalid = effect_result(&application, NETWORK_EFFECT_RESULT_STATUS_FAILED);
-        invalid.payload_bytes = optimized_bundle([0x55; 32], 10, 2, 1, 1);
-        assert_eq!(
-            api.report_effect_results(vec![invalid]).status,
-            NETWORK_EFFECT_ACK_STATUS_MISMATCHED_EFFECT_RESULT
-        );
-
-        let failed = effect_result(&application, NETWORK_EFFECT_RESULT_STATUS_FAILED);
-        assert_eq!(
-            api.report_effect_results(vec![failed]).status,
-            NETWORK_EFFECT_ACK_STATUS_ACCEPTED
+        assert!(
+            validate_next_votes_payloads(
+                PbftNextVotesBundleEgressPayloads {
+                    next_votes_bundle_rlp: optimized_bundle([0; 32], 10, 2, 1, 1),
+                    next_null_votes_bundle_rlp: optimized_bundle([0x55; 32], 10, 2, 1, 2),
+                },
+                10,
+                2,
+            )
+            .is_err()
         );
         assert!(api.drain_work(6, 8).effects.is_empty());
     }
@@ -2881,6 +3408,38 @@ mod tests {
     }
 
     #[test]
+    fn drain_work_applies_fixed_native_maximum() {
+        let mut api = ConsensusNetworkApi::new();
+        let effect = NetworkEffect {
+            effect_id: 0,
+            source_payload_id: 0,
+            transport_lane: 6,
+            kind: NETWORK_EFFECT_KIND_REQUEST_SYNC,
+            peer_id: peer(1),
+            packet_kind: 0,
+            payload_bytes: Vec::new(),
+            related_payload_bytes: Vec::new(),
+            exclude_peers: Vec::new(),
+            object_kind: 0,
+            object_hash: [0; 32],
+            sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
+            sync_start: 1,
+            reason_code: 0,
+            dependency_id: 0,
+            period: 0,
+            round: 0,
+        };
+        for _ in 0..=MAX_EFFECTS_PER_DRAIN {
+            api.enqueue_effect(effect.clone());
+        }
+
+        let batch = api.drain_work(6, u32::MAX);
+        assert_eq!(batch.effects.len(), MAX_EFFECTS_PER_DRAIN);
+        assert!(batch.more_available);
+        assert_eq!(api.drain_work(6, u32::MAX).effects.len(), 1);
+    }
+
+    #[test]
     fn report_effect_results_counts_failures() {
         let mut api = ConsensusNetworkApi::new();
 
@@ -2894,8 +3453,6 @@ mod tests {
                 object_hash: [0; 32],
                 status: NETWORK_EFFECT_RESULT_STATUS_OK,
                 diagnostic: String::new(),
-                payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
                 admission_accepted: false,
                 admission_already_present: false,
                 admission_mark_vote_known: false,
@@ -2911,8 +3468,6 @@ mod tests {
                 object_hash: [0; 32],
                 status: NETWORK_EFFECT_RESULT_STATUS_FAILED,
                 diagnostic: "send failed".to_owned(),
-                payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
                 admission_accepted: false,
                 admission_already_present: false,
                 admission_mark_vote_known: false,
@@ -2925,7 +3480,6 @@ mod tests {
         assert_eq!(ack.accepted_results, 0);
         assert_eq!(ack.failed_results, 1);
         assert_eq!(ack.error_code, ERROR_UNKNOWN_EFFECT_ID);
-        assert_eq!(api.effect_result_len(), 0);
     }
 
     #[test]
@@ -2962,7 +3516,7 @@ mod tests {
         assert_eq!(ack.accepted_results, 1);
         assert_eq!(ack.failed_results, 0);
         assert_eq!(ack.error_code, "");
-        assert_eq!(api.effect_result_len(), 1);
+        assert!(api.outstanding_effects.is_empty());
     }
 
     #[test]
@@ -3000,7 +3554,7 @@ mod tests {
         assert_eq!(ack.accepted_results, 0);
         assert_eq!(ack.failed_results, 0);
         assert_eq!(ack.error_code, ERROR_MISMATCHED_EFFECT_RESULT);
-        assert_eq!(api.effect_result_len(), 0);
+        assert_eq!(api.outstanding_effects.len(), 1);
     }
 
     #[test]

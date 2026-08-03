@@ -48,7 +48,12 @@ class Network {
           std::shared_ptr<SlashingManager> slashing_manager,
 #endif
           std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
-          std::shared_ptr<final_chain::FinalChain> final_chain);
+          std::shared_ptr<final_chain::FinalChain> final_chain
+#ifdef RUSTAXA_ENABLE
+          ,
+          network::ConsensusNetworkApiShared consensus_network_api
+#endif
+  );
 
   ~Network();
   Network(const Network &) = delete;

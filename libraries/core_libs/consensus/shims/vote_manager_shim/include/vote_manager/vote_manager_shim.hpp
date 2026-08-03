@@ -755,14 +755,6 @@ class VoteManager {
   std::vector<std::shared_ptr<PbftVote>> getTwoTPlusOneVotedBlockVotes(PbftPeriod period, PbftRound round,
                                                                        TwoTPlusOneVotedBlockType type) const;
   /**
-   * Builds packet-ready previous-round next and next-null bundle payloads.
-   *
-   * Both families observe one Rust verified-vote lock epoch. Missing mappings
-   * produce empty fields; invariant or codec failures throw through the bridge
-   * so network execution cannot report a partial pair.
-   */
-  rustaxa::PbftNextVotesBundleEgressPayloads buildNextVotesBundleEgress(PbftPeriod period, PbftRound round) const;
-  /**
    * Builds certify-step soft-vote debug output from VoteManager-owned vote facts.
    *
    * Purpose:

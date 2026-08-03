@@ -532,8 +532,10 @@ Completion condition: internal C++ code cannot obtain mutable consensus-domain o
 Completion condition: `pbft_manager_shim` and `vote_manager_shim` are leaf executor adapters rather than alternate
 application runtimes; completing `CRW-N01` makes them deletable or replaces them with a transport adapter.
 
-Current network-root progress: `Network` owns the single `BridgeConsensusNetworkApi` lifetime and injects it through
-both tarcap capabilities into the vote, sync, DAG-status, and pillar-vote handler families. The shared queue is
+Current network-root progress: native `PbftService` constructs and owns the single `ConsensusNetworkService`; App gives
+`Network` only a thin CXX adapter cloned from that root and injects it through both tarcap capabilities into the vote,
+sync, DAG-status, and pillar-vote handler families. The bridge owns no network mutex, configuration, or parallel runtime.
+The shared queue is
 transport-lane aware, preventing latest/v5 cross-drain while preserving queue order among dependency-ready effects, and
 PBFT gossip effects carry
 their canonical vote and optional block payloads rather than borrowing handler-local objects. Tarcap still executes peer
@@ -550,10 +552,12 @@ settings are deleted; packet families cross only through authoritative operation
 bundles now preflight through one operation call, retain exact member admission identities in a unique Rust session,
 cancel aggregation on executor failure or slashing, and emit one accepted-only optimized-bundle gossip effect in input
 order. C++ no longer collects accepted bundle members or decides rebroadcast. Moving the remaining handler-local
-consensus routes behind the native pipeline is the next `CRW-N01` work. Get-next-votes egress is now one such native
-route: Rust owns request eligibility, an atomic next/next-null verified-vote leaf result, strict canonical result
-validation, legacy-sized chunking, and ordered send effects; tarcap retains only request decoding, packet wrapping,
-physical send, and successful-send known marking. Pillar single-vote and bundle ingress now share one native preflight
+consensus routes behind the native pipeline is the next `CRW-N01` work. Get-next-votes egress is now a direct native
+service route: Rust owns request eligibility, the verified-vote sibling query, strict canonical validation,
+legacy-sized chunking, and ordered send effects. The application-effect/result payload round trip is deleted. Pillar
+bundle response egress is direct too: Rust owns Ficus schedule validation, live-first/storage-fallback lookup, canonical
+vote verification, 250-vote chunking, and send-dependent known-vote effects. Tarcap retains request decoding, packet
+wrapping, physical send, malicious-peer bookkeeping/disconnect execution, and physical known marking. Pillar single-vote and bundle ingress now share one native preflight
 and exact-ID admission route. Rust owns canonical/signature/activation/duplicate checks and accepted-only known/gossip
 decisions; the PillarChain shim retains one FinalChain-composed native admission leaf but no validation receipt or trusted
 follow-up insertion path. Tarcap retains decoded object materialization, peer state, packet wrapping, physical fanout,

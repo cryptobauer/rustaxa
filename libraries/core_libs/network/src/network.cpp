@@ -5,6 +5,7 @@
 #include <libp2p/Network.h>
 
 #include <boost/tokenizer.hpp>
+#include <stdexcept>
 
 #include "config/version.hpp"
 #include "network/tarcap/packets_handlers/interface/dag_block_packet_handler.hpp"
@@ -51,7 +52,12 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
                  std::shared_ptr<SlashingManager> slashing_manager,
 #endif
                  std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
-                 std::shared_ptr<final_chain::FinalChain> final_chain)
+                 std::shared_ptr<final_chain::FinalChain> final_chain
+#ifdef RUSTAXA_ENABLE
+                 ,
+                 network::ConsensusNetworkApiShared consensus_network_api
+#endif
+                 )
     : kConf(config),
       all_packets_stats_(nullptr),
       node_stats_(nullptr),
@@ -66,7 +72,10 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
   LOG(log_nf_) << "Read Network Config: " << std::endl << config.network << std::endl;
 
 #ifdef RUSTAXA_ENABLE
-  rust_consensus_network_api_ = std::make_shared<network::ConsensusNetworkApi>();
+  rust_consensus_network_api_ = std::move(consensus_network_api);
+  if (!rust_consensus_network_api_) {
+    throw std::invalid_argument("Rust consensus network API must be provided");
+  }
 #endif
 
   all_packets_stats_ = std::make_shared<network::tarcap::TimePeriodPacketsStats>(

@@ -12,14 +12,12 @@ use crate::transaction::*;
 use crate::transaction_manager::*;
 use crate::vdf::*;
 use rustaxa_consensus::ConsensusExecutionApi;
-use rustaxa_consensus::ConsensusNetworkApi;
 use rustaxa_consensus::ConsensusQueryApi;
 use rustaxa_consensus::FinalChain;
 use rustaxa_consensus::PbftService;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 pub struct BridgeStorage(pub Arc<Storage>);
 
@@ -107,14 +105,12 @@ pub struct BridgeConsensusExecutionApi(pub ConsensusExecutionApi);
 /// iterators, or mutable sidecars.
 pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
 
-/// Rust-owned external network/tarcap facade.
+/// Thin CXX adapter over the PBFT-root-owned native network service.
 ///
-/// The facade accepts canonical packet bytes and returns typed network effects
-/// without exposing consensus managers or shim-owned compatibility state to the
-/// network module.
-pub struct BridgeConsensusNetworkApi {
-    pub api: Mutex<ConsensusNetworkApi>,
-}
+/// Cloning the service shares the root's ordered effect queue and sibling
+/// protocol owners; this bridge owns no mutex, configuration, or standalone
+/// consensus runtime.
+pub struct BridgeConsensusNetworkApi(pub(crate) rustaxa_consensus::ConsensusNetworkService);
 
 /// Thin CXX adapter over the CXX-free native PBFT application root.
 ///
@@ -350,11 +346,6 @@ pub mod rustaxa_ffi {
         sender: [u8; 20],
     }
 
-    /// Effect-drain limit for the external network/tarcap facade.
-    struct NetworkApiConfig {
-        max_effects_per_drain: u32,
-    }
-
     /// Fixed-size peer id used by network effect payloads.
     struct NetworkPeerId {
         id: [u8; 64],
@@ -399,8 +390,6 @@ pub mod rustaxa_ffi {
         object_hash: [u8; 32],
         status: u8,
         diagnostic: String,
-        payload_bytes: Vec<u8>,
-        related_payload_bytes: Vec<u8>,
         admission_accepted: bool,
         admission_already_present: bool,
         admission_mark_vote_known: bool,
@@ -739,16 +728,6 @@ pub mod rustaxa_ffi {
         round: u64,
         step: u64,
         block_hash: [u8; 32],
-    }
-
-    /// Packet-ready next and next-null bundles built in one native lock epoch.
-    ///
-    /// Each non-empty field is an inner `OptimizedPbftVotesBundle` RLP. An
-    /// absent `2t+1` mapping is represented by an empty field; failures are
-    /// returned as bridge errors so callers cannot publish a partial pair.
-    struct PbftNextVotesBundleEgressPayloads {
-        next_votes_bundle_rlp: Vec<u8>,
-        next_null_votes_bundle_rlp: Vec<u8>,
     }
 
     /// Operation-level VoteManager persistence request for one accepted vote.
@@ -1110,6 +1089,8 @@ pub mod rustaxa_ffi {
         polling_interval_ms: u64,
         report_malicious_behaviour: bool,
         magnolia_activation_period: u64,
+        ficus_activation_period: u64,
+        pillar_blocks_interval: u64,
     }
 
     /// Rust-owned storage facts for replaying one finalized period during PBFT
@@ -2095,28 +2076,6 @@ pub mod rustaxa_ffi {
         block_weight: u64,
         selected_weight: u64,
         votes: Vec<PillarVoteRecord>,
-    }
-
-    /// Pillar vote hash included in one network-serving bundle.
-    struct PillarVoteBundleHash {
-        hash: [u8; 32],
-    }
-
-    /// Packet-ready optimized pillar-votes bundle payload.
-    ///
-    /// `votes_bundle_rlp` is the inner `OptimizedPillarVotesBundle` RLP, not
-    /// the tarcap packet wrapper. `vote_hashes` mirrors the votes in the same
-    /// order so C++ network code can mark them as known without materializing
-    /// `PillarVote` objects.
-    struct PillarVoteNetworkBundleChunk {
-        vote_hashes: Vec<PillarVoteBundleHash>,
-        votes_bundle_rlp: Vec<u8>,
-    }
-
-    /// Network-facing pillar-vote bundle lookup result.
-    struct PillarVoteNetworkBundleLookup {
-        from_storage: bool,
-        chunks: Vec<PillarVoteNetworkBundleChunk>,
     }
 
     /// Complete result of inspecting, weighting, and applying one synced bundle.
@@ -3643,7 +3602,7 @@ pub mod rustaxa_ffi {
         type BridgeConsensusNetworkApi;
 
         pub fn create_consensus_network_api(
-            config: NetworkApiConfig,
+            service: &BridgePbftService,
         ) -> Box<BridgeConsensusNetworkApi>;
         pub fn consensus_network_drain_work(
             self: &BridgeConsensusNetworkApi,
@@ -3679,6 +3638,14 @@ pub mod rustaxa_ffi {
             peer_round: u64,
             current_period: u64,
             current_round: u64,
+            source_payload_id: u64,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_ingest_pillar_votes_bundle_request(
+            self: &BridgeConsensusNetworkApi,
+            transport_lane: u32,
+            peer_id: [u8; 64],
+            period: u64,
+            pillar_block_hash: [u8; 32],
             source_payload_id: u64,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_plan_status_sync(
@@ -4529,11 +4496,6 @@ pub mod rustaxa_ffi {
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotePayloadsLookup>;
-        pub fn pbft_service_verified_votes_build_next_votes_bundle_egress(
-            self: &BridgePbftService,
-            period: u64,
-            round: u64,
-        ) -> Result<PbftNextVotesBundleEgressPayloads>;
         pub fn pbft_service_verified_votes_cleanup_votes_by_period(
             self: &BridgePbftService,
             pbft_period: u64,
@@ -4705,12 +4667,6 @@ pub mod rustaxa_ffi {
             block_hash: &[u8; 32],
             above_threshold: bool,
         ) -> Result<PillarVotesPayloadLookup>;
-        pub fn pbft_service_pillar_build_verified_vote_network_bundles(
-            self: &BridgePbftService,
-            period: u64,
-            block_hash: &[u8; 32],
-            max_votes_per_bundle: usize,
-        ) -> Result<PillarVoteNetworkBundleLookup>;
         pub fn pbft_service_pillar_prepare_finalized_block_for_pbft(
             self: &BridgePbftService,
             request: PillarBlockFinalizationRequest,

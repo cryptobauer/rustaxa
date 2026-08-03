@@ -31,7 +31,6 @@ constexpr uint8_t kNetworkSyncKindPbftChain = 0;
 constexpr uint8_t kNetworkSyncKindPbftNextVotes = 1;
 constexpr uint8_t kNetworkObjectKindPbftVote = 0;
 constexpr uint8_t kNetworkObjectKindPbftBlock = 1;
-constexpr uint8_t kNetworkObjectKindPbftNextVotesBundleEgressRequest = 7;
 constexpr uint32_t kNetworkPacketKindPbftVote = 1;
 constexpr uint32_t kNetworkPacketKindPbftVotesBundle = 3;
 
@@ -375,11 +374,6 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
                                                       .gossip_vote = report.gossip_vote,
                                                       .report_slashing = report.report_slashing};
           }
-        } else if (effect.kind == kNetworkEffectKindRecordConsensusObject &&
-                   effect.object_kind == kNetworkObjectKindPbftNextVotesBundleEgressRequest) {
-          auto payloads = vote_mgr_->buildNextVotesBundleEgress(effect.period, effect.round);
-          result.payload_bytes = std::move(payloads.next_votes_bundle_rlp);
-          result.related_payload_bytes = std::move(payloads.next_null_votes_bundle_rlp);
         } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftChain) {
           sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
                       encodePacketRlp(GetPbftSyncPacket{effect.sync_start}));

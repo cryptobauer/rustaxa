@@ -7,8 +7,7 @@
 use crate::ffi::rustaxa_ffi::{
     PillarBlockFinalizationAcknowledgeRequest, PillarBlockFinalizationAcknowledgeResult,
     PillarBlockFinalizationPrepareResult, PillarBlockFinalizationRequest,
-    PillarConsensusThresholdLookup, PillarVoteBundleHash, PillarVoteBundleWithFinalChainPlan,
-    PillarVoteInspection, PillarVoteNetworkBundleChunk, PillarVoteNetworkBundleLookup,
+    PillarConsensusThresholdLookup, PillarVoteBundleWithFinalChainPlan, PillarVoteInspection,
     PillarVoteRecord, PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteRlpPayload,
     PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionContext,
     PillarVoteSingleAdmissionPreparePlan as FfiPillarVoteSingleAdmissionPreparePlan,
@@ -142,32 +141,6 @@ impl BridgePbftService {
             .0
             .pillar_verified_vote_payloads(period, block_hash, above_threshold)?;
         Ok(native_payload_lookup_to_ffi(result))
-    }
-
-    pub fn pbft_service_pillar_build_verified_vote_network_bundles(
-        &self,
-        period: u64,
-        block_hash: &[u8; 32],
-        max_votes_per_bundle: usize,
-    ) -> Result<PillarVoteNetworkBundleLookup> {
-        let result =
-            self.0
-                .build_pillar_vote_network_bundles(period, block_hash, max_votes_per_bundle)?;
-        Ok(PillarVoteNetworkBundleLookup {
-            from_storage: result.from_storage,
-            chunks: result
-                .chunks
-                .into_iter()
-                .map(|chunk| PillarVoteNetworkBundleChunk {
-                    vote_hashes: chunk
-                        .vote_hashes
-                        .into_iter()
-                        .map(|hash| PillarVoteBundleHash { hash: hash.hash })
-                        .collect(),
-                    votes_bundle_rlp: chunk.votes_bundle_rlp,
-                })
-                .collect(),
-        })
     }
 
     pub fn pbft_service_pillar_prepare_finalized_block_for_pbft(

@@ -17,6 +17,7 @@
 #include "logger/logger.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "network/consensus_network_api.hpp"
+#include "pbft/pbft_service.hpp"
 #endif
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/dag_block_packet_handler.hpp"
@@ -1867,7 +1868,28 @@ TEST_F(NetworkTest, peer_cache_test) {
 
 #ifdef RUSTAXA_ENABLE
 TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane) {
-  auto network_api = std::make_shared<network::ConsensusNetworkApi>();
+  const auto node_cfgs = make_node_cfgs(1, 1, 5);
+  const auto nodes = create_nodes(node_cfgs, true);
+  const auto& node = nodes[0];
+  const auto& conf = node->getConfig();
+
+  rustaxa::PbftServiceConfig pbft_service_config{};
+  pbft_service_config.genesis_lambda_ms = conf.genesis.pbft.lambda_ms;
+  pbft_service_config.cacti_lambda_max_ms = conf.genesis.state.hardforks.cacti_hf.lambda_max;
+  pbft_service_config.cacti_lambda_default_ms = conf.genesis.state.hardforks.cacti_hf.lambda_default;
+  pbft_service_config.cacti_block = conf.genesis.state.hardforks.cacti_hf.block_num;
+  pbft_service_config.max_exponential_lambda_ms = 60000;
+  pbft_service_config.max_steps = 13;
+  pbft_service_config.deadline_ms = 4 * static_cast<uint64_t>(conf.genesis.pbft.lambda_ms);
+  pbft_service_config.polling_interval_ms = 100;
+  pbft_service_config.report_malicious_behaviour = conf.report_malicious_behaviour;
+  pbft_service_config.magnolia_activation_period = conf.genesis.state.hardforks.magnolia_hf.block_num;
+  pbft_service_config.ficus_activation_period = conf.genesis.state.hardforks.ficus_hf.block_num;
+  pbft_service_config.pillar_blocks_interval = conf.genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
+  const auto consensus_service = std::make_shared<PbftService>(
+      rustaxa::create_pbft_service_from_storage(node->getDB()->rustStorage(), pbft_service_config));
+  auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service->service());
+
   auto first_lane_lock = network_api->lockTransportLane(6);
 
   std::promise<void> same_lane_attempted;

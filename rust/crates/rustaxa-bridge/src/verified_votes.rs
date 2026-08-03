@@ -1,7 +1,7 @@
 use crate::ffi::rustaxa_ffi::{
     DetermineNewRoundOutcome, PbftCanonicalVoteValidation as FfiPbftCanonicalVoteValidation,
     PbftFinalizationHash, PbftLeaderCandidateSnapshot, PbftLeaderSelectionFinishRequest,
-    PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot, PbftNextVotesBundleEgressPayloads,
+    PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot,
     PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
     PbftRewardVotesResetRequest as FfiPbftRewardVotesResetRequest,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
@@ -1209,21 +1209,6 @@ impl BridgePbftService {
                 },
             },
         )
-    }
-
-    /// Builds both next-vote bundle families with one native lock epoch.
-    pub fn pbft_service_verified_votes_build_next_votes_bundle_egress(
-        &self,
-        period: u64,
-        round: u64,
-    ) -> Result<PbftNextVotesBundleEgressPayloads, anyhow::Error> {
-        let result = self
-            .0
-            .verified_votes_build_next_votes_bundle_egress(period, round)?;
-        Ok(PbftNextVotesBundleEgressPayloads {
-            next_votes_bundle_rlp: result.next_votes_bundle_rlp,
-            next_null_votes_bundle_rlp: result.next_null_votes_bundle_rlp,
-        })
     }
 
     /// Applies one bounded verified-vote cleanup pass.

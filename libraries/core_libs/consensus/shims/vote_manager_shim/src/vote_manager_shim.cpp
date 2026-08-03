@@ -1638,11 +1638,6 @@ std::vector<std::shared_ptr<PbftVote>> VoteManager::getTwoTPlusOneVotedBlockVote
   return votes;
 }
 
-rustaxa::PbftNextVotesBundleEgressPayloads VoteManager::buildNextVotesBundleEgress(PbftPeriod period,
-                                                                                   PbftRound round) const {
-  return pbft_service_->service().pbft_service_verified_votes_build_next_votes_bundle_egress(period, round);
-}
-
 std::string VoteManager::softVoteDebugMessage(PbftPeriod period, PbftRound round) const {
   uint64_t votes_weight = 0;
   std::string debug_msg;

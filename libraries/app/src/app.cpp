@@ -19,6 +19,9 @@
 #include "metrics/network_metrics.hpp"
 #include "metrics/pbft_metrics.hpp"
 #include "metrics/transaction_queue_metrics.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "network/consensus_network_api.hpp"
+#endif
 #include "pbft/pbft_manager.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "storage/migration/block_stats.hpp"
@@ -177,6 +180,8 @@ void App::init(const cli::Config &cli_conf) {
   pbft_manager_config.polling_interval_ms = 100;
   pbft_manager_config.report_malicious_behaviour = conf_.report_malicious_behaviour;
   pbft_manager_config.magnolia_activation_period = conf_.genesis.state.hardforks.magnolia_hf.block_num;
+  pbft_manager_config.ficus_activation_period = conf_.genesis.state.hardforks.ficus_hf.block_num;
+  pbft_manager_config.pillar_blocks_interval = conf_.genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
   pbft_service_ =
       std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db_->rustStorage(), pbft_manager_config));
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, pbft_service_);
@@ -215,12 +220,17 @@ void App::init(const cli::Config &cli_conf) {
   dag_block_proposer_ = std::make_shared<DagBlockProposer>(conf_, dag_mgr_, trx_mgr_, final_chain_, db_, key_manager_);
 #endif
 
-  network_ = std::make_shared<Network>(conf_, genesis_hash, conf_.net_file_path().string(),
+  network_ =
+      std::make_shared<Network>(conf_, genesis_hash, conf_.net_file_path().string(),
 #ifndef RUSTAXA_ENABLE
-                                       db_,
+                                db_,
 #endif
-                                       pbft_mgr_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, pillar_chain_mgr_,
-                                       final_chain_);
+                                pbft_mgr_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, pillar_chain_mgr_,
+#ifdef RUSTAXA_ENABLE
+                                final_chain_, std::make_shared<network::ConsensusNetworkApi>(pbft_service_->service()));
+#else
+                                final_chain_);
+#endif
   auto cli_options = cli_conf.getCliOptions();
   for (auto &plugin : active_plugins_) {
     plugin.second->init(cli_options);

@@ -1040,29 +1040,6 @@ std::vector<std::shared_ptr<PillarVote>> PillarChainManager::getVerifiedPillarVo
   return {};
 }
 
-std::vector<PillarChainManager::PillarVoteNetworkBundleChunk> PillarChainManager::buildVerifiedPillarVoteNetworkBundles(
-    PbftPeriod period, const blk_hash_t& pillar_block_hash, size_t max_votes_per_bundle) const {
-  std::vector<PillarVoteNetworkBundleChunk> chunks;
-  try {
-    const auto lookup = pbft_service_->service().pbft_service_pillar_build_verified_vote_network_bundles(
-        period, toBridgeHash(pillar_block_hash), max_votes_per_bundle);
-    chunks.reserve(lookup.chunks.size());
-    for (const auto& bridge_chunk : lookup.chunks) {
-      PillarVoteNetworkBundleChunk chunk;
-      chunk.optimized_bundle_rlp = fromRustBytes(bridge_chunk.votes_bundle_rlp);
-      chunk.vote_hashes.reserve(bridge_chunk.vote_hashes.size());
-      for (const auto& bridge_hash : bridge_chunk.vote_hashes) {
-        chunk.vote_hashes.emplace_back(fromBridgeHash(bridge_hash.hash));
-      }
-      chunks.emplace_back(std::move(chunk));
-    }
-  } catch (const std::exception& e) {
-    LOG(log_er_) << "Unable to build pillar vote network bundle chunks for period " << period << ", block "
-                 << pillar_block_hash << ": " << e.what();
-  }
-  return chunks;
-}
-
 bool PillarChainManager::isValidPillarBlock(const std::shared_ptr<PillarBlock>& pillar_block) const {
   if (!pillar_block) {
     LOG(log_er_) << "Invalid pillar block: null block";

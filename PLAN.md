@@ -970,8 +970,10 @@ The current Rust consensus footprint is broad but still incomplete:
   proposer-sortition screening, Rust-owned local PBFT vote byte generation/signing for canonical signed and weighted
   vote payloads with shim-side parity checks against temporary C++ live sidecars for the Rust-mode `VoteManager`
   overlay, and Rust-owned optimized PBFT vote-bundle construction from retained weighted payload records for
-  get-next-votes egress. C++ still owns peer-known filtering, tarcap packet wrapping, splitting, send policy, and
-  known-vote marking at the network boundary. The crate also contains a Rust-backed
+  get-next-votes egress. The PBFT application root now owns the single native network service and its queue; direct
+  next-vote and pillar-bundle response routes query native sibling services without holding the network lock, validate
+  and chunk packet-ready payloads, and order successful-send known effects in Rust. C++ retains tarcap packet wrapping,
+  physical send/disconnect execution, and physical peer-known mutation at the network boundary. The crate also contains a Rust-backed
   `GasPricer` oracle for finalized-block history, minimum-price
   flooring, and percentile bid selection.
   Rust mode no longer exposes a standalone `GasPricer` facade or feature flag. App finalization and metrics, Eth RPC,

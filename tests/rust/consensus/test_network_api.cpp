@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <filesystem>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -34,11 +37,55 @@ rust::Vec<uint8_t> bridgeBytes(const taraxa::bytes& values) {
   return out;
 }
 
-rustaxa::NetworkApiConfig defaultConfig() {
-  rustaxa::NetworkApiConfig config{};
-  config.max_effects_per_drain = 8;
+rustaxa::PbftServiceConfig serviceConfig() {
+  rustaxa::PbftServiceConfig config{};
+  config.genesis_lambda_ms = 100;
+  config.cacti_lambda_max_ms = 100;
+  config.cacti_lambda_default_ms = 100;
+  config.cacti_block = 100;
+  config.max_exponential_lambda_ms = 60'000;
+  config.max_steps = 13;
+  config.deadline_ms = 400;
+  config.polling_interval_ms = 100;
+  config.report_malicious_behaviour = true;
+  config.magnolia_activation_period = 0;
+  config.ficus_activation_period = 10;
+  config.pillar_blocks_interval = 10;
   return config;
 }
+
+struct TemporaryStorageDirectory {
+  TemporaryStorageDirectory() {
+    static std::atomic<uint64_t> sequence{0};
+    path = std::filesystem::temp_directory_path() /
+           ("rustaxa_network_api_bridge_" + std::to_string(sequence.fetch_add(1)));
+    std::error_code ignored;
+    std::filesystem::remove_all(path, ignored);
+  }
+
+  ~TemporaryStorageDirectory() {
+    std::error_code ignored;
+    std::filesystem::remove_all(path, ignored);
+  }
+
+  std::filesystem::path path;
+};
+
+struct NetworkApiFixture {
+  NetworkApiFixture()
+      : storage(rustaxa::create_storage(directory.path.string())),
+        service(rustaxa::create_pbft_service_from_storage(*storage, serviceConfig())),
+        network_api(rustaxa::create_consensus_network_api(*service)) {
+    service->pbft_service_complete_pillar_bootstrap();
+  }
+
+  rustaxa::BridgeConsensusNetworkApi* operator->() { return &*network_api; }
+
+  TemporaryStorageDirectory directory;
+  rust::Box<rustaxa::BridgeStorage> storage;
+  rust::Box<rustaxa::BridgePbftService> service;
+  rust::Box<rustaxa::BridgeConsensusNetworkApi> network_api;
+};
 
 rustaxa::PbftVoteIngressFact voteFact(uint64_t period, uint64_t round, uint64_t step, uint8_t vote_type) {
   rustaxa::PbftVoteIngressFact fact{};
@@ -115,7 +162,7 @@ rustaxa::NetworkEffectResult voteAdmissionResult(const rustaxa::NetworkEffect& e
 }  // namespace
 
 TEST(ConsensusNetworkApiBridgeTest, drainWorkAndReportResultsExposeExecutorContract) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   const auto batch = network_api->consensus_network_drain_work(6, 10);
   EXPECT_EQ(batch.status, 0);
@@ -131,8 +178,22 @@ TEST(ConsensusNetworkApiBridgeTest, drainWorkAndReportResultsExposeExecutorContr
   EXPECT_TRUE(ack.error_code.empty());
 }
 
+TEST(ConsensusNetworkApiBridgeTest, adaptersCloneThePbftRootOwnedNetworkService) {
+  auto first = NetworkApiFixture{};
+  auto second = rustaxa::create_consensus_network_api(*first.service);
+
+  auto context = networkVoteContext();
+  context.enqueue_admission = true;
+  const auto decision = first->consensus_network_ingest_pbft_vote(voteFact(14, 3, 1, 2), context);
+  ASSERT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = second->consensus_network_drain_work(6, 10);
+  ASSERT_EQ(batch.effects.size(), 1);
+  EXPECT_EQ(batch.effects[0].source_payload_id, context.source_payload_id);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, reportEffectResultsAcceptsMatchingEffectIdentity) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   auto context = networkVoteContext();
   context.enqueue_admission = true;
@@ -161,7 +222,7 @@ TEST(ConsensusNetworkApiBridgeTest, reportEffectResultsAcceptsMatchingEffectIden
 }
 
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressQueuesSyncEffectThroughNetworkApi) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   auto context = networkVoteContext();
   context.enqueue_admission = true;
@@ -183,7 +244,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressQueuesSyncEffectThroughNetwor
 }
 
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressAcceptsCurrentVoteWithoutNetworkEffects) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(10, 3, 2, 2), networkVoteContext());
 
@@ -197,7 +258,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressAcceptsCurrentVoteWithoutNetw
 }
 
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteBundleIngressQueuesReportAndDisconnectEffects) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   rust::Vec<rustaxa::PbftVoteIngressFact> votes;
   votes.push_back(voteFact(10, 3, 2, 1));
@@ -220,7 +281,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteBundleIngressQueuesReportAndDisconne
 }
 
 TEST(ConsensusNetworkApiBridgeTest, pillarVoteIngressQueuesAdmissionAndAcceptedFollowUps) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
   const auto secret = taraxa::secret_t("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd");
   const taraxa::PillarVote vote(secret, taraxa::PbftPeriod{21}, taraxa::blk_hash_t{456});
   rustaxa::NetworkPillarVoteIngressContext context{};
@@ -257,7 +318,7 @@ TEST(ConsensusNetworkApiBridgeTest, pillarVoteIngressQueuesAdmissionAndAcceptedF
 }
 
 TEST(ConsensusNetworkApiBridgeTest, statusSyncPlanningRoutesThroughNetworkApi) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   rustaxa::NetworkStatusSyncFacts facts{};
   facts.local_pbft_syncing = false;
@@ -289,7 +350,7 @@ TEST(ConsensusNetworkApiBridgeTest, statusSyncPlanningRoutesThroughNetworkApi) {
 }
 
 TEST(ConsensusNetworkApiBridgeTest, statusEgressPlanningRoutesThroughNetworkApi) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   rustaxa::NetworkStatusEgressFacts facts{};
   facts.initial = true;
@@ -330,7 +391,7 @@ TEST(ConsensusNetworkApiBridgeTest, statusEgressPlanningRoutesThroughNetworkApi)
 }
 
 TEST(ConsensusNetworkApiBridgeTest, initialStatusPlanningRoutesThroughNetworkApi) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   rustaxa::NetworkInitialStatusFacts facts{};
   facts.local_chain_id = 7;
@@ -355,7 +416,7 @@ TEST(ConsensusNetworkApiBridgeTest, initialStatusPlanningRoutesThroughNetworkApi
 }
 
 TEST(ConsensusNetworkApiBridgeTest, pbftSyncStartPlanningRoutesThroughNetworkApi) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   rustaxa::NetworkPbftSyncStartFacts facts{};
   facts.local_pbft_syncing = false;
@@ -389,7 +450,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftSyncStartPlanningRoutesThroughNetworkApi
 }
 
 TEST(ConsensusNetworkApiBridgeTest, maxChainPeerSelectionRoutesThroughNetworkApi) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   rustaxa::NetworkPeerSelectionFacts facts{};
   facts.local_pbft_syncing_period = 10;
@@ -415,7 +476,7 @@ TEST(ConsensusNetworkApiBridgeTest, maxChainPeerSelectionRoutesThroughNetworkApi
 }
 
 TEST(ConsensusNetworkApiBridgeTest, pendingDagBlocksRequestPlanningRoutesThroughNetworkApi) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   rustaxa::NetworkPendingDagBlocksRequestFacts facts{};
   facts.local_pbft_syncing_period = 10;
@@ -450,7 +511,7 @@ TEST(ConsensusNetworkApiBridgeTest, pendingDagBlocksRequestPlanningRoutesThrough
 }
 
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteAdmissionOrdersBlockPublicationBeforeGossip) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   auto context = networkVoteContext();
   context.enqueue_admission = true;
@@ -505,7 +566,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteAdmissionOrdersBlockPublicationBefor
 }
 
 TEST(ConsensusNetworkApiBridgeTest, duplicateVoteStillRoutesAttachedProposedBlockWithoutGossip) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
   auto context = networkVoteContext();
   context.enqueue_admission = true;
   context.peer_id = nodeId(0x77);
@@ -533,7 +594,7 @@ TEST(ConsensusNetworkApiBridgeTest, duplicateVoteStillRoutesAttachedProposedBloc
 }
 
 TEST(ConsensusNetworkApiBridgeTest, failedAdmissionCancelsDependentKnownAndGossipEffects) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
   auto context = networkVoteContext();
   context.enqueue_admission = true;
   context.peer_id = nodeId(0x77);
@@ -556,7 +617,7 @@ TEST(ConsensusNetworkApiBridgeTest, failedAdmissionCancelsDependentKnownAndGossi
 }
 
 TEST(ConsensusNetworkApiBridgeTest, gossipPayloadsSurviveProducerScopeAndDrainFifo) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
 
   for (uint8_t byte : {1, 2}) {
     auto context = networkVoteContext();
@@ -596,7 +657,7 @@ TEST(ConsensusNetworkApiBridgeTest, gossipPayloadsSurviveProducerScopeAndDrainFi
 }
 
 TEST(ConsensusNetworkApiBridgeTest, sharedRootDrainsOnlyRequestedTransportLane) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
   const auto enqueue_gossip = [&network_api](uint32_t transport_lane, uint8_t byte) {
     auto context = networkVoteContext();
     context.enqueue_admission = true;
@@ -639,7 +700,7 @@ TEST(ConsensusNetworkApiBridgeTest, sharedRootDrainsOnlyRequestedTransportLane) 
 }
 
 TEST(ConsensusNetworkApiBridgeTest, drainWorkIsolatesInterleavedTransportLanes) {
-  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  auto network_api = NetworkApiFixture{};
   const auto enqueue_gossip = [&network_api](uint32_t transport_lane, uint8_t byte) {
     auto context = networkVoteContext();
     context.enqueue_admission = true;

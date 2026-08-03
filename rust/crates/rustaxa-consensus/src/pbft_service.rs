@@ -7,6 +7,7 @@
 
 use crate::FinalChain;
 use crate::dag::{DagBlockPeriodStorageLookup, dag_block_period_from_storage};
+use crate::network_api::ConsensusNetworkService;
 use crate::pbft_chain::{
     PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead, PbftChainService,
     pbft_block_exists_in_storage,
@@ -94,9 +95,8 @@ use crate::pillar_chain_service::{
 use crate::pillar_vote_service::{
     PillarBlockFinalizationAcknowledgeRequest, PillarBlockFinalizationAcknowledgeResult,
     PillarBlockFinalizationPrepareResult, PillarBlockFinalizationRequest,
-    PillarConsensusThresholdLookup, PillarVoteBundleWithFinalChainPlan,
-    PillarVoteNetworkBundleLookup, PillarVoteRelevancePlan, PillarVoteRlpPayload,
-    PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionContext,
+    PillarConsensusThresholdLookup, PillarVoteBundleWithFinalChainPlan, PillarVoteRelevancePlan,
+    PillarVoteRlpPayload, PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionContext,
     PillarVoteSingleAdmissionValidationPlan, PillarVoteSingleAdmissionWithFinalChainPlan,
     PillarVotesPayloadLookup,
 };
@@ -152,7 +152,8 @@ fn resolve_slashing_submitter_facts(
 /// Millisecond values constrained by the legacy manager runtime are already
 /// narrowed to `u32` by the external adapter. Construction derives the current
 /// period and Cacti activation from the restored PBFT-chain head; callers
-/// cannot inject either fact.
+/// cannot inject either fact. Ficus activation and pillar interval configure
+/// the immutable network request schedule, whose interval must exceed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PbftServiceConfig {
     pub genesis_lambda_ms: u32,
@@ -165,6 +166,10 @@ pub struct PbftServiceConfig {
     pub polling_interval_ms: u64,
     pub report_malicious_behaviour: bool,
     pub magnolia_activation_period: u64,
+    /// First PBFT period where the Ficus pillar schedule is active.
+    pub ficus_activation_period: u64,
+    /// Number of PBFT periods between pillar blocks; must exceed one.
+    pub pillar_blocks_interval: u64,
 }
 
 /// Native dynamic-lambda decision composed with its durable prior-lambda fact.
@@ -268,6 +273,7 @@ pub struct PbftService {
     slashing: SlashingProofService,
     readiness: PbftServiceReadiness,
     pillar: PillarChainService,
+    network: ConsensusNetworkService,
 }
 
 impl PbftService {
@@ -884,10 +890,15 @@ impl PbftService {
 
     /// Restores the coherent native PBFT service graph from shared storage.
     ///
-    /// Errors preserve construction order: slashing configuration is checked
-    /// first, followed by chain, verified votes, proposed blocks, manager
-    /// runtime, and pillar restoration. No service root escapes on failure.
+    /// Errors preserve construction order: pillar schedule and slashing
+    /// configuration are checked first, followed by chain, verified votes,
+    /// proposed blocks, manager runtime, pillar restoration, and network
+    /// composition. No service root escapes on failure.
     pub fn restore(storage: Arc<Storage>, config: PbftServiceConfig) -> Result<Self> {
+        anyhow::ensure!(
+            config.ficus_activation_period == u64::MAX || config.pillar_blocks_interval > 1,
+            "PBFT_SERVICE_PILLAR_BLOCKS_INTERVAL_MUST_EXCEED_ONE"
+        );
         let slashing = SlashingProofService::new(
             config.report_malicious_behaviour,
             config.magnolia_activation_period,
@@ -914,6 +925,12 @@ impl PbftService {
             },
         )?;
         let pillar = PillarChainService::restore(storage.clone())?;
+        let network = ConsensusNetworkService::new(
+            pillar.clone(),
+            verified_votes.clone(),
+            config.ficus_activation_period,
+            config.pillar_blocks_interval,
+        )?;
 
         Ok(Self {
             manager: PbftManagerService::new(runtime, storage, chain.clone()),
@@ -923,6 +940,7 @@ impl PbftService {
             slashing,
             readiness: PbftServiceReadiness::pending(),
             pillar,
+            network,
         })
     }
 
@@ -1685,25 +1703,6 @@ impl PbftService {
             .pbft_service_pillar_get_verified_vote_payloads(period, block_hash, above_threshold)
     }
 
-    /// Builds ordered canonical vote bundles for the tarcap transfer adapter.
-    ///
-    /// `max_votes_per_bundle` bounds chunk size without changing vote order.
-    /// Missing data is typed in the lookup; zero limits and native state/storage
-    /// failures retain the underlying task's error behavior.
-    pub fn build_pillar_vote_network_bundles(
-        &self,
-        period: u64,
-        block_hash: &[u8; 32],
-        max_votes_per_bundle: usize,
-    ) -> Result<PillarVoteNetworkBundleLookup> {
-        self.pillar()
-            .pbft_service_pillar_build_verified_vote_network_bundles(
-                period,
-                block_hash,
-                max_votes_per_bundle,
-            )
-    }
-
     /// Generates one canonical weighted PBFT vote after compositional FinalChain reads.
     ///
     /// The service validates the vote period conversion (`period - 1`) before any
@@ -2361,6 +2360,17 @@ impl PbftService {
         &self.verified_votes
     }
 
+    /// Returns a clone of the PBFT-root-owned consensus network service.
+    ///
+    /// The clone shares the one native effect queue and the same restored
+    /// pillar and verified-vote siblings as this root. It is safe to retain at
+    /// the external transport boundary; sibling queries never execute while
+    /// the network queue mutex is held. No independent network composition or
+    /// configuration is created by this accessor.
+    pub fn network_service(&self) -> ConsensusNetworkService {
+        self.network.clone()
+    }
+
     /// Returns verified-vote storage snapshots and sidecars through the service.
     ///
     /// Inputs, ordering, validation, and storage error behavior are exactly the
@@ -2602,6 +2612,11 @@ mod tests {
     use crate::dag_service::DagServiceConfig;
     use crate::dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig};
     use crate::gas_pricer::GasPricerConfig;
+    use crate::network_api::{
+        NETWORK_INGRESS_STATUS_ACCEPTED, NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE,
+        NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA, NetworkGetPillarVotesBundleRequest,
+        NetworkPbftNextVotesBundleRequest,
+    };
     use crate::pbft_chain::{PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead};
     use crate::pbft_thresholds::PbftTwoTPlusOneThresholdStatus;
     use crate::pbft_vote_event::PbftVoteEventFactFlags;
@@ -2667,6 +2682,8 @@ mod tests {
             polling_interval_ms: 100,
             report_malicious_behaviour: true,
             magnolia_activation_period: 0,
+            ficus_activation_period: 10,
+            pillar_blocks_interval: 10,
         }
     }
 
@@ -3941,6 +3958,94 @@ mod tests {
 
         drop(active);
         drop(inactive);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn restore_constructs_one_shared_network_service_with_direct_empty_egress() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_network_service");
+        let service = PbftService::restore(storage, config(10)).expect("service restores");
+        let first = service.network_service();
+        let second = service.network_service();
+
+        let next = first
+            .ingest_pbft_next_votes_bundle_request(NetworkPbftNextVotesBundleRequest {
+                transport_lane: 6,
+                peer_id: [7; 64],
+                peer_period: 1,
+                peer_round: 1,
+                current_period: 1,
+                current_round: 2,
+                source_payload_id: 90,
+            })
+            .unwrap();
+        assert_eq!(next.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert_eq!(next.queued_effect_count, 0);
+        assert!(second.drain_work(6, 10).unwrap().effects.is_empty());
+
+        service.complete_pillar_bootstrap().unwrap();
+        let pillar = second
+            .ingest_get_pillar_votes_bundle_request(NetworkGetPillarVotesBundleRequest {
+                transport_lane: 6,
+                peer_id: [8; 64],
+                period: 11,
+                pillar_block_hash: H256::from_low_u64_be(91).into(),
+                source_payload_id: 91,
+            })
+            .unwrap();
+        assert_eq!(pillar.status, NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA);
+        assert_eq!(pillar.queued_effect_count, 0);
+        assert!(first.drain_work(6, 10).unwrap().effects.is_empty());
+
+        drop(first);
+        drop(second);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn restore_rejects_invalid_pillar_schedule_before_publication() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_network_schedule");
+        let mut invalid = config(10);
+        invalid.pillar_blocks_interval = 1;
+        let error = match PbftService::restore(storage, invalid) {
+            Ok(_) => panic!("invalid pillar interval should fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("PILLAR_BLOCKS_INTERVAL_MUST_EXCEED_ONE")
+        );
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn restore_accepts_disabled_ficus_with_zero_interval_and_rejects_requests_safely() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_disabled_ficus_schedule");
+        let mut disabled = config(10);
+        disabled.ficus_activation_period = u64::MAX;
+        disabled.pillar_blocks_interval = 0;
+        let service = PbftService::restore(storage, disabled).expect("disabled Ficus restores");
+
+        let decision = service
+            .network_service()
+            .ingest_get_pillar_votes_bundle_request(NetworkGetPillarVotesBundleRequest {
+                transport_lane: 6,
+                peer_id: [8; 64],
+                period: 11,
+                pillar_block_hash: H256::from_low_u64_be(91).into(),
+                source_payload_id: 91,
+            })
+            .expect("disabled Ficus request is rejected without interval arithmetic");
+
+        assert_eq!(
+            decision.status,
+            NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE
+        );
+        assert_eq!(decision.queued_effect_count, 2);
+
+        drop(service);
         let _ = fs::remove_dir_all(path);
     }
 
