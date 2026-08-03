@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "rustaxa-bridge/ffi.rs.h"
+#include "vote/pillar_vote.hpp"
 
 namespace {
 
@@ -20,6 +21,15 @@ rust::Vec<uint8_t> bytes(std::initializer_list<uint8_t> values) {
   rust::Vec<uint8_t> out;
   for (auto value : values) {
     out.push_back(value);
+  }
+  return out;
+}
+
+rust::Vec<uint8_t> bridgeBytes(const taraxa::bytes& values) {
+  rust::Vec<uint8_t> out;
+  out.reserve(values.size());
+  for (const auto value : values) {
+    out.push_back(static_cast<uint8_t>(value));
   }
   return out;
 }
@@ -209,27 +219,41 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteBundleIngressQueuesReportAndDisconne
   EXPECT_EQ(batch.effects[1].reason_code, 0);
 }
 
-TEST(ConsensusNetworkApiBridgeTest, pillarVoteRelevancePlanningRoutesThroughNetworkApi) {
+TEST(ConsensusNetworkApiBridgeTest, pillarVoteIngressQueuesAdmissionAndAcceptedFollowUps) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+  const auto secret = taraxa::secret_t("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd");
+  const taraxa::PillarVote vote(secret, taraxa::PbftPeriod{21}, taraxa::blk_hash_t{456});
+  rustaxa::NetworkPillarVoteIngressContext context{};
+  context.transport_lane = 6;
+  context.peer_id = nodeId(0x71);
+  context.source_payload_id = 101;
+  context.ficus_activation_period = 10;
+  context.allow_gossip = true;
+  rustaxa::PillarVoteRlpPayload payload;
+  payload.vote_rlp = bridgeBytes(vote.rlp());
+  rust::Vec<rustaxa::PillarVoteRlpPayload> payloads;
+  payloads.push_back(std::move(payload));
 
-  rustaxa::PillarVoteRelevanceFact fact{};
-  fact.vote_period = 21;
-  fact.vote_block_hash = hash(0x71);
-  fact.current_pillar_block_period = 20;
-  fact.current_pillar_block_hash = hash(0x71);
-  fact.has_current_pillar_block = true;
-  fact.first_pillar_block_period = 10;
-  fact.pillar_blocks_interval = 10;
-  fact.vote_already_known = false;
+  const auto decisions = network_api->consensus_network_ingest_pillar_vote_bundle(context, std::move(payloads));
+  ASSERT_EQ(decisions.size(), 1);
+  EXPECT_EQ(decisions[0].status, 0);
+  EXPECT_NE(decisions[0].application_effect_id, 0);
 
-  const auto accepted = network_api->consensus_network_plan_pillar_vote_relevance(fact);
-  EXPECT_EQ(accepted.status, 0);
-  EXPECT_TRUE(accepted.is_relevant);
+  const auto admission = network_api->consensus_network_drain_work(6, 10);
+  ASSERT_EQ(admission.effects.size(), 1);
+  EXPECT_EQ(admission.effects[0].kind, 8);
+  EXPECT_EQ(admission.effects[0].object_kind, 5);
+  auto result = successfulResult(admission.effects[0]);
+  result.admission_accepted = true;
+  rust::Vec<rustaxa::NetworkEffectResult> results;
+  results.push_back(std::move(result));
+  EXPECT_EQ(network_api->consensus_network_report_effect_results(std::move(results)).status, 0);
 
-  fact.vote_block_hash = hash(0x72);
-  const auto rejected = network_api->consensus_network_plan_pillar_vote_relevance(fact);
-  EXPECT_EQ(rejected.status, 4);
-  EXPECT_FALSE(rejected.is_relevant);
+  const auto follow_ups = network_api->consensus_network_drain_work(6, 10);
+  ASSERT_EQ(follow_ups.effects.size(), 2);
+  EXPECT_EQ(follow_ups.effects[0].kind, 2);
+  EXPECT_EQ(follow_ups.effects[1].kind, 1);
+  EXPECT_EQ(follow_ups.effects[1].packet_kind, 13);
 }
 
 TEST(ConsensusNetworkApiBridgeTest, statusSyncPlanningRoutesThroughNetworkApi) {

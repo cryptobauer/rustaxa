@@ -5,7 +5,6 @@
 #include <memory>
 #include <optional>
 #include <shared_mutex>
-#include <unordered_set>
 #include <vector>
 
 #include "common/event.hpp"
@@ -370,6 +369,24 @@ class PillarChainManager {
   bool validatePillarVote(const std::shared_ptr<PillarVote> vote) const;
 
   /**
+   * Applies one pillar vote through the complete native validation and insertion task.
+   *
+   * `vote` supplies canonical RLP. The result distinguishes new acceptance,
+   * exact duplicate, same-validator/period conflict, and accepted DPoS weight.
+   * - Native consensus owns relevance, signature recovery, uniqueness, DPoS
+   *   lookup, stale-anchor revalidation, and live publication as one task.
+   * - No C++ validation receipt or trusted network follow-up insertion path exists.
+   * - Deterministic rejection returns an all-false report; infrastructure
+   *   failures propagate. Duplicates are identified before DPoS lookup.
+   */
+  struct PillarVoteAdmissionReport {
+    bool accepted = false;
+    bool already_present = false;
+    bool conflict = false;
+    uint64_t validator_vote_count = 0;
+  };
+  PillarVoteAdmissionReport admitPillarVote(const std::shared_ptr<PillarVote>& vote);
+  /**
    * Returns true when `block_hash` is already the latest finalized pillar block.
    */
   bool isPillarBlockLatestFinalized(const blk_hash_t& block_hash) const;
@@ -380,12 +397,12 @@ class PillarChainManager {
   std::shared_ptr<PillarBlock> getLastFinalizedPillarBlock() const;
 
   /**
-   * Adds one verified pillar vote to the in-memory Rust-backed vote index.
+   * Applies one pillar vote through the checked native admission task and
+   * returns its validator weight for compatibility callers.
    *
    * Invariants:
-   * - Voter identity is recovered from Rust inspection and passed into
-   *   `PillarVotes`; this method must not call `PillarVote::getVoterAddr()`.
-   * - DPoS weight is looked up for the Rust-recovered voter at `period - 1`.
+   * - This delegates to `admitPillarVote`; callers cannot bypass validation.
+   * - Voter identity and DPoS weight are derived by the native service.
    *
    * Returns:
    * - The non-zero validator vote count when inserted; otherwise 0.
@@ -661,6 +678,9 @@ class PillarChainManager {
   std::optional<uint64_t> getPillarConsensusThreshold(PbftPeriod period) const;
 
  private:
+  /** Native apply; trusted mode is private and used only for storage-authenticated startup replay. */
+  PillarVoteAdmissionReport admitPillarVoteImpl(const std::shared_ptr<PillarVote>& vote, bool trusted_local_or_restore);
+
   /**
    * Persists and installs a new current pillar block snapshot.
    */
@@ -680,14 +700,6 @@ class PillarChainManager {
 
   std::shared_ptr<PillarBlock> current_pillar_block_;
 
-  /**
-   * Bounded receipts for successful external validation calls awaiting add.
-   *
-   * A receipt forces `addVerifiedPillarVote` back through checked preparation
-   * against the then-current Rust anchor. Calls without a receipt are the
-   * compatibility route for locally generated or restart-restored votes.
-   */
-  mutable std::unordered_set<vote_hash_t> externally_validated_vote_receipts_;
   mutable std::shared_mutex mutex_;
 
   LOG_OBJECTS_DEFINE

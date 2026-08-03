@@ -9,13 +9,13 @@ PillarVotesBundlePacketHandler::PillarVotesBundlePacketHandler(
     std::shared_ptr<TimePeriodPacketsStats> packets_stats,
     std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
 #ifdef RUSTAXA_ENABLE
-    network::ConsensusNetworkApiShared consensus_network_api,
+    network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
 #endif
     const addr_t &node_addr, const std::string &logs_prefix)
     : ExtPillarVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats),
                                  std::move(pillar_chain_manager),
 #ifdef RUSTAXA_ENABLE
-                                 std::move(consensus_network_api),
+                                 std::move(consensus_network_api), transport_lane,
 #endif
                                  node_addr, logs_prefix + "PILLAR_VOTES_BUNDLE_PH") {
 }
@@ -34,6 +34,17 @@ void PillarVotesBundlePacketHandler::process(const threadpool::PacketData &packe
   // TODO[2744]: there could be the same protection as in pbft syncing that only requested bundle packet is accepted
   LOG(log_dg_) << "PillarVotesBundlePacket received from peer " << peer->getId();
 
+#ifdef RUSTAXA_ENABLE
+  for (const auto &pillar_vote : packet.pillar_votes_bundle.pillar_votes) {
+    if (!kConf.genesis.state.hardforks.ficus_hf.isFicusHardfork(pillar_vote->getPeriod())) {
+      std::ostringstream err_msg;
+      err_msg << "Synced pillar vote " << pillar_vote->getHash() << ", period " << pillar_vote->getPeriod()
+              << " < ficus hardfork block num";
+      throw MaliciousPeerException(err_msg.str());
+    }
+  }
+  processPillarVotes(packet.pillar_votes_bundle.pillar_votes, peer, kPacketType_);
+#else
   for (const auto &pillar_vote : packet.pillar_votes_bundle.pillar_votes) {
     if (!kConf.genesis.state.hardforks.ficus_hf.isFicusHardfork(pillar_vote->getPeriod())) {
       std::ostringstream err_msg;
@@ -44,6 +55,7 @@ void PillarVotesBundlePacketHandler::process(const threadpool::PacketData &packe
 
     processPillarVote(pillar_vote, peer, kPacketType_);
   }
+#endif
 }
 
 }  // namespace taraxa::network::tarcap

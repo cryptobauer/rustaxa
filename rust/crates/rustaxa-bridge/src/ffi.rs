@@ -432,6 +432,15 @@ pub mod rustaxa_ffi {
         pbft_block_period: u64,
     }
 
+    /// Scalar context for authoritative pillar-vote ingress through Network/Tarcap.
+    struct NetworkPillarVoteIngressContext {
+        transport_lane: u32,
+        peer_id: [u8; 64],
+        source_payload_id: u64,
+        ficus_activation_period: u64,
+        allow_gossip: bool,
+    }
+
     /// Packet-specific network ingress decision with queued-effect summary.
     struct NetworkIngressDecision {
         payload_id: u64,
@@ -2130,22 +2139,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// Input facts for one pillar-vote relevance check.
-    ///
-    /// `has_current_pillar_block` gates whether C++ has provided current pillar
-    /// context. When false, `current_pillar_block_period` and
-    /// `current_pillar_block_hash` are ignored.
-    struct PillarVoteRelevanceFact {
-        vote_period: u64,
-        vote_block_hash: [u8; 32],
-        current_pillar_block_period: u64,
-        current_pillar_block_hash: [u8; 32],
-        has_current_pillar_block: bool,
-        first_pillar_block_period: u64,
-        pillar_blocks_interval: u64,
-        vote_already_known: bool,
-    }
-
     /// Deterministic relevance decision returned by Rust.
     ///
     /// Status values:
@@ -3672,6 +3665,11 @@ pub mod rustaxa_ffi {
             votes: Vec<PbftVoteIngressFact>,
             contexts: Vec<NetworkPbftVoteIngressContext>,
         ) -> Result<Vec<NetworkIngressDecision>>;
+        pub fn consensus_network_ingest_pillar_vote_bundle(
+            self: &BridgeConsensusNetworkApi,
+            context: NetworkPillarVoteIngressContext,
+            votes: Vec<PillarVoteRlpPayload>,
+        ) -> Result<Vec<NetworkIngressDecision>>;
         #[allow(clippy::too_many_arguments)]
         pub fn consensus_network_ingest_pbft_next_votes_bundle_request(
             self: &BridgeConsensusNetworkApi,
@@ -3683,10 +3681,6 @@ pub mod rustaxa_ffi {
             current_round: u64,
             source_payload_id: u64,
         ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_plan_pillar_vote_relevance(
-            self: &BridgeConsensusNetworkApi,
-            fact: PillarVoteRelevanceFact,
-        ) -> Result<PillarVoteRelevancePlan>;
         pub fn consensus_network_plan_status_sync(
             self: &BridgeConsensusNetworkApi,
             facts: NetworkStatusSyncFacts,

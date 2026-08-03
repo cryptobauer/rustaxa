@@ -421,6 +421,9 @@ TEST_F(PillarChainTest, addVerifiedPillarVote_insertsWithRecoveredIdentityWeight
   auto db = std::make_shared<DbStorage>(data_dir);
   auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
 #ifdef RUSTAXA_ENABLE
+  const auto current_pillar_block = std::make_shared<pillar_chain::PillarBlock>(
+      0, h256{}, blk_hash_t{}, h256{}, 0, std::vector<pillar_chain::PillarBlock::ValidatorVoteCountChange>{});
+  db->saveCurrentPillarBlockData({current_pillar_block, {}});
   auto pillar_chain_manager =
       pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
                                        final_chain, nullptr, cfg.getFirstWallet().node_addr);
@@ -430,9 +433,35 @@ TEST_F(PillarChainTest, addVerifiedPillarVote_insertsWithRecoveredIdentityWeight
 #endif
 
   const auto vote_period = PbftPeriod{1};
+#ifdef RUSTAXA_ENABLE
+  const auto vote =
+      std::make_shared<PillarVote>(cfg.getFirstWallet().node_secret, vote_period, current_pillar_block->getHash());
+#else
   const auto vote = std::make_shared<PillarVote>(cfg.getFirstWallet().node_secret, vote_period, blk_hash_t(10));
+#endif
   const auto expected_weight = final_chain->dposEligibleVoteCount(vote_period - 1, cfg.getFirstWallet().node_addr);
+#ifdef RUSTAXA_ENABLE
+  const auto wrong_anchor_vote =
+      std::make_shared<PillarVote>(cfg.getFirstWallet().node_secret, vote_period, blk_hash_t(10));
+  const auto wrong_anchor_admission = pillar_chain_manager.admitPillarVote(wrong_anchor_vote);
+  EXPECT_FALSE(wrong_anchor_admission.accepted);
+  EXPECT_FALSE(wrong_anchor_admission.already_present);
+  EXPECT_FALSE(wrong_anchor_admission.conflict);
+
+  const auto admission = pillar_chain_manager.admitPillarVote(vote);
+  ASSERT_TRUE(admission.accepted);
+  EXPECT_FALSE(admission.already_present);
+  EXPECT_FALSE(admission.conflict);
+  const auto vote_weight = admission.validator_vote_count;
+
+  const auto duplicate = pillar_chain_manager.admitPillarVote(vote);
+  EXPECT_FALSE(duplicate.accepted);
+  EXPECT_TRUE(duplicate.already_present);
+  EXPECT_FALSE(duplicate.conflict);
+  EXPECT_EQ(duplicate.validator_vote_count, 0);
+#else
   const auto vote_weight = pillar_chain_manager.addVerifiedPillarVote(vote);
+#endif
   ASSERT_GT(vote_weight, 0u);
   EXPECT_EQ(vote_weight, expected_weight);
 
@@ -440,6 +469,30 @@ TEST_F(PillarChainTest, addVerifiedPillarVote_insertsWithRecoveredIdentityWeight
   ASSERT_FALSE(votes.empty());
   EXPECT_EQ(votes.size(), 1u);
   EXPECT_EQ(votes[0]->getHash(), vote->getHash());
+}
+
+TEST_F(PillarChainTest, startupRestoresOwnVoteOutsideLiveAnchor) {
+#ifdef RUSTAXA_ENABLE
+  auto cfg = make_node_cfgs(1, 1, 10).front();
+  cfg.genesis.state.dpos.delegation_delay = 1;
+  cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
+  cfg.genesis.state.hardforks.ficus_hf.pillar_blocks_interval = 4;
+
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
+  const auto vote = std::make_shared<PillarVote>(cfg.getFirstWallet().node_secret, PbftPeriod{1}, blk_hash_t{0xBAD});
+  db->saveOwnPillarBlockVote(vote);
+
+  auto pillar_chain_manager =
+      pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
+                                       final_chain, nullptr, cfg.getFirstWallet().node_addr);
+
+  const auto restored = pillar_chain_manager.getVerifiedPillarVotes(vote->getPeriod(), vote->getBlockHash(), false);
+  ASSERT_EQ(restored.size(), 1u);
+  EXPECT_EQ(restored.front()->getHash(), vote->getHash());
+#else
+  GTEST_SKIP() << "Pillar vote native startup restoration is disabled";
+#endif
 }
 
 TEST_F(PillarChainTest, addVerifiedPillarVote_rejectsInvalidRustInspectedSignature) {

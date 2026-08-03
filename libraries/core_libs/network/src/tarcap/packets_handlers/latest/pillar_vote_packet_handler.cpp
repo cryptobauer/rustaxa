@@ -9,11 +9,12 @@ PillarVotePacketHandler::PillarVotePacketHandler(const FullNodeConfig &conf, std
                                                  std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
 #ifdef RUSTAXA_ENABLE
                                                  network::ConsensusNetworkApiShared consensus_network_api,
+                                                 TarcapVersion transport_lane,
 #endif
                                                  const addr_t &node_addr, const std::string &logs_prefix)
     : IPillarVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pillar_chain_manager),
 #ifdef RUSTAXA_ENABLE
-                               std::move(consensus_network_api),
+                               std::move(consensus_network_api), transport_lane,
 #endif
                                node_addr, logs_prefix + "PILLAR_VOTE_PH") {
 }
@@ -31,7 +32,9 @@ void PillarVotePacketHandler::process(const threadpool::PacketData &packet_data,
   }
 
   if (processPillarVote(packet.pillar_vote, peer, kPacketType_)) {
+#ifndef RUSTAXA_ENABLE
     onNewPillarVote(packet.pillar_vote);
+#endif
   }
 }
 

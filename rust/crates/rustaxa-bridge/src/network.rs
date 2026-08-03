@@ -3,7 +3,6 @@
 
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeConsensusNetworkApi;
-use ethereum_types::H256;
 use rustaxa_consensus::pbft_vote_ingress::{PbftVoteIngressContext, PbftVoteIngressFact};
 use rustaxa_consensus::verified_votes::PbftVoteType;
 use std::sync::{Mutex, MutexGuard};
@@ -210,6 +209,24 @@ impl BridgeConsensusNetworkApi {
             .collect())
     }
 
+    /// Converts one ordered canonical pillar-vote packet for native atomic preflight and exact-id effect queueing.
+    /// A poisoned shared network root is returned as a bridge error without queueing partial work.
+    pub fn consensus_network_ingest_pillar_vote_bundle(
+        &self,
+        context: rustaxa_ffi::NetworkPillarVoteIngressContext,
+        votes: Vec<rustaxa_ffi::PillarVoteRlpPayload>,
+    ) -> anyhow::Result<Vec<rustaxa_ffi::NetworkIngressDecision>> {
+        let mut api = self.lock_api()?;
+        Ok(api
+            .ingest_pillar_vote_bundle(
+                to_domain_pillar_vote_ingress_context(context),
+                votes.into_iter().map(|value| value.vote_rlp).collect(),
+            )
+            .into_iter()
+            .map(to_bridge_network_ingress_decision)
+            .collect())
+    }
+
     /// Routes one get-next-votes request and queues its native egress leaf.
     ///
     /// Scalar facts are intentionally passed directly: Rust owns eligibility,
@@ -240,19 +257,6 @@ impl BridgeConsensusNetworkApi {
                 },
             ),
         ))
-    }
-
-    /// Plans pillar-vote relevance through the external network/tarcap API.
-    pub fn consensus_network_plan_pillar_vote_relevance(
-        &self,
-        fact: rustaxa_ffi::PillarVoteRelevanceFact,
-    ) -> anyhow::Result<rustaxa_ffi::PillarVoteRelevancePlan> {
-        let api = self.lock_api()?;
-        let plan = api.plan_pillar_vote_relevance(to_domain_pillar_vote_relevance_fact(fact)?)?;
-        Ok(rustaxa_ffi::PillarVoteRelevancePlan {
-            status: plan.status_code(),
-            is_relevant: plan.is_relevant,
-        })
     }
 }
 
@@ -309,29 +313,16 @@ fn to_domain_pbft_vote_ingress_context(
     }
 }
 
-fn to_domain_pillar_vote_relevance_fact(
-    value: rustaxa_ffi::PillarVoteRelevanceFact,
-) -> anyhow::Result<rustaxa_consensus::PillarVoteRelevanceFact> {
-    let current_pillar_block_period = if value.has_current_pillar_block {
-        Some(value.current_pillar_block_period)
-    } else {
-        None
-    };
-    let current_pillar_block_hash = if value.has_current_pillar_block {
-        Some(H256::from(value.current_pillar_block_hash))
-    } else {
-        None
-    };
-
-    Ok(rustaxa_consensus::PillarVoteRelevanceFact {
-        vote_period: value.vote_period,
-        vote_block_hash: H256::from(value.vote_block_hash),
-        current_pillar_block_period,
-        current_pillar_block_hash,
-        first_pillar_block_period: value.first_pillar_block_period,
-        pillar_blocks_interval: value.pillar_blocks_interval,
-        vote_already_known: value.vote_already_known,
-    })
+fn to_domain_pillar_vote_ingress_context(
+    value: rustaxa_ffi::NetworkPillarVoteIngressContext,
+) -> rustaxa_consensus::NetworkPillarVoteIngressContext {
+    rustaxa_consensus::NetworkPillarVoteIngressContext {
+        transport_lane: value.transport_lane,
+        peer_id: value.peer_id,
+        source_payload_id: value.source_payload_id,
+        ficus_activation_period: value.ficus_activation_period,
+        allow_gossip: value.allow_gossip,
+    }
 }
 
 fn to_domain_network_status_sync_facts(

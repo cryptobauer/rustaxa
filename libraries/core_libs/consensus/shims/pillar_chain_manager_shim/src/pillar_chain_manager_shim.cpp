@@ -22,7 +22,6 @@ namespace taraxa::pillar_chain {
 namespace {
 static constexpr uint16_t PILLAR_VOTES_POS_IN_PERIOD_DATA = 4;
 static constexpr uint8_t kPillarFinalizationReady = 0;
-static constexpr std::size_t kMaxExternallyValidatedVoteReceipts = 4096;
 static constexpr uint8_t kPillarFinalizationMissingCurrentBlock = 1;
 static constexpr uint8_t kPillarFinalizationCurrentBlockHashMismatch = 2;
 static constexpr uint8_t kPillarFinalizationMissingVotes = 3;
@@ -476,7 +475,7 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
   const auto bootstrap = pbft_service_->service().pbft_service_pillar_load_startup_bootstrap();
 
   if (const auto vote = decodePillarVoteFromRustBytes(bootstrap.own_vote_rlp); vote) {
-    addVerifiedPillarVote(vote);
+    admitPillarVoteImpl(vote, true);
   }
 
   if (auto&& current_pillar_block_data = decodeCurrentPillarBlockDataFromRustBytes(bootstrap.current_block_data_rlp);
@@ -490,7 +489,7 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
     // There should always be pillar votes stored in period data for finalized pillar block
     assert(!last_finalized_pillar_block_votes.empty());
     for (const auto& pillar_vote : last_finalized_pillar_block_votes) {
-      addVerifiedPillarVote(pillar_vote);
+      admitPillarVoteImpl(pillar_vote, true);
     }
   }
 
@@ -940,71 +939,57 @@ bool PillarChainManager::validatePillarVote(const std::shared_ptr<PillarVote> vo
     }
   }
 
-  {
-    std::unique_lock lock(mutex_);
-    const auto vote_hash = validation_plan.vote_hash;
-    if (!externally_validated_vote_receipts_.contains(vote_hash)) {
-      if (externally_validated_vote_receipts_.size() >= kMaxExternallyValidatedVoteReceipts) {
-        LOG(log_wr_) << "Too many externally validated pillar votes awaiting insertion";
-        return false;
-      }
-      externally_validated_vote_receipts_.insert(vote_hash);
-    }
-  }
-
   return true;
 }
 
-uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarVote>& vote) {
+PillarChainManager::PillarVoteAdmissionReport PillarChainManager::admitPillarVote(
+    const std::shared_ptr<PillarVote>& vote) {
+  return admitPillarVoteImpl(vote, false);
+}
+
+PillarChainManager::PillarVoteAdmissionReport PillarChainManager::admitPillarVoteImpl(
+    const std::shared_ptr<PillarVote>& vote, bool trusted_local_or_restore) {
   if (!vote) {
-    return 0;
+    return {};
   }
-  bool externally_validated = false;
-  {
-    std::shared_lock lock(mutex_);
-    externally_validated = externally_validated_vote_receipts_.contains(vote->getHash());
-  }
-  rustaxa::PillarVoteSingleAdmissionWithFinalChainPlan insert_outcome;
-  try {
-    insert_outcome = pbft_service_->service().pbft_service_pillar_apply_single_vote_with_final_chain(
-        final_chain_->rustFinalChain(), toRustBytes(vote->rlp()), toSingleVoteAdmissionContext(kFicusHfConfig),
-        !externally_validated);
-  } catch (const std::exception& e) {
-    LOG(log_er_) << "Unable to insert pillar vote " << vote->getHash() << ", period " << vote->getPeriod() << ": "
-                 << e.what();
-    return 0;
-  }
+  const auto insert_outcome = pbft_service_->service().pbft_service_pillar_apply_single_vote_with_final_chain(
+      final_chain_->rustFinalChain(), toRustBytes(vote->rlp()), toSingleVoteAdmissionContext(kFicusHfConfig),
+      trusted_local_or_restore);
   const auto vote_hash = fromBridgeHash(insert_outcome.vote_hash);
   const auto recovered_voter = fromBridgeAddress(insert_outcome.voter);
-  if (toPillarVoteValidationStatus(insert_outcome.status) != PillarVoteValidationPlanStatus::kValid) {
+  const auto validation_status = toPillarVoteValidationStatus(insert_outcome.status);
+  if (validation_status == PillarVoteValidationPlanStatus::kDuplicate) {
+    return {.already_present = true};
+  }
+  if (validation_status != PillarVoteValidationPlanStatus::kValid) {
     LOG(log_er_) << "Unable to insert pillar vote " << vote_hash << ", period " << insert_outcome.period
                  << ", validator " << recovered_voter << ": "
-                 << pillarVoteValidationPlanStatusString(toPillarVoteValidationStatus(insert_outcome.status));
-    return 0;
+                 << pillarVoteValidationPlanStatusString(validation_status);
+    return {};
   }
   if (insert_outcome.conflict_found) {
     LOG(log_er_) << "Non-unique pillar vote " << vote_hash << ", period " << insert_outcome.period << ", validator "
                  << recovered_voter;
-    return 0;
+    return {.conflict = true};
   }
   if (!insert_outcome.accepted && !insert_outcome.duplicate) {
     LOG(log_er_) << "Unable to insert pillar vote " << vote_hash << ", period " << insert_outcome.period
                  << ", validator " << recovered_voter << ", unexpected Rust insert outcome";
-    return 0;
+    return {};
   }
 
-  LOG(log_nf_) << "Added pillar vote " << vote_hash << ", period " << insert_outcome.period << ", pillar block hash "
-               << vote->getBlockHash();
-  if (externally_validated) {
-    // Consume the routing receipt only after successful checked admission.
-    // Failed or racing retries therefore remain on the checked path and can
-    // never fall through to trusted local/restart preparation.
-    std::unique_lock lock(mutex_);
-    // One successful insertion makes every duplicate delivery safe: Rust now
-    // owns the vote and subsequent apply handles the exact duplicate idempotently.
-    externally_validated_vote_receipts_.erase(vote->getHash());
+  if (insert_outcome.accepted) {
+    LOG(log_nf_) << "Added pillar vote " << vote_hash << ", period " << insert_outcome.period << ", pillar block hash "
+                 << vote->getBlockHash();
   }
-  return insert_outcome.validator_vote_count;
+  return {.accepted = insert_outcome.accepted && !insert_outcome.duplicate,
+          .already_present = insert_outcome.duplicate,
+          .conflict = false,
+          .validator_vote_count = insert_outcome.validator_vote_count};
+}
+
+uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarVote>& vote) {
+  return admitPillarVote(vote).validator_vote_count;
 }
 
 ValidatePbftBlockPillarVotesWithRustResult PillarChainManager::validatePbftBlockPillarVotesWithRust(

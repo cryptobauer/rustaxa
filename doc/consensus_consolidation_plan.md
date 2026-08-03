@@ -553,7 +553,11 @@ order. C++ no longer collects accepted bundle members or decides rebroadcast. Mo
 consensus routes behind the native pipeline is the next `CRW-N01` work. Get-next-votes egress is now one such native
 route: Rust owns request eligibility, an atomic next/next-null verified-vote leaf result, strict canonical result
 validation, legacy-sized chunking, and ordered send effects; tarcap retains only request decoding, packet wrapping,
-physical send, and successful-send known marking. This remains a contraction milestone rather than item completion.
+physical send, and successful-send known marking. Pillar single-vote and bundle ingress now share one native preflight
+and exact-ID admission route. Rust owns canonical/signature/activation/duplicate checks and accepted-only known/gossip
+decisions; the PillarChain shim retains one FinalChain-composed native admission leaf but no validation receipt or trusted
+follow-up insertion path. Tarcap retains decoded object materialization, peer state, packet wrapping, physical fanout,
+and lane scheduling. These remain contraction milestones rather than item completion.
 
 ### 7. Contract DAG and transaction shims
 

@@ -10,7 +10,7 @@ class IPillarVotePacketHandler : public ExtPillarVotePacketHandler {
                            std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                            std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
 #ifdef RUSTAXA_ENABLE
-                           network::ConsensusNetworkApiShared consensus_network_api,
+                           network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
 #endif
                            const addr_t& node_addr, const std::string& logs_prefix);
 

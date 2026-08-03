@@ -165,8 +165,8 @@ pub use network_api::{
     NetworkInitialStatusPlan, NetworkPbftNextVotesBundleRequest, NetworkPbftSyncPeerCandidate,
     NetworkPbftSyncStartFacts, NetworkPbftSyncStartPlan, NetworkPbftVoteIngressContext,
     NetworkPeerSelectionFacts, NetworkPeerSelectionPlan, NetworkPendingDagBlocksRequestFacts,
-    NetworkPendingDagBlocksRequestPlan, NetworkStatusEgressFacts, NetworkStatusEgressPlan,
-    NetworkStatusSyncFacts, NetworkStatusSyncPlan,
+    NetworkPendingDagBlocksRequestPlan, NetworkPillarVoteIngressContext, NetworkStatusEgressFacts,
+    NetworkStatusEgressPlan, NetworkStatusSyncFacts, NetworkStatusSyncPlan,
 };
 pub use pbft_chain::{
     PbftBlockStorageLookup, PbftChain, PbftChainPersistedHeadIdentity, PbftChainStorageRestore,

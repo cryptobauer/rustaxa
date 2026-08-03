@@ -7,13 +7,13 @@ IPillarVotePacketHandler::IPillarVotePacketHandler(
     std::shared_ptr<TimePeriodPacketsStats> packets_stats,
     std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
 #ifdef RUSTAXA_ENABLE
-    network::ConsensusNetworkApiShared consensus_network_api,
+    network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
 #endif
     const addr_t& node_addr, const std::string& logs_prefix)
     : ExtPillarVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats),
                                  std::move(pillar_chain_manager),
 #ifdef RUSTAXA_ENABLE
-                                 std::move(consensus_network_api),
+                                 std::move(consensus_network_api), transport_lane,
 #endif
                                  node_addr, logs_prefix) {
 }

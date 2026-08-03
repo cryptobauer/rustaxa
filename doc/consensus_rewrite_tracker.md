@@ -3364,6 +3364,31 @@ The aggregate consensus gate reaches the established `pillar_chain_test` databas
 while `votes_count_changes`, `pillar_chain_syncing`, and `finalize_root_in_pillar_block` fail to reopen the same temporary
 RocksDB path within one process.
 
+The next `CRW-N01` slice moves the single and bundle pillar-vote ingress family behind one operation-specific network
+call. Rust atomically preflights complete packets for canonical decoding, signatures, activation periods, and duplicate
+hashes, then correlates one native PBFT-service admission effect per member by exact effect ID. Newly accepted votes
+alone release sender-known effects and, for the single-vote packet, gossip; bundle sync ingress and exact duplicates do
+not rebroadcast, and gossip execution honors the Rust-provided source-peer exclusion directly. The C++ leaf keeps only
+pillar-vote materialization, FinalChain-composed native admission, peer-state
+mutation, packet wrapping, and physical fanout. The former split `validatePillarVote`/`addVerifiedPillarVote` receipt set
+is deleted, and compatibility insertion re-enters the same fully checked atomic admission task. A private constructor-only
+route retains trusted admission for storage-authenticated startup votes whose historical anchor is no longer live. Two production packet
+handlers migrate. The obsolete network-only relevance export and fact carrier are replaced by the bundle-ingress export
+and its context, leaving CXX functions and carriers at 377 and 328. Bridge lines fall to 22,085; shim lines, handles,
+shim directories, and non-test consumers are 16,728, 18, 10, and 38. `CRW-N01` remains active for the other
+handler-local routing families.
+
+Validation passes `rewrite-validate-fast`, `rewrite-validate-smoke`, 54 pillar-focused native consensus tests, all 18
+CXX network bridge cases, the Rust-enabled `network_test` and `pillar_chain_test` builds, three focused checked-admission
+pillar cases, the startup restore regression, the isolated multi-node pillar synchronization case, two focused
+lane/peer-cache network cases, and the bridge inventory guard. The aggregate consensus gate
+again records the established three-case `pillar_chain_test` same-process RocksDB lock baseline; its CXX aggregate also
+encounters the untouched `test_pbft_sync.cpp` five-argument call to the current six-argument admission API. A fresh
+all-Rust-disabled tree compiles every changed network source through `core_libs`, then stops at the pre-existing
+`App`/`Network` constructor mismatch before linking `network_test`. The upstream-owned tarcap headers, handlers,
+registration source, and guarded test additions remain explicit Rust-only integration exceptions; their pure-C++ bodies
+select the legacy route until a complete packet-family overlay can own the cutover.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.
