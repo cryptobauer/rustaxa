@@ -46,13 +46,20 @@ pub fn create_consensus_network_api(
 }
 
 impl BridgeConsensusNetworkApi {
-    /// Drains dependency-ready lane-owned effects in queue order, leaving other lanes queued.
+    /// Drains lane work, optionally scoped to an exact source payload id.
     pub fn consensus_network_drain_work(
         &self,
         transport_lane: u32,
+        source_payload_id: u64,
+        source_scoped: bool,
         budget: u32,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEffectBatch> {
-        let batch = self.0.drain_work(transport_lane, budget)?;
+        let batch = if source_scoped {
+            self.0
+                .drain_work_for_source(transport_lane, source_payload_id, budget)?
+        } else {
+            self.0.drain_work(transport_lane, budget)?
+        };
         Ok(rustaxa_ffi::NetworkEffectBatch {
             status: batch.status,
             effects: batch
@@ -67,9 +74,7 @@ impl BridgeConsensusNetworkApi {
 
     /// Records network executor result reports.
     ///
-    /// The report path is part of the stable external API even before concrete
-    /// effect kinds are emitted. Later slices should validate reported effects
-    /// against active Rust-owned sessions before advancing consensus cursors.
+    /// Results are validated against active Rust-owned effects before cursors advance.
     pub fn consensus_network_report_effect_results(
         &self,
         results: Vec<rustaxa_ffi::NetworkEffectResult>,
@@ -217,18 +222,15 @@ impl BridgeConsensusNetworkApi {
 
     /// Routes one get-next-votes request and queues its native egress leaf.
     ///
-    /// Scalar facts are intentionally passed directly: Rust owns eligibility,
-    /// previous-round selection, result validation, chunking, and ordered send
-    /// effects, while tarcap retains only packet decoding and execution.
-    #[allow(clippy::too_many_arguments)]
+    /// Peer request facts are passed directly. The native network service reads
+    /// its sibling manager snapshot before verified-vote lookup, then owns
+    /// eligibility, previous-round selection, validation, chunking, and sends.
     pub fn consensus_network_ingest_pbft_next_votes_bundle_request(
         &self,
         transport_lane: u32,
         peer_id: [u8; 64],
         peer_period: u64,
         peer_round: u64,
-        current_period: u64,
-        current_round: u64,
         source_payload_id: u64,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
@@ -238,8 +240,6 @@ impl BridgeConsensusNetworkApi {
                     peer_id,
                     peer_period,
                     peer_round,
-                    current_period,
-                    current_round,
                     source_payload_id,
                 },
             )?,

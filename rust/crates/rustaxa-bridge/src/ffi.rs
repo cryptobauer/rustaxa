@@ -3605,6 +3605,8 @@ pub mod rustaxa_ffi {
         pub fn consensus_network_drain_work(
             self: &BridgeConsensusNetworkApi,
             transport_lane: u32,
+            source_payload_id: u64,
+            source_scoped: bool,
             budget: u32,
         ) -> Result<NetworkEffectBatch>;
         pub fn consensus_network_report_effect_results(
@@ -3627,15 +3629,12 @@ pub mod rustaxa_ffi {
             context: NetworkPillarVoteIngressContext,
             votes: Vec<PillarVoteRlpPayload>,
         ) -> Result<Vec<NetworkIngressDecision>>;
-        #[allow(clippy::too_many_arguments)]
         pub fn consensus_network_ingest_pbft_next_votes_bundle_request(
             self: &BridgeConsensusNetworkApi,
             transport_lane: u32,
             peer_id: [u8; 64],
             peer_period: u64,
             peer_round: u64,
-            current_period: u64,
-            current_round: u64,
             source_payload_id: u64,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_ingest_pillar_votes_bundle_request(

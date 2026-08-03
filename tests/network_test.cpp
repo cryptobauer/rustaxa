@@ -22,7 +22,9 @@
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/dag_block_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/get_dag_sync_packet_handler.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/latest/get_next_votes_bundle_packet_handler.hpp"
+#endif
 #include "network/tarcap/packets_handlers/latest/status_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/transaction_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
@@ -1946,7 +1948,7 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   EXPECT_EQ(outcome.queued_effect_count, 2);
   EXPECT_EQ(executed, (std::vector<std::string>{"report", "disconnect"}));
   EXPECT_EQ(report_reasons, (std::vector<uint8_t>{3}));
-  EXPECT_TRUE(network_api->api().consensus_network_drain_work(6, 10).effects.empty());
+  EXPECT_TRUE(network_api->api().consensus_network_drain_work(6, 0, false, 10).effects.empty());
 }
 #endif
 

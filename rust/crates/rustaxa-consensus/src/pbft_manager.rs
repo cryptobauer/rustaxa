@@ -451,8 +451,9 @@ pub struct PbftManagerRuntimeState {
 /// chain service. [`Self::lock`] serializes every manager/session mutation and
 /// returns a guard that dereferences to [`PbftManagerRuntimeState`]. A poisoned
 /// lock is treated as an unrecoverable consensus invariant failure.
+#[derive(Clone)]
 pub struct PbftManagerService {
-    runtime: Mutex<PbftManagerRuntimeState>,
+    runtime: Arc<Mutex<PbftManagerRuntimeState>>,
 }
 
 /// Exclusive native PBFT manager runtime guard.
@@ -1769,7 +1770,7 @@ impl PbftManagerService {
         chain: crate::pbft_chain::PbftChainService,
     ) -> Self {
         Self {
-            runtime: Mutex::new(PbftManagerRuntimeState {
+            runtime: Arc::new(Mutex::new(PbftManagerRuntimeState {
                 state,
                 storage,
                 period_data_queue: crate::period_data_queue::PeriodDataQueue::new(),
@@ -1784,7 +1785,7 @@ impl PbftManagerService {
                 finalization_sortition_commit_request: None,
                 finalization_reward_votes_reset_generation: 0,
                 chain,
-            }),
+            })),
         }
     }
 

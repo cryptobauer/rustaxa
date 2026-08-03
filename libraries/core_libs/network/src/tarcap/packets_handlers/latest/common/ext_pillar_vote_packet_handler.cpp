@@ -151,7 +151,8 @@ std::vector<bool> ExtPillarVotePacketHandler::executeConsensusNetworkEffects(
 
   while (true) {
     const auto batch =
-        rust_consensus_network_api_->api().consensus_network_drain_work(static_cast<uint32_t>(transport_lane_), 64);
+        rust_consensus_network_api_->api().consensus_network_drain_work(static_cast<uint32_t>(transport_lane_), 0,
+                                                                        false, 64);
     if (batch.effects.empty()) {
       break;
     }

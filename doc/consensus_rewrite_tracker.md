@@ -3442,6 +3442,27 @@ lack static zlib/snappy. Python integration remains unavailable because this env
 and enforces PEP 668. Focused reward-bundle golden parity and an explicit send-failure executor fixture remain
 non-blocking follow-up coverage.
 
+The following `CRW-N01` contraction replaces the remaining Rust-mode get-next-votes handler shell with a standalone
+transport adapter. `ConsensusNetworkService` now shares the native `PbftManagerService` lock domain and snapshots the
+live period/round cursor before releasing that guard and querying verified votes. The Rust-mode packet family no longer
+inherits `IVotePacketHandler` or receives `PbftManager`, `PbftChain`, `VoteManager`, or `SlashingManager`; the untouched
+original handler is compiled only for pure-C++ reference mode. Tarcap retains two-scalar request decoding, canonical
+outer packet wrapping, physical send, and successful-send peer-known marking. Operation-scoped drains use the retained
+source payload id, preventing this synchronous executor—and the adjacent pillar/PBFT-sync executors—from consuming
+unrelated work in the same lane. The existing drain export is narrowed rather than adding a second bridge operation,
+lowering the exact bridge budget to 21,959 lines while CXX functions, carriers, handles, shim directories, and non-test
+consumers remain 375, 322, 18, 10, and 38. `CRW-N01` remains active for PBFT-sync intake and the status, DAG,
+transaction, and proposed-block admission families.
+
+Validation passes `rewrite-validate-fast`, `rewrite-validate-smoke`, the exact bridge inventory guard, 63 focused native
+network tests, the focused bridge network adapter test, Rust-enabled `core_libs`/`network_test` builds, both isolated
+next-vote synchronization cases, and a fresh pure-C++ `core_libs` build. The new CXX source-scoped-drain regression test
+compiles and covers source id zero as a valid scoped id; the aggregate `rust_consensus_tests` target still
+stops at the established unrelated `test_pbft_sync.cpp` five-argument call to the six-argument vote-admission API.
+Independent review found no consensus or security blocker and identified a reconnect bookkeeping race; the standalone
+handler now refreshes the connected peer immediately before transport and applies successful-send known marks to that
+same refreshed peer object. The original latest handler remains unchanged from `upstream-main`.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

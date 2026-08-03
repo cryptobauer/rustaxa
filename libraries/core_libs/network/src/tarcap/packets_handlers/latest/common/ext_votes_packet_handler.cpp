@@ -333,7 +333,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
   std::optional<std::string> application_failure;
   while (true) {
     const auto batch = rust_consensus_network_api_->api().consensus_network_drain_work(
-        static_cast<uint32_t>(transport_lane_), static_cast<uint32_t>(budget));
+        static_cast<uint32_t>(transport_lane_), 0, false, static_cast<uint32_t>(budget));
     if (batch.effects.empty()) {
       break;
     }

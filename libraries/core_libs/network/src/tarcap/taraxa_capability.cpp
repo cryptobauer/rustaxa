@@ -11,7 +11,11 @@
 #include "network/tarcap/packets_handlers/latest/dag_block_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/dag_sync_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/get_dag_sync_packet_handler.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/latest/get_next_votes_bundle_packet_handler.hpp"
+#else
+#include "network/tarcap/packets_handlers/rust/get_next_votes_bundle_packet_handler.hpp"
+#endif
 #ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.hpp"
 #else
@@ -317,12 +321,14 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
                                                            slashing_manager,
 #endif
                                                            RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
+#ifndef RUSTAXA_ENABLE
       packets_handlers->registerHandler<GetNextVotesBundlePacketHandler>(
           config, peers_state, packets_stats, pbft_mgr, pbft_chain, vote_mgr,
-#ifndef RUSTAXA_ENABLE
-          slashing_manager,
+          slashing_manager, node_addr, logs_prefix);
+#else
+      packets_handlers->registerHandler<RustGetNextVotesBundlePacketHandler>(
+          config, peers_state, packets_stats, consensus_network_api, version, node_addr, logs_prefix);
 #endif
-          RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
       packets_handlers->registerHandler<VotesBundlePacketHandler>(config, peers_state, packets_stats, pbft_mgr,
                                                                   pbft_chain, vote_mgr,
 #ifndef RUSTAXA_ENABLE
@@ -404,12 +410,14 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
                                                            slashing_manager,
 #endif
                                                            RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
+#ifndef RUSTAXA_ENABLE
       packets_handlers->registerHandler<GetNextVotesBundlePacketHandler>(
           config, peers_state, packets_stats, pbft_mgr, pbft_chain, vote_mgr,
-#ifndef RUSTAXA_ENABLE
-          slashing_manager,
+          slashing_manager, node_addr, logs_prefix);
+#else
+      packets_handlers->registerHandler<RustGetNextVotesBundlePacketHandler>(
+          config, peers_state, packets_stats, consensus_network_api, version, node_addr, logs_prefix);
 #endif
-          RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
       packets_handlers->registerHandler<VotesBundlePacketHandler>(config, peers_state, packets_stats, pbft_mgr,
                                                                   pbft_chain, vote_mgr,
 #ifndef RUSTAXA_ENABLE

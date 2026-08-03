@@ -932,11 +932,13 @@ impl PbftService {
             },
         )?;
         let pillar = PillarChainService::restore(storage.clone())?;
+        let manager = PbftManagerService::new(runtime, storage.clone(), chain.clone());
         let network = ConsensusNetworkService::new(
             pillar.clone(),
             verified_votes.clone(),
             chain.clone(),
             proposed_blocks.clone(),
+            manager.clone(),
             storage.clone(),
             config.ficus_activation_period,
             config.pillar_blocks_interval,
@@ -946,7 +948,7 @@ impl PbftService {
         )?;
 
         Ok(Self {
-            manager: PbftManagerService::new(runtime, storage, chain.clone()),
+            manager,
             chain,
             proposed_blocks,
             verified_votes,
@@ -2605,9 +2607,8 @@ mod tests {
     use crate::dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig};
     use crate::gas_pricer::GasPricerConfig;
     use crate::network_api::{
-        NETWORK_INGRESS_STATUS_ACCEPTED, NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE,
-        NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA, NetworkGetPillarVotesBundleRequest,
-        NetworkPbftNextVotesBundleRequest,
+        NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE, NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA,
+        NetworkGetPillarVotesBundleRequest, NetworkPbftNextVotesBundleRequest,
     };
     use crate::pbft_chain::{PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead};
     use crate::pbft_thresholds::PbftTwoTPlusOneThresholdStatus;
@@ -3969,12 +3970,13 @@ mod tests {
                 peer_id: [7; 64],
                 peer_period: 1,
                 peer_round: 1,
-                current_period: 1,
-                current_round: 2,
                 source_payload_id: 90,
             })
             .unwrap();
-        assert_eq!(next.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert_eq!(
+            next.status,
+            crate::network_api::NETWORK_INGRESS_STATUS_NEXT_VOTES_NO_PREVIOUS_ROUND
+        );
         assert_eq!(next.queued_effect_count, 0);
         assert!(second.drain_work(6, 10).unwrap().effects.is_empty());
 

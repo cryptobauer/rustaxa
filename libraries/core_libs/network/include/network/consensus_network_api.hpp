@@ -58,6 +58,18 @@ struct PbftSyncRequestOutcome {
   std::string error_code;
 };
 
+/** Physical tarcap leaf for one native previous-round next-vote response. */
+struct PbftNextVotesBundleExecutor {
+  std::function<bool(const std::vector<uint8_t>&)> send_bundle;
+};
+
+/** Terminal native decision for one previous-round next-vote request. */
+struct PbftNextVotesBundleRequestOutcome {
+  uint8_t status = 0;
+  uint32_t queued_effect_count = 0;
+  std::string error_code;
+};
+
 /**
  * Owns the main-only Rust consensus network facade for one Network instance.
  *
@@ -116,6 +128,17 @@ class ConsensusNetworkApi final {
   PbftSyncRequestOutcome servePbftSyncRequest(uint32_t tarcap_version, const std::array<uint8_t, 64>& peer_id,
                                               const std::vector<uint8_t>& request_rlp, uint64_t source_payload_id,
                                               const PbftSyncRequestExecutor& executor);
+
+  /**
+   * Routes and executes one previous-round next-vote request on its transport lane.
+   *
+   * Rust owns request eligibility, the live PBFT cursor snapshot, verified-vote
+   * lookup, bundle validation, chunking, and send ordering. The caller supplies
+   * only peer request fields and physical packet transport.
+   */
+  PbftNextVotesBundleRequestOutcome servePbftNextVotesBundleRequest(
+      uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id, uint64_t peer_period, uint64_t peer_round,
+      uint64_t source_payload_id, const PbftNextVotesBundleExecutor& executor);
 
   /**
    * Selects a serviceable max-chain peer from network-owned facts.

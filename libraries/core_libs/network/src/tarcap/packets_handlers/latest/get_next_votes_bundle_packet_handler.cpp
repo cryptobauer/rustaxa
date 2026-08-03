@@ -1,55 +1,26 @@
 #include "network/tarcap/packets_handlers/latest/get_next_votes_bundle_packet_handler.hpp"
 
-#include <libdevcore/RLP.h>
-
 #include "pbft/pbft_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
 
 namespace taraxa::network::tarcap {
 
 GetNextVotesBundlePacketHandler::GetNextVotesBundlePacketHandler(
-    const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
+    const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftManager> pbft_mgr,
     std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
-#ifndef RUSTAXA_ENABLE
-    std::shared_ptr<SlashingManager> slashing_manager,
-#else
-    network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
-#endif
-    const addr_t& node_addr, const std::string& logs_prefix)
+    std::shared_ptr<SlashingManager> slashing_manager, const addr_t &node_addr, const std::string &logs_prefix)
     : IVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_mgr),
-                         std::move(pbft_chain), std::move(vote_mgr),
-#ifndef RUSTAXA_ENABLE
-                         std::move(slashing_manager),
-#else
-                         std::move(consensus_network_api), transport_lane,
-#endif
-                         node_addr, logs_prefix + "GET_NEXT_VOTES_BUNDLE_PH") {
-}
+                         std::move(pbft_chain), std::move(vote_mgr), std::move(slashing_manager), node_addr,
+                         logs_prefix + "GET_NEXT_VOTES_BUNDLE_PH") {}
 
-GetNextVotesBundlePacketHandler::~GetNextVotesBundlePacketHandler() = default;
-
-void GetNextVotesBundlePacketHandler::process(const threadpool::PacketData& packet_data,
-                                              const std::shared_ptr<TaraxaPeer>& peer) {
+void GetNextVotesBundlePacketHandler::process(const threadpool::PacketData &packet_data,
+                                              const std::shared_ptr<TaraxaPeer> &peer) {
   // Decode packet rlp into packet object
   auto packet = decodePacketRlp<GetNextVotesBundlePacket>(packet_data.rlp_);
 
   LOG(log_dg_) << "Received GetNextVotesSyncPacket request";
   const auto [pbft_round, pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
-
-#ifdef RUSTAXA_ENABLE
-  // Rust owns request eligibility, the previous-round application query, and
-  // every ordered send decision. Tarcap only supplies its live PBFT snapshot
-  // and executes the returned native-service and transport effects.
-  auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(transport_lane_);
-  const auto decision = rust_consensus_network_api_->api().consensus_network_ingest_pbft_next_votes_bundle_request(
-      static_cast<uint32_t>(transport_lane_), peer->getId().asArray(), packet.peer_pbft_period, packet.peer_pbft_round,
-      pbft_period, pbft_round, packet_data.id_);
-  if (decision.queued_effect_count != 0) {
-    (void)executeConsensusNetworkEffects(static_cast<size_t>(decision.queued_effect_count), std::nullopt);
-  }
-  return;
-#endif
 
   // Send votes only for current_period == peer_period && current_period >= peer_round
   if (pbft_period != packet.peer_pbft_period || pbft_round == 1 || pbft_round < packet.peer_pbft_round) {

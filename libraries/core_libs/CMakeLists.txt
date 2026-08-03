@@ -66,12 +66,18 @@ if(RUSTAXA_ENABLE)
          "/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler\\.cpp$")
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
          "/network/src/tarcap/packets_handlers/v4/get_pbft_sync_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/get_next_votes_bundle_packet_handler\\.cpp$")
 else()
     # The Rust transport adapter depends on the main-only consensus network API.
     list(FILTER NETWORK_HEADERS EXCLUDE REGEX
          "/network/include/network/tarcap/packets_handlers/rust/get_pbft_sync_packet_handler\\.hpp$")
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
          "/network/src/tarcap/packets_handlers/rust/get_pbft_sync_packet_handler\\.cpp$")
+    list(FILTER NETWORK_HEADERS EXCLUDE REGEX
+         "/network/include/network/tarcap/packets_handlers/rust/get_next_votes_bundle_packet_handler\\.hpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/rust/get_next_votes_bundle_packet_handler\\.cpp$")
 endif()
 
 # GraphQL

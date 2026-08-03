@@ -554,7 +554,11 @@ cancel aggregation on executor failure or slashing, and emit one accepted-only o
 order. C++ no longer collects accepted bundle members or decides rebroadcast. Moving the remaining handler-local
 consensus routes behind the native pipeline is the next `CRW-N01` work. Get-next-votes egress is now a direct native
 service route: Rust owns request eligibility, the verified-vote sibling query, strict canonical validation,
-legacy-sized chunking, and ordered send effects. The application-effect/result payload round trip is deleted. Pillar
+legacy-sized chunking, and ordered send effects. The application-effect/result payload round trip is deleted.
+Get-next-votes response routing now enters through a standalone Rust-mode packet adapter. It has no PBFT chain, vote
+manager,
+slashing manager, or generic vote-handler runtime; the network service snapshots its cloned native manager owner before
+querying verified votes, and the bridge drain is source-scoped so concurrent same-lane work remains queued. Pillar
 bundle response egress is direct too: Rust owns Ficus schedule validation, live-first/storage-fallback lookup, canonical
 vote verification, 250-vote chunking, and send-dependent known-vote effects. Tarcap retains request decoding, packet
 wrapping, physical send, malicious-peer bookkeeping/disconnect execution, and physical known marking. Pillar single-vote and bundle ingress now share one native preflight
