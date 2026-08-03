@@ -18,8 +18,11 @@ constexpr uint8_t kEffectSendPacket = 0;
 constexpr uint8_t kEffectMarkPeerKnown = 2;
 constexpr uint8_t kEffectReportPeer = 4;
 constexpr uint8_t kEffectDisconnectPeer = 5;
+constexpr uint8_t kEffectClearPeerSyncing = 9;
 constexpr uint8_t kObjectPillarVote = 5;
 constexpr uint32_t kPacketPillarVotesBundle = 15;
+constexpr uint32_t kPacketPbftSync = 11;
+constexpr uint32_t kPacketPbftBlocksBundle = 16;
 constexpr uint32_t kEffectDrainBudget = 1024;
 
 }  // namespace
@@ -113,6 +116,77 @@ PillarVotesBundleRequestOutcome ConsensusNetworkApi::servePillarVotesBundleReque
 
   return PillarVotesBundleRequestOutcome{decision.status, decision.queued_effect_count,
                                          static_cast<std::string>(decision.error_code)};
+}
+
+PbftSyncRequestOutcome ConsensusNetworkApi::servePbftSyncRequest(uint32_t tarcap_version,
+                                                                 const std::array<uint8_t, 64>& peer_id,
+                                                                 const std::vector<uint8_t>& request_rlp,
+                                                                 uint64_t source_payload_id,
+                                                                 const PbftSyncRequestExecutor& executor) {
+  auto lane_lock = lockTransportLane(tarcap_version);
+  rustaxa::NetworkGetPbftSyncRequest request{};
+  request.tarcap_version = tarcap_version;
+  request.peer_id = peer_id;
+  request.request_rlp.reserve(request_rlp.size());
+  for (const auto byte : request_rlp) {
+    request.request_rlp.push_back(byte);
+  }
+  request.source_payload_id = source_payload_id;
+  const auto decision = api().consensus_network_ingest_get_pbft_sync_request(std::move(request));
+
+  while (true) {
+    const auto batch = api().consensus_network_drain_work(tarcap_version, kEffectDrainBudget);
+    if (batch.effects.empty()) {
+      break;
+    }
+
+    rust::Vec<rustaxa::NetworkEffectResult> results;
+    results.reserve(batch.effects.size());
+    for (const auto& effect : batch.effects) {
+      rustaxa::NetworkEffectResult result{};
+      result.effect_id = effect.effect_id;
+      result.kind = effect.kind;
+      result.peer_id = effect.peer_id;
+      result.packet_kind = effect.packet_kind;
+      result.object_kind = effect.object_kind;
+      result.object_hash = effect.object_hash;
+      result.status = kEffectResultOk;
+
+      try {
+        if (effect.peer_id != peer_id) {
+          throw std::runtime_error("PBFT sync effect targets a different peer");
+        }
+        if (effect.kind == kEffectSendPacket &&
+            (effect.packet_kind == kPacketPbftSync || effect.packet_kind == kPacketPbftBlocksBundle)) {
+          if (!executor.send_packet(effect.packet_kind,
+                                    std::vector<uint8_t>(effect.payload_bytes.begin(), effect.payload_bytes.end()))) {
+            throw std::runtime_error("PBFT sync transport send failed");
+          }
+        } else if (effect.kind == kEffectClearPeerSyncing) {
+          executor.clear_peer_syncing();
+        } else if (effect.kind == kEffectReportPeer) {
+          executor.report_peer(effect.reason_code);
+        } else if (effect.kind == kEffectDisconnectPeer) {
+          executor.disconnect_peer();
+        } else {
+          throw std::runtime_error("PBFT sync executor received an unsupported effect");
+        }
+      } catch (const std::exception& error) {
+        result.status = kEffectResultFailed;
+        result.diagnostic = error.what();
+      }
+      results.push_back(std::move(result));
+    }
+
+    const auto acknowledgement = api().consensus_network_report_effect_results(std::move(results));
+    if (acknowledgement.status != 0) {
+      throw std::runtime_error("Network API rejected PBFT sync executor results: " +
+                               static_cast<std::string>(acknowledgement.error_code));
+    }
+  }
+
+  return PbftSyncRequestOutcome{decision.status, decision.queued_effect_count,
+                                static_cast<std::string>(decision.error_code)};
 }
 
 std::optional<std::array<uint8_t, 64>> ConsensusNetworkApi::selectMaxChainPeer(

@@ -10,9 +10,7 @@
 //! emitted as warnings only. They intentionally do not reject a synced period
 //! payload until the product behavior is explicitly changed.
 
-use anyhow::Context;
 use ethereum_types::H256;
-use rustaxa_storage::Storage;
 use std::collections::HashSet;
 
 /// FinalChain state-root validation fact for a synced PBFT block.
@@ -114,67 +112,6 @@ pub enum PbftSyncAdmissionRuntimeAction {
     WaitForFinalization,
     /// Clear the sync queue and report the sending peer as malicious.
     ClearAndReportPeer,
-}
-
-/// Read-only storage payload for PBFT sync egress.
-///
-/// Purpose:
-/// - Owns the storage-backed `PeriodData` lookup and reward-vote attachment
-///   decision used when serving `GetPbftSyncPacket`.
-///
-/// Inputs:
-/// - The requested PBFT period and explicit C++ live-sidecar facts about the
-///   packet position and current reward-vote bundle.
-///
-/// Outputs:
-/// - `period_data_rlp`: canonical legacy `PeriodData` bytes loaded directly
-///   from `rustaxa-storage`.
-/// - `attach_reward_votes`: whether C++ should attach its temporary
-///   `OptimizedPbftVotesBundle` sidecar to the packet.
-///
-/// Edge behavior:
-/// - Missing period data returns an empty payload so the network handler keeps
-///   the legacy "do not send partial sync data" behavior.
-/// - Storage/backend failures are returned as errors.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PbftSyncEgressPayload {
-    pub period_data_rlp: Vec<u8>,
-    pub attach_reward_votes: bool,
-}
-
-/// Facts required to decide whether a PBFT sync packet carries reward votes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PbftSyncRewardVoteAttachmentFact {
-    pub block_period: u64,
-    pub last_block: bool,
-    pub pbft_chain_synced: bool,
-    pub reward_votes_present: bool,
-    pub reward_votes_period: u64,
-}
-
-/// Plans reward-vote attachment for PBFT sync egress.
-pub fn plan_pbft_sync_reward_vote_attachment(fact: PbftSyncRewardVoteAttachmentFact) -> bool {
-    fact.pbft_chain_synced
-        && fact.last_block
-        && fact.reward_votes_present
-        && fact.reward_votes_period == fact.block_period
-}
-
-/// Loads one PBFT sync egress payload from Rust storage and plans attachment
-/// of the temporary C++ reward-vote sidecar.
-pub fn load_pbft_sync_egress_payload(
-    storage: &Storage,
-    fact: PbftSyncRewardVoteAttachmentFact,
-) -> anyhow::Result<PbftSyncEgressPayload> {
-    let period_data_rlp = storage
-        .period()
-        .data_raw(fact.block_period)
-        .context("PBFT_SYNC_EGRESS_PERIOD_DATA_LOAD")?;
-    let attach_reward_votes = plan_pbft_sync_reward_vote_attachment(fact);
-    Ok(PbftSyncEgressPayload {
-        period_data_rlp,
-        attach_reward_votes,
-    })
 }
 
 impl PbftSyncAdmissionRuntimeAction {
@@ -2012,7 +1949,6 @@ pub fn abort_pbft_sync_admission_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustaxa_storage::{Config, Storage};
 
     fn hash(value: u64) -> H256 {
         H256::from_low_u64_be(value)
@@ -2148,18 +2084,6 @@ mod tests {
             reward.next_check,
             PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
         );
-    }
-
-    fn temp_storage(name: &str) -> Storage {
-        let dir = std::env::temp_dir().join(format!(
-            "{name}_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        Storage::new(Config::new(dir)).unwrap()
     }
 
     fn fact() -> PbftSyncPeriodAdmissionFact {
@@ -2709,78 +2633,5 @@ mod tests {
         f.pillar_votes_status = PbftSyncFactStatus::NotRequired;
 
         assert!(plan_pbft_sync_period_admission(f).is_accepted());
-    }
-
-    #[test]
-    fn egress_payload_loads_period_data_and_plans_reward_votes() {
-        let storage = temp_storage("rustaxa_consensus_pbft_sync_egress");
-        storage.period().write(11, &[0xC8, 0xC0, 0xC0]).unwrap();
-
-        let payload = load_pbft_sync_egress_payload(
-            &storage,
-            PbftSyncRewardVoteAttachmentFact {
-                block_period: 11,
-                last_block: true,
-                pbft_chain_synced: true,
-                reward_votes_present: true,
-                reward_votes_period: 11,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(payload.period_data_rlp, vec![0xC8, 0xC0, 0xC0]);
-        assert!(payload.attach_reward_votes);
-
-        let missing = load_pbft_sync_egress_payload(
-            &storage,
-            PbftSyncRewardVoteAttachmentFact {
-                block_period: 12,
-                last_block: true,
-                pbft_chain_synced: true,
-                reward_votes_present: true,
-                reward_votes_period: 12,
-            },
-        )
-        .unwrap();
-        assert!(missing.period_data_rlp.is_empty());
-        assert!(missing.attach_reward_votes);
-    }
-
-    #[test]
-    fn reward_vote_attachment_requires_last_synced_matching_period() {
-        let base = PbftSyncRewardVoteAttachmentFact {
-            block_period: 20,
-            last_block: true,
-            pbft_chain_synced: true,
-            reward_votes_present: true,
-            reward_votes_period: 20,
-        };
-
-        assert!(plan_pbft_sync_reward_vote_attachment(base));
-
-        assert!(!plan_pbft_sync_reward_vote_attachment(
-            PbftSyncRewardVoteAttachmentFact {
-                last_block: false,
-                ..base
-            }
-        ));
-        assert!(!plan_pbft_sync_reward_vote_attachment(
-            PbftSyncRewardVoteAttachmentFact {
-                pbft_chain_synced: false,
-                ..base
-            }
-        ));
-        assert!(!plan_pbft_sync_reward_vote_attachment(
-            PbftSyncRewardVoteAttachmentFact {
-                reward_votes_present: false,
-                ..base
-            }
-        ));
-        assert!(!plan_pbft_sync_reward_vote_attachment(
-            PbftSyncRewardVoteAttachmentFact {
-                reward_votes_period: 19,
-                ..base
-            }
-        ));
     }
 }

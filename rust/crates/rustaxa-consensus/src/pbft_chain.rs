@@ -333,6 +333,19 @@ impl PbftChainService {
             .head()
     }
 
+    /// Returns the current head snapshot without panicking on lock poison.
+    ///
+    /// Native application pipelines use this fallible form so a poisoned
+    /// sibling aborts the operation before any external effects are queued.
+    pub fn try_head(&self) -> Result<PbftChainHead> {
+        Ok(self
+            .state
+            .read()
+            .map_err(|_| anyhow!("PBFT_CHAIN_SERVICE_LOCK_POISONED"))?
+            .state
+            .head())
+    }
+
     /// Projects legacy persisted-head fields without mutation.
     pub fn project_legacy_json_head(
         &self,

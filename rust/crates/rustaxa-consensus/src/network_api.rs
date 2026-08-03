@@ -15,10 +15,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::pbft_chain::PbftChainService;
 use crate::pbft_vote_payload::build_optimized_pbft_vote_bundle;
 use crate::pbft_vote_runtime::{PbftNextVotesBundleEgressPayloads, PbftVerifiedVotesService};
 use crate::pillar_chain_service::PillarChainService;
 use crate::pillar_vote_service::PillarVoteRecord;
+use crate::proposed_blocks::ProposedBlocksService;
 use crate::{
     PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,
     PbftVotePayloadRecord, inspect_canonical_pbft_vote, inspect_pillar_vote_from_rlp,
@@ -27,6 +29,7 @@ use crate::{
 use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::H256;
 use rlp::{Rlp, RlpStream};
+use rustaxa_storage::Storage;
 use rustaxa_types::{PillarVote, encode_optimized_pillar_votes_bundle_rlp};
 
 const MAX_PILLAR_VOTES_PER_BUNDLE_PACKET: usize = 250;
@@ -112,6 +115,8 @@ pub const NETWORK_EFFECT_KIND_BLOCK_PEER_ORDER: u8 = 6;
 pub const NETWORK_EFFECT_KIND_DRIVE_CONSENSUS_PROGRESS: u8 = 7;
 /// Network effect asks the executor to publish one consensus object through its narrow application boundary.
 pub const NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT: u8 = 8;
+/// Network effect asks tarcap to clear the target peer's syncing flag.
+pub const NETWORK_EFFECT_KIND_CLEAR_PEER_SYNCING: u8 = 9;
 
 /// Network sync effect requests PBFT chain synchronization.
 pub const NETWORK_SYNC_KIND_PBFT_CHAIN: u8 = 0;
@@ -124,6 +129,8 @@ pub const NETWORK_REASON_UNSUPPORTED_BUNDLE_PROPOSE_VOTE: u8 = 0;
 pub const NETWORK_REASON_BUNDLE_VOTE_MISMATCH: u8 = 1;
 /// Network peer report/disconnect reason for an invalid pillar-vote request schedule.
 pub const NETWORK_REASON_INVALID_PILLAR_VOTES_REQUEST: u8 = 2;
+/// Network peer report/disconnect reason for an invalid PBFT sync range.
+pub const NETWORK_REASON_INVALID_PBFT_SYNC_REQUEST: u8 = 3;
 
 /// Network known-object effect identifies a PBFT vote hash.
 pub const NETWORK_OBJECT_KIND_PBFT_VOTE: u8 = 0;
@@ -187,6 +194,26 @@ const ERROR_NEXT_VOTES_INVALID_NATIVE_RESULT: &str = "NETWORK_NEXT_VOTES_INVALID
 const ERROR_PILLAR_VOTES_LOOKUP_FAILED: &str = "NETWORK_PILLAR_VOTES_LOCAL_LOOKUP_FAILED";
 const ERROR_PILLAR_VOTES_INVALID_NATIVE_RESULT: &str = "NETWORK_PILLAR_VOTES_INVALID_NATIVE_RESULT";
 const MAX_VOTES_PER_BUNDLE_PACKET: usize = 1000;
+const MAX_PROPOSED_BLOCKS_PER_BUNDLE_PACKET: usize = 10;
+const TARCAP_VERSION_5: u32 = 5;
+const TARCAP_VERSION_6: u32 = 6;
+
+/// A get-PBFT-sync request is not canonical one-field RLP.
+pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_MALFORMED_REQUEST: u8 = 11;
+/// A get-PBFT-sync request arrived on an unsupported tarcap version.
+pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_UNSUPPORTED_VERSION: u8 = 12;
+/// A peer requested a period ahead of the local finalized chain.
+pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_HEIGHT_AHEAD: u8 = 13;
+/// A light node cannot serve the requested historical period.
+pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_HISTORY_UNAVAILABLE: u8 = 14;
+/// One required finalized period was absent from native storage.
+pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_PERIOD_DATA_MISSING: u8 = 15;
+
+const ERROR_PBFT_SYNC_MALFORMED_REQUEST: &str = "NETWORK_PBFT_SYNC_MALFORMED_REQUEST";
+const ERROR_PBFT_SYNC_UNSUPPORTED_VERSION: &str = "NETWORK_PBFT_SYNC_UNSUPPORTED_VERSION";
+const ERROR_PBFT_SYNC_HEIGHT_AHEAD: &str = "NETWORK_PBFT_SYNC_HEIGHT_AHEAD";
+const ERROR_PBFT_SYNC_HISTORY_UNAVAILABLE: &str = "NETWORK_PBFT_SYNC_HISTORY_UNAVAILABLE";
+const ERROR_PBFT_SYNC_PERIOD_DATA_MISSING: &str = "NETWORK_PBFT_SYNC_PERIOD_DATA_MISSING";
 
 /// Executor-visible network effect planned by Rust consensus.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -363,6 +390,24 @@ pub struct NetworkGetPillarVotesBundleRequest {
     pub period: u64,
     /// Pillar block hash whose votes should be served.
     pub pillar_block_hash: [u8; 32],
+    /// Optional network-owned packet identity for effect correlation.
+    pub source_payload_id: u64,
+}
+
+/// Canonical get-PBFT-sync ingress request owned by the native network service.
+///
+/// `request_rlp` is the complete one-field packet payload `[height_to_sync]`.
+/// Versions five and six share finalized-period responses; only version six
+/// receives proposed-block bundles. A zero `source_payload_id` remains a valid
+/// unretained transport identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkGetPbftSyncRequest {
+    /// Tarcap protocol version; exactly versions five and six are supported.
+    pub tarcap_version: u32,
+    /// Requesting peer.
+    pub peer_id: [u8; 64],
+    /// Canonical one-field get-PBFT-sync packet RLP.
+    pub request_rlp: Vec<u8>,
     /// Optional network-owned packet identity for effect correlation.
     pub source_payload_id: u64,
 }
@@ -703,6 +748,12 @@ pub struct ConsensusNetworkService {
     api: Arc<Mutex<ConsensusNetworkApi>>,
     pillar: PillarChainService,
     verified_votes: PbftVerifiedVotesService,
+    chain: PbftChainService,
+    proposed_blocks: ProposedBlocksService,
+    storage: Arc<Storage>,
+    sync_level_size: u64,
+    is_light_node: bool,
+    light_node_history: u64,
 }
 
 impl ConsensusNetworkService {
@@ -710,19 +761,28 @@ impl ConsensusNetworkService {
     ///
     /// `pillar_blocks_interval` must be greater than one while Ficus is
     /// enabled. A `u64::MAX` activation preserves the legacy disabled-Ficus
-    /// configuration, where the interval is ignored. The sibling handles must
-    /// come from the same restoration graph; clones then observe their shared
-    /// native state.
+    /// configuration, where the interval is ignored. `sync_level_size` must be
+    /// nonzero; light-node history is interpreted only when `is_light_node` is
+    /// true. The sibling handles must come from the same restoration graph;
+    /// clones then observe their shared native state.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         pillar: PillarChainService,
         verified_votes: PbftVerifiedVotesService,
+        chain: PbftChainService,
+        proposed_blocks: ProposedBlocksService,
+        storage: Arc<Storage>,
         ficus_activation_period: u64,
         pillar_blocks_interval: u64,
+        sync_level_size: u64,
+        is_light_node: bool,
+        light_node_history: u64,
     ) -> Result<Self> {
         ensure!(
             ficus_activation_period == u64::MAX || pillar_blocks_interval > 1,
             "PBFT_SERVICE_PILLAR_BLOCKS_INTERVAL_MUST_EXCEED_ONE"
         );
+        ensure!(sync_level_size > 0, "PBFT_SERVICE_SYNC_LEVEL_SIZE_ZERO");
         Ok(Self {
             api: Arc::new(Mutex::new(ConsensusNetworkApi::with_pillar_schedule(
                 ficus_activation_period,
@@ -730,6 +790,12 @@ impl ConsensusNetworkService {
             ))),
             pillar,
             verified_votes,
+            chain,
+            proposed_blocks,
+            storage,
+            sync_level_size,
+            is_light_node,
+            light_node_history,
         })
     }
 
@@ -933,6 +999,136 @@ impl ConsensusNetworkService {
         Ok(self
             .lock_api()?
             .enqueue_pillar_vote_bundle_send_effects(request, chunks))
+    }
+
+    /// Serves one canonical get-PBFT-sync request from native snapshots.
+    ///
+    /// Rust validates protocol version and canonical request bytes, snapshots
+    /// chain, reward-vote, and shared proposal state, then completes every
+    /// storage read before taking the network queue lock. Invalid range/history
+    /// requests produce report and dependent-disconnect effects. Successful
+    /// v5/v6 requests produce full PBFT sync packet payloads; v6 additionally
+    /// produces proposal bundles of at most ten. Completed sync queues an
+    /// independent clear-peer-syncing effect before proposals. Missing period
+    /// data queues the already-built prefix and any v6 proposal snapshot.
+    pub fn ingest_get_pbft_sync_request(
+        &self,
+        request: NetworkGetPbftSyncRequest,
+    ) -> Result<NetworkIngressDecision> {
+        if request.tarcap_version != TARCAP_VERSION_5 && request.tarcap_version != TARCAP_VERSION_6
+        {
+            return Ok(local_network_decision(
+                request.source_payload_id,
+                NETWORK_INGRESS_STATUS_PBFT_SYNC_UNSUPPORTED_VERSION,
+                ERROR_PBFT_SYNC_UNSUPPORTED_VERSION,
+            ));
+        }
+        let Some(height_to_sync) = decode_get_pbft_sync_request(&request.request_rlp) else {
+            return Ok(self.lock_api()?.reject_invalid_pbft_sync_request(
+                &request,
+                0,
+                NETWORK_INGRESS_STATUS_PBFT_SYNC_MALFORMED_REQUEST,
+                ERROR_PBFT_SYNC_MALFORMED_REQUEST,
+            ));
+        };
+        let chain_size = self.chain.try_head()?.size;
+        if height_to_sync > chain_size {
+            return Ok(self.lock_api()?.reject_invalid_pbft_sync_request(
+                &request,
+                height_to_sync,
+                NETWORK_INGRESS_STATUS_PBFT_SYNC_HEIGHT_AHEAD,
+                ERROR_PBFT_SYNC_HEIGHT_AHEAD,
+            ));
+        }
+        if self.is_light_node
+            && height_to_sync
+                .checked_add(self.light_node_history)
+                .is_none_or(|retained_end| retained_end <= chain_size)
+        {
+            return Ok(self.lock_api()?.reject_invalid_pbft_sync_request(
+                &request,
+                height_to_sync,
+                NETWORK_INGRESS_STATUS_PBFT_SYNC_HISTORY_UNAVAILABLE,
+                ERROR_PBFT_SYNC_HISTORY_UNAVAILABLE,
+            ));
+        }
+
+        let total = chain_size - height_to_sync + 1;
+        let blocks_to_transfer = total.min(self.sync_level_size);
+        let chain_synced = total <= self.sync_level_size;
+        let reward_snapshot = chain_synced
+            .then(|| {
+                self.verified_votes
+                    .current_reward_vote_snapshot()
+                    .context("NETWORK_PBFT_SYNC_REWARD_SNAPSHOT")
+            })
+            .transpose()?;
+        let proposed_blocks = if chain_synced && request.tarcap_version == TARCAP_VERSION_6 {
+            self.proposed_blocks.try_snapshot_entries()?
+        } else {
+            Vec::new()
+        };
+        let mut sync_payloads = Vec::with_capacity(blocks_to_transfer as usize);
+        let mut missing_period_data = false;
+        for offset in 0..blocks_to_transfer {
+            let period = height_to_sync + offset;
+            let period_data = self
+                .storage
+                .period()
+                .data_raw(period)
+                .context("PBFT_SYNC_EGRESS_PERIOD_DATA_LOAD")?;
+            if period_data.is_empty() {
+                missing_period_data = true;
+                break;
+            }
+            let last_block = offset + 1 == blocks_to_transfer;
+            let reward_bundle = if chain_synced
+                && last_block
+                && reward_snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.cursor.found
+                        && snapshot.cursor.period == period
+                        && !snapshot.records.is_empty()
+                }) {
+                let reward_snapshot = reward_snapshot
+                    .as_ref()
+                    .expect("matching reward snapshot checked above");
+                Some(
+                    build_optimized_pbft_vote_bundle(
+                        &reward_snapshot.records,
+                        reward_snapshot.cursor.block_hash,
+                        reward_snapshot.cursor.period,
+                        reward_snapshot.cursor.round,
+                        reward_snapshot.cursor.step,
+                    )?
+                    .bundle_rlp,
+                )
+            } else {
+                None
+            };
+            sync_payloads.push(encode_pbft_sync_packet(
+                last_block,
+                &period_data,
+                reward_bundle.as_deref(),
+            ));
+        }
+        let proposal_payloads = encode_proposed_block_bundles(proposed_blocks);
+        Ok(self.lock_api()?.enqueue_pbft_sync_egress_effects(
+            request,
+            height_to_sync,
+            sync_payloads,
+            proposal_payloads,
+            chain_synced && !missing_period_data,
+            if missing_period_data {
+                NETWORK_INGRESS_STATUS_PBFT_SYNC_PERIOD_DATA_MISSING
+            } else {
+                NETWORK_INGRESS_STATUS_ACCEPTED
+            },
+            if missing_period_data {
+                ERROR_PBFT_SYNC_PERIOD_DATA_MISSING
+            } else {
+                ERROR_NONE
+            },
+        ))
     }
 }
 
@@ -1510,6 +1706,149 @@ impl ConsensusNetworkApi {
             queued_effect_count: 2,
             application_effect_id: 0,
         })
+    }
+
+    fn reject_invalid_pbft_sync_request(
+        &mut self,
+        request: &NetworkGetPbftSyncRequest,
+        height_to_sync: u64,
+        status: u8,
+        error_code: &str,
+    ) -> NetworkIngressDecision {
+        let report_id = self.enqueue_effect(NetworkEffect {
+            effect_id: 0,
+            source_payload_id: request.source_payload_id,
+            transport_lane: request.tarcap_version,
+            kind: NETWORK_EFFECT_KIND_REPORT_PEER,
+            peer_id: request.peer_id,
+            packet_kind: NETWORK_PACKET_KIND_GET_PBFT_SYNC,
+            payload_bytes: Vec::new(),
+            related_payload_bytes: Vec::new(),
+            exclude_peers: Vec::new(),
+            object_kind: NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST,
+            object_hash: [0; 32],
+            sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
+            sync_start: height_to_sync,
+            reason_code: NETWORK_REASON_INVALID_PBFT_SYNC_REQUEST,
+            dependency_id: 0,
+            period: height_to_sync,
+            round: 0,
+        });
+        self.enqueue_effect(NetworkEffect {
+            effect_id: 0,
+            source_payload_id: request.source_payload_id,
+            transport_lane: request.tarcap_version,
+            kind: NETWORK_EFFECT_KIND_DISCONNECT_PEER,
+            peer_id: request.peer_id,
+            packet_kind: NETWORK_PACKET_KIND_GET_PBFT_SYNC,
+            payload_bytes: Vec::new(),
+            related_payload_bytes: Vec::new(),
+            exclude_peers: Vec::new(),
+            object_kind: NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST,
+            object_hash: [0; 32],
+            sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
+            sync_start: height_to_sync,
+            reason_code: NETWORK_REASON_INVALID_PBFT_SYNC_REQUEST,
+            dependency_id: report_id,
+            period: height_to_sync,
+            round: 0,
+        });
+        NetworkIngressDecision {
+            payload_id: request.source_payload_id,
+            payload_accepted: request.source_payload_id != 0,
+            routed: true,
+            status,
+            error_code: error_code.to_owned(),
+            queued_effect_count: 2,
+            application_effect_id: 0,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_pbft_sync_egress_effects(
+        &mut self,
+        request: NetworkGetPbftSyncRequest,
+        height_to_sync: u64,
+        sync_payloads: Vec<Vec<u8>>,
+        proposal_payloads: Vec<Vec<u8>>,
+        clear_peer_syncing: bool,
+        status: u8,
+        error_code: &str,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        let mut final_sync_effect_id = 0;
+        for (offset, payload_bytes) in sync_payloads.into_iter().enumerate() {
+            final_sync_effect_id = self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: request.source_payload_id,
+                transport_lane: request.tarcap_version,
+                kind: NETWORK_EFFECT_KIND_SEND_PACKET,
+                peer_id: request.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_PBFT_SYNC,
+                payload_bytes,
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_PERIOD_DATA,
+                object_hash: [0; 32],
+                sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
+                sync_start: height_to_sync,
+                reason_code: 0,
+                dependency_id: 0,
+                period: height_to_sync.saturating_add(offset as u64),
+                round: 0,
+            });
+        }
+        if clear_peer_syncing && final_sync_effect_id != 0 {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: request.source_payload_id,
+                transport_lane: request.tarcap_version,
+                kind: NETWORK_EFFECT_KIND_CLEAR_PEER_SYNCING,
+                peer_id: request.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_PBFT_SYNC,
+                payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST,
+                object_hash: [0; 32],
+                sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
+                sync_start: height_to_sync,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+        for payload_bytes in proposal_payloads {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: request.source_payload_id,
+                transport_lane: request.tarcap_version,
+                kind: NETWORK_EFFECT_KIND_SEND_PACKET,
+                peer_id: request.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE,
+                payload_bytes,
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,
+                object_hash: [0; 32],
+                sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
+                sync_start: height_to_sync,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+        NetworkIngressDecision {
+            payload_id: request.source_payload_id,
+            payload_accepted: request.source_payload_id != 0,
+            routed: true,
+            status,
+            error_code: error_code.to_owned(),
+            queued_effect_count: self.pending_effects.len().saturating_sub(before_effects) as u32,
+            application_effect_id: 0,
+        }
     }
 
     fn decision_from_vote_plan(
@@ -2173,6 +2512,49 @@ fn local_network_decision(
         queued_effect_count: 0,
         application_effect_id: 0,
     }
+}
+
+fn decode_get_pbft_sync_request(request_rlp: &[u8]) -> Option<u64> {
+    let request = Rlp::new(request_rlp);
+    if !request.is_list() || request.item_count().ok()? != 1 {
+        return None;
+    }
+    let height: u64 = request.val_at(0).ok()?;
+    let mut canonical = RlpStream::new_list(1);
+    canonical.append(&height);
+    (canonical.out().as_ref() == request_rlp).then_some(height)
+}
+
+fn encode_pbft_sync_packet(
+    last_block: bool,
+    period_data_rlp: &[u8],
+    reward_votes_bundle_rlp: Option<&[u8]>,
+) -> Vec<u8> {
+    let mut packet = RlpStream::new_list(3);
+    packet.append(&last_block);
+    packet.append_raw(period_data_rlp, 1);
+    if let Some(reward_votes_bundle_rlp) = reward_votes_bundle_rlp {
+        packet.append_raw(reward_votes_bundle_rlp, 1);
+    } else {
+        packet.append(&0u8);
+    }
+    packet.out().to_vec()
+}
+
+fn encode_proposed_block_bundles(
+    proposed_blocks: Vec<crate::proposed_blocks::ProposedBlockEntry>,
+) -> Vec<Vec<u8>> {
+    proposed_blocks
+        .chunks(MAX_PROPOSED_BLOCKS_PER_BUNDLE_PACKET)
+        .map(|blocks| {
+            let mut packet = RlpStream::new_list(1);
+            packet.begin_list(blocks.len());
+            for block in blocks {
+                packet.append_raw(&block.block_rlp, 1);
+            }
+            packet.out().to_vec()
+        })
+        .collect()
 }
 
 fn native_lock_poisoned(error: &anyhow::Error) -> bool {
@@ -4529,5 +4911,149 @@ mod tests {
         assert_eq!(second_v5.effects[0].effect_id, 4);
         assert_eq!(second_v5.effects[0].payload_bytes, vec![0xc1, 4]);
         assert!(!second_v5.more_available);
+    }
+
+    #[test]
+    fn get_pbft_sync_request_requires_exact_canonical_one_field_rlp() {
+        let mut canonical = RlpStream::new_list(1);
+        canonical.append(&12u64);
+        assert_eq!(decode_get_pbft_sync_request(&canonical.out()), Some(12));
+
+        assert_eq!(decode_get_pbft_sync_request(&[0xc0]), None);
+        assert_eq!(decode_get_pbft_sync_request(&[0xc2, 0x81, 0x01]), None);
+        let mut extra = RlpStream::new_list(2);
+        extra.append(&12u64);
+        extra.append(&13u64);
+        assert_eq!(decode_get_pbft_sync_request(&extra.out()), None);
+    }
+
+    #[test]
+    fn pbft_sync_and_proposal_packet_encoders_match_full_wire_shapes() {
+        let period_data = [0xc2, 0x01, 0x02];
+        let packet = encode_pbft_sync_packet(true, &period_data, None);
+        let decoded = Rlp::new(&packet);
+        assert_eq!(decoded.item_count().unwrap(), 3);
+        assert!(decoded.val_at::<bool>(0).unwrap());
+        assert_eq!(decoded.at(1).unwrap().as_raw(), period_data);
+        assert_eq!(decoded.val_at::<u8>(2).unwrap(), 0);
+
+        let proposals = (0..21)
+            .map(|period| crate::proposed_blocks::ProposedBlockEntry {
+                period,
+                block_hash: H256::from_low_u64_be(period),
+                pivot_hash: H256::zero(),
+                block_rlp: vec![0xc1, period as u8],
+                is_valid: false,
+            })
+            .collect();
+        let bundles = encode_proposed_block_bundles(proposals);
+        assert_eq!(bundles.len(), 3);
+        assert_eq!(
+            Rlp::new(&bundles[0]).at(0).unwrap().item_count().unwrap(),
+            10
+        );
+        assert_eq!(
+            Rlp::new(&bundles[1]).at(0).unwrap().item_count().unwrap(),
+            10
+        );
+        assert_eq!(
+            Rlp::new(&bundles[2]).at(0).unwrap().item_count().unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn pbft_sync_egress_queues_sync_clear_then_proposals_independently() {
+        let mut api = ConsensusNetworkApi::new();
+        let request = NetworkGetPbftSyncRequest {
+            tarcap_version: 6,
+            peer_id: peer(7),
+            request_rlp: vec![0xc1, 0x01],
+            source_payload_id: 99,
+        };
+        let decision = api.enqueue_pbft_sync_egress_effects(
+            request,
+            1,
+            vec![vec![0xc1, 1], vec![0xc1, 2]],
+            vec![vec![0xc1, 3]],
+            true,
+            NETWORK_INGRESS_STATUS_ACCEPTED,
+            ERROR_NONE,
+        );
+        assert_eq!(decision.queued_effect_count, 4);
+        let effects = api.drain_work(6, 10).effects;
+        assert_eq!(effects.len(), 4);
+        assert_eq!(effects[0].packet_kind, NETWORK_PACKET_KIND_PBFT_SYNC);
+        assert_eq!(effects[1].packet_kind, NETWORK_PACKET_KIND_PBFT_SYNC);
+        assert_eq!(effects[2].kind, NETWORK_EFFECT_KIND_CLEAR_PEER_SYNCING);
+        assert_eq!(effects[2].dependency_id, 0);
+        assert_eq!(
+            effects[3].packet_kind,
+            NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE
+        );
+        assert_eq!(effects[3].dependency_id, 0);
+
+        let mut missing_api = ConsensusNetworkApi::new();
+        let missing_request = NetworkGetPbftSyncRequest {
+            tarcap_version: 6,
+            peer_id: peer(9),
+            request_rlp: vec![0xc1, 0x01],
+            source_payload_id: 100,
+        };
+        let missing = missing_api.enqueue_pbft_sync_egress_effects(
+            missing_request,
+            1,
+            vec![vec![0xc1, 1]],
+            vec![vec![0xc1, 3]],
+            false,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_PERIOD_DATA_MISSING,
+            ERROR_PBFT_SYNC_PERIOD_DATA_MISSING,
+        );
+        assert_eq!(
+            missing.status,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_PERIOD_DATA_MISSING
+        );
+        assert_eq!(missing.queued_effect_count, 2);
+        let missing_effects = missing_api.drain_work(6, 10).effects;
+        assert_eq!(missing_effects.len(), 2);
+        assert_eq!(
+            missing_effects[0].packet_kind,
+            NETWORK_PACKET_KIND_PBFT_SYNC
+        );
+        assert_eq!(
+            missing_effects[1].packet_kind,
+            NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE
+        );
+    }
+
+    #[test]
+    fn malformed_pbft_sync_request_reports_then_dependently_disconnects() {
+        let mut api = ConsensusNetworkApi::new();
+        let request = NetworkGetPbftSyncRequest {
+            tarcap_version: 6,
+            peer_id: peer(8),
+            request_rlp: vec![0xc0],
+            source_payload_id: 101,
+        };
+        let decision = api.reject_invalid_pbft_sync_request(
+            &request,
+            0,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_MALFORMED_REQUEST,
+            ERROR_PBFT_SYNC_MALFORMED_REQUEST,
+        );
+        assert_eq!(decision.queued_effect_count, 2);
+        let report = api.drain_work(6, 10).effects;
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].kind, NETWORK_EFFECT_KIND_REPORT_PEER);
+        assert_eq!(
+            report[0].reason_code,
+            NETWORK_REASON_INVALID_PBFT_SYNC_REQUEST
+        );
+        let result = effect_result(&report[0], NETWORK_EFFECT_RESULT_STATUS_OK);
+        assert_eq!(api.report_effect_results(vec![result]).status, 0);
+        let disconnect = api.drain_work(6, 10).effects;
+        assert_eq!(disconnect.len(), 1);
+        assert_eq!(disconnect[0].kind, NETWORK_EFFECT_KIND_DISCONNECT_PEER);
+        assert_eq!(disconnect[0].dependency_id, report[0].effect_id);
     }
 }

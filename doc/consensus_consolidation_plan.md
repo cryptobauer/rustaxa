@@ -561,7 +561,13 @@ wrapping, physical send, malicious-peer bookkeeping/disconnect execution, and ph
 and exact-ID admission route. Rust owns canonical/signature/activation/duplicate checks and accepted-only known/gossip
 decisions; the PillarChain shim retains one FinalChain-composed native admission leaf but no validation receipt or trusted
 follow-up insertion path. Tarcap retains decoded object materialization, peer state, packet wrapping, physical fanout,
-and lane scheduling. These remain contraction milestones rather than item completion.
+and lane scheduling. Get-PBFT-sync egress now follows the same boundary for both supported capability versions. Rust
+decodes the canonical request, validates chain/history bounds, reads finalized period bytes from native storage,
+attaches the native reward-vote snapshot, and emits complete PBFT-sync packet payloads. Version six additionally
+snapshots and chunks native proposed blocks; version five intentionally omits them. Tarcap executes the ordered sends,
+peer-syncing clear, and typed report/disconnect effects only. The old PBFT-manager sync-payload helper and proposed-block
+snapshot projection are deleted; PBFT-sync intake and the other handler-local DAG/status/transaction families remain
+active `CRW-N01` work. These remain contraction milestones rather than item completion.
 
 ### 7. Contract DAG and transaction shims
 

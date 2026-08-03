@@ -153,7 +153,8 @@ fn resolve_slashing_submitter_facts(
 /// narrowed to `u32` by the external adapter. Construction derives the current
 /// period and Cacti activation from the restored PBFT-chain head; callers
 /// cannot inject either fact. Ficus activation and pillar interval configure
-/// the immutable network request schedule, whose interval must exceed one.
+/// the immutable pillar request schedule. PBFT sync limits and retained-history
+/// facts configure native response service; the sync level must be nonzero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PbftServiceConfig {
     pub genesis_lambda_ms: u32,
@@ -170,6 +171,12 @@ pub struct PbftServiceConfig {
     pub ficus_activation_period: u64,
     /// Number of PBFT periods between pillar blocks; must exceed one.
     pub pillar_blocks_interval: u64,
+    /// Maximum finalized periods served by one PBFT sync request.
+    pub sync_level_size: u64,
+    /// Whether this node retains only bounded finalized history.
+    pub is_light_node: bool,
+    /// Number of finalized PBFT periods retained by a light node.
+    pub light_node_history: u64,
 }
 
 /// Native dynamic-lambda decision composed with its durable prior-lambda fact.
@@ -928,8 +935,14 @@ impl PbftService {
         let network = ConsensusNetworkService::new(
             pillar.clone(),
             verified_votes.clone(),
+            chain.clone(),
+            proposed_blocks.clone(),
+            storage.clone(),
             config.ficus_activation_period,
             config.pillar_blocks_interval,
+            config.sync_level_size,
+            config.is_light_node,
+            config.light_node_history,
         )?;
 
         Ok(Self {
@@ -1055,16 +1068,6 @@ impl PbftService {
     /// policy.
     pub fn proposed_block(&self, period: u64, block_hash: H256) -> Option<ProposedBlockEntry> {
         self.proposed_blocks().get(period, block_hash)
-    }
-
-    /// Returns an owned, deterministically ordered proposed-block snapshot.
-    ///
-    /// Entries preserve the native period/hash index order and include canonical
-    /// RLP plus process-local validation state. The snapshot is point-in-time,
-    /// independent of later mutations, and performs no storage I/O. Lock poison
-    /// follows the sibling service's fatal panic policy.
-    pub fn proposed_block_snapshot_entries(&self) -> Vec<ProposedBlockEntry> {
-        self.proposed_blocks().snapshot_entries()
     }
 
     /// Publishes completion of PBFT startup replay.
@@ -1473,17 +1476,6 @@ impl PbftService {
         &self,
     ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
         self.manager.abort_pbft_sync_admission()
-    }
-
-    /// Loads canonical PBFT sync egress bytes through manager-owned storage.
-    ///
-    /// Rust also decides whether the temporary reward-vote sidecar belongs on
-    /// the last packet. C++ retains only packet wrapping and transport.
-    pub fn load_pbft_sync_egress_payload(
-        &self,
-        fact: crate::pbft_sync::PbftSyncRewardVoteAttachmentFact,
-    ) -> Result<crate::pbft_sync::PbftSyncEgressPayload> {
-        self.manager.load_pbft_sync_egress_payload(fact)
     }
 
     /// Returns whether PBFT startup replay has been published complete.
@@ -2684,6 +2676,9 @@ mod tests {
             magnolia_activation_period: 0,
             ficus_activation_period: 10,
             pillar_blocks_interval: 10,
+            sync_level_size: 10,
+            is_light_node: false,
+            light_node_history: 0,
         }
     }
 
@@ -4636,8 +4631,8 @@ mod tests {
             .proposed_block(link.period, link.block_hash)
             .expect("proposal should still exist after mark");
         assert!(marked.is_valid);
-        assert_eq!(service.proposed_block_snapshot_entries().len(), 1);
-        assert_eq!(service.proposed_block_snapshot_entries()[0].is_valid, true);
+        assert_eq!(service.proposed_blocks().snapshot_entries().len(), 1);
+        assert!(service.proposed_blocks().snapshot_entries()[0].is_valid);
         assert!(
             service
                 .proposed_block(link.period, H256::from_low_u64_be(99))
@@ -4661,10 +4656,10 @@ mod tests {
     }
 
     #[test]
-    fn sync_admission_and_egress_are_owned_by_native_pbft_service() {
+    fn sync_admission_is_owned_by_native_pbft_service() {
         use crate::pbft_sync::{
             PbftSyncAdmissionInitialFact, PbftSyncAdmissionTransactionReport, PbftSyncFactStatus,
-            PbftSyncRewardVoteAttachmentFact, PbftSyncRuntimeFinalChainHashStatus,
+            PbftSyncRuntimeFinalChainHashStatus,
         };
 
         let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_sync_owner");
@@ -4751,17 +4746,68 @@ mod tests {
         assert!(!mismatch.can_continue);
         assert!(service.pbft_sync_admission_next().is_none());
 
-        let payload = service
-            .load_pbft_sync_egress_payload(PbftSyncRewardVoteAttachmentFact {
-                block_period: 9,
-                last_block: true,
-                pbft_chain_synced: true,
-                reward_votes_present: true,
-                reward_votes_period: 9,
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn get_pbft_sync_egress_is_owned_by_native_network_service() {
+        use crate::network_api::{
+            NETWORK_EFFECT_KIND_CLEAR_PEER_SYNCING, NETWORK_EFFECT_KIND_SEND_PACKET,
+            NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE, NETWORK_PACKET_KIND_PBFT_SYNC,
+            NetworkGetPbftSyncRequest,
+        };
+
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_sync_native_egress");
+        storage.period().write(1, &[0xc1, 0x01]).unwrap();
+        storage.period().write(2, &[0xc1, 0x02]).unwrap();
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        service
+            .chain()
+            .update(H256::from_low_u64_be(1), H256::zero())
+            .unwrap();
+        service
+            .chain()
+            .update(H256::from_low_u64_be(2), H256::zero())
+            .unwrap();
+        let (proposal_rlp, proposal) = pbft_block_rlp(3, 30);
+        service
+            .publish_proposed_block(
+                proposal.period,
+                proposal.block_hash,
+                proposal.pivot_dag_block_hash,
+                proposal_rlp,
+            )
+            .unwrap();
+
+        let mut request_rlp = rlp::RlpStream::new_list(1);
+        request_rlp.append(&1u64);
+        let network = service.network_service();
+        let decision = network
+            .ingest_get_pbft_sync_request(NetworkGetPbftSyncRequest {
+                tarcap_version: 6,
+                peer_id: [7; 64],
+                request_rlp: request_rlp.out().to_vec(),
+                source_payload_id: 55,
             })
-            .expect("egress payload loads");
-        assert_eq!(payload.period_data_rlp, vec![0xc8, 0xc0, 0xc1]);
-        assert!(payload.attach_reward_votes);
+            .unwrap();
+        assert_eq!(decision.status, 0);
+        assert_eq!(decision.queued_effect_count, 4);
+        let effects = network.drain_work(6, 10).unwrap().effects;
+        assert_eq!(effects.len(), 4);
+        assert!(effects[..2].iter().all(|effect| {
+            effect.kind == NETWORK_EFFECT_KIND_SEND_PACKET
+                && effect.packet_kind == NETWORK_PACKET_KIND_PBFT_SYNC
+        }));
+        assert_eq!(effects[2].kind, NETWORK_EFFECT_KIND_CLEAR_PEER_SYNCING);
+        assert_eq!(effects[2].dependency_id, 0);
+        assert_eq!(
+            effects[3].packet_kind,
+            NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE
+        );
+        let final_sync = rlp::Rlp::new(&effects[1].payload_bytes);
+        assert!(final_sync.val_at::<bool>(0).unwrap());
+        assert_eq!(final_sync.at(1).unwrap().as_raw(), &[0xc1, 0x02]);
 
         drop(service);
         let _ = fs::remove_dir_all(path);

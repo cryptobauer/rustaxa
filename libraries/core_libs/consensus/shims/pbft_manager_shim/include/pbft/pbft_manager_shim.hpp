@@ -266,21 +266,6 @@ class PbftManager {
    */
   PbftPeriod pbftSyncingPeriod() const;
 
-  struct PbftSyncEgressPayload {
-    dev::bytes period_data_rlp;
-    bool attach_reward_votes{false};
-  };
-
-  /**
-   * @brief Load the Rust-owned PBFT sync egress payload and sidecar attachment decision.
-   *
-   * Inputs are packet-position facts and temporary C++ reward-vote sidecar facts from the network handler. Rust loads
-   * the canonical PeriodData bytes from rustaxa-storage and decides whether the caller should attach the reward-vote
-   * bundle. Transport, packet encoding, and vote sidecar materialization remain outside this storage boundary.
-   */
-  PbftSyncEgressPayload getPbftSyncEgressPayload(PbftPeriod period, bool last_block, bool pbft_chain_synced,
-                                                 bool reward_votes_present, PbftPeriod reward_votes_period) const;
-
   /**
    * @brief Enable or disable PBFT sync snapshot creation through the Rust-mode PBFT manager boundary.
    *
@@ -411,11 +396,6 @@ class PbftManager {
    * @return true if node can participate in consensus - is dpos eligible to vote and create blocks for specified period
    */
   bool canParticipateInConsensus(PbftPeriod period, const addr_t &node_addr) const;
-
-  /**
-   * @return proposed blocks ordered by period
-   */
-  std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> getProposedBlocks() const;
 
   /**
    * @return pbft deadline time - max time to finalize the block in provided period

@@ -28,6 +28,9 @@ std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage>& d
   config.polling_interval_ms = 100;
   config.ficus_activation_period = 0;
   config.pillar_blocks_interval = 10;
+  config.sync_level_size = 10;
+  config.is_light_node = false;
+  config.light_node_history = 0;
   auto service = std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
   return std::make_shared<PbftChain>(addr_t(), std::move(service));
 #else

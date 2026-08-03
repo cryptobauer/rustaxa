@@ -533,6 +533,9 @@ mod tests {
                 magnolia_activation_period: 0,
                 ficus_activation_period: 0,
                 pillar_blocks_interval: 10,
+                sync_level_size: 10,
+                is_light_node: false,
+                light_node_history: 0,
             },
         )
         .unwrap();

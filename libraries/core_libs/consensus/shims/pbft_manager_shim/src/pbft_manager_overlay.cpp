@@ -3744,18 +3744,6 @@ PbftPeriod PbftManager::pbftSyncingPeriod() const {
   return snapshot.syncing_period;
 }
 
-PbftManager::PbftSyncEgressPayload PbftManager::getPbftSyncEgressPayload(PbftPeriod period, bool last_block,
-                                                                         bool pbft_chain_synced,
-                                                                         bool reward_votes_present,
-                                                                         PbftPeriod reward_votes_period) const {
-  if (!pbft_service_) {
-    throw std::runtime_error("PBFT manager Rust runtime must be initialized before serving PBFT sync egress payload");
-  }
-  const auto payload = rustaxa::load_pbft_sync_egress_payload(
-      pbft_service_->service(), period, last_block, pbft_chain_synced, reward_votes_present, reward_votes_period);
-  return {dev::bytes(payload.period_data_rlp.begin(), payload.period_data_rlp.end()), payload.attach_reward_votes};
-}
-
 void PbftManager::setPbftSyncSnapshotCreationEnabled(bool enabled) {
   // RUSTAXA_PBFT_LIFECYCLE_COMPAT: snapshot toggling is an app/storage-shell lifecycle control, not a consensus
   // storage read/write route.
@@ -4033,15 +4021,6 @@ bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) co
                  << rust_validation_result.first_bad_vote_hash;
   }
   return rust_validation_result.valid();
-}
-
-std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> PbftManager::getProposedBlocks() const {
-  std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> result;
-  auto snapshot = pbft_service_->service().pbft_service_proposed_blocks_snapshot_entries();
-  for (const auto &entry : snapshot) {
-    result[entry.period].push_back(std::make_shared<PbftBlock>(fromBridgeBytes(entry.block_rlp)));
-  }
-  return result;
 }
 
 blk_hash_t PbftManager::lastPbftBlockHashFromQueueOrChain() {

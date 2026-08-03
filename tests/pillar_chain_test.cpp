@@ -25,6 +25,9 @@ SharedPbftService makeInjectedPillarTestService(const std::shared_ptr<DbStorage>
   service_config.polling_interval_ms = 100;
   service_config.ficus_activation_period = 0;
   service_config.pillar_blocks_interval = 10;
+  service_config.sync_level_size = 10;
+  service_config.is_light_node = false;
+  service_config.light_node_history = 0;
   return std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), service_config));
 }
 #endif

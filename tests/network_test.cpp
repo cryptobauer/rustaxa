@@ -1886,6 +1886,9 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   pbft_service_config.magnolia_activation_period = conf.genesis.state.hardforks.magnolia_hf.block_num;
   pbft_service_config.ficus_activation_period = conf.genesis.state.hardforks.ficus_hf.block_num;
   pbft_service_config.pillar_blocks_interval = conf.genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
+  pbft_service_config.sync_level_size = conf.network.sync_level_size;
+  pbft_service_config.is_light_node = conf.is_light_node;
+  pbft_service_config.light_node_history = conf.light_node_history;
   const auto consensus_service = std::make_shared<PbftService>(
       rustaxa::create_pbft_service_from_storage(node->getDB()->rustStorage(), pbft_service_config));
   auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service->service());
@@ -1915,6 +1918,35 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   first_lane_lock.unlock();
   EXPECT_EQ(same_lane_acquired_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
   same_lane_worker.join();
+
+  std::array<uint8_t, 64> peer_id{};
+  peer_id.fill(0x71);
+  const std::vector<uint8_t> invalid_request_rlp{0xC3, 0x82, 0x03, 0xE8};  // [1000]
+  std::vector<std::string> executed;
+  std::vector<uint8_t> report_reasons;
+  const auto outcome =
+      network_api->servePbftSyncRequest(6, peer_id, invalid_request_rlp, 73,
+                                        network::PbftSyncRequestExecutor{
+                                            .send_packet =
+                                                [&executed](uint32_t, const std::vector<uint8_t>&) {
+                                                  executed.emplace_back("send");
+                                                  return true;
+                                                },
+                                            .clear_peer_syncing = [&executed] { executed.emplace_back("clear"); },
+                                            .report_peer =
+                                                [&executed, &report_reasons](uint8_t reason) {
+                                                  executed.emplace_back("report");
+                                                  report_reasons.push_back(reason);
+                                                },
+                                            .disconnect_peer = [&executed] { executed.emplace_back("disconnect"); },
+                                        });
+
+  EXPECT_EQ(outcome.status, 13);
+  EXPECT_EQ(outcome.error_code, "NETWORK_PBFT_SYNC_HEIGHT_AHEAD");
+  EXPECT_EQ(outcome.queued_effect_count, 2);
+  EXPECT_EQ(executed, (std::vector<std::string>{"report", "disconnect"}));
+  EXPECT_EQ(report_reasons, (std::vector<uint8_t>{3}));
+  EXPECT_TRUE(network_api->api().consensus_network_drain_work(6, 10).effects.empty());
 }
 #endif
 

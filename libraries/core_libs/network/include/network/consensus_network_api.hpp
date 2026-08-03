@@ -43,6 +43,21 @@ struct PillarVotesBundleRequestOutcome {
   std::string error_code;
 };
 
+/** Physical tarcap leaves for one native Get-PBFT-sync response plan. */
+struct PbftSyncRequestExecutor {
+  std::function<bool(uint32_t, const std::vector<uint8_t>&)> send_packet;
+  std::function<void()> clear_peer_syncing;
+  std::function<void(uint8_t)> report_peer;
+  std::function<void()> disconnect_peer;
+};
+
+/** Terminal native decision for one Get-PBFT-sync request. */
+struct PbftSyncRequestOutcome {
+  uint8_t status = 0;
+  uint32_t queued_effect_count = 0;
+  std::string error_code;
+};
+
 /**
  * Owns the main-only Rust consensus network facade for one Network instance.
  *
@@ -88,6 +103,19 @@ class ConsensusNetworkApi final {
                                                                 const std::array<uint8_t, 32>& pillar_block_hash,
                                                                 uint64_t source_payload_id,
                                                                 const PillarVotesBundleExecutor& executor);
+
+  /**
+   * Routes and executes one canonical Get-PBFT-sync request on its transport lane.
+   *
+   * Rust validates the request, reads canonical period data and native proposed
+   * blocks, selects reward-vote attachment, and orders all response effects.
+   * The callbacks retain only packet sealing and peer-state operations. Version
+   * 5 intentionally emits no proposed-block bundles; versions other than 5 and
+   * 6 are rejected by the native request planner.
+   */
+  PbftSyncRequestOutcome servePbftSyncRequest(uint32_t tarcap_version, const std::array<uint8_t, 64>& peer_id,
+                                              const std::vector<uint8_t>& request_rlp, uint64_t source_payload_id,
+                                              const PbftSyncRequestExecutor& executor);
 
   /**
    * Selects a serviceable max-chain peer from network-owned facts.

@@ -51,6 +51,9 @@ rustaxa::PbftServiceConfig serviceConfig() {
   config.magnolia_activation_period = 0;
   config.ficus_activation_period = 10;
   config.pillar_blocks_interval = 10;
+  config.sync_level_size = 10;
+  config.is_light_node = false;
+  config.light_node_history = 0;
   return config;
 }
 

@@ -88,6 +88,9 @@ PbftServiceConfig makePbftServiceConfig() {
   config.polling_interval_ms = 100;
   config.ficus_activation_period = 0;
   config.pillar_blocks_interval = 10;
+  config.sync_level_size = 10;
+  config.is_light_node = false;
+  config.light_node_history = 0;
   return config;
 }
 

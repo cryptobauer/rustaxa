@@ -854,8 +854,11 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
   packet worker retains the transport-lane lock; Rust consumes the typed `VoteManager` leaf result before releasing
   proposed-block publication, peer-known, and gossip effects or returning the typed slashing outcome. Exact duplicate votes may still carry a
   previously unseen block without being regossiped. Bundle shape preflight completes before any member admission. The
-  no-consumer generic shadow-ingress arena and its capacity configuration are deleted. Tarcap still owns physical
-  execution; accepted-only bundle aggregation is native, while remaining handler-local routing is tracked by `CRW-N01`.
+  no-consumer generic shadow-ingress arena and its capacity configuration are deleted. Get-PBFT-sync response authority
+  is also native for versions five and six: Rust validates canonical requests and history bounds, reads native period
+  data, attaches reward votes, builds complete sync packets, and emits version-six proposed-block bundles. Tarcap still
+  owns lane serialization, packet sealing, peer syncing/report/disconnect execution, and acknowledgements. Accepted-only
+  bundle aggregation is native, while sync intake and remaining handler-local routing are tracked by `CRW-N01`.
 - EVM/FinalChain execution: transaction execution, receipt/log bloom construction, gas execution, state transition
   execution, and external contract execution stay in the existing FinalChain/EVM boundary until that execution layer is
   migrated. Rust PBFT logic may plan finalization, validate facts, and request execution/finalization effects, but it

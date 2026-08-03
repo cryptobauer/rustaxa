@@ -12,7 +12,11 @@
 #include "network/tarcap/packets_handlers/latest/dag_sync_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/get_dag_sync_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/get_next_votes_bundle_packet_handler.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.hpp"
+#else
+#include "network/tarcap/packets_handlers/rust/get_pbft_sync_packet_handler.hpp"
+#endif
 #include "network/tarcap/packets_handlers/latest/get_pillar_votes_bundle_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/pbft_blocks_bundle_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/pbft_sync_packet_handler.hpp"
@@ -22,7 +26,9 @@
 #include "network/tarcap/packets_handlers/latest/transaction_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/votes_bundle_packet_handler.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/v4/get_pbft_sync_packet_handler.hpp"
+#endif
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
@@ -343,9 +349,14 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
           config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, pbft_mgr, dag_mgr, trx_mgr,
           RUSTAXA_LEGACY_DB_ARG RUSTAXA_NETWORK_API_ARG node_addr, logs_prefix);
 
+#ifndef RUSTAXA_ENABLE
       packets_handlers->registerHandler<GetPbftSyncPacketHandler>(config, peers_state, packets_stats,
                                                                   pbft_syncing_state, pbft_mgr, pbft_chain, vote_mgr,
-                                                                  RUSTAXA_LEGACY_DB_ARG node_addr, logs_prefix);
+                                                                  db, node_addr, logs_prefix);
+#else
+      packets_handlers->registerHandler<RustGetPbftSyncPacketHandler>(
+          config, peers_state, packets_stats, consensus_network_api, version, node_addr, logs_prefix);
+#endif
 
       packets_handlers->registerHandler<PbftSyncPacketHandler>(
           config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, pbft_mgr, dag_mgr, vote_mgr,
@@ -425,9 +436,14 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
           config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, pbft_mgr, dag_mgr, trx_mgr,
           RUSTAXA_LEGACY_DB_ARG RUSTAXA_NETWORK_API_ARG node_addr, logs_prefix);
 
-      packets_handlers->registerHandler<v4::GetPbftSyncPacketHandler>(
-          config, peers_state, packets_stats, pbft_syncing_state, pbft_mgr, pbft_chain, vote_mgr,
-          RUSTAXA_LEGACY_DB_ARG node_addr, logs_prefix);
+#ifndef RUSTAXA_ENABLE
+      packets_handlers->registerHandler<v4::GetPbftSyncPacketHandler>(config, peers_state, packets_stats,
+                                                                      pbft_syncing_state, pbft_mgr, pbft_chain,
+                                                                      vote_mgr, db, node_addr, logs_prefix);
+#else
+      packets_handlers->registerHandler<RustGetPbftSyncPacketHandler>(
+          config, peers_state, packets_stats, consensus_network_api, version, node_addr, logs_prefix);
+#endif
 
       packets_handlers->registerHandler<PbftSyncPacketHandler>(
           config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, pbft_mgr, dag_mgr, vote_mgr,

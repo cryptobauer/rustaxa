@@ -3415,6 +3415,33 @@ compiles every changed network source through `core_libs`, then reaches the prev
 constructor mismatch before linking `network_test`. The aggregate CXX bridge target still stops at the untouched
 `test_pbft_sync.cpp` five-argument call to the current six-argument admission API.
 
+The next `CRW-N01`/`CRW-12` slice moves the complete Get-PBFT-sync response family behind the application-owned
+`ConsensusNetworkService` for tarcap versions five and six. Rust now decodes the canonical request, snapshots the native
+PBFT chain/reward votes/proposed blocks through fallible sibling APIs, enforces checked chain and light-history bounds,
+reads finalized period bytes directly from Rust storage, and emits complete packet-ready PBFT-sync payloads. Version six
+also emits deterministically ordered proposed-block bundles of at most ten; version five preserves its historical
+omission. Missing storage data preserves the legacy already-built prefix and version-six proposal behavior, while
+malformed/range/history requests produce typed report-then-disconnect effects. Tarcap retains only per-lane execution,
+packet sealing, syncing-state clearing, peer mechanics, and exact acknowledgement. The old sync-egress payload helper,
+proposal snapshot projection, two CXX carriers/functions, and two PBFT-manager shim methods are deleted; one narrow
+network request carrier/function replaces them. Exact budgets are 21,960 bridge lines, 16,626 shim lines, 375 CXX
+functions, 322 carriers, 18 handles, 10 shim directories, and 38 non-test consumers. `CRW-N01` remains active for
+PBFT-sync intake and the remaining status, DAG, transaction, and admission routes. Upstream-owned changes in this slice
+are limited to guarded application configuration, guarded handler source selection/registration, and focused integration
+coverage; the original latest/v4 Get-PBFT-sync handler implementations have no worktree diff and remain the pure-C++
+reference route.
+
+Validation passes `rewrite-validate-fast`, `rewrite-validate-consensus`, `rewrite-validate-smoke`, all 1,104 native
+consensus tests, all 76 bridge tests, the Rust-enabled `core_libs`/`network_test` builds, the focused lane-serialized
+executor case, the bridge inventory self/live guards, the storage-boundary guard, and a fresh all-Rust-disabled
+`core_libs` build that compiles both untouched legacy Get-PBFT-sync handlers. Independent review approved the cutover
+with no blocker. The aggregate CXX bridge build still stops at the untouched `test_pbft_sync.cpp` five-argument call to
+the current six-argument vote-admission API. Tier 3 CTest reproduces the established 9-of-21 partial-tree baseline:
+six binaries are unbuilt, aggregate node suites hit same-process `/tmp/taraxa0` RocksDB locks, and Go contract tests
+lack static zlib/snappy. Python integration remains unavailable because this environment lacks `virtualenv`/`pytest`
+and enforces PEP 668. Focused reward-bundle golden parity and an explicit send-failure executor fixture remain
+non-blocking follow-up coverage.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

@@ -267,6 +267,23 @@ impl BridgeConsensusNetworkApi {
             )?,
         ))
     }
+
+    /// Routes canonical get-PBFT-sync bytes through native range validation,
+    /// snapshotting, storage reads, packet encoding, and ordered effect queueing.
+    pub fn consensus_network_ingest_get_pbft_sync_request(
+        &self,
+        request: rustaxa_ffi::NetworkGetPbftSyncRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        Ok(to_bridge_network_ingress_decision(
+            self.0
+                .ingest_get_pbft_sync_request(rustaxa_consensus::NetworkGetPbftSyncRequest {
+                    tarcap_version: request.tarcap_version,
+                    peer_id: request.peer_id,
+                    request_rlp: request.request_rlp,
+                    source_payload_id: request.source_payload_id,
+                })?,
+        ))
+    }
 }
 
 fn to_bridge_network_effect(

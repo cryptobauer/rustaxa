@@ -58,6 +58,21 @@ endif()
 
 file(GLOB_RECURSE NETWORK_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/network/*.hpp)
 file(GLOB_RECURSE NETWORK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/network/*.cpp)
+if(RUSTAXA_ENABLE)
+    # Native PBFT sync egress owns request validation, storage reads, reward-vote
+    # attachment, and proposed-block selection. Keep the untouched latest and v5
+    # handler implementations only in pure C++ reference builds.
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/v4/get_pbft_sync_packet_handler\\.cpp$")
+else()
+    # The Rust transport adapter depends on the main-only consensus network API.
+    list(FILTER NETWORK_HEADERS EXCLUDE REGEX
+         "/network/include/network/tarcap/packets_handlers/rust/get_pbft_sync_packet_handler\\.hpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/rust/get_pbft_sync_packet_handler\\.cpp$")
+endif()
 
 # GraphQL
 include(${PROJECT_SOURCE_DIR}/CMakeModules/cpp_graphql_gen.cmake)

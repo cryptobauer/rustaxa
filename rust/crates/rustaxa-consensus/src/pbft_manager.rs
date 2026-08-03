@@ -1880,21 +1880,6 @@ impl PbftManagerService {
         runtime.pbft_sync_admission_session = None;
         Some(step)
     }
-
-    /// Loads one PBFT sync egress payload from manager-owned storage.
-    ///
-    /// Canonical period bytes and reward-vote attachment selection are
-    /// evaluated through a cloned manager-owned storage handle. The manager
-    /// lock is held only long enough to acquire that handle, so durable reads
-    /// cannot block unrelated manager transitions. Missing or malformed data
-    /// returns the storage error without changing manager state.
-    pub fn load_pbft_sync_egress_payload(
-        &self,
-        fact: crate::pbft_sync::PbftSyncRewardVoteAttachmentFact,
-    ) -> Result<crate::pbft_sync::PbftSyncEgressPayload> {
-        let storage = self.lock().storage.clone();
-        crate::pbft_sync::load_pbft_sync_egress_payload(storage.as_ref(), fact)
-    }
 }
 
 fn clear_terminal_pbft_sync_admission(

@@ -431,6 +431,9 @@ pub fn create_pbft_service_from_storage(
         magnolia_activation_period: config.magnolia_activation_period,
         ficus_activation_period: config.ficus_activation_period,
         pillar_blocks_interval: config.pillar_blocks_interval,
+        sync_level_size: config.sync_level_size,
+        is_light_node: config.is_light_node,
+        light_node_history: config.light_node_history,
     };
     Ok(Box::new(BridgePbftService(PbftService::restore(
         storage.0.clone(),

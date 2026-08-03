@@ -271,9 +271,10 @@ impl ProposedBlocks {
 /// corresponding in-memory mutation. Callers composing proposed blocks with
 /// other PBFT domains may borrow the lock through [`Self::read`] and
 /// [`Self::write`]; the guard never exposes or depends on bridge types.
+#[derive(Clone)]
 pub struct ProposedBlocksService {
     storage: Option<Arc<Storage>>,
-    blocks: RwLock<ProposedBlocks>,
+    blocks: Arc<RwLock<ProposedBlocks>>,
 }
 
 impl ProposedBlocksService {
@@ -293,7 +294,7 @@ impl ProposedBlocksService {
         }
         Ok(Self {
             storage: Some(storage),
-            blocks: RwLock::new(blocks),
+            blocks: Arc::new(RwLock::new(blocks)),
         })
     }
 
@@ -306,7 +307,7 @@ impl ProposedBlocksService {
     pub fn from_parts(storage: Option<Arc<Storage>>, blocks: ProposedBlocks) -> Self {
         Self {
             storage,
-            blocks: RwLock::new(blocks),
+            blocks: Arc::new(RwLock::new(blocks)),
         }
     }
 
@@ -421,6 +422,18 @@ impl ProposedBlocksService {
             .read()
             .expect("proposed blocks lock poisoned")
             .snapshot_entries()
+    }
+
+    /// Returns a deterministic owned snapshot without panicking on lock poison.
+    ///
+    /// Native application pipelines use this form so no packet effects are
+    /// queued from a partial snapshot when sibling state is unavailable.
+    pub fn try_snapshot_entries(&self) -> Result<Vec<ProposedBlockEntry>> {
+        Ok(self
+            .blocks
+            .read()
+            .map_err(|_| anyhow!("PBFT_SERVICE_PROPOSED_BLOCKS_LOCK_POISONED"))?
+            .snapshot_entries())
     }
 
     /// Returns all live proposals grouped by ascending period.

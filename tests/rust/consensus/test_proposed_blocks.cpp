@@ -76,6 +76,9 @@ class RustProposedBlocksTest : public ::testing::Test {
     config.polling_interval_ms = 100;
     config.ficus_activation_period = 0;
     config.pillar_blocks_interval = 10;
+    config.sync_level_size = 10;
+    config.is_light_node = false;
+    config.light_node_history = 0;
     return config;
   }
 };
@@ -101,14 +104,6 @@ TEST_F(RustProposedBlocksTest, PushGetMarkValidAndSnapshotEntries) {
   service->pbft_service_proposed_blocks_mark_valid(2, block.block_hash);
   lookup = service->pbft_service_proposed_blocks_get(2, block.block_hash);
   EXPECT_TRUE(lookup.is_valid);
-
-  auto entries = service->pbft_service_proposed_blocks_snapshot_entries();
-  ASSERT_EQ(entries.size(), 1);
-  EXPECT_EQ(entries[0].period, 2u);
-  EXPECT_EQ(entries[0].block_hash, block.block_hash);
-  EXPECT_EQ(entries[0].pivot_hash, block.pivot_hash);
-  EXPECT_EQ(to_std(entries[0].block_rlp), to_std(block.block_rlp));
-  EXPECT_TRUE(entries[0].is_valid);
 
   std::filesystem::remove_all(test_dir);
 }

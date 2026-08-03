@@ -1,4 +1,4 @@
-use crate::ffi::rustaxa_ffi::{ProposedBlockLookup, ProposedBlockSnapshotEntry};
+use crate::ffi::rustaxa_ffi::ProposedBlockLookup;
 use crate::ffi::BridgePbftService;
 use ethereum_types::H256;
 
@@ -65,24 +65,5 @@ impl BridgePbftService {
                 pivot_hash: [0; 32],
                 block_rlp: Vec::new(),
             })
-    }
-
-    /// Returns an owned snapshot of all proposed-block entries.
-    ///
-    /// Canonical RLP and validation flags are copied for C++ materialization.
-    /// The snapshot is point-in-time and subsequent service mutations do not
-    /// change it.
-    pub fn pbft_service_proposed_blocks_snapshot_entries(&self) -> Vec<ProposedBlockSnapshotEntry> {
-        self.0
-            .proposed_block_snapshot_entries()
-            .into_iter()
-            .map(|entry| ProposedBlockSnapshotEntry {
-                period: entry.period,
-                block_hash: entry.block_hash.into(),
-                pivot_hash: entry.pivot_hash.into(),
-                block_rlp: entry.block_rlp,
-                is_valid: entry.is_valid,
-            })
-            .collect()
     }
 }

@@ -430,6 +430,14 @@ pub mod rustaxa_ffi {
         allow_gossip: bool,
     }
 
+    /// Operation-specific canonical get-PBFT-sync ingress request.
+    struct NetworkGetPbftSyncRequest {
+        tarcap_version: u32,
+        peer_id: [u8; 64],
+        request_rlp: Vec<u8>,
+        source_payload_id: u64,
+    }
+
     /// Packet-specific network ingress decision with queued-effect summary.
     struct NetworkIngressDecision {
         payload_id: u64,
@@ -818,12 +826,6 @@ pub mod rustaxa_ffi {
         finalized_lookup_hashes: Vec<PbftSyncTransactionHash>,
     }
 
-    /// Storage-backed PBFT sync egress payload for packet materialization.
-    struct PbftSyncEgressPayload {
-        period_data_rlp: Vec<u8>,
-        attach_reward_votes: bool,
-    }
-
     /// Staged PBFT sync runtime action for C++ `processPeriodData` execution.
     struct PbftSyncProcessPeriodDataRuntimePlan {
         runtime_action: u8,
@@ -1076,8 +1078,9 @@ pub mod rustaxa_ffi {
     ///
     /// The restored chain head supplies the current period and determines
     /// whether Cacti is active; callers cannot inject either derived fact.
-    /// Slashing enablement and Magnolia activation are copied into the
-    /// service-owned planner and cannot change during the service lifetime.
+    /// Slashing/hardfork facts and PBFT-sync service limits are copied into the
+    /// service-owned planners and cannot change during the service lifetime.
+    /// `sync_level_size` must be nonzero.
     struct PbftServiceConfig {
         genesis_lambda_ms: u64,
         cacti_lambda_max_ms: u64,
@@ -1091,6 +1094,9 @@ pub mod rustaxa_ffi {
         magnolia_activation_period: u64,
         ficus_activation_period: u64,
         pillar_blocks_interval: u64,
+        sync_level_size: u64,
+        is_light_node: bool,
+        light_node_history: u64,
     }
 
     /// Rust-owned storage facts for replaying one finalized period during PBFT
@@ -1631,14 +1637,6 @@ pub mod rustaxa_ffi {
         is_valid: bool,
         pivot_hash: [u8; 32],
         block_rlp: Vec<u8>,
-    }
-
-    struct ProposedBlockSnapshotEntry {
-        period: u64,
-        block_hash: [u8; 32],
-        pivot_hash: [u8; 32],
-        block_rlp: Vec<u8>,
-        is_valid: bool,
     }
 
     /// Compact transaction identity retained by the Rust period-data queue for
@@ -3648,6 +3646,10 @@ pub mod rustaxa_ffi {
             pillar_block_hash: [u8; 32],
             source_payload_id: u64,
         ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_ingest_get_pbft_sync_request(
+            self: &BridgeConsensusNetworkApi,
+            request: NetworkGetPbftSyncRequest,
+        ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_plan_status_sync(
             self: &BridgeConsensusNetworkApi,
             facts: NetworkStatusSyncFacts,
@@ -4016,14 +4018,6 @@ pub mod rustaxa_ffi {
             period: u64,
             prev_hash: &[u8; 32],
         ) -> PbftBlockValidationResult;
-        pub fn load_pbft_sync_egress_payload(
-            runtime: &BridgePbftService,
-            block_period: u64,
-            last_block: bool,
-            pbft_chain_synced: bool,
-            reward_votes_present: bool,
-            reward_votes_period: u64,
-        ) -> Result<PbftSyncEgressPayload>;
         pub fn pbft_manager_runtime_begin_pbft_sync_admission(
             runtime: &BridgePbftService,
             fact: PbftSyncAdmissionInitialFact,
@@ -4292,9 +4286,6 @@ pub mod rustaxa_ffi {
             period: u64,
             block_hash: &[u8; 32],
         ) -> ProposedBlockLookup;
-        pub fn pbft_service_proposed_blocks_snapshot_entries(
-            self: &BridgePbftService,
-        ) -> Vec<ProposedBlockSnapshotEntry>;
         // Consensus transaction manager planning
 
         pub fn transaction_manager_runtime_gas_price_bid(

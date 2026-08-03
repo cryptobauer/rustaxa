@@ -13,7 +13,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftSyncCertVoteBundleFact as FfiPbftSyncCertVoteBundleFact,
     PbftSyncCertVoteBundleValidation as FfiPbftSyncCertVoteBundleValidation,
     PbftSyncCertVoteFact as FfiPbftSyncCertVoteFact,
-    PbftSyncEgressPayload as FfiPbftSyncEgressPayload,
     PbftSyncProcessPeriodDataRuntimePlan as FfiPbftSyncProcessPeriodDataRuntimePlan,
     PbftSyncTransactionHash as FfiPbftSyncTransactionHash,
     PbftSyncTransactionQueryPlan as FfiPbftSyncTransactionQueryPlan,
@@ -25,8 +24,7 @@ use rustaxa_consensus::pbft_sync::{
     validate_pbft_sync_cert_vote_bundle as validate_domain_pbft_sync_cert_vote_bundle,
     PbftSyncAdmissionInitialFact, PbftSyncAdmissionSessionStep, PbftSyncAdmissionTransactionReport,
     PbftSyncCertVoteBundleFact, PbftSyncCertVoteBundleValidation, PbftSyncCertVoteFact,
-    PbftSyncEgressPayload, PbftSyncFactStatus, PbftSyncProcessPeriodDataRuntimePlan,
-    PbftSyncProcessRuntimeNextCheck, PbftSyncRewardVoteAttachmentFact,
+    PbftSyncFactStatus, PbftSyncProcessPeriodDataRuntimePlan, PbftSyncProcessRuntimeNextCheck,
     PbftSyncRuntimeFinalChainHashStatus, PbftSyncTransactionQueryPlan, PbftSyncTransactionWarning,
 };
 
@@ -91,32 +89,6 @@ pub fn abort_pbft_manager_runtime_pbft_sync_admission(
         .abort_pbft_sync_admission()
         .map(Into::into)
         .unwrap_or_else(sync_admission_not_started_step)
-}
-
-/// Loads the storage-backed payload for one PBFT sync egress packet.
-///
-/// C++ still owns packet wrapping, transport, and temporary reward-vote
-/// sidecar materialization. Rust owns the canonical `PeriodData` storage read
-/// and the deterministic decision about whether those sidecars belong on the
-/// packet.
-pub fn load_pbft_sync_egress_payload(
-    runtime: &BridgePbftService,
-    block_period: u64,
-    last_block: bool,
-    pbft_chain_synced: bool,
-    reward_votes_present: bool,
-    reward_votes_period: u64,
-) -> anyhow::Result<FfiPbftSyncEgressPayload> {
-    let payload = runtime
-        .0
-        .load_pbft_sync_egress_payload(PbftSyncRewardVoteAttachmentFact {
-            block_period,
-            last_block,
-            pbft_chain_synced,
-            reward_votes_present,
-            reward_votes_period,
-        })?;
-    Ok(pbft_sync_egress_payload_to_ffi(payload))
 }
 
 /// Validates one synced PBFT cert-vote bundle from compact C++ facts.
@@ -252,13 +224,6 @@ fn pbft_sync_admission_transaction_report_from_ffi(
             .map(|hash| H256::from(hash.hash))
             .collect(),
         contains_finalized_transactions: report.contains_finalized_transactions,
-    }
-}
-
-fn pbft_sync_egress_payload_to_ffi(payload: PbftSyncEgressPayload) -> FfiPbftSyncEgressPayload {
-    FfiPbftSyncEgressPayload {
-        period_data_rlp: payload.period_data_rlp,
-        attach_reward_votes: payload.attach_reward_votes,
     }
 }
 
@@ -452,17 +417,5 @@ mod tests {
             .finalized_lookup_hashes
             .is_empty());
         assert!(step.plan.warnings.is_empty());
-    }
-
-    #[test]
-    fn bridge_projects_native_sync_admission_egress_projection() {
-        let payload = pbft_sync_egress_payload_to_ffi(PbftSyncEgressPayload {
-            period_data_rlp: vec![0x01, 0x02],
-            attach_reward_votes: true,
-        });
-        assert_eq!(
-            (payload.period_data_rlp, payload.attach_reward_votes),
-            (vec![1, 2], true)
-        );
     }
 }

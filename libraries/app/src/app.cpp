@@ -182,6 +182,9 @@ void App::init(const cli::Config &cli_conf) {
   pbft_manager_config.magnolia_activation_period = conf_.genesis.state.hardforks.magnolia_hf.block_num;
   pbft_manager_config.ficus_activation_period = conf_.genesis.state.hardforks.ficus_hf.block_num;
   pbft_manager_config.pillar_blocks_interval = conf_.genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
+  pbft_manager_config.sync_level_size = conf_.network.sync_level_size;
+  pbft_manager_config.is_light_node = conf_.is_light_node;
+  pbft_manager_config.light_node_history = conf_.light_node_history;
   pbft_service_ =
       std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db_->rustStorage(), pbft_manager_config));
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, pbft_service_);
