@@ -18,8 +18,9 @@ if(RUSTAXA_ENABLE)
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_queue\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/sortition_params_manager\\.cpp$")
 
-    # The Rust-mode SlashingManager overlay is fully standalone. Keep the
-    # untouched legacy implementation in pure C++ builds.
+    # Native verified-vote admission owns Rust-mode slashing planning; no
+    # SlashingManager overlay remains. Keep the untouched legacy implementation
+    # in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/gas_pricer\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/slashing_manager/slashing_manager\\.cpp$")
 

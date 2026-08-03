@@ -93,8 +93,8 @@ class ExtVotesPacketHandler : public PacketHandler {
    * A matching executor failure is acknowledged to Rust so dependent work is cancelled, then
    * surfaced as an exception; callers must not request later admission IDs from that operation.
    */
-  VoteProcessingResult executeConsensusNetworkEffects(size_t budget, std::optional<uint64_t> admission_effect_id,
-                                                      bool stop_after_correlated_admission = false);
+  VoteProcessingResult executeConsensusNetworkEffects(size_t budget, std::optional<uint64_t> application_effect_id,
+                                                      bool stop_after_correlated_application = false);
 #endif
 
  private:

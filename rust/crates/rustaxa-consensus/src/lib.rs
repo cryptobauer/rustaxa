@@ -138,7 +138,9 @@ pub use network_api::{
     NETWORK_EFFECT_KIND_MARK_PEER_KNOWN, NETWORK_EFFECT_KIND_REPORT_PEER,
     NETWORK_EFFECT_KIND_REQUEST_SYNC, NETWORK_EFFECT_KIND_SEND_PACKET,
     NETWORK_EFFECT_RESULT_STATUS_FAILED, NETWORK_EFFECT_RESULT_STATUS_OK,
-    NETWORK_INGRESS_STATUS_ACCEPTED, NETWORK_OBJECT_KIND_DAG_BLOCK,
+    NETWORK_INGRESS_STATUS_ACCEPTED, NETWORK_INGRESS_STATUS_NEXT_VOTES_NO_PREVIOUS_ROUND,
+    NETWORK_INGRESS_STATUS_NEXT_VOTES_PEER_ROUND_AHEAD,
+    NETWORK_INGRESS_STATUS_NEXT_VOTES_PERIOD_MISMATCH, NETWORK_OBJECT_KIND_DAG_BLOCK,
     NETWORK_OBJECT_KIND_DAG_SYNC_EGRESS_REQUEST, NETWORK_OBJECT_KIND_PBFT_BLOCK,
     NETWORK_OBJECT_KIND_PBFT_NEXT_VOTES_BUNDLE_EGRESS_REQUEST,
     NETWORK_OBJECT_KIND_PBFT_PERIOD_DATA, NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST,
@@ -160,9 +162,9 @@ pub use network_api::{
     NETWORK_STATUS_PLAN_STATUS_SYNC_NOT_NEEDED, NETWORK_SYNC_KIND_PBFT_CHAIN,
     NETWORK_SYNC_KIND_PBFT_NEXT_VOTES, NetworkApiConfig, NetworkEffect, NetworkEffectAck,
     NetworkEffectBatch, NetworkEffectResult, NetworkIngressDecision, NetworkInitialStatusFacts,
-    NetworkInitialStatusPlan, NetworkPbftSyncPeerCandidate, NetworkPbftSyncStartFacts,
-    NetworkPbftSyncStartPlan, NetworkPbftVoteIngressContext, NetworkPeerSelectionFacts,
-    NetworkPeerSelectionPlan, NetworkPendingDagBlocksRequestFacts,
+    NetworkInitialStatusPlan, NetworkPbftNextVotesBundleRequest, NetworkPbftSyncPeerCandidate,
+    NetworkPbftSyncStartFacts, NetworkPbftSyncStartPlan, NetworkPbftVoteIngressContext,
+    NetworkPeerSelectionFacts, NetworkPeerSelectionPlan, NetworkPendingDagBlocksRequestFacts,
     NetworkPendingDagBlocksRequestPlan, NetworkStatusEgressFacts, NetworkStatusEgressPlan,
     NetworkStatusSyncFacts, NetworkStatusSyncPlan,
 };
@@ -218,9 +220,7 @@ pub use pbft_reward_votes::{
     PbftRewardVoteRoundCandidate, PbftRewardVoteSelectionFact, PbftRewardVoteSelectionPlan,
     PbftRewardVotesStatus, plan_pbft_reward_votes,
 };
-pub use pbft_service::{
-    PbftService, PbftServiceConfig, PbftVoteAdmissionWithSlashingResult,
-};
+pub use pbft_service::{PbftService, PbftServiceConfig, PbftVoteAdmissionWithSlashingResult};
 pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,
     PbftSyncPeriodAdmissionFact, PbftSyncPeriodAdmissionPlan, PbftSyncPeriodAdmissionStatus,
@@ -269,9 +269,9 @@ pub use pbft_vote_progress::{
     PbftVoteProgressPlan, PbftVoteProgressStatus, plan_pbft_vote_progress,
 };
 pub use pbft_vote_runtime::{
-    PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
-    PbftOptimizedVoteBundleBuildResult, PbftOptimizedVoteBundlePlan,
-    PbftOptimizedVoteBundlePlanEntry, PbftRewardVotePayloadSelection,
+    PbftNextVotesBundleEgressPayloads, PbftNextVotesBundleEgressPlan,
+    PbftOptimizedVoteBundleBuildRequest, PbftOptimizedVoteBundleBuildResult,
+    PbftOptimizedVoteBundlePlan, PbftOptimizedVoteBundlePlanEntry, PbftRewardVotePayloadSelection,
     PbftVerifiedVoteProgressBundle, PbftVerifiedVoteProgressPersistenceWrite,
     PbftVerifiedVotesService, PbftVoteAdmissionPersistenceStatus, PbftVoteAdmissionRuntime,
     PbftVoteAdmissionTransactionResult, PbftVoteRuntimeAdmissionOutcome, PbftVoteRuntimeBundle,

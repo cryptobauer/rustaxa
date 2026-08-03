@@ -1,9 +1,7 @@
 use crate::ffi::rustaxa_ffi::{
     DetermineNewRoundOutcome, PbftCanonicalVoteValidation as FfiPbftCanonicalVoteValidation,
     PbftFinalizationHash, PbftLeaderCandidateSnapshot, PbftLeaderSelectionFinishRequest,
-    PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot, PbftNextVotesBundleEgressPlan,
-    PbftOptimizedVoteBundleBuildRequest, PbftOptimizedVoteBundleBuildResult,
-    PbftOptimizedVoteBundlePlan,
+    PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot, PbftNextVotesBundleEgressPayloads,
     PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
     PbftRewardVotesResetRequest as FfiPbftRewardVotesResetRequest,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
@@ -14,10 +12,9 @@ use crate::ffi::rustaxa_ffi::{
     RewardVotePayloadSnapshot as FfiRewardVotePayloadSnapshot, RoundMarkerSnapshot,
     SlashingSubmitterIdentity as FfiSlashingSubmitterIdentity,
     SlashingTransactionEffect as FfiSlashingTransactionEffect, TwoTPlusOneSnapshotEntry,
-    TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup,
-    VerifiedStepVotePayloadEntry, VerifiedStepVotePayloadsLookup,
-    VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome, VerifiedVotePayload,
-    VerifiedVoteStateSnapshotEntry, VerifiedVotesStateSnapshot,
+    TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup, VerifiedStepVotePayloadEntry,
+    VerifiedStepVotePayloadsLookup, VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome,
+    VerifiedVotePayload, VerifiedVoteStateSnapshotEntry, VerifiedVotesStateSnapshot,
 };
 use crate::ffi::{BridgeFinalChain, BridgePbftService};
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
@@ -45,12 +42,7 @@ use rustaxa_consensus::verified_votes::{
     TwoTPlusOneVotedBlockType, VerifiedVote,
 };
 use rustaxa_consensus::{
-    build_weighted_pbft_vote_payload,
-    PbftNextVotesBundleEgressPlan as ConsensusPbftNextVotesBundleEgressPlan,
-    PbftOptimizedVoteBundleBuildRequest as ConsensusPbftOptimizedVoteBundleBuildRequest,
-    PbftOptimizedVoteBundleBuildResult as ConsensusPbftOptimizedVoteBundleBuildResult,
-    PbftOptimizedVoteBundlePlan as ConsensusPbftOptimizedVoteBundlePlan,
-    PbftRewardVotePayloadSelection,
+    build_weighted_pbft_vote_payload, PbftRewardVotePayloadSelection,
     PbftVerifiedVoteProgressBundle as DomainPbftVerifiedVoteProgressBundle,
     PbftVerifiedVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
     PbftVoteAdmissionTransactionResult,
@@ -315,18 +307,15 @@ impl BridgePbftService {
             .into_iter()
             .map(slashing_submitter_identity_to_domain)
             .collect::<Vec<_>>();
-        let result = self
-            .0
-            .admit_and_persist_verified_vote_with_final_chain(
-                &final_chain.0,
-                canonical_vote_rlp,
-                request,
-                flags_to_domain(flags),
-                context_to_domain(&context),
-                &slashing_submitters,
-            )?;
-        let weighted_vote_rlp = if result.validation.accepted
-            && result.validation.weight_calculated
+        let result = self.0.admit_and_persist_verified_vote_with_final_chain(
+            &final_chain.0,
+            canonical_vote_rlp,
+            request,
+            flags_to_domain(flags),
+            context_to_domain(&context),
+            &slashing_submitters,
+        )?;
+        let weighted_vote_rlp = if result.validation.accepted && result.validation.weight_calculated
         {
             build_weighted_pbft_vote_payload(
                 canonical_vote_rlp,
@@ -432,95 +421,7 @@ impl BridgePbftService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustaxa_consensus::{PbftOptimizedVoteBundlePlanEntry, VerifiedVoteOptimizedBundleStatus};
-
-    #[test]
-    fn optimized_bundle_statuses_keep_stable_cxx_codes() {
-        let statuses = [
-            VerifiedVoteOptimizedBundleStatus::Ready,
-            VerifiedVoteOptimizedBundleStatus::NotFound,
-            VerifiedVoteOptimizedBundleStatus::EmptyRequest,
-            VerifiedVoteOptimizedBundleStatus::UnsupportedKind,
-            VerifiedVoteOptimizedBundleStatus::MappingMismatch,
-            VerifiedVoteOptimizedBundleStatus::HashNotInPlan,
-            VerifiedVoteOptimizedBundleStatus::OrderMismatch,
-            VerifiedVoteOptimizedBundleStatus::MissingPayload,
-            VerifiedVoteOptimizedBundleStatus::PayloadDecodeError,
-            VerifiedVoteOptimizedBundleStatus::PayloadMetadataMismatch,
-        ];
-        for (expected, status) in statuses.into_iter().enumerate() {
-            let ffi =
-                optimize_bundle_build_result_to_ffi(ConsensusPbftOptimizedVoteBundleBuildResult {
-                    status,
-                    vote_hashes: vec![H256::from([expected as u8; 32])],
-                    votes_bundle_rlp: vec![expected as u8],
-                });
-            assert_eq!(ffi.status, expected as u8);
-            assert_eq!(ffi.error_code, status.legacy_error_code());
-            assert_eq!(ffi.vote_hashes[0].hash, [expected as u8; 32]);
-        }
-    }
-
-    #[test]
-    fn optimized_bundle_plan_projects_option_and_order() {
-        let hashes = vec![H256::from([0x11; 32]), H256::from([0x22; 32])];
-        let ffi = optimize_bundle_plan_to_ffi(ConsensusPbftOptimizedVoteBundlePlan {
-            status: VerifiedVoteOptimizedBundleStatus::Ready,
-            kind: TwoTPlusOneVotedBlockType::NextVotedBlock,
-            period: 7,
-            round: 8,
-            plan: Some(PbftOptimizedVoteBundlePlanEntry {
-                block_hash: H256::from([0x33; 32]),
-                period: 7,
-                round: 8,
-                step: 9,
-                vote_hashes: hashes,
-            }),
-        });
-        assert!(ffi.found);
-        assert_eq!(
-            ffi.kind,
-            u8::from(TwoTPlusOneVotedBlockType::NextVotedBlock)
-        );
-        assert_eq!(ffi.block_hash, [0x33; 32]);
-        assert_eq!(ffi.vote_hashes[0].hash, [0x11; 32]);
-        assert_eq!(ffi.vote_hashes[1].hash, [0x22; 32]);
-
-        let missing = optimize_bundle_plan_to_ffi(ConsensusPbftOptimizedVoteBundlePlan {
-            status: VerifiedVoteOptimizedBundleStatus::NotFound,
-            kind: TwoTPlusOneVotedBlockType::NextVotedNullBlock,
-            period: 12,
-            round: 13,
-            plan: None,
-        });
-        assert!(!missing.found);
-        assert_eq!(missing.block_hash, [0; 32]);
-        assert_eq!(missing.period, 12);
-        assert_eq!(missing.round, 13);
-        assert!(missing.vote_hashes.is_empty());
-    }
-
-    #[test]
-    fn raw_invalid_bundle_kind_stays_bridge_only() {
-        let request = PbftOptimizedVoteBundleBuildRequest {
-            kind: u8::MAX,
-            block_hash: [0; 32],
-            period: 0,
-            round: 0,
-            step: 0,
-            vote_hashes: Vec::new(),
-        };
-        assert!(optimize_bundle_request_to_domain(request).is_none());
-        assert!(TwoTPlusOneVotedBlockType::try_from(u8::MAX).is_err());
-        assert_eq!(
-            VerifiedVoteOptimizedBundleStatus::UnsupportedKind.as_u8(),
-            3
-        );
-        assert_eq!(
-            VerifiedVoteOptimizedBundleStatus::UnsupportedKind.legacy_error_code(),
-            "PBFT_OPTIMIZED_VOTE_BUNDLE_UNSUPPORTED_KIND"
-        );
-    }
+    use rustaxa_consensus::DoubleVotingProofPlanStatus;
 
     #[test]
     fn raw_invalid_persistence_kind_stays_typed_rejection() {
@@ -968,8 +869,8 @@ fn runtime_outcome_to_ffi(
             empty_step_vote_payload_entry(),
         )
     });
-    let has_slashing_transaction_effect = transition_published
-        && slashing_transaction_effect.is_some();
+    let has_slashing_transaction_effect =
+        transition_published && slashing_transaction_effect.is_some();
     let slashing_transaction_effect = if transition_published {
         slashing_transaction_effect
             .map(slashing_transaction_effect_to_ffi)
@@ -1213,70 +1114,6 @@ impl From<VerifiedVote> for VerifiedVotePayload {
     }
 }
 
-fn optimize_bundle_plan_to_ffi(
-    value: ConsensusPbftOptimizedVoteBundlePlan,
-) -> PbftOptimizedVoteBundlePlan {
-    let found = value.plan.is_some();
-    let (block_hash, period, round, step, vote_hashes) = match value.plan {
-        Some(plan) => (
-            plan.block_hash.0,
-            plan.period,
-            plan.round,
-            plan.step,
-            plan.vote_hashes
-                .into_iter()
-                .map(|hash| PbftFinalizationHash { hash: hash.0 })
-                .collect(),
-        ),
-        None => ([0u8; 32], value.period, value.round, 0, Vec::new()),
-    };
-
-    PbftOptimizedVoteBundlePlan {
-        found,
-        status: value.status.as_u8(),
-        error_code: value.status.legacy_error_code().to_owned(),
-        kind: value.kind.into(),
-        block_hash,
-        period,
-        round,
-        step,
-        vote_hashes,
-    }
-}
-
-fn optimize_bundle_build_result_to_ffi(
-    value: ConsensusPbftOptimizedVoteBundleBuildResult,
-) -> PbftOptimizedVoteBundleBuildResult {
-    PbftOptimizedVoteBundleBuildResult {
-        status: value.status.as_u8(),
-        error_code: value.status.legacy_error_code().to_owned(),
-        vote_hashes: value
-            .vote_hashes
-            .into_iter()
-            .map(|hash| PbftFinalizationHash { hash: hash.0 })
-            .collect(),
-        votes_bundle_rlp: value.votes_bundle_rlp,
-    }
-}
-
-fn optimize_bundle_request_to_domain(
-    value: PbftOptimizedVoteBundleBuildRequest,
-) -> Option<ConsensusPbftOptimizedVoteBundleBuildRequest> {
-    let kind = TwoTPlusOneVotedBlockType::try_from(value.kind).ok()?;
-    Some(ConsensusPbftOptimizedVoteBundleBuildRequest {
-        kind,
-        block_hash: H256::from(value.block_hash),
-        period: value.period,
-        round: value.round,
-        step: value.step,
-        vote_hashes: value
-            .vote_hashes
-            .into_iter()
-            .map(|hash| H256::from(hash.hash))
-            .collect(),
-    })
-}
-
 impl BridgePbftService {
     /// Reads one canonical verified-vote count under the service lock boundary.
     pub fn pbft_service_verified_votes_size(&self) -> Result<u64, anyhow::Error> {
@@ -1374,42 +1211,19 @@ impl BridgePbftService {
         )
     }
 
-    /// Returns one next-vote optimized bundle egress plan.
-    pub fn pbft_service_verified_votes_plan_next_votes_bundle_egress(
+    /// Builds both next-vote bundle families with one native lock epoch.
+    pub fn pbft_service_verified_votes_build_next_votes_bundle_egress(
         &self,
         period: u64,
         round: u64,
-    ) -> Result<PbftNextVotesBundleEgressPlan, anyhow::Error> {
-        let result: ConsensusPbftNextVotesBundleEgressPlan = self
+    ) -> Result<PbftNextVotesBundleEgressPayloads, anyhow::Error> {
+        let result = self
             .0
-            .verified_votes_plan_next_votes_bundle_egress(period, round)?;
-        Ok(PbftNextVotesBundleEgressPlan {
-            status: result.status.as_u8(),
-            error_code: result.status.legacy_error_code().to_owned(),
-            period: result.period,
-            round: result.round,
-            next_votes: optimize_bundle_plan_to_ffi(result.next_votes),
-            next_null_votes: optimize_bundle_plan_to_ffi(result.next_null_votes),
+            .verified_votes_build_next_votes_bundle_egress(period, round)?;
+        Ok(PbftNextVotesBundleEgressPayloads {
+            next_votes_bundle_rlp: result.next_votes_bundle_rlp,
+            next_null_votes_bundle_rlp: result.next_null_votes_bundle_rlp,
         })
-    }
-
-    /// Builds one optimized verified-vote bundle by retained payload hash list.
-    pub fn pbft_service_verified_votes_build_optimized_votes_bundle_egress(
-        &self,
-        request: PbftOptimizedVoteBundleBuildRequest,
-    ) -> Result<PbftOptimizedVoteBundleBuildResult, anyhow::Error> {
-        let Some(request) = optimize_bundle_request_to_domain(request) else {
-            let status = rustaxa_consensus::VerifiedVoteOptimizedBundleStatus::UnsupportedKind;
-            return Ok(PbftOptimizedVoteBundleBuildResult {
-                status: status.as_u8(),
-                error_code: status.legacy_error_code().to_owned(),
-                vote_hashes: Vec::new(),
-                votes_bundle_rlp: Vec::new(),
-            });
-        };
-        self.0
-            .verified_votes_build_optimized_votes_bundle_egress(request)
-            .map(optimize_bundle_build_result_to_ffi)
     }
 
     /// Applies one bounded verified-vote cleanup pass.

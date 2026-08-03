@@ -20,6 +20,7 @@ namespace {
 
 constexpr uint8_t kNetworkEffectResultStatusOk = 0;
 constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
+constexpr uint8_t kNetworkEffectKindSendPacket = 0;
 constexpr uint8_t kNetworkEffectKindGossipPacket = 1;
 constexpr uint8_t kNetworkEffectKindMarkPeerKnown = 2;
 constexpr uint8_t kNetworkEffectKindRequestSync = 3;
@@ -30,6 +31,7 @@ constexpr uint8_t kNetworkSyncKindPbftChain = 0;
 constexpr uint8_t kNetworkSyncKindPbftNextVotes = 1;
 constexpr uint8_t kNetworkObjectKindPbftVote = 0;
 constexpr uint8_t kNetworkObjectKindPbftBlock = 1;
+constexpr uint8_t kNetworkObjectKindPbftNextVotesBundleEgressRequest = 7;
 constexpr uint32_t kNetworkPacketKindPbftVote = 1;
 constexpr uint32_t kNetworkPacketKindPbftVotesBundle = 3;
 
@@ -325,11 +327,11 @@ rust::Vec<rustaxa::NetworkIngressDecision> ExtVotesPacketHandler::ingestPbftVote
 }
 
 ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsensusNetworkEffects(
-    size_t budget, std::optional<uint64_t> admission_effect_id, bool stop_after_correlated_admission) {
+    size_t budget, std::optional<uint64_t> application_effect_id, bool stop_after_correlated_application) {
   assert(rust_consensus_network_api_);
   VoteProcessingResult admission_result{};
-  bool admission_effect_completed = false;
-  std::optional<std::string> admission_failure;
+  bool application_effect_completed = false;
+  std::optional<std::string> application_failure;
   while (true) {
     const auto batch = rust_consensus_network_api_->api().consensus_network_drain_work(
         static_cast<uint32_t>(transport_lane_), static_cast<uint32_t>(budget));
@@ -349,7 +351,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
       result.object_kind = effect.object_kind;
       result.object_hash = effect.object_hash;
       result.status = kNetworkEffectResultStatusOk;
-      const bool is_requested_admission = admission_effect_id && *admission_effect_id == effect.effect_id;
+      const bool is_requested_application = application_effect_id && *application_effect_id == effect.effect_id;
 
       try {
         const dev::p2p::NodeID peer_id(effect.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
@@ -366,17 +368,37 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
           result.admission_mark_vote_known = report.mark_vote_known;
           result.admission_gossip_vote = report.gossip_vote;
           result.admission_report_slashing = report.report_slashing;
-          if (is_requested_admission) {
+          if (is_requested_application) {
             reported_admission = VoteProcessingResult{.accepted = report.accepted,
                                                       .already_present = report.already_present,
                                                       .mark_vote_known = report.mark_vote_known,
                                                       .gossip_vote = report.gossip_vote,
                                                       .report_slashing = report.report_slashing};
           }
+        } else if (effect.kind == kNetworkEffectKindRecordConsensusObject &&
+                   effect.object_kind == kNetworkObjectKindPbftNextVotesBundleEgressRequest) {
+          auto payloads = vote_mgr_->buildNextVotesBundleEgress(effect.period, effect.round);
+          result.payload_bytes = std::move(payloads.next_votes_bundle_rlp);
+          result.related_payload_bytes = std::move(payloads.next_null_votes_bundle_rlp);
         } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftChain) {
           sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
                       encodePacketRlp(GetPbftSyncPacket{effect.sync_start}));
           last_pbft_block_sync_request_time_ = std::chrono::system_clock::now();
+        } else if (effect.kind == kNetworkEffectKindSendPacket &&
+                   effect.packet_kind == kNetworkPacketKindPbftVotesBundle) {
+          const auto optimized_bundle_rlp = bytes(effect.payload_bytes.begin(), effect.payload_bytes.end());
+          auto votes = decodePbftVotesBundleRlp(dev::RLP(optimized_bundle_rlp));
+          auto target = peers_state_->getPeer(peer_id);
+          if (!target) {
+            throw std::runtime_error("Network API PBFT votes-bundle send target is no longer connected");
+          }
+          auto packet = VotesBundlePacket{OptimizedPbftVotesBundle{.votes = std::move(votes)}};
+          if (!sealAndSend(peer_id, SubprotocolPacketType::kVotesBundlePacket, encodePacketRlp(packet))) {
+            throw std::runtime_error("Network API PBFT votes-bundle transport send failed");
+          }
+          for (const auto &vote : packet.votes_bundle.votes) {
+            target->markPbftVoteAsKnown(vote->getHash());
+          }
         } else if (effect.kind == kNetworkEffectKindGossipPacket && effect.packet_kind == kNetworkPacketKindPbftVote) {
           auto gossip_vote =
               std::make_shared<PbftVote>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
@@ -485,8 +507,8 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
       } catch (const std::exception &e) {
         result.status = kNetworkEffectResultStatusFailed;
         result.diagnostic = e.what();
-        if (admission_effect_id && effect.effect_id == *admission_effect_id) {
-          admission_failure = e.what();
+        if (application_effect_id && effect.effect_id == *application_effect_id) {
+          application_failure = e.what();
         }
       }
 
@@ -499,22 +521,22 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
       throw std::runtime_error("Network API rejected an executor result batch: " +
                                static_cast<std::string>(acknowledgement.error_code));
     }
-    if (admission_failure) {
-      throw std::runtime_error("Network API PBFT vote admission executor failed: " + *admission_failure);
+    if (application_failure) {
+      throw std::runtime_error("Network API correlated application executor failed: " + *application_failure);
     }
     if (reported_admission) {
       admission_result = *reported_admission;
     }
-    admission_effect_completed =
-        admission_effect_completed || std::any_of(batch.effects.begin(), batch.effects.end(), [&](const auto &effect) {
-          return admission_effect_id && *admission_effect_id == effect.effect_id;
-        });
-    if (admission_effect_completed && stop_after_correlated_admission) {
+    application_effect_completed = application_effect_completed ||
+                                   std::any_of(batch.effects.begin(), batch.effects.end(), [&](const auto &effect) {
+                                     return application_effect_id && *application_effect_id == effect.effect_id;
+                                   });
+    if (application_effect_completed && stop_after_correlated_application) {
       break;
     }
   }
-  if (admission_effect_id && !admission_effect_completed) {
-    throw std::runtime_error("Network API did not execute the correlated PBFT vote admission effect");
+  if (application_effect_id && !application_effect_completed) {
+    throw std::runtime_error("Network API did not execute the correlated application effect");
   }
   return admission_result;
 }

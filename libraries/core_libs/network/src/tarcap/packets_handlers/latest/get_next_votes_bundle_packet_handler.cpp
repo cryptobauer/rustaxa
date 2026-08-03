@@ -37,6 +37,20 @@ void GetNextVotesBundlePacketHandler::process(const threadpool::PacketData& pack
   LOG(log_dg_) << "Received GetNextVotesSyncPacket request";
   const auto [pbft_round, pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
 
+#ifdef RUSTAXA_ENABLE
+  // Rust owns request eligibility, the previous-round application query, and
+  // every ordered send decision. Tarcap only supplies its live PBFT snapshot
+  // and executes the returned native-service and transport effects.
+  auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(transport_lane_);
+  const auto decision = rust_consensus_network_api_->api().consensus_network_ingest_pbft_next_votes_bundle_request(
+      static_cast<uint32_t>(transport_lane_), peer->getId().asArray(), packet.peer_pbft_period, packet.peer_pbft_round,
+      pbft_period, pbft_round, packet_data.id_);
+  if (decision.application_effect_id != 0) {
+    (void)executeConsensusNetworkEffects(16, decision.application_effect_id);
+  }
+  return;
+#endif
+
   // Send votes only for current_period == peer_period && current_period >= peer_round
   if (pbft_period != packet.peer_pbft_period || pbft_round == 1 || pbft_round < packet.peer_pbft_round) {
     LOG(log_nf_) << "No previous round next votes sync packet will be sent. pbft_period " << pbft_period

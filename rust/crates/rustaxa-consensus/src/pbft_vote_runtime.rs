@@ -218,6 +218,19 @@ pub struct PbftNextVotesBundleEgressPlan {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+/// Packet-ready next and next-null bundles built from one runtime epoch.
+///
+/// An empty family payload means its `2t+1` mapping is absent. Retained-state
+/// or encoding failures abort the pair so an executor cannot publish a partial
+/// response.
+pub struct PbftNextVotesBundleEgressPayloads {
+    /// Inner optimized PBFT votes-bundle RLP for next votes.
+    pub next_votes_bundle_rlp: Vec<u8>,
+    /// Inner optimized PBFT votes-bundle RLP for next-null votes.
+    pub next_null_votes_bundle_rlp: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 /// Deterministic result of validating and encoding an optimized vote bundle.
 ///
 /// Non-ready statuses carry no bundle bytes. Lock and invariant failures remain
@@ -1055,8 +1068,7 @@ impl PbftVerifiedVotesService {
         &self,
         request: PbftOptimizedVoteBundleBuildRequest,
     ) -> Result<PbftOptimizedVoteBundleBuildResult> {
-        let requested_hashes = request.vote_hashes;
-        if requested_hashes.is_empty() {
+        if request.vote_hashes.is_empty() {
             return Ok(PbftOptimizedVoteBundleBuildResult {
                 status: PBFT_OPTIMIZED_BUNDLE_EMPTY_REQUEST,
                 vote_hashes: Vec::new(),
@@ -1065,6 +1077,78 @@ impl PbftVerifiedVotesService {
         }
 
         let runtime = self.lock()?;
+        self.verified_votes_build_optimized_votes_bundle_egress_runtime(&runtime, request)
+    }
+
+    /// Builds complete next and next-null bundle payloads with one lock epoch.
+    ///
+    /// The supplied coordinates select both families. Missing mappings are
+    /// successful empty slots; all other non-ready build outcomes are retained
+    /// state errors and no partial pair is returned.
+    pub fn verified_votes_build_next_votes_bundle_egress(
+        &self,
+        period: u64,
+        round: u64,
+    ) -> Result<PbftNextVotesBundleEgressPayloads> {
+        let runtime = self.lock()?;
+        let next_votes_bundle_rlp = self.verified_votes_build_complete_bundle_runtime(
+            &runtime,
+            period,
+            round,
+            TwoTPlusOneVotedBlockType::NextVotedBlock,
+        )?;
+        let next_null_votes_bundle_rlp = self.verified_votes_build_complete_bundle_runtime(
+            &runtime,
+            period,
+            round,
+            TwoTPlusOneVotedBlockType::NextVotedNullBlock,
+        )?;
+        Ok(PbftNextVotesBundleEgressPayloads {
+            next_votes_bundle_rlp,
+            next_null_votes_bundle_rlp,
+        })
+    }
+
+    fn verified_votes_build_complete_bundle_runtime(
+        &self,
+        runtime: &PbftVerifiedVotesServiceGuard<'_>,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+    ) -> Result<Vec<u8>> {
+        let Some(voted) = runtime
+            .verified_votes()
+            .get_two_t_plus_one_voted_block(period, round, kind)
+        else {
+            return Ok(Vec::new());
+        };
+        let result = self.verified_votes_build_optimized_votes_bundle_egress_runtime(
+            runtime,
+            PbftOptimizedVoteBundleBuildRequest {
+                kind,
+                block_hash: voted.hash,
+                period,
+                round,
+                step: voted.step,
+                vote_hashes: runtime
+                    .verified_votes()
+                    .get_two_t_plus_one_voted_block_vote_hashes(period, round, kind),
+            },
+        )?;
+        ensure!(
+            result.status == PBFT_OPTIMIZED_BUNDLE_READY,
+            "PBFT_NEXT_VOTES_BUNDLE_EGRESS_BUILD_FAILED: {}",
+            result.status.legacy_error_code()
+        );
+        Ok(result.votes_bundle_rlp)
+    }
+
+    fn verified_votes_build_optimized_votes_bundle_egress_runtime(
+        &self,
+        runtime: &PbftVerifiedVotesServiceGuard<'_>,
+        request: PbftOptimizedVoteBundleBuildRequest,
+    ) -> Result<PbftOptimizedVoteBundleBuildResult> {
+        let requested_hashes = request.vote_hashes;
         let Some(voted) = runtime.verified_votes().get_two_t_plus_one_voted_block(
             request.period,
             request.round,
@@ -4610,6 +4694,11 @@ mod tests {
         assert!(next_plan.next_votes.plan.is_none());
         assert_eq!(next_plan.next_null_votes.period, 12);
         assert_eq!(next_plan.next_null_votes.round, 2);
+        let next_payloads = service
+            .verified_votes_build_next_votes_bundle_egress(12, 2)
+            .unwrap();
+        assert!(next_payloads.next_votes_bundle_rlp.is_empty());
+        assert!(next_payloads.next_null_votes_bundle_rlp.is_empty());
 
         let snapshot = service.verified_votes_state_snapshot().unwrap();
         assert_eq!(snapshot.votes.len(), 2);

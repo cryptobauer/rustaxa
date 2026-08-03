@@ -61,12 +61,12 @@ use crate::pbft_vote_generation::{
 use crate::pbft_vote_payload::build_weighted_pbft_vote_payload;
 use crate::pbft_vote_progress::PbftVoteProgressContext;
 use crate::pbft_vote_runtime::{
-    PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
-    PbftOptimizedVoteBundleBuildResult, PbftRewardVotePayloadSelection,
-    PbftVerifiedVoteProgressPersistenceWrite, PbftVerifiedVotesService,
-    PbftVoteAdmissionTransactionResult, PbftVoteRuntimeReplayOutcome, RewardVoteCursorSnapshot,
-    RewardVotePayloadSnapshot, RewardVoteResetApplyRequest, VerifiedStepVotePayloadEntry,
-    VerifiedVotesStateSnapshot, VerifiedVotesTwoTPlusOneVotePayloads,
+    PbftNextVotesBundleEgressPayloads, PbftNextVotesBundleEgressPlan,
+    PbftOptimizedVoteBundleBuildRequest, PbftOptimizedVoteBundleBuildResult,
+    PbftRewardVotePayloadSelection, PbftVerifiedVoteProgressPersistenceWrite,
+    PbftVerifiedVotesService, PbftVoteAdmissionTransactionResult, PbftVoteRuntimeReplayOutcome,
+    RewardVoteCursorSnapshot, RewardVotePayloadSnapshot, RewardVoteResetApplyRequest,
+    VerifiedStepVotePayloadEntry, VerifiedVotesStateSnapshot, VerifiedVotesTwoTPlusOneVotePayloads,
     VerifiedVotesTwoTPlusOneVotedBlock,
 };
 use crate::pbft_vote_storage::{
@@ -2101,14 +2101,10 @@ impl PbftService {
                         .progress_fact
                         .as_ref()
                         .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "PBFT_SERVICE_SLASHING_CONFLICT_MISSING_PROGRESS_FACT"
-                            )
+                            anyhow::anyhow!("PBFT_SERVICE_SLASHING_CONFLICT_MISSING_PROGRESS_FACT")
                         })?;
-                    let submitters = resolve_slashing_submitter_facts(
-                        final_chain,
-                        slashing_submitters,
-                    )?;
+                    let submitters =
+                        resolve_slashing_submitter_facts(final_chain, slashing_submitters)?;
                     self.slashing
                         .plan_double_voting_proof(DoubleVotingProofInput {
                             vote_a_hash: payloads.incoming.hash,
@@ -2480,6 +2476,19 @@ impl PbftService {
     ) -> Result<PbftNextVotesBundleEgressPlan> {
         self.verified_votes()
             .verified_votes_plan_next_votes_bundle_egress(period, round)
+    }
+
+    /// Builds complete next and next-null egress payloads atomically.
+    ///
+    /// Both family lookups and encodings share one verified-vote lock epoch;
+    /// missing families are empty and invariant failures abort the pair.
+    pub fn verified_votes_build_next_votes_bundle_egress(
+        &self,
+        period: u64,
+        round: u64,
+    ) -> Result<PbftNextVotesBundleEgressPayloads> {
+        self.verified_votes()
+            .verified_votes_build_next_votes_bundle_egress(period, round)
     }
 
     /// Builds one optimized verified-vote bundle payload from retained hashes.
@@ -4284,22 +4293,27 @@ mod tests {
         before_activation.vote_b_period = 9;
         assert_eq!(
             service
+                .slashing
                 .plan_double_voting_proof(before_activation)
                 .unwrap()
                 .status,
             DoubleVotingProofPlanStatus::BeforeMagnoliaActivation
         );
 
-        let plan = service.plan_double_voting_proof(input.clone()).unwrap();
+        let plan = service
+            .slashing
+            .plan_double_voting_proof(input.clone())
+            .unwrap();
         assert_eq!(plan.status, DoubleVotingProofPlanStatus::Planned);
         assert!(
             !service
-                .report_double_voting_proof_submission(plan.proof_hash, false)
+                .report_verified_vote_slashing_transaction_submission(plan.proof_hash, false)
                 .unwrap()
                 .submitted
         );
         assert_eq!(
             service
+                .slashing
                 .plan_double_voting_proof(input.clone())
                 .unwrap()
                 .status,
@@ -4307,12 +4321,16 @@ mod tests {
         );
         assert!(
             service
-                .report_double_voting_proof_submission(plan.proof_hash, true)
+                .report_verified_vote_slashing_transaction_submission(plan.proof_hash, true)
                 .unwrap()
                 .submitted
         );
         assert_eq!(
-            service.plan_double_voting_proof(input).unwrap().status,
+            service
+                .slashing
+                .plan_double_voting_proof(input)
+                .unwrap()
+                .status,
             DoubleVotingProofPlanStatus::DuplicateProof
         );
 

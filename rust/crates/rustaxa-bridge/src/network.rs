@@ -210,6 +210,38 @@ impl BridgeConsensusNetworkApi {
             .collect())
     }
 
+    /// Routes one get-next-votes request and queues its native egress leaf.
+    ///
+    /// Scalar facts are intentionally passed directly: Rust owns eligibility,
+    /// previous-round selection, result validation, chunking, and ordered send
+    /// effects, while tarcap retains only packet decoding and execution.
+    #[allow(clippy::too_many_arguments)]
+    pub fn consensus_network_ingest_pbft_next_votes_bundle_request(
+        &self,
+        transport_lane: u32,
+        peer_id: [u8; 64],
+        peer_period: u64,
+        peer_round: u64,
+        current_period: u64,
+        current_round: u64,
+        source_payload_id: u64,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self.lock_api()?;
+        Ok(to_bridge_network_ingress_decision(
+            api.ingest_pbft_next_votes_bundle_request(
+                rustaxa_consensus::NetworkPbftNextVotesBundleRequest {
+                    transport_lane,
+                    peer_id,
+                    peer_period,
+                    peer_round,
+                    current_period,
+                    current_round,
+                    source_payload_id,
+                },
+            ),
+        ))
+    }
+
     /// Plans pillar-vote relevance through the external network/tarcap API.
     pub fn consensus_network_plan_pillar_vote_relevance(
         &self,
@@ -521,10 +553,40 @@ fn from_bridge_effect_result(
         object_hash: result.object_hash,
         status: result.status,
         diagnostic: result.diagnostic,
+        payload_bytes: result.payload_bytes,
+        related_payload_bytes: result.related_payload_bytes,
         admission_accepted: result.admission_accepted,
         admission_already_present: result.admission_already_present,
         admission_mark_vote_known: result.admission_mark_vote_known,
         admission_gossip_vote: result.admission_gossip_vote,
         admission_report_slashing: result.admission_report_slashing,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effect_result_conversion_preserves_operation_payload_pair() {
+        let result = from_bridge_effect_result(rustaxa_ffi::NetworkEffectResult {
+            effect_id: 7,
+            kind: 8,
+            peer_id: [3; 64],
+            packet_kind: 0,
+            object_kind: 7,
+            object_hash: [4; 32],
+            status: 0,
+            diagnostic: String::new(),
+            payload_bytes: vec![1, 2],
+            related_payload_bytes: vec![3, 4],
+            admission_accepted: false,
+            admission_already_present: false,
+            admission_mark_vote_known: false,
+            admission_gossip_vote: false,
+            admission_report_slashing: false,
+        });
+        assert_eq!(result.payload_bytes, vec![1, 2]);
+        assert_eq!(result.related_payload_bytes, vec![3, 4]);
     }
 }

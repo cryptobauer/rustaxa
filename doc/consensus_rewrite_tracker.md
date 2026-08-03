@@ -3346,6 +3346,24 @@ bundle loop. The executor now reports the failure first so Rust cancels dependen
 the original diagnostic before the handler can request another admission ID; this also makes final-member failure
 observable instead of silently returning an empty result.
 
+The following `CRW-N01` slice moves get-next-votes response routing behind the shared network root. Rust now owns the
+request period/round gate, exact previous-round application query, atomic result validation, 1,000-vote packet chunking,
+and next-before-next-null send ordering. One exact-ID application effect calls an atomic native verified-vote leaf that
+builds both optimized bundle families under one lock epoch; missing families are successful empty slots, while any
+invariant or encoding failure returns no partial pair. Tarcap only decodes the request, supplies the current PBFT
+snapshot, wraps and physically sends Rust-approved chunks, and marks decoded votes known after successful transport.
+The Rust-mode handler-local retry, vote materialization, chunking, and direct send decisions are unreachable. Two unused
+plan/build CXX exports and four DTOs are replaced by the one atomic leaf while the network ingress export is added, so
+CXX functions remain 377 and carriers fall to 328. Exact budgets are 22,100 bridge lines and 16,731 shim lines; handles,
+shim directories, and non-test consumers remain 18, 10, and 38. `CRW-N01` remains active for the other handler-local
+routing families.
+
+Focused native consensus and bridge tests, the Rust-enabled and fresh pure-C++ `network_test` targets, both isolated
+next-vote synchronization cases, `rewrite-validate-fast`, `rewrite-validate-smoke`, and the bridge inventory guard pass.
+The aggregate consensus gate reaches the established `pillar_chain_test` database-lock baseline: 10 of 13 cases pass,
+while `votes_count_changes`, `pillar_chain_syncing`, and `finalize_root_in_pillar_block` fail to reopen the same temporary
+RocksDB path within one process.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

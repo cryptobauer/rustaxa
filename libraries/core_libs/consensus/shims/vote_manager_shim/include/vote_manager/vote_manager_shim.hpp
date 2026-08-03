@@ -755,29 +755,13 @@ class VoteManager {
   std::vector<std::shared_ptr<PbftVote>> getTwoTPlusOneVotedBlockVotes(PbftPeriod period, PbftRound round,
                                                                        TwoTPlusOneVotedBlockType type) const;
   /**
-   * Plans previous-round next-vote bundle egress from Rust-owned vote payload metadata.
+   * Builds packet-ready previous-round next and next-null bundle payloads.
    *
-   * Inputs:
-   * - `period` and `round`: PBFT round requested by get-next-votes sync.
-   *
-   * Outputs:
-   * - Ordered next and next-null vote-hash plans without materializing
-   *   `PbftVote` objects.
-   *
-   * Invariants:
-   * - Network code must still filter per-peer known votes and build/send
-   *   chunked tarcap packets at the boundary.
+   * Both families observe one Rust verified-vote lock epoch. Missing mappings
+   * produce empty fields; invariant or codec failures throw through the bridge
+   * so network execution cannot report a partial pair.
    */
-  rustaxa::PbftNextVotesBundleEgressPlan planNextVotesBundleEgress(PbftPeriod period, PbftRound round) const;
-  /**
-   * Builds one optimized PBFT votes-bundle payload from a peer-filtered Rust egress request.
-   *
-   * Outputs:
-   * - On status 0, returns inner optimized votes-bundle RLP and included hashes
-   *   in send order; non-zero statuses must not be sent.
-   */
-  rustaxa::PbftOptimizedVoteBundleBuildResult buildOptimizedVotesBundleEgress(
-      rustaxa::PbftOptimizedVoteBundleBuildRequest request) const;
+  rustaxa::PbftNextVotesBundleEgressPayloads buildNextVotesBundleEgress(PbftPeriod period, PbftRound round) const;
   /**
    * Builds certify-step soft-vote debug output from VoteManager-owned vote facts.
    *
@@ -826,27 +810,14 @@ class VoteManager {
       const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
 
   /**
-   * Executes a Rust-planned double-vote slashing proof submission.
+   * Executes one native slashing transaction effect through the retained signing/submission leaf.
    *
-   * Purpose:
-   * - Isolates the remaining C++ `SlashingManager` executor boundary from the
-   *   Rust-owned PBFT vote admission state machine.
-   *
-   * Inputs:
-   * - `evidence` is the Rust-normalized double-vote payload selected by
-   *   verified-vote admission.
-   *
-   * Outputs:
-   * - Returns the SlashingManager submission result.
-   *
-   * Invariants:
-   * - Does not mutate verified-vote state.
-   * - This is a temporary executor boundary until slashing proof submission has
-   *   a Rust-owned port.
+   * Rust has already selected the configured wallet, account nonce, contract, gas, value, and canonical calldata.
+   * This method validates the wallet index, signs the exact returned transaction request, inserts it through the
+   * transaction manager, and reports the insertion outcome to the native PBFT service. A rejected insertion remains
+   * retryable; an accepted insertion commits native duplicate suppression exactly once.
    */
-  bool submitRustPlannedSlashingProof(const rustaxa::PbftVoteStorageRecord& incoming_vote,
-                                     const rustaxa::PbftVoteStorageRecord& conflicting_vote, PbftPeriod period,
-                                     PbftRound round, PbftStep step);
+  bool executeSlashingTransactionEffect(const rustaxa::SlashingTransactionEffect& effect);
   const PbftConfig& kPbftConfig;
   const FullNodeConfig& kConfig;
   std::shared_ptr<PbftChain> pbft_chain_;

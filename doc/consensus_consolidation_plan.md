@@ -550,8 +550,10 @@ settings are deleted; packet families cross only through authoritative operation
 bundles now preflight through one operation call, retain exact member admission identities in a unique Rust session,
 cancel aggregation on executor failure or slashing, and emit one accepted-only optimized-bundle gossip effect in input
 order. C++ no longer collects accepted bundle members or decides rebroadcast. Moving the remaining handler-local
-consensus routes behind the native pipeline is the next `CRW-N01` work, so this remains a contraction milestone rather
-than item completion.
+consensus routes behind the native pipeline is the next `CRW-N01` work. Get-next-votes egress is now one such native
+route: Rust owns request eligibility, an atomic next/next-null verified-vote leaf result, strict canonical result
+validation, legacy-sized chunking, and ordered send effects; tarcap retains only request decoding, packet wrapping,
+physical send, and successful-send known marking. This remains a contraction milestone rather than item completion.
 
 ### 7. Contract DAG and transaction shims
 

@@ -399,6 +399,8 @@ pub mod rustaxa_ffi {
         object_hash: [u8; 32],
         status: u8,
         diagnostic: String,
+        payload_bytes: Vec<u8>,
+        related_payload_bytes: Vec<u8>,
         admission_accepted: bool,
         admission_already_present: bool,
         admission_mark_vote_known: bool,
@@ -730,63 +732,14 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
     }
 
-    /// Per-family optimized PBFT vote-bundle egress plan.
+    /// Packet-ready next and next-null bundles built in one native lock epoch.
     ///
-    /// Status values are stable bridge codes:
-    /// 0 = ready, 1 = not found, 2 = empty request, 3 = unsupported kind,
-    /// 4 = mapping mismatch, 5 = requested hash is not in the 2t+1 plan,
-    /// 6 = requested hashes are not in plan order, 7 = missing retained
-    /// payload, 8 = payload decode error, 9 = payload metadata mismatch.
-    struct PbftOptimizedVoteBundlePlan {
-        found: bool,
-        status: u8,
-        error_code: String,
-        kind: u8,
-        block_hash: [u8; 32],
-        period: u64,
-        round: u64,
-        step: u64,
-        vote_hashes: Vec<PbftFinalizationHash>,
-    }
-
-    /// Combined get-next response plan for the previous PBFT round.
-    ///
-    /// Rust owns the next/next-null vote-hash selection from retained
-    /// verified-vote metadata. C++ owns peer-known filtering, chunking, tarcap
-    /// packet wrapping, and network send policy.
-    struct PbftNextVotesBundleEgressPlan {
-        status: u8,
-        error_code: String,
-        period: u64,
-        round: u64,
-        next_votes: PbftOptimizedVoteBundlePlan,
-        next_null_votes: PbftOptimizedVoteBundlePlan,
-    }
-
-    /// Request to build one peer-filtered optimized PBFT votes bundle.
-    ///
-    /// `vote_hashes` must be a non-empty ordered subsequence of the Rust plan
-    /// for `kind`; C++ uses this to filter already-known votes and split large
-    /// bundles without materializing `PbftVote` objects.
-    struct PbftOptimizedVoteBundleBuildRequest {
-        kind: u8,
-        block_hash: [u8; 32],
-        period: u64,
-        round: u64,
-        step: u64,
-        vote_hashes: Vec<PbftFinalizationHash>,
-    }
-
-    /// Result of building one optimized PBFT votes bundle.
-    ///
-    /// On status 0, `votes_bundle_rlp` is the inner
-    /// `OptimizedPbftVotesBundle` RLP payload and `vote_hashes` echoes the
-    /// included hashes in send order. It is not the tarcap packet wrapper.
-    struct PbftOptimizedVoteBundleBuildResult {
-        status: u8,
-        error_code: String,
-        vote_hashes: Vec<PbftFinalizationHash>,
-        votes_bundle_rlp: Vec<u8>,
+    /// Each non-empty field is an inner `OptimizedPbftVotesBundle` RLP. An
+    /// absent `2t+1` mapping is represented by an empty field; failures are
+    /// returned as bridge errors so callers cannot publish a partial pair.
+    struct PbftNextVotesBundleEgressPayloads {
+        next_votes_bundle_rlp: Vec<u8>,
+        next_null_votes_bundle_rlp: Vec<u8>,
     }
 
     /// Operation-level VoteManager persistence request for one accepted vote.
@@ -3719,6 +3672,17 @@ pub mod rustaxa_ffi {
             votes: Vec<PbftVoteIngressFact>,
             contexts: Vec<NetworkPbftVoteIngressContext>,
         ) -> Result<Vec<NetworkIngressDecision>>;
+        #[allow(clippy::too_many_arguments)]
+        pub fn consensus_network_ingest_pbft_next_votes_bundle_request(
+            self: &BridgeConsensusNetworkApi,
+            transport_lane: u32,
+            peer_id: [u8; 64],
+            peer_period: u64,
+            peer_round: u64,
+            current_period: u64,
+            current_round: u64,
+            source_payload_id: u64,
+        ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_plan_pillar_vote_relevance(
             self: &BridgeConsensusNetworkApi,
             fact: PillarVoteRelevanceFact,
@@ -4571,15 +4535,11 @@ pub mod rustaxa_ffi {
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotePayloadsLookup>;
-        pub fn pbft_service_verified_votes_plan_next_votes_bundle_egress(
+        pub fn pbft_service_verified_votes_build_next_votes_bundle_egress(
             self: &BridgePbftService,
             period: u64,
             round: u64,
-        ) -> Result<PbftNextVotesBundleEgressPlan>;
-        pub fn pbft_service_verified_votes_build_optimized_votes_bundle_egress(
-            self: &BridgePbftService,
-            request: PbftOptimizedVoteBundleBuildRequest,
-        ) -> Result<PbftOptimizedVoteBundleBuildResult>;
+        ) -> Result<PbftNextVotesBundleEgressPayloads>;
         pub fn pbft_service_verified_votes_cleanup_votes_by_period(
             self: &BridgePbftService,
             pbft_period: u64,

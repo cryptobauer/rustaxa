@@ -26,6 +26,13 @@ class TimePeriodPacketsStats;
 class NodeStats;
 }  // namespace network::tarcap
 
+class PbftBlock;
+class PbftVote;
+class PillarVote;
+#ifndef RUSTAXA_ENABLE
+class SlashingManager;
+#endif
+
 class PacketHandler;
 
 class Network {
