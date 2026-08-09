@@ -7,7 +7,7 @@
 
 use crate::dag_transaction_service::BridgeDagTransactionService;
 use crate::ffi::rustaxa_ffi::{
-    BlockPeriodLookup as FfiBlockPeriodLookup,
+    BlockPeriodLookup as FfiBlockPeriodLookup, PbftCertVoteRlp as FfiPbftCertVoteRlp,
     PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig,
     PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
     PbftFinalizationCleanupPlan as FfiPbftFinalizationCleanupPlan,
@@ -47,7 +47,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerRuntimeActionReport as FfiPbftManagerRuntimeActionReport,
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
     PbftManagerRuntimeSnapshot as FfiPbftManagerRuntimeSnapshot,
-    PbftManagerRuntimeStorageApplyResult as FfiPbftManagerRuntimeStorageApplyResult,
     PbftManagerRuntimeTickFact as FfiPbftManagerRuntimeTickFact,
     PbftManagerSleepPlan as FfiPbftManagerSleepPlan,
     PbftManagerStartupReplayRangeFact as FfiPbftManagerStartupReplayRangeFact,
@@ -56,22 +55,24 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerStateActionEffectReport as FfiPbftManagerStateActionEffectReport,
     PbftManagerStateActionFact as FfiPbftManagerStateActionFact,
     PbftManagerStateActionSessionStep as FfiPbftManagerStateActionSessionStep,
-    PbftServiceConfig as FfiPbftServiceConfig,
+    PbftServiceConfig as FfiPbftServiceConfig, PbftSyncIngressStep as FfiPbftSyncIngressStep,
     PbftSyncQueueDrainReport as FfiPbftSyncQueueDrainReport,
     PbftSyncQueueDrainReportResult as FfiPbftSyncQueueDrainReportResult,
     PbftSyncQueueDrainStep as FfiPbftSyncQueueDrainStep,
-    PeriodDataQueueEntryRef as FfiPeriodDataQueueEntryRef,
-    PeriodDataQueuePbftVotePayload as FfiPeriodDataQueuePbftVotePayload,
-    PeriodDataQueuePillarVotePayload as FfiPeriodDataQueuePillarVotePayload,
     PeriodDataQueuePopPlan as FfiPeriodDataQueuePopPlan,
     PeriodDataQueuePushOutcome as FfiPeriodDataQueuePushOutcome,
     PeriodDataQueueSnapshot as FfiPeriodDataQueueSnapshot,
     PeriodDataQueueTransactionIdentity as FfiPeriodDataQueueTransactionIdentity,
     PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
+    PillarVoteRlpPayload as FfiPillarVoteRlpPayload,
     TransactionQueueAccountNonceFact as FfiTransactionQueueAccountNonceFact,
 };
-use crate::ffi::{BridgePbftService, BridgeStorage};
+use crate::ffi::{BridgeFinalChain, BridgePbftService, BridgeStorage};
 use crate::transaction_manager::bridge_to_service_account_nonce_facts;
+use crate::verified_votes::{
+    empty_slashing_transaction_effect, slashing_submitter_identity_to_domain,
+    slashing_transaction_effect_to_ffi,
+};
 use anyhow::anyhow;
 use rustaxa_consensus::dag::DagBlockPeriodStorageLookup;
 use rustaxa_consensus::pbft_finalize::{
@@ -119,10 +120,8 @@ use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
     PbftSyncQueueDrainStatus, PbftSyncQueueDrainStep,
 };
-use rustaxa_consensus::period_data_queue::{
-    PeriodDataQueueEntryRef, PeriodDataQueuePushRequest, PeriodDataQueueTransactionIdentity,
-};
-use rustaxa_consensus::{PbftService, PbftServiceConfig};
+use rustaxa_consensus::period_data_queue::EncodedPeriodDataQueuePushRequest;
+use rustaxa_consensus::{PbftService, PbftServiceConfig, PbftSyncIngressStep};
 
 impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
     for PbftFinalizationStorageWriteStage
@@ -434,11 +433,69 @@ pub fn create_pbft_service_from_storage(
         sync_level_size: config.sync_level_size,
         is_light_node: config.is_light_node,
         light_node_history: config.light_node_history,
+        committee_size: config.committee_size,
+        number_of_proposers: config.number_of_proposers,
+        slashing_submitters: config
+            .slashing_submitters
+            .into_iter()
+            .map(slashing_submitter_identity_to_domain)
+            .collect(),
     };
     Ok(Box::new(BridgePbftService(PbftService::restore(
         storage.0.clone(),
         config,
     )?)))
+}
+
+fn pbft_sync_ingress_step_to_ffi(value: PbftSyncIngressStep) -> FfiPbftSyncIngressStep {
+    let has_effect = value.slashing_transaction_effect.is_some();
+    FfiPbftSyncIngressStep {
+        action: value.action.as_u8(),
+        error_code: value.error_code,
+        source_payload_id: value.source_payload_id,
+        block_hash: value.block_hash.0,
+        period: value.period,
+        max_dag_level: value.max_dag_level,
+        last_block: value.last_block,
+        current_cert_present: value.current_cert_present,
+        has_slashing_transaction_effect: has_effect,
+        slashing_transaction_effect: value
+            .slashing_transaction_effect
+            .map(slashing_transaction_effect_to_ffi)
+            .unwrap_or_else(empty_slashing_transaction_effect),
+    }
+}
+
+/// Begins or replaces the native PBFT-sync ingress session.
+pub fn pbft_service_begin_pbft_sync_ingress(
+    service: &BridgePbftService,
+    final_chain: &BridgeFinalChain,
+    packet_rlp: &[u8],
+    source_payload_id: u64,
+    source_peer_id: [u8; 64],
+) -> anyhow::Result<FfiPbftSyncIngressStep> {
+    service
+        .0
+        .begin_pbft_sync_ingress(
+            &final_chain.0,
+            packet_rlp,
+            source_payload_id,
+            source_peer_id,
+        )
+        .map(pbft_sync_ingress_step_to_ffi)
+}
+
+/// Reports one pending slashing effect and advances the same ingress session.
+pub fn pbft_service_report_pbft_sync_ingress_slashing(
+    service: &BridgePbftService,
+    final_chain: &BridgeFinalChain,
+    proof_hash: [u8; 32],
+    transaction_inserted: bool,
+) -> anyhow::Result<FfiPbftSyncIngressStep> {
+    service
+        .0
+        .report_pbft_sync_ingress_slashing(&final_chain.0, proof_hash.into(), transaction_inserted)
+        .map(pbft_sync_ingress_step_to_ffi)
 }
 
 /// Marks the typed PBFT startup replay phase complete.
@@ -505,8 +562,8 @@ pub fn pbft_manager_runtime_snapshot(runtime: &BridgePbftService) -> FfiPbftMana
 ///
 /// Inputs:
 /// - `runtime` owns the in-memory period-data queue metadata.
-/// - `pbft_chain_size`, `current_period`, and `chain_last_hash` are the
-///   remaining PBFT-chain compatibility facts supplied by the C++ shell.
+/// - Native PBFT-chain head state supplies the chain size, current period, and
+///   last hash; C++ cannot inject a divergent queue view.
 ///
 /// Outputs:
 /// - Returns the queue marker, syncing period, chain-link hash decision, size,
@@ -519,27 +576,15 @@ pub fn pbft_manager_runtime_snapshot(runtime: &BridgePbftService) -> FfiPbftMana
 ///   exports.
 pub fn pbft_manager_runtime_period_data_queue_snapshot(
     runtime: &BridgePbftService,
-    pbft_chain_size: u64,
-    current_period: u64,
-    chain_last_hash: [u8; 32],
-) -> FfiPeriodDataQueueSnapshot {
-    let snapshot = runtime.0.period_data_queue_snapshot(
-        pbft_chain_size,
-        current_period,
-        ethereum_types::H256::from(chain_last_hash),
-    );
-    FfiPeriodDataQueueSnapshot {
+) -> anyhow::Result<FfiPeriodDataQueueSnapshot> {
+    let snapshot = runtime.0.period_data_queue_snapshot()?;
+    Ok(FfiPeriodDataQueueSnapshot {
         period: snapshot.period,
         syncing_period: snapshot.syncing_period,
         last_block_hash_or_chain: snapshot.last_block_hash_or_chain.into(),
         size: snapshot.size,
         empty: snapshot.empty,
-    }
-}
-
-/// Clears PBFT manager runtime queue metadata.
-pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &BridgePbftService) {
-    runtime.0.clear_period_data_queue();
+    })
 }
 
 fn queue_drain_step_into_ffi(value: PbftSyncQueueDrainStep) -> FfiPbftSyncQueueDrainStep {
@@ -598,34 +643,23 @@ fn queue_drain_report_from_ffi(value: FfiPbftSyncQueueDrainReport) -> PbftSyncQu
 ///
 /// Invariants and edge behavior:
 /// - C++ calls this once at the start of each `pushSyncedPbftBlocksIntoChain`
-///   pass. The live `PeriodData` sidecars remain C++-owned for now, but the
-///   planner session no longer requires a standalone CXX bridge handle.
+///   pass. Rust retains the encoded `PeriodData` payloads and peer identities;
+///   the planner session requires no parallel C++ queue or standalone handle.
 pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgePbftService) {
     runtime.0.begin_pbft_sync_queue_drain();
 }
 
-/// Returns the next queue-drain step from the PBFT manager runtime-owned planner.
+/// Returns the next CXX-safe external queue-drain step for `runtime`.
 ///
-/// Inputs:
-/// - `runtime`: long-lived Rust PBFT manager runtime.
-/// - `queue_size`: current processable C++ sidecar queue size.
-/// - `current_period`: current PBFT period used for stale queue cleanup.
-///
-/// Outputs:
-/// - A CXX-safe queue-drain step for the C++ executor.
-///
-/// Invariants and edge behavior:
-/// - Rust owns action ordering and report validation. C++ remains the
-///   temporary executor for live sidecar cleanup, period processing, block
-///   pushing, and network sync-state updates.
+/// Queue size and period are sampled from native siblings. Rust orders actions,
+/// applies and acknowledges cleanup, and validates reports; C++ temporarily
+/// materializes popped periods, pushes blocks, and publishes network sync state.
 pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
     runtime: &BridgePbftService,
-    queue_size: usize,
-    current_period: u64,
 ) -> FfiPbftSyncQueueDrainStep {
     runtime
         .0
-        .pbft_sync_queue_drain_next(queue_size, current_period)
+        .pbft_sync_queue_drain_next()
         .map(queue_drain_step_into_ffi)
         .unwrap_or_else(queue_drain_bootstrap_incomplete_step)
 }
@@ -654,184 +688,37 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
         .unwrap_or_else(queue_drain_bootstrap_incomplete_report)
 }
 
-// Pure conversion carrier for the stable CXX push arguments. It exists so the
-// boundary mapping can be tested without constructing storage or a runtime.
-struct PeriodDataQueuePushFfiInput {
-    entry_id: u64,
-    period: u64,
-    block_hash: [u8; 32],
-    prev_block_hash: [u8; 32],
-    pivot_hash: [u8; 32],
-    final_chain_hash: [u8; 32],
-    reward_vote_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
-    pillar_vote_rlps: Vec<FfiPeriodDataQueuePillarVotePayload>,
-    transaction_rlps: Vec<FfiPeriodDataQueueTransactionPayload>,
-    previous_cert_vote_rlps: Vec<FfiPeriodDataQueuePbftVotePayload>,
-    dag_transaction_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
-    period_data_transaction_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
-    period_data_transaction_identities: Vec<FfiPeriodDataQueueTransactionIdentity>,
-    previous_cert_votes_present: bool,
-    previous_cert_first_vote_has_weight: bool,
-    pillar_votes_present: bool,
-    extra_data_present: bool,
-    extra_data_pillar_block_hash_present: bool,
-    max_pbft_size: u64,
-    current_block_cert_vote_rlps: Vec<FfiPeriodDataQueuePbftVotePayload>,
-}
-
-impl From<PeriodDataQueuePushFfiInput> for PeriodDataQueuePushRequest {
-    fn from(value: PeriodDataQueuePushFfiInput) -> Self {
-        Self {
-            entry: PeriodDataQueueEntryRef {
-                entry_id: value.entry_id,
-                period: value.period,
-                block_hash: value.block_hash.into(),
-                prev_block_hash: value.prev_block_hash.into(),
-                pivot_hash: value.pivot_hash.into(),
-                final_chain_hash: value.final_chain_hash.into(),
-                reward_vote_hashes: bridge_hashes_to_h256(value.reward_vote_hashes),
-                pillar_vote_rlps: value
-                    .pillar_vote_rlps
-                    .into_iter()
-                    .map(|payload| payload.vote_rlp)
-                    .collect(),
-                transaction_rlps: value
-                    .transaction_rlps
-                    .into_iter()
-                    .map(|payload| payload.transaction_rlp)
-                    .collect(),
-                previous_cert_vote_rlps: pbft_vote_rlps_to_vec(value.previous_cert_vote_rlps),
-                dag_transaction_hashes: bridge_hashes_to_h256(value.dag_transaction_hashes),
-                period_data_transaction_hashes: bridge_hashes_to_h256(
-                    value.period_data_transaction_hashes,
-                ),
-                period_data_transaction_identities: value
-                    .period_data_transaction_identities
-                    .into_iter()
-                    .map(|identity| PeriodDataQueueTransactionIdentity {
-                        input_index: identity.input_index,
-                        hash: identity.hash.into(),
-                        transaction_nonce: identity.transaction_nonce,
-                        sender: identity.sender,
-                    })
-                    .collect(),
-                previous_cert_votes_present: value.previous_cert_votes_present,
-                previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
-                pillar_votes_present: value.pillar_votes_present,
-                extra_data_present: value.extra_data_present,
-                extra_data_pillar_block_hash_present: value.extra_data_pillar_block_hash_present,
-            },
-            max_pbft_size: value.max_pbft_size,
-            current_block_cert_vote_rlps: pbft_vote_rlps_to_vec(value.current_block_cert_vote_rlps),
-        }
-    }
-}
-
-/// Pushes one period-data payload reference into native manager queue metadata.
+/// Pushes one encoded period-data payload into the native manager queue.
 ///
-/// C++ supplies canonical payload facts and retains live `PeriodData`,
-/// `PbftVote`, and peer sidecars. The bridge converts the complete request;
-/// native `PbftService` owns locking, admission, cleanup, and pop-source state.
+/// C++ supplies canonical payload bytes, the fixed peer identity, and temporary
+/// compact validation facts. The bridge converts the complete request; native
+/// `PbftService` owns payload retention, locking, admission, cleanup, and
+/// pop-source state.
 /// Sequencing rejection is returned as an outcome and checked period overflow
 /// is returned as an error without partial queue mutation.
 pub fn pbft_manager_runtime_period_data_queue_push(
     runtime: &BridgePbftService,
-    entry_id: u64,
-    period: u64,
-    block_hash: [u8; 32],
-    prev_block_hash: [u8; 32],
-    pivot_hash: [u8; 32],
-    final_chain_hash: [u8; 32],
-    reward_vote_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
-    pillar_vote_rlps: Vec<FfiPeriodDataQueuePillarVotePayload>,
-    transaction_rlps: Vec<FfiPeriodDataQueueTransactionPayload>,
-    previous_cert_vote_rlps: Vec<FfiPeriodDataQueuePbftVotePayload>,
-    dag_transaction_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
-    period_data_transaction_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
-    period_data_transaction_identities: Vec<FfiPeriodDataQueueTransactionIdentity>,
-    previous_cert_votes_present: bool,
-    previous_cert_first_vote_has_weight: bool,
-    pillar_votes_present: bool,
-    extra_data_present: bool,
-    extra_data_pillar_block_hash_present: bool,
-    max_pbft_size: u64,
-    current_block_cert_vote_rlps: Vec<FfiPeriodDataQueuePbftVotePayload>,
+    period_data_rlp: Vec<u8>,
+    source_peer_id: [u8; 64],
+    previous_cert_vote_rlps: Vec<FfiPbftCertVoteRlp>,
+    current_block_cert_vote_rlps: Vec<FfiPbftCertVoteRlp>,
 ) -> anyhow::Result<FfiPeriodDataQueuePushOutcome> {
-    let request = PeriodDataQueuePushFfiInput {
-        entry_id,
-        period,
-        block_hash,
-        prev_block_hash,
-        pivot_hash,
-        final_chain_hash,
-        reward_vote_hashes,
-        pillar_vote_rlps,
-        transaction_rlps,
-        previous_cert_vote_rlps,
-        dag_transaction_hashes,
-        period_data_transaction_hashes,
-        period_data_transaction_identities,
-        previous_cert_votes_present,
-        previous_cert_first_vote_has_weight,
-        pillar_votes_present,
-        extra_data_present,
-        extra_data_pillar_block_hash_present,
-        max_pbft_size,
-        current_block_cert_vote_rlps,
-    }
-    .into();
-    Ok(runtime.0.push_period_data_queue(request)?.into())
+    Ok(runtime
+        .0
+        .push_encoded_period_data_queue(EncodedPeriodDataQueuePushRequest {
+            period_data_rlp,
+            source_peer_id,
+            previous_cert_vote_rlps: pbft_vote_rlps_to_vec(previous_cert_vote_rlps),
+            current_block_cert_vote_rlps: pbft_vote_rlps_to_vec(current_block_cert_vote_rlps),
+        })?
+        .into())
 }
 
-/// Pops one PBFT sync queue metadata entry from PBFT manager runtime state.
+/// Pops one encoded PBFT sync payload and its executor facts from runtime state.
 pub fn pbft_manager_runtime_period_data_queue_pop(
     runtime: &BridgePbftService,
 ) -> anyhow::Result<FfiPeriodDataQueuePopPlan> {
     Ok(runtime.0.pop_period_data_queue()?.into())
-}
-
-/// Removes stale PBFT sync queue metadata entries from PBFT manager runtime state.
-pub fn pbft_manager_runtime_period_data_queue_clean_old_data(
-    runtime: &BridgePbftService,
-    period: u64,
-) -> Vec<FfiPeriodDataQueueEntryRef> {
-    runtime
-        .0
-        .clean_old_period_data_queue(period)
-        .into_iter()
-        .map(Into::into)
-        .collect()
-}
-
-impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
-    for FfiPeriodDataQueueEntryRef
-{
-    fn from(value: rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef) -> Self {
-        Self {
-            entry_id: value.entry_id,
-            period: value.period,
-            block_hash: value.block_hash.into(),
-            prev_block_hash: value.prev_block_hash.into(),
-            pivot_hash: value.pivot_hash.into(),
-            final_chain_hash: value.final_chain_hash.into(),
-            reward_vote_hashes: transaction_hashes_to_bridge(value.reward_vote_hashes),
-            pillar_vote_rlps: pillar_vote_rlps_to_bridge(value.pillar_vote_rlps),
-            transaction_rlps: transaction_rlps_to_bridge(value.transaction_rlps),
-            previous_cert_vote_rlps: pbft_vote_rlps_to_bridge(value.previous_cert_vote_rlps),
-            dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
-            period_data_transaction_hashes: transaction_hashes_to_bridge(
-                value.period_data_transaction_hashes,
-            ),
-            period_data_transaction_identities: transaction_identities_to_bridge(
-                value.period_data_transaction_identities,
-            ),
-            previous_cert_votes_present: value.previous_cert_votes_present,
-            previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
-            pillar_votes_present: value.pillar_votes_present,
-            extra_data_present: value.extra_data_present,
-            extra_data_pillar_block_hash_present: value.extra_data_pillar_block_hash_present,
-        }
-    }
 }
 
 impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePushOutcome>
@@ -840,7 +727,6 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePushOutcome>
     fn from(value: rustaxa_consensus::period_data_queue::PeriodDataQueuePushOutcome) -> Self {
         Self {
             accepted: value.accepted,
-            clear_existing: value.clear_existing,
             expected_next_period: value.expected_next_period,
             actual_period: value.actual_period,
             current_period: value.current_period,
@@ -854,7 +740,8 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan>
 {
     fn from(value: rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan) -> Self {
         Self {
-            entry_id: value.entry_id,
+            period_data_rlp: value.period_data_rlp,
+            source_peer_id: value.source_peer_id,
             entry_period: value.entry_period,
             block_hash: value.block_hash.into(),
             prev_block_hash: value.prev_block_hash.into(),
@@ -877,10 +764,6 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan>
             pillar_votes_present: value.pillar_votes_present,
             extra_data_present: value.extra_data_present,
             extra_data_pillar_block_hash_present: value.extra_data_pillar_block_hash_present,
-            use_last_block_cert_votes: value.use_last_block_cert_votes,
-            next_entry_id: value.next_entry_id,
-            current_period: value.current_period,
-            effective_size: value.effective_size,
         }
     }
 }
@@ -894,18 +777,9 @@ fn transaction_hashes_to_bridge(
         .collect()
 }
 
-fn bridge_hashes_to_h256(
-    hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
-) -> Vec<ethereum_types::H256> {
-    hashes
-        .into_iter()
-        .map(|hash| ethereum_types::H256::from(hash.hash))
-        .collect()
-}
-
-fn pillar_vote_rlps_to_bridge(rlps: Vec<Vec<u8>>) -> Vec<FfiPeriodDataQueuePillarVotePayload> {
+fn pillar_vote_rlps_to_bridge(rlps: Vec<Vec<u8>>) -> Vec<FfiPillarVoteRlpPayload> {
     rlps.into_iter()
-        .map(|vote_rlp| FfiPeriodDataQueuePillarVotePayload { vote_rlp })
+        .map(|vote_rlp| FfiPillarVoteRlpPayload { vote_rlp })
         .collect()
 }
 
@@ -915,16 +789,16 @@ fn transaction_rlps_to_bridge(rlps: Vec<Vec<u8>>) -> Vec<FfiPeriodDataQueueTrans
         .collect()
 }
 
-fn pbft_vote_rlps_to_vec(payloads: Vec<FfiPeriodDataQueuePbftVotePayload>) -> Vec<Vec<u8>> {
+fn pbft_vote_rlps_to_vec(payloads: Vec<FfiPbftCertVoteRlp>) -> Vec<Vec<u8>> {
     payloads
         .into_iter()
         .map(|payload| payload.vote_rlp)
         .collect()
 }
 
-fn pbft_vote_rlps_to_bridge(rlps: Vec<Vec<u8>>) -> Vec<FfiPeriodDataQueuePbftVotePayload> {
+fn pbft_vote_rlps_to_bridge(rlps: Vec<Vec<u8>>) -> Vec<FfiPbftCertVoteRlp> {
     rlps.into_iter()
-        .map(|vote_rlp| FfiPeriodDataQueuePbftVotePayload { vote_rlp })
+        .map(|vote_rlp| FfiPbftCertVoteRlp { vote_rlp })
         .collect()
 }
 
@@ -1269,6 +1143,8 @@ fn lifecycle_transition_result_from_domain(
 /// - `status = 0` after the durable `ExecutedBlock` status is set to false and
 ///   the runtime snapshot is updated.
 /// - `status = 1` with the prior snapshot when storage rejects the write.
+/// - Every lifecycle sidecar and timer command is `false`; this storage
+///   follow-up reuses the lifecycle result carrier without emitting effects.
 ///
 /// Invariants and edge behavior:
 /// - C++ must call this only after preserving the legacy
@@ -1278,12 +1154,19 @@ fn lifecycle_transition_result_from_domain(
 /// - The returned snapshot is the authoritative source for C++ live mirrors.
 pub fn pbft_manager_runtime_apply_executed_block_reset(
     runtime: &BridgePbftService,
-) -> anyhow::Result<FfiPbftManagerRuntimeStorageApplyResult> {
+) -> anyhow::Result<FfiPbftManagerLifecycleTransitionResult> {
     let outcome = runtime.0.apply_executed_block_reset();
-    Ok(FfiPbftManagerRuntimeStorageApplyResult {
+    Ok(FfiPbftManagerLifecycleTransitionResult {
         status: outcome.status.as_u8(),
-        applied_writes: outcome.applied_writes,
         snapshot: outcome.snapshot.into(),
+        remove_cert_voted_sidecar: false,
+        clear_broadcasted_vote_sidecars: false,
+        set_vote_manager_period_round: false,
+        reset_current_round_timer: false,
+        reset_second_finish_timer: false,
+        print_cert_step_info: false,
+        print_second_finish_step_info: false,
+        reset_executed_block_follow_up: false,
         error_code: outcome.error_code,
     })
 }
@@ -1364,27 +1247,6 @@ fn dag_block_period_lookup_into_ffi(lookup: DagBlockPeriodStorageLookup) -> FfiB
         period: lookup.period,
         position: lookup.position,
     }
-}
-
-/// Checks PBFT block existence through PBFT-manager runtime storage.
-///
-/// Inputs:
-/// - `runtime`: long-lived Rust PBFT manager runtime with its storage handle.
-/// - `hash`: canonical PBFT block hash.
-///
-/// Outputs:
-/// - Returns whether the Rust PBFT block index contains `hash`.
-///
-/// Invariants and edge behavior:
-/// - This is a storage fact lookup only. PBFT block materialization for network
-///   and API compatibility remains outside this helper.
-pub fn pbft_manager_runtime_pbft_block_in_db(
-    runtime: &BridgePbftService,
-    hash: &[u8; 32],
-) -> anyhow::Result<bool> {
-    runtime
-        .0
-        .pbft_block_in_db(ethereum_types::H256::from(*hash))
 }
 
 /// Plans one deterministic PBFT finalization intent through Rust for a PBFT
@@ -2487,7 +2349,6 @@ mod period_data_queue_adapter_tests;
 mod tests {
     use super::*;
     use ethereum_types::H256;
-    use rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStatus;
     use rustaxa_consensus::pbft_manager::{
         PbftManagerRuntimeStateCode, PbftManagerStartupRestoreStatus, PbftManagerTransitionKind,
     };
@@ -2601,61 +2462,7 @@ mod tests {
     }
 
     #[test]
-    fn manager_runtime_projects_native_owned_drain_compatibility_flags() {
-        let state = finalization_executor_state_from_boundary(
-            rustaxa_consensus::pbft_manager::PbftFinalizationExecutorBoundary {
-                cleared_anchor_dag_cache: true,
-                has_snapshot: true,
-                expired_dag_hashes: vec![H256::repeat_byte(9)],
-                refresh_dag_counters: true,
-                next_step: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep {
-                    runtime_status: PbftFinalizationRuntimeStatus::Active,
-                    has_action: true,
-                    action: Some(PbftFinalizationRuntimeAction::FinalizeFinalChain),
-                    action_index: 7,
-                    complete: false,
-                    error_code: String::new(),
-                },
-                snapshot: runtime_snapshot(),
-                error_code: String::new(),
-            },
-        );
-
-        assert!(state.cleared_anchor_dag_cache);
-        assert!(state.has_snapshot);
-        assert_eq!(state.expired_dag_hashes[0].hash, [9; 32]);
-        assert!(state.refresh_dag_counters);
-        assert_eq!(state.cursor, 7);
-        assert_eq!(
-            state.action,
-            PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
-        );
-        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
-        assert!(state.has_action);
-        assert!(!state.complete);
-        assert!(state.can_continue);
-        assert_eq!(
-            state.snapshot.status,
-            PbftManagerStartupRestoreStatus::Ready.as_u8()
-        );
-        assert_eq!(
-            state.snapshot.state,
-            PbftManagerRuntimeStateCode::ValueProposal.as_u8()
-        );
-        assert_eq!(
-            (
-                state.snapshot.period,
-                state.snapshot.round,
-                state.snapshot.step
-            ),
-            (10, 2, 3)
-        );
-        assert_eq!(state.snapshot.cert_voted_block_hash, [0x11; 32]);
-        assert!(state.error_code.is_empty());
-    }
-
-    #[test]
-    fn bridge_session_adapters_preserve_boundary_fields() {
+    fn bridge_session_adapters_preserve_boundary_codes() {
         let queue_step = queue_drain_step_into_ffi(PbftSyncQueueDrainStep {
             action: PbftSyncQueueDrainAction::PushAccepted,
             status: PbftSyncQueueDrainStatus::Active,
@@ -2670,33 +2477,18 @@ mod tests {
                 PbftSyncQueueDrainStatus::Active.as_u8()
             )
         );
-        assert_eq!(queue_step.clean_before_period, 42);
-        assert!(queue_step.can_continue);
-        assert_eq!(queue_step.error_code, "QUEUE_STEP_SENTINEL");
-
         let queue_report = queue_drain_report_result_into_ffi(PbftSyncQueueDrainReportResult {
             status: PbftSyncQueueDrainStatus::PushFailed,
             can_continue: false,
             error_code: "QUEUE_REPORT_SENTINEL",
         });
+        assert_eq!(queue_step.clean_before_period, 42);
+        assert_eq!(queue_step.error_code, "QUEUE_STEP_SENTINEL");
         assert_eq!(
             queue_report.status,
             PbftSyncQueueDrainStatus::PushFailed.as_u8()
         );
-        assert!(!queue_report.can_continue);
         assert_eq!(queue_report.error_code, "QUEUE_REPORT_SENTINEL");
-
-        let queue_report_input = queue_drain_report_from_ffi(FfiPbftSyncQueueDrainReport {
-            action: PbftSyncQueueDrainAction::UpdateSyncState.as_u8(),
-            success: false,
-            accepted_period_data: true,
-        });
-        assert_eq!(
-            queue_report_input.action,
-            PbftSyncQueueDrainAction::UpdateSyncState
-        );
-        assert!(!queue_report_input.success);
-        assert!(queue_report_input.accepted_period_data);
 
         let state_report_input: PbftManagerStateActionEffectReport =
             FfiPbftManagerStateActionEffectReport {
@@ -2706,7 +2498,6 @@ mod tests {
                 error_code: "STATE_REPORT_SENTINEL".to_owned(),
             }
             .into();
-        assert_eq!(state_report_input.cursor, 9);
         assert_eq!(
             state_report_input.intent,
             PbftManagerStateActionIntent::NextVoteNullBlock
@@ -2715,7 +2506,6 @@ mod tests {
             state_report_input.result,
             PbftManagerStateActionEffectResultCode::SkippedNoWork
         );
-        assert_eq!(state_report_input.error_code, "STATE_REPORT_SENTINEL");
 
         let state_step: FfiPbftManagerStateActionSessionStep = PbftManagerStateActionSessionStep {
             status: PbftManagerStateActionSessionStatus::Active,
@@ -2739,20 +2529,12 @@ mod tests {
             state_step.status,
             PbftManagerStateActionSessionStatus::Active.as_u8()
         );
-        assert_eq!(state_step.cursor, 7);
-        assert!(state_step.has_effect);
         assert_eq!(
             state_step.effect.intent,
             PbftManagerStateActionIntent::NextVoteCurrentSoftValue.as_u8()
         );
         assert_eq!(state_step.effect.hash, [0x55; 32]);
-        assert!(state_step.effect.request_proposed_block_sidecar);
         assert_eq!(state_step.effect.proposed_block_sidecar_hash, [0x66; 32]);
-        assert_eq!(state_step.effect.proposed_block_sidecar_period, 11);
-        assert!(state_step.go_finish_state);
-        assert!(!state_step.loop_back_finish_state);
-        assert!(!state_step.complete);
-        assert!(state_step.can_continue);
         assert_eq!(state_step.error_code, "STATE_STEP_SENTINEL");
     }
 

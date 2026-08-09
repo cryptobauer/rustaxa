@@ -1,5 +1,7 @@
 #include "network/tarcap/packets_handlers/latest/votes_bundle_packet_handler.hpp"
 
+#include <algorithm>
+
 #include "pbft/pbft_manager.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -14,6 +16,7 @@ namespace {
 
 constexpr uint8_t kPbftVoteIngressStatusUnsupportedBundleProposeVote = 7;
 constexpr uint8_t kPbftVoteIngressStatusBundleVoteMismatch = 8;
+constexpr uint8_t kPbftVoteIngressStatusAccepted = 0;
 
 rustaxa::PbftVoteIngressFact makeVoteIngressFact(const std::shared_ptr<PbftVote> &vote) {
   rustaxa::PbftVoteIngressFact fact{};
@@ -104,6 +107,7 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
     member_context.transport_lane = transport_lane_;
     member_context.peer_id = peer->getId().asArray();
     member_context.peer_pbft_chain_size = peer->pbft_chain_size_.load();
+    member_context.source_payload_id = packet_data.id_;
     member_context.enqueue_admission = true;
     member_context.allow_gossip = false;
     member_context.vote_hash = vote->getHash().asArray();
@@ -112,12 +116,17 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
   }
   const auto bundle_decisions =
       ingestPbftVoteBundle(makeVoteIngressFact(reference_vote), std::move(bundle_facts), std::move(bundle_contexts));
-  if (bundle_decisions.size() != packet.votes_bundle.votes.size()) {
+  const bool bundle_preflight_accepted =
+      bundle_decisions.size() == packet.votes_bundle.votes.size() &&
+      std::all_of(bundle_decisions.begin(), bundle_decisions.end(), [](const auto &decision) {
+        return decision.status == kPbftVoteIngressStatusAccepted && decision.application_effect_id != 0;
+      });
+  if (!bundle_preflight_accepted) {
     if (bundle_decisions.empty()) {
       throw std::runtime_error("Rust network API rejected malformed PBFT bundle admission inputs");
     }
     const auto &ingress_decision = bundle_decisions.front();
-    (void)executeConsensusNetworkEffects(16, std::nullopt);
+    (void)executeConsensusNetworkEffects(16, std::nullopt, false, false, packet_data.id_);
     if (ingress_decision.status == kPbftVoteIngressStatusUnsupportedBundleProposeVote) {
       LOG(log_er_) << "Dropping votes bundle packet due to received \"propose\" votes from " << peer->getId()
                    << ". The peer may be a malicious player, will be disconnected";
@@ -187,9 +196,13 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
                  << " as part of votes bundle";
 
 #ifdef RUSTAXA_ENABLE
-    const auto process_result =
-        executeConsensusNetworkEffects(1, bundle_decisions[bundle_member_index].application_effect_id, true);
+    const auto process_result = executeConsensusNetworkEffects(
+        1, bundle_decisions[bundle_member_index].application_effect_id, true, true, packet_data.id_);
     ++bundle_member_index;
+    if (process_result.cancelled) {
+      LOG(log_dg_) << "Rust network API cancelled the remaining PBFT vote-bundle admissions";
+      break;
+    }
 #else
     const auto process_result = processVote(vote, nullptr, peer, check_max_round_step, false);
 #endif
@@ -210,7 +223,7 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
 #ifndef RUSTAXA_ENABLE
   onNewPbftVotesBundle(packet.votes_bundle.votes, false, peer->getId());
 #else
-  (void)executeConsensusNetworkEffects(16, std::nullopt);
+  (void)executeConsensusNetworkEffects(16, std::nullopt, false, false, packet_data.id_);
 #endif
 }
 

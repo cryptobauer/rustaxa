@@ -7,7 +7,11 @@
 
 use crate::FinalChain;
 use crate::dag::{DagBlockPeriodStorageLookup, dag_block_period_from_storage};
-use crate::network_api::ConsensusNetworkService;
+use crate::network_api::{
+    ConsensusNetworkService, NETWORK_INGRESS_STATUS_ACCEPTED,
+    NETWORK_INGRESS_STATUS_PBFT_SYNC_COMPLETE, NETWORK_INGRESS_STATUS_PBFT_SYNC_DUPLICATE_BLOCK,
+    NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS,
+};
 use crate::pbft_chain::{
     PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead, PbftChainService,
     pbft_block_exists_in_storage,
@@ -81,8 +85,9 @@ use crate::pbft_vote_validation::{
     prepare_and_validate_pbft_proposer_sortition_request, validate_canonical_pbft_vote,
 };
 use crate::period_data_queue::{
-    PeriodDataQueueEntryRef, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
-    PeriodDataQueuePushRequest, PeriodDataQueueSnapshot,
+    DecodedPbftSyncPacketPrecheck, EncodedPeriodDataQueuePushRequest, PeriodDataQueuePopPlan,
+    PeriodDataQueuePushOutcome, PeriodDataQueuePushRequest, PeriodDataQueueSnapshot,
+    decode_pbft_sync_packet_precheck,
 };
 use crate::pillar_chain::{
     PillarBlockLinkagePlan, PillarCurrentAnchorDecisionRequest, PillarValidatorVoteCount,
@@ -109,7 +114,7 @@ use crate::verified_votes::{DetermineNewRoundOutcome, TwoTPlusOneVotedBlockType}
 use anyhow::{Context, Result};
 use ethereum_types::{H256, U256};
 use rustaxa_storage::{Storage, StorageWriteBatch};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const SLASHING_PROOF_CACHE_MAX_SIZE: usize = 1000;
 const SLASHING_PROOF_CACHE_DELETE_STEP: usize = 100;
@@ -127,24 +132,35 @@ fn resolve_slashing_submitter_facts(
     final_chain: &FinalChain,
     identities: &[SlashingSubmitterIdentity],
 ) -> Result<Vec<SlashingSubmitterFact>> {
-    identities
-        .iter()
-        .map(|identity| {
-            let account = final_chain.account(identity.address)?;
-            let (nonce, balance) = match account {
-                Some(account) => (
-                    final_chain_nonce_as_u256(&account.nonce)?,
-                    *account.balance.as_u256(),
-                ),
-                None => (U256::zero(), U256::zero()),
-            };
-            Ok(SlashingSubmitterFact {
-                wallet_index: identity.wallet_index,
-                nonce,
-                balance,
-            })
+    resolve_slashing_submitter_facts_with(identities, |identity| {
+        let account = final_chain.account(identity.address)?;
+        Ok(match account {
+            Some(account) => (
+                final_chain_nonce_as_u256(&account.nonce)?,
+                *account.balance.as_u256(),
+            ),
+            None => (U256::zero(), U256::zero()),
         })
-        .collect()
+    })
+}
+
+fn resolve_slashing_submitter_facts_with(
+    identities: &[SlashingSubmitterIdentity],
+    mut resolve_account: impl FnMut(&SlashingSubmitterIdentity) -> Result<(U256, U256)>,
+) -> Result<Vec<SlashingSubmitterFact>> {
+    let mut submitters = Vec::new();
+    for identity in identities {
+        let (nonce, balance) = resolve_account(identity)?;
+        submitters.push(SlashingSubmitterFact {
+            wallet_index: identity.wallet_index,
+            nonce,
+            balance,
+        });
+        if !balance.is_zero() {
+            break;
+        }
+    }
+    Ok(submitters)
 }
 
 /// Validated immutable configuration for native PBFT service restoration.
@@ -155,7 +171,7 @@ fn resolve_slashing_submitter_facts(
 /// cannot inject either fact. Ficus activation and pillar interval configure
 /// the immutable pillar request schedule. PBFT sync limits and retained-history
 /// facts configure native response service; the sync level must be nonzero.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PbftServiceConfig {
     pub genesis_lambda_ms: u32,
     pub cacti_lambda_max_ms: u32,
@@ -177,6 +193,12 @@ pub struct PbftServiceConfig {
     pub is_light_node: bool,
     /// Number of finalized PBFT periods retained by a light node.
     pub light_node_history: u64,
+    /// PBFT committee size used by strict sync-certificate validation.
+    pub committee_size: u64,
+    /// Proposal committee size used by strict sync-certificate validation.
+    pub number_of_proposers: u64,
+    /// Ordered application identities eligible to submit slashing proofs.
+    pub slashing_submitters: Vec<SlashingSubmitterIdentity>,
 }
 
 /// Native dynamic-lambda decision composed with its durable prior-lambda fact.
@@ -264,6 +286,53 @@ pub struct PbftVoteAdmissionWithSlashingResult {
     pub slashing_transaction_effect: Option<SlashingTransactionEffect>,
 }
 
+/// Stable action returned by a native PBFT-sync ingress session.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PbftSyncIngressAction {
+    EnqueuedContinue = 0,
+    Duplicate = 1,
+    SyncComplete = 2,
+    Drop = 3,
+    StopSyncing = 4,
+    Malicious = 5,
+    QueueRejected = 6,
+    AwaitingSlashing = 7,
+}
+
+impl PbftSyncIngressAction {
+    /// Returns the stable CXX action code.
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+/// Terminal or resumable result of one native PBFT-sync packet ingress session.
+///
+/// Packet facts are decoded from the exact wire payload and remain immutable
+/// while sequential certificate admission pauses for an executable slashing
+/// transaction. `AwaitingSlashing` is the only resumable action.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PbftSyncIngressStep {
+    pub action: PbftSyncIngressAction,
+    pub error_code: String,
+    pub source_payload_id: u64,
+    pub block_hash: H256,
+    pub period: u64,
+    pub max_dag_level: u64,
+    pub last_block: bool,
+    pub current_cert_present: bool,
+    pub slashing_transaction_effect: Option<SlashingTransactionEffect>,
+}
+
+struct PbftSyncIngressSession {
+    packet: DecodedPbftSyncPacketPrecheck,
+    source_payload_id: u64,
+    source_peer_id: [u8; 64],
+    next_vote: usize,
+    pending_slashing: Option<SlashingTransactionEffect>,
+}
+
 /// CXX-free native owner of the complete PBFT application-service graph.
 ///
 /// Restoration validates storage-independent slashing configuration first,
@@ -281,6 +350,11 @@ pub struct PbftService {
     readiness: PbftServiceReadiness,
     pillar: PillarChainService,
     network: ConsensusNetworkService,
+    sync_ingress: Mutex<Option<PbftSyncIngressSession>>,
+    committee_size: u64,
+    number_of_proposers: u64,
+    slashing_submitters: Vec<SlashingSubmitterIdentity>,
+    slashing_enabled: bool,
 }
 
 impl PbftService {
@@ -305,6 +379,300 @@ impl PbftService {
     ) -> Result<DoubleVotingProofSubmissionPlan> {
         self.slashing
             .report_double_voting_proof_submission(proof_hash, transaction_inserted)
+    }
+
+    /// Begins or replaces the application-owned PBFT-sync ingress session.
+    ///
+    /// Native prechecks run before certificate signature recovery and preserve
+    /// duplicate/drop precedence. A non-empty native queue bypasses weighted
+    /// admission and enqueues the decoded exact child/current-certificate
+    /// bytes. An empty queue admits previous-certificate votes sequentially;
+    /// the returned step pauses only for an executable slashing transaction.
+    pub fn begin_pbft_sync_ingress(
+        &self,
+        final_chain: &FinalChain,
+        packet_rlp: &[u8],
+        source_payload_id: u64,
+        source_peer_id: [u8; 64],
+    ) -> Result<PbftSyncIngressStep> {
+        *self
+            .sync_ingress
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PBFT_SYNC_INGRESS_LOCK_POISONED"))? = None;
+        let decision = self
+            .network
+            .precheck_pbft_sync_packet(packet_rlp, source_payload_id)?;
+        let decoded = decode_pbft_sync_packet_precheck(packet_rlp).ok();
+        if decision.status != NETWORK_INGRESS_STATUS_ACCEPTED {
+            let action = match decision.status {
+                NETWORK_INGRESS_STATUS_PBFT_SYNC_DUPLICATE_BLOCK => {
+                    PbftSyncIngressAction::Duplicate
+                }
+                NETWORK_INGRESS_STATUS_PBFT_SYNC_COMPLETE => PbftSyncIngressAction::SyncComplete,
+                NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS => PbftSyncIngressAction::Malicious,
+                _ => PbftSyncIngressAction::Drop,
+            };
+            return Ok(Self::sync_ingress_step(
+                decoded.as_ref(),
+                source_payload_id,
+                action,
+                decision.error_code,
+                None,
+            ));
+        }
+        let mut packet = decoded.ok_or_else(|| anyhow::anyhow!("PBFT_SYNC_INGRESS_DECODE_LOST"))?;
+        packet.period_data.entry.source_peer_id = source_peer_id;
+        *self
+            .sync_ingress
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PBFT_SYNC_INGRESS_LOCK_POISONED"))? =
+            Some(PbftSyncIngressSession {
+                packet,
+                source_payload_id,
+                source_peer_id,
+                next_vote: 0,
+                pending_slashing: None,
+            });
+        self.advance_pbft_sync_ingress(final_chain)
+    }
+
+    /// Reports the pending slashing insertion result and immediately advances.
+    ///
+    /// The proof hash must equal the current executable effect. Successful
+    /// insertion updates duplicate protection; a failed insertion stays
+    /// retryable by the slashing planner but does not reorder later certificate
+    /// admissions. No FinalChain reference is retained after this call.
+    pub fn report_pbft_sync_ingress_slashing(
+        &self,
+        final_chain: &FinalChain,
+        proof_hash: H256,
+        transaction_inserted: bool,
+    ) -> Result<PbftSyncIngressStep> {
+        {
+            let mut ingress = self
+                .sync_ingress
+                .lock()
+                .map_err(|_| anyhow::anyhow!("PBFT_SYNC_INGRESS_LOCK_POISONED"))?;
+            let session = ingress
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("PBFT_SYNC_INGRESS_NO_SESSION"))?;
+            let pending = session
+                .pending_slashing
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("PBFT_SYNC_INGRESS_NOT_AWAITING_SLASHING"))?;
+            anyhow::ensure!(
+                pending.proof_hash == proof_hash,
+                "PBFT_SYNC_INGRESS_SLASHING_PROOF_HASH_MISMATCH"
+            );
+            self.report_verified_vote_slashing_transaction_submission(
+                proof_hash,
+                transaction_inserted,
+            )?;
+            session.pending_slashing = None;
+        }
+        self.advance_pbft_sync_ingress(final_chain)
+    }
+
+    fn advance_pbft_sync_ingress(&self, final_chain: &FinalChain) -> Result<PbftSyncIngressStep> {
+        let mut ingress = self
+            .sync_ingress
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PBFT_SYNC_INGRESS_LOCK_POISONED"))?;
+        let session = ingress
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("PBFT_SYNC_INGRESS_NO_SESSION"))?;
+        if session.pending_slashing.is_some() {
+            return Err(anyhow::anyhow!(
+                "PBFT_SYNC_INGRESS_AWAITING_SLASHING_REPORT"
+            ));
+        }
+
+        if !self.period_data_queue_snapshot()?.empty {
+            let outcome = self.push_sync_ingress_packet(session, None)?;
+            let action = if outcome.accepted {
+                PbftSyncIngressAction::EnqueuedContinue
+            } else {
+                PbftSyncIngressAction::QueueRejected
+            };
+            let step = Self::sync_ingress_step(
+                Some(&session.packet),
+                session.source_payload_id,
+                action,
+                if outcome.accepted {
+                    String::new()
+                } else {
+                    "PBFT_SYNC_INGRESS_QUEUE_REJECTED".into()
+                },
+                None,
+            );
+            *ingress = None;
+            return Ok(step);
+        }
+
+        while session.next_vote
+            < session
+                .packet
+                .period_data
+                .entry
+                .previous_cert_vote_rlps
+                .len()
+        {
+            let vote =
+                session.packet.period_data.entry.previous_cert_vote_rlps[session.next_vote].clone();
+            let manager = self.manager_snapshot();
+            let result = self.admit_and_persist_verified_vote_with_final_chain(
+                final_chain,
+                &vote,
+                PbftVoteAdmissionValidationRequest {
+                    strict_vrf: true,
+                    committee_size: self.committee_size,
+                    number_of_proposers: self.number_of_proposers,
+                    has_preverified_weight: false,
+                    preverified_weight: 0,
+                },
+                PbftVoteEventFactFlags {
+                    vote_already_known: false,
+                    carries_proposed_block: false,
+                    valid_stale_reward_vote: true,
+                },
+                PbftVoteProgressContext {
+                    current_period: manager.period,
+                    current_round: manager.round,
+                    max_future_period_delta: 0,
+                    two_t_plus_one_threshold: None,
+                    require_proposed_block_sidecar: false,
+                    slashing_enabled: self.slashing_enabled,
+                },
+                &self.slashing_submitters,
+            )?;
+            if !result.validation.accepted {
+                let step = Self::sync_ingress_step(
+                    Some(&session.packet),
+                    session.source_payload_id,
+                    PbftSyncIngressAction::Malicious,
+                    result.validation.error_code.into(),
+                    None,
+                );
+                *ingress = None;
+                return Ok(step);
+            }
+            if result.transaction.persistence_required && !result.transaction.transition_published {
+                let step = Self::sync_ingress_step(
+                    Some(&session.packet),
+                    session.source_payload_id,
+                    PbftSyncIngressAction::QueueRejected,
+                    result.transaction.persistence_error_code,
+                    None,
+                );
+                *ingress = None;
+                return Ok(step);
+            }
+            session.next_vote += 1;
+            if let Some(effect) = result
+                .slashing_transaction_effect
+                .filter(|effect| effect.status.as_u8() == 0)
+            {
+                session.pending_slashing = Some(effect.clone());
+                return Ok(Self::sync_ingress_step(
+                    Some(&session.packet),
+                    session.source_payload_id,
+                    PbftSyncIngressAction::AwaitingSlashing,
+                    String::new(),
+                    Some(effect),
+                ));
+            }
+        }
+
+        let block = &session.packet.period_data.entry;
+        let rewards =
+            self.select_reward_vote_payloads(block.period, block.reward_vote_hashes.clone())?;
+        if !rewards.accepted {
+            let action = classify_sync_reward_failure(block.period, self.reward_vote_period()?);
+            let step = Self::sync_ingress_step(
+                Some(&session.packet),
+                session.source_payload_id,
+                action,
+                rewards.status.legacy_error_code().into(),
+                None,
+            );
+            *ingress = None;
+            return Ok(step);
+        }
+        let weighted_votes = rewards
+            .selected_records
+            .into_iter()
+            .map(|record| record.vote_rlp)
+            .collect();
+        let outcome = self.push_sync_ingress_packet(session, Some(weighted_votes))?;
+        let action = if outcome.accepted {
+            PbftSyncIngressAction::EnqueuedContinue
+        } else {
+            PbftSyncIngressAction::QueueRejected
+        };
+        let step = Self::sync_ingress_step(
+            Some(&session.packet),
+            session.source_payload_id,
+            action,
+            if outcome.accepted {
+                String::new()
+            } else {
+                "PBFT_SYNC_INGRESS_QUEUE_REJECTED".into()
+            },
+            None,
+        );
+        *ingress = None;
+        Ok(step)
+    }
+
+    fn push_sync_ingress_packet(
+        &self,
+        session: &PbftSyncIngressSession,
+        weighted_previous_cert_votes: Option<Vec<Vec<u8>>>,
+    ) -> Result<PeriodDataQueuePushOutcome> {
+        let mut entry = session.packet.period_data.entry.clone();
+        entry.source_peer_id = session.source_peer_id;
+        if let Some(votes) = weighted_previous_cert_votes {
+            entry.previous_cert_vote_rlps = votes;
+            entry.previous_cert_first_vote_has_weight = !entry.previous_cert_vote_rlps.is_empty();
+        }
+        let chain_size = self.pbft_chain_head().size;
+        self.push_period_data_queue(PeriodDataQueuePushRequest {
+            entry,
+            max_pbft_size: chain_size,
+            current_block_cert_vote_rlps: session
+                .packet
+                .period_data
+                .current_block_cert_vote_rlps
+                .clone(),
+        })
+    }
+
+    fn sync_ingress_step(
+        packet: Option<&DecodedPbftSyncPacketPrecheck>,
+        source_payload_id: u64,
+        action: PbftSyncIngressAction,
+        error_code: String,
+        slashing_transaction_effect: Option<SlashingTransactionEffect>,
+    ) -> PbftSyncIngressStep {
+        PbftSyncIngressStep {
+            action,
+            error_code,
+            source_payload_id,
+            block_hash: packet
+                .map(|packet| packet.period_data.entry.block_hash)
+                .unwrap_or_default(),
+            period: packet
+                .map(|packet| packet.period_data.entry.period)
+                .unwrap_or_default(),
+            max_dag_level: packet
+                .map(|packet| packet.max_dag_level)
+                .unwrap_or_default(),
+            last_block: packet.map(|packet| packet.last_block).unwrap_or(false),
+            current_cert_present: packet
+                .map(|packet| packet.current_cert_votes_present)
+                .unwrap_or(false),
+            slashing_transaction_effect,
+        }
     }
     /// Loads one finalized startup-replay period through manager-owned storage.
     ///
@@ -494,24 +862,43 @@ impl PbftService {
         manager.pbft_sync_queue_drain_session = create_pbft_sync_queue_drain_session();
     }
 
-    /// Returns the next native queue-drain executor step after bootstrap.
+    /// Returns the next external queue-drain executor step after bootstrap.
     ///
-    /// `None` denotes incomplete bootstrap. Queue size and period are copied
-    /// facts; cursor advancement occurs under the manager lock.
-    pub fn pbft_sync_queue_drain_next(
-        &self,
-        queue_size: usize,
-        current_period: u64,
-    ) -> Option<PbftSyncQueueDrainStep> {
+    /// `None` denotes incomplete bootstrap. Queue size and period come from
+    /// manager-owned queue and chain state; cursor advancement and requested
+    /// stale cleanup occur under the same manager lock. The infallible native
+    /// cleanup step is acknowledged internally and is never exposed as a
+    /// fallible C++ executor action.
+    pub fn pbft_sync_queue_drain_next(&self) -> Option<PbftSyncQueueDrainStep> {
         if !self.readiness.is_ready() {
             return None;
         }
         let mut manager = self.manager_state();
-        Some(next_pbft_sync_queue_drain_step(
-            &mut manager.pbft_sync_queue_drain_session,
-            queue_size,
-            current_period,
-        ))
+        loop {
+            let queue_size = manager.period_data_queue.size();
+            let current_period = manager.chain.head().size.saturating_add(1);
+            let step = next_pbft_sync_queue_drain_step(
+                &mut manager.pbft_sync_queue_drain_session,
+                queue_size,
+                current_period,
+            );
+            if step.action != crate::pbft_sync::PbftSyncQueueDrainAction::CleanOldData {
+                return Some(step);
+            }
+
+            manager
+                .period_data_queue
+                .clean_old_data(step.clean_before_period);
+            let result = report_pbft_sync_queue_drain_step(
+                &mut manager.pbft_sync_queue_drain_session,
+                PbftSyncQueueDrainReport {
+                    action: crate::pbft_sync::PbftSyncQueueDrainAction::CleanOldData,
+                    success: true,
+                    accepted_period_data: false,
+                },
+            );
+            debug_assert!(result.can_continue);
+        }
     }
 
     /// Applies one external queue-drain report under the manager lock.
@@ -798,17 +1185,18 @@ impl PbftService {
     }
 
     /// Returns a coherent snapshot of manager-owned period-data queue state.
-    pub fn period_data_queue_snapshot(
-        &self,
-        pbft_chain_size: u64,
-        current_period: u64,
-        chain_last_hash: ethereum_types::H256,
-    ) -> PeriodDataQueueSnapshot {
-        self.manager_state().period_data_queue.snapshot(
-            pbft_chain_size,
+    pub fn period_data_queue_snapshot(&self) -> Result<PeriodDataQueueSnapshot> {
+        let manager = self.manager_state();
+        let chain = manager.chain.head();
+        let current_period = chain
+            .size
+            .checked_add(1)
+            .context("PBFT_PERIOD_DATA_QUEUE_CHAIN_PERIOD_OVERFLOW")?;
+        Ok(manager.period_data_queue.snapshot(
+            chain.size,
             current_period,
-            chain_last_hash,
-        )
+            chain.last_pbft_block_hash,
+        ))
     }
 
     /// Clears all manager-owned period-data queue metadata.
@@ -827,6 +1215,17 @@ impl PbftService {
         self.manager_state().period_data_queue.push(request)
     }
 
+    /// Decodes and admits one encoded period-data payload.
+    ///
+    /// Deterministic payload inspection completes before the manager lock is
+    /// acquired, so malformed bytes cannot partially mutate queue state.
+    pub fn push_encoded_period_data_queue(
+        &self,
+        request: EncodedPeriodDataQueuePushRequest,
+    ) -> Result<PeriodDataQueuePushOutcome> {
+        self.manager.push_encoded_period_data_queue(request)
+    }
+
     /// Pops the next manager-owned queue entry and certificate-source plan.
     ///
     /// An empty queue returns an error and leaves state unchanged.
@@ -834,8 +1233,10 @@ impl PbftService {
         self.manager_state().period_data_queue.pop()
     }
 
-    /// Removes and returns queue entries older than `period`.
-    pub fn clean_old_period_data_queue(&self, period: u64) -> Vec<PeriodDataQueueEntryRef> {
+    /// Removes queue entries older than `period`.
+    ///
+    /// Returns the count of entries removed from the live queue.
+    pub fn clean_old_period_data_queue(&self, period: u64) -> usize {
         self.manager_state()
             .period_data_queue
             .clean_old_data(period)
@@ -956,6 +1357,11 @@ impl PbftService {
             readiness: PbftServiceReadiness::pending(),
             pillar,
             network,
+            sync_ingress: Mutex::new(None),
+            committee_size: config.committee_size,
+            number_of_proposers: config.number_of_proposers,
+            slashing_enabled: config.report_malicious_behaviour,
+            slashing_submitters: config.slashing_submitters,
         })
     }
 
@@ -2600,6 +3006,17 @@ impl PbftService {
     }
 }
 
+const fn classify_sync_reward_failure(
+    block_period: u64,
+    reward_cursor_period: u64,
+) -> PbftSyncIngressAction {
+    if block_period <= reward_cursor_period {
+        PbftSyncIngressAction::StopSyncing
+    } else {
+        PbftSyncIngressAction::Malicious
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2621,6 +3038,7 @@ mod tests {
         PbftProposerSortitionRequest, PbftProposerSortitionStatus, PbftVoteValidationExternalFacts,
         PbftVoteValidationStatus, validate_canonical_pbft_vote,
     };
+    use crate::period_data_queue::PeriodDataQueueEntryRef;
     use crate::sortition::{SortitionConfig, SortitionParams, VdfParams, VrfParams};
     use crate::transaction_service::TransactionServiceConfig;
     use crate::verified_votes::PbftVoteType;
@@ -2680,6 +3098,308 @@ mod tests {
             sync_level_size: 10,
             is_light_node: false,
             light_node_history: 0,
+            committee_size: 1,
+            number_of_proposers: 1,
+            slashing_submitters: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn sync_reward_cursor_failure_is_benign_only_at_or_behind_cursor() {
+        assert_eq!(
+            classify_sync_reward_failure(9, 9),
+            PbftSyncIngressAction::StopSyncing
+        );
+        assert_eq!(
+            classify_sync_reward_failure(8, 9),
+            PbftSyncIngressAction::StopSyncing
+        );
+        assert_eq!(
+            classify_sync_reward_failure(10, 9),
+            PbftSyncIngressAction::Malicious
+        );
+    }
+
+    #[test]
+    fn slashing_submitter_resolution_stops_after_first_funded_wallet() {
+        let identities = [
+            SlashingSubmitterIdentity {
+                wallet_index: 2,
+                address: [2; 20],
+            },
+            SlashingSubmitterIdentity {
+                wallet_index: 7,
+                address: [7; 20],
+            },
+            SlashingSubmitterIdentity {
+                wallet_index: 9,
+                address: [9; 20],
+            },
+        ];
+        let mut queried = Vec::new();
+        let submitters = resolve_slashing_submitter_facts_with(&identities, |identity| {
+            queried.push(identity.wallet_index);
+            anyhow::ensure!(identity.wallet_index != 9, "irrelevant wallet was queried");
+            Ok((
+                U256::from(identity.wallet_index),
+                if identity.wallet_index == 7 {
+                    U256::from(1)
+                } else {
+                    U256::zero()
+                },
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(queried, vec![2, 7]);
+        assert_eq!(submitters.len(), 2);
+        assert_eq!(submitters[1].wallet_index, 7);
+        assert_eq!(submitters[1].nonce, U256::from(7));
+    }
+
+    fn signed_period_one_sync_packet() -> (Vec<u8>, Vec<u8>) {
+        let signing_key = SigningKey::from_slice(&[0x61; 32]).unwrap();
+        let append_unsigned_fields = |stream: &mut RlpStream| {
+            stream.append(&H256::zero());
+            stream.append(&H256::from_low_u64_be(2));
+            stream.append(&H256::zero());
+            stream.append(&H256::from_low_u64_be(3));
+            stream.append(&1_u64);
+            stream.append(&7_u64);
+            stream.begin_list(0);
+        };
+        let mut unsigned = RlpStream::new_list(7);
+        append_unsigned_fields(&mut unsigned);
+        let mut digest = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&unsigned.out());
+        hasher.finalize(&mut digest);
+        let (signature, recovery_id) = signing_key.sign_prehash_recoverable(&digest).unwrap();
+        let mut signature = signature.to_bytes().to_vec();
+        signature.push(recovery_id.to_byte());
+
+        let mut block = RlpStream::new_list(8);
+        append_unsigned_fields(&mut block);
+        block.append(&signature);
+        let mut period_data = RlpStream::new_list(4);
+        period_data.append_raw(&block.out(), 1);
+        period_data.append_empty_data();
+        period_data.append_empty_data();
+        period_data.begin_list(0);
+        let period_data_rlp = period_data.out().to_vec();
+        let mut packet = RlpStream::new_list(3);
+        packet.append(&true);
+        packet.append_raw(&period_data_rlp, 1);
+        packet.append_empty_data();
+        (packet.out().to_vec(), period_data_rlp)
+    }
+
+    fn optimized_cert_bundle(votes: &[Vec<u8>]) -> Vec<u8> {
+        let first = Rlp::new(&votes[0]);
+        let block_hash: H256 = first.val_at(0).unwrap();
+        let first_sortition_bytes: Vec<u8> = first.val_at(1).unwrap();
+        let first_sortition = Rlp::new(&first_sortition_bytes);
+        let period: u64 = first_sortition.val_at(0).unwrap();
+        let round: u64 = first_sortition.val_at(1).unwrap();
+        let step: u64 = first_sortition.val_at(2).unwrap();
+
+        let mut bundle = RlpStream::new_list(5);
+        bundle.append(&block_hash);
+        bundle.append(&period);
+        bundle.append(&round);
+        bundle.append(&step);
+        bundle.begin_list(votes.len());
+        for vote in votes {
+            let vote = Rlp::new(vote);
+            let sortition_bytes: Vec<u8> = vote.val_at(1).unwrap();
+            let sortition = Rlp::new(&sortition_bytes);
+            let proof: Vec<u8> = sortition.val_at(3).unwrap();
+            let signature: Vec<u8> = vote.val_at(2).unwrap();
+            bundle.begin_list(2);
+            bundle.append(&proof);
+            bundle.append(&signature);
+        }
+        bundle.out().to_vec()
+    }
+
+    fn signed_period_two_sync_packet(
+        previous_votes: &[Vec<u8>],
+        reward_vote_hash: H256,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let signing_key = SigningKey::from_slice(&[0x62; 32]).unwrap();
+        let append_unsigned_fields = |stream: &mut RlpStream| {
+            stream.append(&H256::zero());
+            stream.append(&H256::from_low_u64_be(12));
+            stream.append(&H256::zero());
+            stream.append(&H256::from_low_u64_be(13));
+            stream.append(&2_u64);
+            stream.append(&8_u64);
+            stream.begin_list(1);
+            stream.append(&reward_vote_hash);
+        };
+        let mut unsigned = RlpStream::new_list(7);
+        append_unsigned_fields(&mut unsigned);
+        let mut digest = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&unsigned.out());
+        hasher.finalize(&mut digest);
+        let (signature, recovery_id) = signing_key.sign_prehash_recoverable(&digest).unwrap();
+        let mut signature = signature.to_bytes().to_vec();
+        signature.push(recovery_id.to_byte());
+
+        let mut block = RlpStream::new_list(8);
+        append_unsigned_fields(&mut block);
+        block.append(&signature);
+        let previous_bundle = optimized_cert_bundle(previous_votes);
+        let mut period_data = RlpStream::new_list(4);
+        period_data.append_raw(&block.out(), 1);
+        period_data.append_raw(&previous_bundle, 1);
+        period_data.append_empty_data();
+        period_data.begin_list(0);
+        let period_data_rlp = period_data.out().to_vec();
+        let mut packet = RlpStream::new_list(3);
+        packet.append(&true);
+        packet.append_raw(&period_data_rlp, 1);
+        packet.append_empty_data();
+        (packet.out().to_vec(), period_data_rlp)
+    }
+
+    #[test]
+    fn sync_ingress_successfully_enqueues_exact_period_child_and_peer() {
+        let (path, storage) = temp_storage("pbft_sync_ingress_exact_enqueue");
+        let service = PbftService::restore(storage.clone(), config(10)).unwrap();
+        let final_chain = final_chain_with_pillar_voters(storage, &[]);
+        let (packet_rlp, period_data_rlp) = signed_period_one_sync_packet();
+        let peer = [0x5a; 64];
+
+        let step = service
+            .begin_pbft_sync_ingress(&final_chain, &packet_rlp, 41, peer)
+            .unwrap();
+        assert_eq!(step.action, PbftSyncIngressAction::EnqueuedContinue);
+        assert_eq!(step.source_payload_id, 41);
+        let popped = service.pop_period_data_queue().unwrap();
+        assert_eq!(popped.period_data_rlp, period_data_rlp);
+        assert_eq!(popped.source_peer_id, peer);
+        assert!(popped.cert_vote_rlps.is_empty());
+
+        drop(final_chain);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn malformed_begin_replaces_and_clears_a_stale_ingress_session() {
+        let (path, storage) = temp_storage("pbft_sync_ingress_stale_replacement");
+        let service = PbftService::restore(storage.clone(), config(10)).unwrap();
+        let final_chain = final_chain_with_pillar_voters(storage, &[]);
+        let (packet_rlp, _) = signed_period_one_sync_packet();
+        let packet = decode_pbft_sync_packet_precheck(&packet_rlp).unwrap();
+        *service.sync_ingress.lock().unwrap() = Some(PbftSyncIngressSession {
+            packet,
+            source_payload_id: 1,
+            source_peer_id: [1; 64],
+            next_vote: 0,
+            pending_slashing: None,
+        });
+
+        let step = service
+            .begin_pbft_sync_ingress(&final_chain, &[0xc1, 0x80], 42, [2; 64])
+            .unwrap();
+        assert_eq!(step.action, PbftSyncIngressAction::Malicious);
+        assert_eq!(step.source_payload_id, 42);
+        assert!(service.sync_ingress.lock().unwrap().is_none());
+
+        drop(final_chain);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn weighted_sync_ingress_pauses_for_slashing_and_accepts_both_executor_reports() {
+        for transaction_inserted in [false, true] {
+            let (path, storage) = temp_storage(if transaction_inserted {
+                "pbft_sync_ingress_slashing_inserted"
+            } else {
+                "pbft_sync_ingress_slashing_rejected"
+            });
+            let voter = voter_from_secret(&NODE_SECRET);
+            let submitter = [0x77; 20];
+            let mut service_config = config(10);
+            service_config.slashing_submitters = vec![SlashingSubmitterIdentity {
+                wallet_index: 0,
+                address: submitter,
+            }];
+            let service = PbftService::restore(storage.clone(), service_config).unwrap();
+            let final_chain = final_chain_with_vote_validator_and_account(
+                storage.clone(),
+                voter,
+                vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+                5_000,
+                submitter,
+            );
+            let previous_hash = H256::repeat_byte(0x31);
+            service
+                .pbft_chain_update(previous_hash, H256::zero())
+                .unwrap();
+
+            let conflicting = generated_vote_at_period(H256::repeat_byte(0x32), 1);
+            let initial = service
+                .admit_and_persist_verified_vote_with_final_chain(
+                    &final_chain,
+                    &conflicting.vote_rlp,
+                    PbftVoteAdmissionValidationRequest {
+                        strict_vrf: true,
+                        committee_size: 1,
+                        number_of_proposers: 1,
+                        has_preverified_weight: false,
+                        preverified_weight: 0,
+                    },
+                    PbftVoteEventFactFlags {
+                        vote_already_known: false,
+                        carries_proposed_block: false,
+                        valid_stale_reward_vote: true,
+                    },
+                    PbftVoteProgressContext {
+                        current_period: 1,
+                        current_round: 1,
+                        max_future_period_delta: 0,
+                        two_t_plus_one_threshold: None,
+                        require_proposed_block_sidecar: false,
+                        slashing_enabled: true,
+                    },
+                    &[],
+                )
+                .unwrap();
+            assert!(initial.validation.accepted);
+
+            let incoming = generated_vote_at_period(previous_hash, 1);
+            let (packet_rlp, _) =
+                signed_period_two_sync_packet(&[incoming.vote_rlp.clone()], conflicting.vote_hash);
+            let peer = [0x6b; 64];
+            let awaiting = service
+                .begin_pbft_sync_ingress(&final_chain, &packet_rlp, 81, peer)
+                .unwrap();
+            assert_eq!(awaiting.action, PbftSyncIngressAction::AwaitingSlashing);
+            let effect = awaiting
+                .slashing_transaction_effect
+                .expect("conflict emits a slashing transaction");
+            let resumed = service
+                .report_pbft_sync_ingress_slashing(
+                    &final_chain,
+                    effect.proof_hash,
+                    transaction_inserted,
+                )
+                .unwrap();
+            assert_eq!(resumed.action, PbftSyncIngressAction::Malicious);
+            assert_eq!(
+                resumed.error_code,
+                "PBFT_REWARD_VOTES_MISSING_PREFERRED_ROUND"
+            );
+            assert!(service.sync_ingress.lock().unwrap().is_none());
+
+            drop(final_chain);
+            drop(service);
+            let _ = fs::remove_dir_all(path);
         }
     }
 
@@ -2863,6 +3583,56 @@ mod tests {
             0.into(),
             0,
             Vec::new(),
+            vec![GenesisValidator {
+                address: voter,
+                vrf_key,
+                total_stake: stake.clone(),
+                delegations: vec![(voter, stake)],
+                metadata: GenesisValidatorMetadata {
+                    owner: voter,
+                    commission: 0,
+                    description: String::new(),
+                    endpoint: String::new(),
+                },
+            }],
+            GenesisDposConfig {
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn final_chain_with_vote_validator_and_account(
+        storage: Arc<Storage>,
+        voter: [u8; 20],
+        vrf_key: [u8; 32],
+        stake: u64,
+        account: [u8; 20],
+    ) -> FinalChain {
+        use rustaxa_types::{
+            DposTokenAmount, FinalChainAccountBalance, GenesisAccount, GenesisDposConfig,
+            GenesisValidator, GenesisValidatorMetadata,
+        };
+
+        let stake = U256::from(stake).to_big_endian().to_vec();
+        FinalChain::new(
+            storage,
+            0.into(),
+            0,
+            vec![GenesisAccount {
+                address: account,
+                balance: FinalChainAccountBalance::from_cpp_genesis_bytes(
+                    &U256::from(1_000_000u64).to_big_endian(),
+                )
+                .unwrap(),
+            }],
             vec![GenesisValidator {
                 address: voter,
                 vrf_key,
@@ -4051,7 +4821,8 @@ mod tests {
         let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_period_queue");
         let service = PbftService::restore(storage, config(10)).expect("service restores");
         let entry = PeriodDataQueueEntryRef {
-            entry_id: 7,
+            period_data_rlp: vec![0x11],
+            source_peer_id: [0x01; 64],
             period: 1,
             block_hash: H256::repeat_byte(0x11),
             prev_block_hash: H256::repeat_byte(0x22),
@@ -4080,23 +4851,95 @@ mod tests {
             .expect("queue push succeeds");
         assert!(pushed.accepted);
         assert_eq!(
-            service.period_data_queue_snapshot(5, 1, H256::repeat_byte(0xee)),
+            service
+                .period_data_queue_snapshot()
+                .expect("native chain-backed queue snapshot succeeds"),
             PeriodDataQueueSnapshot {
                 period: 1,
-                syncing_period: 5,
+                syncing_period: 1,
                 last_block_hash_or_chain: entry.block_hash,
                 size: 1,
                 empty: false,
             }
         );
+        let advanced_hash = H256::repeat_byte(0xaa);
+        service
+            .pbft_chain_update(advanced_hash, H256::repeat_byte(0xbb))
+            .expect("native PBFT chain advances");
+        let advanced_snapshot = service
+            .period_data_queue_snapshot()
+            .expect("queue snapshot samples advanced native chain");
+        assert_eq!(advanced_snapshot.syncing_period, 1);
+        assert_eq!(advanced_snapshot.last_block_hash_or_chain, advanced_hash);
 
         let popped = service.pop_period_data_queue().expect("queue pop succeeds");
-        assert_eq!(popped.entry_id, entry.entry_id);
         assert_eq!(popped.cert_vote_rlps, vec![vec![0xd1]]);
         assert!(popped.use_last_block_cert_votes);
-        assert!(service.clean_old_period_data_queue(2).is_empty());
+        assert_eq!(service.clean_old_period_data_queue(2), 0);
         service.clear_period_data_queue();
-        assert!(service.period_data_queue_snapshot(0, 1, H256::zero()).empty);
+        assert!(
+            service
+                .period_data_queue_snapshot()
+                .expect("cleared native chain-backed queue snapshot succeeds")
+                .empty
+        );
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn queue_drain_applies_native_stale_cleanup_before_returning_external_step() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_queue_drain_cleanup");
+        let service = PbftService::restore(storage, config(10)).expect("service restores");
+        let stale_hash = H256::repeat_byte(0x11);
+        service
+            .push_period_data_queue(PeriodDataQueuePushRequest {
+                entry: PeriodDataQueueEntryRef {
+                    period_data_rlp: vec![0x11],
+                    source_peer_id: [0x01; 64],
+                    period: 1,
+                    block_hash: stale_hash,
+                    prev_block_hash: H256::repeat_byte(0x22),
+                    pivot_hash: H256::repeat_byte(0x33),
+                    final_chain_hash: H256::repeat_byte(0x44),
+                    reward_vote_hashes: vec![],
+                    pillar_vote_rlps: vec![],
+                    transaction_rlps: vec![],
+                    previous_cert_vote_rlps: vec![],
+                    dag_transaction_hashes: vec![],
+                    period_data_transaction_hashes: vec![],
+                    period_data_transaction_identities: vec![],
+                    previous_cert_votes_present: false,
+                    previous_cert_first_vote_has_weight: false,
+                    pillar_votes_present: false,
+                    extra_data_present: false,
+                    extra_data_pillar_block_hash_present: false,
+                },
+                max_pbft_size: 0,
+                current_block_cert_vote_rlps: vec![],
+            })
+            .expect("stale queue entry is admitted");
+        service
+            .pbft_chain_update(H256::repeat_byte(0xaa), H256::repeat_byte(0xbb))
+            .expect("native PBFT chain advances past queued period");
+
+        service.complete_bootstrap();
+        service.begin_pbft_sync_queue_drain();
+        let step = service
+            .pbft_sync_queue_drain_next()
+            .expect("ready service returns a drain step");
+
+        assert_eq!(
+            step.action,
+            crate::pbft_sync::PbftSyncQueueDrainAction::Stop
+        );
+        assert!(
+            service
+                .period_data_queue_snapshot()
+                .expect("queue snapshot succeeds")
+                .empty
+        );
 
         drop(service);
         let _ = fs::remove_dir_all(path);
@@ -4484,7 +5327,7 @@ mod tests {
         service.begin_pbft_sync_queue_drain();
         assert!(service.runtime_session_next().is_none());
         assert!(service.proposal_session_next().is_none());
-        assert!(service.pbft_sync_queue_drain_next(1, 10).is_none());
+        assert!(service.pbft_sync_queue_drain_next().is_none());
 
         service.begin_state_action_effect_session(PbftManagerStateActionFact {
             state: PbftManagerRuntimeStateCode::Filter,
@@ -4519,7 +5362,7 @@ mod tests {
         service.begin_proposal_session(proposal);
         assert!(service.proposal_session_next().is_some());
         service.begin_pbft_sync_queue_drain();
-        assert!(service.pbft_sync_queue_drain_next(1, 10).is_some());
+        assert!(service.pbft_sync_queue_drain_next().is_some());
 
         drop(service);
         let _ = fs::remove_dir_all(path);

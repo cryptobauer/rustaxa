@@ -1474,13 +1474,6 @@ std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packTrx
   return TransactionManagerRustShimAccess::packTrxs(*this, proposal_period, weight_limit);
 }
 
-std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packShardedTrxs(
-    PbftPeriod proposal_period, uint64_t weight_limit, uint16_t total_shards, uint16_t node_trx_shard,
-    uint64_t shard_period_interval) {
-  return TransactionManagerRustShimAccess::packTrxs(*this, proposal_period, weight_limit, total_shards, node_trx_shard,
-                                                    shard_period_interval);
-}
-
 rustaxa::DagProposerSessionStep TransactionManager::executeDagProposerTransactionPack(uint64_t session_id,
                                                                                       bool network_throttled) {
   return TransactionManagerRustShimAccess::executeDagProposerTransactionPack(*this, session_id, network_throttled);

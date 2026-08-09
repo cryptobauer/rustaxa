@@ -5,7 +5,6 @@ use crate::network::*;
 use crate::pbft_manager::*;
 use crate::pbft_sync::*;
 use crate::pbft_vote_generation::*;
-use crate::pillar_votes::*;
 use crate::query::*;
 use crate::storage::*;
 use crate::transaction::*;
@@ -137,8 +136,8 @@ pub mod rustaxa_ffi {
         data: Vec<u8>,
     }
 
-    /// Optional DAG block payload lookup result.
-    struct DagBlockLookup {
+    /// Optional canonical block RLP lookup shared by DAG and PBFT query adapters.
+    struct BlockRlpLookup {
         found: bool,
         block_rlp: Vec<u8>,
     }
@@ -198,7 +197,7 @@ pub mod rustaxa_ffi {
         patch_version: u16,
     }
 
-    /// Canonical PBFT vote bytes for public/debug query materialization.
+    /// Canonical signed PBFT certificate-vote bytes shared by query and queue boundaries.
     struct PbftCertVoteRlp {
         vote_rlp: Vec<u8>,
     }
@@ -304,7 +303,7 @@ pub mod rustaxa_ffi {
         max_size: usize,
     }
 
-    /// Hash handle used to map Rust queue decisions back to C++ live transactions.
+    /// Transaction identity returned by Rust queue decisions and effect reports.
     struct TransactionQueueHash {
         hash: [u8; 32],
     }
@@ -773,11 +772,6 @@ pub mod rustaxa_ffi {
         last_non_null_anchor_hash: [u8; 32],
     }
 
-    struct PbftBlockStorageLookup {
-        found: bool,
-        block_rlp: Vec<u8>,
-    }
-
     /// Warning carried from side-effect-free PBFT sync admission planning.
     struct PbftSyncTransactionWarning {
         hash: [u8; 32],
@@ -1097,6 +1091,23 @@ pub mod rustaxa_ffi {
         sync_level_size: u64,
         is_light_node: bool,
         light_node_history: u64,
+        committee_size: u64,
+        number_of_proposers: u64,
+        slashing_submitters: Vec<SlashingSubmitterIdentity>,
+    }
+
+    /// One terminal or slashing-resumable native PBFT-sync ingress step.
+    struct PbftSyncIngressStep {
+        action: u8,
+        error_code: String,
+        source_payload_id: u64,
+        block_hash: [u8; 32],
+        period: u64,
+        max_dag_level: u64,
+        last_block: bool,
+        current_cert_present: bool,
+        has_slashing_transaction_effect: bool,
+        slashing_transaction_effect: SlashingTransactionEffect,
     }
 
     /// Rust-owned storage facts for replaying one finalized period during PBFT
@@ -1542,15 +1553,6 @@ pub mod rustaxa_ffi {
         selected_block_rlp: Vec<u8>,
     }
 
-    /// Result from applying PBFT manager transition storage through the
-    /// long-lived Rust runtime handle.
-    struct PbftManagerRuntimeStorageApplyResult {
-        status: u8,
-        applied_writes: u64,
-        snapshot: PbftManagerRuntimeSnapshot,
-        error_code: String,
-    }
-
     /// External/configuration inputs for one runtime-owned lifecycle transition.
     struct PbftManagerLifecycleTransitionRequest {
         kind: u8,
@@ -1560,7 +1562,8 @@ pub mod rustaxa_ffi {
         network_next_voting_step: u64,
     }
 
-    /// Committed runtime snapshot plus temporary C++ sidecar commands.
+    /// Committed runtime snapshot plus temporary C++ sidecar commands; storage
+    /// follow-ups reuse it with every command boolean set to `false`.
     struct PbftManagerLifecycleTransitionResult {
         status: u8,
         snapshot: PbftManagerRuntimeSnapshot,
@@ -1648,46 +1651,11 @@ pub mod rustaxa_ffi {
         sender: [u8; 20],
     }
 
-    /// Canonical pillar-vote payload retained by the Rust period-data queue
-    /// for sync validation without reopening the live C++ `PeriodData`
-    /// sidecar.
-    struct PeriodDataQueuePillarVotePayload {
-        vote_rlp: Vec<u8>,
-    }
-
-    /// Canonical PBFT cert-vote payload retained by the Rust period-data queue
-    /// for sync validation and finalization without reopening live C++
-    /// `PeriodData` vote sidecars as the payload source.
-    struct PeriodDataQueuePbftVotePayload {
-        vote_rlp: Vec<u8>,
-    }
-
     /// Canonical transaction payload retained by the Rust period-data queue
     /// for finalization materialization without reopening the live C++
     /// `PeriodData` transaction list.
     struct PeriodDataQueueTransactionPayload {
         transaction_rlp: Vec<u8>,
-    }
-
-    struct PeriodDataQueueEntryRef {
-        entry_id: u64,
-        period: u64,
-        block_hash: [u8; 32],
-        prev_block_hash: [u8; 32],
-        pivot_hash: [u8; 32],
-        final_chain_hash: [u8; 32],
-        reward_vote_hashes: Vec<PbftSyncTransactionHash>,
-        pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
-        transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
-        previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
-        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
-        previous_cert_votes_present: bool,
-        previous_cert_first_vote_has_weight: bool,
-        pillar_votes_present: bool,
-        extra_data_present: bool,
-        extra_data_pillar_block_hash_present: bool,
     }
 
     /// Runtime-owned PBFT sync period-data queue snapshot for C++ shell reads.
@@ -1706,7 +1674,6 @@ pub mod rustaxa_ffi {
 
     struct PeriodDataQueuePushOutcome {
         accepted: bool,
-        clear_existing: bool,
         expected_next_period: u64,
         actual_period: u64,
         current_period: u64,
@@ -1714,17 +1681,18 @@ pub mod rustaxa_ffi {
     }
 
     struct PeriodDataQueuePopPlan {
-        entry_id: u64,
+        period_data_rlp: Vec<u8>,
+        source_peer_id: [u8; 64],
         entry_period: u64,
         block_hash: [u8; 32],
         prev_block_hash: [u8; 32],
         pivot_hash: [u8; 32],
         final_chain_hash: [u8; 32],
         reward_vote_hashes: Vec<PbftSyncTransactionHash>,
-        pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
+        pillar_vote_rlps: Vec<PillarVoteRlpPayload>,
         transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
-        cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
-        previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
+        cert_vote_rlps: Vec<PbftCertVoteRlp>,
+        previous_cert_vote_rlps: Vec<PbftCertVoteRlp>,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -1733,10 +1701,6 @@ pub mod rustaxa_ffi {
         pillar_votes_present: bool,
         extra_data_present: bool,
         extra_data_pillar_block_hash_present: bool,
-        use_last_block_cert_votes: bool,
-        next_entry_id: u64,
-        current_period: u64,
-        effective_size: usize,
     }
 
     struct VerifiedVotePayload {
@@ -1992,17 +1956,7 @@ pub mod rustaxa_ffi {
         accepted: bool,
     }
 
-    /// Result of inspecting one PillarVote RLP payload in Rust.
-    struct PillarVoteInspection {
-        status: u8,
-        period: u64,
-        block_hash: [u8; 32],
-        vote_hash: [u8; 32],
-        voter: [u8; 20],
-        signature_valid: bool,
-    }
-
-    /// Canonical pillar-vote bytes supplied for one batch inspection pass.
+    /// Canonical pillar-vote bytes shared by batch inspection and period-data pop boundaries.
     struct PillarVoteRlpPayload {
         vote_rlp: Vec<u8>,
     }
@@ -2014,15 +1968,6 @@ pub mod rustaxa_ffi {
     /// uniqueness checks. C++ supplies only immutable scheduling configuration;
     /// FinalChain DPoS facts remain outside this DTO.
     struct PillarVoteSingleAdmissionContext {
-        first_pillar_block_period: u64,
-        pillar_blocks_interval: u64,
-    }
-
-    /// Configuration for a runtime-owned pillar-vote relevance check.
-    ///
-    /// Rust sources current-pillar anchor facts and duplicate membership from
-    /// runtime-owned state. C++ supplies only immutable pillar scheduling rules.
-    struct PillarVoteRuntimeRelevanceContext {
         first_pillar_block_period: u64,
         pillar_blocks_interval: u64,
     }
@@ -2115,14 +2060,8 @@ pub mod rustaxa_ffi {
         vote_count: u64,
     }
 
-    /// One signed validator vote-count change planned for a pillar block.
+    /// One signed validator vote-count change shared by pillar planning and query views.
     struct PillarValidatorVoteCountChange {
-        address: [u8; 20],
-        vote_count_change: i32,
-    }
-
-    /// Public/query JSON view for one pillar validator vote-count delta.
-    struct PillarBlockViewVoteCountChange {
         address: [u8; 20],
         vote_count_change: i32,
     }
@@ -2141,7 +2080,7 @@ pub mod rustaxa_ffi {
         previous_pillar_block_hash: [u8; 32],
         bridge_root: [u8; 32],
         epoch: u64,
-        validator_vote_count_changes: Vec<PillarBlockViewVoteCountChange>,
+        validator_vote_count_changes: Vec<PillarValidatorVoteCountChange>,
         block_hash: [u8; 32],
         signatures: Vec<PillarBlockViewSignature>,
     }
@@ -2481,22 +2420,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// PBFT-facing DPoS single-wallet eligibility request.
-    struct PbftFinalChainDposWalletEligibilityRequest {
-        period: u64,
-        address: [u8; 20],
-    }
-
-    /// PBFT-facing DPoS single-wallet eligibility response.
-    struct PbftFinalChainDposWalletEligibilityFacts {
-        status: u8,
-        last_block_number: u64,
-        address: [u8; 20],
-        eligible: bool,
-        vote_count: u64,
-        error_code: String,
-    }
-
     /// PBFT-facing DPoS batch wallet-eligibility request.
     struct PbftFinalChainDposWalletEligibilityBatchRequest {
         period: u64,
@@ -2593,11 +2516,6 @@ pub mod rustaxa_ffi {
     struct DposValidatorStake {
         address: [u8; 20],
         stake: Vec<u8>,
-    }
-
-    struct DposValidatorVoteCount {
-        address: [u8; 20],
-        vote_count: u64,
     }
 
     struct FinalChainCall {
@@ -3050,21 +2968,13 @@ pub mod rustaxa_ffi {
         finalized_period: u64,
     }
 
-    /// One direct transaction hash in a typed TransactionManager command report.
-    ///
-    /// Direct hashes are emitted for runtime queue or sidecar effects that are
-    /// no longer tied to a current C++ input vector.
-    struct TransactionManagerHashCommand {
-        hash: [u8; 32],
-    }
-
     /// Typed command report for DAG-block transaction persistence.
     ///
     /// Rust has already persisted storage, updated sidecars, erased queued
     /// transactions, and updated the authoritative runtime count. C++ consumes
     /// this report only for logging.
     struct TransactionManagerDagSaveCommandReport {
-        queue_erased: Vec<TransactionManagerHashCommand>,
+        queue_erased: Vec<TransactionQueueHash>,
     }
 
     /// Typed admission result attached to admission command reports.
@@ -3412,7 +3322,7 @@ pub mod rustaxa_ffi {
         emit_verified: bool,
         gossip: bool,
         proposed: bool,
-        queue_erased: Vec<TransactionManagerHashCommand>,
+        queue_erased: Vec<TransactionQueueHash>,
         counters: DagPersistenceCounters,
     }
 
@@ -3613,6 +3523,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             results: Vec<NetworkEffectResult>,
         ) -> Result<NetworkEffectAck>;
+        pub fn consensus_network_take_cancelled_vote_admission_effect(
+            self: &BridgeConsensusNetworkApi,
+            effect_id: u64,
+        ) -> Result<bool>;
         pub fn consensus_network_ingest_pbft_vote(
             self: &BridgeConsensusNetworkApi,
             fact: PbftVoteIngressFact,
@@ -3648,6 +3562,12 @@ pub mod rustaxa_ffi {
         pub fn consensus_network_ingest_get_pbft_sync_request(
             self: &BridgeConsensusNetworkApi,
             request: NetworkGetPbftSyncRequest,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_ingest_pbft_blocks_bundle(
+            self: &BridgeConsensusNetworkApi,
+            final_chain: &BridgeFinalChain,
+            packet_rlp: Vec<u8>,
+            source_payload_id: u64,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_plan_status_sync(
             self: &BridgeConsensusNetworkApi,
@@ -3803,9 +3723,6 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_anchors(
             self: &BridgeDagTransactionService,
         ) -> Result<DagManagerAnchors>;
-        pub fn dag_manager_runtime_dag_expiry_limit(
-            self: &BridgeDagTransactionService,
-        ) -> Result<u32>;
         pub fn dag_manager_runtime_dag_expiry_level(
             self: &BridgeDagTransactionService,
         ) -> Result<u64>;
@@ -3815,9 +3732,6 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_non_finalized_blocks_size(
             self: &BridgeDagTransactionService,
         ) -> Result<DagManagerNonFinalizedSize>;
-        pub fn dag_manager_runtime_non_finalized_min_difficulty(
-            self: &BridgeDagTransactionService,
-        ) -> Result<u32>;
         /// Returns DAG block membership from Rust graph state plus canonical
         /// Rust storage without consulting C++ compatibility caches.
         pub fn dag_manager_runtime_is_block_known(
@@ -3828,7 +3742,7 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_load_block(
             self: &BridgeDagTransactionService,
             hash: &[u8; 32],
-        ) -> Result<DagBlockLookup>;
+        ) -> Result<BlockRlpLookup>;
         pub fn dag_manager_runtime_plan_proposal_tip_selection(
             self: &BridgeDagTransactionService,
             input: DagProposerStorageTipSelectionInput,
@@ -4011,7 +3925,7 @@ pub mod rustaxa_ffi {
         pub fn pbft_chain_block_rlp(
             self: &BridgePbftService,
             block_hash: &[u8; 32],
-        ) -> Result<PbftBlockStorageLookup>;
+        ) -> Result<BlockRlpLookup>;
         pub fn pbft_chain_validate_block(
             self: &BridgePbftService,
             period: u64,
@@ -4044,6 +3958,19 @@ pub mod rustaxa_ffi {
             config: PbftServiceConfig,
         ) -> Result<Box<BridgePbftService>>;
         pub fn pbft_service_complete_bootstrap(service: &BridgePbftService) -> Result<()>;
+        pub fn pbft_service_begin_pbft_sync_ingress(
+            service: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            packet_rlp: &[u8],
+            source_payload_id: u64,
+            source_peer_id: [u8; 64],
+        ) -> Result<PbftSyncIngressStep>;
+        pub fn pbft_service_report_pbft_sync_ingress_slashing(
+            service: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            proof_hash: [u8; 32],
+            transaction_inserted: bool,
+        ) -> Result<PbftSyncIngressStep>;
         pub fn pbft_manager_runtime_load_startup_replay_period(
             runtime: &BridgePbftService,
             period: u64,
@@ -4054,46 +3981,20 @@ pub mod rustaxa_ffi {
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_period_data_queue_snapshot(
             runtime: &BridgePbftService,
-            pbft_chain_size: u64,
-            current_period: u64,
-            chain_last_hash: [u8; 32],
-        ) -> PeriodDataQueueSnapshot;
-        pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &BridgePbftService);
+        ) -> Result<PeriodDataQueueSnapshot>;
         pub fn pbft_manager_runtime_period_data_queue_push(
             runtime: &BridgePbftService,
-            entry_id: u64,
-            period: u64,
-            block_hash: [u8; 32],
-            prev_block_hash: [u8; 32],
-            pivot_hash: [u8; 32],
-            final_chain_hash: [u8; 32],
-            reward_vote_hashes: Vec<PbftSyncTransactionHash>,
-            pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
-            transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
-            previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
-            dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
-            period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
-            period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
-            previous_cert_votes_present: bool,
-            previous_cert_first_vote_has_weight: bool,
-            pillar_votes_present: bool,
-            extra_data_present: bool,
-            extra_data_pillar_block_hash_present: bool,
-            max_pbft_size: u64,
-            current_block_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
+            period_data_rlp: Vec<u8>,
+            source_peer_id: [u8; 64],
+            previous_cert_vote_rlps: Vec<PbftCertVoteRlp>,
+            current_block_cert_vote_rlps: Vec<PbftCertVoteRlp>,
         ) -> Result<PeriodDataQueuePushOutcome>;
         pub fn pbft_manager_runtime_period_data_queue_pop(
             runtime: &BridgePbftService,
         ) -> Result<PeriodDataQueuePopPlan>;
-        pub fn pbft_manager_runtime_period_data_queue_clean_old_data(
-            runtime: &BridgePbftService,
-            period: u64,
-        ) -> Vec<PeriodDataQueueEntryRef>;
         pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgePbftService);
         pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
             runtime: &BridgePbftService,
-            queue_size: usize,
-            current_period: u64,
         ) -> PbftSyncQueueDrainStep;
         pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
             runtime: &BridgePbftService,
@@ -4158,7 +4059,7 @@ pub mod rustaxa_ffi {
         ) -> Result<PbftManagerLifecycleTransitionResult>;
         pub fn pbft_manager_runtime_apply_executed_block_reset(
             runtime: &BridgePbftService,
-        ) -> Result<PbftManagerRuntimeStorageApplyResult>;
+        ) -> Result<PbftManagerLifecycleTransitionResult>;
         pub fn pbft_manager_runtime_apply_next_voted_status(
             runtime: &BridgePbftService,
             status: u8,
@@ -4172,10 +4073,6 @@ pub mod rustaxa_ffi {
             runtime: &BridgePbftService,
             hash: &[u8; 32],
         ) -> Result<BlockPeriodLookup>;
-        pub fn pbft_manager_runtime_pbft_block_in_db(
-            runtime: &BridgePbftService,
-            hash: &[u8; 32],
-        ) -> Result<bool>;
         pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
             runtime: &BridgePbftService,
             fact: PbftDynamicLambdaFact,
@@ -4498,9 +4395,6 @@ pub mod rustaxa_ffi {
         pub fn pbft_service_verified_votes_reward_vote_cursor(
             self: &BridgePbftService,
         ) -> Result<RewardVoteCursorSnapshot>;
-        pub fn pbft_service_verified_votes_reward_vote_period(
-            self: &BridgePbftService,
-        ) -> Result<u64>;
         pub fn pbft_service_verified_votes_state_snapshot(
             self: &BridgePbftService,
         ) -> Result<VerifiedVotesStateSnapshot>;
@@ -4556,7 +4450,6 @@ pub mod rustaxa_ffi {
         ) -> Result<PbftProposerSortitionResult>;
         // Consensus pillar votes
 
-        pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection>;
         pub fn pbft_service_pillar_plan_block_creation_with_final_chain(
             self: &BridgePbftService,
             final_chain: &BridgeFinalChain,
@@ -4643,7 +4536,7 @@ pub mod rustaxa_ffi {
         pub fn pbft_service_pillar_plan_vote_relevance(
             self: &BridgePbftService,
             vote_rlp: Vec<u8>,
-            context: PillarVoteRuntimeRelevanceContext,
+            context: PillarVoteSingleAdmissionContext,
         ) -> Result<PillarVoteRelevancePlan>;
         pub fn pbft_service_pillar_apply_rlp_bundle_with_final_chain(
             self: &BridgePbftService,
@@ -5043,15 +4936,6 @@ pub mod rustaxa_ffi {
         pub fn get_dpos_yield(self: &BridgeFinalChain, block_number: u64) -> Result<u64>;
         pub fn get_dpos_total_supply(self: &BridgeFinalChain, block_number: u64)
             -> Result<Vec<u8>>;
-        pub fn get_dpos_validators_eligible_vote_counts(
-            self: &BridgeFinalChain,
-            block_number: u64,
-        ) -> Result<Vec<DposValidatorVoteCount>>;
-        pub fn get_vrf_key_at_block(
-            self: &BridgeFinalChain,
-            block_number: u64,
-            address: &[u8; 20],
-        ) -> Result<Vec<u8>>;
         pub fn call(
             self: &BridgeFinalChain,
             request: FinalChainCall,
@@ -5135,11 +5019,6 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             request: PbftFinalChainDposWalletAggregateVoteCountRequest,
         ) -> Result<PbftFinalChainDposWalletAggregateVoteCountFacts>;
-        pub fn pbft_service_collect_dpos_wallet_eligibility(
-            self: &BridgePbftService,
-            final_chain: &BridgeFinalChain,
-            request: PbftFinalChainDposWalletEligibilityRequest,
-        ) -> Result<PbftFinalChainDposWalletEligibilityFacts>;
         pub fn pbft_service_collect_dpos_wallet_eligibility_batch(
             self: &BridgePbftService,
             final_chain: &BridgeFinalChain,

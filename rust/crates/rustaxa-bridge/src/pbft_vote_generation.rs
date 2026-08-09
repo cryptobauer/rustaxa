@@ -13,8 +13,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalChainDposWalletAggregateVoteCountRequest as FfiPbftFinalChainDposWalletAggregateVoteCountRequest,
     PbftFinalChainDposWalletEligibilityBatchFacts as FfiPbftFinalChainDposWalletEligibilityBatchFacts,
     PbftFinalChainDposWalletEligibilityBatchRequest as FfiPbftFinalChainDposWalletEligibilityBatchRequest,
-    PbftFinalChainDposWalletEligibilityFacts as FfiPbftFinalChainDposWalletEligibilityFacts,
-    PbftFinalChainDposWalletEligibilityRequest as FfiPbftFinalChainDposWalletEligibilityRequest,
     PbftGeneratedVote as FfiPbftGeneratedVote,
     PbftProposerSortitionRequest as FfiPbftProposerSortitionRequest,
     PbftProposerSortitionResult as FfiPbftProposerSortitionResult,
@@ -28,7 +26,6 @@ use rustaxa_consensus::pbft_vote_generation::{
     PbftFinalChainDposTotalVoteCountRequest, PbftFinalChainDposWalletAggregateVoteCountFacts,
     PbftFinalChainDposWalletAggregateVoteCountRequest,
     PbftFinalChainDposWalletEligibilityBatchFacts, PbftFinalChainDposWalletEligibilityBatchRequest,
-    PbftFinalChainDposWalletEligibilityFacts, PbftFinalChainDposWalletEligibilityRequest,
     PbftFinalChainFact, PbftGeneratedVote, PbftVoteGenerationInput,
 };
 use rustaxa_consensus::pbft_vote_validation::{
@@ -131,24 +128,6 @@ impl BridgePbftService {
                         .into_iter()
                         .map(|entry| H160::from(entry.address))
                         .collect(),
-                },
-            )?
-            .into())
-    }
-
-    /// Queries PBFT-facing single-wallet DPoS vote facts for one address.
-    pub fn pbft_service_collect_dpos_wallet_eligibility(
-        &self,
-        final_chain: &BridgeFinalChain,
-        request: FfiPbftFinalChainDposWalletEligibilityRequest,
-    ) -> Result<FfiPbftFinalChainDposWalletEligibilityFacts> {
-        Ok(self
-            .0
-            .collect_dpos_wallet_eligibility(
-                &final_chain.0,
-                PbftFinalChainDposWalletEligibilityRequest {
-                    period: request.period,
-                    address: H160::from(request.address),
                 },
             )?
             .into())
@@ -278,28 +257,6 @@ impl From<PbftFinalChainDposWalletAggregateVoteCountFacts>
             last_block_number: value.last_block_number.as_u64(),
             has_aggregate_vote_count,
             aggregate_vote_count,
-            error_code,
-        }
-    }
-}
-
-impl From<PbftFinalChainDposWalletEligibilityFacts>
-    for FfiPbftFinalChainDposWalletEligibilityFacts
-{
-    fn from(value: PbftFinalChainDposWalletEligibilityFacts) -> Self {
-        let status = value.status;
-        let status_code = status.as_u8();
-        let (eligible, vote_count, error_code) = match status {
-            PbftFinalChainFact::Ready(vote_count) => (vote_count > 0, vote_count, String::new()),
-            PbftFinalChainFact::Unavailable { error_code } => (false, 0, error_code),
-        };
-
-        Self {
-            status: status_code,
-            last_block_number: value.last_block_number.as_u64(),
-            address: value.address.0,
-            eligible,
-            vote_count,
             error_code,
         }
     }

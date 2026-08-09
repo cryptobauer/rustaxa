@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include <libdevcore/RLP.h>
+#include <libdevcore/SHA3.h>
 
 #include <array>
 #include <chrono>
@@ -6,9 +8,6 @@
 #include <filesystem>
 #include <string>
 #include <vector>
-
-#include <libdevcore/RLP.h>
-#include <libdevcore/SHA3.h>
 
 #include "rustaxa-bridge/ffi.rs.h"
 
@@ -38,9 +37,7 @@ class RustProposedBlocksTest : public ::testing::Test {
     return out;
   }
 
-  static std::vector<uint8_t> to_std(const rust::Vec<uint8_t>& data) {
-    return {data.begin(), data.end()};
-  }
+  static std::vector<uint8_t> to_std(const rust::Vec<uint8_t>& data) { return {data.begin(), data.end()}; }
 
   static rust::Vec<uint8_t> copy(const rust::Vec<uint8_t>& data) {
     rust::Vec<uint8_t> out;
@@ -79,6 +76,8 @@ class RustProposedBlocksTest : public ::testing::Test {
     config.sync_level_size = 10;
     config.is_light_node = false;
     config.light_node_history = 0;
+    config.committee_size = 5;
+    config.number_of_proposers = 20;
     return config;
   }
 };

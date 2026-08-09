@@ -12,7 +12,6 @@
 #include "dag/dag_block_proposer.hpp"
 #include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
-#include "key_manager/key_manager.hpp"
 #include "libdevcore/Common.h"
 #include "libdevcrypto/Common.h"
 #include "network/network.hpp"
@@ -84,8 +83,7 @@ using namespace vdf_sortition;
 
 DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr<DagManager> dag_mgr,
                                    std::shared_ptr<TransactionManager> trx_mgr,
-                                   std::shared_ptr<final_chain::FinalChain> final_chain,
-                                   std::shared_ptr<KeyManager> key_manager)
+                                   std::shared_ptr<final_chain::FinalChain> final_chain)
     : executor_(config.wallets.size()),
       total_trx_shards_(std::max(config.genesis.dag.block_proposer.shard, uint16_t(1))),
       dag_mgr_(std::move(dag_mgr)),
@@ -96,7 +94,6 @@ DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr
           std::min(config.propose_dag_gas_limit, config.genesis.getGasLimits(final_chain_->lastBlockNumber()).first)),
       kPbftGasLimit(config.genesis.getGasLimits(final_chain_->lastBlockNumber()).second),
       kDagGasLimit(config.genesis.getGasLimits(final_chain_->lastBlockNumber()).first) {
-  (void)key_manager;
   const auto& node_addr = dev::toAddress(config.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("DAG_PROPOSER");
 
@@ -293,7 +290,6 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   if (step.record_proposed_block) {
     LOG(log_nf_) << node_dag_proposer_data->wallet.node_addr << " proposed new DAG block " << proposed_block_hash
                  << ", pivot " << from_bridge_hash(step.frontier_pivot) << ", txs num " << proposed_transaction_count;
-    proposed_blocks_count_ += 1;
   } else {
     LOG(log_er_) << "Failed to add newly proposed dag block " << proposed_block_hash << ", proposed by "
                  << node_dag_proposer_data->wallet.node_addr << " into dag";
@@ -310,8 +306,6 @@ void DagBlockProposer::start() {
     return;
   }
   LOG(log_nf_) << "DagBlockProposer started ...";
-
-  proposed_blocks_count_ = 0;
 
   for (auto node_dag_proposer_data : nodes_dag_proposers_data_) {
     proposer_workers_.emplace_back(([this, node_dag_proposer_data]() {

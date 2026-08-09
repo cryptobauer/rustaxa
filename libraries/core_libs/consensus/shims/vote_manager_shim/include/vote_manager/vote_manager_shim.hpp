@@ -23,7 +23,6 @@ namespace taraxa {
 class Network;
 class PbftBlock;
 class PbftService;
-class KeyManager;
 class TransactionManager;
 
 /**
@@ -178,8 +177,7 @@ class VoteManager {
    * - Unported methods keep explicit shim-local forwarding TODOs.
    */
   VoteManager(const FullNodeConfig& config, SharedPbftService pbft_service, std::shared_ptr<PbftChain> pbft_chain,
-              std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<KeyManager> key_manager,
-              std::shared_ptr<TransactionManager> trx_manager);
+              std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<TransactionManager> trx_manager);
   ~VoteManager() = default;
   VoteManager(const VoteManager&) = delete;
   VoteManager(VoteManager&&) = delete;
@@ -240,7 +238,6 @@ class VoteManager {
   std::vector<std::shared_ptr<PbftVote>> getVerifiedVotes() const;
   uint64_t getVerifiedVotesSize() const;
   void cleanupVotesByPeriod(PbftPeriod pbft_period);
-  std::vector<std::shared_ptr<PbftVote>> getProposalVotes(PbftPeriod period, PbftRound round) const;
   /**
    * Selects the filtering-step leader from VoteManager-owned proposal votes.
    *
@@ -476,7 +473,6 @@ class VoteManager {
    * Invariants:
    * - No C++ reward cursor field or lock is consulted.
    */
-  PbftPeriod getRewardVotesPbftBlockPeriod();
   /**
    * Persists a locally generated verified PBFT vote through Rust storage.
    *

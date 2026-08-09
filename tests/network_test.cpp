@@ -30,6 +30,7 @@
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/votes_bundle_packet_handler.hpp"
 #include "pbft/pbft_manager.hpp"
+#include "pbft/period_data.hpp"
 #include "test_util/samples.hpp"
 #include "test_util/test_util.hpp"
 
@@ -1891,6 +1892,14 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   pbft_service_config.sync_level_size = conf.network.sync_level_size;
   pbft_service_config.is_light_node = conf.is_light_node;
   pbft_service_config.light_node_history = conf.light_node_history;
+  pbft_service_config.committee_size = conf.genesis.pbft.committee_size;
+  pbft_service_config.number_of_proposers = conf.genesis.pbft.number_of_proposers;
+  for (size_t wallet_index = 0; wallet_index < conf.wallets.size(); ++wallet_index) {
+    rustaxa::SlashingSubmitterIdentity identity{};
+    identity.wallet_index = wallet_index;
+    identity.address = conf.wallets[wallet_index].node_addr.asArray();
+    pbft_service_config.slashing_submitters.push_back(std::move(identity));
+  }
   const auto consensus_service = std::make_shared<PbftService>(
       rustaxa::create_pbft_service_from_storage(node->getDB()->rustStorage(), pbft_service_config));
   auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service->service());
@@ -1949,6 +1958,14 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   EXPECT_EQ(executed, (std::vector<std::string>{"report", "disconnect"}));
   EXPECT_EQ(report_reasons, (std::vector<uint8_t>{3}));
   EXPECT_TRUE(network_api->api().consensus_network_drain_work(6, 0, false, 10).effects.empty());
+
+  std::array<uint8_t, 64> ingress_peer_id{};
+  ingress_peer_id.fill(0x5a);
+  const auto malformed_sync_packet = network_api->admitPbftSyncPacket(
+      *node->getFinalChain(), {0xC1, 0x80}, 74, ingress_peer_id,
+      network::PbftSyncIngressExecutor{[](const network::PbftSyncSlashingTransaction&) { return false; }});
+  EXPECT_EQ(malformed_sync_packet.action, network::PbftSyncIngressAction::kMalicious);
+  EXPECT_EQ(malformed_sync_packet.error_code, "NETWORK_PBFT_SYNC_PACKET_MALFORMED");
 }
 #endif
 

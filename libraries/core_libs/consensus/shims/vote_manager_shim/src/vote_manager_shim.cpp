@@ -454,7 +454,7 @@ std::shared_ptr<PbftVote> materializeOwnVoteRecord(const rustaxa::PbftVoteStorag
 
 VoteManager::VoteManager(const FullNodeConfig& config, SharedPbftService pbft_service,
                          std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-                         std::shared_ptr<KeyManager> key_manager, std::shared_ptr<TransactionManager> trx_manager)
+                         std::shared_ptr<TransactionManager> trx_manager)
     : kPbftConfig(config.genesis.pbft),
       kConfig(config),
       pbft_chain_(std::move(pbft_chain)),
@@ -467,7 +467,6 @@ VoteManager::VoteManager(const FullNodeConfig& config, SharedPbftService pbft_se
   if (!final_chain_) {
     throw std::invalid_argument("VoteManager requires FinalChain in Rust mode");
   }
-  (void)key_manager;
   const auto node_addr = dev::toAddress(config.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("VOTE_MGR");
 }
@@ -809,24 +808,6 @@ uint64_t VoteManager::getVerifiedVotesSize() const {
 
 void VoteManager::cleanupVotesByPeriod(PbftPeriod pbft_period) {
   pbft_service_->service().pbft_service_verified_votes_cleanup_votes_by_period(pbft_period);
-}
-
-std::vector<std::shared_ptr<PbftVote>> VoteManager::getProposalVotes(PbftPeriod period, PbftRound round) const {
-  const auto lookup = pbft_service_->service().pbft_service_verified_votes_step_payloads(
-      period, round, PbftStates::value_proposal_state);
-  if (!lookup.found) {
-    return {};
-  }
-  const auto step_votes = materializeStepVotes(lookup, period, round, PbftStates::value_proposal_state);
-
-  std::vector<std::shared_ptr<PbftVote>> proposal_votes;
-  for (const auto& voted_value : step_votes.votes) {
-    for (const auto& vote_pair : voted_value.second.votes) {
-      proposal_votes.emplace_back(vote_pair.second);
-    }
-  }
-
-  return proposal_votes;
 }
 
 std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> VoteManager::identifyLeaderBlock(
@@ -1195,10 +1176,6 @@ VoteManager::ProposalRewardVotes VoteManager::proposalRewardVotesForPeriod(PbftP
 
   result.valid = true;
   return result;
-}
-
-PbftPeriod VoteManager::getRewardVotesPbftBlockPeriod() {
-  return pbft_service_->service().pbft_service_verified_votes_reward_vote_period();
 }
 
 void VoteManager::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {

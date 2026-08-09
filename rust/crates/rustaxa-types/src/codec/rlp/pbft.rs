@@ -93,7 +93,7 @@ fn recover_address(signature: &[u8], message_hash: &H256) -> Option<H160> {
         return None;
     }
 
-    let recovery_id = RecoveryId::try_from(signature[64] % 4).ok()?;
+    let recovery_id = RecoveryId::try_from(signature[64]).ok()?;
     let signature = Signature::try_from(&signature[..64]).ok()?;
     let recovered_key =
         VerifyingKey::recover_from_prehash(message_hash.as_bytes(), &signature, recovery_id)

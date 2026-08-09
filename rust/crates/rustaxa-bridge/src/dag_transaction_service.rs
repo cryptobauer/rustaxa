@@ -618,10 +618,6 @@ impl BridgeDagTransactionService {
         })
     }
 
-    pub fn dag_manager_runtime_dag_expiry_limit(&self) -> Result<u32> {
-        Ok(self.root.dag_runtime_status()?.expiry_limit)
-    }
-
     pub fn dag_manager_runtime_dag_expiry_level(&self) -> Result<u64> {
         Ok(self.root.dag_runtime_status()?.expiry_level)
     }
@@ -650,17 +646,13 @@ impl BridgeDagTransactionService {
         })
     }
 
-    pub fn dag_manager_runtime_non_finalized_min_difficulty(&self) -> Result<u32> {
-        Ok(self.root.dag_non_finalized_summary()?.min_difficulty)
-    }
-
     pub fn dag_manager_runtime_is_block_known(&self, hash: &[u8; 32]) -> Result<bool> {
         self.root.dag_is_block_known(H256::from(*hash))
     }
 
-    pub fn dag_manager_runtime_load_block(&self, hash: &[u8; 32]) -> Result<DagBlockLookup> {
+    pub fn dag_manager_runtime_load_block(&self, hash: &[u8; 32]) -> Result<BlockRlpLookup> {
         let lookup = self.root.dag_load_block(H256::from(*hash))?;
-        Ok(DagBlockLookup {
+        Ok(BlockRlpLookup {
             found: lookup.found,
             block_rlp: lookup.block_rlp,
         })
@@ -777,7 +769,7 @@ impl BridgeDagTransactionService {
             queue_erased: report
                 .queue_erased
                 .into_iter()
-                .map(|hash| TransactionManagerHashCommand { hash: hash.0 })
+                .map(|hash| TransactionQueueHash { hash: hash.0 })
                 .collect(),
             counters: DagPersistenceCounters {
                 dag_blocks: report.counters.dag_blocks,

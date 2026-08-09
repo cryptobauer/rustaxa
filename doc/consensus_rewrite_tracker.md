@@ -3382,8 +3382,8 @@ Validation passes `rewrite-validate-fast`, `rewrite-validate-smoke`, 54 pillar-f
 CXX network bridge cases, the Rust-enabled `network_test` and `pillar_chain_test` builds, three focused checked-admission
 pillar cases, the startup restore regression, the isolated multi-node pillar synchronization case, two focused
 lane/peer-cache network cases, and the bridge inventory guard. The aggregate consensus gate
-again records the established three-case `pillar_chain_test` same-process RocksDB lock baseline; its CXX aggregate also
-encounters the untouched `test_pbft_sync.cpp` five-argument call to the current six-argument admission API. A fresh
+again records the established three-case `pillar_chain_test` same-process RocksDB lock baseline. The formerly stale
+`test_pbft_sync.cpp` admission call is now repaired, and the CXX aggregate builds and passes all 52 tests. A fresh
 all-Rust-disabled tree compiles every changed network source through `core_libs`, then stops at the pre-existing
 `App`/`Network` constructor mismatch before linking `network_test`. The upstream-owned tarcap headers, handlers,
 registration source, and guarded test additions remain explicit Rust-only integration exceptions; their pure-C++ bodies
@@ -3412,8 +3412,7 @@ records the established partial-tree baseline: five binaries are not built, aggr
 `/tmp/taraxa0` RocksDB locks, and Go contract tests lack static zlib/snappy; 9 of 21 registered tests pass. Python
 integration remains unavailable because the environment lacks `virtualenv` and `pytest`. A fresh all-Rust-disabled tree
 compiles every changed network source through `core_libs`, then reaches the previously tracked `App`/`Network`
-constructor mismatch before linking `network_test`. The aggregate CXX bridge target still stops at the untouched
-`test_pbft_sync.cpp` five-argument call to the current six-argument admission API.
+constructor mismatch before linking `network_test`. The aggregate CXX bridge target now builds and passes all 52 tests.
 
 The next `CRW-N01`/`CRW-12` slice moves the complete Get-PBFT-sync response family behind the application-owned
 `ConsensusNetworkService` for tarcap versions five and six. Rust now decodes the canonical request, snapshots the native
@@ -3435,8 +3434,8 @@ Validation passes `rewrite-validate-fast`, `rewrite-validate-consensus`, `rewrit
 consensus tests, all 76 bridge tests, the Rust-enabled `core_libs`/`network_test` builds, the focused lane-serialized
 executor case, the bridge inventory self/live guards, the storage-boundary guard, and a fresh all-Rust-disabled
 `core_libs` build that compiles both untouched legacy Get-PBFT-sync handlers. Independent review approved the cutover
-with no blocker. The aggregate CXX bridge build still stops at the untouched `test_pbft_sync.cpp` five-argument call to
-the current six-argument vote-admission API. Tier 3 CTest reproduces the established 9-of-21 partial-tree baseline:
+with no blocker. The aggregate CXX bridge build now passes all 52 tests. Tier 3 CTest reproduces the established
+9-of-21 partial-tree baseline:
 six binaries are unbuilt, aggregate node suites hit same-process `/tmp/taraxa0` RocksDB locks, and Go contract tests
 lack static zlib/snappy. Python integration remains unavailable because this environment lacks `virtualenv`/`pytest`
 and enforces PEP 668. Focused reward-bundle golden parity and an explicit send-failure executor fixture remain
@@ -3457,11 +3456,275 @@ transaction, and proposed-block admission families.
 Validation passes `rewrite-validate-fast`, `rewrite-validate-smoke`, the exact bridge inventory guard, 63 focused native
 network tests, the focused bridge network adapter test, Rust-enabled `core_libs`/`network_test` builds, both isolated
 next-vote synchronization cases, and a fresh pure-C++ `core_libs` build. The new CXX source-scoped-drain regression test
-compiles and covers source id zero as a valid scoped id; the aggregate `rust_consensus_tests` target still
-stops at the established unrelated `test_pbft_sync.cpp` five-argument call to the six-argument vote-admission API.
+compiles and covers source id zero as a valid scoped id; the aggregate `rust_consensus_tests` target now builds and
+passes all 52 tests.
 Independent review found no consensus or security blocker and identified a reconnect bookkeeping race; the standalone
 handler now refreshes the connected peer immediately before transport and applies successful-send known marks to that
-same refreshed peer object. The original latest handler remains unchanged from `upstream-main`.
+same refreshed peer object. That prior slice left the original latest handler's pre-existing upstream delta unchanged.
+
+The next `CRW-N01`/`CRW-12` contraction moves latest-version proposed-block bundle intake behind the native network
+service. Rust owns raw packet and signed-block decoding, the ten-block bound, the current-through-five-period relevance
+window, exact legacy 8/9-field block shape, signature/extra-data/reward-vote invariants, per-period recovered-author
+uniqueness, FinalChain-head-gated DPoS eligibility, and storage-first proposal publication. Rust predecodes every member
+before publication, while protocol admission deliberately remains sequential to preserve the reference handler's
+partial-progress behavior when a later member is malicious. The standalone Rust-mode packet adapter retains only
+syncing-peer gating and typed
+malicious-peer execution; it no longer receives or materializes through `PbftManager`. The former single-wallet PBFT
+eligibility export, two carriers, and shim method are deleted while one operation-specific network function replaces the
+export. Exact budgets fall to 21,918 bridge lines, 16,599 shim lines, and 320 carriers; CXX functions, handles, shim
+directories, and non-test consumers remain 375, 18, 10, and 38. `CRW-N01` remains active for PBFT-sync intake and the
+status, DAG, and transaction families. The original latest handler remains the pure-C++ reference route.
+
+Validation passes `rewrite-validate-fast`, `rewrite-validate-smoke`, five focused native proposed-block-bundle cases,
+the Rust-enabled `core_libs`/`network_test` builds, the isolated multi-node `sync_large_pbft_block` path,
+the exact bridge inventory guard, formatting, clippy with the unchanged warning baseline, and whitespace checks. A
+fresh `RUSTAXA_ENABLE=OFF` tree compiles the complete untouched legacy network route through `core_libs`, then reaches
+the previously tracked `App`/`Network` constructor mismatch while linking `network_test`. The aggregate consensus gate
+again records the established same-process `/tmp/taraxa0` RocksDB lock failures. The aggregate CXX bridge binary now
+builds and passes all 52 tests. Independent review required direct strict-decoder regressions; duplicate reward hashes,
+recovery id four, and
+oversized extra data are now covered and the review found no remaining correctness, ABI, or source-selection blocker.
+An explicit CXX assertion for unfinalized proposal persistence remains non-blocking follow-up coverage; the multi-node
+sync case exercises the live route but asserts finalized PBFT state rather than that intermediate storage row directly.
+
+The next bounded `CRW-12` prerequisite makes the native PBFT period-data queue the sole owner of queued payload bytes
+and source peer identities. The PBFT overlay no longer retains a parallel `PeriodData`/`NodeID` deque, generates
+cross-runtime entry ids, checks queue alignment, returns removed entries for sidecar cleanup, or serializes queue calls
+with a compatibility mutex. Rust pop plans now return the encoded period payload and fixed 64-byte peer id; C++
+materializes `PeriodData` only at the remaining sync executor edge and restores normalized previous-certificate votes
+before validation/finalization. Entry-id fields, the cleanup entry carrier, and unused CXX push/pop diagnostics are
+deleted. Exact budgets fall to 21,850 bridge lines, 16,571 shim lines, and 319 carriers; CXX functions, handles, shim
+directories, and non-test consumers remain 375, 18, 10, and 38.
+
+Focused native queue tests pass 9/9, including the all-zero database-replay peer identity, the bridge adapter test
+passes, Rust-enabled `core_libs` and `network_test` build,
+and `NetworkTest.sync_large_pbft_block` passes through live queue push, drain, reconstruction, and finalization. The
+retained boundary is explicit: the latest PBFT-sync handler still decodes/materializes `PeriodData`, derives compact
+facts, and re-encodes the payload before native retention. `CRW-N01` remains active to pass original wire bytes, move
+handler prechecks and previous-certificate normalization native, and delete that ingress materialization.
+
+The following `CRW-12` contraction moves period-data queue fact production into native Rust. The CXX push shrinks from
+twenty-two positional values to encoded `PeriodData`, fixed peer identity, normalized previous/current certificate
+votes, and the temporary C++ PBFT-chain size. Before acquiring the queue lock, Rust enforces the four/five-field period
+shape and exact eight/nine-field signed-block shape, recovers the block signer, validates unique reward references,
+derives PBFT linkage/final-chain hashes, expands finalized DAG transaction references and optimized pillar votes, and
+decodes transaction RLPs, hashes, nonces, and recovered senders. It also consumes each RLP value exactly, preserves
+binary node-implementation extra data, validates full certificate-vote signatures, and proves the optimized previous
+certificate bundle matches the supplied normalized full votes. Malformed payloads return stable
+`PBFT_PERIOD_DATA_QUEUE_*` errors before mutation. The overlay deletes eight fact-extraction helpers and the
+large-transaction sender-prewarm fanout; only certificate normalization remains because optimized legacy period data
+does not retain vote weights.
+
+Exact budgets fall to 21,706 bridge lines and 16,413 shim lines. CXX functions fall to 374; carriers, handles, shim
+directories, and non-test consumers remain 319, 18, 10, and 38. Native queue/decoder tests pass 22/22, the bridge adapter passes,
+Rust-enabled `core_libs` and `network_test` build, and `NetworkTest.sync_large_pbft_block` passes through the native
+decoder. `CRW-N01` still owns original-wire handoff and the packet handler's pre-queue peer/order/certificate checks;
+the queue-specific `CRW-12` sibling composition is closed: snapshot and encoded push sample the PBFT chain under the
+manager serialization domain, so C++ no longer injects chain size, current period, or last hash. Sync-admission queue
+clears also execute under that native manager lock; the CXX clear operation and shim helper are deleted.
+
+The next bounded `CRW-N01` ingress contraction selects a standalone PBFT-sync handler for Rust-enabled latest and v5
+tarcap while preserving the untouched original handler for pure-C++ mode. The handler passes the exact outer packet
+bytes to `ConsensusNetworkService`, where Rust owns exact outer/nested decoding, optimized certificate reconstruction,
+strict `PeriodData` validation, native chain/queue period and previous-link sampling, duplicate/sync-complete/drop
+classification, certificate target checks, Ficus pillar/extra-data scheduling, and DAG-order hashing. Typed statuses
+leave peer mutation, timers, transport, sync lifecycle publication, and the temporary FinalChain-weighted reward-vote
+normalization/push executor in C++. Three ingress-only manager facade methods are deleted, and queue-drain stale cleanup
+is now applied and acknowledged internally before Rust returns the next external executor step.
+
+Raw precheck runs before any legacy `PbftSyncPacket`, `PeriodData`, vote, transaction, or DAG object construction, so
+malformed nested input reaches typed native classification instead of legacy positional decoders. Proposed-block bundle
+DPoS lookup failures also propagate as operational errors rather than being collapsed into malicious-peer decisions.
+
+The previous guarded constructor hook in the upstream-owned latest handler is also retired: its header and source now
+match `upstream-main` exactly, while guarded source selection keeps the standalone Rust adapter out of pure-C++ builds.
+
+Exact budgets are 21,703 bridge lines and 16,329 shim lines; CXX functions, carriers, handles, shim directories, and
+non-test consumers remain 374, 319, 18, 10, and 38. Native raw-packet tests pass 4/4, classifier tests pass 5/5, the
+native queue suite passes 26/26, and the complete consensus library passes 1,135/1,135 including the service-level
+cleanup regression. Rust-enabled `core_libs` and `network_test` build, and `NetworkTest.sync_large_pbft_block` passes
+through the selected live handler. A fresh `RUSTAXA_ENABLE=OFF` tree builds `core_libs` with the exact upstream legacy
+PBFT-sync handler and without the Rust adapter. The remaining ingress debt is
+native FinalChain-weighted reward-certificate normalization and direct admission of the already-decoded original
+`PeriodData` child without the retained C++ materialization/re-encoding executor.
+
+The following bounded `CRW-N01` contraction removes the last Rust-mode period-data queue push facade from
+`PbftManager`. The standalone PBFT-sync handler retains the exact validated `PeriodData` child bytes, performs only the
+temporary C++ reward-certificate normalization, and submits the original child plus canonical normalized vote bytes
+through the application-owned PBFT service. `App::rebuildDb` likewise retains the exact bytes returned by the legacy
+database and calls the same native queue operation with the zero peer identity. The manager overlay no longer declares
+or defines `periodDataQueuePush`, and its overlay-only vote-RLP helper is deleted; the untouched pure-C++ manager keeps
+its reference implementation. The retained CXX queue-push export is now the narrow database-replay/tarcap lifecycle
+adapter until rebuild and weighted ingress move fully native.
+
+Exact budgets remain 21,703 bridge lines, 374 CXX functions, 319 carriers, 18 handles, 10 shim directories, and 38
+non-test consumers, while shim lines fall from 16,329 to 16,284. All 1,135 native consensus tests and all 76 bridge
+tests pass. Rust-enabled `app`, `core_libs`, and `network_test` build; the isolated live
+`NetworkTest.sync_large_pbft_block` and raw-ingress regression pass. A fresh `RUSTAXA_ENABLE=OFF` tree still builds
+`core_libs` through the untouched legacy route. Full native weighted sync ingress remains gated on preserving the
+legacy slashing-transaction effect through a typed executor/report boundary; it must not be silently discarded.
+
+The next `CRW-N01` slice closes that gate. `PbftService` owns a resumable weighted PBFT-sync ingress session configured
+once with committee/proposer limits and ordered slashing submitters. After native raw precheck, an empty queue admits
+each previous-cert vote strictly and durably against borrowed native FinalChain state, preserving duplicate-proof
+ordering by pausing at an executable slashing transaction. C++ receives only nonce/value/gas/calldata/wallet facts,
+constructs and inserts the signed transaction, and reports the result before Rust continues. Rust then selects retained
+weighted reward payloads and queues the exact decoded `PeriodData` child with the complete 64-byte peer id; a nonempty
+queue keeps the legacy bypass. Duplicate, complete, drop, malicious, benign reward-cursor stop, and queue rejection are
+terminal typed actions. A new begin replaces stale sessions even when precheck fails, while rejected transaction
+insertion leaves the proof planner-retryable and continues legacy packet admission order.
+
+Tarcap no longer decodes or materializes `PbftSyncPacket`, `PeriodData`, DAG blocks, or PBFT votes and no longer depends
+on `VoteManager`; it retains syncing-peer gating, peer facts, pacing, and the narrow transaction leaf. The old precheck
+and direct handler queue wrappers, `VoteManager::getRewardVotesPbftBlockPeriod`, two dead PBFT-manager overlay methods,
+and a redundant manager-named PBFT storage lookup are deleted. DAG/PBFT block-RLP lookups share one generic CXX carrier,
+and the slashing DTO is projected inside `ConsensusNetworkApi`, keeping the production bridge-consumer count flat.
+Exact budgets fall to 21,662 bridge lines, 16,259 shim lines, 373 CXX functions, 319 carriers, 18 handles, 10 shim
+directories, and 38 non-test C++ consumers.
+
+Validation passes all 1,215 native consensus/bridge tests, `make rewrite-validate-fast`, all 52 CXX consensus tests,
+the Rust-enabled `app`, `network_test`, and consensus-test builds, isolated live PBFT sync, exact malformed-ingress/lane
+execution, both inventory checks, and a fresh pure-C++ `core_libs` build through the untouched legacy handler.
+Independent review found and closed one availability defect: slashing submitter resolution now reads configured wallets
+in order only until the first funded account, so an irrelevant later FinalChain lookup cannot abort an already-published
+conflict transition or disconnect the syncing peer. Native regressions cover that read bound and both accepted/rejected
+slashing executor reports through the weighted ingress pause/resume state machine.
+
+The same `CRW-12` closeout deletes five callerless `PillarChainManager` compatibility methods: direct finalization,
+candidate-anchor validation, proposal-anchor selection, local-vote anchor selection, and restart post-processing
+selection. It also removes their four shim-local result DTOs and two private decision enums. Native PBFT already calls
+the pillar current-anchor planner directly for all four decisions and uses only the typed finalization preflight/ack
+boundary, so no C++ replacement path is introduced. This removes 245 additional shim lines and lowers the exact
+`shim_lines` budget to 16,014; all other inventory budgets remain unchanged. The 31 native pillar-chain tests pass,
+both affected C++ targets build, and the isolated pillar synchronization case passes. The aggregate pillar binary still
+records its established same-process RocksDB lock baseline plus two unrelated live-node timing/proposer-session
+failures; the deleted methods had no callers in any of those paths.
+
+The follow-on DAG contraction removes the callerless Rust-mode `DagManager` expiry-limit and non-finalized-minimum-
+difficulty compatibility queries together with their last two scalar CXX exports. The now-unconsumed values are also
+removed from the broad native runtime-status and non-finalized-summary projections; native `DagManagerState` continues
+to own both values for expiry pruning and proposer/VDF policy. This deletes 14 bridge lines and 12 shim lines, lowering
+the exact budgets to 21,648 bridge lines, 16,002 shim lines, and 371 CXX functions without adding a carrier or replacement
+boundary. The untouched original manager and proposer retain their pure-C++ reference APIs.
+All 1,215 native consensus/bridge tests pass after this contraction, as do all six Rust-mode `dag_test` cases and all
+13 `dag_block_test` cases.
+
+The same facade audit removes two more callerless Rust-mode methods: `DagManager::getDagConfig` and
+`TransactionManager::packShardedTrxs`. Native DAG configuration remains constructor-owned, while the live proposer
+uses the owner-bound transaction-pack session instead of this public materialization helper. Their untouched original
+methods remain available only in the pure-C++ reference sources. The deletion removes another 22 shim lines and lowers
+the exact `shim_lines` budget to 15,980 without changing bridge exports, carriers, handles, or consumers.
+
+The final contraction retires the Rust-mode `KeyManager` facade completely. App and the DAG manager/proposer, vote,
+and pillar overlays no longer construct, retain, or accept that internal manager; native PBFT and DAG services already
+borrow FinalChain directly for VRF facts. The last standalone `FinalChain::dposGetVrfKey` shim method and its scalar CXX
+export are deleted with the entire shim directory. Wallet/node-secret custody and actual signature execution remain at
+the classified external signing boundary, while the untouched original `KeyManager` and its legacy callers remain
+source-selected in pure-C++ mode. Exact budgets fall to 21,625 bridge lines, 15,838 shim lines, 370 CXX functions, and
+nine shim directories; carriers, handles, flags, factories, and consumer counts do not increase. Fresh Rust-enabled and
+`RUSTAXA_ENABLE=OFF` `app` builds pass after the constructor cutover, as do the six DAG cases, 13 DAG-block cases, 37
+transaction-manager shim cases, and five focused pillar vote/restore cases. The 1,215-test native workspace, inventory
+and storage-boundary guards, inventory self-test, and whitespace validation also pass. The aggregate vote binary retains
+its existing fixed `/tmp/taraxa0` same-process RocksDB lock collision; it reaches no KeyManager-specific assertion failure.
+
+The closeout also removes the one-use `PbftManagerRuntimeStorageApplyResult` CXX carrier. Executed-block reset now reuses
+the lifecycle transition result with every unrelated command flag explicitly false, preserving only status, authoritative
+snapshot, and error information. This keeps the bridge-line budget at 21,625 while lowering the carrier count to 318;
+the 75 bridge tests cover the reused projection.
+
+The next FinalChain contraction deletes the Rust-mode `dposValidatorsEligibleVoteCounts` compatibility method, its CXX
+export, and the exclusive `DposValidatorVoteCount` carrier. Native PBFT pillar construction already queries the validator
+vote-count set directly from native FinalChain; the only bridge callers were two assertions that duplicated native
+coverage. The untouched original method remains source-selected for the pure-C++ pillar manager. Exact budgets fall to
+21,601 bridge lines, 15,824 shim lines, 369 CXX functions, and 317 carriers.
+
+Finally, pillar relevance and single-vote admission now share one scheduling-fact CXX carrier instead of two identical
+two-field structs. Rust still converts that shared boundary input into distinct native admission and relevance domain
+contexts, while C++ constructs the immutable Ficus schedule once. Removing `PillarVoteRuntimeRelevanceContext` lowers
+the exact budgets again to 21,592 bridge lines, 15,822 shim lines, and 316 carriers without changing an export or fact.
+
+The period-data pop projection now reuses that same canonical `PillarVoteRlpPayload` carrier instead of wrapping identical
+`vote_rlp` bytes in a queue-specific struct. Rust queue ownership and the temporary C++ pop materialization retain the
+same bytes and direction. Removing `PeriodDataQueuePillarVotePayload` lowers the exact bridge budget to 21,584 lines and
+the carrier count to 315.
+
+Canonical PBFT certificate-vote RLP now follows the same rule: period-data queue input/pop and debug-query projection
+share `PbftCertVoteRlp` instead of maintaining an identical queue-only wrapper. Signing/weight bytes remain opaque and
+unchanged across the boundary. Removing `PeriodDataQueuePbftVotePayload` lowers the exact bridge budget to 21,577 lines
+and the carrier count to 314.
+
+Pillar creation and public pillar-block queries now share `PillarValidatorVoteCountChange` for the same signed address
+delta instead of projecting an identical query-only carrier. Native query and planning domain types stay distinct, while
+the CXX boundary preserves address, signedness, and value exactly. Removing `PillarBlockViewVoteCountChange` lowers the
+exact bridge budget to 21,571 lines and the carrier count to 313.
+
+Transaction queue decisions and DAG-save effect reports now share `TransactionQueueHash` for their identical transaction
+identity payload instead of maintaining `TransactionManagerHashCommand`. Native outcomes, ordering, and C++ log
+materialization are unchanged. This lowers the exact bridge budget to 21,563 lines and the carrier count to 312.
+
+The Rust-mode VoteManager facade also drops the callerless `getProposalVotes` materializer. Native prepare/finish leader
+selection already owns proposal-vote snapshotting, ranking, validation commands, and stale-snapshot rejection; the only
+production caller of the legacy API is the untouched pure-C++ PBFT manager. This removes another 19 shim lines and lowers
+the exact shim budget to 15,803 without changing the native verified-vote payload export used by other live queries.
+
+The Rust-mode PBFT manager facade drops the callerless `getRoundLambda` compatibility method as well. Active transition,
+sleep, and dynamic-lambda persistence flows already consume the native runtime snapshot directly; the legacy method and
+its three callers remain together only in the untouched pure-C++ manager. This removes 24 more shim lines and lowers the
+exact shim budget to 15,779 without deleting the broadly shared runtime-snapshot export.
+
+The callerless whole-`PeriodData` `validatePbftBlockPillarVotes` facade is removed too. Native sync admission already
+retains canonical pillar-vote RLP, requests the live pillar validator only at its typed executor boundary, and owns report
+ordering and terminal rejection. The narrower `validatePbftBlockPillarVotesWithRust` executor remains live for that task;
+the legacy whole-object method and caller remain together only in pure-C++ mode. This removes 47 shim lines and lowers
+the exact shim budget to 15,732.
+
+The Rust-mode DAG proposer drops its unread `getProposedBlocksCount` facade and compatibility counter. The native proposer
+session already owns the accepted add-report outcome, while C++ retains success/failure logging without mirroring an
+unobserved cumulative count. Pure-C++ retains the original getter and counter. This lowers the exact shim budget to 15,723.
+
+Static closeout removed two pillar helpers orphaned by the whole-`PeriodData` validation contraction and their now-unused
+byte-slice adapter. The live single-vote and sync-bundle executors retain their owned native validation paths and error
+mapping; no public or executor boundary changes. PBFT vote logging now records the hash and weight before transferring
+the vote into its compatibility vector, and the runtime snapshot step has an unambiguous local name. These shim-only
+cleanups, including removal of the helpers' stale public declarations, lower the exact shim budget to 15,654 and leave
+the untouched pure-C++ reference implementation unchanged.
+
+That helper deletion also made the standalone `pillar_vote_inspect` CXX function and `PillarVoteInspection` carrier
+test-only, so both are retired instead of entering the allowlist. Their bridge-wrapper and C++ adapter tests are deleted
+with the boundary; the four native Rust inspection tests continue to cover signer recovery, invalid signatures,
+out-of-range recovery identifiers, and malformed RLP. Production single-vote and bundle admission still invoke the same
+native inspection logic internally. This lowers the exact bridge budget to 21,424 lines, CXX functions to 368, and CXX
+carriers to 311.
+
+Closeout validation after these final contractions passes the fast rewrite gate, all 71 Rust bridge tests, all 1,140
+native consensus tests, all 50 `rust_consensus_tests`, all nine Rust storage bridge tests, Rust-enabled and pure-C++ `app`
+builds, six DAG tests, 13 DAG-block tests, 37 transaction-manager shim tests, PBFT-chain and PBFT-chain-shim suites,
+focused PBFT-manager, pillar, vote-leader, RPC query, PBFT sync wire-encoding, node-sync, insufficient-vote, and next-vote
+cases, large-block and transaction-bearing sync, a Rust-enabled `taraxad` build/version smoke, both inventory modes, the
+storage-boundary guard, and whitespace validation. Aggregate vote/pillar/network binaries retain the documented
+same-process RocksDB-lock/timing baseline; their affected cases pass in isolated processes.
+
+The repo-wide `check-static` gate was also exercised. It remains non-green on the existing broad
+`useStlAlgorithm`/legacy-shadow baseline and an `accessMoved` finding in the untouched pure-C++ PBFT manager. All
+slice-owned actionable findings are resolved: Rust-mode PBFT logging reads the vote before moving it, the runtime step no
+longer shadows the snapshot value, and orphaned pillar definitions, declarations, and their byte adapter are absent.
+Independent follow-up review reports no remaining findings.
+
+Five-node full-sync validation exposed a single-member bundle rejection ambiguity. Native preflight correctly returned
+one rejection decision with application effect id zero; because the input also contained one vote, C++ mistook equal
+vector lengths for successful preflight and requested nonexistent effect zero. Success now requires one accepted,
+nonzero application id for every member. Each vote bundle also carries its unique packet id into native effects and
+drains only that source within the locked transport lane.
+
+The same executor now represents real native bundle cancellation exactly. Rust records consumable tombstones only for
+admission ids deliberately removed after a bundle member terminates aggregation; C++ accepts `cancelled` only with that
+proof and preserves hard failures for arbitrary, consumed, and single-vote missing ids. Tombstones are cleared per lane
+at the next bundle ingress, bounding abandoned-session memory. Focused native tests cover ordered admission, exact
+cancellation, one-shot tombstone consumption, and unknown-id rejection. This narrow tarcap executor proof adds one CXX
+function and 12 bridge lines, setting the exact budgets to 369 functions and 21,436 lines. The full-sync test reaches its
+passing assertions after the fix, emits no missing-effect diagnostic, and exits cleanly in the final isolated rerun. The
+intermittent Boost logger TLS teardown abort remains an aggregate-suite environment baseline rather than a failure of
+this route.
 
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
@@ -3485,7 +3748,7 @@ and pure-C++ builds still select the untouched original implementation.
 | Sortition params | `dag/sortition_params_manager.hpp`, `dag/sortition_params_manager.cpp` | 331 lines | `rust-owned` | Native `SortitionService` inside the DAG/transaction root; no Rust-mode C++ manager facade | Deterministic efficiency/threshold runtime state and persistence route to `rustaxa-consensus::sortition` and native `rustaxa-storage` in master Rust mode. `SortitionService` restores the manager before publication and owns its mutex and poison policy; the full application root requires this capability structurally. PBFT finalization uses a two-phase contract: preview the Rust threshold transition without publishing live state, persist any emitted `SortitionParamsChange` inside the primary Rust-owned finalization batch, then commit the live Rust runtime only after storage succeeds and validate the emitted change matches the preview. The standalone Rust handle/factories, facade-owned box, optional bridge field, unavailable branches, capability probe, C++ facade/shim, direct CXX operations, and facade-only tests are deleted. The storage overlay retains only the canonical `SortitionParamsChange` RLP codec required by the stable storage API. The untouched legacy class and `sortition_test` are pure-C++-reference-only. |
 | PBFT chain | `pbft/pbft_chain.hpp`, `pbft/pbft_chain.cpp`, `pbft_chain_shim/*` | 259 lines | `rust-owned` application state; C++ facade retained | Native `rustaxa-consensus::pbft_chain::PbftChainService` behind a C++ compatibility view | The CXX-free native owner holds startup restore/default initialization, storage lifetime, the sibling `RwLock`, head projection/update, block lookup, and next-block validation. Native `PbftService` embeds that owner; production `App` and Rust-mode tests share the full service through the thin CXX adapter between manager and chain facades. The chain-only constructor/factory are deleted. Cross-domain finalization and leader selection temporarily borrow native guards until the complete PBFT owner moves. C++ retains JsonCpp formatting and temporary `PbftBlock` materialization. Feature-on builds import or compile no `PbftChainOld`; pure-C++ builds retain the untouched original implementation. |
 | Proposed blocks | `pbft/proposed_blocks.hpp`, `pbft/proposed_blocks.cpp` | 178 legacy lines | `rust-owned` application state; no Rust-mode C++ facade | Native `rustaxa-consensus::proposed_blocks::ProposedBlocksService` with PBFT-manager boundary materialization | The CXX-free native owner holds restore, membership, compact pivot metadata, validation flags, canonical RLP payloads, storage-first publication, atomic stale-period cleanup, storage lifetime, and the sibling `RwLock`; native behavioral tests cover those contracts. Native `PbftService` embeds that owner, and the PBFT manager bridge adapter calls publication, lookup, mark-valid, and snapshot operations directly before materializing `PbftBlock` only at validation/network boundaries. Period advance performs combined vote/proposal cleanup and manager-period publication inside the native service, so no cleanup result crosses CXX. The standalone bridge handle/factory, C++ facade/mutex/shim, facade-only operations/carriers/tests, and combined-cleanup behavioral relay are deleted. Temporary `DbStorage` compatibility uses the existing typed PBFT storage-query handle rather than free functions over `BridgeStorage`; tentative wallet candidates use an isolated Rust-local batch lookup. The untouched original class remains pure-C++-reference-only. |
-| Period data queue | `pbft/period_data_queue.hpp`, `pbft/period_data_queue.cpp`, PBFT service queue API | 168 lines | `rust-backed` | Rust metadata owned by the PBFT application service | Admission rules, queued block-link/reward/pillar/cert-vote metadata, transaction metadata and payloads, previous-cert metadata, processable-size/period tracking, pop decisions, cleanup planning, and clear semantics route through `BridgePbftService`. The standalone queue CXX handle, shim overlay, and module flag are retired. C++ keeps live `PeriodData`, compatibility vote/transaction materialization at external boundaries, pillar-vote sidecars, and peer `NodeID` ownership. |
+| Period data queue | `pbft/period_data_queue.hpp`, `pbft/period_data_queue.cpp`, PBFT service queue API | 168 lines | `rust-backed` | Rust payload and metadata owned by the PBFT application service | Admission rules, encoded period payloads and peer identities, block-link/reward/pillar/cert-vote metadata, transaction metadata and payloads, previous-cert metadata, processable-size/period tracking, pop decisions, cleanup, and chain-head composition route through the native service. The standalone queue CXX handle, shim overlay, module flag, C++ payload deque, peer sidecar, chain-fact inputs, CXX clear operation, and Rust-mode `PbftManager::periodDataQueuePush` facade are retired. Tarcap and database replay retain exact encoded `PeriodData` bytes and submit them through the PBFT-root queue adapter; C++ materializes compatibility vote/transaction/`PeriodData` objects only after pop at remaining executor boundaries. |
 | PBFT manager | `pbft/pbft_manager.hpp`, `pbft/pbft_manager.cpp`, `pbft_manager_shim/*` | 3267 lines | `partial` | Native PBFT application service plus C++ lifecycle/executor facade | Rust-enabled builds exclude the untouched upstream manager source and expose only the shim-owned `PbftManager` facade. Native `PbftService` and its sibling services own manager scalar state, daemon/action/session cursors, period-data metadata, sync admission, proposal planning, block validation, transition persistence, PBFT chain lifetime/state, proposed-block state, and verified-vote state; `BridgePbftService` is a one-field CXX adapter. Production construction validates slashing configuration, restores every storage-backed sibling before publication, and remains bootstrap-gated until C++ replay/restart work completes. Authoritative leader selection uses a service-owned vote/proposed/chain snapshot plus fingerprint revalidation around the external C++ block validator; no separate proposal-vote snapshot, per-vote proposed lookup, or C++ chain callback remains. Vote admission commits any required progress batch under the vote lock before publishing the transition and restores a bounded checkpoint on failure. Period advance cleans vote and proposed-block state through one storage-first service action. Finalization drains and validates the chain mutation internally; C++ executes only the remaining typed external effects for FinalChain/EVM, DAG, network, timers, signing, events, and compatibility materialization. |
 
 PBFT manager proposal note: `PbftManagerProposalSession` now owns proposal candidate filtering from supplied
@@ -3529,8 +3792,8 @@ by Rust transition/snapshot application helpers. PBFT period remains PBFT-chain-
 the chain before the Rust runtime period commit. Dynamic-lambda compatibility mutation has also been reduced: the
 obsolete shim-local `adjustDynamicLambda()` helper is gone, and Rust-mode finalization stages use Rust planner lambda
 outputs before updating C++ lambda mirrors only after Rust storage accepts the dynamic-lambda stage. The Rust manager
-runtime now records accepted dynamic-lambda stage outputs in its snapshot, `getRoundLambda()` reads round-one lambda from
-that snapshot, and finalization dynamic-lambda planner inputs no longer read `rounds_count_dynamic_lambda_` /
+runtime now records accepted dynamic-lambda stage outputs in its snapshot, and transition/sleep consumers read that
+native lambda directly. Finalization dynamic-lambda planner inputs no longer read `rounds_count_dynamic_lambda_` /
 `dynamic_lambda_` as authority. Successful next-vote status persistence now returns a Rust runtime snapshot that hydrates
 the C++ compatibility flags, and active state-action facts read next-voted flags from runtime snapshots instead of the
 C++ bool mirrors. Broadcast/rebroadcast counters now live in `PbftManagerRuntimeSnapshot`: startup seeds them as

@@ -151,7 +151,7 @@ fn vote_storage_record_to_ffi(value: DomainPbftVoteStorageRecord) -> PbftVoteSto
     }
 }
 
-fn slashing_submitter_identity_to_domain(
+pub(crate) fn slashing_submitter_identity_to_domain(
     value: FfiSlashingSubmitterIdentity,
 ) -> DomainSlashingSubmitterIdentity {
     DomainSlashingSubmitterIdentity {
@@ -164,7 +164,7 @@ fn u256_to_bytes(value: U256) -> [u8; 32] {
     value.to_big_endian()
 }
 
-fn slashing_transaction_effect_to_ffi(
+pub(crate) fn slashing_transaction_effect_to_ffi(
     value: DomainSlashingTransactionEffect,
 ) -> FfiSlashingTransactionEffect {
     FfiSlashingTransactionEffect {
@@ -179,7 +179,7 @@ fn slashing_transaction_effect_to_ffi(
     }
 }
 
-fn empty_slashing_transaction_effect() -> FfiSlashingTransactionEffect {
+pub(crate) fn empty_slashing_transaction_effect() -> FfiSlashingTransactionEffect {
     FfiSlashingTransactionEffect {
         status: 0,
         proof_hash: [0; 32],
@@ -421,7 +421,6 @@ impl BridgePbftService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustaxa_consensus::DoubleVotingProofPlanStatus;
 
     #[test]
     fn raw_invalid_persistence_kind_stays_typed_rejection() {
@@ -685,11 +684,6 @@ impl BridgePbftService {
         self.0
             .reward_vote_cursor_snapshot()
             .map(reward_vote_cursor_snapshot_to_ffi)
-    }
-
-    /// Returns the native finalized reward period; native lock errors propagate.
-    pub fn pbft_service_verified_votes_reward_vote_period(&self) -> Result<u64, anyhow::Error> {
-        self.0.reward_vote_period()
     }
 
     /// Converts requested CXX hashes, delegates ordered selection, and maps its typed result.

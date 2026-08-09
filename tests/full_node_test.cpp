@@ -41,6 +41,8 @@ std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage> &d
   config.sync_level_size = 10;
   config.is_light_node = false;
   config.light_node_history = 0;
+  config.committee_size = 5;
+  config.number_of_proposers = 20;
   auto service = std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
   return std::make_shared<PbftChain>(addr_t(), std::move(service));
 #else
@@ -1100,7 +1102,9 @@ TEST_F(FullNodeTest, persist_counter) {
 TEST_F(FullNodeTest, save_network_to_file) {
   auto node_cfgs = make_node_cfgs(3);
   // Create and destroy to create network. So next time will be loaded from file
-  { auto nodes = launch_nodes(node_cfgs); }
+  {
+    auto nodes = launch_nodes(node_cfgs);
+  }
   {
     auto nodes = create_nodes({node_cfgs[1], node_cfgs[2]}, true /*start*/);
 

@@ -186,6 +186,8 @@ PbftServiceConfig makePbftServiceConfig(bool cacti_active = true) {
   config.sync_level_size = 10;
   config.is_light_node = false;
   config.light_node_history = 0;
+  config.committee_size = 5;
+  config.number_of_proposers = 20;
   return config;
 }
 
@@ -220,9 +222,8 @@ rust::Box<BridgeDagTransactionService> createDagTransactionServiceForFinalizatio
   GasPricerConfig gas_config;
   gas_config.percentile = 50;
   gas_config.history_blocks = 10;
-  return create_dag_transaction_service_from_storage(*storage, genesis, 32, 100,
-                                                     runtimeSortitionConfig(changing_interval), queue_config, gas_config,
-                                                     UINT64_MAX);
+  return create_dag_transaction_service_from_storage(
+      *storage, genesis, 32, 100, runtimeSortitionConfig(changing_interval), queue_config, gas_config, UINT64_MAX);
 }
 
 struct FinalizationServices {
@@ -272,7 +273,8 @@ void seedRewardCertVote(BridgeStorage& storage, BridgePbftService& service) {
   context.two_t_plus_one_threshold = 1;
   context.slashing_enabled = true;
   const auto result = service.pbft_service_verified_votes_admit_and_persist_with_final_chain(
-      *final_chain, rust::Slice<const uint8_t>(vote_rlp.data(), vote_rlp.size()), validation, flags, context);
+      *final_chain, rust::Slice<const uint8_t>(vote_rlp.data(), vote_rlp.size()), validation, flags, context,
+      rust::Vec<SlashingSubmitterIdentity>{});
   ASSERT_TRUE(result.transition_published);
 }
 
@@ -442,8 +444,8 @@ TEST(RustPbftSyncTest, FinalizationBoundaryAcceptsCompatibleDagService) {
                                      storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
   auto compatible_dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
 
-  const auto state = pbft_manager_runtime_advance_finalization_action(
-      *runtime, *compatible_dag_transaction_service, boundary.cursor, boundary.action, 0, 0, 0, {});
+  const auto state = pbft_manager_runtime_advance_finalization_action(*runtime, *compatible_dag_transaction_service,
+                                                                      boundary.cursor, boundary.action, 0, 0, 0, {});
   EXPECT_EQ(state.status, kPbftFinalizationRuntimeStatusActive);
   EXPECT_EQ(state.action, kPbftFinalizationRuntimeActionSetDagBlockOrder);
   EXPECT_TRUE(state.can_continue);
@@ -488,11 +490,11 @@ TEST(RustPbftSyncTest, FinalizationBoundaryAdvancesNativeRewardVotes) {
   auto boundary =
       startFreshFinalizationExecutor(*runtime, *dag_transaction_service, plan,
                                      storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
-  boundary = pbft_manager_runtime_advance_finalization_action(
-      *runtime, *dag_transaction_service, boundary.cursor, boundary.action, 0, 0, 0, {});
+  boundary = pbft_manager_runtime_advance_finalization_action(*runtime, *dag_transaction_service, boundary.cursor,
+                                                              boundary.action, 0, 0, 0, {});
   ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitRewardVotesResetRuntime);
-  boundary = pbft_manager_runtime_advance_finalization_action(
-      *runtime, *dag_transaction_service, boundary.cursor, boundary.action, 0, 0, 0, {});
+  boundary = pbft_manager_runtime_advance_finalization_action(*runtime, *dag_transaction_service, boundary.cursor,
+                                                              boundary.action, 0, 0, 0, {});
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive) << std::string(boundary.error_code);
   EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionSetDagBlockOrder);
   EXPECT_TRUE(boundary.can_continue);
@@ -516,16 +518,16 @@ TEST(RustPbftSyncTest, FinalizationResumeReplaysAuthenticatedRewardPublication) 
   auto boundary =
       startFreshFinalizationExecutor(*runtime, *dag_transaction_service, plan,
                                      storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
-  boundary = pbft_manager_runtime_advance_finalization_action(
-      *runtime, *dag_transaction_service, boundary.cursor, boundary.action, 0, 0, 0, {});
+  boundary = pbft_manager_runtime_advance_finalization_action(*runtime, *dag_transaction_service, boundary.cursor,
+                                                              boundary.action, 0, 0, 0, {});
   ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitRewardVotesResetRuntime);
 
   boundary = startResumeFinalizationExecutor(*runtime, *dag_transaction_service, plan, 0);
   ASSERT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive);
   ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitRewardVotesResetRuntime);
 
-  boundary = pbft_manager_runtime_advance_finalization_action(
-      *runtime, *dag_transaction_service, boundary.cursor, boundary.action, 0, 0, 0, {});
+  boundary = pbft_manager_runtime_advance_finalization_action(*runtime, *dag_transaction_service, boundary.cursor,
+                                                              boundary.action, 0, 0, 0, {});
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive) << std::string(boundary.error_code);
   EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionFinalizeFinalChain);
   EXPECT_TRUE(boundary.can_continue);
@@ -538,8 +540,7 @@ TEST(RustPbftSyncTest, FinalizationResumeReplaysAuthenticatedSortitionPublicatio
   auto dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage, 1);
   auto fact = makeFinalizationFact();
   fact.request_dynamic_lambda_update = false;
-  const auto plan =
-      withoutRewardVoteReset(pbft_manager_runtime_plan_finalization_intent(*runtime, std::move(fact)));
+  const auto plan = withoutRewardVoteReset(pbft_manager_runtime_plan_finalization_intent(*runtime, std::move(fact)));
 
   auto boundary =
       startFreshFinalizationExecutor(*runtime, *dag_transaction_service, plan,
@@ -550,8 +551,8 @@ TEST(RustPbftSyncTest, FinalizationResumeReplaysAuthenticatedSortitionPublicatio
   ASSERT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive);
   ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
 
-  boundary = pbft_manager_runtime_advance_finalization_action(
-      *runtime, *dag_transaction_service, boundary.cursor, boundary.action, 0, 0, 0, {});
+  boundary = pbft_manager_runtime_advance_finalization_action(*runtime, *dag_transaction_service, boundary.cursor,
+                                                              boundary.action, 0, 0, 0, {});
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive) << std::string(boundary.error_code);
   EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionFinalizeFinalChain);
   EXPECT_TRUE(boundary.can_continue);

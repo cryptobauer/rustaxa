@@ -9,7 +9,9 @@
 #include "common/app_base.hpp"
 #include "common/thread_pool.hpp"
 #include "config/config.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "key_manager/key_manager.hpp"
+#endif
 #include "logger/logger.hpp"
 #include "plugin/plugin.hpp"
 
@@ -120,7 +122,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<PbftService> pbft_service_;
 #endif
   std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr_;
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<KeyManager> key_manager_;
+#endif
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::shared_ptr<metrics::MetricsService> metrics_;
 

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <memory>
-
 #include "common/thread_pool.hpp"
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
 #include "network/tarcap/packets_handlers/interface/sync_packet_handler.hpp"
@@ -15,14 +13,8 @@ class PbftSyncPacketHandler : public ISyncPacketHandler {
                         std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                         std::shared_ptr<PbftSyncingState> pbft_syncing_state, std::shared_ptr<PbftChain> pbft_chain,
                         std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
-                        std::shared_ptr<VoteManager> vote_mgr,
-#ifndef RUSTAXA_ENABLE
-                        std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy PBFT sync handler.
-#else
-                        network::ConsensusNetworkApiShared consensus_network_api,
-#endif
-                        const addr_t& node_addr, const std::string& logs_prefix = "");
-  ~PbftSyncPacketHandler() override;
+                        std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DbStorage> db, const addr_t& node_addr,
+                        const std::string& logs_prefix = "");
 
   // Packet type that is processed by this handler
   static constexpr SubprotocolPacketType kPacketType_ = SubprotocolPacketType::kPbftSyncPacket;

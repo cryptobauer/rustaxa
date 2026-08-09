@@ -31,6 +31,8 @@ std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage>& d
   config.sync_level_size = 10;
   config.is_light_node = false;
   config.light_node_history = 0;
+  config.committee_size = 5;
+  config.number_of_proposers = 20;
   auto service = std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
   return std::make_shared<PbftChain>(addr_t(), std::move(service));
 #else
@@ -193,7 +195,11 @@ TEST_F(DagTest, compute_epoch) {
   auto pbft_chain = makeTestPbftChain(db_ptr);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
+#ifdef RUSTAXA_ENABLE
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+#else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
+#endif
 
   auto blkA =
       std::make_shared<DagBlock>(GENESIS, 1, vec_blk_t{}, vec_trx_t{trx_hash_t(2)}, sig_t(1), blk_hash_t(2), addr_t(1));
@@ -298,7 +304,11 @@ TEST_F(DagTest, dag_expiry) {
   node_cfgs[0].max_levels_per_period = 3;
   node_cfgs[0].dag_expiry_limit = EXPIRY_LIMIT;
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
+#ifdef RUSTAXA_ENABLE
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+#else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
+#endif
 
   auto blkA =
       std::make_shared<DagBlock>(GENESIS, 1, vec_blk_t{}, vec_trx_t{trx_hash_t(2)}, sig_t(1), blk_hash_t(2), addr_t(1));
@@ -386,7 +396,11 @@ TEST_F(DagTest, receive_block_in_order) {
   auto trx_mgr = std::make_shared<TransactionManager>(FullNodeConfig(), db_ptr, nullptr, addr_t());
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
+#ifdef RUSTAXA_ENABLE
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+#else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
+#endif
 
   auto blk1 = std::make_shared<DagBlock>(GENESIS, 1, vec_blk_t{}, vec_trx_t{}, sig_t(777), blk_hash_t(1), addr_t(15));
   auto blk2 =
@@ -419,7 +433,11 @@ TEST_F(DagTest, compute_epoch_2) {
   auto trx_mgr = std::make_shared<TransactionManager>(FullNodeConfig(), db_ptr, nullptr, addr_t());
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
+#ifdef RUSTAXA_ENABLE
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+#else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
+#endif
 
   auto blkA =
       std::make_shared<DagBlock>(GENESIS, 1, vec_blk_t{}, vec_trx_t{trx_hash_t(2)}, sig_t(1), blk_hash_t(2), addr_t(1));
@@ -512,7 +530,11 @@ TEST_F(DagTest, get_latest_pivot_tips) {
   auto pbft_chain = makeTestPbftChain(db_ptr);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
+#ifdef RUSTAXA_ENABLE
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+#else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
+#endif
 
   auto blk2 = std::make_shared<DagBlock>(GENESIS, 1, vec_blk_t{}, vec_trx_t{}, sig_t(1), blk_hash_t(2), addr_t(15));
   auto blk3 =
@@ -541,7 +563,11 @@ TEST_F(DagTest, initial_pivot) {
   auto trx_mgr = std::make_shared<TransactionManager>(FullNodeConfig(), db_ptr, nullptr, addr_t());
   auto pbft_chain = makeTestPbftChain(db_ptr);
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
+#ifdef RUSTAXA_ENABLE
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+#else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
+#endif
 
   auto pt = mgr->getLatestPivotAndTips();
 
@@ -551,7 +577,7 @@ TEST_F(DagTest, initial_pivot) {
 }  // namespace taraxa::core_tests
 
 using namespace taraxa;
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   static_init();
   auto logging = logger::createDefaultLoggingConfig();
   logging.verbosity = logger::Verbosity::Error;

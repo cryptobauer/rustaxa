@@ -386,8 +386,9 @@ retain the untouched legacy RewardsStats header, source, and focused test.
   - genesis vote-count snapshot is derived in Rust from genesis validator stake.
   - `dposEligibleTotalVoteCount`, `dposEligibleVoteCount`, and `dposIsEligible` now preserve the `EthBlockNumber`
     argument through the C++ shim and Rust bridge.
-  - `dposValidatorsTotalStakes` and `dposValidatorsEligibleVoteCounts` are Rust-backed and return address-sorted
-    vectors for available Rust DPoS snapshots.
+  - `dposValidatorsTotalStakes` is Rust-backed and returns address-sorted vectors for available Rust DPoS snapshots.
+    Validator eligible-vote-count sets stay native for PBFT pillar construction and are no longer materialized through
+    a Rust-mode C++ FinalChain method; the untouched pure-C++ method remains on the reference path.
   - DagManager verification now receives DPoS authorization facts whose VDF sortition denominator is selected in Rust
     from genesis DPoS config plus the configured Magnolia boundary, instead of passing per-block hardfork or
     validator-max policy through the C++ shim.
@@ -858,7 +859,10 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
   is also native for versions five and six: Rust validates canonical requests and history bounds, reads native period
   data, attaches reward votes, builds complete sync packets, and emits version-six proposed-block bundles. Tarcap still
   owns lane serialization, packet sealing, peer syncing/report/disconnect execution, and acknowledgements. Accepted-only
-  bundle aggregation is native, while sync intake and remaining handler-local routing are tracked by `CRW-N01`.
+  bundle aggregation is native. Latest-version proposed-block bundle intake is native too: Rust owns raw signed-block
+  decoding, relevance and unique-author checks, FinalChain-backed DPoS admission, and storage-first publication, while
+  tarcap retains only syncing-peer gating and malicious-peer execution. Sync intake and remaining handler-local routing
+  are tracked by `CRW-N01`.
 - EVM/FinalChain execution: transaction execution, receipt/log bloom construction, gas execution, state transition
   execution, and external contract execution stay in the existing FinalChain/EVM boundary until that execution layer is
   migrated. Rust PBFT logic may plan finalization, validate facts, and request execution/finalization effects, but it
@@ -896,14 +900,28 @@ The completed PBFT manager closeout folded the dedicated slice tracker into this
 4. State-action and daemon control flow ownership: daemon ticks, state-action branch selection, transition eligibility,
    follow-up decisions, and cursor advancement are driven by Rust runtime sessions with typed executor reports.
 5. Object sidecar and materialization reduction: PBFT decisions use Rust-owned canonical payloads and compact facts for
-   proposed blocks, cert-voted payloads, period-data queue metadata, and selected vote/pillar/reward facts; old C++
-   objects remain only at classified executor and public/network edges.
+   proposed blocks, cert-voted payloads, period-data queue payload bytes and peer identities, and selected
+   vote/pillar/reward facts. The period-data queue no longer keeps a parallel C++ object deque, correlation ids, or
+   compatibility mutex; C++ reconstructs `PeriodData` only after Rust pops an executor payload. Other old C++ objects
+   remain only at classified executor and public/network edges.
 6. Finalization executor collapse except EVM: Rust owns finalization action ordering, storage-write application,
    dynamic-lambda decisions, duplicate/restart resume classification, and non-EVM live-mutation report validation while
    FinalChain/EVM execution stays an explicit executor boundary.
-7. Sync and period-data intake without C++ decision state: Rust owns queue admission, queue-drain ordering, staged
-   `processPeriodData` check ordering, transaction warning classification, and terminal sync actions from queued compact
-   facts.
+7. Sync and period-data intake without C++ decision state: Rust owns queue admission, encoded payload and peer
+   retention, cleanup, queue-drain ordering, staged `processPeriodData` check ordering, transaction warning
+   classification, and terminal sync actions. Queue push now derives PBFT hashes, reward references, finalized-DAG
+   transaction references, transaction hashes/senders/nonces, pillar votes, and presence flags from encoded
+   `PeriodData`; native snapshot/push composition samples the PBFT-chain sibling under the manager serialization domain,
+   and sync-admission queue clears and stale drain cleanup no longer cross CXX. The latest and v5 Rust-mode PBFT-sync
+   routes now hand the original packet bytes to a standalone handler backed by native exact-shape decoding, chain/queue
+   sequencing, certificate-target, pillar-schedule, and DAG-order prechecks. Exact-child queue submission preserves the
+   validated wire bytes. Database replay also retains exact stored bytes; neither Rust-mode caller
+   routes queue admission through `PbftManager::periodDataQueuePush`, so that overlay method and its vote-RLP helper are
+   retired. The application-owned PBFT root now runs a resumable weighted ingress session: it admits previous-cert
+   votes sequentially against native FinalChain, persists verified votes, pauses only for a typed slashing transaction
+   leaf, selects authoritative weighted reward payloads, and pushes the already-decoded exact child plus full peer id.
+   Tarcap retains peer transport/lifecycle publication and transaction construction/signing/insertion only. The
+   untouched latest handler remains the pure-C++ reference route.
 8. Vote, pillar, and slashing boundary tightening: PBFT manager no longer consumes live `VoteManager` or
    `PillarChainManager` sidecar collections for protocol decisions; it uses typed manager ports and receives only
    executor payloads for signing, network, finalization, or public compatibility.
@@ -1075,9 +1093,10 @@ The current Rust consensus footprint is broad but still incomplete:
    no longer import or compile `PbftChainOld`; proposed-block membership, validity flags, RLP snapshots, persistence,
    restore, and cleanup route through the standalone Rust-backed facade under `RUSTAXA_ENABLE`, and
    feature-on builds no longer import or compile `ProposedBlocksOld`; period-data queue admission, effective size, pop
-   vote-source decisions, and cleanup planning now live inside the PBFT manager Rust runtime. The standalone period-data
-   queue CXX handle, shim overlay, and module flag have been retired; C++ keeps only temporary live sidecars for `PeriodData`,
-   vote, and peer objects.
+   vote-source decisions, encoded payload/peer retention, native fact derivation, and cleanup planning now live inside
+   the PBFT manager Rust runtime. The standalone period-data queue CXX handle, shim overlay, module flag, parallel C++
+   payload deque, peer sidecar, and Rust-mode PBFT-manager queue-push facade have been retired; C++ materializes `PeriodData` only after native pop for the
+   remaining validation/finalization executor and temporarily supplies normalized certificate votes.
 9. Continue shrinking the Rust-mode `PbftManager` overlay into Rust services for candidate validation and ordered
    state-action scripts. The first grouped leader-candidate planner owns proposal candidate status derivation,
    mark-valid commands, and deterministic leader ranking; the C++ overlay only supplies live block lookup/validation

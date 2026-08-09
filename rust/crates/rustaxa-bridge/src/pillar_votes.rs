@@ -7,17 +7,14 @@
 use crate::ffi::rustaxa_ffi::{
     PillarBlockFinalizationAcknowledgeRequest, PillarBlockFinalizationAcknowledgeResult,
     PillarBlockFinalizationPrepareResult, PillarBlockFinalizationRequest,
-    PillarConsensusThresholdLookup, PillarVoteBundleWithFinalChainPlan, PillarVoteInspection,
-    PillarVoteRecord, PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteRlpPayload,
-    PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionContext,
+    PillarConsensusThresholdLookup, PillarVoteBundleWithFinalChainPlan, PillarVoteRecord,
+    PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteRlpPayload,
+    PillarVoteSingleAdmissionContext,
     PillarVoteSingleAdmissionPreparePlan as FfiPillarVoteSingleAdmissionPreparePlan,
     PillarVoteSingleAdmissionWithFinalChainPlan, PillarVotesPayloadLookup,
 };
 use crate::ffi::{BridgeFinalChain, BridgePbftService};
 use anyhow::Result;
-use rustaxa_consensus::{
-    inspect_pillar_vote_from_rlp, PillarVoteInspection as ConsensusPillarVoteInspection,
-};
 
 #[allow(dead_code)]
 impl BridgePbftService {
@@ -85,7 +82,7 @@ impl BridgePbftService {
     pub fn pbft_service_pillar_plan_vote_relevance(
         &self,
         vote_rlp: Vec<u8>,
-        context: PillarVoteRuntimeRelevanceContext,
+        context: PillarVoteSingleAdmissionContext,
     ) -> Result<FfiPillarVoteRelevancePlan> {
         let result = self.0.plan_pillar_vote_relevance(
             vote_rlp,
@@ -226,129 +223,5 @@ fn native_payload_lookup_to_ffi(
             .into_iter()
             .map(native_vote_record_to_ffi)
             .collect(),
-    }
-}
-
-/// Inspects a legacy-encoded PillarVote payload without mutating state.
-///
-/// Use this before inserting a vote to recover voter/address and check
-/// signature validity from vote RLP alone.
-pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection> {
-    Ok(inspect_pillar_vote_from_rlp(vote_rlp)?.into())
-}
-
-impl From<ConsensusPillarVoteInspection> for PillarVoteInspection {
-    fn from(value: ConsensusPillarVoteInspection) -> Self {
-        Self {
-            status: u8::from(!value.signature_valid),
-            period: value.period,
-            block_hash: value.block_hash.into(),
-            vote_hash: value.vote_hash.into(),
-            voter: value.voter.into(),
-            signature_valid: value.signature_valid,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ethereum_types::H256;
-    use k256::ecdsa::SigningKey;
-    use rustaxa_types::PillarVote;
-
-    fn keccak256(data: &[u8]) -> H256 {
-        use tiny_keccak::{Hasher, Keccak};
-
-        let mut output = [0u8; 32];
-        let mut hasher = Keccak::v256();
-        hasher.update(data);
-        hasher.finalize(&mut output);
-        H256::from(output)
-    }
-
-    fn signed_vote(seed: u8, period: u64, block: u64) -> (PillarVote, [u8; 20]) {
-        let signing_key = SigningKey::from_slice(&[seed; 32]).unwrap();
-        signed_vote_with_key(&signing_key, period, block)
-    }
-
-    fn signed_vote_with_key(
-        signing_key: &SigningKey,
-        period: u64,
-        block: u64,
-    ) -> (PillarVote, [u8; 20]) {
-        signed_vote_with_key_and_hash(signing_key, period, H256::from_low_u64_be(block))
-    }
-
-    fn signed_vote_with_key_and_hash(
-        signing_key: &SigningKey,
-        period: u64,
-        block_hash: H256,
-    ) -> (PillarVote, [u8; 20]) {
-        let mut vote = PillarVote {
-            period,
-            block_hash,
-            signature: [0u8; 65],
-        };
-        let unsigned_hash = vote.hash(false);
-        let (signature, recovery_id) = signing_key
-            .sign_prehash_recoverable(unsigned_hash.as_bytes())
-            .unwrap();
-        let signature_bytes_fixed = signature.to_bytes();
-        let mut signature_bytes = [0u8; 65];
-        signature_bytes[..64].copy_from_slice(&signature_bytes_fixed);
-        signature_bytes[64] = recovery_id.to_byte();
-        vote.signature = signature_bytes;
-
-        let voter = {
-            let verifying_key = signing_key.verifying_key();
-            let public_key = verifying_key.to_encoded_point(false);
-            let public_key_hash = keccak256(&public_key.as_bytes()[1..]);
-            public_key_hash.as_bytes()[12..].try_into().unwrap()
-        };
-
-        (vote, voter)
-    }
-
-    #[test]
-    fn inspect_pillar_vote_recovers_voter_and_signature_status() {
-        let (vote, voter) = signed_vote(0x11, 9_999, 77);
-        let inspected = pillar_vote_inspect(&vote.encode_rlp()).unwrap();
-
-        assert!(inspected.signature_valid);
-        assert_eq!(inspected.status, 0);
-        assert_eq!(inspected.period, 9_999);
-        assert_eq!(H256::from(inspected.block_hash), H256::from_low_u64_be(77));
-        assert_eq!(H256::from(inspected.vote_hash), vote.hash(true));
-        assert_eq!(inspected.voter, voter);
-    }
-
-    #[test]
-    fn inspect_pillar_vote_reports_invalid_signature_without_error() {
-        let (mut vote, _) = signed_vote(0x12, 100, 78);
-        vote.signature = [0u8; 65];
-
-        let inspected = pillar_vote_inspect(&vote.encode_rlp()).unwrap();
-
-        assert!(!inspected.signature_valid);
-        assert_eq!(inspected.status, 1);
-        assert_eq!(inspected.voter, [0u8; 20]);
-    }
-
-    #[test]
-    fn inspect_pillar_vote_rejects_out_of_range_recovery_id() {
-        let (mut vote, _) = signed_vote(0x13, 101, 79);
-        vote.signature[64] = 4;
-
-        let inspected = pillar_vote_inspect(&vote.encode_rlp()).unwrap();
-
-        assert!(!inspected.signature_valid);
-        assert_eq!(inspected.status, 1);
-        assert_eq!(inspected.voter, [0u8; 20]);
-    }
-
-    #[test]
-    fn inspect_pillar_vote_rejects_malformed_rlp() {
-        assert!(pillar_vote_inspect(&[1, 2, 3]).is_err());
     }
 }

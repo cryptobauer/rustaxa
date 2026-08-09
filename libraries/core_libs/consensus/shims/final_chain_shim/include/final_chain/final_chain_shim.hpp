@@ -12,7 +12,6 @@
 
 #include "common/event.hpp"
 #include "common/types.hpp"
-#include "common/vrf_wrapper.hpp"
 #include "config/config.hpp"
 #include "final_chain/data.hpp"
 #include "final_chain/state_api.hpp"
@@ -27,6 +26,9 @@ class VoteManager;
 namespace taraxa::pillar_chain {
 class PillarChainManager;
 }
+namespace taraxa::network {
+class ConsensusNetworkApi;
+}
 
 namespace taraxa::final_chain {
 
@@ -37,6 +39,7 @@ class FinalChain {
   friend class ::taraxa::PbftManager;
   friend class ::taraxa::VoteManager;
   friend class ::taraxa::pillar_chain::PillarChainManager;
+  friend class ::taraxa::network::ConsensusNetworkApi;
 
  protected:
   util::event::EventEmitter<std::shared_ptr<FinalizationResult>> const block_finalized_emitter_{};
@@ -120,13 +123,11 @@ class FinalChain {
   uint64_t dposEligibleTotalVoteCount(EthBlockNumber blk_num) const;
   uint64_t dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const;
   bool dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) const;
-  vrf_wrapper::vrf_pk_t dposGetVrfKey(EthBlockNumber blk_n, const addr_t& addr) const;
   void prune(EthBlockNumber blk_n);
   void waitForFinalized();
 
   std::vector<state_api::ValidatorStake> dposValidatorsTotalStakes(EthBlockNumber blk_num) const;
   uint256_t dposTotalAmountDelegated(EthBlockNumber blk_num) const;
-  std::vector<state_api::ValidatorVoteCount> dposValidatorsEligibleVoteCounts(EthBlockNumber blk_num) const;
   uint64_t dposYield(EthBlockNumber blk_num) const;
   u256 dposTotalSupply(EthBlockNumber blk_num) const;
   h256 getBridgeRoot(EthBlockNumber blk_num) const;

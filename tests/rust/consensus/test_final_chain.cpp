@@ -342,11 +342,6 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
             std::vector<uint8_t>(validator_word.begin(), validator_word.end()));
   EXPECT_EQ(abi_word_u64(delegations.code_retval, 128), 10'000u);
   EXPECT_EQ(abi_word_u64(delegations.code_retval, 160), 0u);
-
-  const auto vote_counts = final_chain->get_dpos_validators_eligible_vote_counts(0);
-  ASSERT_EQ(vote_counts.size(), 1u);
-  EXPECT_EQ(vote_counts[0].address, validator_address);
-  EXPECT_EQ(vote_counts[0].vote_count, 10u);
 }
 
 TEST_F(RustFinalChainTest, DposQueriesRejectMissingNonGenesisSnapshot) {
@@ -358,7 +353,6 @@ TEST_F(RustFinalChainTest, DposQueriesRejectMissingNonGenesisSnapshot) {
   EXPECT_THROW(final_chain->get_dpos_eligible_vote_count(1, validator_address), std::exception);
   EXPECT_THROW(final_chain->get_dpos_is_eligible(1, validator_address), std::exception);
   EXPECT_THROW(final_chain->get_dpos_validators_total_stakes(1), std::exception);
-  EXPECT_THROW(final_chain->get_dpos_validators_eligible_vote_counts(1), std::exception);
 }
 
 TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorMetadata) {
@@ -395,8 +389,7 @@ TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorPages) {
   validators.push_back(genesis_validator(second_validator, second_owner, "second"));
 
   auto storage = create_storage(test_dir.string());
-  auto final_chain =
-      create_final_chain_for_test(*storage, std::move(validators));
+  auto final_chain = create_final_chain_for_test(*storage, std::move(validators));
 
   auto all = final_chain->call(dpos_call(0, get_validators_input(0)));
   ASSERT_EQ(std::string(all.code_err), "");

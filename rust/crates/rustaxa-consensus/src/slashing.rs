@@ -368,11 +368,12 @@ pub struct SlashingSubmitterFact {
 /// Ordered application identity eligible to submit a planned slashing proof.
 ///
 /// The application supplies identities in configured wallet order. Native PBFT
-/// admission borrows FinalChain to resolve each address into nonce and balance
-/// facts before invoking the deterministic planner. Missing accounts become
-/// zero-valued facts; FinalChain lookup failures abort the composed admission
-/// call after the already-committed vote transition, matching the former leaf
-/// executor boundary's ordering.
+/// admission borrows FinalChain to resolve addresses in order until it finds the
+/// first funded submitter, then invokes the deterministic planner. Missing
+/// accounts become zero-valued facts; a lookup failure before selection aborts
+/// the composed admission call after the already-committed vote transition,
+/// matching the former leaf executor boundary's ordering. Wallets after the
+/// selected submitter are not queried.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SlashingSubmitterIdentity {
     /// Stable index into the application-owned signing wallet sequence.

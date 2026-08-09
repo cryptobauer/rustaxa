@@ -12,15 +12,10 @@
 
 #include "common/encoding_solidity.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
-#include "vote/pillar_vote.hpp"
 
 namespace rustaxa::core_tests {
 
 namespace {
-
-rust::Slice<const uint8_t> makeSlice(const taraxa::bytes& bytes) {
-  return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
-}
 
 rust::Vec<uint8_t> makeBytes(const taraxa::bytes& bytes) {
   rust::Vec<uint8_t> out;
@@ -84,6 +79,8 @@ rustaxa::PbftServiceConfig makePbftServiceConfig() {
   config.sync_level_size = 10;
   config.is_light_node = false;
   config.light_node_history = 0;
+  config.committee_size = 5;
+  config.number_of_proposers = 20;
   return config;
 }
 
@@ -182,39 +179,6 @@ TEST(PillarVoteBundleBridgeTest, preparePillarFinalizationWithCurrentBlockCanRea
   EXPECT_FALSE(prepare.has_prepared_pillar_block);
   EXPECT_FALSE(prepare.should_request_votes);
   std::filesystem::remove_all(test_dir);
-}
-
-TEST(PillarVoteInspectionBridgeTest, inspectPillarVoteRecoversSameVoterAsCpp) {
-  const auto secret = taraxa::secret_t("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd");
-  const taraxa::PbftPeriod period{123};
-  const taraxa::blk_hash_t block_hash{456};
-  const taraxa::PillarVote vote(secret, period, block_hash);
-  const auto vote_rlp = vote.rlp();
-
-  const auto inspection = rustaxa::pillar_vote_inspect(makeSlice(vote_rlp));
-
-  EXPECT_EQ(inspection.status, 0);
-  EXPECT_TRUE(inspection.signature_valid);
-  EXPECT_EQ(inspection.period, period);
-  EXPECT_EQ(inspection.block_hash, block_hash.asArray());
-  EXPECT_EQ(inspection.vote_hash, vote.getHash().asArray());
-  EXPECT_EQ(inspection.voter, vote.getVoterAddr().asArray());
-}
-
-TEST(PillarVoteInspectionBridgeTest, inspectPillarVoteRejectsOutOfRangeRecoveryId) {
-  const auto secret = taraxa::secret_t("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd");
-  taraxa::PillarVote vote(secret, 124, taraxa::blk_hash_t{457});
-  auto signature = vote.getVoteSignature();
-  signature[64] = 4;
-  const taraxa::PillarVote malformed_vote(vote.getPeriod(), vote.getBlockHash(), std::move(signature));
-  const auto vote_rlp = malformed_vote.rlp();
-
-  const auto inspection = rustaxa::pillar_vote_inspect(makeSlice(vote_rlp));
-
-  EXPECT_EQ(inspection.status, 1);
-  EXPECT_FALSE(inspection.signature_valid);
-  const std::array<uint8_t, 20> zero_address{};
-  EXPECT_EQ(inspection.voter, zero_address);
 }
 
 }  // namespace rustaxa::core_tests

@@ -100,18 +100,6 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
   std::pair<SharedTransactions, std::vector<uint64_t>> packTrxs(PbftPeriod proposal_period, uint64_t weight_limit);
 
   /**
-   * Select transactions for one DAG proposer shard.
-   *
-   * Rust owns the deterministic shard filter, candidate scan, gas-fit planning,
-   * invalid-estimate demotion, accepted ordering, and stop conditions. C++ still
-   * supplies live transaction materialization and FinalChain/EVM gas estimates.
-   */
-  std::pair<SharedTransactions, std::vector<uint64_t>> packShardedTrxs(PbftPeriod proposal_period,
-                                                                       uint64_t weight_limit, uint16_t total_shards,
-                                                                       uint16_t node_trx_shard,
-                                                                       uint64_t shard_period_interval);
-
-  /**
    * Executes the external EVM boundary for one Rust-owned DAG proposer pack.
    *
    * Rust derives all proposal and shard parameters from `session_id`. C++ keeps

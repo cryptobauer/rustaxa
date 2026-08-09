@@ -326,14 +326,16 @@ rust::Vec<rustaxa::NetworkIngressDecision> ExtVotesPacketHandler::ingestPbftVote
 }
 
 ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsensusNetworkEffects(
-    size_t budget, std::optional<uint64_t> application_effect_id, bool stop_after_correlated_application) {
+    size_t budget, std::optional<uint64_t> application_effect_id, bool stop_after_correlated_application,
+    bool allow_cancelled_application, std::optional<uint64_t> source_payload_id) {
   assert(rust_consensus_network_api_);
   VoteProcessingResult admission_result{};
   bool application_effect_completed = false;
   std::optional<std::string> application_failure;
   while (true) {
     const auto batch = rust_consensus_network_api_->api().consensus_network_drain_work(
-        static_cast<uint32_t>(transport_lane_), 0, false, static_cast<uint32_t>(budget));
+        static_cast<uint32_t>(transport_lane_), source_payload_id.value_or(0), source_payload_id.has_value(),
+        static_cast<uint32_t>(budget));
     if (batch.effects.empty()) {
       break;
     }
@@ -530,7 +532,14 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
     }
   }
   if (application_effect_id && !application_effect_completed) {
-    throw std::runtime_error("Network API did not execute the correlated application effect");
+    if (allow_cancelled_application &&
+        rust_consensus_network_api_->api().consensus_network_take_cancelled_vote_admission_effect(
+            *application_effect_id)) {
+      admission_result.cancelled = true;
+      return admission_result;
+    }
+    throw std::runtime_error("Network API did not execute correlated application effect " +
+                             std::to_string(*application_effect_id));
   }
   return admission_result;
 }

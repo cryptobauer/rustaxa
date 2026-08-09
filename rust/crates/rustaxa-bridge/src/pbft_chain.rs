@@ -5,8 +5,7 @@
 //! so public reads do not contend on the separately synchronized manager.
 
 use crate::ffi::rustaxa_ffi::{
-    PbftBlockStorageLookup as FfiPbftBlockStorageLookup, PbftBlockValidationResult,
-    PbftChainHeadPayload,
+    BlockRlpLookup as FfiBlockRlpLookup, PbftBlockValidationResult, PbftChainHeadPayload,
 };
 use crate::ffi::BridgePbftService;
 use ethereum_types::H256;
@@ -64,7 +63,7 @@ impl BridgePbftService {
     pub fn pbft_chain_block_rlp(
         &self,
         block_hash: &[u8; 32],
-    ) -> Result<FfiPbftBlockStorageLookup, anyhow::Error> {
+    ) -> Result<FfiBlockRlpLookup, anyhow::Error> {
         Ok(self.0.pbft_chain_block_rlp(H256::from(*block_hash))?.into())
     }
 
@@ -132,7 +131,7 @@ impl From<PbftChainHead> for PbftChainHeadPayload {
     }
 }
 
-impl From<PbftBlockStorageLookup> for FfiPbftBlockStorageLookup {
+impl From<PbftBlockStorageLookup> for FfiBlockRlpLookup {
     fn from(value: PbftBlockStorageLookup) -> Self {
         Self {
             found: value.found,

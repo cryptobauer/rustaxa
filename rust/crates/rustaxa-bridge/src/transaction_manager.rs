@@ -13,13 +13,13 @@ use crate::ffi::rustaxa_ffi::{
     GasPricerConfig, TransactionManagerAdmissionCommandReport, TransactionManagerAdmissionResult,
     TransactionManagerAdmissionShellIntent, TransactionManagerDagSaveCommandReport,
     TransactionManagerFinalChainAdmissionFact, TransactionManagerGasEstimationFact,
-    TransactionManagerGasEstimationPlan, TransactionManagerHashCommand,
-    TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
-    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
-    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
-    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
+    TransactionManagerGasEstimationPlan, TransactionManagerPublicAdmissionCommandReport,
+    TransactionManagerPublicInsertResult, TransactionManagerTransactionView,
+    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
+    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyTransactionFact,
+    TransactionManagerVerifyTransactionOutcome,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
-    TransactionQueueInsertInput, TransactionQueueStoredTransaction,
+    TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueStoredTransaction,
     TransactionQueueTransactionGroup,
 };
 use anyhow::Result;
@@ -255,8 +255,8 @@ const TM_INSERT_TRANSACTION_STATUS_ACCEPTED: u8 =
     TransactionManagerInsertTransactionStatus::Accepted as u8;
 const TM_ADMISSION_SHELL_INTENT_LOG_INSERTED: u8 = 1;
 const TM_ADMISSION_SHELL_INTENT_EMIT_TRANSACTION_ADDED: u8 = 2;
-fn hash_command(hash: [u8; 32]) -> TransactionManagerHashCommand {
-    TransactionManagerHashCommand { hash }
+fn hash_command(hash: [u8; 32]) -> TransactionQueueHash {
+    TransactionQueueHash { hash }
 }
 
 pub(crate) fn dag_save_command_report(

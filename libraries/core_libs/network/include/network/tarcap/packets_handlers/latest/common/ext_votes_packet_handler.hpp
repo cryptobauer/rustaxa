@@ -33,6 +33,8 @@ class ExtVotesPacketHandler : public PacketHandler {
    * mutually exclusive; the remaining flags describe dependent work that
    * Rust may release after the application result is acknowledged. Legacy
    * builds use only `accepted` and retain their existing mark/gossip path.
+   * `cancelled` is set only for a bundle member whose exact admission effect
+   * Rust removed after an earlier member terminated the bundle session.
    */
   struct VoteProcessingResult {
     bool accepted = false;
@@ -40,6 +42,7 @@ class ExtVotesPacketHandler : public PacketHandler {
     bool mark_vote_known = false;
     bool gossip_vote = false;
     bool report_slashing = false;
+    bool cancelled = false;
   };
 
   ExtVotesPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
@@ -94,7 +97,9 @@ class ExtVotesPacketHandler : public PacketHandler {
    * surfaced as an exception; callers must not request later admission IDs from that operation.
    */
   VoteProcessingResult executeConsensusNetworkEffects(size_t budget, std::optional<uint64_t> application_effect_id,
-                                                      bool stop_after_correlated_application = false);
+                                                      bool stop_after_correlated_application = false,
+                                                      bool allow_cancelled_application = false,
+                                                      std::optional<uint64_t> source_payload_id = std::nullopt);
 #endif
 
  private:

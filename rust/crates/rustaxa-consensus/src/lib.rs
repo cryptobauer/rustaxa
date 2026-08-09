@@ -225,7 +225,10 @@ pub use pbft_reward_votes::{
     PbftRewardVoteRoundCandidate, PbftRewardVoteSelectionFact, PbftRewardVoteSelectionPlan,
     PbftRewardVotesStatus, plan_pbft_reward_votes,
 };
-pub use pbft_service::{PbftService, PbftServiceConfig, PbftVoteAdmissionWithSlashingResult};
+pub use pbft_service::{
+    PbftService, PbftServiceConfig, PbftSyncIngressAction, PbftSyncIngressStep,
+    PbftVoteAdmissionWithSlashingResult,
+};
 pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,
     PbftSyncPeriodAdmissionFact, PbftSyncPeriodAdmissionPlan, PbftSyncPeriodAdmissionStatus,

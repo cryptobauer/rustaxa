@@ -22,7 +22,6 @@
 
 namespace taraxa {
 
-class KeyManager;
 class Network;
 
 /**
@@ -63,13 +62,12 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
    */
   explicit DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
                       std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-                      std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager);
+                      std::shared_ptr<DbStorage> db);
 
   /** Constructs the production DAG facade over the application-owned service. */
   DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
              std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-             std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager,
-             SharedDagTransactionService dag_transaction_service);
+             std::shared_ptr<DbStorage> db, SharedDagTransactionService dag_transaction_service);
   ~DagManager();
 
   DagManager(const DagManager &) = delete;
@@ -139,18 +137,15 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   level_t getMaxLevel() const;
   PbftPeriod getLatestPeriod() const;
   std::pair<blk_hash_t, blk_hash_t> getAnchors() const;
-  uint32_t getDagExpiryLimit() const;
   const std::pair<PbftPeriod, std::map<uint64_t, std::unordered_set<blk_hash_t>>> getNonFinalizedBlocks() const;
   const std::tuple<PbftPeriod, std::vector<std::shared_ptr<DagBlock>>, SharedTransactions>
   getNonFinalizedBlocksWithTransactions(const std::unordered_set<blk_hash_t> &known_hashes) const;
   DagFrontier getDagFrontier();
   std::pair<size_t, size_t> getNonFinalizedBlocksSize() const;
-  uint32_t getNonFinalizedBlocksMinDifficulty() const;
 
   util::event::Event<DagManager, std::shared_ptr<DagBlock>> const block_verified_{};
 
   std::shared_mutex &getDagMutex();
-  const DagConfig &getDagConfig() const;
   uint64_t getDagExpiryLevel() const;
   uint64_t getMaxLevelsPerPeriod() const;
   /**
@@ -257,7 +252,6 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::shared_ptr<DbStorage> db_;
-  std::shared_ptr<KeyManager> key_manager_;
   std::weak_ptr<Network> network_;
   const GenesisConfig genesis_config_;
   const std::shared_ptr<DagBlock> genesis_block_;

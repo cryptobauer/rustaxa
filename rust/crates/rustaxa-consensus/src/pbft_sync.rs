@@ -639,10 +639,9 @@ pub struct PbftSyncProcessPeriodDataRuntimePlan {
 
 /// Rust-owned action for draining the PBFT sync queue.
 ///
-/// The session is side-effect-free. It decides the order of queue cleanup,
-/// candidate processing, accepted-period push, sync-state update, and stop
-/// conditions while C++ executes the live queue, `PeriodData`, network, and
-/// PBFT-chain operations.
+/// The planner is side-effect-free. Its native service owner consumes queue
+/// cleanup internally, while C++ executes only remaining `PeriodData`, network,
+/// and PBFT-chain effects.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PbftSyncQueueDrainAction {
     /// Remove stale queue entries before the drain loop starts.
@@ -826,9 +825,9 @@ pub fn create_pbft_sync_queue_drain_session() -> PbftSyncQueueDrainSession {
 
 /// Returns the next Rust-owned PBFT sync queue-drain step.
 ///
-/// C++ supplies current queue size because the live `PeriodData` payload mirror
-/// remains outside Rust. Rust uses that fact to decide whether another pop is
-/// required or the drain is complete.
+/// The native service supplies its owned queue size and current period. The
+/// planner uses those facts to decide whether another pop is required or the
+/// drain is complete.
 #[must_use]
 pub fn next_pbft_sync_queue_drain_step(
     session: &mut PbftSyncQueueDrainSession,

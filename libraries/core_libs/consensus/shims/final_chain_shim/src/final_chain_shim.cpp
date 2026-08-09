@@ -1064,15 +1064,6 @@ bool FinalChain::dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) cons
   return rust_final_chain_.value()->get_dpos_is_eligible(blk_num, into_address_array(addr));
 }
 
-vrf_wrapper::vrf_pk_t FinalChain::dposGetVrfKey(EthBlockNumber blk_n, const addr_t& addr) const {
-  auto rust_key =
-      rust_final_chain_.value()->get_vrf_key_at_block(static_cast<uint64_t>(blk_n), into_address_array(addr));
-  if (rust_key.empty()) {
-    return {};
-  }
-  return vrf_wrapper::vrf_pk_t(dev::bytes(rust_key.begin(), rust_key.end()));
-}
-
 void FinalChain::prune(EthBlockNumber) { throw_unimplemented_final_chain_api("prune"); }
 
 void FinalChain::waitForFinalized() { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
@@ -1093,19 +1084,6 @@ std::vector<state_api::ValidatorStake> FinalChain::dposValidatorsTotalStakes(Eth
 uint256_t FinalChain::dposTotalAmountDelegated(EthBlockNumber blk_num) const {
   auto delegated = rust_final_chain_.value()->get_dpos_total_amount_delegated(blk_num);
   return dev::fromBigEndian<u256>(dev::bytes(delegated.begin(), delegated.end()));
-}
-
-std::vector<state_api::ValidatorVoteCount> FinalChain::dposValidatorsEligibleVoteCounts(EthBlockNumber blk_num) const {
-  auto rust_vote_counts = rust_final_chain_.value()->get_dpos_validators_eligible_vote_counts(blk_num);
-  std::vector<state_api::ValidatorVoteCount> vote_counts;
-  vote_counts.reserve(rust_vote_counts.size());
-  for (const auto& rust_vote_count : rust_vote_counts) {
-    vote_counts.push_back(state_api::ValidatorVoteCount{
-        into_address(rust_vote_count.address),
-        rust_vote_count.vote_count,
-    });
-  }
-  return vote_counts;
 }
 
 uint64_t FinalChain::dposYield(EthBlockNumber blk_num) const {

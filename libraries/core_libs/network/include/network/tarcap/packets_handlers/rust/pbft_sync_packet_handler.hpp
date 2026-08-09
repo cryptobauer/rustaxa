@@ -1,0 +1,47 @@
+#pragma once
+
+#include "common/thread_pool.hpp"
+#include "network/consensus_network_api.hpp"
+#include "network/tarcap/packets_handlers/interface/sync_packet_handler.hpp"
+#include "transaction/transaction_manager.hpp"
+
+namespace taraxa::network::tarcap {
+
+/**
+ * Rust-mode PBFT sync packet transport/executor facade.
+ *
+ * Native consensus inspects the original packet bytes and owns deterministic
+ * chain, queue-link, certificate, pillar-schedule, and DAG-order decisions.
+ * This facade retains peer state, slashing-transaction execution, pacing
+ * timers, packet sends, and sync lifecycle publication.
+ */
+class RustPbftSyncPacketHandler final : public ISyncPacketHandler {
+ public:
+  RustPbftSyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
+                            std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+                            std::shared_ptr<PbftSyncingState> pbft_syncing_state, std::shared_ptr<PbftChain> pbft_chain,
+                            std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
+                            std::shared_ptr<TransactionManager> trx_mgr,
+                            std::shared_ptr<final_chain::FinalChain> final_chain,
+                            network::ConsensusNetworkApiShared consensus_network_api, const addr_t& node_addr,
+                            const std::string& logs_prefix = "");
+  ~RustPbftSyncPacketHandler() override;
+
+  static constexpr SubprotocolPacketType kPacketType_ = SubprotocolPacketType::kPbftSyncPacket;
+
+ private:
+  void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;
+  void pbftSyncComplete();
+  void delayedPbftSync(uint32_t counter);
+
+  static constexpr uint32_t kDelayedPbftSyncDelayMs = 10;
+
+  bool executeSlashingTransaction(const network::PbftSyncSlashingTransaction& effect) const;
+
+  std::shared_ptr<TransactionManager> trx_mgr_;
+  std::shared_ptr<final_chain::FinalChain> final_chain_;
+  network::ConsensusNetworkApiShared consensus_network_api_;
+  util::ThreadPool periodic_events_tp_;
+};
+
+}  // namespace taraxa::network::tarcap

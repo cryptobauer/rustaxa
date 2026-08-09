@@ -90,6 +90,14 @@ impl BridgeConsensusNetworkApi {
         })
     }
 
+    /// Consumes native proof that one exact bundled vote admission was cancelled.
+    pub fn consensus_network_take_cancelled_vote_admission_effect(
+        &self,
+        effect_id: u64,
+    ) -> anyhow::Result<bool> {
+        self.0.take_cancelled_vote_admission_effect(effect_id)
+    }
+
     /// Plans deterministic sync follow-up for an accepted status packet.
     pub fn consensus_network_plan_status_sync(
         &self,
@@ -282,6 +290,23 @@ impl BridgeConsensusNetworkApi {
                     request_rlp: request.request_rlp,
                     source_payload_id: request.source_payload_id,
                 })?,
+        ))
+    }
+
+    /// Admits one latest-tarcap proposed-block bundle through native consensus.
+    ///
+    /// C++ supplies only canonical packet bytes and the retained FinalChain
+    /// leaf handle. Native consensus owns decoding, relevance, author
+    /// uniqueness, DPoS queries, and storage-first proposal publication.
+    pub fn consensus_network_ingest_pbft_blocks_bundle(
+        &self,
+        final_chain: &crate::ffi::BridgeFinalChain,
+        packet_rlp: Vec<u8>,
+        source_payload_id: u64,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        Ok(to_bridge_network_ingress_decision(
+            self.0
+                .ingest_pbft_blocks_bundle(&final_chain.0, &packet_rlp, source_payload_id)?,
         ))
     }
 }

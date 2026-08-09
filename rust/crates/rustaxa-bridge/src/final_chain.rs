@@ -882,24 +882,6 @@ impl BridgeFinalChain {
         ))
     }
 
-    /// Returns a block-scoped validator VRF key for the C++ FinalChain shim.
-    ///
-    /// Inputs are a finalized block number and validator address. The output is
-    /// the raw 32-byte VRF key, or an empty vector when the block snapshot
-    /// exists but does not contain the validator. Missing snapshots propagate as
-    /// errors so Rust mode does not fall back to genesis or latest state.
-    pub fn get_vrf_key_at_block(
-        self: &BridgeFinalChain,
-        block_number: u64,
-        address: &[u8; 20],
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .vrf_key_at_block(block_number.into(), *address)?
-            .map(|key| key.to_vec())
-            .unwrap_or_default())
-    }
-
     pub fn get_dpos_eligible_vote_count(
         self: &BridgeFinalChain,
         block_number: u64,
@@ -958,21 +940,6 @@ impl BridgeFinalChain {
         block_number: u64,
     ) -> Result<Vec<u8>, anyhow::Error> {
         self.0.dpos_total_supply(block_number.into())
-    }
-
-    pub fn get_dpos_validators_eligible_vote_counts(
-        self: &BridgeFinalChain,
-        block_number: u64,
-    ) -> Result<Vec<rustaxa_ffi::DposValidatorVoteCount>, anyhow::Error> {
-        Ok(self
-            .0
-            .dpos_validators_eligible_vote_counts(block_number.into())?
-            .into_iter()
-            .map(|vote_count| rustaxa_ffi::DposValidatorVoteCount {
-                address: vote_count.address,
-                vote_count: vote_count.vote_count,
-            })
-            .collect())
     }
 
     pub fn call(
@@ -2264,6 +2231,9 @@ mod tests {
                 sync_level_size: 10,
                 is_light_node: false,
                 light_node_history: 0,
+                committee_size: 1,
+                number_of_proposers: 1,
+                slashing_submitters: Vec::new(),
             },
         )
         .expect("PBFT service should initialize");
@@ -2353,6 +2323,9 @@ mod tests {
                 sync_level_size: 10,
                 is_light_node: false,
                 light_node_history: 0,
+                committee_size: 1,
+                number_of_proposers: 1,
+                slashing_submitters: Vec::new(),
             },
         )
         .expect("PBFT service should initialize");

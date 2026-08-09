@@ -174,8 +174,8 @@ fn pbft_period_cert_votes_view_to_ffi(
 
 fn pillar_vote_count_change_to_ffi(
     change: rustaxa_consensus::PillarBlockViewVoteCountChange,
-) -> rustaxa_ffi::PillarBlockViewVoteCountChange {
-    rustaxa_ffi::PillarBlockViewVoteCountChange {
+) -> rustaxa_ffi::PillarValidatorVoteCountChange {
+    rustaxa_ffi::PillarValidatorVoteCountChange {
         address: change.address,
         vote_count_change: change.vote_count_change,
     }

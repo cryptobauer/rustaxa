@@ -1799,6 +1799,34 @@ impl PbftManagerService {
         PbftManagerGuard(self.runtime.lock().expect("PBFT manager lock poisoned"))
     }
 
+    /// Decodes and admits one exact encoded period-data payload.
+    ///
+    /// Decoding completes before the manager lock is acquired. Malformed bytes
+    /// and checked-arithmetic failures therefore leave both the queue and chain
+    /// cursor unchanged; sequencing mismatches are returned in the normal push
+    /// outcome.
+    pub fn push_encoded_period_data_queue(
+        &self,
+        request: crate::period_data_queue::EncodedPeriodDataQueuePushRequest,
+    ) -> Result<crate::period_data_queue::PeriodDataQueuePushOutcome> {
+        let decoded = crate::period_data_queue::decode_encoded_period_data_queue_push(request)?;
+        let mut manager = self.lock();
+        let chain_size = manager.chain.head().size;
+        manager
+            .period_data_queue
+            .push(decoded.with_chain_size(chain_size))
+    }
+
+    /// Captures the current scalar manager state for a native sibling service.
+    ///
+    /// The snapshot is copied while the manager serialization lock is held and
+    /// remains valid after the guard is released. Callers must not treat it as
+    /// a lease: any external lookup performed afterward can race a later PBFT
+    /// transition and must use the snapshot only for one bounded decision.
+    pub(crate) fn snapshot(&self) -> PbftManagerRuntimeSnapshot {
+        self.lock().state.snapshot()
+    }
+
     /// Starts a synced-period admission session under the manager lock.
     ///
     /// The supplied immutable candidate facts replace any stale admission
@@ -1817,10 +1845,11 @@ impl PbftManagerService {
         &self,
     ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
         let mut runtime = self.lock();
-        let step = runtime
+        let mut step = runtime
             .pbft_sync_admission_session
             .as_ref()
             .map(crate::pbft_sync::next_pbft_sync_admission_session)?;
+        apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
         clear_terminal_pbft_sync_admission(&mut runtime, &step);
         Some(step)
     }
@@ -1837,13 +1866,14 @@ impl PbftManagerService {
         fact_status: crate::pbft_sync::PbftSyncFactStatus,
     ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
         let mut runtime = self.lock();
-        let step = crate::pbft_sync::report_pbft_sync_admission_status(
+        let mut step = crate::pbft_sync::report_pbft_sync_admission_status(
             runtime.pbft_sync_admission_session.as_mut()?,
             cursor,
             check,
             final_chain_status,
             fact_status,
         );
+        apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
         clear_terminal_pbft_sync_admission(&mut runtime, &step);
         Some(step)
     }
@@ -1858,11 +1888,12 @@ impl PbftManagerService {
         report: crate::pbft_sync::PbftSyncAdmissionTransactionReport,
     ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
         let mut runtime = self.lock();
-        let step = crate::pbft_sync::report_pbft_sync_admission_transactions(
+        let mut step = crate::pbft_sync::report_pbft_sync_admission_transactions(
             runtime.pbft_sync_admission_session.as_mut()?,
             cursor,
             report,
         );
+        apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
         clear_terminal_pbft_sync_admission(&mut runtime, &step);
         Some(step)
     }
@@ -1880,6 +1911,16 @@ impl PbftManagerService {
         );
         runtime.pbft_sync_admission_session = None;
         Some(step)
+    }
+}
+
+fn apply_native_pbft_sync_queue_effects(
+    runtime: &mut PbftManagerRuntimeState,
+    step: &mut crate::pbft_sync::PbftSyncAdmissionSessionStep,
+) {
+    if step.plan.clear_sync_queue {
+        runtime.period_data_queue.clear();
+        step.plan.clear_sync_queue = false;
     }
 }
 

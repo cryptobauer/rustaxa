@@ -18,7 +18,6 @@ namespace taraxa {
  * @{
  */
 class TransactionManager;
-class KeyManager;
 class DagManager;
 class Network;
 struct FullNodeConfig;
@@ -64,8 +63,7 @@ class DagBlockProposer {
 
  public:
   DagBlockProposer(const FullNodeConfig& config, std::shared_ptr<DagManager> dag_mgr,
-                   std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
-                   std::shared_ptr<KeyManager> key_manager);
+                   std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain);
   ~DagBlockProposer() { stop(); }
   DagBlockProposer(const DagBlockProposer&) = delete;
   DagBlockProposer(DagBlockProposer&&) = delete;
@@ -102,11 +100,6 @@ class DagBlockProposer {
   void setNetwork(std::weak_ptr<Network> network);
 
   /**
-   * Returns the number of proposed blocks since the last start.
-   */
-  uint64_t getProposedBlocksCount() const { return proposed_blocks_count_; }
-
-  /**
    * Selects proposal tips through the Rust DAG proposer policy.
    *
    * This compatibility method preserves the legacy public API for tests and callers. Rust owns storage-backed tip
@@ -119,7 +112,6 @@ class DagBlockProposer {
   const uint16_t max_num_tries_{20};
   util::ThreadPool executor_{1};
 
-  std::atomic<uint64_t> proposed_blocks_count_{0};
   std::atomic<bool> stopped_{true};
 
   const uint16_t total_trx_shards_;

@@ -30,6 +30,8 @@ class RustPbftChainTest : public ::testing::Test {
     config.sync_level_size = 10;
     config.is_light_node = false;
     config.light_node_history = 0;
+    config.committee_size = 5;
+    config.number_of_proposers = 20;
     return config;
   }
 

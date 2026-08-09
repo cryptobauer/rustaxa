@@ -28,6 +28,8 @@ SharedPbftService makeInjectedPillarTestService(const std::shared_ptr<DbStorage>
   service_config.sync_level_size = 10;
   service_config.is_light_node = false;
   service_config.light_node_history = 0;
+  service_config.committee_size = 5;
+  service_config.number_of_proposers = 20;
   return std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), service_config));
 }
 #endif
@@ -431,7 +433,7 @@ TEST_F(PillarChainTest, addVerifiedPillarVote_insertsWithRecoveredIdentityWeight
   db->saveCurrentPillarBlockData({current_pillar_block, {}});
   auto pillar_chain_manager =
       pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
-                                       final_chain, nullptr, cfg.getFirstWallet().node_addr);
+                                       final_chain, cfg.getFirstWallet().node_addr);
 #else
   auto pillar_chain_manager = pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, final_chain,
                                                                nullptr, cfg.getFirstWallet().node_addr);
@@ -490,7 +492,7 @@ TEST_F(PillarChainTest, startupRestoresOwnVoteOutsideLiveAnchor) {
 
   auto pillar_chain_manager =
       pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
-                                       final_chain, nullptr, cfg.getFirstWallet().node_addr);
+                                       final_chain, cfg.getFirstWallet().node_addr);
 
   const auto restored = pillar_chain_manager.getVerifiedPillarVotes(vote->getPeriod(), vote->getBlockHash(), false);
   ASSERT_EQ(restored.size(), 1u);
@@ -511,7 +513,7 @@ TEST_F(PillarChainTest, addVerifiedPillarVote_rejectsInvalidRustInspectedSignatu
   auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
   auto pillar_chain_manager =
       pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
-                                       final_chain, nullptr, cfg.getFirstWallet().node_addr);
+                                       final_chain, cfg.getFirstWallet().node_addr);
 
   const auto vote_period = PbftPeriod{1};
   const auto valid_vote = PillarVote(cfg.getFirstWallet().node_secret, vote_period, blk_hash_t(11));
@@ -541,7 +543,7 @@ TEST_F(PillarChainTest, validatePillarVote_usesRustRecoveredIdentityForUniquenes
   db->saveCurrentPillarBlockData({current_pillar_block, {}});
   auto pillar_chain_manager =
       pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
-                                       final_chain, nullptr, cfg.getFirstWallet().node_addr);
+                                       final_chain, cfg.getFirstWallet().node_addr);
 
   const auto vote =
       std::make_shared<PillarVote>(cfg.getFirstWallet().node_secret, PbftPeriod{1}, current_pillar_block->getHash());
@@ -570,7 +572,7 @@ TEST_F(PillarChainTest, injectedService_rejectsInvalidRustInspectedSignature) {
   db->saveCurrentPillarBlockData({current_pillar_block, {}});
   auto pillar_chain_manager =
       pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
-                                       final_chain, nullptr, cfg.getFirstWallet().node_addr);
+                                       final_chain, cfg.getFirstWallet().node_addr);
 
   const auto valid_vote = PillarVote(cfg.getFirstWallet().node_secret, PbftPeriod{1}, current_pillar_block->getHash());
   auto signature = valid_vote.getVoteSignature();

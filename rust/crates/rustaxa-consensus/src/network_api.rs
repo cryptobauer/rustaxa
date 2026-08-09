@@ -15,9 +15,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::final_chain::FinalChain;
 use crate::pbft_chain::PbftChainService;
 use crate::pbft_vote_payload::build_optimized_pbft_vote_bundle;
 use crate::pbft_vote_runtime::{PbftNextVotesBundleEgressPayloads, PbftVerifiedVotesService};
+use crate::period_data_queue::{DecodedPbftSyncPacketPrecheck, decode_pbft_sync_packet_precheck};
 use crate::pillar_chain_service::PillarChainService;
 use crate::pillar_vote_service::PillarVoteRecord;
 use crate::proposed_blocks::ProposedBlocksService;
@@ -30,7 +32,9 @@ use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::H256;
 use rlp::{Rlp, RlpStream};
 use rustaxa_storage::Storage;
-use rustaxa_types::{PillarVote, encode_optimized_pillar_votes_bundle_rlp};
+use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+use rustaxa_types::pbft::PbftBlockLink;
+use rustaxa_types::{PbftBlockMetadata, PillarVote, encode_optimized_pillar_votes_bundle_rlp};
 
 const MAX_PILLAR_VOTES_PER_BUNDLE_PACKET: usize = 250;
 const MAX_EFFECTS_PER_DRAIN: usize = 1024;
@@ -208,12 +212,46 @@ pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_HEIGHT_AHEAD: u8 = 13;
 pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_HISTORY_UNAVAILABLE: u8 = 14;
 /// One required finalized period was absent from native storage.
 pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_PERIOD_DATA_MISSING: u8 = 15;
+/// A proposed-block bundle is not canonical one-field RLP.
+pub const NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_MALFORMED: u8 = 16;
+/// A proposed-block bundle exceeds the legacy ten-block limit.
+pub const NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_TOO_LARGE: u8 = 17;
+/// Two relevant proposed blocks have the same author and period.
+pub const NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_DUPLICATE_AUTHOR: u8 = 18;
+/// A relevant proposed block author is not eligible for its prior period.
+pub const NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_INELIGIBLE_AUTHOR: u8 = 19;
+/// A valid PBFT-sync block is already present in the native finalized chain.
+pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_DUPLICATE_BLOCK: u8 = 20;
+/// A final-certificate packet proves the local sync cursor is complete.
+pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_COMPLETE: u8 = 21;
+/// A valid PBFT-sync packet has an ordinary unexpected period and is dropped.
+pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_UNEXPECTED_PERIOD: u8 = 22;
+/// A malformed or deterministically invalid PBFT-sync packet is malicious.
+pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS: u8 = 23;
 
 const ERROR_PBFT_SYNC_MALFORMED_REQUEST: &str = "NETWORK_PBFT_SYNC_MALFORMED_REQUEST";
 const ERROR_PBFT_SYNC_UNSUPPORTED_VERSION: &str = "NETWORK_PBFT_SYNC_UNSUPPORTED_VERSION";
 const ERROR_PBFT_SYNC_HEIGHT_AHEAD: &str = "NETWORK_PBFT_SYNC_HEIGHT_AHEAD";
 const ERROR_PBFT_SYNC_HISTORY_UNAVAILABLE: &str = "NETWORK_PBFT_SYNC_HISTORY_UNAVAILABLE";
 const ERROR_PBFT_SYNC_PERIOD_DATA_MISSING: &str = "NETWORK_PBFT_SYNC_PERIOD_DATA_MISSING";
+const ERROR_PBFT_BLOCKS_BUNDLE_MALFORMED: &str = "NETWORK_PBFT_BLOCKS_BUNDLE_MALFORMED";
+const ERROR_PBFT_BLOCKS_BUNDLE_TOO_LARGE: &str = "NETWORK_PBFT_BLOCKS_BUNDLE_TOO_LARGE";
+const ERROR_PBFT_BLOCKS_BUNDLE_DUPLICATE_AUTHOR: &str =
+    "NETWORK_PBFT_BLOCKS_BUNDLE_DUPLICATE_AUTHOR";
+const ERROR_PBFT_BLOCKS_BUNDLE_INELIGIBLE_AUTHOR: &str =
+    "NETWORK_PBFT_BLOCKS_BUNDLE_INELIGIBLE_AUTHOR";
+const ERROR_PBFT_SYNC_PACKET_MALFORMED: &str = "NETWORK_PBFT_SYNC_PACKET_MALFORMED";
+const ERROR_PBFT_SYNC_PACKET_DUPLICATE_BLOCK: &str = "NETWORK_PBFT_SYNC_PACKET_DUPLICATE_BLOCK";
+const ERROR_PBFT_SYNC_PACKET_COMPLETE: &str = "NETWORK_PBFT_SYNC_PACKET_COMPLETE";
+const ERROR_PBFT_SYNC_PACKET_UNEXPECTED_PERIOD: &str = "NETWORK_PBFT_SYNC_PACKET_UNEXPECTED_PERIOD";
+const ERROR_PBFT_SYNC_PACKET_CERT_SIGNATURE: &str = "NETWORK_PBFT_SYNC_PACKET_CERT_SIGNATURE";
+const ERROR_PBFT_SYNC_PACKET_CURRENT_CERT_HASH: &str = "NETWORK_PBFT_SYNC_PACKET_CURRENT_CERT_HASH";
+const ERROR_PBFT_SYNC_PACKET_PREVIOUS_CERT_HASH: &str =
+    "NETWORK_PBFT_SYNC_PACKET_PREVIOUS_CERT_HASH";
+const ERROR_PBFT_SYNC_PACKET_PILLAR_SCHEDULE: &str = "NETWORK_PBFT_SYNC_PACKET_PILLAR_SCHEDULE";
+const ERROR_PBFT_SYNC_PACKET_ORDER_HASH: &str = "NETWORK_PBFT_SYNC_PACKET_ORDER_HASH";
+const MAX_PBFT_BLOCKS_PER_BUNDLE: usize = 10;
+const MAX_PBFT_BLOCK_EXTRA_DATA_BYTES: usize = 1024;
 
 /// Executor-visible network effect planned by Rust consensus.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -834,6 +872,17 @@ impl ConsensusNetworkService {
         Ok(self.lock_api()?.report_effect_results(results))
     }
 
+    /// Consumes proof that Rust deliberately removed one exact vote-admission effect.
+    ///
+    /// Returns `false` for arbitrary, already-consumed, or still-live effect ids.
+    /// Tarcap uses this only after an exact-id drain completes without finding
+    /// the requested bundle member, preserving hard failures for unexplained loss.
+    pub fn take_cancelled_vote_admission_effect(&self, effect_id: u64) -> Result<bool> {
+        Ok(self
+            .lock_api()?
+            .take_cancelled_vote_admission_effect(effect_id))
+    }
+
     /// Plans status-triggered sync work from caller-owned scalar snapshots.
     pub fn plan_status_sync(&self, facts: NetworkStatusSyncFacts) -> Result<NetworkStatusSyncPlan> {
         Ok(self.lock_api()?.plan_status_sync(facts))
@@ -1154,6 +1203,314 @@ impl ConsensusNetworkService {
             },
         ))
     }
+
+    /// Admits one latest-tarcap proposed-PBFT-block bundle directly into native state.
+    ///
+    /// The input is the canonical outer packet RLP. Rust decodes signed blocks,
+    /// samples the native manager period once, ignores blocks outside the legacy
+    /// `[period, period + 5]` window, enforces one recovered author per relevant
+    /// period, queries the native FinalChain DPoS view when that view covers the
+    /// prior period, and publishes accepted blocks through the native proposal
+    /// owner. Publication is intentionally sequential: if a later member is
+    /// malicious, earlier accepted members remain published as in the reference
+    /// handler. Malformed, oversized, duplicate-author, and ineligible bundles
+    /// return typed peer-fault decisions; storage and lock failures are errors.
+    pub fn ingest_pbft_blocks_bundle(
+        &self,
+        final_chain: &FinalChain,
+        packet_rlp: &[u8],
+        source_payload_id: u64,
+    ) -> Result<NetworkIngressDecision> {
+        let current_period = self.manager.snapshot().period;
+        let final_chain_head = final_chain.last_block_number()?;
+        admit_pbft_blocks_bundle(
+            packet_rlp,
+            source_payload_id,
+            current_period,
+            final_chain_head,
+            |period, author| match final_chain.pbft_dpos_eligible_vote_count(period, author) {
+                Ok(Some(count)) => Ok(count > 0),
+                Ok(None) => Ok(false),
+                Err(error) => Err(error),
+            },
+            |link, block_rlp| {
+                self.proposed_blocks.push_with_storage(
+                    link.period,
+                    link.block_hash,
+                    link.pivot_dag_block_hash,
+                    block_rlp,
+                )
+            },
+        )
+    }
+
+    /// Prechecks one raw latest-tarcap PBFT-sync packet without mutation.
+    ///
+    /// Rust owns exact outer decoding, optimized certificate reconstruction,
+    /// strict `PeriodData` decoding, native chain/queue sequencing checks,
+    /// certificate target hashes, Ficus pillar/extra-data scheduling, and DAG
+    /// order hashing. The existing ingress-decision carrier distinguishes
+    /// continue, duplicate, sync-complete, ordinary-drop, and malicious
+    /// outcomes. Queue insertion and verified-vote mutation remain outside this
+    /// precheck. The application root consumes accepted decisions immediately
+    /// in its resumable weighted-admission and queue-push session.
+    pub(crate) fn precheck_pbft_sync_packet(
+        &self,
+        packet_rlp: &[u8],
+        source_payload_id: u64,
+    ) -> Result<NetworkIngressDecision> {
+        let packet = match decode_pbft_sync_packet_precheck(packet_rlp) {
+            Ok(packet) => packet,
+            Err(_) => {
+                return Ok(local_network_decision(
+                    source_payload_id,
+                    NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS,
+                    ERROR_PBFT_SYNC_PACKET_MALFORMED,
+                ));
+            }
+        };
+        let block_in_chain = self
+            .chain
+            .block_exists(packet.period_data.entry.block_hash)?;
+
+        let manager = self.manager.lock();
+        let chain_head = manager.chain.head();
+        let syncing_period = manager.period_data_queue.syncing_period(chain_head.size);
+        let last_block_hash = manager.period_data_queue.last_block_hash_or_chain(
+            chain_head.size.saturating_add(1),
+            chain_head.last_pbft_block_hash,
+        );
+        drop(manager);
+
+        let (ficus_activation_period, pillar_blocks_interval) = {
+            let api = self.lock_api()?;
+            (api.ficus_activation_period, api.pillar_blocks_interval)
+        };
+        Ok(classify_pbft_sync_packet_precheck(
+            packet,
+            source_payload_id,
+            block_in_chain,
+            syncing_period,
+            last_block_hash,
+            ficus_activation_period,
+            pillar_blocks_interval,
+        ))
+    }
+}
+
+fn classify_pbft_sync_packet_precheck(
+    packet: DecodedPbftSyncPacketPrecheck,
+    source_payload_id: u64,
+    block_in_chain: bool,
+    syncing_period: u64,
+    last_block_hash: H256,
+    ficus_activation_period: u64,
+    pillar_blocks_interval: u64,
+) -> NetworkIngressDecision {
+    let block = &packet.period_data.entry;
+    if block_in_chain {
+        return local_network_decision(
+            source_payload_id,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_DUPLICATE_BLOCK,
+            ERROR_PBFT_SYNC_PACKET_DUPLICATE_BLOCK,
+        );
+    }
+    if block.period != syncing_period.saturating_add(1) {
+        if packet.current_cert_votes_present && block.period == syncing_period {
+            return local_network_decision(
+                source_payload_id,
+                NETWORK_INGRESS_STATUS_PBFT_SYNC_COMPLETE,
+                ERROR_PBFT_SYNC_PACKET_COMPLETE,
+            );
+        }
+        return local_network_decision(
+            source_payload_id,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_UNEXPECTED_PERIOD,
+            ERROR_PBFT_SYNC_PACKET_UNEXPECTED_PERIOD,
+        );
+    }
+    if packet
+        .period_data
+        .current_block_cert_vote_rlps
+        .iter()
+        .chain(block.previous_cert_vote_rlps.iter())
+        .any(|vote| {
+            inspect_canonical_pbft_vote(vote).map_or(true, |inspection| !inspection.signature_valid)
+        })
+    {
+        return local_network_decision(
+            source_payload_id,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS,
+            ERROR_PBFT_SYNC_PACKET_CERT_SIGNATURE,
+        );
+    }
+    if packet
+        .period_data
+        .current_block_cert_vote_rlps
+        .iter()
+        .any(|vote| {
+            inspect_canonical_pbft_vote(vote)
+                .map_or(true, |vote| vote.block_hash != block.block_hash)
+        })
+    {
+        return local_network_decision(
+            source_payload_id,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS,
+            ERROR_PBFT_SYNC_PACKET_CURRENT_CERT_HASH,
+        );
+    }
+    if block.previous_cert_vote_rlps.iter().any(|vote| {
+        inspect_canonical_pbft_vote(vote).map_or(true, |vote| vote.block_hash != last_block_hash)
+    }) {
+        return local_network_decision(
+            source_payload_id,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS,
+            ERROR_PBFT_SYNC_PACKET_PREVIOUS_CERT_HASH,
+        );
+    }
+    let ficus_active =
+        ficus_activation_period != u64::MAX && block.period >= ficus_activation_period;
+    let first_pillar_period = if ficus_activation_period == 0 {
+        pillar_blocks_interval
+    } else {
+        ficus_activation_period
+    };
+    let pillar_period = ficus_activation_period != u64::MAX
+        && block.period >= first_pillar_period
+        && block.period % pillar_blocks_interval == 1;
+    if block.extra_data_present != ficus_active
+        || block.extra_data_pillar_block_hash_present != pillar_period
+        || block.pillar_votes_present != pillar_period
+    {
+        return local_network_decision(
+            source_payload_id,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS,
+            ERROR_PBFT_SYNC_PACKET_PILLAR_SCHEDULE,
+        );
+    }
+    if packet.declared_order_hash != packet.calculated_order_hash {
+        return local_network_decision(
+            source_payload_id,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS,
+            ERROR_PBFT_SYNC_PACKET_ORDER_HASH,
+        );
+    }
+    local_network_decision(source_payload_id, NETWORK_INGRESS_STATUS_ACCEPTED, "")
+}
+
+fn admit_pbft_blocks_bundle<E, P>(
+    packet_rlp: &[u8],
+    source_payload_id: u64,
+    current_period: u64,
+    final_chain_head: u64,
+    mut eligible: E,
+    mut publish: P,
+) -> Result<NetworkIngressDecision>
+where
+    E: FnMut(u64, [u8; 20]) -> Result<bool>,
+    P: FnMut(PbftBlockLink, Vec<u8>) -> Result<bool>,
+{
+    let packet = Rlp::new(packet_rlp);
+    let blocks = match packet.item_count().ok().filter(|count| *count == 1) {
+        Some(_) => packet.at(0).ok().filter(Rlp::is_list),
+        None => None,
+    };
+    let Some(blocks) = blocks else {
+        return Ok(local_network_decision(
+            source_payload_id,
+            NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_MALFORMED,
+            ERROR_PBFT_BLOCKS_BUNDLE_MALFORMED,
+        ));
+    };
+    let Ok(block_count) = blocks.item_count() else {
+        return Ok(local_network_decision(
+            source_payload_id,
+            NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_MALFORMED,
+            ERROR_PBFT_BLOCKS_BUNDLE_MALFORMED,
+        ));
+    };
+    if block_count > MAX_PBFT_BLOCKS_PER_BUNDLE {
+        return Ok(local_network_decision(
+            source_payload_id,
+            NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_TOO_LARGE,
+            ERROR_PBFT_BLOCKS_BUNDLE_TOO_LARGE,
+        ));
+    }
+
+    let mut decoded_blocks = Vec::with_capacity(block_count);
+    for index in 0..block_count {
+        let Ok(block) = blocks.at(index) else {
+            return Ok(local_network_decision(
+                source_payload_id,
+                NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_MALFORMED,
+                ERROR_PBFT_BLOCKS_BUNDLE_MALFORMED,
+            ));
+        };
+        let block_rlp = block.as_raw().to_vec();
+        let Ok((link, metadata)) = decode_pbft_blocks_bundle_member(&block_rlp) else {
+            return Ok(local_network_decision(
+                source_payload_id,
+                NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_MALFORMED,
+                ERROR_PBFT_BLOCKS_BUNDLE_MALFORMED,
+            ));
+        };
+        decoded_blocks.push((block_rlp, link, metadata));
+    }
+
+    let last_relevant_period = current_period.saturating_add(5);
+    let mut unique_authors = HashSet::new();
+    for (block_rlp, link, metadata) in decoded_blocks {
+        if link.period < current_period || link.period > last_relevant_period {
+            continue;
+        }
+        if !unique_authors.insert((link.period, metadata.author)) {
+            return Ok(local_network_decision(
+                source_payload_id,
+                NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_DUPLICATE_AUTHOR,
+                ERROR_PBFT_BLOCKS_BUNDLE_DUPLICATE_AUTHOR,
+            ));
+        }
+        let eligibility_period = link.period.saturating_sub(1);
+        if final_chain_head >= eligibility_period
+            && !eligible(eligibility_period, metadata.author.into())?
+        {
+            return Ok(local_network_decision(
+                source_payload_id,
+                NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_INELIGIBLE_AUTHOR,
+                ERROR_PBFT_BLOCKS_BUNDLE_INELIGIBLE_AUTHOR,
+            ));
+        }
+        publish(link, block_rlp)?;
+    }
+    Ok(local_network_decision(
+        source_payload_id,
+        NETWORK_INGRESS_STATUS_ACCEPTED,
+        ERROR_NONE,
+    ))
+}
+
+fn decode_pbft_blocks_bundle_member(
+    block_rlp: &[u8],
+) -> Result<(PbftBlockLink, PbftBlockMetadata)> {
+    let block = Rlp::new(block_rlp);
+    ensure!(matches!(block.item_count()?, 8 | 9));
+    let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(block_rlp))?;
+    let metadata = PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(block_rlp))?;
+    ensure!(metadata.extra_data.len() <= MAX_PBFT_BLOCK_EXTRA_DATA_BYTES);
+    let _: H256 = block.val_at(2)?;
+    let _: H256 = block.val_at(3)?;
+
+    let signature: Vec<u8> = block.val_at(block.item_count()? - 1)?;
+    ensure!(signature.len() == 65 && signature[64] <= 3);
+
+    let reward_votes = block.at(6)?;
+    ensure!(reward_votes.is_list());
+    let mut unique_reward_votes = HashSet::new();
+    for index in 0..reward_votes.item_count()? {
+        ensure!(unique_reward_votes.insert(reward_votes.val_at::<H256>(index)?));
+    }
+
+    Ok((link, metadata))
 }
 
 /// Rust-owned external network/tarcap API facade.
@@ -1171,6 +1528,7 @@ pub(crate) struct ConsensusNetworkApi {
     pending_effects: VecDeque<NetworkEffect>,
     pending_vote_admissions: HashMap<u64, PendingVoteAdmissionContext>,
     pending_vote_bundles: HashMap<u64, PendingVoteBundle>,
+    cancelled_vote_admission_effects: HashMap<u64, u32>,
     pending_pillar_vote_admissions: HashMap<u64, PendingPillarVoteAdmissionContext>,
     outstanding_effects: HashMap<u64, NetworkEffect>,
     completed_dependency_status: HashMap<u64, bool>,
@@ -1199,6 +1557,7 @@ impl ConsensusNetworkApi {
             pending_effects: VecDeque::new(),
             pending_vote_admissions: HashMap::new(),
             pending_vote_bundles: HashMap::new(),
+            cancelled_vote_admission_effects: HashMap::new(),
             pending_pillar_vote_admissions: HashMap::new(),
             outstanding_effects: HashMap::new(),
             completed_dependency_status: HashMap::new(),
@@ -1484,6 +1843,9 @@ impl ConsensusNetworkApi {
         }) {
             return Vec::new();
         }
+        let transport_lane = contexts[0].transport_lane;
+        self.cancelled_vote_admission_effects
+            .retain(|_, lane| *lane != transport_lane);
         for context in &mut contexts {
             context.enqueue_admission = true;
             context.allow_gossip = false;
@@ -2264,10 +2626,24 @@ impl ConsensusNetworkApi {
                     .map(|_| *effect_id)
             })
             .collect::<HashSet<_>>();
+        for effect_id in &cancelled_effect_ids {
+            if let Some(context) = self.pending_vote_admissions.get(effect_id) {
+                self.cancelled_vote_admission_effects
+                    .insert(*effect_id, context.transport_lane);
+            }
+        }
         self.pending_vote_admissions
             .retain(|effect_id, _| !cancelled_effect_ids.contains(effect_id));
         self.pending_effects
             .retain(|effect| !cancelled_effect_ids.contains(&effect.effect_id));
+    }
+
+    /// Consumes one exact cancellation tombstone created by `cancel_vote_bundle`.
+    #[must_use]
+    pub fn take_cancelled_vote_admission_effect(&mut self, effect_id: u64) -> bool {
+        self.cancelled_vote_admission_effects
+            .remove(&effect_id)
+            .is_some()
     }
 
     fn enqueue_next_votes_bundle_send_effects(
@@ -3348,6 +3724,243 @@ mod tests {
         stream.out().to_vec()
     }
 
+    fn structurally_valid_unrecoverable_bundle(block_hash: H256, period: u64) -> Vec<u8> {
+        let mut optimized_vote = RlpStream::new_list(2);
+        optimized_vote.append(&[0x41_u8; 80].as_slice());
+        optimized_vote.append(&[0_u8; 65].as_slice());
+        let mut bundle = RlpStream::new_list(5);
+        bundle.append(&block_hash);
+        bundle.append(&period);
+        bundle.append(&0_u64);
+        bundle.append(&3_u64);
+        bundle.begin_list(1);
+        bundle.append_raw(&optimized_vote.out(), 1);
+        bundle.out().to_vec()
+    }
+
+    fn signed_pbft_sync_block(period: u64, order_hash: H256) -> Vec<u8> {
+        fn append_fields(stream: &mut RlpStream, period: u64, order_hash: H256) {
+            stream.append(&H256::zero());
+            stream.append(&H256::zero());
+            stream.append(&order_hash);
+            stream.append(&H256::zero());
+            stream.append(&period);
+            stream.append(&7_u64);
+            stream.begin_list(0);
+        }
+
+        let signing_key = SigningKey::from_slice(&[0x6a; 32]).unwrap();
+        let mut unsigned = RlpStream::new_list(7);
+        append_fields(&mut unsigned, period, order_hash);
+        let mut digest = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&unsigned.out());
+        hasher.finalize(&mut digest);
+        let (signature, recovery_id) = signing_key.sign_prehash_recoverable(&digest).unwrap();
+        let mut signature = signature.to_bytes().to_vec();
+        signature.push(recovery_id.to_byte());
+
+        let mut block = RlpStream::new_list(8);
+        append_fields(&mut block, period, order_hash);
+        block.append(&signature);
+        block.out().to_vec()
+    }
+
+    fn decoded_pbft_sync_packet(
+        period: u64,
+        order_hash: H256,
+        previous_cert_bundle: Option<&[u8]>,
+        current_cert_bundle: Option<&[u8]>,
+    ) -> DecodedPbftSyncPacketPrecheck {
+        let block = signed_pbft_sync_block(period, order_hash);
+        let mut period_data = RlpStream::new_list(4);
+        period_data.append_raw(&block, 1);
+        if let Some(bundle) = previous_cert_bundle {
+            period_data.append_raw(bundle, 1);
+        } else {
+            period_data.append_empty_data();
+        }
+        period_data.append_empty_data();
+        period_data.begin_list(0);
+
+        let mut packet = RlpStream::new_list(3);
+        packet.append(&true);
+        packet.append_raw(&period_data.out(), 1);
+        if let Some(bundle) = current_cert_bundle {
+            packet.append_raw(bundle, 1);
+        } else {
+            packet.append(&0_u8);
+        }
+        decode_pbft_sync_packet_precheck(&packet.out()).unwrap()
+    }
+
+    fn classify_test_pbft_sync_packet(
+        packet: DecodedPbftSyncPacketPrecheck,
+        block_in_chain: bool,
+        syncing_period: u64,
+        last_block_hash: H256,
+        ficus_activation_period: u64,
+    ) -> NetworkIngressDecision {
+        classify_pbft_sync_packet_precheck(
+            packet,
+            77,
+            block_in_chain,
+            syncing_period,
+            last_block_hash,
+            ficus_activation_period,
+            10,
+        )
+    }
+
+    #[test]
+    fn pbft_sync_precheck_classifies_accepted_and_duplicate_packets() {
+        let accepted = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(1, H256::zero(), None, None),
+            false,
+            0,
+            H256::zero(),
+            u64::MAX,
+        );
+        assert_eq!(accepted.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+
+        let duplicate = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(1, H256::zero(), None, None),
+            true,
+            0,
+            H256::zero(),
+            u64::MAX,
+        );
+        assert_eq!(
+            duplicate.status,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_DUPLICATE_BLOCK
+        );
+    }
+
+    #[test]
+    fn pbft_sync_precheck_classifies_sync_complete_and_unexpected_period() {
+        let block = signed_pbft_sync_block(1, H256::zero());
+        let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block)).unwrap();
+        let current_bundle = optimized_bundle(link.block_hash.into(), 1, 0, 1, 0x71);
+        let complete = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(1, H256::zero(), None, Some(&current_bundle)),
+            false,
+            1,
+            H256::zero(),
+            u64::MAX,
+        );
+        assert_eq!(complete.status, NETWORK_INGRESS_STATUS_PBFT_SYNC_COMPLETE);
+
+        let unexpected = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(1, H256::zero(), None, None),
+            false,
+            4,
+            H256::zero(),
+            u64::MAX,
+        );
+        assert_eq!(
+            unexpected.status,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_UNEXPECTED_PERIOD
+        );
+    }
+
+    #[test]
+    fn pbft_sync_precheck_preserves_duplicate_and_drop_before_signature_recovery() {
+        let block = signed_pbft_sync_block(1, H256::zero());
+        let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block)).unwrap();
+        let invalid_bundle = structurally_valid_unrecoverable_bundle(link.block_hash, 1);
+
+        let duplicate = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(1, H256::zero(), None, Some(&invalid_bundle)),
+            true,
+            0,
+            H256::zero(),
+            u64::MAX,
+        );
+        assert_eq!(
+            duplicate.status,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_DUPLICATE_BLOCK
+        );
+
+        let unexpected = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(1, H256::zero(), None, Some(&invalid_bundle)),
+            false,
+            4,
+            H256::zero(),
+            u64::MAX,
+        );
+        assert_eq!(
+            unexpected.status,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_UNEXPECTED_PERIOD
+        );
+
+        let accepted_height = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(1, H256::zero(), None, Some(&invalid_bundle)),
+            false,
+            0,
+            H256::zero(),
+            u64::MAX,
+        );
+        assert_eq!(
+            accepted_height.status,
+            NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS
+        );
+        assert_eq!(
+            accepted_height.error_code,
+            ERROR_PBFT_SYNC_PACKET_CERT_SIGNATURE
+        );
+    }
+
+    #[test]
+    fn pbft_sync_precheck_classifies_certificate_hash_mismatches_as_malicious() {
+        let wrong_current = optimized_bundle(hash(0x91), 1, 0, 1, 0x72);
+        let current = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(1, H256::zero(), None, Some(&wrong_current)),
+            false,
+            0,
+            H256::zero(),
+            u64::MAX,
+        );
+        assert_eq!(current.status, NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS);
+        assert_eq!(current.error_code, ERROR_PBFT_SYNC_PACKET_CURRENT_CERT_HASH);
+
+        let previous_bundle = optimized_bundle(hash(0x92), 1, 0, 1, 0x73);
+        let previous = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(2, H256::zero(), Some(&previous_bundle), None),
+            false,
+            1,
+            H256::zero(),
+            u64::MAX,
+        );
+        assert_eq!(previous.status, NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS);
+        assert_eq!(
+            previous.error_code,
+            ERROR_PBFT_SYNC_PACKET_PREVIOUS_CERT_HASH
+        );
+    }
+
+    #[test]
+    fn pbft_sync_precheck_classifies_pillar_schedule_and_order_hash_as_malicious() {
+        let schedule = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(1, H256::zero(), None, None),
+            false,
+            0,
+            H256::zero(),
+            1,
+        );
+        assert_eq!(schedule.status, NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS);
+        assert_eq!(schedule.error_code, ERROR_PBFT_SYNC_PACKET_PILLAR_SCHEDULE);
+
+        let order = classify_test_pbft_sync_packet(
+            decoded_pbft_sync_packet(1, H256::repeat_byte(0x44), None, None),
+            false,
+            0,
+            H256::zero(),
+            u64::MAX,
+        );
+        assert_eq!(order.status, NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS);
+        assert_eq!(order.error_code, ERROR_PBFT_SYNC_PACKET_ORDER_HASH);
+    }
+
     fn effect_result(effect: &NetworkEffect, status: u8) -> NetworkEffectResult {
         NetworkEffectResult {
             effect_id: effect.effect_id,
@@ -3392,6 +4005,266 @@ mod tests {
             hash: inspection.vote_hash,
             vote_rlp: generated.vote_rlp,
         }
+    }
+
+    fn signed_pbft_block_with_options(
+        seed: u8,
+        period: u64,
+        timestamp: u64,
+        reward_votes: &[H256],
+        extra_data: Option<&[u8]>,
+        recovery_id_override: Option<u8>,
+    ) -> Vec<u8> {
+        fn append_fields(
+            stream: &mut RlpStream,
+            period: u64,
+            timestamp: u64,
+            reward_votes: &[H256],
+            extra_data: Option<&[u8]>,
+        ) {
+            stream.append(&H256::from_low_u64_be(10));
+            stream.append(&H256::from_low_u64_be(11));
+            stream.append(&H256::from_low_u64_be(12));
+            stream.append(&H256::from_low_u64_be(13));
+            stream.append(&period);
+            stream.append(&timestamp);
+            stream.begin_list(reward_votes.len());
+            for vote in reward_votes {
+                stream.append(vote);
+            }
+            if let Some(extra_data) = extra_data {
+                stream.append(&extra_data);
+            }
+        }
+
+        let signing_key = SigningKey::from_slice(&[seed; 32]).unwrap();
+        let unsigned_fields = 7 + usize::from(extra_data.is_some());
+        let mut unsigned = RlpStream::new_list(unsigned_fields);
+        append_fields(&mut unsigned, period, timestamp, reward_votes, extra_data);
+        let mut digest = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&unsigned.out());
+        hasher.finalize(&mut digest);
+        let (signature, recovery_id) = signing_key.sign_prehash_recoverable(&digest).unwrap();
+        let mut signature = signature.to_bytes().to_vec();
+        signature.push(recovery_id_override.unwrap_or_else(|| recovery_id.to_byte()));
+
+        let mut signed = RlpStream::new_list(unsigned_fields + 1);
+        append_fields(&mut signed, period, timestamp, reward_votes, extra_data);
+        signed.append(&signature);
+        signed.out().to_vec()
+    }
+
+    fn signed_pbft_block(seed: u8, period: u64, timestamp: u64) -> Vec<u8> {
+        signed_pbft_block_with_options(seed, period, timestamp, &[], None, None)
+    }
+
+    fn pbft_blocks_bundle(blocks: &[Vec<u8>]) -> Vec<u8> {
+        let mut encoded_blocks = RlpStream::new_list(blocks.len());
+        for block in blocks {
+            encoded_blocks.append_raw(block, 1);
+        }
+        let mut packet = RlpStream::new_list(1);
+        packet.append_raw(&encoded_blocks.out(), 1);
+        packet.out().to_vec()
+    }
+
+    #[test]
+    fn proposed_block_bundle_rejects_malformed_and_oversized_packets_before_callbacks() {
+        let mut eligibility_calls = 0;
+        let mut publication_calls = 0;
+        let malformed = admit_pbft_blocks_bundle(
+            &[0xc0],
+            41,
+            10,
+            10,
+            |_, _| {
+                eligibility_calls += 1;
+                Ok(true)
+            },
+            |_, _| {
+                publication_calls += 1;
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            malformed.status,
+            NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_MALFORMED
+        );
+
+        let block = signed_pbft_block(9, 10, 1);
+        let oversized = admit_pbft_blocks_bundle(
+            &pbft_blocks_bundle(&vec![block; 11]),
+            42,
+            10,
+            10,
+            |_, _| {
+                eligibility_calls += 1;
+                Ok(true)
+            },
+            |_, _| {
+                publication_calls += 1;
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            oversized.status,
+            NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_TOO_LARGE
+        );
+
+        let malformed_member = admit_pbft_blocks_bundle(
+            &pbft_blocks_bundle(&[signed_pbft_block(9, 10, 1), vec![0xc0]]),
+            47,
+            10,
+            10,
+            |_, _| {
+                eligibility_calls += 1;
+                Ok(true)
+            },
+            |_, _| {
+                publication_calls += 1;
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            malformed_member.status,
+            NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_MALFORMED
+        );
+        assert_eq!((eligibility_calls, publication_calls), (0, 0));
+    }
+
+    #[test]
+    fn proposed_block_bundle_rejects_legacy_constructor_invariant_violations() {
+        let duplicate_reward = H256::from_low_u64_be(99);
+        let duplicate_rewards = signed_pbft_block_with_options(
+            9,
+            10,
+            1,
+            &[duplicate_reward, duplicate_reward],
+            None,
+            None,
+        );
+        let invalid_recovery_id = signed_pbft_block_with_options(9, 10, 1, &[], None, Some(4));
+        let oversized_extra = vec![0_u8; MAX_PBFT_BLOCK_EXTRA_DATA_BYTES + 1];
+        let oversized_extra =
+            signed_pbft_block_with_options(9, 10, 1, &[], Some(&oversized_extra), None);
+
+        for block in [duplicate_rewards, invalid_recovery_id, oversized_extra] {
+            let decision = admit_pbft_blocks_bundle(
+                &pbft_blocks_bundle(&[block]),
+                48,
+                10,
+                10,
+                |_, _| panic!("malformed block must not query DPoS"),
+                |_, _| panic!("malformed block must not publish"),
+            )
+            .unwrap();
+            assert_eq!(
+                decision.status,
+                NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_MALFORMED
+            );
+        }
+    }
+
+    #[test]
+    fn proposed_block_bundle_ignores_irrelevant_blocks_before_eligibility() {
+        let blocks = vec![signed_pbft_block(7, 9, 1), signed_pbft_block(7, 16, 2)];
+        let decision = admit_pbft_blocks_bundle(
+            &pbft_blocks_bundle(&blocks),
+            43,
+            10,
+            100,
+            |_, _| panic!("irrelevant blocks must not query DPoS"),
+            |_, _| panic!("irrelevant blocks must not publish"),
+        )
+        .unwrap();
+        assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+    }
+
+    #[test]
+    fn proposed_block_bundle_preserves_sequential_publication_before_late_duplicate() {
+        let blocks = vec![signed_pbft_block(8, 10, 1), signed_pbft_block(8, 10, 2)];
+        let mut published = Vec::new();
+        let decision = admit_pbft_blocks_bundle(
+            &pbft_blocks_bundle(&blocks),
+            44,
+            10,
+            10,
+            |_, _| Ok(true),
+            |link, _| {
+                published.push(link.block_hash);
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            decision.status,
+            NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_DUPLICATE_AUTHOR
+        );
+        assert_eq!(published.len(), 1);
+    }
+
+    #[test]
+    fn proposed_block_bundle_uses_head_gate_and_rejects_ineligible_author() {
+        let block = signed_pbft_block(6, 12, 1);
+        let packet = pbft_blocks_bundle(&[block]);
+        let mut queried = Vec::new();
+        let mut published = 0;
+        let accepted = admit_pbft_blocks_bundle(
+            &packet,
+            45,
+            12,
+            10,
+            |period, _| {
+                queried.push(period);
+                Ok(false)
+            },
+            |_, _| {
+                published += 1;
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert_eq!(accepted.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert!(queried.is_empty());
+        assert_eq!(published, 1);
+
+        let rejected = admit_pbft_blocks_bundle(
+            &packet,
+            46,
+            12,
+            11,
+            |period, _| {
+                queried.push(period);
+                Ok(false)
+            },
+            |_, _| panic!("ineligible block must not publish"),
+        )
+        .unwrap();
+        assert_eq!(
+            rejected.status,
+            NETWORK_INGRESS_STATUS_PBFT_BLOCKS_BUNDLE_INELIGIBLE_AUTHOR
+        );
+        assert_eq!(queried, [11]);
+    }
+
+    #[test]
+    fn proposed_block_bundle_propagates_eligibility_lookup_failure() {
+        let packet = pbft_blocks_bundle(&[signed_pbft_block(6, 12, 1)]);
+        let error = admit_pbft_blocks_bundle(
+            &packet,
+            47,
+            12,
+            11,
+            |_, _| Err(anyhow!("FINAL_CHAIN_DPOS_LOOKUP_FAILED")),
+            |_, _| panic!("lookup failure must not publish or become a peer-fault decision"),
+        )
+        .expect_err("operational FinalChain failure propagates");
+
+        assert!(error.to_string().contains("FINAL_CHAIN_DPOS_LOOKUP_FAILED"));
     }
 
     #[test]
@@ -4582,6 +5455,9 @@ mod tests {
         slashing.admission_report_slashing = true;
         api.report_effect_results(vec![slashing]);
 
+        assert!(api.take_cancelled_vote_admission_effect(decisions[2].application_effect_id));
+        assert!(!api.take_cancelled_vote_admission_effect(decisions[2].application_effect_id));
+        assert!(!api.take_cancelled_vote_admission_effect(u64::MAX));
         assert!(api.drain_work(6, 10).effects.is_empty());
     }
 

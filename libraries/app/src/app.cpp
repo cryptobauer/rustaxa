@@ -14,7 +14,9 @@
 #include "dag/dag_block_proposer.hpp"
 #include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "key_manager/key_manager.hpp"
+#endif
 #include "metrics/metrics_service.hpp"
 #include "metrics/network_metrics.hpp"
 #include "metrics/pbft_metrics.hpp"
@@ -38,6 +40,81 @@
 #endif
 
 namespace taraxa {
+
+#ifdef RUSTAXA_ENABLE
+namespace {
+
+/**
+ * Stops and joins the database-rebuild queue worker on every exit path.
+ *
+ * The guard borrows the stop flag and future created by `App::rebuildDb`.
+ * `stop` is idempotent; destruction performs the same cleanup during exception
+ * unwinding so an encoding or native queue-admission failure can propagate
+ * without the async future waiting forever on a worker that was never stopped.
+ */
+class RebuildQueueWorkerGuard final {
+ public:
+  RebuildQueueWorkerGuard(std::atomic_bool &stop_requested, std::future<void> &worker)
+      : stop_requested_(stop_requested), worker_(worker) {}
+  ~RebuildQueueWorkerGuard() { stop(); }
+
+  void stop() noexcept {
+    if (stopped_) {
+      return;
+    }
+    stop_requested_ = true;
+    if (worker_.valid()) {
+      worker_.wait();
+    }
+    stopped_ = true;
+  }
+
+ private:
+  std::atomic_bool &stop_requested_;
+  std::future<void> &worker_;
+  bool stopped_ = false;
+};
+
+/**
+ * Copies canonical database bytes into the stable CXX vector carrier.
+ *
+ * The input remains available to the rebuild loop for materialized logging and
+ * sender prewarming. Allocation failure propagates to abort rebuild without a
+ * partial queue push.
+ */
+rust::Vec<uint8_t> toRustBytes(const dev::bytes &input) {
+  rust::Vec<uint8_t> output;
+  output.reserve(input.size());
+  for (const auto byte : input) {
+    output.push_back(static_cast<uint8_t>(byte));
+  }
+  return output;
+}
+
+/**
+ * Encodes one certificate-vote set for Rust queue ownership.
+ *
+ * Each non-null vote is encoded with its signature and optional weight exactly
+ * as the PBFT manager adapter encoded it. A null vote is rejected before the
+ * Rust queue mutates, and encoding or allocation errors propagate to abort the
+ * rebuild.
+ */
+rust::Vec<rustaxa::PbftCertVoteRlp> toRustCertVotePayloads(const std::vector<std::shared_ptr<PbftVote>> &votes) {
+  rust::Vec<rustaxa::PbftCertVoteRlp> payloads;
+  payloads.reserve(votes.size());
+  for (const auto &vote : votes) {
+    if (!vote) {
+      throw std::runtime_error("PBFT manager period-data queue: cannot push period data with a null PBFT cert vote");
+    }
+    rustaxa::PbftCertVoteRlp payload;
+    payload.vote_rlp = toRustBytes(vote->rlp(true, vote->getWeight().has_value()));
+    payloads.push_back(std::move(payload));
+  }
+  return payloads;
+}
+
+}  // namespace
+#endif
 
 App::App() {}
 
@@ -145,7 +222,9 @@ void App::init(const cli::Config &cli_conf) {
   }
 
   final_chain_ = std::make_shared<final_chain::FinalChain>(db_, conf_, node_addr);
+#ifndef RUSTAXA_ENABLE
   key_manager_ = std::make_shared<KeyManager>(final_chain_);
+#endif
 #ifdef RUSTAXA_ENABLE
   dag_transaction_service_ = createDagTransactionService(conf_, *db_);
   trx_mgr_ = std::make_shared<TransactionManager>(conf_, db_, final_chain_, node_addr, dag_transaction_service_);
@@ -185,6 +264,15 @@ void App::init(const cli::Config &cli_conf) {
   pbft_manager_config.sync_level_size = conf_.network.sync_level_size;
   pbft_manager_config.is_light_node = conf_.is_light_node;
   pbft_manager_config.light_node_history = conf_.light_node_history;
+  pbft_manager_config.committee_size = conf_.genesis.pbft.committee_size;
+  pbft_manager_config.number_of_proposers = conf_.genesis.pbft.number_of_proposers;
+  pbft_manager_config.slashing_submitters.reserve(conf_.wallets.size());
+  for (size_t wallet_index = 0; wallet_index < conf_.wallets.size(); ++wallet_index) {
+    rustaxa::SlashingSubmitterIdentity identity{};
+    identity.wallet_index = wallet_index;
+    identity.address = conf_.wallets[wallet_index].node_addr.asArray();
+    pbft_manager_config.slashing_submitters.push_back(std::move(identity));
+  }
   pbft_service_ =
       std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db_->rustStorage(), pbft_manager_config));
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, pbft_service_);
@@ -192,20 +280,20 @@ void App::init(const cli::Config &cli_conf) {
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, db_);
 #endif
 #ifdef RUSTAXA_ENABLE
-  dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_,
+  dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_,
                                           dag_transaction_service_);
 #else
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
 #endif
 #ifdef RUSTAXA_ENABLE
-  vote_mgr_ = std::make_shared<VoteManager>(conf_, pbft_service_, pbft_chain_, final_chain_, key_manager_, trx_mgr_);
+  vote_mgr_ = std::make_shared<VoteManager>(conf_, pbft_service_, pbft_chain_, final_chain_, trx_mgr_);
 #else
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
   vote_mgr_ = std::make_shared<VoteManager>(conf_, db_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
 #endif
 #ifdef RUSTAXA_ENABLE
-  pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(
-      conf_.genesis.state.hardforks.ficus_hf, db_, pbft_service_, final_chain_, key_manager_, node_addr);
+  pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(conf_.genesis.state.hardforks.ficus_hf, db_,
+                                                                         pbft_service_, final_chain_, node_addr);
 #else
   pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(conf_.genesis.state.hardforks.ficus_hf, db_,
                                                                          final_chain_, key_manager_, node_addr);
@@ -218,7 +306,7 @@ void App::init(const cli::Config &cli_conf) {
                                             pillar_chain_mgr_);
 #endif
 #ifdef RUSTAXA_ENABLE
-  dag_block_proposer_ = std::make_shared<DagBlockProposer>(conf_, dag_mgr_, trx_mgr_, final_chain_, key_manager_);
+  dag_block_proposer_ = std::make_shared<DagBlockProposer>(conf_, dag_mgr_, trx_mgr_, final_chain_);
 #else
   dag_block_proposer_ = std::make_shared<DagBlockProposer>(conf_, dag_mgr_, trx_mgr_, final_chain_, db_, key_manager_);
 #endif
@@ -228,7 +316,11 @@ void App::init(const cli::Config &cli_conf) {
 #ifndef RUSTAXA_ENABLE
                                 db_,
 #endif
-                                pbft_mgr_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, pillar_chain_mgr_,
+                                pbft_mgr_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_,
+#ifndef RUSTAXA_ENABLE
+                                std::move(slashing_manager),
+#endif
+                                pillar_chain_mgr_,
 #ifdef RUSTAXA_ENABLE
                                 final_chain_, std::make_shared<network::ConsensusNetworkApi>(pbft_service_->service()));
 #else
@@ -391,6 +483,9 @@ void App::rebuildDb() {
   // Read pbft blocks one by one
   PbftPeriod period = 1;
   std::shared_ptr<PeriodData> period_data, next_period_data;
+#ifdef RUSTAXA_ENABLE
+  dev::bytes period_data_raw, next_period_data_raw;
+#endif
   std::atomic_bool stop_async = false;
 
   std::future<void> fut = std::async(std::launch::async, [this, &stop_async]() {
@@ -400,26 +495,45 @@ void App::rebuildDb() {
       thisThreadSleepForMilliSeconds(1);
     }
   });
+#ifdef RUSTAXA_ENABLE
+  RebuildQueueWorkerGuard worker_guard(stop_async, fut);
+#endif
 
   while (true) {
     std::vector<std::shared_ptr<PbftVote>> cert_votes;
     if (next_period_data != nullptr) {
       period_data = next_period_data;
+#ifdef RUSTAXA_ENABLE
+      period_data_raw = std::move(next_period_data_raw);
+#endif
     } else {
       auto data = old_db_->getPeriodDataRaw(period);
       if (data.size() == 0) break;
+#ifdef RUSTAXA_ENABLE
+      period_data = std::make_shared<PeriodData>(data);
+      period_data_raw = std::move(data);
+#else
       period_data = std::make_shared<PeriodData>(std::move(data));
+#endif
     }
     auto data = old_db_->getPeriodDataRaw(period + 1);
     if (data.size() == 0) {
       next_period_data = nullptr;
+#ifdef RUSTAXA_ENABLE
+      next_period_data_raw.clear();
+#endif
       // Latest finalized block cert votes are saved in db as 2t+1 cert votes
       auto votes = old_db_->getAllTwoTPlusOneVotes();
       for (auto v : votes) {
         if (v->getType() == PbftVoteTypes::cert_vote) cert_votes.push_back(v);
       }
     } else {
+#ifdef RUSTAXA_ENABLE
+      next_period_data = std::make_shared<PeriodData>(data);
+      next_period_data_raw = std::move(data);
+#else
       next_period_data = std::make_shared<PeriodData>(std::move(data));
+#endif
       // More efficient to get sender(which is expensive) on this thread which is not as busy as the thread that
       // pushes blocks to chain
       for (auto &t : next_period_data->transactions) t->getSender();
@@ -430,7 +544,27 @@ void App::rebuildDb() {
                  << " from old DB into syncing queue for processing, final chain size: "
                  << final_chain_->lastBlockNumber();
 
+#ifdef RUSTAXA_ENABLE
+    auto previous_cert_vote_payloads = toRustCertVotePayloads(period_data->previous_block_cert_votes);
+    auto current_cert_vote_payloads = toRustCertVotePayloads(cert_votes);
+    rustaxa::PeriodDataQueuePushOutcome outcome;
+    try {
+      outcome = rustaxa::pbft_manager_runtime_period_data_queue_push(
+          pbft_service_->service(), toRustBytes(period_data_raw), dev::p2p::NodeID().asArray(),
+          std::move(previous_cert_vote_payloads), std::move(current_cert_vote_payloads));
+    } catch (const std::exception &e) {
+      throw std::runtime_error("PBFT manager period-data queue: " + std::string(e.what()));
+    } catch (...) {
+      throw std::runtime_error("PBFT manager period-data queue: Rust push failed");
+    }
+    if (!outcome.accepted) {
+      LOG(log_er_) << "Rejected synced period data push for period " << period << ": expected "
+                   << outcome.expected_next_period << ", got " << outcome.actual_period << " (current period "
+                   << outcome.current_period << ", effective queue size " << outcome.effective_size << ")";
+    }
+#else
     pbft_mgr_->periodDataQueuePush(std::move(*period_data), dev::p2p::NodeID(), std::move(cert_votes));
+#endif
     pbft_mgr_->waitForPeriodFinalization();
     period++;
     if (period % 100 == 0) {
@@ -447,8 +581,12 @@ void App::rebuildDb() {
       LOG(log_si_) << "Rebuilding period: " << period;
     }
   }
+#ifdef RUSTAXA_ENABLE
+  worker_guard.stop();
+#else
   stop_async = true;
   fut.wait();
+#endif
   // Handles the race case if some blocks are still in the queue
   pbft_mgr_->pushSyncedPbftBlocksIntoChain();
   LOG(log_si_) << "Rebuild completed";

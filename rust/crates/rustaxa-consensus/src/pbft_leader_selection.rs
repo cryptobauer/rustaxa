@@ -536,6 +536,9 @@ mod tests {
                 sync_level_size: 10,
                 is_light_node: false,
                 light_node_history: 0,
+                committee_size: 1,
+                number_of_proposers: 1,
+                slashing_submitters: Vec::new(),
             },
         )
         .unwrap();

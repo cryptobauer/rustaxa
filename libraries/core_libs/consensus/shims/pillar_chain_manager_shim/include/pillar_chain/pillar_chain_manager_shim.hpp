@@ -19,7 +19,6 @@
 namespace taraxa {
 class DbStorage;
 class Network;
-class KeyManager;
 struct FicusHardforkConfig;
 namespace final_chain {
 class FinalChain;
@@ -151,15 +150,6 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
                                                     const rustaxa::BridgePbftService& service);
 
 /**
- * Inspects one vote RLP in Rust and returns decoded identity plus signature status.
- *
- * The helper must not call `PillarVote::getVoterAddr()` or `verifyVote()`.
- * Rust-enabled validation uses the recovered identity for uniqueness and DPoS
- * checks so cryptographic recovery is not silently delegated back to C++.
- */
-PillarVoteValidationPlan inspectPillarVoteWithRust(const std::shared_ptr<PillarVote>& vote);
-
-/**
  * Stable logging helper for explicit validation reason reporting.
  */
 const char* pillarVoteValidationPlanStatusString(PillarVoteValidationPlanStatus status);
@@ -262,11 +252,6 @@ struct ValidatePbftBlockPillarVotesWithRustResult {
   [[nodiscard]] bool valid() const { return status == ValidatePbftBlockPillarVotesWithRustStatus::kValid; }
 };
 
-/**
- * Returns a stable string for the pillar-chain shim-level synced validation status.
- */
-const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPillarVotesWithRustStatus status);
-
 /** @addtogroup PILLAR_CHAIN
  * @{
  */
@@ -309,7 +294,7 @@ class PillarChainManager {
    * - `pbft_service` is the application-owned PBFT service with pillar
    *   capability; it remains shared with the PBFT manager.
    * - `final_chain` supplies DPoS vote counts and eligibility.
-   * - `key_manager` and `node_addr` preserve the legacy construction contract.
+   * - `node_addr` identifies the local signing wallet.
    *
    * Outputs:
    * - Completes pillar bootstrap on the injected service after replaying the
@@ -322,7 +307,7 @@ class PillarChainManager {
    */
   PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> db,
                      SharedPbftService pbft_service, std::shared_ptr<final_chain::FinalChain> final_chain,
-                     std::shared_ptr<KeyManager> key_manager, addr_t node_addr);
+                     addr_t node_addr);
 
   /**
    * Creates and persists a new current pillar block for `period`.
@@ -431,15 +416,6 @@ class PillarChainManager {
       PbftPeriod required_votes_period, const std::vector<bytes>& pillar_vote_rlps);
 
   /**
-   * Finalizes the current pillar block when enough verified votes are present.
-   *
-   * Returns:
-   * - Above-threshold votes used for finalization, or an empty vector when
-   *   direct C++ finalization is unsupported.
-   */
-  std::vector<std::shared_ptr<PillarVote>> finalizePillarBlock(const blk_hash_t& pillar_block_hash);
-
-  /**
    * Typed PBFT finalization preflight result for pillar-block finalization.
    *
    * Purpose:
@@ -510,120 +486,6 @@ class PillarChainManager {
   std::shared_ptr<PillarBlock> getCurrentPillarBlock() const;
 
   /**
-   * Validates a PBFT block's pillar-anchor extra-data against the current
-   * Rust runtime anchor.
-   *
-   * Purpose:
-   * - Keeps PBFT manager from owning pillar sidecar comparison rules while it
-   *   reports only a typed check result into the Rust PBFT block-validation
-   *   session.
-   *
-   * Inputs:
-   * - `pbft_block_hash` and `pbft_period` identify the PBFT block being
-   *   checked and are used for diagnostics.
-   * - `pillar_block_hash` is the optional pillar hash carried by the PBFT
-   *   block extra-data.
-   *
-   * Outputs:
-   * - `valid` is true only when a current pillar block exists and its hash
-   *   matches the PBFT block's pillar hash.
-   * - `missing_current_anchor` distinguishes missing local pillar state from a
-   *   hash mismatch.
-   *
-   * Invariants and edge behavior:
-   * - Does not mutate pillar state or read the C++ current-block sidecar.
-   * - Missing PBFT extra-data pillar hash is reported as invalid, not missing
-   *   current anchor.
-   */
-  struct PbftBlockPillarAnchorValidation {
-    bool valid = false;
-    bool missing_current_anchor = false;
-    PbftPeriod current_pillar_period = 0;
-    blk_hash_t current_pillar_hash;
-  };
-  PbftBlockPillarAnchorValidation validatePbftBlockPillarAnchor(
-      const blk_hash_t& pbft_block_hash, PbftPeriod pbft_period,
-      const std::optional<blk_hash_t>& pillar_block_hash) const;
-
-  /**
-   * Selects the pillar anchor hash that must be embedded in locally proposed
-   * PBFT block extra-data.
-   *
-   * Purpose:
-   * - Keeps PBFT manager from reading the current pillar block sidecar to
-   *   decide proposal extra-data eligibility.
-   *
-   * Inputs:
-   * - `pbft_period` is the PBFT block period being proposed.
-   *
-   * Outputs:
-   * - `available` is true only when the current pillar block exists for
-   *   `pbft_period - 1`.
-   * - `pillar_block_hash` is the selected anchor hash when available.
-   *
-   * Invariants and edge behavior:
-   * - Does not mutate pillar state.
-   * - Missing or wrong-period current pillar anchors are logged and returned as
-   *   unavailable.
-   */
-  struct PbftExtraDataPillarAnchor {
-    bool available = false;
-    PbftPeriod current_pillar_period = 0;
-    blk_hash_t pillar_block_hash;
-  };
-  PbftExtraDataPillarAnchor pbftExtraDataPillarAnchor(PbftPeriod pbft_period) const;
-
-  /**
-   * Selects the current pillar block hash for local pillar-vote generation
-   * during PBFT voting.
-   *
-   * Purpose:
-   * - Keeps PBFT manager from inspecting current pillar sidecar facts while it
-   *   remains the executor for local vote signing and gossip.
-   *
-   * Outputs:
-   * - `should_vote` is true only when the current pillar block is for
-   *   `pbft_period - 1`.
-   * - `pillar_block_hash` is the block that should receive the local pillar
-   *   vote when `should_vote` is true.
-   *
-   * Invariants:
-   * - Does not generate, persist, or gossip a pillar vote.
-   */
-  struct LocalPillarVoteAnchor {
-    bool should_vote = false;
-    PbftPeriod current_pillar_period = 0;
-    blk_hash_t pillar_block_hash;
-  };
-  LocalPillarVoteAnchor localPillarVoteAnchorForPbftPeriod(PbftPeriod pbft_period) const;
-
-  /**
-   * Classifies whether PBFT startup should rerun pillar post-processing for
-   * the current PBFT period.
-   *
-   * Purpose:
-   * - Keeps PBFT manager from inspecting current pillar-block sidecar facts
-   *   during restart recovery.
-   *
-   * Inputs:
-   * - `pbft_period` is the restored PBFT chain size.
-   *
-   * Outputs:
-   * - `should_process` is true when a current pillar block exists and its
-   *   period indicates the node may have stopped after persisting the PBFT
-   *   block but before processing the pillar block.
-   *
-   * Invariants:
-   * - Does not mutate pillar state.
-   * - Logs the legacy restart diagnostic when the recovery condition is met.
-   */
-  struct RestartPillarPostProcessingDecision {
-    bool should_process = false;
-    PbftPeriod current_pillar_period = 0;
-  };
-  RestartPillarPostProcessingDecision restartPillarPostProcessingDecision(PbftPeriod pbft_period) const;
-
-  /**
    * Retrieves verified votes for one pillar period and block hash.
    *
    * Inputs:
@@ -669,7 +531,6 @@ class PillarChainManager {
   SharedPbftService pbft_service_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
-  std::shared_ptr<KeyManager> key_manager_;
 
   const addr_t node_addr_;
 

@@ -520,6 +520,19 @@ For each facade:
 
 Completion condition: internal C++ code cannot obtain mutable consensus-domain object graphs from Rust-owned services.
 
+The PBFT sync queue now owns each encoded `PeriodData` payload and fixed peer identity together with its compact
+admission facts. The PBFT overlay's parallel live-object deque, correlation ids, mismatch protocol, cleanup return
+carrier, and compatibility mutex are deleted. C++ reconstructs the legacy object only from a Rust pop plan at the
+temporary finalization executor edge. A standalone Rust-mode latest/v5 handler now passes the original outer packet
+bytes into one application-root-owned ingress session. Rust owns exact-shape decoding, chain/queue sequencing,
+certificate-target and signature checks, sequential FinalChain-weighted vote admission/persistence, authoritative
+reward-payload selection, and exact-child/full-peer queue insertion. The session pauses only at the retained typed
+slashing transaction leaf and resumes after C++ reports insertion success or failure. Tarcap owns peer lifecycle,
+transaction construction/signing/insertion, and timers; it no longer materializes `PbftSyncPacket`, `PeriodData`, or
+certificate votes. Database replay still submits exact stored bytes through the narrow queue operation. The Rust-mode
+`PbftManager::periodDataQueuePush` facade, vote-RLP helper, precheck export, and redundant reward-period/block-existence
+facades are deleted.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT
@@ -570,8 +583,13 @@ decodes the canonical request, validates chain/history bounds, reads finalized p
 attaches the native reward-vote snapshot, and emits complete PBFT-sync packet payloads. Version six additionally
 snapshots and chunks native proposed blocks; version five intentionally omits them. Tarcap executes the ordered sends,
 peer-syncing clear, and typed report/disconnect effects only. The old PBFT-manager sync-payload helper and proposed-block
-snapshot projection are deleted; PBFT-sync intake and the other handler-local DAG/status/transaction families remain
-active `CRW-N01` work. These remain contraction milestones rather than item completion.
+snapshot projection are deleted. Latest-version proposed-block bundle intake now enters through a standalone Rust-mode
+transport adapter: Rust decodes canonical signed blocks, applies the period window and per-period author uniqueness,
+queries native FinalChain DPoS eligibility, and publishes accepted proposals through native storage. The adapter retains
+only syncing-peer gating and malicious-peer execution, and the PBFT-manager eligibility export is deleted. PBFT-sync
+weighted-certificate ingress is now native through the resumable PBFT-root session; the other handler-local
+DAG/status/transaction families remain active `CRW-N01` work. These remain
+contraction milestones rather than item completion.
 
 ### 7. Contract DAG and transaction shims
 

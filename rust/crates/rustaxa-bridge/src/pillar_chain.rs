@@ -73,6 +73,9 @@ fn create_pending_pillar_test_service_from_storage(
             sync_level_size: 10,
             is_light_node: false,
             light_node_history: 0,
+            committee_size: 1,
+            number_of_proposers: 1,
+            slashing_submitters: Vec::new(),
         },
     )
 }

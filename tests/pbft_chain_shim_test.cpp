@@ -26,6 +26,8 @@ SharedPbftService makeService(const std::shared_ptr<DbStorage>& db) {
   config.sync_level_size = 10;
   config.is_light_node = false;
   config.light_node_history = 0;
+  config.committee_size = 5;
+  config.number_of_proposers = 20;
   return std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
 }
 

@@ -6,6 +6,7 @@
 #include <utility>
 
 #ifdef RUSTAXA_ENABLE
+#include "final_chain/final_chain.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa::network {
@@ -25,13 +26,23 @@ constexpr uint32_t kPacketPbftSync = 11;
 constexpr uint32_t kPacketPbftBlocksBundle = 16;
 constexpr uint32_t kPacketPbftVotesBundle = 3;
 constexpr uint32_t kEffectDrainBudget = 1024;
+constexpr uint8_t kPbftSyncIngressContinue = 0;
+constexpr uint8_t kPbftSyncIngressDuplicate = 1;
+constexpr uint8_t kPbftSyncIngressComplete = 2;
+constexpr uint8_t kPbftSyncIngressDrop = 3;
+constexpr uint8_t kPbftSyncIngressStop = 4;
+constexpr uint8_t kPbftSyncIngressMalicious = 5;
+constexpr uint8_t kPbftSyncIngressQueueRejected = 6;
+constexpr uint8_t kPbftSyncIngressAwaitingSlashing = 7;
 
 }  // namespace
 
 class ConsensusNetworkApi::Impl final {
  public:
-  explicit Impl(const rustaxa::BridgePbftService& service) : api(rustaxa::create_consensus_network_api(service)) {}
+  explicit Impl(const rustaxa::BridgePbftService& service)
+      : service(service), api(rustaxa::create_consensus_network_api(service)) {}
 
+  const rustaxa::BridgePbftService& service;
   rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
   std::mutex lanes_mutex;
   std::unordered_map<uint32_t, std::unique_ptr<std::mutex>> lane_execution_mutexes;
@@ -44,6 +55,68 @@ ConsensusNetworkApi::~ConsensusNetworkApi() = default;
 rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() noexcept { return *impl_->api; }
 
 const rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() const noexcept { return *impl_->api; }
+
+PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(const final_chain::FinalChain& final_chain,
+                                                                const std::vector<uint8_t>& packet_rlp,
+                                                                uint64_t source_payload_id,
+                                                                const std::array<uint8_t, 64>& source_peer_id,
+                                                                const PbftSyncIngressExecutor& executor) {
+  auto step = rustaxa::pbft_service_begin_pbft_sync_ingress(
+      impl_->service, final_chain.rustFinalChain(), rust::Slice<const uint8_t>(packet_rlp.data(), packet_rlp.size()),
+      source_payload_id, source_peer_id);
+  while (step.action == kPbftSyncIngressAwaitingSlashing) {
+    if (!step.has_slashing_transaction_effect || !executor.submit_slashing_transaction) {
+      throw std::runtime_error("Native PBFT-sync ingress paused without an executable slashing boundary");
+    }
+    const auto& native_effect = step.slashing_transaction_effect;
+    PbftSyncSlashingTransaction transaction{
+        native_effect.status,
+        native_effect.wallet_index,
+        native_effect.nonce,
+        native_effect.contract_address,
+        native_effect.value,
+        native_effect.gas_limit,
+        std::vector<uint8_t>(native_effect.call_data.begin(), native_effect.call_data.end())};
+    const auto transaction_inserted = executor.submit_slashing_transaction(transaction);
+    step = rustaxa::pbft_service_report_pbft_sync_ingress_slashing(impl_->service, final_chain.rustFinalChain(),
+                                                                   step.slashing_transaction_effect.proof_hash,
+                                                                   transaction_inserted);
+  }
+
+  PbftSyncIngressAction action;
+  switch (step.action) {
+    case kPbftSyncIngressContinue:
+      action = PbftSyncIngressAction::kContinue;
+      break;
+    case kPbftSyncIngressDuplicate:
+      action = PbftSyncIngressAction::kDuplicate;
+      break;
+    case kPbftSyncIngressComplete:
+      action = PbftSyncIngressAction::kSyncComplete;
+      break;
+    case kPbftSyncIngressDrop:
+      action = PbftSyncIngressAction::kDrop;
+      break;
+    case kPbftSyncIngressStop:
+      action = PbftSyncIngressAction::kStopSyncing;
+      break;
+    case kPbftSyncIngressMalicious:
+      action = PbftSyncIngressAction::kMalicious;
+      break;
+    case kPbftSyncIngressQueueRejected:
+      action = PbftSyncIngressAction::kQueueRejected;
+      break;
+    default:
+      throw std::runtime_error("Native PBFT-sync ingress returned an unknown terminal action");
+  }
+  return PbftSyncIngressOutcome{action,
+                                static_cast<std::string>(step.error_code),
+                                step.block_hash,
+                                step.period,
+                                step.max_dag_level,
+                                step.last_block,
+                                step.current_cert_present};
+}
 
 std::unique_lock<std::mutex> ConsensusNetworkApi::lockTransportLane(uint32_t transport_lane) {
   std::mutex* lane_mutex = nullptr;
@@ -67,8 +140,7 @@ PillarVotesBundleRequestOutcome ConsensusNetworkApi::servePillarVotesBundleReque
       transport_lane, peer_id, period, pillar_block_hash, source_payload_id);
 
   while (true) {
-    const auto batch =
-        api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
+    const auto batch = api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
     if (batch.effects.empty()) {
       break;
     }
@@ -137,8 +209,7 @@ PbftSyncRequestOutcome ConsensusNetworkApi::servePbftSyncRequest(uint32_t tarcap
   const auto decision = api().consensus_network_ingest_get_pbft_sync_request(std::move(request));
 
   while (true) {
-    const auto batch =
-        api().consensus_network_drain_work(tarcap_version, source_payload_id, true, kEffectDrainBudget);
+    const auto batch = api().consensus_network_drain_work(tarcap_version, source_payload_id, true, kEffectDrainBudget);
     if (batch.effects.empty()) {
       break;
     }
@@ -200,8 +271,7 @@ PbftNextVotesBundleRequestOutcome ConsensusNetworkApi::servePbftNextVotesBundleR
       transport_lane, peer_id, peer_period, peer_round, source_payload_id);
 
   while (true) {
-    const auto batch =
-        api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
+    const auto batch = api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
     if (batch.effects.empty()) {
       break;
     }
@@ -244,6 +314,19 @@ PbftNextVotesBundleRequestOutcome ConsensusNetworkApi::servePbftNextVotesBundleR
 
   return PbftNextVotesBundleRequestOutcome{decision.status, decision.queued_effect_count,
                                            static_cast<std::string>(decision.error_code)};
+}
+
+PbftBlocksBundleOutcome ConsensusNetworkApi::admitPbftBlocksBundle(const final_chain::FinalChain& final_chain,
+                                                                   const std::vector<uint8_t>& packet_rlp,
+                                                                   uint64_t source_payload_id) {
+  rust::Vec<uint8_t> bridge_packet;
+  bridge_packet.reserve(packet_rlp.size());
+  for (const auto byte : packet_rlp) {
+    bridge_packet.push_back(byte);
+  }
+  const auto decision = api().consensus_network_ingest_pbft_blocks_bundle(final_chain.rustFinalChain(),
+                                                                          std::move(bridge_packet), source_payload_id);
+  return PbftBlocksBundleOutcome{decision.status, static_cast<std::string>(decision.error_code)};
 }
 
 std::optional<std::array<uint8_t, 64>> ConsensusNetworkApi::selectMaxChainPeer(

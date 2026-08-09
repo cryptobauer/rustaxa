@@ -6,9 +6,9 @@ list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
 list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/shims/")
 if(RUSTAXA_ENABLE)
     # Rust mode no longer exposes the standalone DAG/PivotTree graph facade. Its
-    # DAG manager, DAG block proposer, KeyManager, TransactionManager, and
-    # native queue runtime overlays are fully standalone. Sortition runtime
-    # ownership is native and has no Rust-mode C++ manager facade.
+    # DAG manager, DAG block proposer, TransactionManager, and native queue
+    # runtime overlays are fully standalone. KeyManager and sortition ownership
+    # are native and have no Rust-mode C++ manager facade.
     # Keep the untouched legacy implementations only in pure C++ reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag_manager\\.cpp$")
@@ -65,6 +65,10 @@ if(RUSTAXA_ENABLE)
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
          "/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler\\.cpp$")
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/pbft_blocks_bundle_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/pbft_sync_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
          "/network/src/tarcap/packets_handlers/v4/get_pbft_sync_packet_handler\\.cpp$")
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
          "/network/src/tarcap/packets_handlers/latest/get_next_votes_bundle_packet_handler\\.cpp$")
@@ -74,6 +78,14 @@ else()
          "/network/include/network/tarcap/packets_handlers/rust/get_pbft_sync_packet_handler\\.hpp$")
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
          "/network/src/tarcap/packets_handlers/rust/get_pbft_sync_packet_handler\\.cpp$")
+    list(FILTER NETWORK_HEADERS EXCLUDE REGEX
+         "/network/include/network/tarcap/packets_handlers/rust/pbft_sync_packet_handler\\.hpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/rust/pbft_sync_packet_handler\\.cpp$")
+    list(FILTER NETWORK_HEADERS EXCLUDE REGEX
+         "/network/include/network/tarcap/packets_handlers/rust/pbft_blocks_bundle_packet_handler\\.hpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/rust/pbft_blocks_bundle_packet_handler\\.cpp$")
     list(FILTER NETWORK_HEADERS EXCLUDE REGEX
          "/network/include/network/tarcap/packets_handlers/rust/get_next_votes_bundle_packet_handler\\.hpp$")
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
@@ -153,10 +165,6 @@ if(RUSTAXA_ENABLE)
     # In Rust mode, inject the standalone Rust-backed TransactionManager facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/transaction_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/transaction_manager_shim/src/transaction_manager_shim.cpp)
-
-    # In Rust mode, inject the standalone Rust-backed KeyManager facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/src/key_manager_shim.cpp)
 
     # In Rust mode, inject a header overlay that remaps legacy DbStorage
     # to DbStorageOld and exposes a forwarding DbStorage shim facade.

@@ -354,8 +354,6 @@ pub struct DagRuntimeStatus {
     pub period: u64,
     /// Previous and current finalized DAG anchors.
     pub anchors: DagAnchors,
-    /// Configured count of retained levels behind the frontier.
-    pub expiry_limit: u32,
     /// Lowest currently retained DAG level.
     pub expiry_level: u64,
 }
@@ -383,8 +381,6 @@ pub struct DagNonFinalizedSummary {
     pub levels: u64,
     /// Total number of non-finalized blocks.
     pub blocks: u64,
-    /// Minimum live VDF difficulty, or `u32::MAX` when empty.
-    pub min_difficulty: u32,
 }
 
 impl DagTransactionService {
@@ -740,7 +736,6 @@ impl DagTransactionService {
             max_level: dag.state.max_level(),
             period: dag.state.period(),
             anchors: DagAnchors { old, current },
-            expiry_limit: dag.state.dag_expiry_limit(),
             expiry_level: dag.state.dag_expiry_level(),
         })
     }
@@ -768,7 +763,6 @@ impl DagTransactionService {
         Ok(DagNonFinalizedSummary {
             levels: u64::try_from(levels).context("DAG_RUNTIME_LEVEL_COUNT_OVERFLOW")?,
             blocks: u64::try_from(blocks).context("DAG_RUNTIME_BLOCK_COUNT_OVERFLOW")?,
-            min_difficulty: dag.state.non_finalized_min_difficulty(),
         })
     }
 
@@ -2429,14 +2423,12 @@ mod tests {
         assert_eq!(status.max_level, 0);
         assert_eq!(status.period, 0);
         assert_eq!(status.anchors.current, genesis);
-        assert_eq!(status.expiry_limit, 32);
 
         let non_finalized = root.dag_non_finalized_index()?;
         let summary = root.dag_non_finalized_summary()?;
         assert!(non_finalized.levels.is_empty());
         assert_eq!(summary.levels, 0);
         assert_eq!(summary.blocks, 0);
-        assert_eq!(summary.min_difficulty, u32::MAX);
 
         let validation = root.dag_validate_references(1, genesis, Vec::new())?;
         assert!(validation.ok);

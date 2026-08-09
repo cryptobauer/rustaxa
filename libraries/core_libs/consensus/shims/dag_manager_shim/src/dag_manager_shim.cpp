@@ -15,7 +15,6 @@
 #include "dag/dag_block.hpp"
 #include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
-#include "key_manager/key_manager.hpp"
 #include "libdevcore/Common.h"
 #include "network/network.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -312,19 +311,17 @@ rustaxa::DagVerifyBlockGasReport to_bridge_verify_block_gas_report(uint64_t bloc
 
 DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
                        std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-                       std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager)
+                       std::shared_ptr<DbStorage> db)
     : DagManager(config, node_addr, std::move(trx_mgr), std::move(pbft_chain), std::move(final_chain), db,
-                 std::move(key_manager), createDagTransactionService(config, *db)) {}
+                 createDagTransactionService(config, *db)) {}
 
 DagManager::DagManager(const FullNodeConfig &config, addr_t /*node_addr*/, std::shared_ptr<TransactionManager> trx_mgr,
                        std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-                       std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager,
-                       SharedDagTransactionService dag_transaction_service)
+                       std::shared_ptr<DbStorage> db, SharedDagTransactionService dag_transaction_service)
     : trx_mgr_(std::move(trx_mgr)),
       pbft_chain_(std::move(pbft_chain)),
       final_chain_(std::move(final_chain)),
       db_(std::move(db)),
-      key_manager_(std::move(key_manager)),
       genesis_config_(config.genesis),
       genesis_block_(std::make_shared<DagBlock>(config.genesis.dag_genesis_block)),
       max_levels_per_period_(config.max_levels_per_period),
@@ -781,11 +778,6 @@ std::pair<blk_hash_t, blk_hash_t> DagManager::getAnchors() const {
   return std::make_pair(from_bridge_hash(anchors.old_anchor), from_bridge_hash(anchors.anchor));
 }
 
-uint32_t DagManager::getDagExpiryLimit() const {
-  std::shared_lock lock(rust_graphs_mutex_);
-  return dag_transaction_service_->service().dag_manager_runtime_dag_expiry_limit();
-}
-
 const std::pair<PbftPeriod, std::map<uint64_t, std::unordered_set<blk_hash_t>>> DagManager::getNonFinalizedBlocks()
     const {
   std::shared_lock lock(rust_graphs_mutex_);
@@ -818,14 +810,7 @@ std::pair<size_t, size_t> DagManager::getNonFinalizedBlocksSize() const {
   return {size.levels, size.blocks};
 }
 
-uint32_t DagManager::getNonFinalizedBlocksMinDifficulty() const {
-  std::shared_lock lock(rust_graphs_mutex_);
-  return dag_transaction_service_->service().dag_manager_runtime_non_finalized_min_difficulty();
-}
-
 std::shared_mutex &DagManager::getDagMutex() { return dag_finalization_mutex_; }
-
-const DagConfig &DagManager::getDagConfig() const { return genesis_config_.dag; }
 
 uint64_t DagManager::getDagExpiryLevel() const {
   std::shared_lock lock(rust_graphs_mutex_);
