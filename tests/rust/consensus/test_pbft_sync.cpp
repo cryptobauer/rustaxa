@@ -115,7 +115,6 @@ PbftFinalizationIntentFact makeFinalizationFact() {
   fact.block_hash = h256(9);
   fact.block_period = 1;
   fact.block_prev_hash = h256(0);
-  fact.block_in_chain = false;
   fact.pivot_dag_anchor_hash = h256(8);
   fact.has_pillar_block = false;
   fact.pillar_block_finalized = false;
@@ -275,8 +274,15 @@ void seedRewardCertVote(BridgeStorage& storage, BridgePbftService& service) {
   ASSERT_TRUE(result.transition_published);
 }
 
-PbftFinalizationIntentPlan finalizationIntentPlan(PbftFinalizationIntentFact fact) {
-  auto runtime = managerRuntimeForFinalizationSession();
+PbftFinalizationIntentPlan finalizationIntentPlan(PbftFinalizationIntentFact fact, bool persist_block = false) {
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_intent");
+  auto storage = create_storage(test_dir.string());
+  if (persist_block) {
+    auto batch = create_storage_shim_batch(*storage);
+    storage_shim_save_pbft_block_period(*batch, fact.block_hash, fact.block_period);
+    storage_shim_commit_batch(std::move(batch), false);
+  }
+  auto runtime = create_pbft_service_from_storage(*storage, makePbftServiceConfig(false));
   return pbft_manager_runtime_plan_finalization_intent(*runtime, std::move(fact));
 }
 
@@ -439,34 +445,13 @@ TEST(RustPbftSyncTest, FinalizationBoundaryAcceptsCompatibleDagService) {
   auto runtime = create_pbft_service_from_storage(*storage, makePbftServiceConfig(false));
   const auto plan =
       withoutRewardVoteReset(pbft_manager_runtime_plan_finalization_intent(*runtime, makeFinalizationFact()));
-  rust::Box<BridgeDagTransactionService> dag_transaction_service;
-  try {
-    dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
-  } catch (const std::exception& error) {
-    FAIL() << "first DagTransactionService restore failed: " << error.what();
-    return;
-  }
-
-  rust::Box<BridgeDagTransactionService> boundary_state;
-  try {
-    boundary_state = startFreshFinalizationExecutor(*runtime, *dag_transaction_service, plan,
-                                                  storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
-  } catch (const std::exception& error) {
-    FAIL() << "startFreshFinalizationExecutor failed: " << error.what();
-    return;
-  }
-
-  rust::Box<BridgeDagTransactionService> compatible_dag_transaction_service;
-  try {
-    compatible_dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
-  } catch (const std::exception& error) {
-    FAIL() << "compatible DagTransactionService restore failed: " << error.what();
-    return;
-  }
-
-  const auto boundary = std::move(boundary_state);
+  auto dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
+  auto compatible_dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
+  auto boundary =
+      startFreshFinalizationExecutor(*runtime, *dag_transaction_service, plan,
+                                     storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
   const auto state = pbft_manager_runtime_advance_finalization_action(*runtime, *compatible_dag_transaction_service,
-                                                                     boundary.cursor, boundary.action, 0, 0, 0, {});
+                                                                      boundary.cursor, boundary.action, 0, 0, 0, {});
   EXPECT_EQ(state.status, kPbftFinalizationRuntimeStatusActive);
   EXPECT_EQ(state.action, kPbftFinalizationRuntimeActionSetDagBlockOrder);
   EXPECT_TRUE(state.can_continue);
@@ -581,9 +566,8 @@ TEST(RustPbftSyncTest, FinalizationResumeReplaysAuthenticatedSortitionPublicatio
 
 TEST(RustPbftSyncTest, FinalizationIntentRejectsAlreadyPersistedBlock) {
   auto fact = makeFinalizationFact();
-  fact.block_in_chain = true;
 
-  const auto plan = finalizationIntentPlan(std::move(fact));
+  const auto plan = finalizationIntentPlan(std::move(fact), true);
 
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusBlockAlreadyInChain);
@@ -610,8 +594,7 @@ TEST(RustPbftSyncTest, FinalizationIntentClassifiesNullAnchorAndRejectsExplicitl
   EXPECT_EQ(plan.storage_write_intent.blocks_per_year, 500);
 
   fact = makeFinalizationFact();
-  fact.block_in_chain = true;
-  plan = finalizationIntentPlan(std::move(fact));
+  plan = finalizationIntentPlan(std::move(fact), true);
 
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusBlockAlreadyInChain);

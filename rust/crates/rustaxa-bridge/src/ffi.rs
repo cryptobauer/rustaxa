@@ -907,7 +907,6 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
         block_period: u64,
         block_prev_hash: [u8; 32],
-        block_in_chain: bool,
         pivot_dag_anchor_hash: [u8; 32],
         has_pillar_block: bool,
         pillar_block_finalized: bool,

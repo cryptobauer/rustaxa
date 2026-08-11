@@ -603,6 +603,13 @@ without returning an executor request to C++. The bridge only joins the two opaq
 immutable order hash and gas limit facts and receives a terminal decision. The former DAG status/report loop and its
 test-only manager weight facade are deleted.
 
+PBFT finalization intent planning now derives its chain linkage and exact persisted-head bytes inside native
+`PbftService`. C++ supplies only immutable candidate, certificate, dynamic-lambda, period-data, and ordered-hash facts;
+the bridge converts that carrier and delegates fallibly. The Rust owner samples one chain snapshot, preserves the
+already-in-chain previous-period rule, emits the canonical styled legacy head payload for fresh finalization, and maps
+chain-lock poison without a bridge panic. The C++ `PbftChain::getJsonStrForBlock` facade, standalone chain projection
+export, bridge JSON builder, four caller-synthesized chain fields, and their compatibility tests are deleted.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT

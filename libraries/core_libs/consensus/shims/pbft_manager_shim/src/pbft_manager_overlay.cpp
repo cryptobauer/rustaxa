@@ -596,7 +596,6 @@ rustaxa::PbftFinalizationIntentFact makePbftFinalizationIntentFact(
   fact.block_hash = toBridgeHash(period_data.pbft_blk->getBlockHash());
   fact.block_period = period_data.pbft_blk->getPeriod();
   fact.block_prev_hash = toBridgeHash(period_data.pbft_blk->getPrevBlockHash());
-  fact.block_in_chain = block_in_chain;
   fact.pivot_dag_anchor_hash = toBridgeHash(period_data.pbft_blk->getPivotDagBlockHash());
   fact.has_pillar_block =
       period_data.pbft_blk->getExtraData() && period_data.pbft_blk->getExtraData()->getPillarBlockHash().has_value();
@@ -614,7 +613,6 @@ rustaxa::PbftFinalizationIntentFact makePbftFinalizationIntentFact(
   fact.rounds_count_dynamic_lambda = rounds_count_dynamic_lambda;
   fact.dynamic_lambda = dynamic_lambda;
   fact.dpos_blocks_per_year = dpos_blocks_per_year;
-  fact.pbft_head_payload = rust::Vec<uint8_t>();
   fact.period_data_rlp = block_in_chain ? rust::Vec<uint8_t>() : toBridgeBytes(period_data.rlp());
   fact.ordered_dag_block_hashes = toBridgeFinalizationHashes(dag_blocks_order);
   fact.ordered_transaction_hashes = toBridgeFinalizationHashes(transaction_order);

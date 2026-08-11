@@ -258,8 +258,6 @@ pub struct PbftFinalizationIntent {
     pub block_period: u64,
     /// Candidate PBFT previous hash.
     pub block_prev_hash: H256,
-    /// PBFT block is already in storage.
-    pub block_in_chain: bool,
     /// PBFT block pivot DAG anchor hash.
     pub pivot_dag_anchor_hash: H256,
     /// Candidate carries a finalization-required pillar block.
@@ -2124,24 +2122,21 @@ impl PbftService {
         &self,
         fact: PbftFinalizationIntent,
     ) -> Result<PbftFinalizationPlan> {
-        let chain = self.chain().try_head()?;
-        let chain_last_period = if fact.block_in_chain {
+        let block_in_chain = self.chain().block_exists(fact.block_hash)?;
+        let projected_anchor = !fact.pivot_dag_anchor_hash.is_zero();
+        let (chain, pbft_head_payload) = self.chain().finalization_snapshot(
+            fact.block_hash,
+            (!block_in_chain).then_some(projected_anchor),
+        )?;
+        let chain_last_period = if block_in_chain {
             fact.block_period.saturating_sub(1)
         } else {
             chain.size
         };
 
-        let projected_anchor = !fact.pivot_dag_anchor_hash.is_zero();
-        let pbft_head_payload = if fact.block_in_chain {
-            Vec::new()
-        } else {
-            self.chain()
-                .project_legacy_json_head_payload(fact.block_hash, projected_anchor)?
-        };
-
         let domain_fact = PbftFinalizationIntentFact {
             block_hash: fact.block_hash,
-            pbft_head_hash: if fact.block_in_chain {
+            pbft_head_hash: if block_in_chain {
                 fact.block_prev_hash
             } else {
                 chain.head_hash
@@ -2150,7 +2145,7 @@ impl PbftService {
             block_prev_hash: fact.block_prev_hash,
             chain_last_hash: chain.last_pbft_block_hash,
             chain_last_period,
-            block_in_chain: fact.block_in_chain,
+            block_in_chain,
             pivot_dag_anchor_hash: fact.pivot_dag_anchor_hash,
             has_pillar_block: fact.has_pillar_block,
             pillar_block_finalized: fact.pillar_block_finalized,
@@ -7589,13 +7584,11 @@ mod tests {
         block_period: u64,
         block_prev_hash: H256,
         anchor_hash: H256,
-        block_in_chain: bool,
     ) -> PbftFinalizationIntent {
         PbftFinalizationIntent {
             block_hash,
             block_period,
             block_prev_hash,
-            block_in_chain,
             pivot_dag_anchor_hash: anchor_hash,
             has_pillar_block: false,
             pillar_block_finalized: false,
@@ -7635,7 +7628,6 @@ mod tests {
                 block_period,
                 block_prev_hash,
                 anchor_hash,
-                false,
             ))
             .unwrap();
         assert_eq!(plan.status, PbftFinalizationStatus::Accepted);
@@ -7675,7 +7667,6 @@ mod tests {
                 2,
                 H256::repeat_byte(0x55),
                 H256::repeat_byte(0x33),
-                false,
             ))
             .unwrap();
         assert_eq!(plan.status, PbftFinalizationStatus::StalePeriod);
@@ -7702,7 +7693,6 @@ mod tests {
                 3,
                 H256::repeat_byte(0x55),
                 H256::repeat_byte(0x33),
-                false,
             ))
             .unwrap();
         assert_eq!(plan.status, PbftFinalizationStatus::PreviousHashMismatch);
@@ -7729,7 +7719,6 @@ mod tests {
                 1,
                 H256::zero(),
                 H256::repeat_byte(0x22),
-                false,
             ))
             .expect_err("poisoned chain lock should fail chain-derived planning");
         assert_eq!(error.to_string(), "PBFT_CHAIN_SERVICE_LOCK_POISONED");

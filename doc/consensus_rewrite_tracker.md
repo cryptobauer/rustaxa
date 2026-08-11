@@ -3999,6 +3999,16 @@ emission.
 
 ## Public API Tracker
 
+The latest bounded `CRW-12` finalization contraction moves chain-fact composition into native `PbftService`. The CXX
+fact no longer carries caller-synthesized PBFT head hash, last-chain hash/period, or persisted-head bytes; the bridge is
+a fallible conversion/delegation layer. Native tests cover fresh and duplicate linkage, exact legacy payload bytes,
+rejections, and poisoned-lock error propagation. The focused CXX boundary fixture verifies exact payload conversion and
+all 48 `rust_consensus_tests` pass. The C++ head-payload facade and standalone projection route are deleted. Measured
+surface falls by 32 bridge lines, 29 shim lines, and one CXX function to 21,178 bridge lines, 14,816 shim lines, and 361
+CXX functions; carriers remain 301, handles 18, shim directories 9, granular flags 0, partial factories 0,
+compatibility constructor calls 0, and non-test C++ consumers 38. `CRW-12` remains active because the bridge application
+roots and remaining manager-shaped executor facades are not yet retired.
+
 ### DAG
 
 | Class | Public API groups | Dependencies | Tests | Target |

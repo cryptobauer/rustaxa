@@ -380,8 +380,36 @@ impl PbftChainService {
         block_hash: H256,
         increments_non_empty_size: bool,
     ) -> Result<Vec<u8>> {
-        let projected = self.try_project_legacy_json_head(block_hash, increments_non_empty_size)?;
-        Ok(legacy_head_json(projected).into_bytes())
+        Ok(self
+            .finalization_snapshot(block_hash, Some(increments_non_empty_size))?
+            .1)
+    }
+
+    /// Samples the chain head and optional legacy persisted-head projection under one read lock.
+    ///
+    /// `increments_non_empty_size` set to `Some` projects the candidate payload from the same
+    /// snapshot returned as the first tuple element. `None` returns an empty payload for duplicate
+    /// finalization. Lock poison and projection overflow are returned without partial output.
+    pub fn finalization_snapshot(
+        &self,
+        block_hash: H256,
+        increments_non_empty_size: Option<bool>,
+    ) -> Result<(PbftChainHead, Vec<u8>)> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| anyhow!("PBFT_CHAIN_SERVICE_LOCK_POISONED"))?;
+        let head = state.state.head();
+        let payload = match increments_non_empty_size {
+            Some(increments) => legacy_head_json(
+                state
+                    .state
+                    .project_legacy_json_head(block_hash, increments)?,
+            )
+            .into_bytes(),
+            None => Vec::new(),
+        };
+        Ok((head, payload))
     }
 
     /// Applies one in-memory accepted-block head transition.

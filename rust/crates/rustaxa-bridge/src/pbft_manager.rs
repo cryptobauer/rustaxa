@@ -254,7 +254,6 @@ impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntent {
             block_hash: ethereum_types::H256::from(value.block_hash),
             block_period: value.block_period,
             block_prev_hash: ethereum_types::H256::from(value.block_prev_hash),
-            block_in_chain: value.block_in_chain,
             pivot_dag_anchor_hash: ethereum_types::H256::from(value.pivot_dag_anchor_hash),
             has_pillar_block: value.has_pillar_block,
             pillar_block_finalized: value.pillar_block_finalized,
@@ -1172,10 +1171,9 @@ fn dag_block_period_lookup_into_ffi(lookup: DagBlockPeriodStorageLookup) -> FfiB
 /// Plans one deterministic PBFT finalization intent through Rust for a PBFT
 /// manager runtime.
 ///
-/// The runtime argument is intentionally explicit to keep the API bound to
-/// the manager-runtime bridge boundary. The current planner is stateless and
-/// uses only the supplied fact; future runtime policy can be added here without
-/// reintroducing a standalone CXX entry point.
+/// The runtime argument is the native authority for block existence and one
+/// coherent chain-head/persisted-payload snapshot. The bridge only converts
+/// caller facts and maps fallible native results into the CXX plan.
 pub fn pbft_manager_runtime_plan_finalization_intent(
     runtime: &BridgePbftService,
     fact: FfiPbftFinalizationIntentFact,
