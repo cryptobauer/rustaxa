@@ -154,6 +154,19 @@ impl BridgeDagTransactionService {
             .admit_proposed_block(&final_chain.0, &self.root, request)
     }
 
+    /// Runs complete local proposal validation and ranking without exposing
+    /// either native root or materializing a consensus object in the bridge.
+    pub(crate) fn select_local_proposal_candidate(
+        &self,
+        runtime: &BridgePbftService,
+        final_chain: &BridgeFinalChain,
+        request: rustaxa_consensus::pbft_service::PbftLocalProposalSelectionRequest,
+    ) -> Result<rustaxa_consensus::pbft_service::PbftLocalProposalSelectionResult> {
+        runtime
+            .0
+            .select_local_proposal_candidate(&final_chain.0, &self.root, request)
+    }
+
     /// Composes exact PBFT sync transaction admission with the private native
     /// DAG/transaction root and the external FinalChain account boundary.
     ///

@@ -17,6 +17,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
+    PbftLocalProposalCandidate as FfiPbftLocalProposalCandidate,
+    PbftLocalProposalSelectionResult as FfiPbftLocalProposalSelectionResult,
     PbftManagerAdvancePeriodActionReport as FfiPbftManagerAdvancePeriodActionReport,
     PbftManagerAdvancePeriodActionReportResult as FfiPbftManagerAdvancePeriodActionReportResult,
     PbftManagerAdvancePeriodPlan as FfiPbftManagerAdvancePeriodPlan,
@@ -32,9 +34,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
-    PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
-    PbftManagerLeaderCandidatePlan as FfiPbftManagerLeaderCandidatePlan,
-    PbftManagerLeaderValidBlockCommand as FfiPbftManagerLeaderValidBlockCommand,
     PbftManagerLifecycleTransitionRequest as FfiPbftManagerLifecycleTransitionRequest,
     PbftManagerLifecycleTransitionResult as FfiPbftManagerLifecycleTransitionResult,
     PbftManagerProposalInitialFact as FfiPbftManagerProposalInitialFact,
@@ -82,7 +81,6 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_eligible_wallet_period_wait as plan_domain_pbft_manager_eligible_wallet_period_wait,
     plan_pbft_manager_finalization_wait as plan_domain_pbft_manager_finalization_wait,
-    plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
     validate_pbft_manager_advance_period_action_report as validate_domain_pbft_manager_advance_period_action_report,
@@ -93,9 +91,7 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerBroadcastPlan, PbftManagerBroadcastReport, PbftManagerBroadcastReportResult,
     PbftManagerBroadcastStatus, PbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan, PbftManagerFinalizationWaitFact,
-    PbftManagerFinalizationWaitPlan, PbftManagerLeaderBlockValidationStatus,
-    PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
-    PbftManagerLeaderValidBlockCommand, PbftManagerLifecycleTransitionRequest,
+    PbftManagerFinalizationWaitPlan, PbftManagerLifecycleTransitionRequest,
     PbftManagerProposalAction, PbftManagerProposalInitialFact, PbftManagerProposalSessionStep,
     PbftManagerProposalStatus, PbftManagerProposalWalletFact, PbftManagerRuntimeAction,
     PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
@@ -108,8 +104,10 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerStateActionSessionStep, PbftManagerTransitionKind,
 };
 use rustaxa_consensus::pbft_service::{
-    PbftBlockValidationCandidate, PbftFinalizationIntent, PbftManagerLifecycleTransitionOutcome,
-    PbftProposedBlockAdmissionRequest, PbftProposedBlockAdmissionResult,
+    PbftBlockValidationCandidate, PbftFinalizationIntent, PbftLocalProposalCandidate,
+    PbftLocalProposalSelectionRequest, PbftLocalProposalSelectionResult,
+    PbftManagerLifecycleTransitionOutcome, PbftProposedBlockAdmissionRequest,
+    PbftProposedBlockAdmissionResult,
 };
 use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
@@ -1513,15 +1511,40 @@ pub fn pbft_service_admit_proposed_block(
         .into())
 }
 
-/// Plans grouped PBFT proposal candidate validation, mark-valid commands, and leader selection.
-pub fn plan_pbft_manager_leader_candidates(
-    candidates: Vec<FfiPbftManagerLeaderCandidateInputFact>,
-) -> FfiPbftManagerLeaderCandidatePlan {
-    let candidates = candidates
-        .into_iter()
-        .map(PbftManagerLeaderCandidateInputFact::from)
-        .collect();
-    plan_domain_pbft_manager_leader_candidates(candidates).into()
+/// Selects one already-signed local proposal through native vote validation,
+/// composed block validation, and deterministic leader ranking.
+#[allow(clippy::too_many_arguments)]
+pub fn pbft_service_select_local_proposal_candidate(
+    runtime: &BridgePbftService,
+    final_chain: &BridgeFinalChain,
+    dag_transaction_service: &BridgeDagTransactionService,
+    candidates: Vec<FfiPbftLocalProposalCandidate>,
+    period: u64,
+    round: u64,
+    pbft_gas_limit: u64,
+    extra_data_required: bool,
+    pillar_block_required: bool,
+) -> anyhow::Result<FfiPbftLocalProposalSelectionResult> {
+    Ok(dag_transaction_service
+        .select_local_proposal_candidate(
+            runtime,
+            final_chain,
+            PbftLocalProposalSelectionRequest {
+                candidates: candidates
+                    .into_iter()
+                    .map(|candidate| PbftLocalProposalCandidate {
+                        block_rlp: candidate.block_rlp,
+                        vote_rlp: candidate.vote_rlp,
+                    })
+                    .collect(),
+                period,
+                round,
+                pbft_gas_limit,
+                extra_data_required,
+                pillar_block_required,
+            },
+        )?
+        .into())
 }
 
 const FINALIZATION_EXECUTOR_MODE_FRESH: u8 = 0;
@@ -1918,26 +1941,6 @@ impl From<FfiPbftManagerBroadcastReport> for PbftManagerBroadcastReport {
     }
 }
 
-impl From<FfiPbftManagerLeaderCandidateInputFact> for PbftManagerLeaderCandidateInputFact {
-    fn from(value: FfiPbftManagerLeaderCandidateInputFact) -> Self {
-        Self {
-            vote_hash: value.vote_hash.into(),
-            block_hash: value.block_hash.into(),
-            period: value.period,
-            credential: value.credential,
-            voter_public_key: value.voter_public_key,
-            weight_found: value.weight_found,
-            weight: value.weight,
-            block_in_chain: value.block_in_chain,
-            proposed_block_found: value.proposed_block_found,
-            block_validation_status: PbftManagerLeaderBlockValidationStatus::from_u8(
-                value.block_validation_status,
-            ),
-            pivot_hash: value.pivot_hash.into(),
-        }
-    }
-}
-
 impl From<PbftManagerRuntimeSessionStep> for FfiPbftManagerRuntimeSessionStep {
     fn from(value: PbftManagerRuntimeSessionStep) -> Self {
         let status = value.status.as_u8();
@@ -2082,6 +2085,16 @@ impl From<PbftProposedBlockAdmissionResult> for FfiPbftProposedBlockAdmissionRes
     }
 }
 
+impl From<PbftLocalProposalSelectionResult> for FfiPbftLocalProposalSelectionResult {
+    fn from(value: PbftLocalProposalSelectionResult) -> Self {
+        Self {
+            selected: value.selected,
+            selected_index: value.selected_index,
+            error_code: value.error_code.to_string(),
+        }
+    }
+}
+
 impl From<PbftManagerProposalSessionStep> for FfiPbftManagerProposalSessionStep {
     fn from(value: PbftManagerProposalSessionStep) -> Self {
         Self {
@@ -2125,30 +2138,6 @@ impl From<PbftManagerBroadcastReportResult> for FfiPbftManagerBroadcastReportRes
             broadcast_reward_votes_counter: value.broadcast_reward_votes_counter,
             rebroadcast_reward_votes_counter: value.rebroadcast_reward_votes_counter,
             error_code: value.error_code,
-        }
-    }
-}
-
-impl From<PbftManagerLeaderValidBlockCommand> for FfiPbftManagerLeaderValidBlockCommand {
-    fn from(value: PbftManagerLeaderValidBlockCommand) -> Self {
-        Self {
-            period: value.period,
-            block_hash: value.block_hash.into(),
-        }
-    }
-}
-
-impl From<PbftManagerLeaderCandidatePlan> for FfiPbftManagerLeaderCandidatePlan {
-    fn from(value: PbftManagerLeaderCandidatePlan) -> Self {
-        Self {
-            status: value.status.as_u8(),
-            selected: value.selected,
-            selected_vote_hash: value.selected_vote_hash.into(),
-            selected_block_hash: value.selected_block_hash.into(),
-            selected_period: value.selected_period,
-            selected_from_null_anchor: value.selected_from_null_anchor,
-            valid_blocks: value.valid_blocks.into_iter().map(Into::into).collect(),
-            error_code: value.error_code.to_string(),
         }
     }
 }
@@ -2642,17 +2631,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_pbft_leader_candidates_reject_unknown_validation_status() {
-        let plan = plan_pbft_manager_leader_candidates(vec![leader_candidate_input(1, 1, 99)]);
-
-        assert_eq!(plan.status, 3);
-        assert_eq!(
-            plan.error_code,
-            "PBFT_MANAGER_LEADER_UNKNOWN_BLOCK_VALIDATION_STATUS"
-        );
-    }
-
-    #[test]
     fn bridge_manager_action_conversions_preserve_boundary_codes() {
         let session: FfiPbftManagerRuntimeSessionStep = PbftManagerRuntimeSessionStep {
             status: PbftManagerRuntimeStatus::Active,
@@ -2870,14 +2848,6 @@ mod tests {
         assert_eq!(candidate.reward_vote_hashes, vec![[0x14; 32].into()]);
         assert_eq!(candidate.pillar_block_hash, Some([0x15; 32].into()));
 
-        let leader_fact: PbftManagerLeaderCandidateInputFact =
-            leader_candidate_input(0x44, 0x55, 1).into();
-        assert_eq!(leader_fact.vote_hash, ethereum_types::H256([0x44; 32]));
-        assert_eq!(
-            leader_fact.block_validation_status,
-            PbftManagerLeaderBlockValidationStatus::Validated
-        );
-
         let block_plan: FfiPbftManagerBlockValidationPlan =
             PbftManagerBlockValidationPlan {
                 action:
@@ -2891,50 +2861,5 @@ mod tests {
             .into();
         assert_eq!((block_plan.action, block_plan.status), (3, 3));
         assert_eq!(block_plan.error_code, "BLOCK_SENTINEL");
-
-        let leader_plan: FfiPbftManagerLeaderCandidatePlan = PbftManagerLeaderCandidatePlan {
-            status: rustaxa_consensus::pbft_manager::PbftManagerLeaderSelectionStatus::Selected,
-            selected: true,
-            selected_vote_hash: ethereum_types::H256([0x66; 32]),
-            selected_block_hash: ethereum_types::H256([0x77; 32]),
-            selected_period: 14,
-            selected_from_null_anchor: false,
-            valid_blocks: vec![PbftManagerLeaderValidBlockCommand {
-                period: 14,
-                block_hash: ethereum_types::H256([0x88; 32]),
-            }],
-            error_code: "LEADER_SENTINEL",
-        }
-        .into();
-        assert_eq!(leader_plan.status, 0);
-        assert!(leader_plan.selected);
-        assert_eq!(leader_plan.selected_vote_hash, [0x66; 32]);
-        assert_eq!(leader_plan.selected_block_hash, [0x77; 32]);
-        assert_eq!(leader_plan.selected_period, 14);
-        assert!(!leader_plan.selected_from_null_anchor);
-        assert_eq!(leader_plan.valid_blocks.len(), 1);
-        assert_eq!(leader_plan.valid_blocks[0].period, 14);
-        assert_eq!(leader_plan.valid_blocks[0].block_hash, [0x88; 32]);
-        assert_eq!(leader_plan.error_code, "LEADER_SENTINEL");
-    }
-
-    fn leader_candidate_input(
-        id: u8,
-        block: u8,
-        block_validation_status: u8,
-    ) -> FfiPbftManagerLeaderCandidateInputFact {
-        FfiPbftManagerLeaderCandidateInputFact {
-            vote_hash: [id; 32],
-            block_hash: [block; 32],
-            period: 11,
-            credential: [id; 64],
-            voter_public_key: [id.wrapping_add(17); 64],
-            weight_found: true,
-            weight: 1,
-            block_in_chain: false,
-            proposed_block_found: true,
-            block_validation_status,
-            pivot_hash: [block.wrapping_add(20); 32],
-        }
     }
 }

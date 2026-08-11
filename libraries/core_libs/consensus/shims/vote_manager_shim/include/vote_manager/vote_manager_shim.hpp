@@ -234,29 +234,6 @@ class VoteManager {
       PbftPeriod period, PbftRound round,
       const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
   /**
-   * Selects a leader from caller-supplied proposal votes.
-   *
-   * Purpose:
-   * - Reuses the same Rust leader-candidate planner for locally generated
-   *   proposal votes, so PBFT manager no longer owns a duplicate leader
-   *   candidate fact builder.
-   *
-   * Inputs and outputs match the period/round overload, except tentative block/vote pairs are supplied by the caller
-   * and passed directly into Rust-owned candidate status and ranking after identity validation.
-   *
-   * Invariants:
-   * - The caller remains responsible for local proposal vote generation and
-   *   uniqueness checks.
-   * - Each block/vote pair must match by period and block hash; mismatches fail closed before validation or ranking.
-   * - Tentative candidates never enter authoritative service or storage state and are not serialized through a
-   *   compatibility candidate map.
-   * - Rust still owns candidate status derivation and deterministic leader ranking.
-   */
-  std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlock(
-      std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>&& local_candidates,
-      const std::function<bool(const blk_hash_t&)>& block_in_chain,
-      const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
-  /**
    * Rust-backed round-advance decision for PBFT manager runtime reports.
    *
    * Purpose:
@@ -709,13 +686,6 @@ class VoteManager {
   PbftStep getNetworkTplusOneNextVotingStep(PbftPeriod period, PbftRound round) const;
 
  private:
-  /** Selects from isolated tentative wallet candidates without mutating authoritative service state. */
-  std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>
-  identifyLeaderBlockFromLocalCandidates(
-      std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>&& local_candidates,
-      const std::function<bool(const blk_hash_t&)>& block_in_chain,
-      const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
-
   /**
    * Executes one native slashing transaction effect through the retained signing/submission leaf.
    *

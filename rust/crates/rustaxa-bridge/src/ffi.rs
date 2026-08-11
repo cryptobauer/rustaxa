@@ -1398,36 +1398,24 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// C++ live lookup and validation facts for one PBFT proposal candidate.
-    struct PbftManagerLeaderCandidateInputFact {
-        vote_hash: [u8; 32],
-        block_hash: [u8; 32],
-        period: u64,
-        credential: [u8; 64],
-        voter_public_key: [u8; 64],
-        weight_found: bool,
-        weight: u64,
-        block_in_chain: bool,
-        proposed_block_found: bool,
-        block_validation_status: u8,
-        pivot_hash: [u8; 32],
+    /// One already-signed local PBFT proposal candidate.
+    ///
+    /// Rust decodes and validates both canonical payloads before using the
+    /// candidate for leader ranking. C++ retains the corresponding live
+    /// objects and moves only the selected pair across its signing boundary.
+    struct PbftLocalProposalCandidate {
+        block_rlp: Vec<u8>,
+        vote_rlp: Vec<u8>,
     }
 
-    /// Proposed block accepted by Rust candidate planning and ready to mark valid.
-    struct PbftManagerLeaderValidBlockCommand {
-        period: u64,
-        block_hash: [u8; 32],
-    }
-
-    /// Grouped PBFT leader-candidate plan for C++ materialization.
-    struct PbftManagerLeaderCandidatePlan {
-        status: u8,
+    /// Terminal native selection result for local proposal generation.
+    ///
+    /// `selected_index` identifies the unchanged input carrier only when
+    /// `selected` is true. Empty or ineligible input returns `selected = false`
+    /// with a stable diagnostic rather than materializing consensus objects.
+    struct PbftLocalProposalSelectionResult {
         selected: bool,
-        selected_vote_hash: [u8; 32],
-        selected_block_hash: [u8; 32],
-        selected_period: u64,
-        selected_from_null_anchor: bool,
-        valid_blocks: Vec<PbftManagerLeaderValidBlockCommand>,
+        selected_index: u64,
         error_code: String,
     }
 
@@ -4044,9 +4032,6 @@ pub mod rustaxa_ffi {
             dag_transaction_service: &BridgeDagTransactionService,
             fact: &PbftManagerBlockValidationFact,
         ) -> Result<PbftManagerBlockValidationPlan>;
-        pub fn plan_pbft_manager_leader_candidates(
-            candidates: Vec<PbftManagerLeaderCandidateInputFact>,
-        ) -> PbftManagerLeaderCandidatePlan;
         pub fn pbft_manager_runtime_session_next(
             runtime: &BridgePbftService,
         ) -> PbftManagerRuntimeSessionStep;
@@ -4074,6 +4059,17 @@ pub mod rustaxa_ffi {
             extra_data_required: bool,
             pillar_block_required: bool,
         ) -> Result<PbftProposedBlockAdmissionResult>;
+        pub fn pbft_service_select_local_proposal_candidate(
+            runtime: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            dag_transaction_service: &BridgeDagTransactionService,
+            candidates: Vec<PbftLocalProposalCandidate>,
+            period: u64,
+            round: u64,
+            pbft_gas_limit: u64,
+            extra_data_required: bool,
+            pillar_block_required: bool,
+        ) -> Result<PbftLocalProposalSelectionResult>;
         pub fn pbft_service_proposed_blocks_get(
             self: &BridgePbftService,
             period: u64,

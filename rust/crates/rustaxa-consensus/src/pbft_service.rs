@@ -702,6 +702,57 @@ pub struct PbftProposedBlockAdmissionResult {
     pub error_code: &'static str,
 }
 
+/// Canonical bytes for one already-signed local PBFT proposal candidate.
+///
+/// The native task decodes both payloads, proves their shared identity, and
+/// validates the block before ranking the proposal vote. The caller retains
+/// its live block/vote pair and uses only the returned input index.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftLocalProposalCandidate {
+    /// Canonical signed PBFT block RLP.
+    pub block_rlp: Vec<u8>,
+    /// Canonical signed proposal-vote RLP including its validated weight.
+    pub vote_rlp: Vec<u8>,
+}
+
+/// Complete policy and payload input for local proposal leader selection.
+///
+/// The operation owns decoding, PBFT-chain lookup, composed FinalChain/DAG
+/// validation, candidate-status derivation, and deterministic ranking. It does
+/// not publish proposals or mutate the proposed-block cache; signing and
+/// publication remain retained external boundaries.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftLocalProposalSelectionRequest {
+    /// Already-signed candidates in caller order.
+    pub candidates: Vec<PbftLocalProposalCandidate>,
+    /// Expected PBFT period for every block and vote.
+    pub period: u64,
+    /// Expected PBFT proposal round for every vote.
+    pub round: u64,
+    /// Gas limit used by candidate DAG divergency validation.
+    pub pbft_gas_limit: u64,
+    /// Whether the active hardfork requires decodable block extra data.
+    pub extra_data_required: bool,
+    /// Whether the active schedule requires a pillar-block anchor.
+    pub pillar_block_required: bool,
+}
+
+/// Terminal result of native local proposal leader selection.
+///
+/// `selected_index` is meaningful only when `selected` is true and always
+/// refers to the unchanged input ordering. Empty or ineligible input is a
+/// successful no-selection result; malformed canonical bytes and dependency
+/// failures are returned as operation errors.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftLocalProposalSelectionResult {
+    /// Whether one candidate was selected.
+    pub selected: bool,
+    /// Selected input index, or zero when no candidate was selected.
+    pub selected_index: u64,
+    /// Stable diagnostic code for logs and bridge consumers.
+    pub error_code: &'static str,
+}
+
 /// CXX-free native owner of the complete PBFT application-service graph.
 ///
 /// Restoration validates storage-independent slashing configuration first,
@@ -2673,6 +2724,151 @@ impl PbftService {
                 plan.error_code
             )),
         }
+    }
+
+    /// Selects the leader among already-signed local proposal candidates.
+    ///
+    /// Every candidate is canonically decoded and identity-bound. Proposal
+    /// votes are revalidated against native FinalChain/VRF facts, blocks are
+    /// checked against the native PBFT chain and composed validation graph,
+    /// and the existing native planner owns status derivation and ranking.
+    /// The task neither publishes a proposal nor mutates the proposal cache;
+    /// it returns only the original input index for the retained C++ signing
+    /// and publication boundary.
+    pub fn select_local_proposal_candidate(
+        &self,
+        final_chain: &FinalChain,
+        dag_transaction_service: &DagTransactionService,
+        request: PbftLocalProposalSelectionRequest,
+    ) -> Result<PbftLocalProposalSelectionResult> {
+        use crate::pbft_manager::{
+            PbftManagerBlockValidationAction, PbftManagerLeaderBlockValidationStatus,
+            PbftManagerLeaderCandidateInputFact, plan_pbft_manager_leader_candidates,
+        };
+
+        let mut identities = Vec::with_capacity(request.candidates.len());
+        let mut facts = Vec::with_capacity(request.candidates.len());
+        for candidate in request.candidates {
+            let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&candidate.block_rlp))?;
+            let entry = ProposedBlockEntry {
+                period: link.period,
+                block_hash: link.block_hash,
+                block_rlp: candidate.block_rlp,
+                pivot_hash: link.pivot_dag_block_hash,
+                is_valid: false,
+            };
+            let block_candidate = proposed_block_validation_candidate(
+                &entry,
+                PbftProposedBlockAdmissionRequest {
+                    period: request.period,
+                    block_hash: link.block_hash,
+                    pbft_gas_limit: request.pbft_gas_limit,
+                    extra_data_required: request.extra_data_required,
+                    pillar_block_required: request.pillar_block_required,
+                },
+            )?;
+            let inspection = inspect_canonical_pbft_vote(&candidate.vote_rlp)?;
+            ensure!(
+                inspection.status == PbftCanonicalVoteInspectionStatus::Valid
+                    && inspection.signature_valid,
+                "PBFT_LOCAL_PROPOSAL_INVALID_VOTE_SIGNATURE"
+            );
+            ensure!(
+                inspection.period == request.period
+                    && inspection.round == request.round
+                    && inspection.vote_type == PbftVoteType::Propose,
+                "PBFT_LOCAL_PROPOSAL_VOTE_CONTEXT_MISMATCH"
+            );
+            ensure!(
+                inspection.block_hash == link.block_hash,
+                "PBFT_LOCAL_PROPOSAL_BLOCK_VOTE_MISMATCH"
+            );
+
+            let (validation, _) = self.validate_verified_vote_with_final_chain_internal(
+                final_chain,
+                &candidate.vote_rlp,
+                PbftVoteAdmissionValidationRequest {
+                    strict_vrf: true,
+                    committee_size: self.committee_size,
+                    number_of_proposers: self.number_of_proposers,
+                    has_preverified_weight: false,
+                    preverified_weight: 0,
+                },
+                false,
+            )?;
+            let valid_weight = validation.accepted
+                && validation.weight_calculated
+                && validation.calculated_weight > 0;
+            if valid_weight {
+                ensure!(
+                    inspection.has_embedded_weight
+                        && inspection.embedded_weight == validation.calculated_weight,
+                    "PBFT_LOCAL_PROPOSAL_EMBEDDED_WEIGHT_MISMATCH"
+                );
+            }
+            let block_in_chain = self.pbft_chain_block_exists(link.block_hash)?;
+            let block_validation_status = if !valid_weight || block_in_chain {
+                PbftManagerLeaderBlockValidationStatus::Rejected
+            } else {
+                let validation_plan = self.validate_pbft_block_composed(
+                    final_chain,
+                    dag_transaction_service,
+                    block_candidate,
+                )?;
+                match validation_plan.action {
+                    PbftManagerBlockValidationAction::Accept => {
+                        PbftManagerLeaderBlockValidationStatus::Validated
+                    }
+                    PbftManagerBlockValidationAction::Reject
+                    | PbftManagerBlockValidationAction::WaitForFinalization => {
+                        PbftManagerLeaderBlockValidationStatus::Rejected
+                    }
+                    PbftManagerBlockValidationAction::ContractError
+                    | PbftManagerBlockValidationAction::RunCheck => {
+                        return Err(anyhow!(
+                            "native local proposal block validation returned non-terminal action: {}",
+                            validation_plan.error_code
+                        ));
+                    }
+                }
+            };
+
+            identities.push((inspection.vote_hash, link.block_hash));
+            facts.push(PbftManagerLeaderCandidateInputFact {
+                vote_hash: inspection.vote_hash,
+                block_hash: link.block_hash,
+                period: request.period,
+                credential: validation.vrf_output,
+                voter_public_key: inspection.recovered_public_key,
+                weight_found: valid_weight,
+                weight: validation.calculated_weight,
+                block_in_chain,
+                proposed_block_found: true,
+                block_validation_status,
+                pivot_hash: link.pivot_dag_block_hash,
+            });
+        }
+
+        let plan = plan_pbft_manager_leader_candidates(facts);
+        if !plan.selected {
+            return Ok(PbftLocalProposalSelectionResult {
+                selected: false,
+                selected_index: 0,
+                error_code: plan.error_code,
+            });
+        }
+        let selected_index = identities
+            .iter()
+            .rposition(|(vote_hash, block_hash)| {
+                *vote_hash == plan.selected_vote_hash && *block_hash == plan.selected_block_hash
+            })
+            .ok_or_else(|| anyhow!("PBFT_LOCAL_PROPOSAL_SELECTED_UNKNOWN_CANDIDATE"))?;
+        Ok(PbftLocalProposalSelectionResult {
+            selected: true,
+            selected_index: u64::try_from(selected_index)
+                .context("PBFT_LOCAL_PROPOSAL_SELECTED_INDEX_OVERFLOW")?,
+            error_code: plan.error_code,
+        })
     }
 
     /// Persists and publishes one proposed PBFT block through native service state.
@@ -5641,6 +5837,16 @@ mod tests {
         vrf_key: [u8; 32],
         stake: u64,
     ) -> FinalChain {
+        final_chain_with_vote_validator_and_delay(storage, voter, vrf_key, stake, 0)
+    }
+
+    fn final_chain_with_vote_validator_and_delay(
+        storage: Arc<Storage>,
+        voter: [u8; 20],
+        vrf_key: [u8; 32],
+        stake: u64,
+        delegation_delay: u64,
+    ) -> FinalChain {
         use rustaxa_types::{
             DposTokenAmount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
         };
@@ -5670,7 +5876,7 @@ mod tests {
                 minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
-                delegation_delay: 0,
+                delegation_delay,
                 dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         )
@@ -8261,6 +8467,191 @@ mod tests {
                 .expect("proposal remains indexed")
                 .is_valid
         );
+
+        drop(final_chain);
+        drop(service);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+        Ok(())
+    }
+
+    #[test]
+    fn local_proposal_selection_composes_vote_block_and_ranking() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_local_proposal_selection");
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        let dag = dag_service(storage.clone());
+        let final_chain = final_chain_with_vote_validator_and_delay(
+            storage.clone(),
+            voter_from_secret(&NODE_SECRET),
+            vrf::public_key_from_secret(&VRF_SECRET)?,
+            20_000,
+            2,
+        );
+        let genesis = H256::repeat_byte(1);
+        let dag_block_rlp = candidate_dag_block_rlp(genesis, 42);
+        let dag_block = dag_manager_block_from_rlp(&dag_block_rlp)?;
+        dag.lock_dag()?.state.add_block(dag_block.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), dag_block.hash, 1, 0, &dag_block_rlp)?;
+        let order_hash = pbft_candidate_dag_order_hash(
+            &dag.prepare_pbft_candidate_payload(1, dag_block.hash)?
+                .expect("payload should load")
+                .payload,
+        );
+        let (block_rlp, link) = proposed_admission_block_rlp(1, dag_block.hash, order_hash);
+        let vote = service.generate_signed_vote_with_weight(
+            &final_chain,
+            PbftVoteGenerationInput {
+                block_hash: link.block_hash,
+                vote_type: PbftVoteType::Propose,
+                period: 1,
+                round: 2,
+                step: 1,
+                node_secret: NODE_SECRET,
+                vrf_secret: VRF_SECRET,
+                expected_voter: voter_from_secret(&NODE_SECRET).into(),
+                expected_vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET)?,
+            },
+            service.committee_size,
+            service.number_of_proposers,
+        )?;
+        assert!(vote.has_weight && vote.weight > 0);
+        let (vote_validation, _) = service.validate_verified_vote_with_final_chain_internal(
+            &final_chain,
+            &vote.vote_rlp,
+            PbftVoteAdmissionValidationRequest {
+                strict_vrf: true,
+                committee_size: service.committee_size,
+                number_of_proposers: service.number_of_proposers,
+                has_preverified_weight: false,
+                preverified_weight: 0,
+            },
+            false,
+        )?;
+        assert!(vote_validation.accepted, "{vote_validation:?}");
+
+        let mut mismatched_weight = RlpStream::new_list(4);
+        let weighted_vote = Rlp::new(&vote.vote_rlp);
+        for index in 0..3 {
+            mismatched_weight.append_raw(weighted_vote.at(index)?.as_raw(), 1);
+        }
+        mismatched_weight.append(&vote.weight.saturating_add(1));
+        let mismatched_weight = mismatched_weight.out().to_vec();
+        let unweighted_vote = build_slashing_pbft_vote_payload(&vote.vote_rlp)?.vote_rlp;
+
+        let result = service.select_local_proposal_candidate(
+            &final_chain,
+            &dag,
+            PbftLocalProposalSelectionRequest {
+                candidates: vec![PbftLocalProposalCandidate {
+                    block_rlp: block_rlp.clone(),
+                    vote_rlp: vote.vote_rlp.clone(),
+                }],
+                period: 1,
+                round: 2,
+                pbft_gas_limit: u64::MAX,
+                extra_data_required: false,
+                pillar_block_required: false,
+            },
+        )?;
+        assert!(result.selected, "{result:?}");
+        assert_eq!(result.selected_index, 0);
+        assert!(service.proposed_block(1, link.block_hash).is_none());
+
+        let ineligible_vote = generate_pbft_vote(PbftVoteGenerationInput {
+            block_hash: link.block_hash,
+            vote_type: PbftVoteType::Propose,
+            period: 1,
+            round: 2,
+            step: 1,
+            node_secret: NODE_SECRET_TWO,
+            vrf_secret: VRF_SECRET,
+            expected_voter: voter_from_secret(&NODE_SECRET_TWO).into(),
+            expected_vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET)?,
+        })?;
+        let mut weighted_ineligible = RlpStream::new_list(4);
+        let ineligible_rlp = Rlp::new(&ineligible_vote.vote_rlp);
+        for index in 0..3 {
+            weighted_ineligible.append_raw(ineligible_rlp.at(index)?.as_raw(), 1);
+        }
+        weighted_ineligible.append(&1_u64);
+        let after_ineligible = service.select_local_proposal_candidate(
+            &final_chain,
+            &dag,
+            PbftLocalProposalSelectionRequest {
+                candidates: vec![
+                    PbftLocalProposalCandidate {
+                        block_rlp: block_rlp.clone(),
+                        vote_rlp: weighted_ineligible.out().to_vec(),
+                    },
+                    PbftLocalProposalCandidate {
+                        block_rlp: block_rlp.clone(),
+                        vote_rlp: vote.vote_rlp.clone(),
+                    },
+                ],
+                period: 1,
+                round: 2,
+                pbft_gas_limit: u64::MAX,
+                extra_data_required: false,
+                pillar_block_required: false,
+            },
+        )?;
+        assert!(after_ineligible.selected, "{after_ineligible:?}");
+        assert_eq!(after_ineligible.selected_index, 1);
+
+        for invalid_vote in [mismatched_weight, unweighted_vote] {
+            let error = service
+                .select_local_proposal_candidate(
+                    &final_chain,
+                    &dag,
+                    PbftLocalProposalSelectionRequest {
+                        candidates: vec![PbftLocalProposalCandidate {
+                            block_rlp: block_rlp.clone(),
+                            vote_rlp: invalid_vote,
+                        }],
+                        period: 1,
+                        round: 2,
+                        pbft_gas_limit: u64::MAX,
+                        extra_data_required: false,
+                        pillar_block_required: false,
+                    },
+                )
+                .expect_err("missing or mismatched embedded weight must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("PBFT_LOCAL_PROPOSAL_EMBEDDED_WEIGHT_MISMATCH")
+            );
+            assert!(service.proposed_block(1, link.block_hash).is_none());
+        }
+
+        drop(final_chain);
+        drop(service);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+        Ok(())
+    }
+
+    #[test]
+    fn local_proposal_selection_returns_typed_empty_result() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_local_proposal_empty");
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        let dag = dag_service(storage.clone());
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage, &[], 2);
+        let result = service.select_local_proposal_candidate(
+            &final_chain,
+            &dag,
+            PbftLocalProposalSelectionRequest {
+                candidates: Vec::new(),
+                period: 1,
+                round: 2,
+                pbft_gas_limit: u64::MAX,
+                extra_data_required: false,
+                pillar_block_required: false,
+            },
+        )?;
+        assert!(!result.selected);
+        assert_eq!(result.selected_index, 0);
+        assert_eq!(result.error_code, "PBFT_MANAGER_LEADER_EMPTY");
 
         drop(final_chain);
         drop(service);

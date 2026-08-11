@@ -580,13 +580,13 @@ void materializeCachedCandidateDag(const rustaxa::DagManagerNonFinalizedSyncPayl
 }
 
 rustaxa::PbftFinalizationIntentFact makePbftFinalizationIntentFact(
-    const PeriodData &period_data, bool block_in_chain, bool pillar_block_finalized,
-    bool request_dynamic_lambda_update, uint64_t cert_vote_count, const blk_hash_t &sample_cert_vote_block_hash,
-    PbftPeriod sample_cert_vote_period, PbftRound sample_cert_vote_round, PbftStep sample_cert_vote_step,
-    uint32_t block_lambda, bool last_saved_period_lambda_found, uint32_t last_saved_period_lambda,
-    uint32_t dynamic_blocks_per_year, uint32_t rounds_count_dynamic_lambda, uint32_t dynamic_lambda,
-    uint32_t dpos_blocks_per_year, const std::vector<blk_hash_t> &dag_blocks_order,
-    const std::vector<trx_hash_t> &transaction_order, bool process_pillar_block_after_advance) {
+    const PeriodData &period_data, bool block_in_chain, bool pillar_block_finalized, bool request_dynamic_lambda_update,
+    uint64_t cert_vote_count, const blk_hash_t &sample_cert_vote_block_hash, PbftPeriod sample_cert_vote_period,
+    PbftRound sample_cert_vote_round, PbftStep sample_cert_vote_step, uint32_t block_lambda,
+    bool last_saved_period_lambda_found, uint32_t last_saved_period_lambda, uint32_t dynamic_blocks_per_year,
+    uint32_t rounds_count_dynamic_lambda, uint32_t dynamic_lambda, uint32_t dpos_blocks_per_year,
+    const std::vector<blk_hash_t> &dag_blocks_order, const std::vector<trx_hash_t> &transaction_order,
+    bool process_pillar_block_after_advance) {
   rustaxa::PbftFinalizationIntentFact fact;
   fact.block_hash = toBridgeHash(period_data.pbft_blk->getBlockHash());
   fact.block_period = period_data.pbft_blk->getPeriod();
@@ -1734,8 +1734,8 @@ bool PbftManager::publishProposedBlock(const std::shared_ptr<PbftBlock> &propose
 std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(PbftPeriod period, const blk_hash_t &block_hash) {
   const auto result = rustaxa::pbft_service_admit_proposed_block(
       pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(), period,
-      toBridgeHash(block_hash),
-      kGenesisConfig.getGasLimits(period).second, kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(period),
+      toBridgeHash(block_hash), kGenesisConfig.getGasLimits(period).second,
+      kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(period),
       kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(period));
   if (result.status == kPbftProposedBlockAdmissionAcceptedAlreadyValid ||
       result.status == kPbftProposedBlockAdmissionAcceptedNewlyValidated) {
@@ -1751,8 +1751,8 @@ std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(PbftPeriod per
     return nullptr;
   }
   if (result.status == kPbftProposedBlockAdmissionRejected) {
-    LOG(log_er_) << "Proposed block " << block_hash << " rejected by native admission, period " << period
-                 << ", code " << std::string(result.error_code);
+    LOG(log_er_) << "Proposed block " << block_hash << " rejected by native admission, period " << period << ", code "
+                 << std::string(result.error_code);
     return nullptr;
   }
   throw std::runtime_error("Native PBFT proposed-block admission returned unknown status");
@@ -2327,14 +2327,15 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
 
   try {
     std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> local_candidates;
+    const auto propose_round = getPbftRound();
+    const auto propose_step = getPbftStep();
+    const auto pbft_gas_limit = kGenesisConfig.getGasLimits(propose_period).second;
 
     for (const auto &wallet : eligible_wallets) {
       auto block = std::make_shared<PbftBlock>(prev_blk_hash, anchor_hash, order_hash, final_chain_hash, propose_period,
                                                wallet.node_addr, wallet.node_secret,
                                                reward_vote_payload.reward_vote_hashes, extra_data);
 
-      const auto propose_round = getPbftRound();
-      const auto propose_step = getPbftStep();
       auto propose_vote_generation = vote_mgr_->generateUniqueProposalVoteForBlock(
           block->getBlockHash(), propose_period, propose_round, propose_step, wallet);
       if (!propose_vote_generation.generated) {
@@ -2346,27 +2347,47 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
     }
 
     // Select leader block
-    auto leader_block_data = vote_mgr_->identifyLeaderBlock(
-        std::move(local_candidates),
-        [this](const auto &proposed_block_hash) { return pbft_chain_->findPbftBlockInChain(proposed_block_hash); },
-        [this](const auto &proposed_block) { return validatePbftBlock(proposed_block); });
-    if (!leader_block_data.has_value()) {
+    rust::Vec<rustaxa::PbftLocalProposalCandidate> candidates;
+    candidates.reserve(local_candidates.size());
+    for (const auto &[block, vote] : local_candidates) {
+      rustaxa::PbftLocalProposalCandidate candidate{};
+      candidate.block_rlp = toBridgeBytes(block->rlp(true));
+      candidate.vote_rlp = toBridgeBytes(vote->rlp(true, true));
+      candidates.push_back(std::move(candidate));
+    }
+
+    const auto selection = rustaxa::pbft_service_select_local_proposal_candidate(
+        pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(),
+        std::move(candidates), propose_period, propose_round, pbft_gas_limit,
+        kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(propose_period),
+        kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(propose_period));
+    if (!selection.selected) {
+      LOG(log_er_) << "Rust PBFT local proposal candidate selection failed for period " << propose_period << ", round "
+                   << propose_round << ", status: " << static_cast<std::string>(selection.error_code);
       return {};
     }
 
-    if (!vote_mgr_->addLocallyGeneratedVote(leader_block_data->second)) {
-      LOG(log_er_) << "Unable to save propose vote " << leader_block_data->second->getHash() << " for block "
-                   << leader_block_data->second->getBlockHash() << ", period " << propose_period << ", round "
-                   << leader_block_data->second->getRound() << ", step " << leader_block_data->second->getStep()
-                   << ", validator " << leader_block_data->second->getVoterAddr();
+    const auto selected_index = static_cast<size_t>(selection.selected_index);
+    if (selected_index >= local_candidates.size()) {
+      LOG(log_er_) << "Rust PBFT local proposal candidate selection returned invalid index " << selection.selected_index
+                   << " for " << local_candidates.size() << " candidates";
+      return {};
+    }
+    auto leader_block_data = std::move(local_candidates[selected_index]);
+
+    if (!vote_mgr_->addLocallyGeneratedVote(leader_block_data.second)) {
+      LOG(log_er_) << "Unable to save propose vote " << leader_block_data.second->getHash() << " for block "
+                   << leader_block_data.second->getBlockHash() << ", period " << propose_period << ", round "
+                   << leader_block_data.second->getRound() << ", step " << leader_block_data.second->getStep()
+                   << ", validator " << leader_block_data.second->getVoterAddr();
       return {};
     }
 
-    publishProposedBlock(leader_block_data->first);
+    publishProposedBlock(leader_block_data.first);
 
-    return PbftManager::ProposedBlockData{std::move(leader_block_data->first),
+    return PbftManager::ProposedBlockData{std::move(leader_block_data.first),
                                           std::move(reward_vote_payload.reward_votes),
-                                          std::move(leader_block_data->second)};
+                                          std::move(leader_block_data.second)};
   } catch (const std::exception &e) {
     LOG(log_er_) << "Block for period " << propose_period << " could not be proposed " << e.what();
     return {};
@@ -2544,9 +2565,8 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   fact.extra_data_present = extra_data.has_value();
   fact.extra_data_pillar_hash_present = pillar_hash.has_value();
   fact.pillar_block_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
-  const auto plan = rustaxa::plan_pbft_manager_block_validation(pbft_service_->service(),
-                                                               final_chain_->rustFinalChain(),
-                                                               dag_transaction_service_->service(), fact);
+  const auto plan = rustaxa::plan_pbft_manager_block_validation(
+      pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(), fact);
 
   if (plan.action == kPbftManagerBlockValidationActionAccept) {
     return true;

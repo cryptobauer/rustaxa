@@ -1116,7 +1116,11 @@ The current Rust consensus footprint is broad but still incomplete:
    through one shim helper for Rust-planned proposal/filter/certify/finish block hashes instead of duplicating
    phase-local lookup and validation branches. Rust-planned state-action vote intents now also go through one shim
    executor helper that centralizes live vote placement and next-vote status mirror persistence while Rust continues to
-   own the intent selection. PBFT proposed-block validation also has a Rust-owned staged planner for
+   own the intent selection. Locally generated signed block/vote pairs now cross one narrow canonical-byte task:
+   native `PbftService` revalidates proposal signatures, VRF/DPoS weight, PBFT-chain membership, and the complete
+   FinalChain/reward/pillar/DAG block contract before deterministic leader ranking, then returns only the unchanged
+   input index. The C++ manager retains wallet signing and publication but no longer calls a VoteManager local-leader
+   facade or materializes leader-planner fact/command carriers. PBFT proposed-block validation also has a Rust-owned staged planner for
    the proposal path: Rust requests PBFT-chain, FinalChain hash, reward-vote, pillar-block, DAG-order, and DAG-weight
    facts in legacy order, owns immutable extra-data/Ficus policy, then returns accept/reject or wait-for-finalization
    decisions while C++ still supplies the live object checks. `processPeriodData` reuses native sync planners before handing cert-vote, transaction, pillar-vote, and

@@ -4023,6 +4023,20 @@ CXX carriers. Handles remain 18, shim directories 9, granular flags 0, partial f
 calls 0, and non-test C++ consumers 38. `CRW-12` remains active because other PBFT manager validation and leader
 selection callers still materialize compatibility objects and the bridge application roots remain production-owned.
 
+The following bounded `CRW-12` contraction removes local proposal leader selection from the Rust-mode VoteManager
+facade. PBFT manager now passes already-signed block/vote RLP pairs to one native `PbftService` task. Rust proves their
+shared period/round/hash identity, revalidates the proposal signature, VRF key, DPoS weight, and sortition output,
+checks finalized-chain membership, runs composed PBFT/FinalChain/reward/pillar/DAG block validation, and applies native
+deterministic ranking without publishing or mutating the proposed-block cache. C++ receives only the selected input
+index and retains signing, live-object custody, vote insertion, and proposal publication. The caller-supplied
+VoteManager overload/helper plus the generic leader input, mark-valid command, plan carriers, and planner export are
+deleted. Native selected/empty, ineligible-batch, embedded-weight-integrity, and cache-isolation coverage, all 70 bridge
+tests, and the focused PBFT proposal/broadcast test pass. Measured
+surface falls by 66 bridge lines, 117 shim lines, and one CXX carrier to 21,071 bridge lines, 14,643 shim lines, 360 CXX
+functions, and 299 carriers. Handles remain 18, shim directories 9, granular flags 0, partial factories 0,
+compatibility constructor calls 0, and non-test C++ consumers 38. `CRW-12` remains active because authoritative
+received-vote leader materialization and other manager/executor boundaries still cross C++.
+
 ### DAG
 
 | Class | Public API groups | Dependencies | Tests | Target |

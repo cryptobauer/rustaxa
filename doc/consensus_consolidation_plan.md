@@ -103,9 +103,13 @@ the manager accessor, are crate-private; the CXX adapter exposes no sibling or
 manager mutation hook, including in bridge tests. Chain and proposal bridge
 modules retain only stable carrier/status projection plus the separately
 classified stateless storage compatibility helpers. Caller-owned tentative
-block/vote pairs now enter the existing Rust leader planner directly after a
-fail-closed identity check, without a temporary bridge candidate map or RLP
-rematerialization.
+block/vote pairs now enter one native application task as canonical signed
+bytes. `PbftService` owns canonical identity/signature decoding,
+FinalChain/VRF proposal-weight validation, PBFT-chain lookup, composed block
+validation, candidate status, and deterministic ranking, and returns only the
+caller's input index. The local VoteManager leader facade and its generic CXX
+fact/mark-valid/plan carriers are deleted; C++ retains wallet signing and
+proposal publication without building a compatibility candidate map.
 Native
 `rustaxa-consensus::pbft_manager::PbftManagerService` now owns the manager mutex and complete runtime/session container;
 the native root retains the service and the bridge exposes only a short-lived native guard to remaining DTO/effect
