@@ -20,7 +20,6 @@
 #include "storage/storage.hpp"
 #include "transaction/dag_transaction_service.hpp"
 #include "transaction/transaction.hpp"
-#include "transaction/transaction_manager_bridge_types.hpp"
 
 namespace taraxa {
 
@@ -187,26 +186,6 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
    * first finalized hash.
    */
   bool verifyTransactionsNotFinalized(const SharedTransactions &trxs);
-
-  /**
-   * Verify transaction identity facts and return Rust's typed finalized outcome.
-   *
-   * Purpose:
-   * - Lets PBFT sync admission forward hash-specific finalized transaction
-   *   warnings into the Rust PBFT sync planner instead of collapsing the result
-   *   to a legacy boolean.
-   *
-   * Outputs:
-   * - `is_finalized == false` when all input facts are accepted.
-   * - Otherwise `hash`, `input_index`, and `source` identify the first
-   *   finalized transaction selected by Rust.
-   *
-   * Edge behavior:
-   * - Throws `DbException` if Rust returns an out-of-range index or mismatched
-   *   hash for the supplied facts.
-   */
-  rustaxa::TransactionManagerVerifyNotFinalizedOutcome verifyTransactionsNotFinalizedDetailed(
-      std::vector<TransactionManagerVerifyNotFinalizedInput> &&facts);
 
   /**
    * Materialize DAG block transactions from live C++ views and Rust-backed storage.

@@ -16,34 +16,6 @@
 #include "transaction/transaction_manager.hpp"
 
 namespace taraxa::core_tests {
-namespace {
-
-std::array<uint8_t, 32> toBridgeHash(const trx_hash_t& hash) { return hash.asArray(); }
-
-template <typename Value>
-std::array<uint8_t, 32> toBridgeU256(const Value& value) {
-  std::array<uint8_t, 32> out{};
-  const auto bytes = dev::toBigEndian(value);
-  std::copy(bytes.begin(), bytes.end(), out.begin() + static_cast<std::ptrdiff_t>(out.size() - bytes.size()));
-  return out;
-}
-
-std::vector<TransactionManagerVerifyNotFinalizedInput> verifyFacts(const SharedTransactions& trxs) {
-  std::vector<TransactionManagerVerifyNotFinalizedInput> facts;
-  facts.reserve(trxs.size());
-  uint64_t input_index = 0;
-  for (const auto& trx : trxs) {
-    TransactionManagerVerifyNotFinalizedInput fact;
-    fact.input_index = input_index++;
-    fact.hash = toBridgeHash(trx->getHash());
-    fact.transaction_nonce = toBridgeU256(trx->getNonce());
-    fact.sender = trx->getSender().asArray();
-    facts.push_back(fact);
-  }
-  return facts;
-}
-
-}  // namespace
 
 TEST(TransactionManagerShimTest, rustModeTransactionManagerOwnsSharedIdentity) {
 #ifdef RUSTAXA_ENABLE
@@ -636,45 +608,6 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionsNotFinalizedUsesRece
 
   EXPECT_FALSE(trx_mgr.verifyTransactionsNotFinalized({transactions[0]}));
   EXPECT_TRUE(trx_mgr.verifyTransactionsNotFinalized(pending_transactions));
-}
-
-TEST_F(TransactionManagerShimFixture, rustVerifyTransactionsNotFinalizedAcceptsPreinspectedFacts) {
-  auto db = std::make_shared<DbStorage>(data_dir);
-  auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  const auto transactions =
-      samples::createSignedTrxSamples(0, 2,
-                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
-                                                  dev::Secret::ConstructFromStringType::FromHex));
-  const auto pending_transactions =
-      samples::createSignedTrxSamples(3, 3,
-                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
-                                                  dev::Secret::ConstructFromStringType::FromHex));
-
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
-  for (auto const& trx : transactions) {
-    ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
-  }
-  for (auto const& trx : pending_transactions) {
-    ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
-  }
-
-  std::vector<vote_hash_t> reward_votes;
-  auto block = std::make_shared<PbftBlock>(kNullBlockHash, kNullBlockHash, kNullBlockHash, kNullBlockHash, 1,
-                                           addr_t::random(), dev::KeyPair::create().secret(), reward_votes);
-  PeriodData period_data(std::move(block), {});
-  period_data.transactions = {transactions[1]};
-  trx_mgr.initializeRecentlyFinalizedTransactions(period_data);
-  EXPECT_TRUE(trx_mgr.verifyTransactionsNotFinalizedDetailed(verifyFacts({transactions[1]})).is_finalized);
-
-  {
-    auto batch = db->createWriteBatch();
-    db->addTransactionLocationToBatch(batch, transactions[0]->getHash(), 1, 0);
-    db->commitWriteBatch(batch);
-  }
-
-  EXPECT_TRUE(trx_mgr.verifyTransactionsNotFinalizedDetailed(verifyFacts({transactions[0]})).is_finalized);
-  EXPECT_FALSE(trx_mgr.verifyTransactionsNotFinalizedDetailed(verifyFacts(pending_transactions)).is_finalized);
 }
 
 TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersUseRustQueueViews) {

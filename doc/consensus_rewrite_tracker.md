@@ -3788,6 +3788,16 @@ status/result types are deleted together with the standalone pillar-bundle CXX e
 fall to 21,364, shim lines to 15,254, and carriers to 307 while CXX functions remain 367. Native and bridge validation
 passes 1,231 tests and the focused PBFT manager target rebuilds successfully.
 
+The following `CRW-12` cut composes PBFT sync transaction admission inside the native PBFT and DAG/transaction roots.
+Rust captures the exact admission generation, cursor, and ordered finalized-lookup hashes, releases the manager lock,
+filters live/durable finalized state, sources only latest account nonces from the narrow FinalChain boundary, verifies
+the canonical queue identities, and exact-reports missing/finalized warnings plus terminal queue effects. Storage and
+FinalChain failures become a generation-bound native terminal step, so stale success and stale failure cannot mutate a
+replacement session or fall through to the generic C++ abort. The C++ lookup/report loop, one-use detailed TransactionManager method, shim-only identity header and
+compatibility test, transaction report export/carrier, and query-plan carrier are deleted. Bridge lines fall to 21,331,
+shim lines to 15,118, and carriers to 305 while CXX functions remain 367. Native and bridge validation passes 1,236
+tests, all 36 remaining transaction-manager shim tests pass, and the rebuilt/focused PBFT manager path passes.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

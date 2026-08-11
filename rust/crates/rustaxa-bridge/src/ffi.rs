@@ -810,11 +810,6 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
-    /// Rust-planned finalized transaction lookup work for PBFT sync admission.
-    struct PbftSyncTransactionQueryPlan {
-        finalized_lookup_hashes: Vec<PbftSyncTransactionHash>,
-    }
-
     /// Staged PBFT sync runtime action for C++ `processPeriodData` execution.
     struct PbftSyncProcessPeriodDataRuntimePlan {
         runtime_action: u8,
@@ -826,7 +821,6 @@ pub mod rustaxa_ffi {
         accept_period_data: bool,
         retry_same_candidate: bool,
         replace_previous_block_cert_votes: bool,
-        transaction_query_plan: PbftSyncTransactionQueryPlan,
         warnings: Vec<PbftSyncTransactionWarning>,
         contains_finalized_transaction_warning: bool,
     }
@@ -866,14 +860,6 @@ pub mod rustaxa_ffi {
         cursor: u32,
         check: u8,
         status: u8,
-    }
-
-    /// Cursor-checked TransactionManager result for synced-period admission.
-    struct PbftSyncAdmissionTransactionReport {
-        cursor: u32,
-        missing_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        finalized_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        contains_finalized_transactions: bool,
     }
 
     /// Rust-owned outer drain step for C++ `pushSyncedPbftBlocksIntoChain`.
@@ -3915,9 +3901,11 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             vote_rlps: Vec<PillarVoteRlpPayload>,
         ) -> PbftSyncAdmissionSessionStep;
-        pub fn pbft_manager_runtime_pbft_sync_admission_report_transactions(
+        pub fn pbft_manager_runtime_pbft_sync_admission_validate_transactions(
             runtime: &BridgePbftService,
-            report: PbftSyncAdmissionTransactionReport,
+            dag_transaction_service: &BridgeDagTransactionService,
+            final_chain: &BridgeFinalChain,
+            identities: Vec<PeriodDataQueueTransactionIdentity>,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn abort_pbft_manager_runtime_pbft_sync_admission(
             runtime: &BridgePbftService,

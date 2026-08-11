@@ -129,6 +129,23 @@ pub fn pbft_manager_proposal_session_next_with_dag(
 }
 
 impl BridgeDagTransactionService {
+    /// Composes exact PBFT sync transaction admission with the private native
+    /// DAG/transaction root and the external FinalChain account boundary.
+    ///
+    /// The PBFT service captures and later revalidates its generation-bound
+    /// transaction request. This adapter exposes neither root nor a native
+    /// guard; storage/account errors become an exact native terminal step.
+    pub(crate) fn validate_pbft_sync_admission_transactions(
+        &self,
+        runtime: &BridgePbftService,
+        final_chain: &BridgeFinalChain,
+        identities: Vec<rustaxa_consensus::period_data_queue::PeriodDataQueueTransactionIdentity>,
+    ) -> Option<rustaxa_consensus::pbft_sync::PbftSyncAdmissionSessionStep> {
+        runtime
+            .0
+            .validate_pbft_sync_admission_transactions(&self.root, &final_chain.0, identities)
+    }
+
     /// Composes native PBFT cache/status ownership with DAG order, canonical
     /// payload, and gas ownership without exposing either root or its locks.
     pub(crate) fn prepare_pbft_candidate_dag(

@@ -95,7 +95,7 @@ use crate::pbft_vote_validation::{
 use crate::period_data_queue::{
     DecodedPbftSyncPacketPrecheck, EncodedPeriodDataQueuePushRequest, PeriodDataQueuePopPlan,
     PeriodDataQueuePushOutcome, PeriodDataQueuePushRequest, PeriodDataQueueSnapshot,
-    decode_pbft_sync_packet_precheck,
+    PeriodDataQueueTransactionIdentity, decode_pbft_sync_packet_precheck,
 };
 use crate::pillar_chain::{
     PillarBlockLinkagePlan, PillarCurrentAnchorDecisionRequest, PillarValidatorVoteCount,
@@ -2635,17 +2635,101 @@ impl PbftService {
         )
     }
 
-    /// Reports the requested transaction lookup result to the native cursor.
+    /// Performs the transaction work requested by the active PBFT sync admission.
     ///
-    /// The manager owns cursor validation, state mutation, terminal cleanup,
-    /// and the complete resulting admission plan.
-    pub fn report_pbft_sync_admission_transactions(
+    /// The exact manager generation, cursor, and ordered finalized-lookup
+    /// hashes are captured before releasing the manager lock. Native
+    /// transaction filtering and supplied-transaction verification then run
+    /// against the composed DAG/transaction service; latest FinalChain sender
+    /// nonces are sampled for verification, with absent accounts contributing
+    /// nonce zero. Transaction, storage, FinalChain, and nonce-width failures
+    /// become a terminal abort only for the exact captured request. A result is
+    /// applied only when the same request remains pending; stale success or
+    /// failure returns `None` and cannot mutate a replacement session or queue.
+    pub fn validate_pbft_sync_admission_transactions(
         &self,
-        cursor: u32,
-        report: crate::pbft_sync::PbftSyncAdmissionTransactionReport,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        final_chain: &FinalChain,
+        transactions: Vec<PeriodDataQueueTransactionIdentity>,
     ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
-        self.manager
-            .report_pbft_sync_admission_transactions(cursor, report)
+        self.validate_pbft_sync_admission_transactions_with(
+            dag_transaction_service,
+            final_chain,
+            transactions,
+            || {},
+        )
+    }
+
+    fn validate_pbft_sync_admission_transactions_with(
+        &self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        final_chain: &FinalChain,
+        transactions: Vec<PeriodDataQueueTransactionIdentity>,
+        after_capture: impl FnOnce(),
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        if !self.is_ready() {
+            return None;
+        }
+        let identity = self.manager.pbft_sync_admission_transaction_request()?;
+        after_capture();
+
+        let report = (|| -> Result<crate::pbft_sync::PbftSyncAdmissionTransactionReport> {
+            let missing_transaction_hashes = dag_transaction_service
+                .transaction_filter_non_finalized(
+                    identity
+                        .finalized_lookup_hashes
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .map(|(index, hash)| {
+                            Ok(crate::transaction_service::TransactionServiceFinalizedFilterRequest {
+                                input_index: u64::try_from(index)
+                                    .context("PBFT_SYNC_TRANSACTION_LOOKUP_INDEX_OVERFLOW")?,
+                                hash,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                )?
+                .not_finalized
+                .into_iter()
+                .map(|action| action.hash)
+                .collect();
+
+            let mut verification_facts = Vec::with_capacity(transactions.len());
+            for transaction in transactions {
+                let sender_account_nonce = match final_chain.account(transaction.sender)? {
+                    Some(account) => final_chain_nonce_as_u256(&account.nonce)?,
+                    None => U256::zero(),
+                };
+                verification_facts.push(
+                    crate::transaction_service::TransactionServiceVerifyNotFinalizedFact {
+                        input_index: transaction.input_index,
+                        hash: transaction.hash,
+                        transaction_nonce: U256::from_big_endian(&transaction.transaction_nonce),
+                        sender_account_nonce,
+                    },
+                );
+            }
+            let finalized =
+                dag_transaction_service.transaction_verify_not_finalized(verification_facts)?;
+            Ok(crate::pbft_sync::PbftSyncAdmissionTransactionReport {
+                missing_transaction_hashes,
+                finalized_transaction_hashes: finalized
+                    .is_finalized
+                    .then_some(finalized.hash)
+                    .into_iter()
+                    .collect(),
+                contains_finalized_transactions: finalized.is_finalized,
+            })
+        })();
+        match report {
+            Ok(report) => self
+                .manager
+                .report_pbft_sync_admission_transactions_exact(identity, report),
+            Err(_) => self
+                .manager
+                .abort_pbft_sync_admission_transactions_exact(identity),
+        }
     }
 
     /// Aborts and consumes the current synced-period admission cursor.
@@ -4495,16 +4579,89 @@ mod tests {
                         crate::pbft_sync::PbftSyncFactStatus::Valid,
                     )
                     .expect("vote report"),
-                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckTransactions => service
-                    .report_pbft_sync_admission_transactions(
-                        step.cursor,
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckTransactions => {
+                    report_sync_admission_transactions_for_test(
+                        service,
                         crate::pbft_sync::PbftSyncAdmissionTransactionReport {
                             missing_transaction_hashes: Vec::new(),
                             finalized_transaction_hashes: Vec::new(),
                             contains_finalized_transactions: false,
                         },
                     )
-                    .expect("transaction report"),
+                }
+                other => panic!("unexpected sync check {other:?}"),
+            };
+        }
+    }
+
+    fn sync_transaction_admission_fact(
+        dag_transaction_hashes: Vec<H256>,
+        period_data_transaction_hashes: Vec<H256>,
+    ) -> crate::pbft_sync::PbftSyncAdmissionInitialFact {
+        crate::pbft_sync::PbftSyncAdmissionInitialFact {
+            block_period: 1,
+            block_prev_hash: H256::repeat_byte(0xa1),
+            chain_last_hash: H256::repeat_byte(0xa1),
+            chain_last_period: 0,
+            block_in_chain: false,
+            dag_transaction_hashes,
+            period_data_transaction_hashes,
+            extra_data_required: false,
+            extra_data_present: false,
+            extra_data_pillar_block_hash_present: false,
+            pillar_votes_required: false,
+            pillar_votes_present: false,
+            previous_cert_votes_present: true,
+            previous_cert_first_vote_has_weight: false,
+        }
+    }
+
+    fn report_sync_admission_transactions_for_test(
+        service: &PbftService,
+        report: crate::pbft_sync::PbftSyncAdmissionTransactionReport,
+    ) -> crate::pbft_sync::PbftSyncAdmissionSessionStep {
+        let identity = service
+            .manager
+            .pbft_sync_admission_transaction_request()
+            .expect("transaction request identity");
+        service
+            .manager
+            .report_pbft_sync_admission_transactions_exact(identity, report)
+            .expect("exact transaction report")
+    }
+
+    fn advance_sync_admission_to_transactions(
+        service: &PbftService,
+        fact: crate::pbft_sync::PbftSyncAdmissionInitialFact,
+    ) -> crate::pbft_sync::PbftSyncAdmissionSessionStep {
+        assert!(service.begin_pbft_sync_admission(fact));
+        let mut step = service.pbft_sync_admission_next().expect("sync admission");
+        loop {
+            if step.next_check
+                == crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckTransactions
+            {
+                return step;
+            }
+            step = match step.next_check {
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash => {
+                    service
+                        .report_pbft_sync_admission_status(
+                            step.cursor,
+                            step.next_check,
+                            crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::Valid,
+                            crate::pbft_sync::PbftSyncFactStatus::Valid,
+                        )
+                        .expect("final-chain report")
+                }
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
+                | crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateCertVotes => service
+                    .report_pbft_sync_admission_status(
+                        step.cursor,
+                        step.next_check,
+                        crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::NotChecked,
+                        crate::pbft_sync::PbftSyncFactStatus::Valid,
+                    )
+                    .expect("vote report"),
                 other => panic!("unexpected sync check {other:?}"),
             };
         }
@@ -6975,16 +7132,18 @@ mod tests {
                 PbftSyncFactStatus::Valid,
             )
             .expect("cert report advances");
-        let accepted = service
-            .report_pbft_sync_admission_transactions(
-                transactions.cursor,
-                PbftSyncAdmissionTransactionReport {
-                    missing_transaction_hashes: vec![H256::repeat_byte(1)],
-                    finalized_transaction_hashes: vec![H256::repeat_byte(2)],
-                    contains_finalized_transactions: true,
-                },
-            )
-            .expect("transaction report completes");
+        assert_eq!(
+            transactions.next_check,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckTransactions
+        );
+        let accepted = report_sync_admission_transactions_for_test(
+            &service,
+            PbftSyncAdmissionTransactionReport {
+                missing_transaction_hashes: vec![H256::repeat_byte(1)],
+                finalized_transaction_hashes: vec![H256::repeat_byte(2)],
+                contains_finalized_transactions: true,
+            },
+        );
         assert!(accepted.complete);
         assert!(accepted.plan.accept_period_data);
         assert_eq!(accepted.plan.warnings.len(), 2);
@@ -7006,6 +7165,208 @@ mod tests {
         assert!(!mismatch.can_continue);
         assert!(service.pbft_sync_admission_next().is_none());
 
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sync_transaction_admission_accepts_valid_native_inputs() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_transaction_valid");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        service.complete_bootstrap();
+        let dag_transaction_service = dag_service(storage.clone());
+        let final_chain = final_chain_with_pillar_voters(storage, &[]);
+        let hash = H256::repeat_byte(0x11);
+        advance_sync_admission_to_transactions(
+            &service,
+            sync_transaction_admission_fact(vec![hash], vec![hash]),
+        );
+
+        let step = service
+            .validate_pbft_sync_admission_transactions(
+                &dag_transaction_service,
+                &final_chain,
+                vec![PeriodDataQueueTransactionIdentity {
+                    input_index: 7,
+                    hash,
+                    transaction_nonce: U256::one().to_big_endian(),
+                    sender: [0x51; 20],
+                }],
+            )
+            .expect("exact request remains pending");
+
+        assert!(step.complete);
+        assert!(step.plan.accept_period_data);
+        assert!(step.plan.warnings.is_empty());
+        assert!(!step.plan.contains_finalized_transaction_warning);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sync_transaction_admission_preserves_missing_warning() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_transaction_missing");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        service.complete_bootstrap();
+        let dag_transaction_service = dag_service(storage.clone());
+        let final_chain = final_chain_with_pillar_voters(storage, &[]);
+        let missing = H256::repeat_byte(0x22);
+        advance_sync_admission_to_transactions(
+            &service,
+            sync_transaction_admission_fact(vec![missing], Vec::new()),
+        );
+
+        let step = service
+            .validate_pbft_sync_admission_transactions(
+                &dag_transaction_service,
+                &final_chain,
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            step.plan.warnings,
+            vec![crate::pbft_sync::PbftSyncTransactionWarning {
+                hash: missing,
+                kind: crate::pbft_sync::PbftSyncTransactionWarningKind::MissingTransaction,
+            }]
+        );
+        assert!(!step.plan.contains_finalized_transaction_warning);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sync_transaction_admission_preserves_first_finalized_warning() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_transaction_finalized");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        service.complete_bootstrap();
+        let dag_transaction_service = dag_service(storage.clone());
+        let final_chain = final_chain_with_pillar_voters(storage.clone(), &[]);
+        let finalized = H256::repeat_byte(0x33);
+        storage
+            .transaction()
+            .write_location(finalized, 1, 0, false)
+            .unwrap();
+        advance_sync_admission_to_transactions(
+            &service,
+            sync_transaction_admission_fact(vec![finalized], vec![finalized]),
+        );
+
+        let step = service
+            .validate_pbft_sync_admission_transactions(
+                &dag_transaction_service,
+                &final_chain,
+                vec![PeriodDataQueueTransactionIdentity {
+                    input_index: 4,
+                    hash: finalized,
+                    transaction_nonce: [0; 32],
+                    sender: [0x52; 20],
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            step.plan.warnings,
+            vec![crate::pbft_sync::PbftSyncTransactionWarning {
+                hash: finalized,
+                kind: crate::pbft_sync::PbftSyncTransactionWarningKind::FinalizedTransaction,
+            }]
+        );
+        assert!(step.plan.contains_finalized_transaction_warning);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sync_transaction_admission_exact_aborts_native_lookup_error() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_transaction_error");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        service.complete_bootstrap();
+        let dag_transaction_service = dag_service(storage.clone());
+        let final_chain = final_chain_with_pillar_voters(storage, &[]);
+        advance_sync_admission_to_transactions(
+            &service,
+            sync_transaction_admission_fact(vec![H256::zero()], Vec::new()),
+        );
+
+        let step = service
+            .validate_pbft_sync_admission_transactions(
+                &dag_transaction_service,
+                &final_chain,
+                Vec::new(),
+            )
+            .expect("zero lookup hash must return an exact terminal step");
+        assert!(!step.can_continue);
+        assert_eq!(step.error_code, "PBFT_SYNC_ADMISSION_SESSION_ABORTED");
+        assert!(service.pbft_sync_admission_next().is_none());
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn stale_sync_transaction_error_does_not_abort_replacement_generation() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_transaction_stale_error");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        service.complete_bootstrap();
+        let dag_transaction_service = dag_service(storage.clone());
+        let final_chain = final_chain_with_pillar_voters(storage, &[]);
+        advance_sync_admission_to_transactions(
+            &service,
+            sync_transaction_admission_fact(vec![H256::zero()], Vec::new()),
+        );
+        let replacement =
+            sync_transaction_admission_fact(vec![H256::repeat_byte(0x42)], Vec::new());
+
+        let stale = service.validate_pbft_sync_admission_transactions_with(
+            &dag_transaction_service,
+            &final_chain,
+            Vec::new(),
+            || assert!(service.begin_pbft_sync_admission(replacement)),
+        );
+        assert!(stale.is_none());
+        let replacement_step = service.pbft_sync_admission_next().unwrap();
+        assert_eq!(replacement_step.cursor, 0);
+        assert_eq!(
+            replacement_step.next_check,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash
+        );
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn stale_sync_transaction_completion_does_not_mutate_replacement_generation() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_transaction_stale");
+        let service = PbftService::restore(storage, config(0)).unwrap();
+        service.complete_bootstrap();
+        let first = sync_transaction_admission_fact(vec![H256::repeat_byte(0x41)], Vec::new());
+        advance_sync_admission_to_transactions(&service, first);
+        let stale = service
+            .manager
+            .pbft_sync_admission_transaction_request()
+            .expect("transaction request identity");
+        let replacement =
+            sync_transaction_admission_fact(vec![H256::repeat_byte(0x42)], Vec::new());
+        assert!(service.begin_pbft_sync_admission(replacement));
+
+        assert!(
+            service
+                .manager
+                .report_pbft_sync_admission_transactions_exact(
+                    stale,
+                    crate::pbft_sync::PbftSyncAdmissionTransactionReport {
+                        missing_transaction_hashes: vec![H256::repeat_byte(0x41)],
+                        finalized_transaction_hashes: Vec::new(),
+                        contains_finalized_transactions: false,
+                    },
+                )
+                .is_none()
+        );
+        let replacement_step = service.pbft_sync_admission_next().unwrap();
+        assert_eq!(replacement_step.cursor, 0);
+        assert_eq!(
+            replacement_step.next_check,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash
+        );
         drop(service);
         let _ = fs::remove_dir_all(path);
     }

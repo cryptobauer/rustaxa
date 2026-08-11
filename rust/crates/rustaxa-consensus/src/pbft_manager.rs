@@ -477,6 +477,21 @@ pub(crate) struct PbftSyncAdmissionPillarRequestIdentity {
     pub required_votes_period: u64,
 }
 
+/// Exact identity of one pending native sync transaction-admission request.
+///
+/// The manager generation prevents an unlocked completion from entering a
+/// replacement session. Cursor and ordered lookup hashes bind the completion
+/// to the precise transaction query that was sampled under the manager lock.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PbftSyncAdmissionTransactionRequestIdentity {
+    /// Manager-owned admission generation captured with the pending request.
+    pub generation: u64,
+    /// Exact session cursor requesting transaction validation.
+    pub cursor: u32,
+    /// Ordered DAG transaction hashes requiring finalized-state lookup.
+    pub finalized_lookup_hashes: Vec<H256>,
+}
+
 impl Deref for PbftManagerGuard<'_> {
     type Target = PbftManagerRuntimeState;
 
@@ -1905,6 +1920,82 @@ impl PbftManagerService {
         Some(step)
     }
 
+    /// Captures one exact pending sync transaction request under the manager lock.
+    ///
+    /// The returned owned identity may cross native transaction and FinalChain
+    /// calls without retaining the manager guard. `None` means the active
+    /// session is absent, terminal, or waiting on a different check.
+    pub(crate) fn pbft_sync_admission_transaction_request(
+        &self,
+    ) -> Option<PbftSyncAdmissionTransactionRequestIdentity> {
+        let manager = self.lock();
+        let (cursor, finalized_lookup_hashes) =
+            crate::pbft_sync::pbft_sync_admission_transaction_request(
+                manager.pbft_sync_admission_session.as_ref()?,
+            )?;
+        Some(PbftSyncAdmissionTransactionRequestIdentity {
+            generation: manager.pbft_sync_admission_generation,
+            cursor,
+            finalized_lookup_hashes,
+        })
+    }
+
+    /// Reports transaction results only to the exact session that requested them.
+    ///
+    /// Generation, cursor, check, and ordered finalized-lookup hashes are
+    /// revalidated before mutation. Stale completion returns `None` without
+    /// consuming or otherwise changing a replacement session or sync queue.
+    pub(crate) fn report_pbft_sync_admission_transactions_exact(
+        &self,
+        identity: PbftSyncAdmissionTransactionRequestIdentity,
+        report: crate::pbft_sync::PbftSyncAdmissionTransactionReport,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        let mut runtime = self.lock();
+        if runtime.pbft_sync_admission_generation != identity.generation {
+            return None;
+        }
+        let current = crate::pbft_sync::pbft_sync_admission_transaction_request(
+            runtime.pbft_sync_admission_session.as_ref()?,
+        )?;
+        if current != (identity.cursor, identity.finalized_lookup_hashes.clone()) {
+            return None;
+        }
+        let mut step = crate::pbft_sync::report_pbft_sync_admission_transactions(
+            runtime.pbft_sync_admission_session.as_mut()?,
+            identity.cursor,
+            report,
+        );
+        apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
+        clear_terminal_pbft_sync_admission(&mut runtime, &step);
+        Some(step)
+    }
+
+    /// Aborts only the exact sync transaction request that failed externally.
+    ///
+    /// Generation, cursor, check, and ordered lookup hashes are revalidated
+    /// before consuming the session. A stale failure returns `None` and leaves
+    /// the replacement session and queue untouched.
+    pub(crate) fn abort_pbft_sync_admission_transactions_exact(
+        &self,
+        identity: PbftSyncAdmissionTransactionRequestIdentity,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        let mut runtime = self.lock();
+        if runtime.pbft_sync_admission_generation != identity.generation {
+            return None;
+        }
+        let current = crate::pbft_sync::pbft_sync_admission_transaction_request(
+            runtime.pbft_sync_admission_session.as_ref()?,
+        )?;
+        if current != (identity.cursor, identity.finalized_lookup_hashes) {
+            return None;
+        }
+        let step = crate::pbft_sync::abort_pbft_sync_admission_session(
+            runtime.pbft_sync_admission_session.as_mut()?,
+        );
+        runtime.pbft_sync_admission_session = None;
+        Some(step)
+    }
+
     /// Returns the current synced-period admission step without advancing it.
     ///
     /// Terminal or failed steps consume the manager-owned session. `None`
@@ -1940,26 +2031,6 @@ impl PbftManagerService {
             check,
             final_chain_status,
             fact_status,
-        );
-        apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
-        clear_terminal_pbft_sync_admission(&mut runtime, &step);
-        Some(step)
-    }
-
-    /// Reports the transaction lookup result requested by the active cursor.
-    ///
-    /// The manager validates the expected transaction-check stage and consumes
-    /// every terminal or failed session before returning.
-    pub fn report_pbft_sync_admission_transactions(
-        &self,
-        cursor: u32,
-        report: crate::pbft_sync::PbftSyncAdmissionTransactionReport,
-    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
-        let mut runtime = self.lock();
-        let mut step = crate::pbft_sync::report_pbft_sync_admission_transactions(
-            runtime.pbft_sync_admission_session.as_mut()?,
-            cursor,
-            report,
         );
         apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
         clear_terminal_pbft_sync_admission(&mut runtime, &step);

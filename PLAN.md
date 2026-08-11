@@ -1265,10 +1265,11 @@ The current Rust consensus footprint is broad but still incomplete:
    facts and still performs waits, queue clears, peer reporting, live object dispatch, and temporary log emission, while
    Rust owns the deterministic accept/drop/wait/clear decision table. Logging is not a reason to leave the decision
    table in C++. Missing or finalized transaction facts remain warn-only for
-   compatibility and do not reject synced period data. Rust now also plans the sync-period transaction-finalization query:
-   C++ extracts live DAG and period-data transaction hashes, Rust de-duplicates DAG references, removes hashes already
-   supplied by period data, and returns the ordered finalized-storage lookup list before C++ performs the live
-   TransactionManager query. The PBFT sync runtime now has a staged Rust planner for the full `processPeriodData`
+   compatibility and do not reject synced period data. Rust now owns the sync-period transaction-finalization task:
+   it de-duplicates DAG references, removes hashes already supplied by period data, filters the resulting ordered lookup
+   set through the native transaction owner, reads only latest sender nonces from the narrow FinalChain boundary, verifies
+   canonical queue identities, and exact-reports warning and queue effects without a C++ manager relay. The PBFT sync
+   runtime now has a staged Rust planner for the full `processPeriodData`
    validation order: Rust returns the next required live C++ check for FinalChain, reward votes, cert votes,
    transactions, pillar data, or pillar votes until all required facts are present, then returns accept/drop/wait/report
    side-effect intent. This keeps sleeps, queue mutation, peer reporting, live vote/transaction managers, and

@@ -561,21 +561,6 @@ addr_t fromBridgeAddress(const std::array<uint8_t, 20> &address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
 }
 
-std::vector<TransactionManagerVerifyNotFinalizedInput> toVerifyNotFinalizedFacts(
-    const rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> &identities) {
-  std::vector<TransactionManagerVerifyNotFinalizedInput> facts;
-  facts.reserve(identities.size());
-  for (const auto &identity : identities) {
-    TransactionManagerVerifyNotFinalizedInput fact;
-    fact.input_index = identity.input_index;
-    fact.hash = identity.hash;
-    fact.transaction_nonce = identity.transaction_nonce;
-    fact.sender = identity.sender;
-    facts.push_back(fact);
-  }
-  return facts;
-}
-
 SharedTransactions materializeTransactionsFromQueuedRlps(const std::vector<bytes> &transaction_rlps,
                                                          const std::vector<trx_hash_t> &expected_hashes) {
   if (transaction_rlps.size() != expected_hashes.size()) {
@@ -861,7 +846,7 @@ PbftManager::PoppedPeriodDataPayload PbftManager::popPeriodDataQueueWithMetadata
   payload.transaction_rlps = fromBridgeTransactionRlps(plan.transaction_rlps);
   payload.dag_transaction_hashes = fromBridgeTransactionHashes(plan.dag_transaction_hashes);
   payload.period_data_transaction_hashes = fromBridgeTransactionHashes(plan.period_data_transaction_hashes);
-  payload.period_data_transaction_identities = toVerifyNotFinalizedFacts(plan.period_data_transaction_identities);
+  payload.period_data_transaction_identities = std::move(plan.period_data_transaction_identities);
   payload.previous_cert_votes_present = plan.previous_cert_votes_present;
   payload.previous_cert_first_vote_has_weight = plan.previous_cert_first_vote_has_weight;
   payload.pillar_votes_present = plan.pillar_votes_present;
@@ -3634,19 +3619,9 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         continue;
       }
       if (session_step.next_check == kPbftSyncRuntimeCheckTransactions) {
-        auto missing_transactions = trx_mgr_->excludeFinalizedTransactions(
-            fromBridgeTransactionHashes(session_step.plan.transaction_query_plan.finalized_lookup_hashes));
-        const auto finalized_outcome =
-            trx_mgr_->verifyTransactionsNotFinalizedDetailed(std::move(period_data_transaction_identities));
-        rustaxa::PbftSyncAdmissionTransactionReport report{};
-        report.cursor = session_step.cursor;
-        report.missing_transaction_hashes = toBridgeTransactionHashes(missing_transactions);
-        report.contains_finalized_transactions = finalized_outcome.is_finalized;
-        if (finalized_outcome.is_finalized) {
-          report.finalized_transaction_hashes.push_back(rustaxa::PbftSyncTransactionHash{finalized_outcome.hash});
-        }
-        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_transactions(pbft_service_->service(),
-                                                                                             std::move(report));
+        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_validate_transactions(
+            pbft_service_->service(), dag_transaction_service_->service(), final_chain_->rustFinalChain(),
+            std::move(period_data_transaction_identities));
         continue;
       }
       if (session_step.next_check == kPbftSyncRuntimeCheckPillarVotes) {

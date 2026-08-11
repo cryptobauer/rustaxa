@@ -1869,6 +1869,23 @@ pub fn next_pbft_sync_admission_session(
     sync_admission_step(session)
 }
 
+/// Returns the exact finalized-lookup request pending on an admission cursor.
+///
+/// The pair is `(cursor, finalized_lookup_hashes)`. Hash order is part of the
+/// request identity because native transaction filtering preserves caller
+/// positions. Non-transaction stages and terminal sessions return `None`;
+/// callers must revalidate the complete pair before reporting unlocked work.
+pub(crate) fn pbft_sync_admission_transaction_request(
+    session: &PbftSyncAdmissionSession,
+) -> Option<(u32, Vec<H256>)> {
+    let step = sync_admission_step(session);
+    (step.has_check && step.next_check == PbftSyncProcessRuntimeNextCheck::CheckTransactions)
+        .then_some((
+            step.cursor,
+            step.plan.transaction_query.finalized_lookup_hashes,
+        ))
+}
+
 /// Returns the exact pillar-vote request currently pending on an admission cursor.
 ///
 /// The pair is `(cursor, required_votes_period)`. Non-pillar stages and

@@ -570,6 +570,14 @@ The one-use `PillarChainManager::validatePbftBlockPillarVotesWithRust` facade, i
 standalone pillar bundle CXX export, and its result carrier are deleted. C++ retains only canonical vote bytes at the
 period-data materialization boundary.
 
+PBFT sync transaction admission now follows the same composed-root pattern. Rust captures the exact manager generation,
+cursor, and ordered missing-hash request, then uses the private DAG/transaction root and narrow FinalChain account reads
+outside the manager lock before exact-reporting missing/finalized warnings and queue effects. The C++ lookup/report loop,
+one-use detailed TransactionManager facade and shim identity DTO, transaction report export/carrier, and query-plan
+carrier are deleted. Operational failures also terminate only their captured generation, preventing the generic C++
+abort path from consuming a replacement session. C++ retains only the canonical queue identities needed at the
+temporary period-data boundary.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT

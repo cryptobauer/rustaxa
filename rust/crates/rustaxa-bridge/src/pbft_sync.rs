@@ -5,18 +5,18 @@
 //! facts, runs the deterministic planner, and returns u8-coded side-effect
 //! intent flags for the PBFT manager overlay to apply.
 
+use crate::dag_transaction_service::BridgeDagTransactionService;
 use crate::ffi::rustaxa_ffi::{
     PbftCertVoteRlp as FfiPbftCertVoteRlp,
     PbftSyncAdmissionInitialFact as FfiPbftSyncAdmissionInitialFact,
     PbftSyncAdmissionSessionStep as FfiPbftSyncAdmissionSessionStep,
     PbftSyncAdmissionStatusReport as FfiPbftSyncAdmissionStatusReport,
-    PbftSyncAdmissionTransactionReport as FfiPbftSyncAdmissionTransactionReport,
     PbftSyncCertBundleCommand as FfiPbftSyncCertBundleCommand,
     PbftSyncCertBundleStep as FfiPbftSyncCertBundleStep,
     PbftSyncProcessPeriodDataRuntimePlan as FfiPbftSyncProcessPeriodDataRuntimePlan,
-    PbftSyncTransactionHash as FfiPbftSyncTransactionHash,
-    PbftSyncTransactionQueryPlan as FfiPbftSyncTransactionQueryPlan,
-    PbftSyncTransactionWarning as FfiPbftSyncTransactionWarning, PillarVoteRlpPayload,
+    PbftSyncTransactionWarning as FfiPbftSyncTransactionWarning,
+    PeriodDataQueueTransactionIdentity as FfiPeriodDataQueueTransactionIdentity,
+    PillarVoteRlpPayload,
 };
 use crate::ffi::{BridgeFinalChain, BridgePbftService};
 use crate::verified_votes::{
@@ -26,9 +26,9 @@ use anyhow::Result;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_service::PbftSyncCertBundleStep as DomainPbftSyncCertBundleStep;
 use rustaxa_consensus::pbft_sync::{
-    PbftSyncAdmissionInitialFact, PbftSyncAdmissionSessionStep, PbftSyncAdmissionTransactionReport,
-    PbftSyncFactStatus, PbftSyncProcessPeriodDataRuntimePlan, PbftSyncProcessRuntimeNextCheck,
-    PbftSyncRuntimeFinalChainHashStatus, PbftSyncTransactionQueryPlan, PbftSyncTransactionWarning,
+    PbftSyncAdmissionInitialFact, PbftSyncAdmissionSessionStep, PbftSyncFactStatus,
+    PbftSyncProcessPeriodDataRuntimePlan, PbftSyncProcessRuntimeNextCheck,
+    PbftSyncRuntimeFinalChainHashStatus, PbftSyncTransactionWarning,
 };
 
 /// Starts a manager-owned synced-period admission cursor.
@@ -97,16 +97,36 @@ pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
         .unwrap_or_else(sync_admission_not_started_step)
 }
 
-/// Reports the requested transaction-manager lookup result.
-pub fn pbft_manager_runtime_pbft_sync_admission_report_transactions(
+/// Executes and reports the exact native sync transaction-admission task.
+///
+/// Rust owns the requested missing-hash lookup, recent/durable finalized
+/// checks, FinalChain account-nonce enrichment, warning facts, and exact
+/// generation/cursor report. C++ supplies only the queue-retained canonical
+/// transaction identities and the narrow native service handles. Native
+/// storage or FinalChain failures terminate only the exact captured admission;
+/// a stale completion returns the not-started step without mutating its
+/// replacement.
+pub fn pbft_manager_runtime_pbft_sync_admission_validate_transactions(
     runtime: &BridgePbftService,
-    report: FfiPbftSyncAdmissionTransactionReport,
+    dag_transaction_service: &BridgeDagTransactionService,
+    final_chain: &BridgeFinalChain,
+    identities: Vec<FfiPeriodDataQueueTransactionIdentity>,
 ) -> FfiPbftSyncAdmissionSessionStep {
-    runtime
-        .0
-        .report_pbft_sync_admission_transactions(
-            report.cursor,
-            pbft_sync_admission_transaction_report_from_ffi(report),
+    dag_transaction_service
+        .validate_pbft_sync_admission_transactions(
+            runtime,
+            final_chain,
+            identities
+                .into_iter()
+                .map(|identity| {
+                    rustaxa_consensus::period_data_queue::PeriodDataQueueTransactionIdentity {
+                        input_index: identity.input_index,
+                        hash: H256::from(identity.hash),
+                        transaction_nonce: identity.transaction_nonce,
+                        sender: identity.sender,
+                    }
+                })
+                .collect(),
         )
         .map(Into::into)
         .unwrap_or_else(sync_admission_not_started_step)
@@ -173,18 +193,6 @@ pub fn pbft_service_pbft_sync_cert_bundle_session(
     }
 }
 
-impl From<PbftSyncTransactionQueryPlan> for FfiPbftSyncTransactionQueryPlan {
-    fn from(plan: PbftSyncTransactionQueryPlan) -> Self {
-        Self {
-            finalized_lookup_hashes: plan
-                .finalized_lookup_hashes
-                .into_iter()
-                .map(|hash| FfiPbftSyncTransactionHash { hash: hash.into() })
-                .collect(),
-        }
-    }
-}
-
 impl From<PbftSyncProcessPeriodDataRuntimePlan> for FfiPbftSyncProcessPeriodDataRuntimePlan {
     fn from(plan: PbftSyncProcessPeriodDataRuntimePlan) -> Self {
         Self {
@@ -197,7 +205,6 @@ impl From<PbftSyncProcessPeriodDataRuntimePlan> for FfiPbftSyncProcessPeriodData
             accept_period_data: plan.accept_period_data,
             retry_same_candidate: plan.retry_same_candidate,
             replace_previous_block_cert_votes: plan.replace_previous_block_cert_votes,
-            transaction_query_plan: plan.transaction_query.into(),
             warnings: plan
                 .warnings
                 .into_iter()
@@ -252,24 +259,6 @@ impl From<PbftSyncAdmissionSessionStep> for FfiPbftSyncAdmissionSessionStep {
     }
 }
 
-fn pbft_sync_admission_transaction_report_from_ffi(
-    report: FfiPbftSyncAdmissionTransactionReport,
-) -> PbftSyncAdmissionTransactionReport {
-    PbftSyncAdmissionTransactionReport {
-        missing_transaction_hashes: report
-            .missing_transaction_hashes
-            .into_iter()
-            .map(|hash| H256::from(hash.hash))
-            .collect(),
-        finalized_transaction_hashes: report
-            .finalized_transaction_hashes
-            .into_iter()
-            .map(|hash| H256::from(hash.hash))
-            .collect(),
-        contains_finalized_transactions: report.contains_finalized_transactions,
-    }
-}
-
 fn sync_admission_not_started_step() -> FfiPbftSyncAdmissionSessionStep {
     FfiPbftSyncAdmissionSessionStep {
         status: 4,
@@ -286,9 +275,6 @@ fn sync_admission_not_started_step() -> FfiPbftSyncAdmissionSessionStep {
             accept_period_data: false,
             retry_same_candidate: false,
             replace_previous_block_cert_votes: false,
-            transaction_query_plan: FfiPbftSyncTransactionQueryPlan {
-                finalized_lookup_hashes: Vec::new(),
-            },
             warnings: Vec::new(),
             contains_finalized_transaction_warning: false,
         },
@@ -337,6 +323,7 @@ impl From<PbftSyncTransactionWarning> for FfiPbftSyncTransactionWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::rustaxa_ffi::PbftSyncTransactionHash as FfiPbftSyncTransactionHash;
     use rustaxa_consensus::pbft_service::PbftSyncCertBundleAction as DomainPbftSyncCertBundleAction;
     use rustaxa_consensus::pbft_sync::PbftSyncCertVoteBundleStatus as DomainPbftSyncCertVoteBundleStatus;
 
@@ -403,26 +390,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_projects_native_sync_admission_transaction_report_projection() {
-        let domain = pbft_sync_admission_transaction_report_from_ffi(
-            FfiPbftSyncAdmissionTransactionReport {
-                cursor: 7,
-                missing_transaction_hashes: vec![FfiPbftSyncTransactionHash { hash: [6; 32] }],
-                finalized_transaction_hashes: vec![FfiPbftSyncTransactionHash { hash: [7; 32] }],
-                contains_finalized_transactions: true,
-            },
-        );
-        assert_eq!(
-            domain,
-            PbftSyncAdmissionTransactionReport {
-                missing_transaction_hashes: vec![H256::from([6; 32])],
-                finalized_transaction_hashes: vec![H256::from([7; 32])],
-                contains_finalized_transactions: true,
-            }
-        );
-    }
-
-    #[test]
     fn bridge_projects_native_sync_admission_not_started_step_projection() {
         let step = sync_admission_not_started_step();
         assert_eq!(step.status, 4);
@@ -442,11 +409,6 @@ mod tests {
         assert!(!step.plan.retry_same_candidate);
         assert!(!step.plan.replace_previous_block_cert_votes);
         assert!(!step.plan.contains_finalized_transaction_warning);
-        assert!(step
-            .plan
-            .transaction_query_plan
-            .finalized_lookup_hashes
-            .is_empty());
         assert!(step.plan.warnings.is_empty());
     }
 }
