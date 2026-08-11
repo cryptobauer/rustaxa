@@ -2002,19 +2002,6 @@ pub mod rustaxa_ffi {
         votes: Vec<PillarVoteRecord>,
     }
 
-    /// Complete result of inspecting, weighting, and applying one synced bundle.
-    struct PillarVoteBundleWithFinalChainPlan {
-        prepare_status: u8,
-        missing_threshold: bool,
-        status: u8,
-        block_weight: u64,
-        selected_weight: u64,
-        first_bad_vote_hash: [u8; 32],
-        insert_failed: bool,
-        insert_failed_vote_hash: [u8; 32],
-        applied_votes: u64,
-    }
-
     /// Compatibility lookup for the externally visible pillar threshold API.
     struct PillarConsensusThresholdLookup {
         available: bool,
@@ -3923,6 +3910,11 @@ pub mod rustaxa_ffi {
             runtime: &BridgePbftService,
             report: PbftSyncAdmissionStatusReport,
         ) -> PbftSyncAdmissionSessionStep;
+        pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
+            runtime: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            vote_rlps: Vec<PillarVoteRlpPayload>,
+        ) -> PbftSyncAdmissionSessionStep;
         pub fn pbft_manager_runtime_pbft_sync_admission_report_transactions(
             runtime: &BridgePbftService,
             report: PbftSyncAdmissionTransactionReport,
@@ -4519,12 +4511,6 @@ pub mod rustaxa_ffi {
             vote_rlp: Vec<u8>,
             context: PillarVoteSingleAdmissionContext,
         ) -> Result<PillarVoteRelevancePlan>;
-        pub fn pbft_service_pillar_apply_rlp_bundle_with_final_chain(
-            self: &BridgePbftService,
-            final_chain: &BridgeFinalChain,
-            vote_rlps: Vec<PillarVoteRlpPayload>,
-            required_votes_period: u64,
-        ) -> Result<PillarVoteBundleWithFinalChainPlan>;
         pub fn pbft_service_pillar_get_verified_vote_payloads(
             self: &BridgePbftService,
             period: u64,

@@ -425,6 +425,8 @@ pub struct PbftManagerRuntimeState {
     pub(crate) pbft_sync_queue_drain_session: crate::pbft_sync::PbftSyncQueueDrainSession,
     /// Optional admission cursor for the PBFT sync item currently being checked.
     pub pbft_sync_admission_session: Option<crate::pbft_sync::PbftSyncAdmissionSession>,
+    /// Monotonic identity for the currently published PBFT sync admission cursor.
+    pub(crate) pbft_sync_admission_generation: u64,
     /// Optional cursor for applying one manager state-action effect sequence.
     pub(crate) state_action_effect_session: Option<PbftManagerStateActionEffectSession>,
     /// Optional daemon-tick planning cursor.
@@ -463,6 +465,17 @@ pub struct PbftManagerService {
 /// and mutable field access through `Deref`/`DerefMut`, and releases the native
 /// manager serialization domain when dropped.
 pub struct PbftManagerGuard<'a>(MutexGuard<'a, PbftManagerRuntimeState>);
+
+/// Exact identity of one pending native sync pillar-vote validation request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PbftSyncAdmissionPillarRequestIdentity {
+    /// Manager-owned admission generation captured with the pending request.
+    pub generation: u64,
+    /// Exact session cursor requesting pillar-vote validation.
+    pub cursor: u32,
+    /// PBFT block period whose pillar votes must be admitted.
+    pub required_votes_period: u64,
+}
 
 impl Deref for PbftManagerGuard<'_> {
     type Target = PbftManagerRuntimeState;
@@ -1778,6 +1791,7 @@ impl PbftManagerService {
                 pbft_sync_queue_drain_session:
                     crate::pbft_sync::create_pbft_sync_queue_drain_session(),
                 pbft_sync_admission_session: None,
+                pbft_sync_admission_generation: 0,
                 state_action_effect_session: None,
                 runtime_session: None,
                 proposal_session: None,
@@ -1835,8 +1849,60 @@ impl PbftManagerService {
     /// cursor. Subsequent checks and reports must enter through the task
     /// methods below; callers never receive mutable session state.
     pub fn begin_pbft_sync_admission(&self, fact: crate::pbft_sync::PbftSyncAdmissionInitialFact) {
-        self.lock().pbft_sync_admission_session =
+        let mut manager = self.lock();
+        manager.pbft_sync_admission_generation = manager
+            .pbft_sync_admission_generation
+            .checked_add(1)
+            .expect("PBFT sync admission generation exhausted");
+        manager.pbft_sync_admission_session =
             Some(crate::pbft_sync::create_pbft_sync_admission_session(fact));
+    }
+
+    /// Captures one exact pending sync pillar-vote request under the manager lock.
+    pub(crate) fn pbft_sync_admission_pillar_request(
+        &self,
+    ) -> Option<PbftSyncAdmissionPillarRequestIdentity> {
+        let manager = self.lock();
+        let (cursor, required_votes_period) = crate::pbft_sync::pbft_sync_admission_pillar_request(
+            manager.pbft_sync_admission_session.as_ref()?,
+        )?;
+        Some(PbftSyncAdmissionPillarRequestIdentity {
+            generation: manager.pbft_sync_admission_generation,
+            cursor,
+            required_votes_period,
+        })
+    }
+
+    /// Reports a pillar-vote result only to the exact session that requested it.
+    ///
+    /// Generation, cursor, check, and required period are revalidated before
+    /// mutation. Any stale replacement returns `None` and leaves the new
+    /// admission cursor untouched.
+    pub(crate) fn report_pbft_sync_admission_pillar_status_exact(
+        &self,
+        identity: PbftSyncAdmissionPillarRequestIdentity,
+        status: crate::pbft_sync::PbftSyncFactStatus,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        let mut runtime = self.lock();
+        if runtime.pbft_sync_admission_generation != identity.generation {
+            return None;
+        }
+        let current = crate::pbft_sync::pbft_sync_admission_pillar_request(
+            runtime.pbft_sync_admission_session.as_ref()?,
+        )?;
+        if current != (identity.cursor, identity.required_votes_period) {
+            return None;
+        }
+        let mut step = crate::pbft_sync::report_pbft_sync_admission_status(
+            runtime.pbft_sync_admission_session.as_mut()?,
+            identity.cursor,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidatePillarVotes,
+            crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::NotChecked,
+            status,
+        );
+        apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
+        clear_terminal_pbft_sync_admission(&mut runtime, &step);
+        Some(step)
     }
 
     /// Returns the current synced-period admission step without advancing it.

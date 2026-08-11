@@ -154,104 +154,6 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
  */
 const char* pillarVoteValidationPlanStatusString(PillarVoteValidationPlanStatus status);
 
-/**
- * Rust-mode deterministic status for one synced pillar-vote bundle.
- *
- * Purpose:
- * - Mirrors stable Rust planner status codes at the pillar-chain shim boundary.
- *
- * Invariants:
- * - Values `0..9` intentionally match Rust bridge status codes.
- * - `kUnknown` is reserved for shim/bridge failures before Rust returns a
- *   deterministic status.
- */
-enum class ValidateSyncPillarVotesBundlePlanStatus : uint8_t {
-  kBundleValid = 0,
-  kBundleEmpty = 1,
-  kVotePeriodMismatch = 2,
-  kVoteBlockHashMismatch = 3,
-  kPrevalidationFailed = 4,
-  kZeroWeight = 5,
-  kVoterConflict = 6,
-  kThresholdNotReached = 7,
-  kWeightOverflow = 8,
-  kStaleAnchor = 9,
-  kUnknown = 255,
-};
-
-/**
- * Deterministic Rust bundle-apply result for synced pillar votes.
- *
- * Purpose:
- * - Carries Rust's validation status, aggregate weights, and insertion status
- *   after Rust applies selected votes to the Rust-backed `PillarVotes` index.
- *
- * Edge behavior:
- * - `valid` is true only when Rust returned `kBundleValid` and all selected
- *   votes were inserted or already present.
- * - `prepare_status` preserves current-anchor preparation failures before the
- *   external FinalChain fact lookup; apply is generation-bound in Rust.
- */
-struct ValidateSyncPillarVotesBundleDeterministicallyResult {
-  ValidateSyncPillarVotesBundlePlanStatus plan_status{ValidateSyncPillarVotesBundlePlanStatus::kUnknown};
-  uint8_t prepare_status{255};
-  vote_hash_t first_bad_vote_hash{};
-  uint64_t block_weight{0};
-  uint64_t selected_weight{0};
-  bool insert_failed{false};
-  vote_hash_t insert_failed_vote_hash{};
-  bool missing_threshold{false};
-  bool valid{false};
-};
-
-/**
- * PBFT sync pillar-vote validation result status.
- *
- * Purpose:
- * - Makes Rust-mode synced pillar-vote failures observable while keeping PBFT
- *   manager on a typed pillar-chain port instead of PBFT-local helper logic.
- *
- * Invariants:
- * - `kValid` is the only accepting status.
- * - `kPlanRejected` means Rust returned a deterministic rejection status.
- * - `kBridgeError` means the shim could not obtain a deterministic Rust plan.
- */
-enum class ValidatePbftBlockPillarVotesWithRustStatus : uint8_t {
-  kUnknown = 0,
-  kValid,
-  kMissingPillarChainManager,
-  kMissingPbftBlock,
-  kMissingPillarVotes,
-  kMissingCurrentPillarBlock,
-  kPillarBlockPeriodMismatch,
-  kMissingThreshold,
-  kBridgeError,
-  kPlanRejected,
-  kAcceptedVoteMissing,
-  kInsertFailed,
-  kStaleAnchor,
-};
-
-/**
- * Explicit result for the Rust-mode PBFT synced pillar-vote path.
- *
- * Inputs/outputs:
- * - `status` describes the pillar-chain shim-level decision.
- * - `plan_status` preserves Rust's stable planner code for deterministic
- *   bundle rejections.
- * - `block_weight` and `selected_weight` are Rust-planned aggregate weights
- *   populated for accepted plans.
- */
-struct ValidatePbftBlockPillarVotesWithRustResult {
-  ValidatePbftBlockPillarVotesWithRustStatus status{ValidatePbftBlockPillarVotesWithRustStatus::kUnknown};
-  uint8_t plan_status{0};
-  vote_hash_t first_bad_vote_hash{};
-  uint64_t block_weight{0};
-  uint64_t selected_weight{0};
-
-  [[nodiscard]] bool valid() const { return status == ValidatePbftBlockPillarVotesWithRustStatus::kValid; }
-};
-
 /** @addtogroup PILLAR_CHAIN
  * @{
  */
@@ -393,27 +295,6 @@ class PillarChainManager {
    * - The non-zero validator vote count when inserted; otherwise 0.
    */
   uint64_t addVerifiedPillarVote(const std::shared_ptr<PillarVote>& vote);
-
-  /**
-   * Validates synced PBFT pillar-vote payloads through the Rust planner.
-   *
-   * Purpose:
-   * - Owns the Rust-mode pillar-vote bundle validation boundary for PBFT sync
-   *   so PBFT manager does not inspect live `PillarVote` sidecars for protocol
-   *   decisions.
-   *
-   * Inputs/outputs:
-   * - `required_votes_period` is the PBFT block period whose pillar votes are
-   *   being admitted.
-   * - `pillar_vote_rlps` are canonical vote payloads inspected by Rust.
-   *
-   * Invariants:
-   * - Current pillar-block anchor, threshold lookup, Rust bundle planning, and
-   *   verified-vote insertion are all owned by Rust-mode PillarVotes APIs.
-   * - The method must not recover voters through legacy C++ vote APIs.
-   */
-  ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
-      PbftPeriod required_votes_period, const std::vector<bytes>& pillar_vote_rlps);
 
   /**
    * Typed PBFT finalization preflight result for pillar-block finalization.

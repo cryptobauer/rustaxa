@@ -1127,7 +1127,7 @@ The current Rust consensus footprint is broad but still incomplete:
    drains every DAG-order request, gas-clipping decision, and re-anchor/recompute loop inside the composed native PBFT
    and DAG roots. C++ receives only the terminal build/skip command and retains proposal signing/materialization; the
    DAG-order report carriers and two-step C++ executor protocol are deleted. The next removal target is to replace
-   remaining transaction and pillar-vote decision glue with shared Rust
+   remaining transaction decision glue with shared Rust
    executor intents that consume existing Rust FinalChain bundles. After the shared planner owns deeper sync acceptance,
    `identifyLeaderBlock`,
    `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and `secondFinish_` should collapse further into

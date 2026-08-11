@@ -26,13 +26,6 @@ static constexpr uint8_t kPillarFinalizationCurrentBlockHashMismatch = 2;
 static constexpr uint8_t kPillarFinalizationMissingVotes = 3;
 static constexpr uint8_t kPillarFinalizationAlreadyFinalized = 4;
 
-enum class WeightedBundlePrepareStatus : uint8_t {
-  kEmpty = 1,
-  kMissingCurrentAnchor = 2,
-  kCurrentPeriodMismatch = 3,
-  kInspectionFailure = 4,
-};
-
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
@@ -146,37 +139,6 @@ PillarVoteValidationPlanStatus toPillarVoteValidationStatus(uint8_t status) {
     default:
       return PillarVoteValidationPlanStatus::kUnknown;
   }
-}
-
-ValidateSyncPillarVotesBundlePlanStatus toSyncPillarVotesBundlePlanStatus(uint8_t status) {
-  switch (status) {
-    case 0:
-      return ValidateSyncPillarVotesBundlePlanStatus::kBundleValid;
-    case 1:
-      return ValidateSyncPillarVotesBundlePlanStatus::kBundleEmpty;
-    case 2:
-      return ValidateSyncPillarVotesBundlePlanStatus::kVotePeriodMismatch;
-    case 3:
-      return ValidateSyncPillarVotesBundlePlanStatus::kVoteBlockHashMismatch;
-    case 4:
-      return ValidateSyncPillarVotesBundlePlanStatus::kPrevalidationFailed;
-    case 5:
-      return ValidateSyncPillarVotesBundlePlanStatus::kZeroWeight;
-    case 6:
-      return ValidateSyncPillarVotesBundlePlanStatus::kVoterConflict;
-    case 7:
-      return ValidateSyncPillarVotesBundlePlanStatus::kThresholdNotReached;
-    case 8:
-      return ValidateSyncPillarVotesBundlePlanStatus::kWeightOverflow;
-    case 9:
-      return ValidateSyncPillarVotesBundlePlanStatus::kStaleAnchor;
-    default:
-      return ValidateSyncPillarVotesBundlePlanStatus::kUnknown;
-  }
-}
-
-uint8_t toSyncPillarVotesBundlePlanStatusCode(ValidateSyncPillarVotesBundlePlanStatus status) {
-  return static_cast<uint8_t>(status);
 }
 
 std::vector<PillarBlock::ValidatorVoteCountChange> fromBridgeVoteCountChanges(
@@ -345,47 +307,6 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
   const auto status = toPillarVoteValidationStatus(prepared.status);
   return {status, status == PillarVoteValidationPlanStatus::kValid, prepared.period, fromBridgeHash(prepared.vote_hash),
           fromBridgeAddress(prepared.voter)};
-}
-
-ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBundleDeterministically(
-    const std::vector<bytes>& pillar_vote_rlps, PbftPeriod required_votes_period,
-    const rustaxa::BridgeFinalChain& final_chain, const rustaxa::BridgePbftService& service) {
-  ValidateSyncPillarVotesBundleDeterministicallyResult result;
-  if (required_votes_period == 0) {
-    return result;
-  }
-
-  rust::Vec<rustaxa::PillarVoteRlpPayload> rlp_payloads;
-  rlp_payloads.reserve(pillar_vote_rlps.size());
-  for (const auto& vote_rlp : pillar_vote_rlps) {
-    rustaxa::PillarVoteRlpPayload payload;
-    payload.vote_rlp = toRustBytes(vote_rlp);
-    rlp_payloads.push_back(std::move(payload));
-  }
-
-  try {
-    const auto plan = service.pbft_service_pillar_apply_rlp_bundle_with_final_chain(
-        final_chain, std::move(rlp_payloads), required_votes_period);
-
-    const auto plan_status = toSyncPillarVotesBundlePlanStatus(plan.status);
-    result.prepare_status = plan.prepare_status;
-    result.missing_threshold = plan.missing_threshold;
-    result.plan_status = plan_status;
-    result.first_bad_vote_hash = fromBridgeHash(plan.first_bad_vote_hash);
-    result.block_weight = plan.block_weight;
-    result.selected_weight = plan.selected_weight;
-    result.insert_failed = plan.insert_failed;
-    result.insert_failed_vote_hash = fromBridgeHash(plan.insert_failed_vote_hash);
-
-    if (plan_status != ValidateSyncPillarVotesBundlePlanStatus::kBundleValid) {
-      return result;
-    }
-
-    result.valid = !plan.insert_failed;
-    return result;
-  } catch (const std::exception&) {
-    return result;
-  }
 }
 
 PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> /*db*/,
@@ -809,40 +730,6 @@ PillarChainManager::PillarVoteAdmissionReport PillarChainManager::admitPillarVot
 
 uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarVote>& vote) {
   return admitPillarVote(vote).validator_vote_count;
-}
-
-ValidatePbftBlockPillarVotesWithRustResult PillarChainManager::validatePbftBlockPillarVotesWithRust(
-    PbftPeriod required_votes_period, const std::vector<bytes>& pillar_vote_rlps) {
-  if (pillar_vote_rlps.empty()) {
-    return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarVotes, 0, {}, 0, 0};
-  }
-
-  const auto sync_plan = validateSyncPillarVotesBundleDeterministically(
-      pillar_vote_rlps, required_votes_period, final_chain_->rustFinalChain(), pbft_service_->service());
-  if (!sync_plan.valid) {
-    auto status = ValidatePbftBlockPillarVotesWithRustStatus::kPlanRejected;
-    if (sync_plan.prepare_status == static_cast<uint8_t>(WeightedBundlePrepareStatus::kMissingCurrentAnchor)) {
-      status = ValidatePbftBlockPillarVotesWithRustStatus::kMissingCurrentPillarBlock;
-    } else if (sync_plan.prepare_status == static_cast<uint8_t>(WeightedBundlePrepareStatus::kCurrentPeriodMismatch)) {
-      status = ValidatePbftBlockPillarVotesWithRustStatus::kPillarBlockPeriodMismatch;
-    } else if (sync_plan.missing_threshold) {
-      status = ValidatePbftBlockPillarVotesWithRustStatus::kMissingThreshold;
-    } else if (sync_plan.insert_failed) {
-      status = ValidatePbftBlockPillarVotesWithRustStatus::kInsertFailed;
-    } else if (sync_plan.plan_status == ValidateSyncPillarVotesBundlePlanStatus::kStaleAnchor) {
-      status = ValidatePbftBlockPillarVotesWithRustStatus::kStaleAnchor;
-    } else if (sync_plan.plan_status == ValidateSyncPillarVotesBundlePlanStatus::kUnknown) {
-      status = ValidatePbftBlockPillarVotesWithRustStatus::kBridgeError;
-    }
-    const auto bad_vote_hash =
-        sync_plan.insert_failed ? sync_plan.insert_failed_vote_hash : sync_plan.first_bad_vote_hash;
-    return {status, toSyncPillarVotesBundlePlanStatusCode(sync_plan.plan_status), bad_vote_hash, sync_plan.block_weight,
-            sync_plan.selected_weight};
-  }
-
-  return {ValidatePbftBlockPillarVotesWithRustStatus::kValid,
-          toSyncPillarVotesBundlePlanStatusCode(sync_plan.plan_status), sync_plan.first_bad_vote_hash,
-          sync_plan.block_weight, sync_plan.selected_weight};
 }
 
 std::vector<std::shared_ptr<PillarVote>> PillarChainManager::getVerifiedPillarVotes(PbftPeriod period,

@@ -1869,6 +1869,19 @@ pub fn next_pbft_sync_admission_session(
     sync_admission_step(session)
 }
 
+/// Returns the exact pillar-vote request currently pending on an admission cursor.
+///
+/// The pair is `(cursor, required_votes_period)`. Non-pillar stages and
+/// terminal sessions return `None`; callers may use the pair only as a bounded
+/// identity and must revalidate it before reporting after external work.
+pub(crate) fn pbft_sync_admission_pillar_request(
+    session: &PbftSyncAdmissionSession,
+) -> Option<(u32, u64)> {
+    let step = sync_admission_step(session);
+    (step.has_check && step.next_check == PbftSyncProcessRuntimeNextCheck::ValidatePillarVotes)
+        .then_some((step.cursor, session.fact.block_period))
+}
+
 fn validate_sync_admission_report(
     session: &mut PbftSyncAdmissionSession,
     cursor: u32,

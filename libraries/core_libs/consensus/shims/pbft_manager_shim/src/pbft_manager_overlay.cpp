@@ -524,6 +524,17 @@ std::vector<bytes> fromBridgePillarVoteRlps(const rust::Vec<rustaxa::PillarVoteR
   return out;
 }
 
+rust::Vec<rustaxa::PillarVoteRlpPayload> toBridgePillarVoteRlps(const std::vector<bytes> &vote_rlps) {
+  rust::Vec<rustaxa::PillarVoteRlpPayload> payloads;
+  payloads.reserve(vote_rlps.size());
+  for (const auto &vote_rlp : vote_rlps) {
+    rustaxa::PillarVoteRlpPayload payload;
+    payload.vote_rlp = toBridgeBytes(vote_rlp);
+    payloads.push_back(std::move(payload));
+  }
+  return payloads;
+}
+
 std::vector<bytes> fromBridgeTransactionRlps(const rust::Vec<rustaxa::PeriodDataQueueTransactionPayload> &payloads) {
   std::vector<bytes> out;
   out.reserve(payloads.size());
@@ -3639,18 +3650,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         continue;
       }
       if (session_step.next_check == kPbftSyncRuntimeCheckPillarVotes) {
-        pillar_chain::ValidatePbftBlockPillarVotesWithRustResult validation;
-        if (!pillar_chain_mgr_) {
-          validation.status = pillar_chain::ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarChainManager;
-        } else {
-          validation = pillar_chain_mgr_->validatePbftBlockPillarVotesWithRust(block_period, pillar_vote_rlps);
-        }
-        rustaxa::PbftSyncAdmissionStatusReport report{};
-        report.cursor = session_step.cursor;
-        report.check = session_step.next_check;
-        report.status = validation.valid() ? kPbftSyncFactValid : kPbftSyncFactInvalid;
-        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(pbft_service_->service(),
-                                                                                       std::move(report));
+        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
+            pbft_service_->service(), final_chain_->rustFinalChain(), toBridgePillarVoteRlps(pillar_vote_rlps));
         continue;
       }
       rustaxa::abort_pbft_manager_runtime_pbft_sync_admission(pbft_service_->service());

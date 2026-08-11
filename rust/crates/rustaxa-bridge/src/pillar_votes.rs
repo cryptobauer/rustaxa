@@ -7,9 +7,8 @@
 use crate::ffi::rustaxa_ffi::{
     PillarBlockFinalizationAcknowledgeRequest, PillarBlockFinalizationAcknowledgeResult,
     PillarBlockFinalizationPrepareResult, PillarBlockFinalizationRequest,
-    PillarConsensusThresholdLookup, PillarVoteBundleWithFinalChainPlan, PillarVoteRecord,
-    PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteRlpPayload,
-    PillarVoteSingleAdmissionContext,
+    PillarConsensusThresholdLookup, PillarVoteRecord,
+    PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteSingleAdmissionContext,
     PillarVoteSingleAdmissionPreparePlan as FfiPillarVoteSingleAdmissionPreparePlan,
     PillarVoteSingleAdmissionWithFinalChainPlan, PillarVotesPayloadLookup,
 };
@@ -94,37 +93,6 @@ impl BridgePbftService {
         Ok(FfiPillarVoteRelevancePlan {
             status: result.status,
             is_relevant: result.is_relevant,
-        })
-    }
-
-    pub fn pbft_service_pillar_apply_rlp_bundle_with_final_chain(
-        &self,
-        final_chain: &BridgeFinalChain,
-        vote_rlps: Vec<PillarVoteRlpPayload>,
-        required_votes_period: u64,
-    ) -> Result<PillarVoteBundleWithFinalChainPlan> {
-        let result = self.0.apply_pillar_vote_bundle_with_final_chain(
-            &final_chain.0,
-            vote_rlps
-                .into_iter()
-                .map(
-                    |value| rustaxa_consensus::pillar_vote_service::PillarVoteRlpPayload {
-                        vote_rlp: value.vote_rlp,
-                    },
-                )
-                .collect(),
-            required_votes_period,
-        )?;
-        Ok(PillarVoteBundleWithFinalChainPlan {
-            prepare_status: result.prepare_status,
-            missing_threshold: result.missing_threshold,
-            status: result.status,
-            block_weight: result.block_weight,
-            selected_weight: result.selected_weight,
-            first_bad_vote_hash: result.first_bad_vote_hash,
-            insert_failed: result.insert_failed,
-            insert_failed_vote_hash: result.insert_failed_vote_hash,
-            applied_votes: result.applied_votes,
         })
     }
 

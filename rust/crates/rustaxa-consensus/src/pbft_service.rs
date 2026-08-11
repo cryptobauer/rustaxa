@@ -2597,6 +2597,44 @@ impl PbftService {
         )
     }
 
+    /// Validates and applies the exact pillar-vote bundle requested by PBFT sync.
+    ///
+    /// The pending generation, cursor, and required PBFT block period are
+    /// captured under the manager lock. Pillar inspection, FinalChain weight
+    /// queries, and generation-bound pillar apply then run without that lock.
+    /// Empty input, period zero, unavailable pillar state, deterministic bundle
+    /// rejection, insertion failure, and every infrastructure error map to the
+    /// legacy invalid fact. The result is reported only if the same admission
+    /// identity is still pending; a stale replacement returns `None` without
+    /// mutating the new cursor.
+    pub fn validate_pbft_sync_admission_pillar_votes(
+        &self,
+        final_chain: &FinalChain,
+        vote_rlps: Vec<PillarVoteRlpPayload>,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        if !self.is_ready() {
+            return None;
+        }
+        let identity = self.manager.pbft_sync_admission_pillar_request()?;
+        let valid = identity.required_votes_period != 0
+            && !vote_rlps.is_empty()
+            && self
+                .apply_pillar_vote_bundle_with_final_chain(
+                    final_chain,
+                    vote_rlps,
+                    identity.required_votes_period,
+                )
+                .is_ok_and(|plan| plan.status == 0 && !plan.insert_failed);
+        self.manager.report_pbft_sync_admission_pillar_status_exact(
+            identity,
+            if valid {
+                crate::pbft_sync::PbftSyncFactStatus::Valid
+            } else {
+                crate::pbft_sync::PbftSyncFactStatus::Invalid
+            },
+        )
+    }
+
     /// Reports the requested transaction lookup result to the native cursor.
     ///
     /// The manager owns cursor validation, state mutation, terminal cleanup,
@@ -4401,6 +4439,74 @@ mod tests {
             ghost_path,
             has_non_finalized_fallback: false,
             non_finalized_fallback_hash: H256::zero(),
+        }
+    }
+
+    fn sync_pillar_admission_fact(
+        block_period: u64,
+    ) -> crate::pbft_sync::PbftSyncAdmissionInitialFact {
+        crate::pbft_sync::PbftSyncAdmissionInitialFact {
+            block_period,
+            block_prev_hash: H256::repeat_byte(0xa1),
+            chain_last_hash: H256::repeat_byte(0xa1),
+            chain_last_period: block_period.saturating_sub(1),
+            block_in_chain: false,
+            dag_transaction_hashes: Vec::new(),
+            period_data_transaction_hashes: Vec::new(),
+            extra_data_required: true,
+            extra_data_present: true,
+            extra_data_pillar_block_hash_present: true,
+            pillar_votes_required: true,
+            pillar_votes_present: true,
+            previous_cert_votes_present: true,
+            previous_cert_first_vote_has_weight: false,
+        }
+    }
+
+    fn advance_sync_admission_to_pillar(
+        service: &PbftService,
+        block_period: u64,
+    ) -> crate::pbft_sync::PbftSyncAdmissionSessionStep {
+        assert!(service.begin_pbft_sync_admission(sync_pillar_admission_fact(block_period)));
+        let mut step = service.pbft_sync_admission_next().expect("sync admission");
+        loop {
+            if step.next_check
+                == crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidatePillarVotes
+            {
+                return step;
+            }
+            step = match step.next_check {
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash => {
+                    service
+                        .report_pbft_sync_admission_status(
+                            step.cursor,
+                            step.next_check,
+                            crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::Valid,
+                            crate::pbft_sync::PbftSyncFactStatus::Valid,
+                        )
+                        .expect("final chain report")
+                }
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
+                | crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateCertVotes => service
+                    .report_pbft_sync_admission_status(
+                        step.cursor,
+                        step.next_check,
+                        crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::NotChecked,
+                        crate::pbft_sync::PbftSyncFactStatus::Valid,
+                    )
+                    .expect("vote report"),
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckTransactions => service
+                    .report_pbft_sync_admission_transactions(
+                        step.cursor,
+                        crate::pbft_sync::PbftSyncAdmissionTransactionReport {
+                            missing_transaction_hashes: Vec::new(),
+                            finalized_transaction_hashes: Vec::new(),
+                            contains_finalized_transactions: false,
+                        },
+                    )
+                    .expect("transaction report"),
+                other => panic!("unexpected sync check {other:?}"),
+            };
         }
     }
 
@@ -7319,6 +7425,120 @@ mod tests {
         assert_eq!(bundle_plan.first_bad_vote_hash, bundle_hash);
         drop(bundle_service);
         let _ = fs::remove_dir_all(bundle_path);
+    }
+
+    #[test]
+    fn sync_admission_native_pillar_bundle_accepts_valid_votes() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_pillar_valid");
+        let secret = [0xb1; 32];
+        let voter = voter_from_secret(&secret);
+        let final_chain = final_chain_with_pillar_voters(storage.clone(), &[voter]);
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        service.complete_bootstrap();
+        service.complete_pillar_bootstrap()?;
+        let (anchor, anchor_rlp) = pillar_current_data(0);
+        service.apply_pillar_current_block_data_for_generation(anchor_rlp, 0)?;
+        let (vote, _) = signed_pillar_vote(secret, 1, anchor.hash());
+        let pending = advance_sync_admission_to_pillar(&service, 1);
+        assert_eq!(
+            pending.next_check,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidatePillarVotes
+        );
+
+        let accepted = service
+            .validate_pbft_sync_admission_pillar_votes(
+                &final_chain,
+                vec![PillarVoteRlpPayload {
+                    vote_rlp: vote.encode_rlp(),
+                }],
+            )
+            .expect("exact pillar report");
+        assert_eq!(
+            accepted.status,
+            crate::pbft_sync::PbftSyncAdmissionSessionStatus::Accepted
+        );
+        assert!(accepted.plan.accept_period_data);
+
+        drop(service);
+        drop(final_chain);
+        drop(storage);
+        fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sync_admission_native_pillar_bundle_maps_empty_and_unavailable_to_invalid() -> Result<()> {
+        for (name, complete_pillar) in [("empty", true), ("unavailable", false)] {
+            let (path, storage) = temp_storage(&format!("rustaxa_consensus_sync_pillar_{name}"));
+            let final_chain = final_chain_with_pillar_voters(storage.clone(), &[]);
+            let service = PbftService::restore(storage.clone(), config(1))?;
+            service.complete_bootstrap();
+            if complete_pillar {
+                service.complete_pillar_bootstrap()?;
+            }
+            advance_sync_admission_to_pillar(&service, 1);
+
+            let rejected = service
+                .validate_pbft_sync_admission_pillar_votes(
+                    &final_chain,
+                    if complete_pillar {
+                        Vec::new()
+                    } else {
+                        vec![PillarVoteRlpPayload {
+                            vote_rlp: vec![0xc0],
+                        }]
+                    },
+                )
+                .expect("invalid pillar report");
+            assert_eq!(
+                rejected.status,
+                crate::pbft_sync::PbftSyncAdmissionSessionStatus::FailedPeer
+            );
+            assert!(!rejected.plan.clear_sync_queue);
+            assert!(rejected.plan.report_malicious_peer);
+
+            drop(service);
+            drop(final_chain);
+            drop(storage);
+            fs::remove_dir_all(path)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_admission_native_pillar_stale_generation_preserves_replacement() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_pillar_stale");
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        service.complete_bootstrap();
+        advance_sync_admission_to_pillar(&service, 1);
+        let stale_identity = service
+            .manager
+            .pbft_sync_admission_pillar_request()
+            .expect("pillar request identity");
+
+        assert!(service.begin_pbft_sync_admission(sync_pillar_admission_fact(2)));
+        assert!(
+            service
+                .manager
+                .report_pbft_sync_admission_pillar_status_exact(
+                    stale_identity,
+                    crate::pbft_sync::PbftSyncFactStatus::Valid,
+                )
+                .is_none()
+        );
+        let replacement = service
+            .pbft_sync_admission_next()
+            .expect("replacement remains active");
+        assert_eq!(replacement.cursor, 0);
+        assert_eq!(
+            replacement.next_check,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash
+        );
+
+        drop(service);
+        drop(storage);
+        fs::remove_dir_all(path)?;
+        Ok(())
     }
 
     #[test]

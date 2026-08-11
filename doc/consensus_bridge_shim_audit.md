@@ -44,10 +44,10 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 21381 |
-| `shim_lines` | 15485 |
+| `bridge_lines` | 21364 |
+| `shim_lines` | 15254 |
 | `cxx_functions` | 367 |
-| `cxx_carriers` | 308 |
+| `cxx_carriers` | 307 |
 | `cxx_handles` | 18 |
 | `shim_directories` | 9 |
 | `granular_flags` | 0 |
@@ -130,7 +130,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/pbft_vote_generation.rs` | DTO adapters over native PBFT vote/FinalChain tasks plus the standalone signing entrypoint | Vote/PBFT shims | Internal bridge route | Signing becomes a leaf port; retained CXX carriers are removed with the vote/PBFT shim clients. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_progress.rs` | progress adapter | PBFT/vote shims | Internal bridge route | Fold into native PBFT service. |
 | `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | CXX conversion over native PBFT-root pillar tasks | pillar shim | Internal bridge route | Native `PbftService` owns current-anchor mutation/decisions, startup bootstrap, FinalChain-composed block planning, linkage, latest-finalized lookup, readiness, and access to private pillar state; retain only CXX conversion plus focused tag/status and FinalChain-handle sentinels. |
-| `rust/crates/rustaxa-bridge/src/pillar_votes.rs` | CXX conversion and FinalChain-handle unwrapping over native PBFT-root pillar-vote tasks | pillar/PBFT shims | Internal bridge route | Native `PbftService` owns admission, FinalChain composition, relevance, weighted bundles, payload/network lookup, finalization prepare/ack, and behavioral tests; retain only CXX conversion until the named C++ pillar/PBFT clients migrate. |
+| `rust/crates/rustaxa-bridge/src/pillar_votes.rs` | CXX conversion and FinalChain-handle unwrapping over native PBFT-root pillar-vote tasks | pillar/PBFT shims | Internal bridge route | Native `PbftService` owns admission, FinalChain composition, relevance, weighted bundles, direct PBFT-sync reporting, payload/network lookup, finalization prepare/ack, and behavioral tests; the standalone sync-bundle export/carrier are deleted, and remaining CXX conversion exists only for named C++ pillar clients. |
 | `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | PBFT operation adapters over root `PbftService` proposal tasks | PBFT manager shim | Internal bridge route | Native state, storage, restoration, lock ownership, snapshotting, and standalone behavior live in `rustaxa-consensus`; production calls cannot borrow or project the proposal sibling, and the C++ proposed-block facade, snapshot DTO, and temporary-candidate bridge are deleted. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi` | RPC, GraphQL, light plugin | External boundary | Keep a client-oriented read API; remove manager/storage construction elsewhere. |
 | `rust/crates/rustaxa-bridge/src/sortition.rs` | CXX configuration conversion for native `SortitionService` construction | DAG application bootstrap | Bootstrap adapter | Delete or inline the conversion when native application construction no longer accepts the legacy CXX configuration carrier. |

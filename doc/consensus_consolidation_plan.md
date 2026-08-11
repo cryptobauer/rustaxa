@@ -564,6 +564,12 @@ generation/period/anchor on report, and drains
 gas-clipping re-anchor loops to a terminal build or skip command. The C++ request/report loop and both proposal DAG fact
 carriers are deleted; C++ retains only wallet selection projection and signed PBFT block materialization.
 
+PBFT sync pillar-vote admission now captures an exact manager-owned admission generation/cursor/period, releases the
+manager lock for native pillar and FinalChain bundle application, and exact-reports the resulting fact plus queue effects.
+The one-use `PillarChainManager::validatePbftBlockPillarVotesWithRust` facade, its shim-local status/result families, the
+standalone pillar bundle CXX export, and its result carrier are deleted. C++ retains only canonical vote bytes at the
+period-data materialization boundary.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT

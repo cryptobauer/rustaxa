@@ -3672,11 +3672,11 @@ sleep, and dynamic-lambda persistence flows already consume the native runtime s
 its three callers remain together only in the untouched pure-C++ manager. This removes 24 more shim lines and lowers the
 exact shim budget to 15,779 without deleting the broadly shared runtime-snapshot export.
 
-The callerless whole-`PeriodData` `validatePbftBlockPillarVotes` facade is removed too. Native sync admission already
-retains canonical pillar-vote RLP, requests the live pillar validator only at its typed executor boundary, and owns report
-ordering and terminal rejection. The narrower `validatePbftBlockPillarVotesWithRust` executor remains live for that task;
-the legacy whole-object method and caller remain together only in pure-C++ mode. This removes 47 shim lines and lowers
-the exact shim budget to 15,732.
+The callerless whole-`PeriodData` `validatePbftBlockPillarVotes` facade was removed first. Native sync admission already
+retained canonical pillar-vote RLP and owned report ordering and terminal rejection, while the narrower
+`validatePbftBlockPillarVotesWithRust` executor temporarily remained as its typed boundary. The later composed native
+sync pillar-admission cut removed that executor too; the legacy whole-object method and caller remain together only in
+pure-C++ mode. The earlier cut removed 47 shim lines and lowered the then-current exact shim budget to 15,732.
 
 The Rust-mode DAG proposer drops its unread `getProposedBlocksCount` facade and compatibility counter. The native proposer
 session already owns the accepted add-report outcome, while C++ retains success/failure logging without mirroring an
@@ -3779,6 +3779,14 @@ build/skip command before the retained signing/materialization boundary. The req
 carriers, and one net CXX function are deleted, lowering bridge lines to 21,381, shim lines to 15,485, CXX functions to
 367, and carriers to 308. Native and bridge validation passes 1,228 tests; the rebuilt proposal/broadcast manager case
 passes through the new native order path.
+
+The next `CRW-12` cut composes PBFT sync pillar-vote admission directly inside the native PBFT/pillar root. Rust captures
+the exact admission generation, cursor, check, and required period, releases the manager lock for FinalChain-weighted
+bundle apply, maps legacy empty/unavailable/rejected/infrastructure outcomes to the admission fact, and exact-reports
+terminal queue effects without mutating a replacement session. The one-use C++ pillar validation facade and its local
+status/result types are deleted together with the standalone pillar-bundle CXX export and result carrier. Bridge lines
+fall to 21,364, shim lines to 15,254, and carriers to 307 while CXX functions remain 367. Native and bridge validation
+passes 1,231 tests and the focused PBFT manager target rebuilds successfully.
 
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and

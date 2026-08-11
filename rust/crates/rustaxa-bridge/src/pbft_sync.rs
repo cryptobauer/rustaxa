@@ -16,7 +16,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftSyncProcessPeriodDataRuntimePlan as FfiPbftSyncProcessPeriodDataRuntimePlan,
     PbftSyncTransactionHash as FfiPbftSyncTransactionHash,
     PbftSyncTransactionQueryPlan as FfiPbftSyncTransactionQueryPlan,
-    PbftSyncTransactionWarning as FfiPbftSyncTransactionWarning,
+    PbftSyncTransactionWarning as FfiPbftSyncTransactionWarning, PillarVoteRlpPayload,
 };
 use crate::ffi::{BridgeFinalChain, BridgePbftService};
 use crate::verified_votes::{
@@ -63,6 +63,35 @@ pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
             check,
             PbftSyncRuntimeFinalChainHashStatus::from_u8(report.status),
             PbftSyncFactStatus::from_u8(report.status),
+        )
+        .map(Into::into)
+        .unwrap_or_else(sync_admission_not_started_step)
+}
+
+/// Executes and reports the exact native sync pillar-vote admission task.
+///
+/// The PBFT root owns cursor identity, pillar readiness, FinalChain-weighted
+/// bundle application, deterministic validity, and terminal queue effects.
+/// Empty, unavailable, rejected, or infrastructure-failed bundles preserve the
+/// legacy invalid-fact result. A stale or missing cursor returns the existing
+/// not-started contract step without mutating a replacement.
+pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
+    runtime: &BridgePbftService,
+    final_chain: &BridgeFinalChain,
+    vote_rlps: Vec<PillarVoteRlpPayload>,
+) -> FfiPbftSyncAdmissionSessionStep {
+    runtime
+        .0
+        .validate_pbft_sync_admission_pillar_votes(
+            &final_chain.0,
+            vote_rlps
+                .into_iter()
+                .map(
+                    |value| rustaxa_consensus::pillar_vote_service::PillarVoteRlpPayload {
+                        vote_rlp: value.vote_rlp,
+                    },
+                )
+                .collect(),
         )
         .map(Into::into)
         .unwrap_or_else(sync_admission_not_started_step)
