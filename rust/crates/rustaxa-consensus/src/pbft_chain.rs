@@ -346,45 +346,6 @@ impl PbftChainService {
             .head())
     }
 
-    /// Projects legacy persisted-head fields without mutation.
-    pub fn project_legacy_json_head(
-        &self,
-        block_hash: H256,
-        increments_non_empty_size: bool,
-    ) -> Result<PbftChainHead> {
-        self.try_project_legacy_json_head(block_hash, increments_non_empty_size)
-    }
-
-    /// Projects legacy persisted-head fields without mutation.
-    ///
-    /// `lock` failures are surfaced as `PBFT_CHAIN_SERVICE_LOCK_POISONED` so
-    /// callers can fail closed without panicking across FFI boundaries.
-    pub fn try_project_legacy_json_head(
-        &self,
-        block_hash: H256,
-        increments_non_empty_size: bool,
-    ) -> Result<PbftChainHead> {
-        self.state
-            .read()
-            .map_err(|_| anyhow!("PBFT_CHAIN_SERVICE_LOCK_POISONED"))?
-            .state
-            .project_legacy_json_head(block_hash, increments_non_empty_size)
-    }
-
-    /// Projects legacy persisted-head JSON bytes without mutation.
-    ///
-    /// This helper centralizes the legacy-compatible serialization path and
-    /// returns lock poison as `PBFT_CHAIN_SERVICE_LOCK_POISONED`.
-    pub fn project_legacy_json_head_payload(
-        &self,
-        block_hash: H256,
-        increments_non_empty_size: bool,
-    ) -> Result<Vec<u8>> {
-        Ok(self
-            .finalization_snapshot(block_hash, Some(increments_non_empty_size))?
-            .1)
-    }
-
     /// Samples the chain head and optional legacy persisted-head projection under one read lock.
     ///
     /// `increments_non_empty_size` set to `Some` projects the candidate payload from the same
@@ -901,8 +862,6 @@ mod tests {
             PbftBlockValidation::Valid
         );
 
-        let projected = service.project_legacy_json_head(block_hash, true).unwrap();
-        assert_eq!(projected.size, 1);
         assert_eq!(service.head().size, 0);
         let updated = service.update(block_hash, hash(9)).unwrap();
         assert_eq!(updated.size, 1);

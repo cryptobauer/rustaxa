@@ -4007,7 +4007,8 @@ all 48 `rust_consensus_tests` pass. The C++ head-payload facade and standalone p
 surface falls by 32 bridge lines, 29 shim lines, and one CXX function to 21,178 bridge lines, 14,816 shim lines, and 361
 CXX functions; carriers remain 301, handles 18, shim directories 9, granular flags 0, partial factories 0,
 compatibility constructor calls 0, and non-test C++ consumers 38. `CRW-12` remains active because the bridge application
-roots and remaining manager-shaped executor facades are not yet retired.
+roots and remaining manager-shaped executor facades are not yet retired. Four test-only public Rust projection wrappers
+are also deleted; the chain-state projection rule is reachable only through the coherent finalization task.
 
 ### DAG
 

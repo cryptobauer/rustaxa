@@ -2264,22 +2264,6 @@ impl PbftService {
         self.chain().head()
     }
 
-    /// Projects the legacy JSON-facing PBFT head without mutation.
-    ///
-    /// `block_hash` becomes the projected last PBFT block and
-    /// `size` always advances by one, while `increments_non_empty_size`
-    /// controls whether `non_empty_size` advances. The result is derived from
-    /// one coherent chain snapshot; overflow is returned as an error and
-    /// neither live state nor storage is changed.
-    pub fn pbft_chain_project_legacy_json_head(
-        &self,
-        block_hash: H256,
-        increments_non_empty_size: bool,
-    ) -> Result<PbftChainHead> {
-        self.chain()
-            .project_legacy_json_head(block_hash, increments_non_empty_size)
-    }
-
     /// Applies one in-memory PBFT head transition and returns the new snapshot.
     ///
     /// `block_hash` is the next finalized PBFT block and `anchor_hash` is its
@@ -7520,18 +7504,6 @@ mod tests {
             PbftBlockValidation::Valid
         ));
 
-        assert_eq!(
-            service
-                .pbft_chain_project_legacy_json_head(H256::from([0x11; 32]), true)
-                .unwrap(),
-            PbftChainHead {
-                head_hash: H256::zero(),
-                size: 1,
-                non_empty_size: 1,
-                last_pbft_block_hash: H256::from([0x11; 32]),
-                last_non_null_pbft_dag_anchor_hash: H256::zero(),
-            }
-        );
         assert!(
             !service
                 .pbft_chain_block_exists(H256::from_low_u64_be(7))
@@ -7639,8 +7611,9 @@ mod tests {
 
         let expected_payload = service
             .chain()
-            .project_legacy_json_head_payload(block_hash, true)
-            .unwrap();
+            .finalization_snapshot(block_hash, Some(true))
+            .unwrap()
+            .1;
         assert_eq!(
             plan.storage_write_intent.pbft_head_payload,
             expected_payload

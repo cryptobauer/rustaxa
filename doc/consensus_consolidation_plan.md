@@ -608,7 +608,9 @@ PBFT finalization intent planning now derives its chain linkage and exact persis
 the bridge converts that carrier and delegates fallibly. The Rust owner samples one chain snapshot, preserves the
 already-in-chain previous-period rule, emits the canonical styled legacy head payload for fresh finalization, and maps
 chain-lock poison without a bridge panic. The C++ `PbftChain::getJsonStrForBlock` facade, standalone chain projection
-export, bridge JSON builder, four caller-synthesized chain fields, and their compatibility tests are deleted.
+export, bridge JSON builder, four caller-synthesized chain fields, and their compatibility tests are deleted. The four
+now-test-only Rust service projection wrappers are deleted too; only the private chain-state projection rule and the
+coherent finalization task remain.
 
 ### 6. Contract PBFT and vote shims
 
