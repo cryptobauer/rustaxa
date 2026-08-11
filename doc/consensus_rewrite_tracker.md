@@ -3745,6 +3745,19 @@ The broader five-node smoke still stops at the previously tracked `FinalChain::p
 setup remains unavailable in the image because PEP 668 blocks system installation and neither `virtualenv` nor `pytest`
 is installed.
 
+The following `CRW-12` validation cut moves immutable PBFT extra-data policy into the existing native block-validation
+planner. C++ supplies only hardfork-required, extra-data-present, embedded-pillar-hash-present, and pillar-period facts;
+Rust rejects Ficus presence and pillar-hash shape mismatches before requesting pillar or DAG executor work. The retired
+extra-data executor ordinal remains reserved for ABI stability and fails closed if reported by a stale session. The
+`validatePbftBlockExtraData` and `validateFinalChainHash` manager facades are deleted; the retained executor loop calls
+the existing native FinalChain state-root leaf directly. No CXX function or carrier is added, bridge lines fall to
+21,431, and PBFT-manager shim lines fall to 15,533. Native planner tests cover both mismatch dimensions, retired-code
+stability, and stale-report rejection; the bridge conversion test covers the new immutable fields. The untouched
+pure-C++ manager remains the reference path.
+Validation passes all 1,217 native consensus/bridge tests, all 50 Rust consensus C++ tests, the rebuilt null-anchor
+PBFT manager admission case, the fast rewrite gate, and the exact inventory guard. The focused state-root manager case
+still stops before block validation at the existing missing latest-block FinalChain account snapshot boundary.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

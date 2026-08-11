@@ -64,22 +64,11 @@ enum PbftMgrStatus : uint8_t;
  */
 enum PbftStates { value_proposal_state = 1, filter_state, certify_state, finish_state, finish_polling_state };
 
-/**
- * Result of validating a proposed PBFT block's FinalChain state root.
- *
- * `Valid` permits block admission, `Missing` requests or waits for unavailable FinalChain state, and `Invalid` rejects
- * a mismatched root. The stable ordinals are translated to typed Rust validation facts at the manager boundary.
- */
-enum class PbftStateRootValidation { Valid = 0, Missing, Invalid };
-
 static_assert(value_proposal_state == 1);
 static_assert(filter_state == 2);
 static_assert(certify_state == 3);
 static_assert(finish_state == 4);
 static_assert(finish_polling_state == 5);
-static_assert(static_cast<uint8_t>(PbftStateRootValidation::Valid) == 0);
-static_assert(static_cast<uint8_t>(PbftStateRootValidation::Missing) == 1);
-static_assert(static_cast<uint8_t>(PbftStateRootValidation::Invalid) == 2);
 
 /**
  * @brief PbftManager class is a daemon that is used to finalize a bench of directed acyclic graph (DAG) blocks by using
@@ -561,23 +550,6 @@ class PbftManager {
    * @return true if pbft block is valid, otherwise false
    */
   bool validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block) const;
-
-  /**
-   * @brief Validates pbft block final chain hash.
-   * @param pbft_block PBFT block
-   * @return validation result
-   */
-  PbftStateRootValidation validateFinalChainHash(const std::shared_ptr<PbftBlock> &pbft_block) const;
-
-  /**
-   * @brief Validates pbft block extra data presence:
-   *        - checks if extra data is present or not based on pbft block number and ficus hf block number
-   *        - checks if pillar block hash is present on not during specific pbft periods
-   *
-   * @param pbft_block
-   * @return true if valid, otherwise false
-   */
-  bool validatePbftBlockExtraData(const std::shared_ptr<PbftBlock> &pbft_block) const;
 
   /**
    * @brief If there are enough certify votes, push the vote PBFT block in PBFT chain

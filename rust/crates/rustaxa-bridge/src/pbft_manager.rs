@@ -1545,23 +1545,12 @@ pub fn report_pbft_manager_broadcast(
     report_domain_pbft_manager_broadcast(plan.into(), report.into()).into()
 }
 
-/// Plans one PBFT block-validation step from the current live-fact bundle.
+/// Plans one PBFT block-validation step from a C++-supplied live-fact bundle.
 ///
-/// Inputs:
-/// - `fact`: block identity, static validation flags, and current live-check
-///   statuses supplied by C++.
-///
-/// Outputs:
-/// - Returns the next requested live check, terminal accept/reject, or
-///   contract error for invalid bridge facts.
-///
-/// Invariants and edge behavior:
-/// - Rust owns the deterministic check ordering and rejection reason.
-/// - C++ owns live PBFT chain, FinalChain, reward-vote, pillar, and DAG
-///   execution and calls this again after updating the corresponding status in
-///   the fact bundle.
-/// - No validation cursor is stored in `BridgePbftService`; callers keep
-///   the per-block fact bundle local to the validation path.
+/// Returns a requested live check, terminal decision, or bridge-fact error.
+/// Rust owns ordering plus immutable extra-data checks; C++ owns live PBFT,
+/// FinalChain, reward-vote, pillar, and DAG queries. The caller retains facts,
+/// and malformed facts or reports produce contract errors without stored state.
 pub fn plan_pbft_manager_block_validation(
     fact: FfiPbftManagerBlockValidationFact,
 ) -> FfiPbftManagerBlockValidationPlan {
@@ -1884,6 +1873,9 @@ impl From<FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact 
             pivot_is_null: value.pivot_is_null,
             dag_order_cached: value.dag_order_cached,
             dag_order_required: value.dag_order_required,
+            extra_data_required: value.extra_data_required,
+            extra_data_present: value.extra_data_present,
+            extra_data_pillar_hash_present: value.extra_data_pillar_hash_present,
             pillar_block_required: value.pillar_block_required,
             dag_weight_check_required: value.dag_weight_check_required,
             pbft_chain_status: PbftManagerBlockValidationFactStatus::from_u8(
@@ -1894,9 +1886,6 @@ impl From<FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact 
             ),
             reward_votes_status: PbftManagerBlockValidationFactStatus::from_u8(
                 value.reward_votes_status,
-            ),
-            extra_data_status: PbftManagerBlockValidationFactStatus::from_u8(
-                value.extra_data_status,
             ),
             pillar_block_status: PbftManagerBlockValidationFactStatus::from_u8(
                 value.pillar_block_status,
@@ -2964,12 +2953,14 @@ mod tests {
             pivot_is_null: false,
             dag_order_cached: true,
             dag_order_required: true,
+            extra_data_required: true,
+            extra_data_present: true,
+            extra_data_pillar_hash_present: false,
             pillar_block_required: false,
             dag_weight_check_required: true,
             pbft_chain_status: 1,
             final_chain_hash_status: 3,
             reward_votes_status: 4,
-            extra_data_status: 2,
             pillar_block_status: 4,
             dag_order_status: 1,
             dag_weight_status: 0,
@@ -2977,6 +2968,9 @@ mod tests {
         .into();
         assert_eq!(block_fact.block_hash, ethereum_types::H256([0x11; 32]));
         assert_eq!(block_fact.pivot_hash, ethereum_types::H256([0x22; 32]));
+        assert!(block_fact.extra_data_required);
+        assert!(block_fact.extra_data_present);
+        assert!(!block_fact.extra_data_pillar_hash_present);
         assert_eq!(
             block_fact.final_chain_hash_status,
             PbftManagerBlockValidationFactStatus::Missing

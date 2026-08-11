@@ -175,7 +175,6 @@ constexpr uint8_t kPbftManagerBlockValidationActionContractError = 255;
 constexpr uint8_t kPbftManagerBlockValidationCheckPbftChain = 0;
 constexpr uint8_t kPbftManagerBlockValidationCheckFinalChainHash = 1;
 constexpr uint8_t kPbftManagerBlockValidationCheckRewardVotes = 2;
-constexpr uint8_t kPbftManagerBlockValidationCheckExtraData = 3;
 constexpr uint8_t kPbftManagerBlockValidationCheckPillarBlock = 4;
 constexpr uint8_t kPbftManagerBlockValidationCheckDagOrder = 5;
 constexpr uint8_t kPbftManagerBlockValidationCheckDagWeight = 6;
@@ -2601,65 +2600,6 @@ std::optional<PbftBlockExtraData> PbftManager::createPbftBlockExtraData(PbftPeri
                             pillar_block_hash};
 }
 
-PbftStateRootValidation PbftManager::validateFinalChainHash(const std::shared_ptr<PbftBlock> &pbft_block) const {
-  const auto period = pbft_block->getPeriod();
-  const auto &pbft_block_hash = pbft_block->getBlockHash();
-
-  rustaxa::PbftManagerFinalChainHashValidationRequest request;
-  request.period = period;
-  request.candidate_final_chain_hash = toBridgeHash(pbft_block->getFinalChainHash());
-  const auto validation =
-      pbft_service_->service().pbft_service_validate_final_chain_hash(final_chain_->rustFinalChain(), request);
-  if (validation.status == kPbftManagerFinalChainHashStatusMissing) {
-    LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
-    return PbftStateRootValidation::Missing;
-  }
-  if (validation.status == kPbftManagerFinalChainHashStatusInvalid) {
-    LOG(log_er_) << "Block " << period << " hash " << pbft_block_hash << " state root "
-                 << pbft_block->getFinalChainHash() << " isn't matching actual "
-                 << fromBridgeHash(validation.expected_hash);
-    return PbftStateRootValidation::Invalid;
-  }
-  if (validation.status != kPbftManagerFinalChainHashStatusValid) {
-    throw std::runtime_error("Rust PBFT FinalChain hash validation returned unknown status");
-  }
-
-  return PbftStateRootValidation::Valid;
-}
-
-bool PbftManager::validatePbftBlockExtraData(const std::shared_ptr<PbftBlock> &pbft_block) const {
-  const auto extra_data = pbft_block->getExtraData();
-  const auto block_period = pbft_block->getPeriod();
-  if (kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(block_period)) {
-    if (!extra_data.has_value()) {
-      LOG(log_er_) << "PBFT block " << pbft_block->getBlockHash() << ", period " << block_period
-                   << " does not contain extra data";
-      return false;
-    }
-
-    // Validate optional pillar block hash
-    const auto pillar_block_hash = extra_data->getPillarBlockHash();
-    if (kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period)) {
-      if (!pillar_block_hash.has_value()) {
-        LOG(log_er_) << "PBFT block " << pbft_block->getBlockHash() << ", period " << block_period
-                     << " does not contain pillar block hash";
-        return false;
-      }
-    } else if (pillar_block_hash.has_value()) {
-      LOG(log_er_) << "PBFT block " << pbft_block->getBlockHash() << ", period " << block_period
-                   << " contains pillar block hash even though it should not";
-      return false;
-    }
-
-  } else if (extra_data.has_value()) {
-    LOG(log_er_) << "PBFT block " << pbft_block->getBlockHash() << ", period " << block_period
-                 << " contains extra data even though it should not";
-    return false;
-  }
-
-  return true;
-}
-
 bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block) const {
   if (!pbft_block) {
     LOG(log_er_) << "Unable to validate pbft block - no block provided";
@@ -2669,6 +2609,8 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   auto const &pbft_block_hash = pbft_block->getBlockHash();
   const auto block_period = pbft_block->getPeriod();
   auto const &anchor_hash = pbft_block->getPivotDagBlockHash();
+  const auto extra_data = pbft_block->getExtraData();
+  const auto pillar_hash = extra_data ? extra_data->getPillarBlockHash() : std::nullopt;
   rustaxa::PbftManagerBlockValidationFact fact;
   fact.block_hash = toBridgeHash(pbft_block_hash);
   fact.period = block_period;
@@ -2677,12 +2619,14 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   fact.dag_order_cached =
       rustaxa::pbft_manager_runtime_has_cached_anchor_dag_order(pbft_service_->service(), toBridgeHash(anchor_hash));
   fact.dag_order_required = true;
+  fact.extra_data_required = kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(block_period);
+  fact.extra_data_present = extra_data.has_value();
+  fact.extra_data_pillar_hash_present = pillar_hash.has_value();
   fact.pillar_block_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
   fact.dag_weight_check_required = false;
   fact.pbft_chain_status = kPbftManagerBlockValidationFactNotChecked;
   fact.final_chain_hash_status = kPbftManagerBlockValidationFactNotChecked;
   fact.reward_votes_status = kPbftManagerBlockValidationFactNotChecked;
-  fact.extra_data_status = kPbftManagerBlockValidationFactNotChecked;
   fact.pillar_block_status = fact.pillar_block_required ? kPbftManagerBlockValidationFactNotChecked
                                                         : kPbftManagerBlockValidationFactNotRequired;
   fact.dag_order_status = kPbftManagerBlockValidationFactNotChecked;
@@ -2714,13 +2658,23 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
     }
 
     if (plan.next_check == kPbftManagerBlockValidationCheckFinalChainHash) {
-      const auto validation_result = validateFinalChainHash(pbft_block);
-      if (validation_result == PbftStateRootValidation::Valid) {
+      rustaxa::PbftManagerFinalChainHashValidationRequest request;
+      request.period = block_period;
+      request.candidate_final_chain_hash = toBridgeHash(pbft_block->getFinalChainHash());
+      const auto validation =
+          pbft_service_->service().pbft_service_validate_final_chain_hash(final_chain_->rustFinalChain(), request);
+      if (validation.status == kPbftManagerFinalChainHashStatusValid) {
         fact.final_chain_hash_status = kPbftManagerBlockValidationFactValid;
-      } else if (validation_result == PbftStateRootValidation::Missing) {
+      } else if (validation.status == kPbftManagerFinalChainHashStatusMissing) {
+        LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
         fact.final_chain_hash_status = kPbftManagerBlockValidationFactMissing;
-      } else {
+      } else if (validation.status == kPbftManagerFinalChainHashStatusInvalid) {
+        LOG(log_er_) << "Block " << block_period << " hash " << pbft_block_hash << " state root "
+                     << pbft_block->getFinalChainHash() << " isn't matching actual "
+                     << fromBridgeHash(validation.expected_hash);
         fact.final_chain_hash_status = kPbftManagerBlockValidationFactInvalid;
+      } else {
+        throw std::runtime_error("Rust PBFT FinalChain hash validation returned unknown status");
       }
       plan = rustaxa::plan_pbft_manager_block_validation(fact);
       continue;
@@ -2737,16 +2691,7 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
       continue;
     }
 
-    if (plan.next_check == kPbftManagerBlockValidationCheckExtraData) {
-      fact.extra_data_status = validatePbftBlockExtraData(pbft_block) ? kPbftManagerBlockValidationFactValid
-                                                                      : kPbftManagerBlockValidationFactInvalid;
-      plan = rustaxa::plan_pbft_manager_block_validation(fact);
-      continue;
-    }
-
     if (plan.next_check == kPbftManagerBlockValidationCheckPillarBlock) {
-      const auto pillar_hash =
-          pbft_block->getExtraData().has_value() ? pbft_block->getExtraData()->getPillarBlockHash() : std::nullopt;
       rustaxa::PillarCurrentAnchorDecisionRequest request{};
       request.operation = kPillarAnchorDecisionValidateCandidate;
       request.has_candidate_hash = pillar_hash.has_value();
@@ -3758,8 +3703,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         rustaxa::PbftSyncCertBundleCommand abort_command{};
         abort_command.action = kPbftSyncCertBundleCommandAbort;
         abort_command.session_id = *active_sync_cert_session;
-        rustaxa::pbft_service_pbft_sync_cert_bundle_session(
-            pbft_service_->service(), final_chain_->rustFinalChain(), std::move(abort_command));
+        rustaxa::pbft_service_pbft_sync_cert_bundle_session(pbft_service_->service(), final_chain_->rustFinalChain(),
+                                                            std::move(abort_command));
       } catch (...) {
         // Preserve the original executor exception; the exact-session abort is best-effort on lock failure.
       }

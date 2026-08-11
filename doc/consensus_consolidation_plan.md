@@ -544,6 +544,12 @@ effects plus accepted weighted RLP. The PBFT overlay retains those RLP carriers 
 until acceptance, then materializes them solely for the still-external finalization push. The standalone bridge fact
 validator and the VoteManager/PbftManager validation facades are deleted.
 
+PBFT proposal validation also gives the native planner immutable extra-data presence and embedded pillar-hash facts.
+Rust owns the Ficus presence policy before requesting pillar or DAG executor checks; the C++
+`validatePbftBlockExtraData` facade is deleted. FinalChain state-root validation calls the existing native service leaf
+directly from the retained executor loop, deleting the C++ `validateFinalChainHash` facade without adding a bridge
+function or carrier.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT
