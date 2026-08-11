@@ -439,14 +439,34 @@ TEST(RustPbftSyncTest, FinalizationBoundaryAcceptsCompatibleDagService) {
   auto runtime = create_pbft_service_from_storage(*storage, makePbftServiceConfig(false));
   const auto plan =
       withoutRewardVoteReset(pbft_manager_runtime_plan_finalization_intent(*runtime, makeFinalizationFact()));
-  auto dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
-  auto boundary =
-      startFreshFinalizationExecutor(*runtime, *dag_transaction_service, plan,
-                                     storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
-  auto compatible_dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
+  rust::Box<BridgeDagTransactionService> dag_transaction_service;
+  try {
+    dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
+  } catch (const std::exception& error) {
+    FAIL() << "first DagTransactionService restore failed: " << error.what();
+    return;
+  }
 
+  rust::Box<BridgeDagTransactionService> boundary_state;
+  try {
+    boundary_state = startFreshFinalizationExecutor(*runtime, *dag_transaction_service, plan,
+                                                  storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
+  } catch (const std::exception& error) {
+    FAIL() << "startFreshFinalizationExecutor failed: " << error.what();
+    return;
+  }
+
+  rust::Box<BridgeDagTransactionService> compatible_dag_transaction_service;
+  try {
+    compatible_dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
+  } catch (const std::exception& error) {
+    FAIL() << "compatible DagTransactionService restore failed: " << error.what();
+    return;
+  }
+
+  const auto boundary = std::move(boundary_state);
   const auto state = pbft_manager_runtime_advance_finalization_action(*runtime, *compatible_dag_transaction_service,
-                                                                      boundary.cursor, boundary.action, 0, 0, 0, {});
+                                                                     boundary.cursor, boundary.action, 0, 0, 0, {});
   EXPECT_EQ(state.status, kPbftFinalizationRuntimeStatusActive);
   EXPECT_EQ(state.action, kPbftFinalizationRuntimeActionSetDagBlockOrder);
   EXPECT_TRUE(state.can_continue);
