@@ -352,11 +352,38 @@ impl PbftChainService {
         block_hash: H256,
         increments_non_empty_size: bool,
     ) -> Result<PbftChainHead> {
-        self.state
-            .read()
+        self.try_project_legacy_json_head(block_hash, increments_non_empty_size)
             .expect("PBFT chain lock poisoned")
+    }
+
+    /// Projects legacy persisted-head fields without mutation.
+    ///
+    /// `lock` failures are surfaced as `PBFT_CHAIN_SERVICE_LOCK_POISONED` so
+    /// callers can fail closed without panicking across FFI boundaries.
+    pub fn try_project_legacy_json_head(
+        &self,
+        block_hash: H256,
+        increments_non_empty_size: bool,
+    ) -> Result<PbftChainHead> {
+        Ok(self
             .state
-            .project_legacy_json_head(block_hash, increments_non_empty_size)
+            .read()
+            .map_err(|_| anyhow!("PBFT_CHAIN_SERVICE_LOCK_POISONED"))?
+            .state
+            .project_legacy_json_head(block_hash, increments_non_empty_size))
+    }
+
+    /// Projects legacy persisted-head JSON bytes without mutation.
+    ///
+    /// This helper centralizes the legacy-compatible serialization path and
+    /// returns lock poison as `PBFT_CHAIN_SERVICE_LOCK_POISONED`.
+    pub fn project_legacy_json_head_payload(
+        &self,
+        block_hash: H256,
+        increments_non_empty_size: bool,
+    ) -> Result<Vec<u8>> {
+        let projected = self.try_project_legacy_json_head(block_hash, increments_non_empty_size)?;
+        Ok(legacy_head_json(projected).into_bytes())
     }
 
     /// Applies one in-memory accepted-block head transition.

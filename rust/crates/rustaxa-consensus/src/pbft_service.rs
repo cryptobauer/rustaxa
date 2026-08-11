@@ -19,7 +19,9 @@ use crate::pbft_chain::{
 };
 use crate::pbft_finalize::{
     PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationPeriodLambdaLookup,
-    PbftFinalizationRuntimeAction, PbftFinalizationStatus, PbftFinalizedPeriodApplyResult,
+    PbftFinalizationIntentFact, PbftFinalizationPlan, PbftFinalizationRuntimeAction,
+    PbftFinalizationStatus, PbftFinalizedPeriodApplyResult,
+    plan_pbft_finalization_intent,
     load_pbft_finalization_last_period_lambda, plan_pbft_dynamic_lambda,
 };
 use crate::pbft_manager::{
@@ -241,6 +243,63 @@ pub struct PbftFinalizationDynamicLambdaDecision {
     pub plan: PbftDynamicLambdaPlan,
     /// Closest persisted lambda at or before the preceding finalized period.
     pub last_saved_period_lambda: PbftFinalizationPeriodLambdaLookup,
+}
+
+/// Finalization intent facts with chain-derived fields supplied by `PbftService`.
+///
+/// This struct intentionally excludes chain-last hashes/period and legacy head
+/// payload bytes; the service derives those values from `PbftChainService` state
+/// to avoid C++ duplication of chain-read/write invariants.
+#[derive(Debug, Clone)]
+pub struct PbftFinalizationIntent {
+    /// PBFT candidate block hash.
+    pub block_hash: H256,
+    /// Candidate PBFT period.
+    pub block_period: u64,
+    /// Candidate PBFT previous hash.
+    pub block_prev_hash: H256,
+    /// PBFT block is already in storage.
+    pub block_in_chain: bool,
+    /// PBFT block pivot DAG anchor hash.
+    pub pivot_dag_anchor_hash: H256,
+    /// Candidate carries a finalization-required pillar block.
+    pub has_pillar_block: bool,
+    /// Candidate pillar block already finalized.
+    pub pillar_block_finalized: bool,
+    /// C++ precomputed dynamic-lambda path requirement.
+    pub request_dynamic_lambda_update: bool,
+    /// Number of certified votes supplied for this non-duplicate finalization.
+    pub cert_vote_count: u64,
+    /// Sample certified-vote block hash.
+    pub sample_cert_vote_block_hash: H256,
+    /// Sample certified-vote period.
+    pub sample_cert_vote_period: u64,
+    /// Sample certified-vote round.
+    pub sample_cert_vote_round: u64,
+    /// Sample certified-vote step.
+    pub sample_cert_vote_step: u64,
+    /// Candidate block Lambda.
+    pub block_lambda: u32,
+    /// Whether persisted previous-period lambda was found.
+    pub last_saved_period_lambda_found: bool,
+    /// Previous period lambda value.
+    pub last_saved_period_lambda: u32,
+    /// Dynamic-lambda blocks-per-year value.
+    pub dynamic_blocks_per_year: u32,
+    /// Dynamic-lambda post-adjust round counter.
+    pub rounds_count_dynamic_lambda: u32,
+    /// Dynamic-lambda post-adjust lambda.
+    pub dynamic_lambda: u32,
+    /// Genesis-configured blocks-per-year.
+    pub dpos_blocks_per_year: u32,
+    /// Canonical period-data RLP for this candidate.
+    pub period_data_rlp: Vec<u8>,
+    /// Ordered finalized DAG block hashes.
+    pub ordered_dag_block_hashes: Vec<H256>,
+    /// Ordered finalized transaction hashes.
+    pub ordered_transaction_hashes: Vec<H256>,
+    /// Whether to process a pillar block after period advance.
+    pub process_pillar_block_after_advance: bool,
 }
 
 /// Native result of one planned, durably committed PBFT lifecycle transition.
@@ -2046,6 +2105,75 @@ impl PbftService {
             plan,
             last_saved_period_lambda,
         })
+    }
+
+    /// Plans one PBFT finalization intent from live chain state.
+    ///
+    /// Inputs are PBFT candidate facts excluding live-chain-derived fields.
+    /// The service samples current chain head state and derives `chain_last_hash`,
+    /// `chain_last_period`, and legacy head payload bytes:
+    /// - `chain_last_hash` is current chain `last_pbft_block_hash`
+    /// - `chain_last_period` is chain size for non-duplicates, or
+    ///   `block_period - 1` for already-in-chain candidates
+    /// - `pbft_head_payload` is empty for already-in-chain candidates, otherwise
+    ///   the legacy projected head payload.
+    ///
+    /// Lock-poisoned chain state returns `PBFT_CHAIN_SERVICE_LOCK_POISONED`;
+    /// otherwise this method is pure and side-effect-free.
+    pub fn plan_finalization_intent(&self, fact: PbftFinalizationIntent) -> Result<PbftFinalizationPlan> {
+        let chain = self.chain().try_head()?;
+        let chain_last_period = if fact.block_in_chain {
+            fact.block_period.saturating_sub(1)
+        } else {
+            chain.size
+        };
+
+        let projected_anchor = !fact.pivot_dag_anchor_hash.is_zero();
+        let pbft_head_payload = if fact.block_in_chain {
+            Vec::new()
+        } else {
+            self.chain().project_legacy_json_head_payload(
+                fact.block_hash,
+                projected_anchor,
+            )?
+        };
+
+        let domain_fact = PbftFinalizationIntentFact {
+            block_hash: fact.block_hash,
+            pbft_head_hash: if fact.block_in_chain {
+                fact.block_prev_hash
+            } else {
+                chain.head_hash
+            },
+            block_period: fact.block_period,
+            block_prev_hash: fact.block_prev_hash,
+            chain_last_hash: chain.last_pbft_block_hash,
+            chain_last_period,
+            block_in_chain: fact.block_in_chain,
+            pivot_dag_anchor_hash: fact.pivot_dag_anchor_hash,
+            has_pillar_block: fact.has_pillar_block,
+            pillar_block_finalized: fact.pillar_block_finalized,
+            request_dynamic_lambda_update: fact.request_dynamic_lambda_update,
+            cert_vote_count: fact.cert_vote_count,
+            sample_cert_vote_block_hash: fact.sample_cert_vote_block_hash,
+            sample_cert_vote_period: fact.sample_cert_vote_period,
+            sample_cert_vote_round: fact.sample_cert_vote_round,
+            sample_cert_vote_step: fact.sample_cert_vote_step,
+            block_lambda: fact.block_lambda,
+            last_saved_period_lambda_found: fact.last_saved_period_lambda_found,
+            last_saved_period_lambda: fact.last_saved_period_lambda,
+            dynamic_blocks_per_year: fact.dynamic_blocks_per_year,
+            rounds_count_dynamic_lambda: fact.rounds_count_dynamic_lambda,
+            dynamic_lambda: fact.dynamic_lambda,
+            dpos_blocks_per_year: fact.dpos_blocks_per_year,
+            pbft_head_payload,
+            period_data_rlp: fact.period_data_rlp,
+            ordered_dag_block_hashes: fact.ordered_dag_block_hashes,
+            ordered_transaction_hashes: fact.ordered_transaction_hashes,
+            process_pillar_block_after_advance: fact.process_pillar_block_after_advance,
+        };
+
+        Ok(plan_pbft_finalization_intent(domain_fact))
     }
 
     /// Restores the coherent native PBFT service graph from shared storage.
@@ -4324,6 +4452,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
     use tiny_keccak::{Hasher, Keccak};
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -7449,6 +7578,157 @@ mod tests {
                 actual: 3
             }
         ));
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn service_finalization_intent(
+        block_hash: H256,
+        block_period: u64,
+        block_prev_hash: H256,
+        anchor_hash: H256,
+        block_in_chain: bool,
+    ) -> PbftFinalizationIntent {
+        PbftFinalizationIntent {
+            block_hash,
+            block_period,
+            block_prev_hash,
+            block_in_chain,
+            pivot_dag_anchor_hash: anchor_hash,
+            has_pillar_block: false,
+            pillar_block_finalized: false,
+            request_dynamic_lambda_update: false,
+            cert_vote_count: 1,
+            sample_cert_vote_block_hash: block_hash,
+            sample_cert_vote_period: block_period,
+            sample_cert_vote_round: 1,
+            sample_cert_vote_step: 1,
+            block_lambda: 1_500,
+            last_saved_period_lambda_found: false,
+            last_saved_period_lambda: 0,
+            dynamic_blocks_per_year: 1_000,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            dpos_blocks_per_year: 500,
+            period_data_rlp: vec![0xc0],
+            ordered_dag_block_hashes: vec![H256::repeat_byte(1)],
+            ordered_transaction_hashes: vec![H256::repeat_byte(2)],
+            process_pillar_block_after_advance: false,
+        }
+    }
+
+    #[test]
+    fn plan_finalization_intent_derives_live_chain_state_and_head_payload() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_finalize_intent");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+
+        let block_hash = H256::repeat_byte(0x11);
+        let block_period = 1;
+        let block_prev_hash = H256::zero();
+        let anchor_hash = H256::repeat_byte(0x22);
+
+        let plan = service
+            .plan_finalization_intent(service_finalization_intent(
+                block_hash,
+                block_period,
+                block_prev_hash,
+                anchor_hash,
+                false,
+            ))
+            .unwrap();
+        assert_eq!(plan.status, PbftFinalizationStatus::Accepted);
+        assert_eq!(plan.storage_write_intent.pbft_head_hash, service.pbft_chain_head().head_hash);
+        assert_eq!(plan.storage_write_intent.pbft_block_hash, block_hash);
+
+        let expected_payload = service
+            .chain()
+            .project_legacy_json_head_payload(block_hash, true)
+            .unwrap();
+        assert_eq!(
+            plan.storage_write_intent.pbft_head_payload,
+            expected_payload
+        );
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn plan_finalization_intent_rejects_stale_previous_hash_mismatch_for_non_advance() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_finalize_intent_stale");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        service
+            .pbft_chain_update(H256::repeat_byte(0x12), H256::zero())
+            .unwrap();
+        service
+            .pbft_chain_update(H256::repeat_byte(0x13), H256::zero())
+            .unwrap();
+
+        let plan = service
+            .plan_finalization_intent(service_finalization_intent(
+                H256::repeat_byte(0x14),
+                2,
+                H256::repeat_byte(0x55),
+                H256::repeat_byte(0x33),
+                false,
+            ))
+            .unwrap();
+        assert_eq!(plan.status, PbftFinalizationStatus::StalePeriod);
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn plan_finalization_intent_rejects_previous_hash_mismatch_on_advance() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_finalize_intent_prev_mismatch");
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        service
+            .pbft_chain_update(H256::repeat_byte(0x12), H256::zero())
+            .unwrap();
+        service
+            .pbft_chain_update(H256::repeat_byte(0x13), H256::zero())
+            .unwrap();
+
+        let plan = service
+            .plan_finalization_intent(service_finalization_intent(
+                H256::repeat_byte(0x14),
+                3,
+                H256::repeat_byte(0x55),
+                H256::repeat_byte(0x33),
+                false,
+            ))
+            .unwrap();
+        assert_eq!(plan.status, PbftFinalizationStatus::PreviousHashMismatch);
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn plan_finalization_intent_reports_poisoned_chain_lock() {
+        let (path, storage) = temp_storage(
+            "rustaxa_consensus_pbft_service_finalize_intent_poisoned_chain",
+        );
+        let service = PbftService::restore(storage, config(1)).unwrap();
+        let chain = service.chain().clone();
+        let poison = thread::spawn(move || {
+            let _guard = chain.write().unwrap();
+            panic!("poison PBFT chain lock");
+        });
+        assert!(poison.join().is_err());
+
+        let error = service
+            .plan_finalization_intent(service_finalization_intent(
+                H256::repeat_byte(0x11),
+                1,
+                H256::zero(),
+                H256::repeat_byte(0x22),
+                false,
+            ))
+            .expect_err("poisoned chain lock should fail chain-derived planning");
+        assert_eq!(error.to_string(), "PBFT_CHAIN_SERVICE_LOCK_POISONED");
 
         drop(service);
         let _ = fs::remove_dir_all(path);
