@@ -18,11 +18,11 @@ use crate::pbft_chain::{
     pbft_block_exists_in_storage,
 };
 use crate::pbft_finalize::{
-    PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationPeriodLambdaLookup,
-    PbftFinalizationIntentFact, PbftFinalizationPlan, PbftFinalizationRuntimeAction,
+    PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationIntentFact,
+    PbftFinalizationPeriodLambdaLookup, PbftFinalizationPlan, PbftFinalizationRuntimeAction,
     PbftFinalizationStatus, PbftFinalizedPeriodApplyResult,
-    plan_pbft_finalization_intent,
     load_pbft_finalization_last_period_lambda, plan_pbft_dynamic_lambda,
+    plan_pbft_finalization_intent,
 };
 use crate::pbft_manager::{
     PbftCandidateDagPreparationStatus, PbftFinalizationExecutorBoundary,
@@ -2120,7 +2120,10 @@ impl PbftService {
     ///
     /// Lock-poisoned chain state returns `PBFT_CHAIN_SERVICE_LOCK_POISONED`;
     /// otherwise this method is pure and side-effect-free.
-    pub fn plan_finalization_intent(&self, fact: PbftFinalizationIntent) -> Result<PbftFinalizationPlan> {
+    pub fn plan_finalization_intent(
+        &self,
+        fact: PbftFinalizationIntent,
+    ) -> Result<PbftFinalizationPlan> {
         let chain = self.chain().try_head()?;
         let chain_last_period = if fact.block_in_chain {
             fact.block_period.saturating_sub(1)
@@ -2132,10 +2135,8 @@ impl PbftService {
         let pbft_head_payload = if fact.block_in_chain {
             Vec::new()
         } else {
-            self.chain().project_legacy_json_head_payload(
-                fact.block_hash,
-                projected_anchor,
-            )?
+            self.chain()
+                .project_legacy_json_head_payload(fact.block_hash, projected_anchor)?
         };
 
         let domain_fact = PbftFinalizationIntentFact {
@@ -7638,7 +7639,10 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(plan.status, PbftFinalizationStatus::Accepted);
-        assert_eq!(plan.storage_write_intent.pbft_head_hash, service.pbft_chain_head().head_hash);
+        assert_eq!(
+            plan.storage_write_intent.pbft_head_hash,
+            service.pbft_chain_head().head_hash
+        );
         assert_eq!(plan.storage_write_intent.pbft_block_hash, block_hash);
 
         let expected_payload = service
@@ -7682,7 +7686,8 @@ mod tests {
 
     #[test]
     fn plan_finalization_intent_rejects_previous_hash_mismatch_on_advance() {
-        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_finalize_intent_prev_mismatch");
+        let (path, storage) =
+            temp_storage("rustaxa_consensus_pbft_service_finalize_intent_prev_mismatch");
         let service = PbftService::restore(storage, config(1)).unwrap();
         service
             .pbft_chain_update(H256::repeat_byte(0x12), H256::zero())
@@ -7708,9 +7713,8 @@ mod tests {
 
     #[test]
     fn plan_finalization_intent_reports_poisoned_chain_lock() {
-        let (path, storage) = temp_storage(
-            "rustaxa_consensus_pbft_service_finalize_intent_poisoned_chain",
-        );
+        let (path, storage) =
+            temp_storage("rustaxa_consensus_pbft_service_finalize_intent_poisoned_chain");
         let service = PbftService::restore(storage, config(1)).unwrap();
         let chain = service.chain().clone();
         let poison = thread::spawn(move || {

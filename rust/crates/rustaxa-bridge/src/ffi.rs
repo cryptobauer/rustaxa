@@ -3987,7 +3987,7 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_plan_finalization_intent(
             runtime: &BridgePbftService,
             fact: PbftFinalizationIntentFact,
-        ) -> PbftFinalizationIntentPlan;
+        ) -> Result<PbftFinalizationIntentPlan>;
         pub fn pbft_manager_runtime_start_finalization_executor(
             runtime: &BridgePbftService,
             dag_transaction_service: &BridgeDagTransactionService,

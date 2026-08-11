@@ -353,7 +353,6 @@ impl PbftChainService {
         increments_non_empty_size: bool,
     ) -> Result<PbftChainHead> {
         self.try_project_legacy_json_head(block_hash, increments_non_empty_size)
-            .expect("PBFT chain lock poisoned")
     }
 
     /// Projects legacy persisted-head fields without mutation.
@@ -365,12 +364,11 @@ impl PbftChainService {
         block_hash: H256,
         increments_non_empty_size: bool,
     ) -> Result<PbftChainHead> {
-        Ok(self
-            .state
+        self.state
             .read()
             .map_err(|_| anyhow!("PBFT_CHAIN_SERVICE_LOCK_POISONED"))?
             .state
-            .project_legacy_json_head(block_hash, increments_non_empty_size))
+            .project_legacy_json_head(block_hash, increments_non_empty_size)
     }
 
     /// Projects legacy persisted-head JSON bytes without mutation.

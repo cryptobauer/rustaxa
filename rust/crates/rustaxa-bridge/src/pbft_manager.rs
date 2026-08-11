@@ -74,11 +74,10 @@ use crate::verified_votes::{
 use anyhow::anyhow;
 use rustaxa_consensus::dag::DagBlockPeriodStorageLookup;
 use rustaxa_consensus::pbft_finalize::{
-    plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent, PbftDynamicLambdaConfig,
-    PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
-    PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationPlan,
-    PbftFinalizationPositionedHash, PbftFinalizationRuntimeAction, PbftFinalizationStatus,
-    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
+    PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
+    PbftFinalizationCleanupIntent, PbftFinalizationPlan, PbftFinalizationPositionedHash,
+    PbftFinalizationRuntimeAction, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
+    PbftFinalizationStorageWriteStage,
 };
 use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
@@ -112,7 +111,7 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerStateActionSessionStep, PbftManagerTransitionKind,
 };
 use rustaxa_consensus::pbft_service::{
-    PbftBlockValidationCandidate, PbftManagerLifecycleTransitionOutcome,
+    PbftBlockValidationCandidate, PbftFinalizationIntent, PbftManagerLifecycleTransitionOutcome,
 };
 use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
@@ -249,101 +248,45 @@ impl From<PbftFinalizationStorageWriteIntent> for FfiPbftFinalizationStorageWrit
     }
 }
 
-fn hash_to_hex(hash: ethereum_types::H256) -> String {
-    let mut out = String::from("0x");
-    for byte in hash.as_bytes() {
-        let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{byte:02x}"));
+impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntent {
+    fn from(value: FfiPbftFinalizationIntentFact) -> Self {
+        Self {
+            block_hash: ethereum_types::H256::from(value.block_hash),
+            block_period: value.block_period,
+            block_prev_hash: ethereum_types::H256::from(value.block_prev_hash),
+            block_in_chain: value.block_in_chain,
+            pivot_dag_anchor_hash: ethereum_types::H256::from(value.pivot_dag_anchor_hash),
+            has_pillar_block: value.has_pillar_block,
+            pillar_block_finalized: value.pillar_block_finalized,
+            request_dynamic_lambda_update: value.request_dynamic_lambda_update,
+            cert_vote_count: value.cert_vote_count,
+            sample_cert_vote_block_hash: ethereum_types::H256::from(
+                value.sample_cert_vote_block_hash,
+            ),
+            sample_cert_vote_period: value.sample_cert_vote_period,
+            sample_cert_vote_round: value.sample_cert_vote_round,
+            sample_cert_vote_step: value.sample_cert_vote_step,
+            block_lambda: value.block_lambda,
+            last_saved_period_lambda_found: value.last_saved_period_lambda_found,
+            last_saved_period_lambda: value.last_saved_period_lambda,
+            dynamic_blocks_per_year: value.dynamic_blocks_per_year,
+            rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
+            dynamic_lambda: value.dynamic_lambda,
+            dpos_blocks_per_year: value.dpos_blocks_per_year,
+            period_data_rlp: value.period_data_rlp,
+            ordered_dag_block_hashes: value
+                .ordered_dag_block_hashes
+                .into_iter()
+                .map(|hash| ethereum_types::H256::from(hash.hash))
+                .collect(),
+            ordered_transaction_hashes: value
+                .ordered_transaction_hashes
+                .into_iter()
+                .map(|hash| ethereum_types::H256::from(hash.hash))
+                .collect(),
+            process_pillar_block_after_advance: value.process_pillar_block_after_advance,
+        }
     }
-    out
-}
-
-fn json_legacy_head_payload(head_hash: ethereum_types::H256, size: u64, non_empty_size: u64, last_hash: ethereum_types::H256) -> Vec<u8> {
-    let mut out = String::new();
-    out.push('{');
-    out.push_str("\"head_hash\":\"");
-    out.push_str(&hash_to_hex(head_hash));
-    out.push_str("\",\"size\":");
-    out.push_str(&size.to_string());
-    out.push_str(",\"non_empty_size\":");
-    out.push_str(&non_empty_size.to_string());
-    out.push_str(",\"last_pbft_block_hash\":\"");
-    out.push_str(&hash_to_hex(last_hash));
-    out.push_str("\"}");
-    out.into_bytes()
-}
-
-fn compose_finalization_intent_fact(
-    runtime: &BridgePbftService,
-    value: FfiPbftFinalizationIntentFact,
-) -> anyhow::Result<PbftFinalizationIntentFact> {
-    let head = runtime.0.pbft_chain_head();
-    let is_block_in_chain = value.block_in_chain;
-    let chain_last_period = if is_block_in_chain {
-        value.block_period.saturating_sub(1)
-    } else {
-        head.size
-    };
-    let projected_payload = if is_block_in_chain {
-        Vec::new()
-    } else {
-        let projected = runtime
-            .0
-            .pbft_chain_project_legacy_json_head(
-                ethereum_types::H256::from(value.block_hash),
-                ethereum_types::H256::from(value.pivot_dag_anchor_hash)
-                    != ethereum_types::H256::zero(),
-            )
-            ?;
-        json_legacy_head_payload(
-            projected.head_hash,
-            projected.size,
-            projected.non_empty_size,
-            projected.last_pbft_block_hash,
-        )
-    };
-
-    Ok(PbftFinalizationIntentFact {
-        block_hash: ethereum_types::H256::from(value.block_hash),
-        pbft_head_hash: if is_block_in_chain {
-            ethereum_types::H256::from(value.block_prev_hash)
-        } else {
-            head.head_hash
-        },
-        block_period: value.block_period,
-        block_prev_hash: ethereum_types::H256::from(value.block_prev_hash),
-        chain_last_hash: head.last_pbft_block_hash,
-        chain_last_period,
-        block_in_chain: is_block_in_chain,
-        pivot_dag_anchor_hash: ethereum_types::H256::from(value.pivot_dag_anchor_hash),
-        has_pillar_block: value.has_pillar_block,
-        pillar_block_finalized: value.pillar_block_finalized,
-        request_dynamic_lambda_update: value.request_dynamic_lambda_update,
-        cert_vote_count: value.cert_vote_count,
-        sample_cert_vote_block_hash: ethereum_types::H256::from(value.sample_cert_vote_block_hash),
-        sample_cert_vote_period: value.sample_cert_vote_period,
-        sample_cert_vote_round: value.sample_cert_vote_round,
-        sample_cert_vote_step: value.sample_cert_vote_step,
-        block_lambda: value.block_lambda,
-        last_saved_period_lambda_found: value.last_saved_period_lambda_found,
-        last_saved_period_lambda: value.last_saved_period_lambda,
-        dynamic_blocks_per_year: value.dynamic_blocks_per_year,
-        rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
-        dynamic_lambda: value.dynamic_lambda,
-        dpos_blocks_per_year: value.dpos_blocks_per_year,
-        pbft_head_payload: projected_payload,
-        period_data_rlp: value.period_data_rlp,
-        ordered_dag_block_hashes: value
-            .ordered_dag_block_hashes
-            .into_iter()
-            .map(|hash| ethereum_types::H256::from(hash.hash))
-            .collect(),
-        ordered_transaction_hashes: value
-            .ordered_transaction_hashes
-            .into_iter()
-            .map(|hash| ethereum_types::H256::from(hash.hash))
-            .collect(),
-        process_pillar_block_after_advance: value.process_pillar_block_after_advance,
-    })
 }
 
 impl From<&FfiPbftFinalizationStorageWritePlan> for PbftFinalizationStorageWriteIntent {
@@ -1236,9 +1179,8 @@ fn dag_block_period_lookup_into_ffi(lookup: DagBlockPeriodStorageLookup) -> FfiB
 pub fn pbft_manager_runtime_plan_finalization_intent(
     runtime: &BridgePbftService,
     fact: FfiPbftFinalizationIntentFact,
-) -> FfiPbftFinalizationIntentPlan {
-    let fact = compose_finalization_intent_fact(runtime, fact).expect("valid finalization fact");
-    plan_domain_pbft_finalization_intent(fact).into()
+) -> anyhow::Result<FfiPbftFinalizationIntentPlan> {
+    Ok(runtime.0.plan_finalization_intent(fact.into())?.into())
 }
 
 /// Plans finalization dynamic-lambda state and loads the prior persisted lambda through runtime storage.

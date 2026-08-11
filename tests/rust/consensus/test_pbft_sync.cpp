@@ -26,6 +26,7 @@ std::array<uint8_t, 32> h256(uint8_t last_byte) {
 rust::Box<BridgePbftStorageQueries> pbftQueries(const rust::Box<BridgeStorage>& storage) {
   return create_pbft_storage_queries(*storage);
 }
+
 constexpr uint8_t kPbftFinalizationAnchorNull = 0;
 constexpr uint8_t kPbftFinalizationAnchorAnchored = 1;
 constexpr uint8_t kPbftFinalizationStatusAccepted = 0;
@@ -112,11 +113,8 @@ PbftManagerFinalizationExecutorState startResumeFinalizationExecutor(
 PbftFinalizationIntentFact makeFinalizationFact() {
   PbftFinalizationIntentFact fact;
   fact.block_hash = h256(9);
-  fact.pbft_head_hash = h256(8);
   fact.block_period = 1;
   fact.block_prev_hash = h256(0);
-  fact.chain_last_hash = h256(0);
-  fact.chain_last_period = 0;
   fact.block_in_chain = false;
   fact.pivot_dag_anchor_hash = h256(8);
   fact.has_pillar_block = false;
@@ -132,7 +130,6 @@ PbftFinalizationIntentFact makeFinalizationFact() {
   fact.last_saved_period_lambda = 0;
   fact.dynamic_blocks_per_year = 1000;
   fact.dpos_blocks_per_year = 500;
-  fact.pbft_head_payload = {'{', '"', 'h', 'e', 'a', 'd', '"', ':', 't', 'r', 'u', 'e', '}'};
   dev::RLPStream period_data;
   period_data.appendList(4).appendList(8)
       << dev::h256(1) << dev::h256(8) << dev::h256(2) << dev::h256(3) << uint64_t{1} << uint64_t{123};
@@ -407,7 +404,7 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
   EXPECT_TRUE(plan.storage_write_intent.persist_period_lambda);
   EXPECT_TRUE(plan.storage_write_intent.persist_executed_pbft_status);
   EXPECT_EQ(plan.storage_write_intent.pbft_block_hash, h256(9));
-  EXPECT_EQ(plan.storage_write_intent.pbft_head_hash, h256(8));
+  EXPECT_EQ(plan.storage_write_intent.pbft_head_hash, h256(0));
   EXPECT_EQ(plan.storage_write_intent.block_period, 1);
   EXPECT_FALSE(plan.storage_write_intent.null_anchor);
   EXPECT_EQ(plan.storage_write_intent.anchor_hash, h256(8));
@@ -418,9 +415,13 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
   EXPECT_EQ(plan.storage_write_intent.period_lambda, 1500);
   EXPECT_EQ(plan.storage_write_intent.blocks_per_year, 1000);
   EXPECT_TRUE(plan.storage_write_intent.executed_pbft_status);
+  const auto expected_head_payload =
+      std::string("{\n\t\"head_hash\" : \"0x") + std::string(64, '0') +
+      "\",\n\t\"last_pbft_block_hash\" : \"0x" + std::string(63, '0') +
+      "9\",\n\t\"non_empty_size\" : 1,\n\t\"size\" : 1\n}\n";
   EXPECT_EQ(std::vector<uint8_t>(plan.storage_write_intent.pbft_head_payload.begin(),
                                  plan.storage_write_intent.pbft_head_payload.end()),
-            (std::vector<uint8_t>{'{', '"', 'h', 'e', 'a', 'd', '"', ':', 't', 'r', 'u', 'e', '}'}));
+            std::vector<uint8_t>(expected_head_payload.begin(), expected_head_payload.end()));
   EXPECT_GT(plan.storage_write_intent.period_data_rlp.size(), 1);
   ASSERT_EQ(plan.storage_write_intent.dag_block_period_writes.size(), 2);
   EXPECT_EQ(plan.storage_write_intent.dag_block_period_writes[0].hash, h256(2));
