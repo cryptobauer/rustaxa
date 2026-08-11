@@ -558,6 +558,12 @@ a separate weight check in production; it materializes cached bytes only at the 
 cache-membership exports are replaced by two task operations using existing carriers, and legacy check code 6 remains
 reserved and fail-closed.
 
+Proposal-time DAG order is now another composed native task. `PbftService` releases its manager lock before
+`DagTransactionService` loads canonical hash/gas facts outside the DAG lock, revalidates the exact pending cursor
+generation/period/anchor on report, and drains
+gas-clipping re-anchor loops to a terminal build or skip command. The C++ request/report loop and both proposal DAG fact
+carriers are deleted; C++ retains only wallet selection projection and signed PBFT block materialization.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT

@@ -108,7 +108,6 @@ constexpr uint8_t kPbftManagerStateActionEffectResultSkippedNoWork = 1;
 constexpr uint8_t kPbftManagerStateActionEffectResultSkippedMissingLiveObject = 2;
 constexpr uint8_t kPbftManagerStateActionEffectResultRejectedLiveCheck = 3;
 constexpr uint8_t kPbftManagerStateActionEffectResultExecutorError = 255;
-constexpr uint8_t kPbftManagerProposalActionRequestDagOrder = 0;
 constexpr uint8_t kPbftManagerProposalActionBuildProposal = 1;
 constexpr uint8_t kPbftManagerProposalActionSkipProposal = 2;
 constexpr uint8_t kPbftManagerProposalActionContractError = 255;
@@ -2541,30 +2540,8 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
   fact.non_finalized_fallback_hash = toBridgeHash(non_finalized_fallback_hash.value_or(kNullBlockHash));
 
   pbft_service_->service().pbft_service_begin_proposal_session_with_final_chain(final_chain_->rustFinalChain(), fact);
-  auto step = rustaxa::pbft_manager_proposal_session_next(pbft_service_->service());
-  while (step.action == kPbftManagerProposalActionRequestDagOrder) {
-    const auto requested_anchor = fromBridgeHash(step.requested_anchor_hash);
-    rustaxa::PbftManagerProposalDagOrderReport report;
-    report.anchor_hash = step.requested_anchor_hash;
-    const auto dag_block_order = dag_mgr_->getDagBlockOrder(requested_anchor, current_pbft_period);
-    report.order_available = !dag_block_order.empty();
-    report.dag_blocks.reserve(dag_block_order.size());
-    for (const auto &blk_hash : dag_block_order) {
-      auto dag_blk = dag_mgr_->getDagBlock(blk_hash);
-      if (!dag_blk) {
-        LOG(log_er_) << "DAG anchor block hash " << requested_anchor << " getDagBlock failed in propose for block "
-                     << blk_hash;
-        report.order_available = false;
-        report.dag_blocks.clear();
-        break;
-      }
-      rustaxa::PbftManagerProposalDagBlockFact dag_block_fact;
-      dag_block_fact.hash = toBridgeHash(blk_hash);
-      dag_block_fact.gas_estimation = static_cast<uint64_t>(dag_blk->getGasEstimation());
-      report.dag_blocks.push_back(dag_block_fact);
-    }
-    step = rustaxa::pbft_manager_proposal_session_report_dag_order(pbft_service_->service(), report);
-  }
+  const auto step = rustaxa::pbft_manager_proposal_session_next_with_dag(pbft_service_->service(),
+                                                                         dag_transaction_service_->service());
 
   if (step.action == kPbftManagerProposalActionBuildProposal && step.status == kPbftManagerProposalStatusBuildReady) {
     std::vector<WalletConfig> eligible_wallets;

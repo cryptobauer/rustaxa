@@ -39,8 +39,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerLeaderValidBlockCommand as FfiPbftManagerLeaderValidBlockCommand,
     PbftManagerLifecycleTransitionRequest as FfiPbftManagerLifecycleTransitionRequest,
     PbftManagerLifecycleTransitionResult as FfiPbftManagerLifecycleTransitionResult,
-    PbftManagerProposalDagBlockFact as FfiPbftManagerProposalDagBlockFact,
-    PbftManagerProposalDagOrderReport as FfiPbftManagerProposalDagOrderReport,
     PbftManagerProposalInitialFact as FfiPbftManagerProposalInitialFact,
     PbftManagerProposalSessionStep as FfiPbftManagerProposalSessionStep,
     PbftManagerProposalWalletFact as FfiPbftManagerProposalWalletFact,
@@ -104,7 +102,6 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateInputFact,
     PbftManagerLeaderCandidatePlan, PbftManagerLeaderValidBlockCommand,
     PbftManagerLifecycleTransitionRequest, PbftManagerProposalAction,
-    PbftManagerProposalDagBlockFact, PbftManagerProposalDagOrderReport,
     PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerProposalStatus,
     PbftManagerProposalWalletFact, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
     PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
@@ -1426,9 +1423,8 @@ fn state_action_effect_session_not_started_step() -> FfiPbftManagerStateActionSe
 /// - `fact`: compact C++ facts needed to select a proposer and DAG anchor.
 ///
 /// Outputs:
-/// - Replaces any previous proposal cursor. C++ drives the cursor with
-///   `pbft_manager_proposal_session_next` and
-///   `pbft_manager_proposal_session_report_dag_order`.
+/// - Replaces any previous proposal cursor. The composed native task drains
+///   DAG-order requests before returning a terminal or build step to C++.
 ///
 /// Invariants and edge behavior:
 /// - Proposal planning is PBFT-manager implementation state and is not exported
@@ -1446,7 +1442,8 @@ pub(crate) fn pbft_manager_runtime_begin_proposal_session_with_hash(
 }
 
 /// Returns the next proposal-construction action or build command.
-pub fn pbft_manager_proposal_session_next(
+#[cfg(test)]
+pub(crate) fn pbft_manager_proposal_session_next(
     runtime: &BridgePbftService,
 ) -> FfiPbftManagerProposalSessionStep {
     runtime
@@ -1456,19 +1453,7 @@ pub fn pbft_manager_proposal_session_next(
         .unwrap_or_else(proposal_session_not_started_step)
 }
 
-/// Reports one C++-loaded DAG order to the runtime-owned proposal session.
-pub fn pbft_manager_proposal_session_report_dag_order(
-    runtime: &BridgePbftService,
-    report: FfiPbftManagerProposalDagOrderReport,
-) -> FfiPbftManagerProposalSessionStep {
-    runtime
-        .0
-        .report_proposal_dag_order(report.into())
-        .map(Into::into)
-        .unwrap_or_else(proposal_session_not_started_step)
-}
-
-fn proposal_session_not_started_step() -> FfiPbftManagerProposalSessionStep {
+pub(crate) fn proposal_session_not_started_step() -> FfiPbftManagerProposalSessionStep {
     FfiPbftManagerProposalSessionStep {
         action: PbftManagerProposalAction::ContractError.as_u8(),
         status: PbftManagerProposalStatus::InvalidBridgeFacts.as_u8(),
@@ -1859,15 +1844,6 @@ impl From<FfiPbftManagerProposalWalletFact> for PbftManagerProposalWalletFact {
     }
 }
 
-impl From<FfiPbftManagerProposalDagBlockFact> for PbftManagerProposalDagBlockFact {
-    fn from(value: FfiPbftManagerProposalDagBlockFact) -> Self {
-        Self {
-            hash: value.hash.into(),
-            gas_estimation: value.gas_estimation,
-        }
-    }
-}
-
 fn proposal_initial_fact_from_ffi(
     value: FfiPbftManagerProposalInitialFact,
     final_chain_hash: Option<[u8; 32]>,
@@ -1893,16 +1869,6 @@ fn proposal_initial_fact_from_ffi(
             .collect(),
         has_non_finalized_fallback: value.has_non_finalized_fallback,
         non_finalized_fallback_hash: value.non_finalized_fallback_hash.into(),
-    }
-}
-
-impl From<FfiPbftManagerProposalDagOrderReport> for PbftManagerProposalDagOrderReport {
-    fn from(value: FfiPbftManagerProposalDagOrderReport) -> Self {
-        Self {
-            anchor_hash: value.anchor_hash.into(),
-            dag_blocks: value.dag_blocks.into_iter().map(Into::into).collect(),
-            order_available: value.order_available,
-        }
     }
 }
 
@@ -2756,21 +2722,6 @@ mod tests {
         assert_eq!(proposal.order_hash, [5; 32]);
         assert_eq!(proposal.eligible_wallet_indices, vec![6]);
         assert_eq!(proposal.dag_blocks_included, 7);
-        let proposal_report: PbftManagerProposalDagOrderReport =
-            FfiPbftManagerProposalDagOrderReport {
-                anchor_hash: [3; 32],
-                dag_blocks: vec![FfiPbftManagerProposalDagBlockFact {
-                    hash: [4; 32],
-                    gas_estimation: 5,
-                }],
-                order_available: true,
-            }
-            .into();
-        assert_eq!(proposal_report.anchor_hash, H256::repeat_byte(3));
-        assert_eq!(proposal_report.dag_blocks[0].hash, H256::repeat_byte(4));
-        assert_eq!(proposal_report.dag_blocks[0].gas_estimation, 5);
-        assert!(proposal_report.order_available);
-
         let broadcast_fact: PbftManagerBroadcastFact = FfiPbftManagerBroadcastFact {
             round_elapsed_ms: 1,
             period_elapsed_ms: 2,

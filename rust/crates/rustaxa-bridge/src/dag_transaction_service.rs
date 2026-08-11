@@ -110,6 +110,24 @@ pub fn pbft_manager_runtime_cached_candidate_dag_payload(
     Ok(dag_non_finalized_sync_payload_to_ffi(payload))
 }
 
+/// Drains every proposal DAG-order request inside the composed native roots.
+///
+/// The PBFT service releases its manager lock before the DAG root loads and
+/// decodes canonical blocks, then validates the exact pending cursor before
+/// reporting facts. The returned owned step is terminal or ready for the
+/// retained C++ signing/materialization boundary. Missing sessions and native
+/// storage failures remain explicit contract/error results.
+pub fn pbft_manager_proposal_session_next_with_dag(
+    runtime: &BridgePbftService,
+    dag_transaction_service: &BridgeDagTransactionService,
+) -> Result<PbftManagerProposalSessionStep> {
+    Ok(runtime
+        .0
+        .proposal_session_next_with_dag(&dag_transaction_service.root)?
+        .map(Into::into)
+        .unwrap_or_else(crate::pbft_manager::proposal_session_not_started_step))
+}
+
 impl BridgeDagTransactionService {
     /// Composes native PBFT cache/status ownership with DAG order, canonical
     /// payload, and gas ownership without exposing either root or its locks.

@@ -1311,12 +1311,6 @@ pub mod rustaxa_ffi {
         sortition_valid: bool,
     }
 
-    /// One ordered DAG block gas fact for a Rust-requested proposal anchor.
-    struct PbftManagerProposalDagBlockFact {
-        hash: [u8; 32],
-        gas_estimation: u64,
-    }
-
     /// Initial fact bundle for Rust-owned PBFT proposal construction.
     struct PbftManagerProposalInitialFact {
         period: u64,
@@ -1333,13 +1327,6 @@ pub mod rustaxa_ffi {
         ghost_path: Vec<PbftFinalizationHash>,
         has_non_finalized_fallback: bool,
         non_finalized_fallback_hash: [u8; 32],
-    }
-
-    /// C++ report for one Rust-requested DAG order.
-    struct PbftManagerProposalDagOrderReport {
-        anchor_hash: [u8; 32],
-        dag_blocks: Vec<PbftManagerProposalDagBlockFact>,
-        order_available: bool,
     }
 
     /// One action or terminal command from a Rust-owned proposal session.
@@ -4129,13 +4116,10 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             fact: PbftManagerProposalInitialFact,
         ) -> Result<()>;
-        pub fn pbft_manager_proposal_session_next(
+        pub fn pbft_manager_proposal_session_next_with_dag(
             runtime: &BridgePbftService,
-        ) -> PbftManagerProposalSessionStep;
-        pub fn pbft_manager_proposal_session_report_dag_order(
-            runtime: &BridgePbftService,
-            report: PbftManagerProposalDagOrderReport,
-        ) -> PbftManagerProposalSessionStep;
+            dag_transaction_service: &BridgeDagTransactionService,
+        ) -> Result<PbftManagerProposalSessionStep>;
         pub fn plan_pbft_manager_broadcast(
             fact: PbftManagerBroadcastFact,
         ) -> PbftManagerBroadcastPlan;

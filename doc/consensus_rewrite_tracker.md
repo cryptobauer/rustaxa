@@ -3771,6 +3771,15 @@ Native and bridge validation passes 1,223 tests, Rust consensus C++ validation p
 null-anchor manager case passes. The isolated overweight manager case still stops earlier at the tracked missing
 latest-block FinalChain account snapshot boundary; its direct helper assertion passes before that unrelated stop.
 
+The following `CRW-12` cut moves proposal-time DAG-order execution into the composed native PBFT and DAG roots. Rust
+captures canonical order under the DAG lock, loads ordered block hash/gas facts after releasing it, preserves checked
+gas clipping and closest-anchor recomputation, and revalidates the pending cursor generation/period/anchor after
+releasing the manager lock for DAG work. C++ now receives only a terminal
+build/skip command before the retained signing/materialization boundary. The request/report loop, two proposal DAG fact
+carriers, and one net CXX function are deleted, lowering bridge lines to 21,381, shim lines to 15,485, CXX functions to
+367, and carriers to 308. Native and bridge validation passes 1,228 tests; the rebuilt proposal/broadcast manager case
+passes through the new native order path.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

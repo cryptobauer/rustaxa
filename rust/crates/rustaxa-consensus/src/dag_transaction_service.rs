@@ -98,6 +98,15 @@ pub(crate) struct DagPbftCandidatePayloadPreparation {
     pub total_gas: U256,
 }
 
+/// One canonical DAG block fact prepared for native PBFT proposal planning.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DagPbftCandidateBlockFact {
+    /// Canonical DAG block hash in deterministic order.
+    pub hash: H256,
+    /// Canonical block gas estimate used by PBFT proposal clipping.
+    pub gas_estimation: u64,
+}
+
 /// Canonical transaction payload supplied while preparing a DAG block.
 #[derive(Clone, Debug)]
 pub struct DagAddBlockTransactionPayload {
@@ -707,19 +716,11 @@ impl DagTransactionService {
         self.dag.runtime_compute_order(anchor)
     }
 
-    /// Prepares one PBFT candidate's canonical DAG payload.
-    ///
-    /// The candidate period must be exactly the live DAG period plus one and
-    /// the requested anchor must differ from the current finalized anchor,
-    /// matching legacy `getDagBlockOrder` availability. Ordered blocks are
-    /// loaded from canonical DAG storage. Transaction RLPs are intentionally
-    /// deferred until finalization to preserve the legacy live-sidecar lookup
-    /// epoch. The exact `U256` gas sum is prepared under the DAG lock.
-    pub(crate) fn prepare_pbft_candidate_payload(
+    fn pbft_candidate_order_and_storage(
         &self,
         period: u64,
         anchor: H256,
-    ) -> Result<Option<DagPbftCandidatePayloadPreparation>> {
+    ) -> Result<Option<(Vec<H256>, Arc<Storage>)>> {
         let dag = self.lock_dag()?;
         let Some(next_period) = dag.state.period().checked_add(1) else {
             return Ok(None);
@@ -733,12 +734,63 @@ impl DagTransactionService {
         if order.is_empty() {
             return Ok(None);
         }
+        Ok(Some((order, Arc::clone(&dag.storage))))
+    }
+
+    /// Prepares canonical hash/gas facts for one PBFT proposal order.
+    ///
+    /// Period, anchor availability, and order selection are captured under the
+    /// DAG lock. Durable block loads and RLP decoding occur after releasing it,
+    /// so proposal planning does not block DAG ingress on storage latency.
+    pub(crate) fn prepare_pbft_proposal_blocks(
+        &self,
+        period: u64,
+        anchor: H256,
+    ) -> Result<Option<Vec<DagPbftCandidateBlockFact>>> {
+        let Some((order, storage)) = self.pbft_candidate_order_and_storage(period, anchor)? else {
+            return Ok(None);
+        };
+        let mut blocks = Vec::with_capacity(order.len());
+        for hash in order {
+            let Some(block_rlp) = storage
+                .dag()
+                .by_hash_rlp_optional(hash)
+                .context("PBFT_PROPOSAL_DAG_BLOCK_LOAD")?
+            else {
+                return Ok(None);
+            };
+            let block = DagBlock::try_from(DagBlockRlp::new(&block_rlp))
+                .context("PBFT_PROPOSAL_DAG_BLOCK_DECODE")?;
+            blocks.push(DagPbftCandidateBlockFact {
+                hash,
+                gas_estimation: block.gas_estimation,
+            });
+        }
+        Ok(Some(blocks))
+    }
+
+    /// Prepares one PBFT candidate's canonical DAG payload.
+    ///
+    /// The candidate period must be exactly the live DAG period plus one and
+    /// the requested anchor must differ from the current finalized anchor,
+    /// matching legacy `getDagBlockOrder` availability. Ordered blocks are
+    /// loaded from canonical DAG storage. Transaction RLPs are intentionally
+    /// deferred until finalization to preserve the legacy live-sidecar lookup
+    /// epoch. Order selection is captured under the DAG lock; durable reads,
+    /// decoding, and exact `U256` gas accumulation occur after releasing it.
+    pub(crate) fn prepare_pbft_candidate_payload(
+        &self,
+        period: u64,
+        anchor: H256,
+    ) -> Result<Option<DagPbftCandidatePayloadPreparation>> {
+        let Some((order, storage)) = self.pbft_candidate_order_and_storage(period, anchor)? else {
+            return Ok(None);
+        };
 
         let mut blocks = Vec::with_capacity(order.len());
         let mut total_gas = U256::zero();
         for hash in order {
-            let Some(block_rlp) = dag
-                .storage
+            let Some(block_rlp) = storage
                 .dag()
                 .by_hash_rlp_optional(hash)
                 .context("PBFT_CANDIDATE_DAG_BLOCK_LOAD")?

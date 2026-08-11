@@ -25,22 +25,23 @@ use crate::pbft_manager::{
     PbftCandidateDagPreparationStatus, PbftFinalizationExecutorBoundary,
     PbftFinalizationExecutorStartRequest, PbftFinalizationOwnedActionDrain,
     PbftManagerAdvancePeriodPlan, PbftManagerGuard, PbftManagerLifecycleTransitionRequest,
-    PbftManagerProposalDagOrderReport, PbftManagerProposalInitialFact,
-    PbftManagerProposalSessionStep, PbftManagerRuntimeActionReport, PbftManagerRuntimeSessionStep,
-    PbftManagerRuntimeSnapshot, PbftManagerRuntimeTickFact, PbftManagerService,
-    PbftManagerSleepPlan, PbftManagerStartupReplayPeriod, PbftManagerStateActionEffectReport,
-    PbftManagerStateActionFact, PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact,
-    PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
-    abort_pbft_manager_runtime_session, apply_executed_block_reset_storage,
-    apply_next_voted_status_storage, apply_pbft_manager_cursor_field_storage,
-    apply_pbft_manager_transition_storage, base_owned_finalization_live_report,
-    create_pbft_manager_proposal_session, create_pbft_manager_runtime_from_storage,
-    create_pbft_manager_runtime_session, create_pbft_manager_state_action_effect_session,
-    load_pbft_manager_startup_replay_period, next_pbft_manager_proposal_session,
-    next_pbft_manager_runtime_action, next_pbft_manager_state_action_effect_session,
-    plan_pbft_manager_runtime_sleep_until_next_step, report_pbft_manager_proposal_dag_order,
-    report_pbft_manager_runtime_action, report_pbft_manager_state_action_effect_session,
-    save_cert_voted_block_in_round_storage,
+    PbftManagerProposalAction, PbftManagerProposalDagBlockFact, PbftManagerProposalDagOrderReport,
+    PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerRuntimeActionReport,
+    PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeTickFact,
+    PbftManagerService, PbftManagerSleepPlan, PbftManagerStartupReplayPeriod,
+    PbftManagerStateActionEffectReport, PbftManagerStateActionFact,
+    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionStatus,
+    PbftManagerTransitionStorageStatus, abort_pbft_manager_runtime_session,
+    apply_executed_block_reset_storage, apply_next_voted_status_storage,
+    apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
+    base_owned_finalization_live_report, create_pbft_manager_proposal_session,
+    create_pbft_manager_runtime_from_storage, create_pbft_manager_runtime_session,
+    create_pbft_manager_state_action_effect_session, load_pbft_manager_startup_replay_period,
+    next_pbft_manager_proposal_session, next_pbft_manager_runtime_action,
+    next_pbft_manager_state_action_effect_session, plan_pbft_manager_runtime_sleep_until_next_step,
+    report_pbft_manager_proposal_dag_order, report_pbft_manager_runtime_action,
+    report_pbft_manager_state_action_effect_session, save_cert_voted_block_in_round_storage,
+    stale_pbft_manager_proposal_session_step,
 };
 #[cfg(test)]
 use crate::pbft_period_cleanup::{PbftPeriodStateCleanupResult, cleanup_period_state_with_commit};
@@ -1662,6 +1663,10 @@ impl PbftService {
             return;
         }
         let mut manager = self.manager_state();
+        manager.proposal_session_generation = manager
+            .proposal_session_generation
+            .checked_add(1)
+            .expect("PBFT proposal cursor generation exhausted");
         manager.proposal_session = Some(create_pbft_manager_proposal_session(fact));
     }
 
@@ -1690,6 +1695,86 @@ impl PbftService {
         report: PbftManagerProposalDagOrderReport,
     ) -> Option<PbftManagerProposalSessionStep> {
         let mut manager = self.manager_state();
+        manager
+            .proposal_session
+            .as_mut()
+            .map(|session| report_pbft_manager_proposal_dag_order(session, report))
+    }
+
+    /// Advances the active proposal cursor through every native DAG-order request.
+    ///
+    /// The manager lock is held only while reading or reporting one cursor
+    /// step. Canonical DAG block RLP decoding, order selection, and gas-fact
+    /// preparation run after releasing it under the DAG/transaction service's
+    /// own lock order. Missing order is reported into the cursor as the
+    /// existing terminal `MissingDagOrder` status. Storage or decode errors are
+    /// returned without reporting, leaving the exact pending anchor retryable.
+    /// A concurrently replaced cursor is detected by its generation and returns
+    /// a stale-cursor contract step without mutating the replacement.
+    pub fn proposal_session_next_with_dag(
+        &self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+    ) -> Result<Option<PbftManagerProposalSessionStep>> {
+        if !self.readiness.is_ready() {
+            return Ok(None);
+        }
+        let Some((mut step, expected_period, expected_generation)) = ({
+            let mut manager = self.manager_state();
+            let generation = manager.proposal_session_generation;
+            manager.proposal_session.as_mut().map(|session| {
+                (
+                    next_pbft_manager_proposal_session(session),
+                    session.fact.period,
+                    generation,
+                )
+            })
+        }) else {
+            return Ok(None);
+        };
+
+        loop {
+            if step.action != PbftManagerProposalAction::RequestDagOrder {
+                return Ok(Some(step));
+            }
+            let requested_anchor = step.requested_anchor_hash;
+            let prepared = dag_transaction_service
+                .prepare_pbft_proposal_blocks(expected_period, requested_anchor)?;
+            let report = match prepared {
+                Some(prepared) => PbftManagerProposalDagOrderReport {
+                    anchor_hash: requested_anchor,
+                    dag_blocks: prepared
+                        .into_iter()
+                        .map(|block| PbftManagerProposalDagBlockFact {
+                            hash: block.hash,
+                            gas_estimation: block.gas_estimation,
+                        })
+                        .collect(),
+                    order_available: true,
+                },
+                None => PbftManagerProposalDagOrderReport {
+                    anchor_hash: requested_anchor,
+                    dag_blocks: Vec::new(),
+                    order_available: false,
+                },
+            };
+            let reported =
+                self.report_proposal_dag_order_for_generation(expected_generation, report);
+            let Some(reported) = reported else {
+                return Ok(None);
+            };
+            step = reported;
+        }
+    }
+
+    fn report_proposal_dag_order_for_generation(
+        &self,
+        expected_generation: u64,
+        report: PbftManagerProposalDagOrderReport,
+    ) -> Option<PbftManagerProposalSessionStep> {
+        let mut manager = self.manager_state();
+        if manager.proposal_session_generation != expected_generation {
+            return Some(stale_pbft_manager_proposal_session_step());
+        }
         manager
             .proposal_session
             .as_mut()
@@ -3682,7 +3767,7 @@ const fn classify_sync_reward_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dag::{dag_manager_block_from_rlp, save_dag_block_to_storage};
+    use crate::dag::{DagManagerBlock, dag_manager_block_from_rlp, save_dag_block_to_storage};
     use crate::dag_service::DagServiceConfig;
     use crate::dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig};
     use crate::gas_pricer::GasPricerConfig;
@@ -4268,6 +4353,10 @@ mod tests {
     }
 
     fn candidate_dag_block_rlp(pivot: H256, gas_estimation: u64) -> Vec<u8> {
+        candidate_dag_block_rlp_at_level(pivot, 1, gas_estimation)
+    }
+
+    fn candidate_dag_block_rlp_at_level(pivot: H256, level: u64, gas_estimation: u64) -> Vec<u8> {
         let mut vdf = RlpStream::new_list(4);
         vdf.append(&vec![0x11_u8; 80]);
         vdf.append(&vec![0x22_u8]);
@@ -4275,7 +4364,7 @@ mod tests {
         vdf.append(&1_u16);
         let mut block = RlpStream::new_list(8);
         block.append(&pivot);
-        block.append(&1_u64);
+        block.append(&level);
         block.append(&0_u64);
         block.append(&vdf.out().to_vec());
         block.begin_list(0);
@@ -4283,6 +4372,36 @@ mod tests {
         block.append(&&[0_u8; 65][..]);
         block.append(&gas_estimation);
         block.out().to_vec()
+    }
+
+    fn native_proposal_fact(
+        period: u64,
+        genesis: H256,
+        ghost_path: Vec<H256>,
+        pbft_gas_limit: u64,
+    ) -> PbftManagerProposalInitialFact {
+        PbftManagerProposalInitialFact {
+            period,
+            round: 1,
+            previous_pbft_block_hash: H256::repeat_byte(0x81),
+            last_period_dag_anchor_hash: genesis,
+            dag_genesis_hash: genesis,
+            dag_blocks_size: 10,
+            ghost_path_move_back: 0,
+            pbft_gas_limit,
+            extra_data_required: false,
+            extra_data_available: true,
+            final_chain_hash_valid: true,
+            final_chain_hash: H256::repeat_byte(0x82),
+            wallets: vec![crate::pbft_manager::PbftManagerProposalWalletFact {
+                wallet_index: 7,
+                dpos_eligible: true,
+                sortition_valid: true,
+            }],
+            ghost_path,
+            has_non_finalized_fallback: false,
+            non_finalized_fallback_hash: H256::zero(),
+        }
     }
 
     fn dynamic_lambda_fact(finalized_period: u64) -> PbftDynamicLambdaFact {
@@ -6101,6 +6220,216 @@ mod tests {
                 .cached_anchor_dag_order_count(),
             0
         );
+
+        drop(dag);
+        drop(service);
+        drop(storage);
+        fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn proposal_session_native_dag_drain_builds_valid_order() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_proposal_native_dag_valid");
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        let dag = dag_service(storage.clone());
+        let genesis = H256::repeat_byte(1);
+        let block_rlp = candidate_dag_block_rlp(genesis, 42);
+        let block = dag_manager_block_from_rlp(&block_rlp)?;
+        dag.lock_dag()?.state.add_block(block.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), block.hash, 1, 0, &block_rlp)?;
+        let prepared = dag
+            .prepare_pbft_candidate_payload(1, block.hash)?
+            .expect("proposal order");
+        let expected_order_hash = pbft_candidate_dag_order_hash(&prepared.payload);
+
+        service.complete_bootstrap();
+        service.begin_proposal_session(native_proposal_fact(
+            1,
+            genesis,
+            vec![genesis, block.hash],
+            100,
+        ));
+        let step = service
+            .proposal_session_next_with_dag(&dag)?
+            .expect("proposal step");
+        assert_eq!(step.action, PbftManagerProposalAction::BuildProposal);
+        assert_eq!(step.anchor_hash, block.hash);
+        assert_eq!(step.order_hash, expected_order_hash);
+        assert_eq!(step.dag_blocks_included, 1);
+        assert_eq!(step.eligible_wallet_indices, vec![7]);
+
+        drop(dag);
+        drop(service);
+        drop(storage);
+        fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn proposal_session_stale_generation_preserves_same_and_different_period_replacements() {
+        let (path, storage) = temp_storage("rustaxa_consensus_proposal_generation");
+        let service = PbftService::restore(storage.clone(), config(1)).expect("PBFT service");
+        let genesis = H256::repeat_byte(1);
+        let anchor = H256::repeat_byte(0x93);
+        service.complete_bootstrap();
+
+        for replacement_period in [1, 2] {
+            service.begin_proposal_session(native_proposal_fact(
+                1,
+                genesis,
+                vec![genesis, anchor],
+                100,
+            ));
+            let (generation, request) = {
+                let mut manager = service.manager_state();
+                let generation = manager.proposal_session_generation;
+                let request = next_pbft_manager_proposal_session(
+                    manager.proposal_session.as_mut().expect("original cursor"),
+                );
+                (generation, request)
+            };
+            assert_eq!(request.action, PbftManagerProposalAction::RequestDagOrder);
+
+            service.begin_proposal_session(native_proposal_fact(
+                replacement_period,
+                genesis,
+                vec![genesis, anchor],
+                100,
+            ));
+            let stale = service
+                .report_proposal_dag_order_for_generation(
+                    generation,
+                    PbftManagerProposalDagOrderReport {
+                        anchor_hash: request.requested_anchor_hash,
+                        dag_blocks: Vec::new(),
+                        order_available: false,
+                    },
+                )
+                .expect("stale result");
+            assert_eq!(stale.action, PbftManagerProposalAction::ContractError);
+            assert_eq!(stale.error_code, "PBFT_MANAGER_PROPOSAL_STALE_CURSOR");
+
+            let replacement = service
+                .proposal_session_next()
+                .expect("replacement survives");
+            assert_eq!(
+                replacement.action,
+                PbftManagerProposalAction::RequestDagOrder
+            );
+            assert_eq!(replacement.requested_anchor_hash, anchor);
+        }
+
+        drop(service);
+        drop(storage);
+        fs::remove_dir_all(path).expect("temporary storage cleanup");
+    }
+
+    #[test]
+    fn proposal_session_native_dag_drain_reports_missing_order() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_proposal_native_dag_missing");
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        let dag = dag_service(storage.clone());
+        let genesis = H256::repeat_byte(1);
+        let missing = H256::repeat_byte(0x91);
+
+        service.complete_bootstrap();
+        service.begin_proposal_session(native_proposal_fact(
+            1,
+            genesis,
+            vec![genesis, missing],
+            100,
+        ));
+        let step = service
+            .proposal_session_next_with_dag(&dag)?
+            .expect("missing-order step");
+        assert_eq!(step.action, PbftManagerProposalAction::SkipProposal);
+        assert_eq!(
+            step.status,
+            crate::pbft_manager::PbftManagerProposalStatus::MissingDagOrder
+        );
+        assert_eq!(step.error_code, "PBFT_MANAGER_PROPOSAL_MISSING_DAG_ORDER");
+
+        drop(dag);
+        drop(service);
+        drop(storage);
+        fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn proposal_session_native_dag_drain_reanchors_and_recomputes_order() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_proposal_native_dag_reanchor");
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        let dag = dag_service(storage.clone());
+        let genesis = H256::repeat_byte(1);
+        let first_rlp = candidate_dag_block_rlp_at_level(genesis, 1, 40);
+        let first = dag_manager_block_from_rlp(&first_rlp)?;
+        dag.lock_dag()?.state.add_block(first.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), first.hash, 1, 0, &first_rlp)?;
+        let second_rlp = candidate_dag_block_rlp_at_level(first.hash, 2, 80);
+        let second = dag_manager_block_from_rlp(&second_rlp)?;
+        dag.lock_dag()?.state.add_block(second.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), second.hash, 2, 0, &second_rlp)?;
+        let first_prepared = dag
+            .prepare_pbft_candidate_payload(1, first.hash)?
+            .expect("reanchored order");
+        let expected_order_hash = pbft_candidate_dag_order_hash(&first_prepared.payload);
+
+        service.complete_bootstrap();
+        service.begin_proposal_session(native_proposal_fact(
+            1,
+            genesis,
+            vec![genesis, first.hash, second.hash],
+            50,
+        ));
+        let step = service
+            .proposal_session_next_with_dag(&dag)?
+            .expect("reanchored build step");
+        assert_eq!(step.action, PbftManagerProposalAction::BuildProposal);
+        assert_eq!(step.anchor_hash, first.hash);
+        assert_eq!(step.order_hash, expected_order_hash);
+        assert_eq!(step.dag_blocks_included, 1);
+
+        drop(dag);
+        drop(service);
+        drop(storage);
+        fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn proposal_session_native_dag_error_preserves_pending_request() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_proposal_native_dag_error");
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        let dag = dag_service(storage.clone());
+        let genesis = H256::repeat_byte(1);
+        let malformed_hash = H256::repeat_byte(0x92);
+        dag.lock_dag()?.state.add_block(DagManagerBlock {
+            hash: malformed_hash,
+            pivot: genesis,
+            tips: Vec::new(),
+            level: 1,
+            difficulty: 1,
+        })?;
+        save_dag_block_to_storage(storage.as_ref(), malformed_hash, 1, 0, &[0x80])?;
+
+        service.complete_bootstrap();
+        service.begin_proposal_session(native_proposal_fact(
+            1,
+            genesis,
+            vec![genesis, malformed_hash],
+            100,
+        ));
+        let error = service
+            .proposal_session_next_with_dag(&dag)
+            .expect_err("malformed canonical block must abort native drain");
+        assert!(error.to_string().contains("PBFT_PROPOSAL_DAG_BLOCK_DECODE"));
+        let pending = service
+            .proposal_session_next()
+            .expect("pending request remains retryable");
+        assert_eq!(pending.action, PbftManagerProposalAction::RequestDagOrder);
+        assert_eq!(pending.requested_anchor_hash, malformed_hash);
 
         drop(dag);
         drop(service);

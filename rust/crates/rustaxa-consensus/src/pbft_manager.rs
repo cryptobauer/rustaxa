@@ -431,6 +431,8 @@ pub struct PbftManagerRuntimeState {
     pub(crate) runtime_session: Option<PbftManagerRuntimeSession>,
     /// Optional PBFT block-proposal planning cursor.
     pub(crate) proposal_session: Option<PbftManagerProposalSession>,
+    /// Monotonic identity of the currently published proposal cursor.
+    pub(crate) proposal_session_generation: u64,
     /// Optional finalization executor state for the current PBFT block.
     pub finalization_runtime_session: Option<crate::pbft_finalize::PbftFinalizationRuntimeState>,
     /// Optional immutable plan paired with the active finalization executor.
@@ -1779,6 +1781,7 @@ impl PbftManagerService {
                 state_action_effect_session: None,
                 runtime_session: None,
                 proposal_session: None,
+                proposal_session_generation: 0,
                 finalization_runtime_session: None,
                 finalization_runtime_plan: None,
                 finalization_sortition_commit_request: None,
@@ -3919,6 +3922,15 @@ pub fn report_pbft_manager_proposal_dag_order(
     );
     session.build_step = Some(step.clone());
     step
+}
+
+/// Returns the contract-error step for a stale native proposal task.
+///
+/// The active cursor is not supplied or mutated. Callers use this after a
+/// generation mismatch so a concurrent replacement remains fully retryable.
+#[must_use]
+pub(crate) fn stale_pbft_manager_proposal_session_step() -> PbftManagerProposalSessionStep {
+    pbft_manager_proposal_contract_error("PBFT_MANAGER_PROPOSAL_STALE_CURSOR")
 }
 
 /// Aborts a proposal session with a stable contract-error status.

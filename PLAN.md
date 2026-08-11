@@ -1123,7 +1123,10 @@ The current Rust consensus footprint is broad but still incomplete:
    resolves transaction bytes at the retained execution epoch, and clears the cache through the existing finalization
    action; C++ materializes the result only at the retained finalization/EVM edge. Three
    cache-membership exports, the C++ block-vector cache, and the separate DAG-weight executor check are deleted. The
-   retained direct `checkBlockWeight` helper is test-only stable-API parity surface. The next removal target is to replace
+   retained direct `checkBlockWeight` helper is test-only stable-API parity surface. Proposal construction now also
+   drains every DAG-order request, gas-clipping decision, and re-anchor/recompute loop inside the composed native PBFT
+   and DAG roots. C++ receives only the terminal build/skip command and retains proposal signing/materialization; the
+   DAG-order report carriers and two-step C++ executor protocol are deleted. The next removal target is to replace
    remaining transaction and pillar-vote decision glue with shared Rust
    executor intents that consume existing Rust FinalChain bundles. After the shared planner owns deeper sync acceptance,
    `identifyLeaderBlock`,
