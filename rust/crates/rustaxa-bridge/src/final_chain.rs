@@ -1015,6 +1015,7 @@ impl BridgePbftService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag_transaction_service::create_dag_transaction_service_from_storage;
     use crate::ffi::{BridgeDagStorageQueries, BridgeStorage};
     use crate::pbft_manager::create_pbft_service_from_storage;
     use crate::storage::{create_dag_storage_queries, create_storage};
@@ -1255,6 +1256,39 @@ mod tests {
             },
         )
         .expect("PBFT service should initialize")
+    }
+
+    fn make_dag_transaction_service(
+        storage: &BridgeStorage,
+    ) -> Box<crate::dag_transaction_service::BridgeDagTransactionService> {
+        create_dag_transaction_service_from_storage(
+            storage,
+            &[1u8; 32],
+            32,
+            100,
+            rustaxa_ffi::SortitionRuntimeConfig {
+                threshold_upper: 0x100,
+                difficulty_min: 1,
+                difficulty_max: 10,
+                difficulty_stale: 5,
+                lambda_bound: 100,
+                changes_count_for_average: 8,
+                dag_efficiency_target_low: 5_000,
+                dag_efficiency_target_high: 10_000,
+                changing_interval: 10,
+                computation_interval: 5,
+            },
+            rustaxa_ffi::TransactionQueueConfig { max_size: 16 },
+            rustaxa_ffi::GasPricerConfig {
+                percentile: 50,
+                minimum_price: [0u8; 32],
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+            1_000_000,
+        )
+        .expect("Dag transaction service should initialize")
     }
 
     fn ffi_transaction(
@@ -2228,31 +2262,31 @@ mod tests {
         let final_chain =
             make_final_chain_with_storage(&storage, vec![genesis_validator(validator, 10_000)]);
         let pbft_service = make_pbft_service(&storage);
+        let dag_transaction_service = make_dag_transaction_service(&storage);
 
         let plan = crate::pbft_manager::plan_pbft_manager_block_validation(
             &pbft_service,
             &final_chain,
+            &dag_transaction_service,
             &rustaxa_ffi::PbftManagerBlockValidationFact {
                 block_hash: [0x11; 32],
                 period: 1,
                 previous_pbft_block_hash: [0; 32],
                 candidate_final_chain_hash: [0; 32],
+                expected_order_hash: [0x21; 32],
+                pbft_gas_limit: 42_000,
                 reward_vote_hashes: Vec::new(),
                 has_pillar_block_hash: false,
                 pillar_block_hash: [0; 32],
                 pivot_hash: [0x22; 32],
-                pivot_is_null: false,
-                dag_order_required: true,
                 extra_data_required: false,
                 extra_data_present: false,
                 extra_data_pillar_hash_present: false,
                 pillar_block_required: false,
-                dag_order_status: 4,
-                dag_weight_status: 4,
             },
         )
         .expect("missing FinalChain hash should remain a typed wait plan");
-        assert_eq!((plan.action, plan.status, plan.next_check), (3, 3, 1));
+        assert_eq!((plan.action, plan.status), (3, 3));
         assert_eq!(
             plan.error_code,
             "PBFT_MANAGER_BLOCK_VALIDATION_FINAL_CHAIN_HASH_MISSING"

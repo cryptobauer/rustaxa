@@ -597,6 +597,12 @@ retained DAG result. The four external status fields, three C++ decision branche
 CXX result family, and the one-use VoteManager validation method are deleted; native behavior tests replace the removed
 CXX chain-validation transcript.
 
+The DAG stage is now part of the same native validation task. The PBFT root borrows the native DAG/transaction sibling,
+prepares and caches the canonical candidate payload, and maps missing order, order-hash mismatch, and excess gas weight
+without returning an executor request to C++. The bridge only joins the two opaque roots; the manager shim supplies
+immutable order hash and gas limit facts and receives a terminal decision. The former DAG status/report loop and its
+test-only manager weight facade are deleted.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT

@@ -302,15 +302,6 @@ class PbftManager {
   static void reorderTransactions(SharedTransactions &transactions);
 
   /**
-   * @brief Computes legacy DAG gas weight for the retained direct parity test.
-   *
-   * Production candidate validation uses native Rust DAG preparation. This
-   * helper remains only while `pbft_manager_test` directly exercises the stable
-   * C++ API.
-   */
-  bool checkBlockWeight(const std::vector<std::shared_ptr<DagBlock>> &dag_blocks, PbftPeriod period) const;
-
-  /**
    * @brief Publish a proposed block through the native PBFT service.
    *
    * @param proposed_block

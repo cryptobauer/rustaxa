@@ -3826,6 +3826,17 @@ removed CXX chain-validation behavior test and cover valid completion, every nat
 FinalChain wait, and pillar readiness errors. Bridge lines fall to 21,223, shim lines to 14,906, CXX functions to 363,
 and carriers to 301.
 
+The following `CRW-12` cut composes the retained DAG candidate-preparation stage into that same native PBFT task.
+`PbftService` now drives canonical DAG ordering, order-hash validation, gas-weight validation, and cache publication
+through the borrowed native DAG/transaction sibling before returning one terminal accept, reject, or wait plan. C++ no
+longer interprets or reports DAG statuses; the two caller-controlled status fields, two redundant DAG branch flags,
+terminal `next_check`, one-use preparation export/bridge wrapper, five status constants, retry loop, and parity-only
+`PbftManager::checkBlockWeight` facade are deleted. Native composition tests cover accepted, missing, order-hash-invalid,
+and weight-invalid DAGs, including inconsistent caller flags and cache non-publication. The Rust-enabled overweight
+integration assertion now computes the observed legacy
+block weight locally; the original helper assertion remains untouched in the pure-C++ branch. Bridge lines fall to
+21,210, shim lines to 14,845, CXX functions to 362, and carriers remain 301.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

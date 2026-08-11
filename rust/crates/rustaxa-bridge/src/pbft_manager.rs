@@ -998,33 +998,6 @@ pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
         .into()
 }
 
-/// Prepares and caches the canonical DAG payload for one PBFT candidate.
-///
-/// The two services compose order, canonical storage payloads, order-hash
-/// validation, and period gas weight from the supplied immutable candidate
-/// facts. The returned scalar preserves the dedicated valid, missing,
-/// order-hash-invalid, and weight-invalid status codes.
-/// Only a valid candidate is cached; native failures return an error without
-/// publishing a partial entry.
-pub fn pbft_manager_runtime_prepare_candidate_dag(
-    runtime: &BridgePbftService,
-    dag_transaction_service: &BridgeDagTransactionService,
-    period: u64,
-    anchor_hash: [u8; 32],
-    expected_order_hash: [u8; 32],
-    pbft_gas_limit: u64,
-) -> anyhow::Result<u8> {
-    Ok(dag_transaction_service
-        .prepare_pbft_candidate_dag(
-            runtime,
-            period,
-            ethereum_types::H256::from(anchor_hash),
-            ethereum_types::H256::from(expected_order_hash),
-            pbft_gas_limit,
-        )?
-        .as_u8())
-}
-
 /// Loads the local node's own pillar-block vote through PBFT-manager runtime storage.
 ///
 /// Inputs:
@@ -1486,16 +1459,20 @@ pub fn report_pbft_manager_broadcast(
 }
 
 /// Composes ordinary PBFT validation from immutable candidate facts, resolving
-/// native chain, FinalChain, reward, extra-data, and pillar checks. It returns a
-/// terminal plan, typed wait/error, or the retained external DAG check.
+/// native chain, FinalChain, reward, extra-data, pillar, and DAG checks. It returns a
+/// terminal plan or typed wait/error.
 pub fn plan_pbft_manager_block_validation(
     runtime: &BridgePbftService,
     final_chain: &BridgeFinalChain,
+    dag_transaction_service: &BridgeDagTransactionService,
     fact: &FfiPbftManagerBlockValidationFact,
 ) -> anyhow::Result<FfiPbftManagerBlockValidationPlan> {
-    Ok(runtime
-        .0
-        .validate_pbft_block_composed(&final_chain.0, block_validation_candidate_from_ffi(fact))?
+    Ok(dag_transaction_service
+        .validate_pbft_block(
+            runtime,
+            final_chain,
+            block_validation_candidate_from_ffi(fact),
+        )?
         .into())
 }
 
@@ -1506,6 +1483,8 @@ fn block_validation_candidate_from_ffi(
         fact: fact.into(),
         previous_pbft_block_hash: fact.previous_pbft_block_hash.into(),
         candidate_final_chain_hash: fact.candidate_final_chain_hash.into(),
+        expected_order_hash: fact.expected_order_hash.into(),
+        pbft_gas_limit: fact.pbft_gas_limit,
         reward_vote_hashes: fact
             .reward_vote_hashes
             .iter()
@@ -1829,8 +1808,8 @@ impl From<&FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact
             block_hash: value.block_hash.into(),
             period: value.period,
             pivot_hash: value.pivot_hash.into(),
-            pivot_is_null: value.pivot_is_null,
-            dag_order_required: value.dag_order_required,
+            pivot_is_null: value.pivot_hash == [0; 32],
+            dag_order_required: true,
             extra_data_required: value.extra_data_required,
             extra_data_present: value.extra_data_present,
             extra_data_pillar_hash_present: value.extra_data_pillar_hash_present,
@@ -1843,10 +1822,8 @@ impl From<&FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact
             } else {
                 PbftManagerBlockValidationFactStatus::NotRequired
             },
-            dag_order_status: PbftManagerBlockValidationFactStatus::from_u8(value.dag_order_status),
-            dag_weight_status: PbftManagerBlockValidationFactStatus::from_u8(
-                value.dag_weight_status,
-            ),
+            dag_order_status: PbftManagerBlockValidationFactStatus::NotChecked,
+            dag_weight_status: PbftManagerBlockValidationFactStatus::NotChecked,
         }
     }
 }
@@ -2095,7 +2072,6 @@ impl From<PbftManagerBlockValidationPlan> for FfiPbftManagerBlockValidationPlan 
         Self {
             action: value.action.as_u8(),
             status: value.status.as_u8(),
-            next_check: value.next_check.as_u8(),
             error_code: value.error_code.to_string(),
         }
     }
@@ -2870,18 +2846,16 @@ mod tests {
             period: 12,
             previous_pbft_block_hash: [0x12; 32],
             candidate_final_chain_hash: [0x13; 32],
+            expected_order_hash: [0x21; 32],
+            pbft_gas_limit: 42_000,
             reward_vote_hashes: vec![FfiPbftFinalizationHash { hash: [0x14; 32] }],
             has_pillar_block_hash: true,
             pillar_block_hash: [0x15; 32],
             pivot_hash: [0x22; 32],
-            pivot_is_null: false,
-            dag_order_required: true,
             extra_data_required: true,
             extra_data_present: true,
             extra_data_pillar_hash_present: true,
             pillar_block_required: true,
-            dag_order_status: 1,
-            dag_weight_status: 0,
         };
         let block_fact: PbftManagerBlockValidationFact = (&ffi_block_fact).into();
         assert_eq!(block_fact.block_hash, ethereum_types::H256([0x11; 32]));
@@ -2894,13 +2868,11 @@ mod tests {
         assert_eq!(block_fact.pbft_chain_status, not_checked);
         assert_eq!(block_fact.reward_votes_status, not_checked);
         assert_eq!(block_fact.pillar_block_status, not_checked);
-        assert_eq!(
-            block_fact.dag_weight_status,
-            PbftManagerBlockValidationFactStatus::NotChecked
-        );
         let candidate = block_validation_candidate_from_ffi(&ffi_block_fact);
         assert_eq!(candidate.previous_pbft_block_hash, [0x12; 32].into());
         assert_eq!(candidate.candidate_final_chain_hash, [0x13; 32].into());
+        assert_eq!(candidate.expected_order_hash, [0x21; 32].into());
+        assert_eq!(candidate.pbft_gas_limit, 42_000);
         assert_eq!(candidate.reward_vote_hashes, vec![[0x14; 32].into()]);
         assert_eq!(candidate.pillar_block_hash, Some([0x15; 32].into()));
 
@@ -2939,10 +2911,7 @@ mod tests {
                 error_code: "BLOCK_SENTINEL",
             }
             .into();
-        assert_eq!(
-            (block_plan.action, block_plan.status, block_plan.next_check),
-            (3, 3, 1)
-        );
+        assert_eq!((block_plan.action, block_plan.status), (3, 3));
         assert_eq!(block_plan.error_code, "BLOCK_SENTINEL");
 
         let candidate_plan: FfiPbftManagerCandidateAdmissionPlan =

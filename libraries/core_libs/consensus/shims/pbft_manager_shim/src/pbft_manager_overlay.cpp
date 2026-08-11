@@ -157,20 +157,10 @@ constexpr uint8_t kPbftManagerCandidateAdmissionActionAccept = 2;
 constexpr uint8_t kPbftManagerCandidateAdmissionActionReject = 3;
 constexpr uint8_t kPbftManagerCandidateAdmissionActionDeferMissingBlock = 4;
 constexpr uint8_t kPbftManagerCandidateAdmissionActionContractError = 255;
-constexpr uint8_t kPbftManagerBlockValidationFactNotChecked = 0;
-constexpr uint8_t kPbftManagerBlockValidationFactValid = 1;
-constexpr uint8_t kPbftManagerBlockValidationFactInvalid = 2;
-constexpr uint8_t kPbftManagerBlockValidationFactMissing = 3;
-constexpr uint8_t kPbftManagerBlockValidationActionRunCheck = 0;
 constexpr uint8_t kPbftManagerBlockValidationActionAccept = 1;
 constexpr uint8_t kPbftManagerBlockValidationActionReject = 2;
 constexpr uint8_t kPbftManagerBlockValidationActionWaitForFinalization = 3;
 constexpr uint8_t kPbftManagerBlockValidationActionContractError = 255;
-constexpr uint8_t kPbftManagerBlockValidationCheckDagOrder = 5;
-constexpr uint8_t kPbftManagerCandidateDagValid = 0;
-constexpr uint8_t kPbftManagerCandidateDagMissing = 1;
-constexpr uint8_t kPbftManagerCandidateDagOrderHashInvalid = 2;
-constexpr uint8_t kPbftManagerCandidateDagWeightInvalid = 3;
 constexpr uint8_t kPillarAnchorDecisionSelectPreviousPeriod = 1;
 constexpr uint8_t kPillarAnchorDecisionRestartPostProcessing = 2;
 
@@ -2607,67 +2597,32 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   fact.period = block_period;
   fact.previous_pbft_block_hash = toBridgeHash(pbft_block->getPrevBlockHash());
   fact.candidate_final_chain_hash = toBridgeHash(pbft_block->getFinalChainHash());
+  fact.expected_order_hash = toBridgeHash(pbft_block->getOrderHash());
+  fact.pbft_gas_limit = kGenesisConfig.getGasLimits(block_period).second;
   fact.reward_vote_hashes = toBridgeHashes(pbft_block->getRewardVotes());
   fact.has_pillar_block_hash = pillar_hash.has_value();
   fact.pillar_block_hash = pillar_hash ? toBridgeHash(*pillar_hash) : std::array<uint8_t, 32>{};
   fact.pivot_hash = toBridgeHash(anchor_hash);
-  fact.pivot_is_null = anchor_hash == kNullBlockHash;
-  fact.dag_order_required = true;
   fact.extra_data_required = kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(block_period);
   fact.extra_data_present = extra_data.has_value();
   fact.extra_data_pillar_hash_present = pillar_hash.has_value();
   fact.pillar_block_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
-  fact.dag_order_status = kPbftManagerBlockValidationFactNotChecked;
-  fact.dag_weight_status = kPbftManagerBlockValidationFactValid;
+  const auto plan = rustaxa::plan_pbft_manager_block_validation(pbft_service_->service(),
+                                                               final_chain_->rustFinalChain(),
+                                                               dag_transaction_service_->service(), fact);
 
-  const auto plan_validation = [&] {
-    return rustaxa::plan_pbft_manager_block_validation(pbft_service_->service(), final_chain_->rustFinalChain(), fact);
-  };
-  auto plan = plan_validation();
-  while (true) {
-    if (plan.action == kPbftManagerBlockValidationActionAccept) {
-      return true;
-    }
-    if (plan.action == kPbftManagerBlockValidationActionReject ||
-        plan.action == kPbftManagerBlockValidationActionWaitForFinalization) {
-      return false;
-    }
-    if (plan.action == kPbftManagerBlockValidationActionContractError) {
-      throw std::runtime_error("Rust PBFT block validation planner rejected bridge facts: " +
-                               std::string(plan.error_code));
-    }
-    if (plan.action != kPbftManagerBlockValidationActionRunCheck) {
-      throw std::runtime_error("Rust PBFT block validation planner returned unknown action");
-    }
-
-    if (plan.next_check == kPbftManagerBlockValidationCheckDagOrder) {
-      const auto dag_status = rustaxa::pbft_manager_runtime_prepare_candidate_dag(
-          pbft_service_->service(), dag_transaction_service_->service(), block_period, toBridgeHash(anchor_hash),
-          toBridgeHash(pbft_block->getOrderHash()), kGenesisConfig.getGasLimits(block_period).second);
-      if (dag_status == kPbftManagerCandidateDagValid) {
-        fact.dag_order_status = kPbftManagerBlockValidationFactValid;
-        fact.dag_weight_status = kPbftManagerBlockValidationFactValid;
-      } else if (dag_status == kPbftManagerCandidateDagMissing) {
-        LOG(log_er_) << "Missing dag blocks for proposed PBFT block " << pbft_block_hash;
-        fact.dag_order_status = kPbftManagerBlockValidationFactMissing;
-      } else if (dag_status == kPbftManagerCandidateDagOrderHashInvalid) {
-        LOG(log_er_) << "Order hash incorrect for PBFT block " << pbft_block_hash
-                     << ". Declared order hash: " << pbft_block->getOrderHash();
-        fact.dag_order_status = kPbftManagerBlockValidationFactInvalid;
-      } else if (dag_status == kPbftManagerCandidateDagWeightInvalid) {
-        LOG(log_er_) << "PBFT block " << pbft_block_hash << " weight exceeded max limit";
-        fact.dag_order_status = kPbftManagerBlockValidationFactValid;
-        fact.dag_weight_status = kPbftManagerBlockValidationFactInvalid;
-      } else {
-        throw std::runtime_error("Rust PBFT candidate DAG preparation returned unknown status");
-      }
-
-      plan = plan_validation();
-      continue;
-    }
-
-    throw std::runtime_error("Rust PBFT block validation planner returned unknown next check");
+  if (plan.action == kPbftManagerBlockValidationActionAccept) {
+    return true;
   }
+  if (plan.action == kPbftManagerBlockValidationActionReject ||
+      plan.action == kPbftManagerBlockValidationActionWaitForFinalization) {
+    return false;
+  }
+  if (plan.action == kPbftManagerBlockValidationActionContractError) {
+    throw std::runtime_error("Rust PBFT block validation planner rejected bridge facts: " +
+                             std::string(plan.error_code));
+  }
+  throw std::runtime_error("Rust PBFT block validation planner returned unknown action");
 }
 
 bool PbftManager::pushCertVotedPbftBlockIntoChain_(const std::shared_ptr<PbftBlock> &pbft_block,
@@ -3603,13 +3558,6 @@ std::shared_ptr<PbftBlock> PbftManager::getPbftProposedBlock(PbftPeriod period, 
   }
 
   return std::make_shared<PbftBlock>(fromBridgeBytes(proposed_block.block_rlp));
-}
-
-bool PbftManager::checkBlockWeight(const std::vector<std::shared_ptr<DagBlock>> &dag_blocks, PbftPeriod period) const {
-  const u256 total_weight =
-      std::accumulate(dag_blocks.begin(), dag_blocks.end(), u256(0),
-                      [](u256 value, const auto &dag_block) { return value + dag_block->getGasEstimation(); });
-  return total_weight <= kGenesisConfig.getGasLimits(period).second;
 }
 
 PbftManager::EligibleWallets::EligibleWallets(const std::vector<WalletConfig> &wallets) {

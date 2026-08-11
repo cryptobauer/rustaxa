@@ -1377,25 +1377,22 @@ pub mod rustaxa_ffi {
         period: u64,
         previous_pbft_block_hash: [u8; 32],
         candidate_final_chain_hash: [u8; 32],
+        expected_order_hash: [u8; 32],
+        pbft_gas_limit: u64,
         reward_vote_hashes: Vec<PbftFinalizationHash>,
         has_pillar_block_hash: bool,
         pillar_block_hash: [u8; 32],
         pivot_hash: [u8; 32],
-        pivot_is_null: bool,
-        dag_order_required: bool,
         extra_data_required: bool,
         extra_data_present: bool,
         extra_data_pillar_hash_present: bool,
         pillar_block_required: bool,
-        dag_order_status: u8,
-        dag_weight_status: u8,
     }
 
     /// Next PBFT block-validation action requested by Rust.
     struct PbftManagerBlockValidationPlan {
         action: u8,
         status: u8,
-        next_check: u8,
         error_code: String,
     }
 
@@ -3964,14 +3961,6 @@ pub mod rustaxa_ffi {
             round: u32,
             block_hash: [u8; 32],
         ) -> PbftManagerRuntimeSnapshot;
-        pub fn pbft_manager_runtime_prepare_candidate_dag(
-            runtime: &BridgePbftService,
-            dag_transaction_service: &BridgeDagTransactionService,
-            period: u64,
-            anchor_hash: [u8; 32],
-            expected_order_hash: [u8; 32],
-            pbft_gas_limit: u64,
-        ) -> Result<u8>;
         pub fn pbft_manager_runtime_cached_candidate_dag_payload(
             runtime: &BridgePbftService,
             dag_transaction_service: &BridgeDagTransactionService,
@@ -4073,6 +4062,7 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_block_validation(
             runtime: &BridgePbftService,
             final_chain: &BridgeFinalChain,
+            dag_transaction_service: &BridgeDagTransactionService,
             fact: &PbftManagerBlockValidationFact,
         ) -> Result<PbftManagerBlockValidationPlan>;
         pub fn plan_pbft_manager_candidate_admission(

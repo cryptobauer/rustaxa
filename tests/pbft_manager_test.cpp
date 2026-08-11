@@ -694,7 +694,14 @@ TEST_F(PbftManagerWithDagCreation, produce_overweighted_block) {
   const auto period = node->getFinalChain()->lastBlockNumber();
   auto period_data = node->getDB()->getPeriodData(period);
   ASSERT_TRUE(period_data.has_value());
+#ifdef RUSTAXA_ENABLE
+  const auto total_weight = std::accumulate(
+      period_data->dag_blocks.begin(), period_data->dag_blocks.end(), u256(0),
+      [](u256 weight, const auto &dag_block) { return weight + dag_block->getGasEstimation(); });
+  EXPECT_GT(total_weight, node_cfgs.front().genesis.pbft.gas_limit);
+#else
   EXPECT_FALSE(node->getPbftManager()->checkBlockWeight(period_data->dag_blocks, period));
+#endif
 }
 
 #ifndef RUSTAXA_ENABLE

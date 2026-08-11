@@ -2754,10 +2754,10 @@ pub struct PbftManagerLeaderCandidatePlan {
 
 /// Tri-state fact status for Rust-owned PBFT block validation orchestration.
 ///
-/// C++ reports each live-object check with this status after Rust asks for the
-/// next check. `Missing` is distinct from `Invalid` for FinalChain lag and DAG
-/// order availability, where the caller may choose to retry or delay instead of
-/// treating the peer/block as malicious.
+/// The native application task records each dependency check with this status.
+/// `Missing` is distinct from `Invalid` for FinalChain lag and DAG order
+/// availability, where the caller may retry instead of treating the block as
+/// malicious.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PbftManagerBlockValidationFactStatus {
     /// The fact has not been supplied yet.
@@ -2776,9 +2776,9 @@ pub enum PbftManagerBlockValidationFactStatus {
 
 /// Native result of preparing one PBFT candidate's canonical DAG payload.
 ///
-/// The numeric values are a stable compatibility ABI: valid, unavailable
-/// order/materialization, order-hash mismatch, and PBFT gas-limit rejection.
-/// Only `Valid` publishes a cache entry.
+/// The variants distinguish valid, unavailable order/materialization,
+/// order-hash mismatch, and PBFT gas-limit rejection. Only `Valid` publishes a
+/// cache entry.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PbftCandidateDagPreparationStatus {
     /// The canonical payload was validated and is cached by anchor.
@@ -2789,18 +2789,6 @@ pub enum PbftCandidateDagPreparationStatus {
     OrderHashInvalid,
     /// The legacy divergence rule required a weight check and it exceeded the limit.
     WeightInvalid,
-}
-
-impl PbftCandidateDagPreparationStatus {
-    /// Returns the stable bridge status code.
-    pub const fn as_u8(self) -> u8 {
-        match self {
-            Self::Valid => 0,
-            Self::Missing => 1,
-            Self::OrderHashInvalid => 2,
-            Self::WeightInvalid => 3,
-        }
-    }
 }
 
 impl PbftManagerBlockValidationFactStatus {
@@ -2957,21 +2945,20 @@ impl PbftManagerBlockValidationStatus {
 ///
 /// Inputs:
 /// - Block identity fields let C++ correlate diagnostics and cached DAG state.
-/// - `*_status` fields report the result of live checks only after Rust asks for
-///   the corresponding `next_check`.
+/// - `*_status` fields are internal planner progress facts owned by the native
+///   application task.
 /// - `extra_data_required`, `extra_data_present`, and
 ///   `extra_data_pillar_hash_present` let Rust validate the block's immutable
 ///   extra-data shape without requesting a live executor check.
-/// - `pivot_is_null`, `dag_order_required`, and `pillar_block_required` encode
-///   deterministic branch conditions that C++ can derive from existing sidecars
-///   without deciding final acceptance.
+/// - `pivot_is_null` and `dag_order_required` are normalized from the pivot and
+///   ordinary-validation contract; `pillar_block_required` is immutable policy.
 ///
 /// Outputs are produced by `plan_pbft_manager_block_validation`.
 ///
 /// Invariants and edge behavior:
 /// - Rust owns the ordering of all validation checks.
-/// - C++ owns live PBFT chain, FinalChain, reward-vote, pillar, and DAG queries;
-///   Rust owns extra-data presence and pillar-hash consistency.
+/// - Native PBFT siblings own chain, FinalChain, reward-vote, pillar, DAG, and
+///   extra-data decisions; C++ supplies only immutable candidate facts.
 /// - Missing FinalChain hash facts return `WaitForFinalization`; proposal paths
 ///   may treat that as rejection, while sync paths can wait and retry.
 #[derive(Debug, Clone, Eq, PartialEq)]

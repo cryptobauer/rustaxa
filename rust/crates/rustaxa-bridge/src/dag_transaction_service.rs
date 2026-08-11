@@ -34,8 +34,7 @@ use rustaxa_consensus::dag_transaction_service::{
     DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
 };
 use rustaxa_consensus::pbft_manager::{
-    PbftCandidateDagPreparationStatus, PbftFinalizationExecutorBoundary,
-    PbftFinalizationExecutorStartRequest,
+    PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
 };
 use rustaxa_consensus::transaction_packing_service::{
     TransactionPackingEstimate, TransactionPackingSelection,
@@ -129,6 +128,20 @@ pub fn pbft_manager_proposal_session_next_with_dag(
 }
 
 impl BridgeDagTransactionService {
+    /// Composes ordinary validation across the opaque PBFT and DAG roots.
+    /// Immutable candidate facts produce one terminal plan; storage and lock
+    /// failures propagate without exposing either root or publishing partial state.
+    pub(crate) fn validate_pbft_block(
+        &self,
+        runtime: &BridgePbftService,
+        final_chain: &BridgeFinalChain,
+        candidate: rustaxa_consensus::pbft_service::PbftBlockValidationCandidate,
+    ) -> Result<rustaxa_consensus::pbft_manager::PbftManagerBlockValidationPlan> {
+        runtime
+            .0
+            .validate_pbft_block_composed(&final_chain.0, &self.root, candidate)
+    }
+
     /// Composes exact PBFT sync transaction admission with the private native
     /// DAG/transaction root and the external FinalChain account boundary.
     ///
@@ -144,25 +157,6 @@ impl BridgeDagTransactionService {
         runtime
             .0
             .validate_pbft_sync_admission_transactions(&self.root, &final_chain.0, identities)
-    }
-
-    /// Composes native PBFT cache/status ownership with DAG order, canonical
-    /// payload, and gas ownership without exposing either root or its locks.
-    pub(crate) fn prepare_pbft_candidate_dag(
-        &self,
-        runtime: &BridgePbftService,
-        period: u64,
-        anchor: H256,
-        expected_order_hash: H256,
-        pbft_gas_limit: u64,
-    ) -> Result<PbftCandidateDagPreparationStatus> {
-        runtime.0.prepare_candidate_dag(
-            &self.root,
-            period,
-            anchor,
-            expected_order_hash,
-            pbft_gas_limit,
-        )
     }
 
     /// Starts or resumes PBFT finalization against the privately owned DAG root.
