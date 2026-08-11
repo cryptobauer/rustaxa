@@ -48,11 +48,14 @@ use crate::pbft_period_cleanup::{
 };
 use crate::pbft_readiness::PbftServiceReadiness;
 use crate::pbft_sync::{
-    PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult, PbftSyncQueueDrainStep,
-    create_pbft_sync_queue_drain_session, next_pbft_sync_queue_drain_step,
-    report_pbft_sync_queue_drain_step,
+    PbftSyncCertVoteBundleFact, PbftSyncCertVoteBundleStatus, PbftSyncCertVoteBundleValidation,
+    PbftSyncCertVoteFact, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
+    PbftSyncQueueDrainStep, create_pbft_sync_queue_drain_session, next_pbft_sync_queue_drain_step,
+    report_pbft_sync_queue_drain_step, validate_pbft_sync_cert_vote_bundle,
 };
-use crate::pbft_thresholds::{PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan};
+use crate::pbft_thresholds::{
+    PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdStatus,
+};
 use crate::pbft_vote_event::PbftVoteEventFactFlags;
 use crate::pbft_vote_generation::{
     PbftFinalChainDposAddressVoteFact, PbftFinalChainDposTotalVoteCountFacts,
@@ -63,15 +66,18 @@ use crate::pbft_vote_generation::{
     PbftFinalChainFact, PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteWeightFacts,
     generate_pbft_vote_with_weight,
 };
-use crate::pbft_vote_payload::build_weighted_pbft_vote_payload;
+use crate::pbft_vote_payload::{
+    build_slashing_pbft_vote_payload, build_weighted_pbft_vote_payload,
+};
 use crate::pbft_vote_progress::PbftVoteProgressContext;
 use crate::pbft_vote_runtime::{
     PbftNextVotesBundleEgressPayloads, PbftNextVotesBundleEgressPlan,
     PbftOptimizedVoteBundleBuildRequest, PbftOptimizedVoteBundleBuildResult,
     PbftRewardVotePayloadSelection, PbftVerifiedVoteProgressPersistenceWrite,
-    PbftVerifiedVotesService, PbftVoteAdmissionTransactionResult, PbftVoteRuntimeReplayOutcome,
-    RewardVoteCursorSnapshot, RewardVotePayloadSnapshot, RewardVoteResetApplyRequest,
-    VerifiedStepVotePayloadEntry, VerifiedVotesStateSnapshot, VerifiedVotesTwoTPlusOneVotePayloads,
+    PbftVerifiedVotesService, PbftVoteAdmissionPersistenceStatus,
+    PbftVoteAdmissionTransactionResult, PbftVoteRuntimeReplayOutcome, RewardVoteCursorSnapshot,
+    RewardVotePayloadSnapshot, RewardVoteResetApplyRequest, VerifiedStepVotePayloadEntry,
+    VerifiedVotesStateSnapshot, VerifiedVotesTwoTPlusOneVotePayloads,
     VerifiedVotesTwoTPlusOneVotedBlock,
 };
 use crate::pbft_vote_storage::{
@@ -110,9 +116,10 @@ use crate::slashing::{
     DoubleVotingProofInput, DoubleVotingProofSubmissionPlan, SlashingProofService,
     SlashingSubmitterFact, SlashingSubmitterIdentity, SlashingTransactionEffect,
 };
-use crate::verified_votes::{DetermineNewRoundOutcome, TwoTPlusOneVotedBlockType};
+use crate::verified_votes::{DetermineNewRoundOutcome, PbftVoteType, TwoTPlusOneVotedBlockType};
 use anyhow::{Context, Result};
 use ethereum_types::{H256, U256};
+use rand::Rng;
 use rustaxa_storage::{Storage, StorageWriteBatch};
 use std::sync::{Arc, Mutex};
 
@@ -325,6 +332,73 @@ pub struct PbftSyncIngressStep {
     pub slashing_transaction_effect: Option<SlashingTransactionEffect>,
 }
 
+/// Deterministic result of sync certificate-vote bundle validation and admission.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncCertVoteBundleResult {
+    /// Whether the bundle passed validation, admission, and threshold checks.
+    pub accepted: bool,
+    /// Legacy status for one of the deterministic validation stages.
+    pub status: PbftSyncCertVoteBundleStatus,
+    /// Summed weight accumulated from validated cert votes.
+    pub total_weight: u64,
+    /// Requested `2t+1` threshold when available.
+    pub two_t_plus_one: u64,
+    /// Vote hash that triggered the first terminal rejection.
+    pub first_bad_vote_hash: H256,
+    /// Stable legacy-oriented diagnostic code for the terminal result.
+    pub error_code: String,
+    /// Weighted cert-vote payloads in admission order when available.
+    pub weighted_vote_rlps: Vec<Vec<u8>>,
+    /// Slashing effects accumulated in discovery order. Repeated proof hashes
+    /// are retained so an external failed insertion can be retried in order.
+    pub slashing_transaction_effects: Vec<SlashingTransactionEffect>,
+}
+
+fn sync_cert_bundle_error_code(status: PbftSyncCertVoteBundleStatus) -> &'static str {
+    match status {
+        PbftSyncCertVoteBundleStatus::Accepted => "",
+        PbftSyncCertVoteBundleStatus::Empty => "PBFT_SYNC_CERT_BUNDLE_EMPTY",
+        PbftSyncCertVoteBundleStatus::PeriodMismatch => "PBFT_SYNC_CERT_BUNDLE_PERIOD_MISMATCH",
+        PbftSyncCertVoteBundleStatus::RoundMismatch => "PBFT_SYNC_CERT_BUNDLE_ROUND_MISMATCH",
+        PbftSyncCertVoteBundleStatus::VoteTypeMismatch => {
+            "PBFT_SYNC_CERT_BUNDLE_VOTE_TYPE_MISMATCH"
+        }
+        PbftSyncCertVoteBundleStatus::StepMismatch => "PBFT_SYNC_CERT_BUNDLE_STEP_MISMATCH",
+        PbftSyncCertVoteBundleStatus::BlockHashMismatch => {
+            "PBFT_SYNC_CERT_BUNDLE_BLOCK_HASH_MISMATCH"
+        }
+        PbftSyncCertVoteBundleStatus::LiveVoteInvalid => "PBFT_SYNC_CERT_BUNDLE_LIVE_VOTE_INVALID",
+        PbftSyncCertVoteBundleStatus::MissingWeight => "PBFT_SYNC_CERT_BUNDLE_MISSING_WEIGHT",
+        PbftSyncCertVoteBundleStatus::ThresholdMissing => "PBFT_SYNC_CERT_BUNDLE_THRESHOLD_MISSING",
+        PbftSyncCertVoteBundleStatus::InsufficientWeight => {
+            "PBFT_SYNC_CERT_BUNDLE_INSUFFICIENT_WEIGHT"
+        }
+    }
+}
+
+fn sync_cert_bundle_result(
+    validation: PbftSyncCertVoteBundleValidation,
+    weighted_vote_rlps: Vec<Vec<u8>>,
+    slashing_transaction_effects: Vec<SlashingTransactionEffect>,
+    error_code: Option<String>,
+) -> PbftSyncCertVoteBundleResult {
+    PbftSyncCertVoteBundleResult {
+        accepted: validation.valid,
+        status: validation.status,
+        total_weight: validation.total_weight,
+        two_t_plus_one: validation.two_t_plus_one,
+        first_bad_vote_hash: validation.first_bad_vote_hash,
+        error_code: error_code
+            .unwrap_or_else(|| sync_cert_bundle_error_code(validation.status).to_owned()),
+        weighted_vote_rlps: if validation.valid {
+            weighted_vote_rlps
+        } else {
+            Vec::new()
+        },
+        slashing_transaction_effects,
+    }
+}
+
 struct PbftSyncIngressSession {
     packet: DecodedPbftSyncPacketPrecheck,
     source_payload_id: u64,
@@ -379,6 +453,239 @@ impl PbftService {
     ) -> Result<DoubleVotingProofSubmissionPlan> {
         self.slashing
             .report_double_voting_proof_submission(proof_hash, transaction_inserted)
+    }
+
+    /// Validates and admits one current-certificate bundle from PBFT sync.
+    ///
+    /// The complete bundle is decoded and checked for period, round, step,
+    /// vote type, and target-block consistency before any verified-vote state
+    /// is mutated. Votes are then validated and durably admitted in input
+    /// order through the native FinalChain composition. Every hundredth PBFT
+    /// period validates every VRF proof strictly; other periods select exactly
+    /// one vote with native process randomness, preserving the legacy policy
+    /// without accepting a caller-controlled selector.
+    ///
+    /// The result contains authoritative weighted vote bytes only after the
+    /// final native `2t+1` check succeeds. Slashing transaction effects are
+    /// returned in discovery order even when a later vote rejects, because
+    /// signing and transaction-pool insertion remain external leaf effects.
+    /// Persistence and infrastructure failures return an error after any
+    /// earlier admissions that were already durably published.
+    pub fn validate_and_admit_sync_cert_vote_bundle(
+        &self,
+        final_chain: &FinalChain,
+        block_period: u64,
+        block_hash: H256,
+        canonical_vote_rlps: Vec<Vec<u8>>,
+    ) -> Result<PbftSyncCertVoteBundleResult> {
+        if canonical_vote_rlps.is_empty() {
+            return self.validate_and_admit_sync_cert_vote_bundle_with_strict_index(
+                final_chain,
+                block_period,
+                block_hash,
+                canonical_vote_rlps,
+                None,
+            );
+        }
+        let strict_index = if block_period % 100 == 0 {
+            None
+        } else {
+            Some(rand::rng().random_range(0..canonical_vote_rlps.len()))
+        };
+        self.validate_and_admit_sync_cert_vote_bundle_with_strict_index(
+            final_chain,
+            block_period,
+            block_hash,
+            canonical_vote_rlps,
+            strict_index,
+        )
+    }
+
+    fn validate_and_admit_sync_cert_vote_bundle_with_strict_index(
+        &self,
+        final_chain: &FinalChain,
+        block_period: u64,
+        block_hash: H256,
+        canonical_vote_rlps: Vec<Vec<u8>>,
+        strict_index: Option<usize>,
+    ) -> Result<PbftSyncCertVoteBundleResult> {
+        let mut inspections = Vec::with_capacity(canonical_vote_rlps.len());
+        let mut shape_votes = Vec::with_capacity(canonical_vote_rlps.len());
+        for vote_rlp in &canonical_vote_rlps {
+            let inspection = inspect_canonical_pbft_vote(vote_rlp)?;
+            if inspection.status == PbftCanonicalVoteInspectionStatus::MalformedRlp {
+                return Ok(sync_cert_bundle_result(
+                    PbftSyncCertVoteBundleValidation {
+                        valid: false,
+                        status: PbftSyncCertVoteBundleStatus::LiveVoteInvalid,
+                        total_weight: 0,
+                        two_t_plus_one: 0,
+                        first_bad_vote_hash: inspection.vote_hash,
+                    },
+                    Vec::new(),
+                    Vec::new(),
+                    Some(inspection.error_code.to_owned()),
+                ));
+            }
+            shape_votes.push(PbftSyncCertVoteFact {
+                vote_hash: inspection.vote_hash,
+                block_hash: inspection.block_hash,
+                period: inspection.period,
+                round: inspection.round,
+                step: inspection.step,
+                vote_type: inspection.vote_type.into(),
+                live_vote_valid: true,
+                weight_present: inspection.has_embedded_weight,
+                weight: inspection.embedded_weight,
+            });
+            inspections.push(inspection);
+        }
+
+        let shape_validation = validate_pbft_sync_cert_vote_bundle(PbftSyncCertVoteBundleFact {
+            block_period,
+            block_hash,
+            votes: shape_votes,
+            check_weight_threshold: false,
+            two_t_plus_one_found: false,
+            two_t_plus_one: 0,
+        });
+        if !shape_validation.valid {
+            return Ok(sync_cert_bundle_result(
+                shape_validation,
+                Vec::new(),
+                Vec::new(),
+                None,
+            ));
+        }
+        if block_period % 100 != 0 {
+            anyhow::ensure!(
+                strict_index.is_some_and(|index| index < canonical_vote_rlps.len()),
+                "PBFT_SYNC_CERT_BUNDLE_STRICT_INDEX_OUT_OF_RANGE"
+            );
+        }
+
+        let threshold_plan = self
+            .verified_votes_two_t_plus_one_threshold_with_final_chain(
+                final_chain,
+                PbftTwoTPlusOneThresholdFact {
+                    pbft_period: block_period.saturating_sub(1),
+                    vote_type: PbftVoteType::Cert,
+                    current_pbft_chain_size: 0,
+                    committee_size: self.committee_size,
+                    number_of_proposers: self.number_of_proposers,
+                    has_total_dpos_votes_count: false,
+                    total_dpos_votes_count: 0,
+                    future_dpos_state: false,
+                    unknown_error: false,
+                },
+            )
+            .ok();
+        let threshold = threshold_plan.as_ref().and_then(|plan| {
+            (plan.status == PbftTwoTPlusOneThresholdStatus::Available && plan.has_threshold)
+                .then_some(plan.threshold)
+        });
+        let manager = self.manager_snapshot();
+        let mut weighted_vote_rlps = Vec::with_capacity(canonical_vote_rlps.len());
+        let mut weighted_facts = Vec::with_capacity(canonical_vote_rlps.len());
+        let mut slashing_transaction_effects = Vec::new();
+        let mut total_weight = 0_u64;
+
+        for (index, (vote_rlp, inspection)) in canonical_vote_rlps
+            .into_iter()
+            .zip(inspections.into_iter())
+            .enumerate()
+        {
+            let strict_vrf = block_period % 100 == 0 || strict_index == Some(index);
+            let canonical = if inspection.signature_valid {
+                build_slashing_pbft_vote_payload(&vote_rlp)?.vote_rlp
+            } else {
+                vote_rlp
+            };
+            let result = self.admit_and_persist_verified_vote_with_final_chain(
+                final_chain,
+                &canonical,
+                PbftVoteAdmissionValidationRequest {
+                    strict_vrf,
+                    committee_size: self.committee_size,
+                    number_of_proposers: self.number_of_proposers,
+                    has_preverified_weight: false,
+                    preverified_weight: 0,
+                },
+                PbftVoteEventFactFlags {
+                    vote_already_known: false,
+                    carries_proposed_block: true,
+                    valid_stale_reward_vote: false,
+                },
+                PbftVoteProgressContext {
+                    current_period: manager.period,
+                    current_round: manager.round,
+                    max_future_period_delta: u64::MAX,
+                    two_t_plus_one_threshold: threshold,
+                    require_proposed_block_sidecar: false,
+                    slashing_enabled: true,
+                },
+                &self.slashing_submitters,
+            )?;
+            if result.transaction.persistence_status == PbftVoteAdmissionPersistenceStatus::Rejected
+            {
+                anyhow::bail!(
+                    "PBFT_SYNC_CERT_BUNDLE_PERSISTENCE_REJECTED: {}",
+                    result.transaction.persistence_error_code
+                );
+            }
+            if let Some(effect) = result
+                .slashing_transaction_effect
+                .filter(|effect| effect.status.as_u8() == 0)
+            {
+                slashing_transaction_effects.push(effect);
+            }
+            if !result.validation.accepted || !result.validation.weight_calculated {
+                return Ok(sync_cert_bundle_result(
+                    PbftSyncCertVoteBundleValidation {
+                        valid: false,
+                        status: PbftSyncCertVoteBundleStatus::LiveVoteInvalid,
+                        total_weight,
+                        two_t_plus_one: threshold.unwrap_or(0),
+                        first_bad_vote_hash: result.validation.vote_hash,
+                    },
+                    weighted_vote_rlps,
+                    slashing_transaction_effects,
+                    Some(result.validation.error_code.to_owned()),
+                ));
+            }
+
+            let weight = result.validation.calculated_weight;
+            let weighted = build_weighted_pbft_vote_payload(&canonical, weight)?.vote_rlp;
+            total_weight = total_weight.saturating_add(weight);
+            weighted_facts.push(PbftSyncCertVoteFact {
+                vote_hash: result.validation.vote_hash,
+                block_hash: result.validation.block_hash,
+                period: result.validation.period,
+                round: result.validation.round,
+                step: result.validation.step,
+                vote_type: result.validation.vote_type.into(),
+                live_vote_valid: true,
+                weight_present: true,
+                weight,
+            });
+            weighted_vote_rlps.push(weighted);
+        }
+
+        let threshold_validation =
+            validate_pbft_sync_cert_vote_bundle(PbftSyncCertVoteBundleFact {
+                block_period,
+                block_hash,
+                votes: weighted_facts,
+                check_weight_threshold: true,
+                two_t_plus_one_found: threshold.is_some(),
+                two_t_plus_one: threshold.unwrap_or(0),
+            });
+        Ok(sync_cert_bundle_result(
+            threshold_validation,
+            weighted_vote_rlps,
+            slashing_transaction_effects,
+            None,
+        ))
     }
 
     /// Begins or replaces the application-owned PBFT-sync ingress session.
