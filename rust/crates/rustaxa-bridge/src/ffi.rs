@@ -1375,6 +1375,11 @@ pub mod rustaxa_ffi {
     struct PbftManagerBlockValidationFact {
         block_hash: [u8; 32],
         period: u64,
+        previous_pbft_block_hash: [u8; 32],
+        candidate_final_chain_hash: [u8; 32],
+        reward_vote_hashes: Vec<PbftFinalizationHash>,
+        has_pillar_block_hash: bool,
+        pillar_block_hash: [u8; 32],
         pivot_hash: [u8; 32],
         pivot_is_null: bool,
         dag_order_required: bool,
@@ -1382,10 +1387,6 @@ pub mod rustaxa_ffi {
         extra_data_present: bool,
         extra_data_pillar_hash_present: bool,
         pillar_block_required: bool,
-        pbft_chain_status: u8,
-        final_chain_hash_status: u8,
-        reward_votes_status: u8,
-        pillar_block_status: u8,
         dag_order_status: u8,
         dag_weight_status: u8,
     }
@@ -1588,15 +1589,6 @@ pub mod rustaxa_ffi {
         status: u8,
         cleanup: PbftFinalizationCleanupPlan,
         storage_write_intent: PbftFinalizationStorageWritePlan,
-    }
-
-    struct PbftBlockValidationResult {
-        ok: bool,
-        code: u8,
-        expected_period: u64,
-        actual_period: u64,
-        expected_prev_hash: [u8; 32],
-        actual_prev_hash: [u8; 32],
     }
 
     struct ProposedBlockLookup {
@@ -3856,11 +3848,6 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             block_hash: &[u8; 32],
         ) -> Result<BlockRlpLookup>;
-        pub fn pbft_chain_validate_block(
-            self: &BridgePbftService,
-            period: u64,
-            prev_hash: &[u8; 32],
-        ) -> PbftBlockValidationResult;
         pub fn pbft_manager_runtime_begin_pbft_sync_admission(
             runtime: &BridgePbftService,
             fact: PbftSyncAdmissionInitialFact,
@@ -4084,9 +4071,9 @@ pub mod rustaxa_ffi {
             report: PbftManagerBroadcastReport,
         ) -> PbftManagerBroadcastReportResult;
         pub fn plan_pbft_manager_block_validation(
+            runtime: &BridgePbftService,
             final_chain: &BridgeFinalChain,
-            candidate_final_chain_hash: &[u8; 32],
-            fact: PbftManagerBlockValidationFact,
+            fact: &PbftManagerBlockValidationFact,
         ) -> Result<PbftManagerBlockValidationPlan>;
         pub fn plan_pbft_manager_candidate_admission(
             fact: PbftManagerCandidateAdmissionFact,

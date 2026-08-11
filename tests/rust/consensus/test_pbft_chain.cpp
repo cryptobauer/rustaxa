@@ -121,26 +121,6 @@ TEST_F(RustPbftChainTest, ProjectsLegacyJsonHeadWithoutMutatingCurrentHead) {
   EXPECT_EQ(current.last_pbft_block_hash, h256(0));
 }
 
-TEST_F(RustPbftChainTest, ReportsPeriodAndPreviousHashValidationFailures) {
-  auto chain = create_chain("rustaxa_consensus_pbft_chain_validation", 0, 0, 0);
-
-  auto valid = chain->pbft_chain_validate_block(1, h256(0));
-  EXPECT_TRUE(valid.ok);
-  EXPECT_EQ(valid.code, 0);
-
-  auto period_mismatch = chain->pbft_chain_validate_block(2, h256(0));
-  EXPECT_FALSE(period_mismatch.ok);
-  EXPECT_EQ(period_mismatch.code, 1);
-  EXPECT_EQ(period_mismatch.expected_period, 1);
-  EXPECT_EQ(period_mismatch.actual_period, 2);
-
-  auto prev_hash_mismatch = chain->pbft_chain_validate_block(1, h256(99));
-  EXPECT_FALSE(prev_hash_mismatch.ok);
-  EXPECT_EQ(prev_hash_mismatch.code, 2);
-  EXPECT_EQ(prev_hash_mismatch.expected_prev_hash, h256(0));
-  EXPECT_EQ(prev_hash_mismatch.actual_prev_hash, h256(99));
-}
-
 TEST_F(RustPbftChainTest, RejectsImpossibleRecoveredHead) {
   EXPECT_THROW((void)create_chain("rustaxa_consensus_pbft_chain_invalid_head", 1, 2, 0), std::exception);
 }

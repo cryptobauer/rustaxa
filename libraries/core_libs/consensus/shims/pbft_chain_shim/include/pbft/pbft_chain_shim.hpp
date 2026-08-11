@@ -100,13 +100,6 @@ class PbftChain {
    */
   void updatePbftChain(blk_hash_t const& pbft_block_hash, blk_hash_t const& anchor_hash);
 
-  /**
-   * Verifies that `pbft_block` extends the current Rust PBFT head.
-   *
-   * Returns false for period or previous-hash mismatch and throws only for unexpected bridge errors.
-   */
-  bool checkPbftBlockValidation(const std::shared_ptr<PbftBlock>& pbft_block) const;
-
  private:
   mutable std::shared_mutex chain_head_access_;
   SharedPbftService pbft_service_;

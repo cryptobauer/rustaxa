@@ -1230,6 +1230,33 @@ mod tests {
         .expect("final chain should initialize")
     }
 
+    fn make_pbft_service(storage: &BridgeStorage) -> Box<BridgePbftService> {
+        create_pbft_service_from_storage(
+            storage,
+            rustaxa_ffi::PbftServiceConfig {
+                genesis_lambda_ms: 100,
+                cacti_lambda_max_ms: 1500,
+                cacti_lambda_default_ms: 500,
+                cacti_block: 1,
+                max_exponential_lambda_ms: 60_000,
+                max_steps: 13,
+                deadline_ms: 1000,
+                polling_interval_ms: 100,
+                report_malicious_behaviour: true,
+                magnolia_activation_period: 0,
+                ficus_activation_period: 0,
+                pillar_blocks_interval: 10,
+                sync_level_size: 10,
+                is_light_node: false,
+                light_node_history: 0,
+                committee_size: 1,
+                number_of_proposers: 1,
+                slashing_submitters: Vec::new(),
+            },
+        )
+        .expect("PBFT service should initialize")
+    }
+
     fn ffi_transaction(
         hash_byte: u8,
         receiver_found: bool,
@@ -2200,13 +2227,19 @@ mod tests {
         let storage = create_storage(storage_path).expect("storage should initialize");
         let final_chain =
             make_final_chain_with_storage(&storage, vec![genesis_validator(validator, 10_000)]);
+        let pbft_service = make_pbft_service(&storage);
 
         let plan = crate::pbft_manager::plan_pbft_manager_block_validation(
+            &pbft_service,
             &final_chain,
-            &[0; 32],
-            rustaxa_ffi::PbftManagerBlockValidationFact {
+            &rustaxa_ffi::PbftManagerBlockValidationFact {
                 block_hash: [0x11; 32],
                 period: 1,
+                previous_pbft_block_hash: [0; 32],
+                candidate_final_chain_hash: [0; 32],
+                reward_vote_hashes: Vec::new(),
+                has_pillar_block_hash: false,
+                pillar_block_hash: [0; 32],
                 pivot_hash: [0x22; 32],
                 pivot_is_null: false,
                 dag_order_required: true,
@@ -2214,10 +2247,6 @@ mod tests {
                 extra_data_present: false,
                 extra_data_pillar_hash_present: false,
                 pillar_block_required: false,
-                pbft_chain_status: 1,
-                final_chain_hash_status: 0,
-                reward_votes_status: 4,
-                pillar_block_status: 4,
                 dag_order_status: 4,
                 dag_weight_status: 4,
             },
@@ -2246,30 +2275,7 @@ mod tests {
             vec![genesis_validator(validator, 10_000)],
             5,
         );
-        let pbft_service = create_pbft_service_from_storage(
-            &storage,
-            rustaxa_ffi::PbftServiceConfig {
-                genesis_lambda_ms: 100,
-                cacti_lambda_max_ms: 1500,
-                cacti_lambda_default_ms: 500,
-                cacti_block: 1,
-                max_exponential_lambda_ms: 60_000,
-                max_steps: 13,
-                deadline_ms: 1000,
-                polling_interval_ms: 100,
-                report_malicious_behaviour: true,
-                magnolia_activation_period: 0,
-                ficus_activation_period: 0,
-                pillar_blocks_interval: 10,
-                sync_level_size: 10,
-                is_light_node: false,
-                light_node_history: 0,
-                committee_size: 1,
-                number_of_proposers: 1,
-                slashing_submitters: Vec::new(),
-            },
-        )
-        .expect("PBFT service should initialize");
+        let pbft_service = make_pbft_service(&storage);
 
         let ready = final_chain
             .0

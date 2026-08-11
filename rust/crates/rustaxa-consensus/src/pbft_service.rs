@@ -456,6 +456,27 @@ struct PbftSyncCertBundleRuntime {
     last_report: Option<PbftSyncCertBundleReportAck>,
 }
 
+/// Complete native input for ordinary PBFT block validation composition.
+///
+/// `fact` carries immutable candidate shape plus any DAG executor result from a
+/// previous call. The remaining fields provide the concrete inputs for the
+/// PBFT-chain, FinalChain, reward-vote, and pillar siblings. Internally owned
+/// fact statuses are normalized and recomputed on every call; only DAG status
+/// remains caller supplied. Ordered reward hashes preserve PBFT block order.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftBlockValidationCandidate {
+    /// Candidate shape and optional retained DAG executor result.
+    pub fact: crate::pbft_manager::PbftManagerBlockValidationFact,
+    /// Candidate's previous PBFT block hash.
+    pub previous_pbft_block_hash: H256,
+    /// Candidate's embedded delayed FinalChain hash.
+    pub candidate_final_chain_hash: H256,
+    /// Candidate reward-vote hashes in canonical PBFT block order.
+    pub reward_vote_hashes: Vec<H256>,
+    /// Candidate pillar anchor hash when the active rules require one.
+    pub pillar_block_hash: Option<H256>,
+}
+
 /// CXX-free native owner of the complete PBFT application-service graph.
 ///
 /// Restoration validates storage-independent slashing configuration first,
@@ -2167,6 +2188,121 @@ impl PbftService {
     /// fatal panic policy.
     pub fn pbft_chain_validate_block(&self, period: u64, prev_hash: H256) -> PbftBlockValidation {
         self.chain().validate_block(period, prev_hash)
+    }
+
+    /// Drives ordinary PBFT block validation through every native dependency.
+    ///
+    /// `candidate` supplies immutable candidate shape, a possible DAG executor
+    /// report, and inputs that previously required C++ facade materialization.
+    /// Internally owned statuses are discarded and recomputed so callers cannot
+    /// bypass a native dependency. The task repeatedly
+    /// drives the block-validation planner through PBFT-chain linkage, delayed
+    /// FinalChain hash comparison, reward-vote selection, and current pillar
+    /// anchor validation. It returns immediately for terminal results,
+    /// including FinalChain `Wait`, and returns `CheckDagOrder` unchanged because
+    /// DAG order remains the retained external executor boundary.
+    ///
+    /// No manager guard is acquired or retained: each sibling or FinalChain
+    /// call completes before the next stateless planner transition. FinalChain,
+    /// verified-vote, pillar readiness, storage, and lock errors propagate;
+    /// deterministic missing or mismatching facts remain typed planner results.
+    pub fn validate_pbft_block_composed(
+        &self,
+        final_chain: &FinalChain,
+        candidate: PbftBlockValidationCandidate,
+    ) -> Result<crate::pbft_manager::PbftManagerBlockValidationPlan> {
+        use crate::pbft_manager::PbftManagerBlockValidationFactStatus as FactStatus;
+
+        let PbftBlockValidationCandidate {
+            mut fact,
+            previous_pbft_block_hash,
+            candidate_final_chain_hash,
+            reward_vote_hashes,
+            pillar_block_hash,
+        } = candidate;
+        fact.pbft_chain_status = FactStatus::NotChecked;
+        fact.final_chain_hash_status = FactStatus::NotChecked;
+        fact.reward_votes_status = FactStatus::NotChecked;
+        fact.pillar_block_status = if fact.pillar_block_required {
+            FactStatus::NotChecked
+        } else {
+            FactStatus::NotRequired
+        };
+        let mut session = crate::pbft_manager::create_pbft_manager_block_validation_session(fact);
+        let mut plan =
+            crate::pbft_manager::next_pbft_manager_block_validation_session(&mut session);
+        loop {
+            use crate::pbft_manager::{
+                PbftManagerBlockValidationAction as Action,
+                PbftManagerBlockValidationNextCheck as NextCheck,
+            };
+
+            if plan.action != Action::RunCheck {
+                return Ok(plan);
+            }
+            let status = match plan.next_check {
+                NextCheck::CheckPbftChain => {
+                    if matches!(
+                        self.chain()
+                            .try_validate_block(session.fact.period, previous_pbft_block_hash,)?,
+                        PbftBlockValidation::Valid
+                    ) {
+                        FactStatus::Valid
+                    } else {
+                        FactStatus::Invalid
+                    }
+                }
+                NextCheck::ValidateFinalChainHash => {
+                    match final_chain.pbft_final_chain_hash(session.fact.period)? {
+                        Some(expected) if H256(expected) == candidate_final_chain_hash => {
+                            FactStatus::Valid
+                        }
+                        Some(_) => FactStatus::Invalid,
+                        None => FactStatus::Missing,
+                    }
+                }
+                NextCheck::CheckRewardVotes => {
+                    if self
+                        .select_reward_vote_payloads(
+                            session.fact.period,
+                            reward_vote_hashes.clone(),
+                        )?
+                        .accepted
+                    {
+                        FactStatus::Valid
+                    } else {
+                        FactStatus::Invalid
+                    }
+                }
+                NextCheck::ValidatePillarBlock => {
+                    let decision = self.plan_pillar_current_anchor_decision(
+                        PillarCurrentAnchorDecisionRequest::ValidateCandidate {
+                            candidate_hash: pillar_block_hash,
+                        },
+                    )?;
+                    if decision.plan.selected {
+                        FactStatus::Valid
+                    } else {
+                        match decision.plan.status {
+                            crate::pillar_chain::PillarCurrentAnchorDecisionStatus::MissingCurrentAnchor
+                            | crate::pillar_chain::PillarCurrentAnchorDecisionStatus::MissingCandidate => {
+                                FactStatus::Missing
+                            }
+                            _ => FactStatus::Invalid,
+                        }
+                    }
+                }
+                NextCheck::CheckDagOrder => return Ok(plan),
+                NextCheck::ValidateExtraData
+                | NextCheck::CheckDagWeight
+                | NextCheck::None
+                | NextCheck::Unknown => return Ok(plan),
+            };
+            plan = crate::pbft_manager::report_pbft_manager_block_validation_session_check(
+                &mut session,
+                status,
+            );
+        }
     }
 
     /// Persists and publishes one proposed PBFT block through native service state.
@@ -7273,6 +7409,325 @@ mod tests {
             }
         ));
 
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn composed_block_validation_fact(
+        period: u64,
+    ) -> crate::pbft_manager::PbftManagerBlockValidationFact {
+        use crate::pbft_manager::PbftManagerBlockValidationFactStatus as FactStatus;
+
+        crate::pbft_manager::PbftManagerBlockValidationFact {
+            block_hash: H256::repeat_byte(0x31),
+            period,
+            pivot_hash: H256::repeat_byte(0x32),
+            pivot_is_null: false,
+            dag_order_required: true,
+            extra_data_required: false,
+            extra_data_present: false,
+            extra_data_pillar_hash_present: false,
+            pillar_block_required: false,
+            pbft_chain_status: FactStatus::NotChecked,
+            final_chain_hash_status: FactStatus::NotChecked,
+            reward_votes_status: FactStatus::NotChecked,
+            pillar_block_status: FactStatus::NotRequired,
+            dag_order_status: FactStatus::NotChecked,
+            dag_weight_status: FactStatus::Valid,
+        }
+    }
+
+    fn composed_block_validation_candidate(
+        fact: crate::pbft_manager::PbftManagerBlockValidationFact,
+        previous_pbft_block_hash: H256,
+        candidate_final_chain_hash: H256,
+        reward_vote_hashes: Vec<H256>,
+        pillar_block_hash: Option<H256>,
+    ) -> PbftBlockValidationCandidate {
+        PbftBlockValidationCandidate {
+            fact,
+            previous_pbft_block_hash,
+            candidate_final_chain_hash,
+            reward_vote_hashes,
+            pillar_block_hash,
+        }
+    }
+
+    #[test]
+    fn composed_block_validation_reaches_external_dag_and_terminal_accept() {
+        use crate::pbft_manager::{
+            PbftManagerBlockValidationAction as Action,
+            PbftManagerBlockValidationFactStatus as FactStatus,
+            PbftManagerBlockValidationNextCheck as NextCheck,
+            PbftManagerBlockValidationStatus as Status,
+        };
+
+        let (path, storage) = temp_storage("rustaxa_consensus_composed_block_valid");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage, &[], 2);
+
+        let plan = service
+            .validate_pbft_block_composed(
+                &final_chain,
+                composed_block_validation_candidate(
+                    composed_block_validation_fact(1),
+                    H256::zero(),
+                    H256::zero(),
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .unwrap();
+        assert_eq!(plan.action, Action::RunCheck);
+        assert_eq!(plan.next_check, NextCheck::CheckDagOrder);
+
+        let mut terminal_fact = composed_block_validation_fact(1);
+        terminal_fact.dag_order_status = FactStatus::Valid;
+        let terminal = service
+            .validate_pbft_block_composed(
+                &final_chain,
+                composed_block_validation_candidate(
+                    terminal_fact,
+                    H256::zero(),
+                    H256::zero(),
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .unwrap();
+        assert_eq!(terminal.action, Action::Accept);
+        assert_eq!(terminal.status, Status::Accepted);
+
+        let mut invalid_dag_fact = composed_block_validation_fact(1);
+        invalid_dag_fact.dag_order_status = FactStatus::Invalid;
+        let invalid_dag = service
+            .validate_pbft_block_composed(
+                &final_chain,
+                composed_block_validation_candidate(
+                    invalid_dag_fact,
+                    H256::zero(),
+                    H256::zero(),
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .unwrap();
+        assert_eq!(invalid_dag.action, Action::Reject);
+        assert_eq!(invalid_dag.status, Status::DagOrderInvalid);
+
+        let mut invalid_weight_fact = composed_block_validation_fact(1);
+        invalid_weight_fact.dag_order_status = FactStatus::Valid;
+        invalid_weight_fact.dag_weight_status = FactStatus::Invalid;
+        let invalid_weight = service
+            .validate_pbft_block_composed(
+                &final_chain,
+                composed_block_validation_candidate(
+                    invalid_weight_fact,
+                    H256::zero(),
+                    H256::zero(),
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .unwrap();
+        assert_eq!(invalid_weight.action, Action::Reject);
+        assert_eq!(invalid_weight.status, Status::DagWeightInvalid);
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn composed_block_validation_rejects_invalid_pbft_chain() {
+        use crate::pbft_manager::{
+            PbftManagerBlockValidationAction as Action, PbftManagerBlockValidationStatus as Status,
+        };
+
+        let (path, storage) = temp_storage("rustaxa_consensus_composed_block_chain_invalid");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage, &[], 2);
+        let mut fact = composed_block_validation_fact(1);
+        fact.pbft_chain_status = crate::pbft_manager::PbftManagerBlockValidationFactStatus::Valid;
+        fact.final_chain_hash_status =
+            crate::pbft_manager::PbftManagerBlockValidationFactStatus::Valid;
+        fact.reward_votes_status = crate::pbft_manager::PbftManagerBlockValidationFactStatus::Valid;
+        let plan = service
+            .validate_pbft_block_composed(
+                &final_chain,
+                composed_block_validation_candidate(
+                    fact,
+                    H256::repeat_byte(0x41),
+                    H256::zero(),
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(plan.action, Action::Reject);
+        assert_eq!(plan.status, Status::PbftChainInvalid);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn composed_block_validation_rejects_invalid_final_chain_hash() {
+        use crate::pbft_manager::{
+            PbftManagerBlockValidationAction as Action, PbftManagerBlockValidationStatus as Status,
+        };
+
+        let (path, storage) = temp_storage("rustaxa_consensus_composed_block_final_chain_invalid");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage, &[], 2);
+        let plan = service
+            .validate_pbft_block_composed(
+                &final_chain,
+                composed_block_validation_candidate(
+                    composed_block_validation_fact(1),
+                    H256::zero(),
+                    H256::repeat_byte(0x42),
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(plan.action, Action::Reject);
+        assert_eq!(plan.status, Status::FinalChainHashInvalid);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn composed_block_validation_rejects_invalid_reward_votes() {
+        use crate::pbft_manager::{
+            PbftManagerBlockValidationAction as Action, PbftManagerBlockValidationStatus as Status,
+        };
+
+        let (path, storage) = temp_storage("rustaxa_consensus_composed_block_reward_invalid");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let previous = H256::repeat_byte(0x43);
+        service.pbft_chain_update(previous, H256::zero()).unwrap();
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage, &[], 2);
+        let plan = service
+            .validate_pbft_block_composed(
+                &final_chain,
+                composed_block_validation_candidate(
+                    composed_block_validation_fact(2),
+                    previous,
+                    H256::zero(),
+                    vec![H256::repeat_byte(0x44)],
+                    None,
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(plan.action, Action::Reject);
+        assert_eq!(plan.status, Status::RewardVotesInvalid);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn composed_block_validation_rejects_missing_pillar_anchor() {
+        use crate::pbft_manager::{
+            PbftManagerBlockValidationAction as Action,
+            PbftManagerBlockValidationFactStatus as FactStatus,
+            PbftManagerBlockValidationStatus as Status,
+        };
+
+        let (path, storage) = temp_storage("rustaxa_consensus_composed_block_pillar_invalid");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        service.complete_pillar_bootstrap().unwrap();
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage, &[], 2);
+        let mut fact = composed_block_validation_fact(1);
+        fact.extra_data_required = true;
+        fact.extra_data_present = true;
+        fact.extra_data_pillar_hash_present = true;
+        fact.pillar_block_required = true;
+        fact.pillar_block_status = FactStatus::NotChecked;
+        let plan = service
+            .validate_pbft_block_composed(
+                &final_chain,
+                composed_block_validation_candidate(
+                    fact,
+                    H256::zero(),
+                    H256::zero(),
+                    Vec::new(),
+                    Some(H256::repeat_byte(0x45)),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(plan.action, Action::Reject);
+        assert_eq!(plan.status, Status::PillarBlockInvalid);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn composed_block_validation_returns_final_chain_wait_without_looping() {
+        use crate::pbft_manager::{
+            PbftManagerBlockValidationAction as Action,
+            PbftManagerBlockValidationNextCheck as NextCheck,
+            PbftManagerBlockValidationStatus as Status,
+        };
+
+        let (path, storage) = temp_storage("rustaxa_consensus_composed_block_final_chain_wait");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let final_chain = final_chain_with_pillar_voters(storage, &[]);
+        let plan = service
+            .validate_pbft_block_composed(
+                &final_chain,
+                composed_block_validation_candidate(
+                    composed_block_validation_fact(1),
+                    H256::zero(),
+                    H256::zero(),
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(plan.action, Action::WaitForFinalization);
+        assert_eq!(plan.status, Status::FinalChainHashMissing);
+        assert_eq!(plan.next_check, NextCheck::ValidateFinalChainHash);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn composed_block_validation_propagates_pillar_readiness_error() {
+        use crate::pbft_manager::PbftManagerBlockValidationFactStatus as FactStatus;
+
+        let (path, storage) = temp_storage("rustaxa_consensus_composed_block_pillar_error");
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage, &[], 2);
+        let mut fact = composed_block_validation_fact(1);
+        fact.extra_data_required = true;
+        fact.extra_data_present = true;
+        fact.extra_data_pillar_hash_present = true;
+        fact.pillar_block_required = true;
+        fact.pillar_block_status = FactStatus::NotChecked;
+        let error = service
+            .validate_pbft_block_composed(
+                &final_chain,
+                composed_block_validation_candidate(
+                    fact,
+                    H256::zero(),
+                    H256::zero(),
+                    Vec::new(),
+                    Some(H256::repeat_byte(0x46)),
+                ),
+            )
+            .expect_err("pillar readiness failures propagate");
+
+        assert!(
+            error
+                .to_string()
+                .contains("PBFT_SERVICE_PILLAR_UNAVAILABLE"),
+            "unexpected pillar readiness error: {error:#}"
+        );
         drop(service);
         let _ = fs::remove_dir_all(path);
     }

@@ -81,7 +81,6 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
 };
 use rustaxa_consensus::pbft_manager::{
-    plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
     plan_pbft_manager_eligible_wallet_period_wait as plan_domain_pbft_manager_eligible_wallet_period_wait,
@@ -92,8 +91,7 @@ use rustaxa_consensus::pbft_manager::{
     validate_pbft_manager_advance_period_action_report as validate_domain_pbft_manager_advance_period_action_report,
     PbftFinalizationExecutorStartRequest, PbftManagerAdvancePeriodActionReport,
     PbftManagerAdvancePeriodActionReportResult, PbftManagerAdvancePeriodPlan,
-    PbftManagerBlockValidationAction, PbftManagerBlockValidationFact,
-    PbftManagerBlockValidationFactStatus, PbftManagerBlockValidationNextCheck,
+    PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
     PbftManagerBlockValidationPlan, PbftManagerBroadcastAction, PbftManagerBroadcastFact,
     PbftManagerBroadcastPlan, PbftManagerBroadcastReport, PbftManagerBroadcastReportResult,
     PbftManagerBroadcastStatus, PbftManagerCandidateAdmissionFact,
@@ -113,7 +111,9 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
     PbftManagerStateActionSessionStep, PbftManagerTransitionKind,
 };
-use rustaxa_consensus::pbft_service::PbftManagerLifecycleTransitionOutcome;
+use rustaxa_consensus::pbft_service::{
+    PbftBlockValidationCandidate, PbftManagerLifecycleTransitionOutcome,
+};
 use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
     PbftSyncQueueDrainStatus, PbftSyncQueueDrainStep,
@@ -1485,32 +1485,35 @@ pub fn report_pbft_manager_broadcast(
     report_domain_pbft_manager_broadcast(plan.into(), report.into()).into()
 }
 
-/// Plans one PBFT block-validation step and resolves requested FinalChain hash checks.
-///
-/// Rust owns check ordering and reads the delayed native FinalChain hash when
-/// that check becomes active. C++ retains PBFT-chain, reward, pillar, and DAG
-/// executor facts. Missing headers remain a typed wait plan; lookup failures
-/// propagate without rewriting the caller's fact bundle.
+/// Composes ordinary PBFT validation from immutable candidate facts, resolving
+/// native chain, FinalChain, reward, extra-data, and pillar checks. It returns a
+/// terminal plan, typed wait/error, or the retained external DAG check.
 pub fn plan_pbft_manager_block_validation(
+    runtime: &BridgePbftService,
     final_chain: &BridgeFinalChain,
-    candidate_final_chain_hash: &[u8; 32],
-    fact: FfiPbftManagerBlockValidationFact,
+    fact: &FfiPbftManagerBlockValidationFact,
 ) -> anyhow::Result<FfiPbftManagerBlockValidationPlan> {
-    let mut fact = PbftManagerBlockValidationFact::from(fact);
-    loop {
-        let plan = plan_domain_pbft_manager_block_validation(fact.clone());
-        if plan.action != PbftManagerBlockValidationAction::RunCheck
-            || plan.next_check != PbftManagerBlockValidationNextCheck::ValidateFinalChainHash
-        {
-            return Ok(plan.into());
-        }
-        fact.final_chain_hash_status = match final_chain.0.pbft_final_chain_hash(fact.period)? {
-            Some(expected) if expected == *candidate_final_chain_hash => {
-                PbftManagerBlockValidationFactStatus::Valid
-            }
-            Some(_) => PbftManagerBlockValidationFactStatus::Invalid,
-            None => PbftManagerBlockValidationFactStatus::Missing,
-        };
+    Ok(runtime
+        .0
+        .validate_pbft_block_composed(&final_chain.0, block_validation_candidate_from_ffi(fact))?
+        .into())
+}
+
+fn block_validation_candidate_from_ffi(
+    fact: &FfiPbftManagerBlockValidationFact,
+) -> PbftBlockValidationCandidate {
+    PbftBlockValidationCandidate {
+        fact: fact.into(),
+        previous_pbft_block_hash: fact.previous_pbft_block_hash.into(),
+        candidate_final_chain_hash: fact.candidate_final_chain_hash.into(),
+        reward_vote_hashes: fact
+            .reward_vote_hashes
+            .iter()
+            .map(|hash| ethereum_types::H256::from(hash.hash))
+            .collect(),
+        pillar_block_hash: fact
+            .has_pillar_block_hash
+            .then(|| ethereum_types::H256::from(fact.pillar_block_hash)),
     }
 }
 
@@ -1820,8 +1823,8 @@ impl From<FfiPbftManagerStateActionFact> for PbftManagerStateActionFact {
     }
 }
 
-impl From<FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact {
-    fn from(value: FfiPbftManagerBlockValidationFact) -> Self {
+impl From<&FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact {
+    fn from(value: &FfiPbftManagerBlockValidationFact) -> Self {
         Self {
             block_hash: value.block_hash.into(),
             period: value.period,
@@ -1832,18 +1835,14 @@ impl From<FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact 
             extra_data_present: value.extra_data_present,
             extra_data_pillar_hash_present: value.extra_data_pillar_hash_present,
             pillar_block_required: value.pillar_block_required,
-            pbft_chain_status: PbftManagerBlockValidationFactStatus::from_u8(
-                value.pbft_chain_status,
-            ),
-            final_chain_hash_status: PbftManagerBlockValidationFactStatus::from_u8(
-                value.final_chain_hash_status,
-            ),
-            reward_votes_status: PbftManagerBlockValidationFactStatus::from_u8(
-                value.reward_votes_status,
-            ),
-            pillar_block_status: PbftManagerBlockValidationFactStatus::from_u8(
-                value.pillar_block_status,
-            ),
+            pbft_chain_status: PbftManagerBlockValidationFactStatus::NotChecked,
+            final_chain_hash_status: PbftManagerBlockValidationFactStatus::NotChecked,
+            reward_votes_status: PbftManagerBlockValidationFactStatus::NotChecked,
+            pillar_block_status: if value.pillar_block_required {
+                PbftManagerBlockValidationFactStatus::NotChecked
+            } else {
+                PbftManagerBlockValidationFactStatus::NotRequired
+            },
             dag_order_status: PbftManagerBlockValidationFactStatus::from_u8(value.dag_order_status),
             dag_weight_status: PbftManagerBlockValidationFactStatus::from_u8(
                 value.dag_weight_status,
@@ -2866,37 +2865,44 @@ mod tests {
         assert!(eligible_wait_plan.should_wait);
         assert_eq!(eligible_wait_plan.sleep_ms, 456);
 
-        let block_fact: PbftManagerBlockValidationFact = FfiPbftManagerBlockValidationFact {
+        let ffi_block_fact = FfiPbftManagerBlockValidationFact {
             block_hash: [0x11; 32],
             period: 12,
+            previous_pbft_block_hash: [0x12; 32],
+            candidate_final_chain_hash: [0x13; 32],
+            reward_vote_hashes: vec![FfiPbftFinalizationHash { hash: [0x14; 32] }],
+            has_pillar_block_hash: true,
+            pillar_block_hash: [0x15; 32],
             pivot_hash: [0x22; 32],
             pivot_is_null: false,
             dag_order_required: true,
             extra_data_required: true,
             extra_data_present: true,
-            extra_data_pillar_hash_present: false,
-            pillar_block_required: false,
-            pbft_chain_status: 1,
-            final_chain_hash_status: 3,
-            reward_votes_status: 4,
-            pillar_block_status: 4,
+            extra_data_pillar_hash_present: true,
+            pillar_block_required: true,
             dag_order_status: 1,
             dag_weight_status: 0,
-        }
-        .into();
+        };
+        let block_fact: PbftManagerBlockValidationFact = (&ffi_block_fact).into();
         assert_eq!(block_fact.block_hash, ethereum_types::H256([0x11; 32]));
         assert_eq!(block_fact.pivot_hash, ethereum_types::H256([0x22; 32]));
         assert!(block_fact.extra_data_required);
         assert!(block_fact.extra_data_present);
-        assert!(!block_fact.extra_data_pillar_hash_present);
-        assert_eq!(
-            block_fact.final_chain_hash_status,
-            PbftManagerBlockValidationFactStatus::Missing
-        );
+        assert!(block_fact.extra_data_pillar_hash_present);
+        let not_checked = PbftManagerBlockValidationFactStatus::NotChecked;
+        assert_eq!(block_fact.final_chain_hash_status, not_checked);
+        assert_eq!(block_fact.pbft_chain_status, not_checked);
+        assert_eq!(block_fact.reward_votes_status, not_checked);
+        assert_eq!(block_fact.pillar_block_status, not_checked);
         assert_eq!(
             block_fact.dag_weight_status,
             PbftManagerBlockValidationFactStatus::NotChecked
         );
+        let candidate = block_validation_candidate_from_ffi(&ffi_block_fact);
+        assert_eq!(candidate.previous_pbft_block_hash, [0x12; 32].into());
+        assert_eq!(candidate.candidate_final_chain_hash, [0x13; 32].into());
+        assert_eq!(candidate.reward_vote_hashes, vec![[0x14; 32].into()]);
+        assert_eq!(candidate.pillar_block_hash, Some([0x15; 32].into()));
 
         let candidate_fact: PbftManagerCandidateAdmissionFact =
             FfiPbftManagerCandidateAdmissionFact {

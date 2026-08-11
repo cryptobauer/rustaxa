@@ -590,6 +590,13 @@ exact-reports the result and consumes any reward continuation. The ordinary PBFT
 same hash check through the native FinalChain root. The C++ sync lookup lambda, ordinary validation branch, standalone
 hash-validation export, and its request/result carriers are deleted; C++ retains no FinalChain-hash decision logic.
 
+Ordinary PBFT block validation now composes the native PBFT-chain, FinalChain, verified-vote, and pillar siblings too.
+The root drives chain linkage, delayed FinalChain hash, ordered reward-vote selection, extra-data, and current-anchor
+checks until terminal or until DAG order must be executed. C++ supplies immutable candidate bytes and reports only the
+retained DAG result. The four external status fields, three C++ decision branches, Rust-mode chain-validation facade and
+CXX result family, and the one-use VoteManager validation method are deleted; native behavior tests replace the removed
+CXX chain-validation transcript.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT

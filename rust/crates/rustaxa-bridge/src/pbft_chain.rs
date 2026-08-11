@@ -4,16 +4,10 @@
 //! [`BridgePbftService`]. Chain state is protected by its own read/write lock,
 //! so public reads do not contend on the separately synchronized manager.
 
-use crate::ffi::rustaxa_ffi::{
-    BlockRlpLookup as FfiBlockRlpLookup, PbftBlockValidationResult, PbftChainHeadPayload,
-};
+use crate::ffi::rustaxa_ffi::{BlockRlpLookup as FfiBlockRlpLookup, PbftChainHeadPayload};
 use crate::ffi::BridgePbftService;
 use ethereum_types::H256;
-use rustaxa_consensus::pbft_chain::{PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead};
-
-const PBFT_VALIDATION_VALID: u8 = 0;
-const PBFT_VALIDATION_PERIOD_MISMATCH: u8 = 1;
-const PBFT_VALIDATION_PREVIOUS_HASH_MISMATCH: u8 = 2;
+use rustaxa_consensus::pbft_chain::{PbftBlockStorageLookup, PbftChainHead};
 impl BridgePbftService {
     /// Returns whether storage recovery initialized the default PBFT chain head.
     pub fn pbft_chain_initialized_default(&self) -> bool {
@@ -65,45 +59,6 @@ impl BridgePbftService {
         block_hash: &[u8; 32],
     ) -> Result<FfiBlockRlpLookup, anyhow::Error> {
         Ok(self.0.pbft_chain_block_rlp(H256::from(*block_hash))?.into())
-    }
-
-    /// Checks whether the supplied candidate block extends the current PBFT head.
-    pub fn pbft_chain_validate_block(
-        &self,
-        period: u64,
-        prev_hash: &[u8; 32],
-    ) -> PbftBlockValidationResult {
-        match self
-            .0
-            .pbft_chain_validate_block(period, H256::from(*prev_hash))
-        {
-            PbftBlockValidation::Valid => PbftBlockValidationResult {
-                ok: true,
-                code: PBFT_VALIDATION_VALID,
-                expected_period: 0,
-                actual_period: period,
-                expected_prev_hash: [0; 32],
-                actual_prev_hash: *prev_hash,
-            },
-            PbftBlockValidation::PeriodMismatch { expected, actual } => PbftBlockValidationResult {
-                ok: false,
-                code: PBFT_VALIDATION_PERIOD_MISMATCH,
-                expected_period: expected,
-                actual_period: actual,
-                expected_prev_hash: [0; 32],
-                actual_prev_hash: *prev_hash,
-            },
-            PbftBlockValidation::PreviousHashMismatch { expected, actual } => {
-                PbftBlockValidationResult {
-                    ok: false,
-                    code: PBFT_VALIDATION_PREVIOUS_HASH_MISMATCH,
-                    expected_period: 0,
-                    actual_period: period,
-                    expected_prev_hash: expected.into(),
-                    actual_prev_hash: actual.into(),
-                }
-            }
-        }
     }
 }
 

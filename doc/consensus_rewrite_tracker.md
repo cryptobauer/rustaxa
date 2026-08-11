@@ -3817,6 +3817,15 @@ lines fall to 21,269, shim lines to 15,000, CXX functions to 364, and carriers t
 Native and bridge validation passes 1,243 tests, including exact stale-session and missing-hash wait regressions; all 50
 Rust consensus C++ tests, the rebuilt/focused PBFT manager path, the fast rewrite gate, and exact inventory guard pass.
 
+The next `CRW-12` cut composes ordinary PBFT block validation across the native PBFT-chain, FinalChain, verified-vote,
+and pillar siblings. Rust now drives chain linkage, delayed FinalChain hash, ordered reward-vote selection, extra-data,
+and current-pillar-anchor checks to a terminal result or the retained DAG executor request; C++ reports only DAG order
+and weight. Four C++-reported status fields, three manager branches, the Rust-mode `PbftChain` validation facade, its
+CXX export/result carrier, and the one-use `VoteManager` reward-validation method are deleted. Native tests replace the
+removed CXX chain-validation behavior test and cover valid completion, every native rejection family, missing
+FinalChain wait, and pillar readiness errors. Bridge lines fall to 21,223, shim lines to 14,906, CXX functions to 363,
+and carriers to 301.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

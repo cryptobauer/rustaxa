@@ -1009,10 +1009,6 @@ VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
   return result;
 }
 
-bool VoteManager::validateRewardVotesForBlock(const std::shared_ptr<PbftBlock>& pbft_block) {
-  return checkRewardVotesDetailed(pbft_block, false).accepted;
-}
-
 std::optional<std::vector<std::shared_ptr<PbftVote>>> VoteManager::collectRewardVotesForBlock(
     const std::shared_ptr<PbftBlock>& pbft_block) {
   auto result = checkRewardVotesDetailed(pbft_block, true);

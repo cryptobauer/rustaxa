@@ -324,24 +324,6 @@ class VoteManager {
   RewardVoteValidationResult checkRewardVotesDetailed(const std::shared_ptr<PbftBlock>& pbft_block, bool copy_votes);
 
   /**
-   * Validates reward votes for a live PBFT block without returning sidecars.
-   *
-   * Purpose:
-   * - Lets PBFT manager report a compact valid/invalid fact to Rust block
-   *   validation sessions without inspecting detailed reward-vote planner
-   *   status.
-   *
-   * Outputs:
-   * - Returns true when Rust accepts the reward-vote references.
-   * - Returns false after `checkRewardVotesDetailed` logs the stable Rust
-   *   rejection status and error code.
-   *
-   * Invariants:
-   * - Does not mutate verified-vote state.
-   * - Does not copy selected live vote sidecars.
-   */
-  bool validateRewardVotesForBlock(const std::shared_ptr<PbftBlock>& pbft_block);
-  /**
    * Selects reward-vote payloads for a live PBFT block.
    *
    * Purpose:

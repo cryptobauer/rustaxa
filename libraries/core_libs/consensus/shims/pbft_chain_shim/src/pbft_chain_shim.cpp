@@ -9,9 +9,6 @@
 namespace taraxa {
 namespace {
 
-constexpr uint8_t kPbftValidationValid = 0;
-constexpr uint8_t kPbftValidationPeriodMismatch = 1;
-constexpr uint8_t kPbftValidationPreviousHashMismatch = 2;
 std::array<uint8_t, 32> to_bridge_hash(blk_hash_t const& hash) { return hash.asArray(); }
 
 blk_hash_t from_bridge_hash(std::array<uint8_t, 32> const& hash) {
@@ -87,27 +84,6 @@ PbftBlock PbftChain::getPbftBlockInChain(const taraxa::blk_hash_t& pbft_block_ha
 void PbftChain::updatePbftChain(blk_hash_t const& pbft_block_hash, blk_hash_t const& anchor_hash) {
   std::scoped_lock lock(chain_head_access_);
   pbft_service_->service().pbft_chain_update(to_bridge_hash(pbft_block_hash), to_bridge_hash(anchor_hash));
-}
-
-bool PbftChain::checkPbftBlockValidation(const std::shared_ptr<PbftBlock>& pbft_block) const {
-  std::shared_lock lock(chain_head_access_);
-  auto validation = pbft_service_->service().pbft_chain_validate_block(pbft_block->getPeriod(),
-                                                                       to_bridge_hash(pbft_block->getPrevBlockHash()));
-  if (validation.code == kPbftValidationValid) {
-    return true;
-  }
-  if (validation.code == kPbftValidationPeriodMismatch) {
-    LOG(log_er_) << "Pbft validation failed. PBFT chain size " << pbft_service_->service().pbft_chain_head().size
-                 << ". Pbft block period: " << pbft_block->getPeriod() << " for block " << pbft_block->getBlockHash();
-    return false;
-  }
-  if (validation.code == kPbftValidationPreviousHashMismatch) {
-    LOG(log_er_) << "PBFT chain last block hash " << from_bridge_hash(validation.expected_prev_hash)
-                 << " Invalid PBFT prev block hash " << pbft_block->getPrevBlockHash() << " in block "
-                 << pbft_block->getBlockHash();
-    return false;
-  }
-  throw std::runtime_error("Unknown PBFT validation result code: " + std::to_string(validation.code));
 }
 
 std::string PbftChain::getJsonStr() const {

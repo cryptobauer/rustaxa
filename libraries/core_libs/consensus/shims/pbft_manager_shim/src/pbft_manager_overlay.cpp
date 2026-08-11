@@ -161,21 +161,16 @@ constexpr uint8_t kPbftManagerBlockValidationFactNotChecked = 0;
 constexpr uint8_t kPbftManagerBlockValidationFactValid = 1;
 constexpr uint8_t kPbftManagerBlockValidationFactInvalid = 2;
 constexpr uint8_t kPbftManagerBlockValidationFactMissing = 3;
-constexpr uint8_t kPbftManagerBlockValidationFactNotRequired = 4;
 constexpr uint8_t kPbftManagerBlockValidationActionRunCheck = 0;
 constexpr uint8_t kPbftManagerBlockValidationActionAccept = 1;
 constexpr uint8_t kPbftManagerBlockValidationActionReject = 2;
 constexpr uint8_t kPbftManagerBlockValidationActionWaitForFinalization = 3;
 constexpr uint8_t kPbftManagerBlockValidationActionContractError = 255;
-constexpr uint8_t kPbftManagerBlockValidationCheckPbftChain = 0;
-constexpr uint8_t kPbftManagerBlockValidationCheckRewardVotes = 2;
-constexpr uint8_t kPbftManagerBlockValidationCheckPillarBlock = 4;
 constexpr uint8_t kPbftManagerBlockValidationCheckDagOrder = 5;
 constexpr uint8_t kPbftManagerCandidateDagValid = 0;
 constexpr uint8_t kPbftManagerCandidateDagMissing = 1;
 constexpr uint8_t kPbftManagerCandidateDagOrderHashInvalid = 2;
 constexpr uint8_t kPbftManagerCandidateDagWeightInvalid = 3;
-constexpr uint8_t kPillarAnchorDecisionValidateCandidate = 0;
 constexpr uint8_t kPillarAnchorDecisionSelectPreviousPeriod = 1;
 constexpr uint8_t kPillarAnchorDecisionRestartPostProcessing = 2;
 
@@ -2610,6 +2605,11 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   rustaxa::PbftManagerBlockValidationFact fact;
   fact.block_hash = toBridgeHash(pbft_block_hash);
   fact.period = block_period;
+  fact.previous_pbft_block_hash = toBridgeHash(pbft_block->getPrevBlockHash());
+  fact.candidate_final_chain_hash = toBridgeHash(pbft_block->getFinalChainHash());
+  fact.reward_vote_hashes = toBridgeHashes(pbft_block->getRewardVotes());
+  fact.has_pillar_block_hash = pillar_hash.has_value();
+  fact.pillar_block_hash = pillar_hash ? toBridgeHash(*pillar_hash) : std::array<uint8_t, 32>{};
   fact.pivot_hash = toBridgeHash(anchor_hash);
   fact.pivot_is_null = anchor_hash == kNullBlockHash;
   fact.dag_order_required = true;
@@ -2617,17 +2617,11 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   fact.extra_data_present = extra_data.has_value();
   fact.extra_data_pillar_hash_present = pillar_hash.has_value();
   fact.pillar_block_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
-  fact.pbft_chain_status = kPbftManagerBlockValidationFactNotChecked;
-  fact.final_chain_hash_status = kPbftManagerBlockValidationFactNotChecked;
-  fact.reward_votes_status = kPbftManagerBlockValidationFactNotChecked;
-  fact.pillar_block_status = fact.pillar_block_required ? kPbftManagerBlockValidationFactNotChecked
-                                                        : kPbftManagerBlockValidationFactNotRequired;
   fact.dag_order_status = kPbftManagerBlockValidationFactNotChecked;
   fact.dag_weight_status = kPbftManagerBlockValidationFactValid;
 
-  const auto candidate_final_chain_hash = toBridgeHash(pbft_block->getFinalChainHash());
   const auto plan_validation = [&] {
-    return rustaxa::plan_pbft_manager_block_validation(final_chain_->rustFinalChain(), candidate_final_chain_hash, fact);
+    return rustaxa::plan_pbft_manager_block_validation(pbft_service_->service(), final_chain_->rustFinalChain(), fact);
   };
   auto plan = plan_validation();
   while (true) {
@@ -2644,40 +2638,6 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
     }
     if (plan.action != kPbftManagerBlockValidationActionRunCheck) {
       throw std::runtime_error("Rust PBFT block validation planner returned unknown action");
-    }
-
-    if (plan.next_check == kPbftManagerBlockValidationCheckPbftChain) {
-      fact.pbft_chain_status = pbft_chain_->checkPbftBlockValidation(pbft_block)
-                                   ? kPbftManagerBlockValidationFactValid
-                                   : kPbftManagerBlockValidationFactInvalid;
-      plan = plan_validation();
-      continue;
-    }
-
-    if (plan.next_check == kPbftManagerBlockValidationCheckRewardVotes) {
-      if (!vote_mgr_->validateRewardVotesForBlock(pbft_block)) {
-        LOG(log_er_) << "Failed verifying reward votes for proposed PBFT block " << pbft_block_hash;
-        fact.reward_votes_status = kPbftManagerBlockValidationFactInvalid;
-      } else {
-        fact.reward_votes_status = kPbftManagerBlockValidationFactValid;
-      }
-      plan = plan_validation();
-      continue;
-    }
-
-    if (plan.next_check == kPbftManagerBlockValidationCheckPillarBlock) {
-      rustaxa::PillarCurrentAnchorDecisionRequest request{};
-      request.operation = kPillarAnchorDecisionValidateCandidate;
-      request.has_candidate_hash = pillar_hash.has_value();
-      if (pillar_hash) {
-        request.candidate_hash = toBridgeHash(*pillar_hash);
-      }
-      const auto pillar_anchor_validation =
-          requireReadyPillarService(pbft_service_).pbft_service_pillar_plan_current_anchor_decision(request);
-      fact.pillar_block_status = pillar_anchor_validation.selected ? kPbftManagerBlockValidationFactValid
-                                                                   : kPbftManagerBlockValidationFactInvalid;
-      plan = plan_validation();
-      continue;
     }
 
     if (plan.next_check == kPbftManagerBlockValidationCheckDagOrder) {
@@ -2708,7 +2668,6 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
 
     throw std::runtime_error("Rust PBFT block validation planner returned unknown next check");
   }
-
 }
 
 bool PbftManager::pushCertVotedPbftBlockIntoChain_(const std::shared_ptr<PbftBlock> &pbft_block,

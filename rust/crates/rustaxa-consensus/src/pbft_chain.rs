@@ -387,6 +387,21 @@ impl PbftChainService {
             .validate_next_block(period, prev_hash)
     }
 
+    /// Fallibly validates whether a candidate extends the current PBFT head.
+    ///
+    /// The result matches [`Self::validate_block`], but lock poison is returned
+    /// as `PBFT_CHAIN_SERVICE_LOCK_POISONED` so native application pipelines can
+    /// abort without unwinding across an FFI boundary. Validation holds only the
+    /// sibling read lock and performs no mutation.
+    pub fn try_validate_block(&self, period: u64, prev_hash: H256) -> Result<PbftBlockValidation> {
+        Ok(self
+            .state
+            .read()
+            .map_err(|_| anyhow!("PBFT_CHAIN_SERVICE_LOCK_POISONED"))?
+            .state
+            .validate_next_block(period, prev_hash))
+    }
+
     fn storage(&self) -> Result<&Storage> {
         self.storage
             .as_deref()
@@ -840,5 +855,21 @@ mod tests {
         assert_eq!(updated.size, 1);
         assert_eq!(updated.non_empty_size, 1);
         assert_eq!(service.head(), updated);
+    }
+
+    #[test]
+    fn fallible_validation_reports_poisoned_chain_lock() {
+        let service = PbftChainService::from_parts(None, default_head(), false).unwrap();
+        let state = service.state.clone();
+        let poison = std::thread::spawn(move || {
+            let _guard = state.write().unwrap();
+            panic!("poison PBFT chain lock");
+        });
+        assert!(poison.join().is_err());
+
+        let error = service
+            .try_validate_block(1, H256::zero())
+            .expect_err("poison must be returned to native pipelines");
+        assert_eq!(error.to_string(), "PBFT_CHAIN_SERVICE_LOCK_POISONED");
     }
 }
