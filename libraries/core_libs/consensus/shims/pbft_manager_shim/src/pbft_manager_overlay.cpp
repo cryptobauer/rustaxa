@@ -585,22 +585,17 @@ void materializeCachedCandidateDag(const rustaxa::DagManagerNonFinalizedSyncPayl
 }
 
 rustaxa::PbftFinalizationIntentFact makePbftFinalizationIntentFact(
-    const PeriodData &period_data, const blk_hash_t &pbft_head_hash, const blk_hash_t &last_pbft_block_hash,
-    PbftPeriod last_pbft_block_period, bool block_in_chain, bool pillar_block_finalized,
+    const PeriodData &period_data, bool block_in_chain, bool pillar_block_finalized,
     bool request_dynamic_lambda_update, uint64_t cert_vote_count, const blk_hash_t &sample_cert_vote_block_hash,
     PbftPeriod sample_cert_vote_period, PbftRound sample_cert_vote_round, PbftStep sample_cert_vote_step,
     uint32_t block_lambda, bool last_saved_period_lambda_found, uint32_t last_saved_period_lambda,
     uint32_t dynamic_blocks_per_year, uint32_t rounds_count_dynamic_lambda, uint32_t dynamic_lambda,
     uint32_t dpos_blocks_per_year, const std::vector<blk_hash_t> &dag_blocks_order,
-    const std::vector<trx_hash_t> &transaction_order, const std::string &pbft_head_payload,
-    bool process_pillar_block_after_advance) {
+    const std::vector<trx_hash_t> &transaction_order, bool process_pillar_block_after_advance) {
   rustaxa::PbftFinalizationIntentFact fact;
   fact.block_hash = toBridgeHash(period_data.pbft_blk->getBlockHash());
-  fact.pbft_head_hash = toBridgeHash(pbft_head_hash);
   fact.block_period = period_data.pbft_blk->getPeriod();
   fact.block_prev_hash = toBridgeHash(period_data.pbft_blk->getPrevBlockHash());
-  fact.chain_last_hash = toBridgeHash(last_pbft_block_hash);
-  fact.chain_last_period = last_pbft_block_period;
   fact.block_in_chain = block_in_chain;
   fact.pivot_dag_anchor_hash = toBridgeHash(period_data.pbft_blk->getPivotDagBlockHash());
   fact.has_pillar_block =
@@ -619,7 +614,7 @@ rustaxa::PbftFinalizationIntentFact makePbftFinalizationIntentFact(
   fact.rounds_count_dynamic_lambda = rounds_count_dynamic_lambda;
   fact.dynamic_lambda = dynamic_lambda;
   fact.dpos_blocks_per_year = dpos_blocks_per_year;
-  fact.pbft_head_payload = block_in_chain ? rust::Vec<uint8_t>() : toBridgeBytes(pbft_head_payload);
+  fact.pbft_head_payload = rust::Vec<uint8_t>();
   fact.period_data_rlp = block_in_chain ? rust::Vec<uint8_t>() : toBridgeBytes(period_data.rlp());
   fact.ordered_dag_block_hashes = toBridgeFinalizationHashes(dag_blocks_order);
   fact.ordered_transaction_hashes = toBridgeFinalizationHashes(transaction_order);
@@ -2887,8 +2882,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     pillar_block_finalized = true;
   }
 
-  auto null_anchor = period_data.pbft_blk->getPivotDagBlockHash() == kNullBlockHash;
-
   LOG(log_dg_) << "Storing pbft blk " << pbft_block_hash << " cert votes: " << cert_votes;
 
   vec_blk_t dag_blocks_order;
@@ -2905,19 +2898,14 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     transaction_order.emplace_back(transaction->getHash());
   }
 
-  const auto planner_chain_last_hash =
-      block_in_chain ? period_data.pbft_blk->getPrevBlockHash() : pbft_chain_->getHeadHash();
-  const auto planner_chain_last_period = block_in_chain ? block_pbft_period - 1 : pbft_chain_->getPbftChainSize();
   const auto planner_pillar_block_finalized = block_in_chain ? true : pillar_block_finalized;
   const auto finalization_intent_fact = makePbftFinalizationIntentFact(
-      period_data, planner_chain_last_hash, pbft_chain_->getLastPbftBlockHash(), planner_chain_last_period,
-      block_in_chain, planner_pillar_block_finalized, dynamic_lambda_enabled, cert_votes.size(),
+      period_data, block_in_chain, planner_pillar_block_finalized, dynamic_lambda_enabled, cert_votes.size(),
       sample_cert_vote->getBlockHash(), sample_cert_vote->getPeriod(), sample_cert_vote->getRound(),
       sample_cert_vote->getStep(), block_lambda, dynamic_lambda_plan.last_saved_period_lambda_found,
       dynamic_lambda_plan.last_saved_period_lambda, dynamic_blocks_per_year,
       dynamic_lambda_plan.rounds_count_dynamic_lambda, dynamic_lambda_plan.dynamic_lambda,
       kGenesisConfig.state.dpos.blocks_per_year, dag_blocks_order, transaction_order,
-      pbft_chain_->getJsonStrForBlock(pbft_block_hash, null_anchor),
       kGenesisConfig.state.hardforks.ficus_hf.isPillarBlockPeriod(block_pbft_period));
   const auto finalization_plan =
       rustaxa::pbft_manager_runtime_plan_finalization_intent(pbft_service_->service(), finalization_intent_fact);

@@ -26,7 +26,6 @@ namespace taraxa {
  * - Rust owns persisted PBFT chain state, and restores it into the shared service on construction.
  * - JSON rendering for head state remains owned by the C++ shim for C++-side API compatibility.
  * - in-memory chain fields and runtime validation state are held by the shared Rust service.
- * - `getJsonStrForBlock` is a pure preview and does not mutate state or write storage
  * - `updatePbftChain` mutates only in-memory state; `PbftManager` remains responsible for batched persistence
  */
 class PbftChain {
@@ -80,13 +79,6 @@ class PbftChain {
    * Returns the current PBFT chain head as legacy JsonCpp styled JSON.
    */
   std::string getJsonStr() const;
-
-  /**
-   * Returns the legacy JSON that would result from appending `block_hash`.
-   *
-   * `null_anchor` controls whether the non-empty PBFT size is incremented. This method does not mutate state.
-   */
-  std::string getJsonStrForBlock(blk_hash_t const& block_hash, bool null_anchor) const;
 
   /**
    * Returns true if Rust storage has a PBFT block-period index entry for `pbft_block_hash`.

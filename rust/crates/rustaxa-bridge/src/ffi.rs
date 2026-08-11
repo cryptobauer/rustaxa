@@ -905,11 +905,8 @@ pub mod rustaxa_ffi {
     /// C++-originated fact bundle for deterministic PBFT finalization intent planning.
     struct PbftFinalizationIntentFact {
         block_hash: [u8; 32],
-        pbft_head_hash: [u8; 32],
         block_period: u64,
         block_prev_hash: [u8; 32],
-        chain_last_hash: [u8; 32],
-        chain_last_period: u64,
         block_in_chain: bool,
         pivot_dag_anchor_hash: [u8; 32],
         has_pillar_block: bool,
@@ -927,7 +924,6 @@ pub mod rustaxa_ffi {
         rounds_count_dynamic_lambda: u32,
         dynamic_lambda: u32,
         dpos_blocks_per_year: u32,
-        pbft_head_payload: Vec<u8>,
         period_data_rlp: Vec<u8>,
         ordered_dag_block_hashes: Vec<PbftFinalizationHash>,
         ordered_transaction_hashes: Vec<PbftFinalizationHash>,
@@ -3827,11 +3823,6 @@ pub mod rustaxa_ffi {
 
         pub fn pbft_chain_initialized_default(self: &BridgePbftService) -> bool;
         pub fn pbft_chain_head(self: &BridgePbftService) -> PbftChainHeadPayload;
-        pub fn pbft_chain_project_legacy_json_head(
-            self: &BridgePbftService,
-            block_hash: &[u8; 32],
-            increments_non_empty_size: bool,
-        ) -> Result<PbftChainHeadPayload>;
         pub fn pbft_chain_update(
             self: &BridgePbftService,
             block_hash: &[u8; 32],

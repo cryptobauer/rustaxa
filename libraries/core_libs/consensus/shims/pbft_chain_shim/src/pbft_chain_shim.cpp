@@ -91,13 +91,6 @@ std::string PbftChain::getJsonStr() const {
   return head_json_string(pbft_service_->service().pbft_chain_head());
 }
 
-std::string PbftChain::getJsonStrForBlock(blk_hash_t const& block_hash, bool null_anchor) const {
-  std::shared_lock lock(chain_head_access_);
-  auto projected =
-      pbft_service_->service().pbft_chain_project_legacy_json_head(to_bridge_hash(block_hash), !null_anchor);
-  return head_json_string(projected);
-}
-
 std::ostream& operator<<(std::ostream& strm, PbftChain const& pbft_chain) {
   strm << pbft_chain.getJsonStr();
   return strm;

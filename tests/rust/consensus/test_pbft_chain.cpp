@@ -106,21 +106,6 @@ TEST_F(RustPbftChainTest, UpdatesHeadStateForNonNullAndNullAnchors) {
   EXPECT_EQ(current.last_non_null_anchor_hash, h256(99));
 }
 
-TEST_F(RustPbftChainTest, ProjectsLegacyJsonHeadWithoutMutatingCurrentHead) {
-  auto chain = create_chain("rustaxa_consensus_pbft_chain_legacy_projection", 0, 0, 0);
-
-  auto projected = chain->pbft_chain_project_legacy_json_head(h256(45), true);
-  EXPECT_EQ(projected.size, 1);
-  EXPECT_EQ(projected.non_empty_size, 1);
-  EXPECT_EQ(projected.last_pbft_block_hash, h256(45));
-  EXPECT_EQ(projected.last_non_null_anchor_hash, h256(0));
-
-  auto current = chain->pbft_chain_head();
-  EXPECT_EQ(current.size, 0);
-  EXPECT_EQ(current.non_empty_size, 0);
-  EXPECT_EQ(current.last_pbft_block_hash, h256(0));
-}
-
 TEST_F(RustPbftChainTest, RejectsImpossibleRecoveredHead) {
   EXPECT_THROW((void)create_chain("rustaxa_consensus_pbft_chain_invalid_head", 1, 2, 0), std::exception);
 }

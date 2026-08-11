@@ -60,9 +60,6 @@ TEST_F(PbftChainShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
   EXPECT_EQ(chain.getLastPbftBlockHash(), block->getBlockHash());
   EXPECT_EQ(chain.getLastNonNullPbftBlockAnchor(), block->getPivotDagBlockHash());
   EXPECT_NE(chain.getJsonStr().find(block->getBlockHash().toString()), std::string::npos);
-
-  const auto projected = chain.getJsonStrForBlock(blk_hash_t(404), true);
-  EXPECT_NE(projected.find(blk_hash_t(404).toString()), std::string::npos);
   EXPECT_EQ(chain.getPbftChainSize(), 1);
 }
 

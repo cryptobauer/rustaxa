@@ -19,21 +19,6 @@ impl BridgePbftService {
         self.0.pbft_chain_head().into()
     }
 
-    /// Returns a non-mutating preview for the legacy persisted-head JSON path.
-    pub fn pbft_chain_project_legacy_json_head(
-        &self,
-        block_hash: &[u8; 32],
-        increments_non_empty_size: bool,
-    ) -> Result<PbftChainHeadPayload, anyhow::Error> {
-        Ok(self
-            .0
-            .pbft_chain_project_legacy_json_head(
-                H256::from(*block_hash),
-                increments_non_empty_size,
-            )?
-            .into())
-    }
-
     /// Applies an in-memory PBFT chain update without writing storage.
     pub fn pbft_chain_update(
         &self,
