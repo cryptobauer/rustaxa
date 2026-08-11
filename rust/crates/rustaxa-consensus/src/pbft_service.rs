@@ -2597,6 +2597,104 @@ impl PbftService {
         )
     }
 
+    /// Validates the exact active PBFT sync FinalChain hash and continues rewards.
+    ///
+    /// Generation, cursor, block period, and candidate hash are captured under
+    /// the manager lock entirely from immutable session facts. The delayed
+    /// FinalChain hash lookup runs after releasing that lock. Exact reporting
+    /// atomically captures a resulting reward request, whose selection also
+    /// runs unlocked and exact-reports through the existing continuation.
+    /// Period-zero, missing, matching, and mismatching hashes preserve native
+    /// FinalChain semantics. Infrastructure failure exact-aborts only the
+    /// captured request; stale success or failure returns `None` without
+    /// consuming a replacement session or exposing reward records.
+    pub fn validate_pbft_sync_admission_final_chain_hash(
+        &self,
+        final_chain: &FinalChain,
+    ) -> Option<(
+        crate::pbft_sync::PbftSyncAdmissionSessionStep,
+        Vec<crate::pbft_vote_payload::PbftVotePayloadRecord>,
+        crate::pbft_manager::PbftManagerFinalChainHashValidationResult,
+    )> {
+        self.validate_pbft_sync_admission_final_chain_hash_with(final_chain, || {})
+    }
+
+    fn validate_pbft_sync_admission_final_chain_hash_with(
+        &self,
+        final_chain: &FinalChain,
+        after_capture: impl FnOnce(),
+    ) -> Option<(
+        crate::pbft_sync::PbftSyncAdmissionSessionStep,
+        Vec<crate::pbft_vote_payload::PbftVotePayloadRecord>,
+        crate::pbft_manager::PbftManagerFinalChainHashValidationResult,
+    )> {
+        if !self.is_ready() {
+            return None;
+        }
+        let identity = self
+            .manager
+            .pbft_sync_admission_final_chain_hash_request()?;
+        after_capture();
+        let expected = match final_chain.pbft_final_chain_hash(identity.block_period) {
+            Ok(expected) => expected,
+            Err(error) => {
+                let step = self
+                    .manager
+                    .abort_pbft_sync_admission_final_chain_hash_exact(identity)?;
+                return Some((
+                    step,
+                    Vec::new(),
+                    crate::pbft_manager::PbftManagerFinalChainHashValidationResult {
+                        status: crate::pbft_manager::PbftManagerFinalChainHashStatus::Unknown,
+                        expected_hash: H256::zero(),
+                        error_code: error.to_string(),
+                    },
+                ));
+            }
+        };
+        let validation = match expected {
+            Some(expected) if H256(expected) == identity.candidate_final_chain_hash => {
+                crate::pbft_manager::PbftManagerFinalChainHashValidationResult {
+                    status: crate::pbft_manager::PbftManagerFinalChainHashStatus::Valid,
+                    expected_hash: H256(expected),
+                    error_code: String::new(),
+                }
+            }
+            Some(expected) => crate::pbft_manager::PbftManagerFinalChainHashValidationResult {
+                status: crate::pbft_manager::PbftManagerFinalChainHashStatus::Invalid,
+                expected_hash: H256(expected),
+                error_code: "PBFT_MANAGER_FINAL_CHAIN_HASH_MISMATCH".to_string(),
+            },
+            None => crate::pbft_manager::PbftManagerFinalChainHashValidationResult {
+                status: crate::pbft_manager::PbftManagerFinalChainHashStatus::Missing,
+                expected_hash: H256::zero(),
+                error_code: "PBFT_MANAGER_FINAL_CHAIN_HASH_MISSING".to_string(),
+            },
+        };
+        let runtime_status = match validation.status {
+            crate::pbft_manager::PbftManagerFinalChainHashStatus::Valid => {
+                crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::Valid
+            }
+            crate::pbft_manager::PbftManagerFinalChainHashStatus::Missing => {
+                crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::Missing
+            }
+            crate::pbft_manager::PbftManagerFinalChainHashStatus::Invalid => {
+                crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::Invalid
+            }
+            crate::pbft_manager::PbftManagerFinalChainHashStatus::Unknown => {
+                crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::Unknown
+            }
+        };
+        let (step, reward_identity) = self
+            .manager
+            .report_pbft_sync_admission_final_chain_hash_exact(identity, runtime_status)?;
+        let (step, records) = match reward_identity {
+            Some(identity) => self.select_and_report_pbft_sync_reward_votes(identity)?,
+            None => (step, Vec::new()),
+        };
+        Some((step, records, validation))
+    }
+
     /// Reports one external status and performs any resulting reward selection.
     ///
     /// The predecessor report and reward-request capture share one manager
@@ -4661,6 +4759,7 @@ mod tests {
             chain_last_hash: H256::repeat_byte(0xa1),
             chain_last_period: block_period.saturating_sub(1),
             block_in_chain: false,
+            candidate_final_chain_hash: H256::zero(),
             reward_vote_hashes: Vec::new(),
             dag_transaction_hashes: Vec::new(),
             period_data_transaction_hashes: Vec::new(),
@@ -4731,6 +4830,7 @@ mod tests {
             chain_last_hash: H256::repeat_byte(0xa1),
             chain_last_period: 0,
             block_in_chain: false,
+            candidate_final_chain_hash: H256::zero(),
             reward_vote_hashes: Vec::new(),
             dag_transaction_hashes,
             period_data_transaction_hashes,
@@ -4929,6 +5029,14 @@ mod tests {
     }
 
     fn final_chain_with_pillar_voters(storage: Arc<Storage>, voters: &[[u8; 20]]) -> FinalChain {
+        final_chain_with_pillar_voters_and_delay(storage, voters, 0)
+    }
+
+    fn final_chain_with_pillar_voters_and_delay(
+        storage: Arc<Storage>,
+        voters: &[[u8; 20]],
+        delegation_delay: u64,
+    ) -> FinalChain {
         use rustaxa_types::{
             DposTokenAmount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
         };
@@ -4961,7 +5069,7 @@ mod tests {
                 minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
-                delegation_delay: 0,
+                delegation_delay,
                 dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         )
@@ -7244,6 +7352,7 @@ mod tests {
             chain_last_hash: H256::repeat_byte(9),
             chain_last_period: 9,
             block_in_chain: false,
+            candidate_final_chain_hash: H256::zero(),
             reward_vote_hashes: Vec::new(),
             dag_transaction_hashes: vec![H256::repeat_byte(1)],
             period_data_transaction_hashes: Vec::new(),
@@ -7319,6 +7428,157 @@ mod tests {
         assert!(!mismatch.can_continue);
         assert!(service.pbft_sync_admission_next().is_none());
 
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn sync_final_chain_admission_fact(
+        candidate_final_chain_hash: H256,
+        reward_vote_hashes: Vec<H256>,
+    ) -> crate::pbft_sync::PbftSyncAdmissionInitialFact {
+        let mut fact = sync_transaction_admission_fact(Vec::new(), Vec::new());
+        fact.block_period = 2;
+        fact.chain_last_period = 1;
+        fact.candidate_final_chain_hash = candidate_final_chain_hash;
+        fact.reward_vote_hashes = reward_vote_hashes;
+        fact
+    }
+
+    #[test]
+    fn sync_final_chain_hash_admission_reports_valid_expected_hash() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_final_chain_valid");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        service.complete_bootstrap();
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage, &[], 2);
+        assert!(
+            service.begin_pbft_sync_admission(sync_final_chain_admission_fact(
+                H256::zero(),
+                vec![H256::repeat_byte(0x81)],
+            ))
+        );
+
+        let (_, records, validation) = service
+            .validate_pbft_sync_admission_final_chain_hash(&final_chain)
+            .expect("exact FinalChain request");
+        assert!(records.is_empty());
+        assert_eq!(
+            validation.status,
+            crate::pbft_manager::PbftManagerFinalChainHashStatus::Valid
+        );
+        assert_eq!(validation.expected_hash, H256::zero());
+        assert!(validation.error_code.is_empty());
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sync_final_chain_hash_admission_reports_invalid_expected_hash() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_final_chain_invalid");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        service.complete_bootstrap();
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage, &[], 2);
+        assert!(
+            service.begin_pbft_sync_admission(sync_final_chain_admission_fact(
+                H256::repeat_byte(0x91),
+                Vec::new(),
+            ))
+        );
+
+        let (_, records, validation) = service
+            .validate_pbft_sync_admission_final_chain_hash(&final_chain)
+            .expect("exact FinalChain request");
+        assert!(records.is_empty());
+        assert_eq!(
+            validation.status,
+            crate::pbft_manager::PbftManagerFinalChainHashStatus::Invalid
+        );
+        assert_eq!(validation.expected_hash, H256::zero());
+        assert_eq!(
+            validation.error_code,
+            "PBFT_MANAGER_FINAL_CHAIN_HASH_MISMATCH"
+        );
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sync_final_chain_hash_admission_reports_missing_hash() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_final_chain_missing");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        service.complete_bootstrap();
+        let final_chain = final_chain_with_pillar_voters(storage, &[]);
+        assert!(
+            service.begin_pbft_sync_admission(sync_final_chain_admission_fact(
+                H256::zero(),
+                Vec::new(),
+            ))
+        );
+
+        let (step, records, validation) = service
+            .validate_pbft_sync_admission_final_chain_hash(&final_chain)
+            .expect("exact FinalChain request");
+        assert!(records.is_empty());
+        assert_eq!(
+            validation.status,
+            crate::pbft_manager::PbftManagerFinalChainHashStatus::Missing
+        );
+        assert_eq!(
+            validation.error_code,
+            "PBFT_MANAGER_FINAL_CHAIN_HASH_MISSING"
+        );
+        assert!(step.plan.wait_for_finalization);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn stale_sync_final_chain_completion_preserves_replacement_reward_request() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_final_chain_stale");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        service.complete_bootstrap();
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage, &[], 2);
+        assert!(
+            service.begin_pbft_sync_admission(sync_final_chain_admission_fact(
+                H256::zero(),
+                vec![H256::repeat_byte(0xa1)],
+            ))
+        );
+        let replacement =
+            sync_final_chain_admission_fact(H256::repeat_byte(0xa2), vec![H256::repeat_byte(0xa3)]);
+
+        assert!(
+            service
+                .validate_pbft_sync_admission_final_chain_hash_with(&final_chain, || {
+                    assert!(service.begin_pbft_sync_admission(replacement));
+                    let replacement_final_chain = service.pbft_sync_admission_next().unwrap();
+                    let replacement_reward = service
+                        .report_pbft_sync_admission_status(
+                            replacement_final_chain.cursor,
+                            replacement_final_chain.next_check,
+                            crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::Valid,
+                            crate::pbft_sync::PbftSyncFactStatus::Valid,
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        replacement_reward.next_check,
+                        crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
+                    );
+                })
+                .is_none()
+        );
+        let replacement_step = service.pbft_sync_admission_next().unwrap();
+        assert_eq!(
+            replacement_step.next_check,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
+        );
+        assert_eq!(
+            service
+                .manager
+                .pbft_sync_admission_reward_request()
+                .unwrap()
+                .reward_vote_hashes,
+            vec![H256::repeat_byte(0xa3)]
+        );
         drop(service);
         let _ = fs::remove_dir_all(path);
     }

@@ -835,6 +835,7 @@ pub mod rustaxa_ffi {
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         reward_vote_hashes: Vec<PbftFinalizationHash>,
+        candidate_final_chain_hash: [u8; 32],
         extra_data_required: bool,
         extra_data_present: bool,
         extra_data_pillar_block_hash_present: bool,
@@ -2309,27 +2310,6 @@ pub mod rustaxa_ffi {
     /// One address whose PBFT-facing FinalChain DPoS facts should be collected.
     struct PbftFinalChainDposAddress {
         address: [u8; 20],
-    }
-
-    /// PBFT-facing FinalChain hash validation request.
-    ///
-    /// `period` is the PBFT period under validation.
-    /// `candidate_final_chain_hash` is compared against FinalChain storage.
-    struct PbftManagerFinalChainHashValidationRequest {
-        period: u64,
-        candidate_final_chain_hash: [u8; 32],
-    }
-
-    /// PBFT-facing FinalChain hash validation result.
-    ///
-    /// Status values preserve `PbftManagerFinalChainHashStatus`:
-    /// `0` means candidate hash matched local storage,
-    /// `1` means local storage was not ready for the requested period,
-    /// `2` means the candidate hash mismatched local storage.
-    struct PbftManagerFinalChainHashValidationResult {
-        status: u8,
-        expected_hash: [u8; 32],
-        error_code: String,
     }
 
     /// PBFT-facing FinalChain DPoS total-vote count request.
@@ -3887,10 +3867,11 @@ pub mod rustaxa_ffi {
         ) -> PbftSyncAdmissionSessionStep;
         pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
             runtime: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
             cursor: u32,
             check_code: u8,
             status: u8,
-        ) -> PbftSyncAdmissionSessionStep;
+        ) -> Result<PbftSyncAdmissionSessionStep>;
         pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
             runtime: &BridgePbftService,
             final_chain: &BridgeFinalChain,
@@ -4103,8 +4084,10 @@ pub mod rustaxa_ffi {
             report: PbftManagerBroadcastReport,
         ) -> PbftManagerBroadcastReportResult;
         pub fn plan_pbft_manager_block_validation(
+            final_chain: &BridgeFinalChain,
+            candidate_final_chain_hash: &[u8; 32],
             fact: PbftManagerBlockValidationFact,
-        ) -> PbftManagerBlockValidationPlan;
+        ) -> Result<PbftManagerBlockValidationPlan>;
         pub fn plan_pbft_manager_candidate_admission(
             fact: PbftManagerCandidateAdmissionFact,
         ) -> PbftManagerCandidateAdmissionPlan;
@@ -4950,12 +4933,6 @@ pub mod rustaxa_ffi {
             period: u64,
             position: u64,
         ) -> Result<Vec<u8>>;
-        pub fn pbft_service_validate_final_chain_hash(
-            self: &BridgePbftService,
-            final_chain: &BridgeFinalChain,
-            request: PbftManagerFinalChainHashValidationRequest,
-        ) -> Result<PbftManagerFinalChainHashValidationResult>;
-
         pub fn pbft_service_collect_dpos_total_vote_count(
             self: &BridgePbftService,
             final_chain: &BridgeFinalChain,

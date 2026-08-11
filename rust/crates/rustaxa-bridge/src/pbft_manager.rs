@@ -92,7 +92,8 @@ use rustaxa_consensus::pbft_manager::{
     validate_pbft_manager_advance_period_action_report as validate_domain_pbft_manager_advance_period_action_report,
     PbftFinalizationExecutorStartRequest, PbftManagerAdvancePeriodActionReport,
     PbftManagerAdvancePeriodActionReportResult, PbftManagerAdvancePeriodPlan,
-    PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
+    PbftManagerBlockValidationAction, PbftManagerBlockValidationFact,
+    PbftManagerBlockValidationFactStatus, PbftManagerBlockValidationNextCheck,
     PbftManagerBlockValidationPlan, PbftManagerBroadcastAction, PbftManagerBroadcastFact,
     PbftManagerBroadcastPlan, PbftManagerBroadcastReport, PbftManagerBroadcastReportResult,
     PbftManagerBroadcastStatus, PbftManagerCandidateAdmissionFact,
@@ -1484,16 +1485,33 @@ pub fn report_pbft_manager_broadcast(
     report_domain_pbft_manager_broadcast(plan.into(), report.into()).into()
 }
 
-/// Plans one PBFT block-validation step from a C++-supplied live-fact bundle.
+/// Plans one PBFT block-validation step and resolves requested FinalChain hash checks.
 ///
-/// Returns a requested live check, terminal decision, or bridge-fact error.
-/// Rust owns ordering plus immutable extra-data checks; C++ owns live PBFT,
-/// FinalChain, reward-vote, pillar, and DAG queries. The caller retains facts,
-/// and malformed facts or reports produce contract errors without stored state.
+/// Rust owns check ordering and reads the delayed native FinalChain hash when
+/// that check becomes active. C++ retains PBFT-chain, reward, pillar, and DAG
+/// executor facts. Missing headers remain a typed wait plan; lookup failures
+/// propagate without rewriting the caller's fact bundle.
 pub fn plan_pbft_manager_block_validation(
+    final_chain: &BridgeFinalChain,
+    candidate_final_chain_hash: &[u8; 32],
     fact: FfiPbftManagerBlockValidationFact,
-) -> FfiPbftManagerBlockValidationPlan {
-    plan_domain_pbft_manager_block_validation(fact.into()).into()
+) -> anyhow::Result<FfiPbftManagerBlockValidationPlan> {
+    let mut fact = PbftManagerBlockValidationFact::from(fact);
+    loop {
+        let plan = plan_domain_pbft_manager_block_validation(fact.clone());
+        if plan.action != PbftManagerBlockValidationAction::RunCheck
+            || plan.next_check != PbftManagerBlockValidationNextCheck::ValidateFinalChainHash
+        {
+            return Ok(plan.into());
+        }
+        fact.final_chain_hash_status = match final_chain.0.pbft_final_chain_hash(fact.period)? {
+            Some(expected) if expected == *candidate_final_chain_hash => {
+                PbftManagerBlockValidationFactStatus::Valid
+            }
+            Some(_) => PbftManagerBlockValidationFactStatus::Invalid,
+            None => PbftManagerBlockValidationFactStatus::Missing,
+        };
+    }
 }
 
 /// Plans one Rust-owned proposed PBFT block admission attempt from live C++ facts.

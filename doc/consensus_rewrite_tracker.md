@@ -3807,6 +3807,16 @@ operation are deleted. The retained status operation automatically consumes the 
 only for temporary previous-certificate materialization. Bridge lines fall to 21,325, shim lines to 15,046, CXX
 functions to 365, and carriers to 304.
 
+The following `CRW-12` cut composes sync FinalChain-hash admission inside the native PBFT/FinalChain root. The manager
+captures the candidate hash with the exact admission generation, cursor, and period, releases its lock for the native
+delayed-hash lookup, and exact-reports valid, invalid, or missing before consuming any reward continuation. Lookup
+failure aborts only the captured request, and stale work cannot advance a replacement session. The same native
+FinalChain lookup now resolves the ordinary PBFT block-validation planner's hash check. The C++ sync hash lambda and
+ordinary block-validation hash branch, standalone validation export, and request/result carriers are deleted. Bridge
+lines fall to 21,269, shim lines to 15,000, CXX functions to 364, and carriers to 302.
+Native and bridge validation passes 1,243 tests, including exact stale-session and missing-hash wait regressions; all 50
+Rust consensus C++ tests, the rebuilt/focused PBFT manager path, the fast rewrite gate, and exact inventory guard pass.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

@@ -888,6 +888,10 @@ dynamic-lambda decisions, and bounded restart/duplicate classification. Remainin
 is executor or compatibility work under the boundaries above, not authoritative PBFT manager decision state. Detailed
 status is tracked in `doc/consensus_rewrite_tracker.md`.
 
+Sync and ordinary PBFT block FinalChain-hash admission now compose the native PBFT and FinalChain roots. Rust captures
+the exact sync request identity, performs delayed-hash lookup outside the manager lock, exact-reports the result, and
+continues reward admission without a C++ hash-decision branch or standalone validation bridge API.
+
 The completed PBFT manager closeout folded the dedicated slice tracker into this plan. The landed sequence was:
 
 1. Runtime root and constructor collapse: `App::init` creates the long-lived Rust PBFT manager runtime, and Rust-mode

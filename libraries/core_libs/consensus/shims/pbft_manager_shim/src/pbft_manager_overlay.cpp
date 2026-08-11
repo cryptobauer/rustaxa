@@ -111,9 +111,6 @@ constexpr uint8_t kPbftManagerProposalActionBuildProposal = 1;
 constexpr uint8_t kPbftManagerProposalActionSkipProposal = 2;
 constexpr uint8_t kPbftManagerProposalActionContractError = 255;
 constexpr uint8_t kPbftManagerProposalStatusBuildReady = 1;
-constexpr uint8_t kPbftManagerFinalChainHashStatusValid = 0;
-constexpr uint8_t kPbftManagerFinalChainHashStatusMissing = 1;
-constexpr uint8_t kPbftManagerFinalChainHashStatusInvalid = 2;
 constexpr uint8_t kPbftManagerBroadcastActionNoop = 0;
 constexpr uint8_t kPbftManagerBroadcastActionPeriodVotes = 1;
 constexpr uint8_t kPbftManagerBroadcastActionRoundVotes = 2;
@@ -171,7 +168,6 @@ constexpr uint8_t kPbftManagerBlockValidationActionReject = 2;
 constexpr uint8_t kPbftManagerBlockValidationActionWaitForFinalization = 3;
 constexpr uint8_t kPbftManagerBlockValidationActionContractError = 255;
 constexpr uint8_t kPbftManagerBlockValidationCheckPbftChain = 0;
-constexpr uint8_t kPbftManagerBlockValidationCheckFinalChainHash = 1;
 constexpr uint8_t kPbftManagerBlockValidationCheckRewardVotes = 2;
 constexpr uint8_t kPbftManagerBlockValidationCheckPillarBlock = 4;
 constexpr uint8_t kPbftManagerBlockValidationCheckDagOrder = 5;
@@ -2629,7 +2625,11 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   fact.dag_order_status = kPbftManagerBlockValidationFactNotChecked;
   fact.dag_weight_status = kPbftManagerBlockValidationFactValid;
 
-  auto plan = rustaxa::plan_pbft_manager_block_validation(fact);
+  const auto candidate_final_chain_hash = toBridgeHash(pbft_block->getFinalChainHash());
+  const auto plan_validation = [&] {
+    return rustaxa::plan_pbft_manager_block_validation(final_chain_->rustFinalChain(), candidate_final_chain_hash, fact);
+  };
+  auto plan = plan_validation();
   while (true) {
     if (plan.action == kPbftManagerBlockValidationActionAccept) {
       return true;
@@ -2650,30 +2650,7 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
       fact.pbft_chain_status = pbft_chain_->checkPbftBlockValidation(pbft_block)
                                    ? kPbftManagerBlockValidationFactValid
                                    : kPbftManagerBlockValidationFactInvalid;
-      plan = rustaxa::plan_pbft_manager_block_validation(fact);
-      continue;
-    }
-
-    if (plan.next_check == kPbftManagerBlockValidationCheckFinalChainHash) {
-      rustaxa::PbftManagerFinalChainHashValidationRequest request;
-      request.period = block_period;
-      request.candidate_final_chain_hash = toBridgeHash(pbft_block->getFinalChainHash());
-      const auto validation =
-          pbft_service_->service().pbft_service_validate_final_chain_hash(final_chain_->rustFinalChain(), request);
-      if (validation.status == kPbftManagerFinalChainHashStatusValid) {
-        fact.final_chain_hash_status = kPbftManagerBlockValidationFactValid;
-      } else if (validation.status == kPbftManagerFinalChainHashStatusMissing) {
-        LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
-        fact.final_chain_hash_status = kPbftManagerBlockValidationFactMissing;
-      } else if (validation.status == kPbftManagerFinalChainHashStatusInvalid) {
-        LOG(log_er_) << "Block " << block_period << " hash " << pbft_block_hash << " state root "
-                     << pbft_block->getFinalChainHash() << " isn't matching actual "
-                     << fromBridgeHash(validation.expected_hash);
-        fact.final_chain_hash_status = kPbftManagerBlockValidationFactInvalid;
-      } else {
-        throw std::runtime_error("Rust PBFT FinalChain hash validation returned unknown status");
-      }
-      plan = rustaxa::plan_pbft_manager_block_validation(fact);
+      plan = plan_validation();
       continue;
     }
 
@@ -2684,7 +2661,7 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
       } else {
         fact.reward_votes_status = kPbftManagerBlockValidationFactValid;
       }
-      plan = rustaxa::plan_pbft_manager_block_validation(fact);
+      plan = plan_validation();
       continue;
     }
 
@@ -2699,7 +2676,7 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
           requireReadyPillarService(pbft_service_).pbft_service_pillar_plan_current_anchor_decision(request);
       fact.pillar_block_status = pillar_anchor_validation.selected ? kPbftManagerBlockValidationFactValid
                                                                    : kPbftManagerBlockValidationFactInvalid;
-      plan = rustaxa::plan_pbft_manager_block_validation(fact);
+      plan = plan_validation();
       continue;
     }
 
@@ -2725,7 +2702,7 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
         throw std::runtime_error("Rust PBFT candidate DAG preparation returned unknown status");
       }
 
-      plan = rustaxa::plan_pbft_manager_block_validation(fact);
+      plan = plan_validation();
       continue;
     }
 
@@ -3467,27 +3444,6 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     }
   };
 
-  auto validate_final_chain_hash_from_queue_metadata = [&]() -> uint8_t {
-    rustaxa::PbftManagerFinalChainHashValidationRequest request;
-    request.period = block_period;
-    request.candidate_final_chain_hash = toBridgeHash(final_chain_hash);
-    const auto validation =
-        pbft_service_->service().pbft_service_validate_final_chain_hash(final_chain_->rustFinalChain(), request);
-    if (validation.status == kPbftManagerFinalChainHashStatusMissing) {
-      LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
-      return kPbftManagerFinalChainHashStatusMissing;
-    }
-    if (validation.status == kPbftManagerFinalChainHashStatusInvalid) {
-      LOG(log_er_) << "Block " << block_period << " hash " << pbft_block_hash << " state root " << final_chain_hash
-                   << " isn't matching actual " << fromBridgeHash(validation.expected_hash);
-      return kPbftManagerFinalChainHashStatusInvalid;
-    }
-    if (validation.status != kPbftManagerFinalChainHashStatusValid) {
-      throw std::runtime_error("Rust PBFT sync FinalChain hash validation returned unknown status");
-    }
-    return kPbftManagerFinalChainHashStatusValid;
-  };
-
   rustaxa::PbftSyncAdmissionInitialFact initial_fact{};
   initial_fact.block_period = block_period;
   initial_fact.block_prev_hash = toBridgeHash(block_prev_hash);
@@ -3497,6 +3453,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   initial_fact.dag_transaction_hashes = toBridgeTransactionHashes(dag_transaction_hashes);
   initial_fact.period_data_transaction_hashes = toBridgeTransactionHashes(period_data_transaction_hashes);
   initial_fact.reward_vote_hashes = toBridgeFinalizationHashes(reward_vote_hashes);
+  initial_fact.candidate_final_chain_hash = toBridgeHash(final_chain_hash);
   initial_fact.extra_data_required = extra_data_required;
   initial_fact.extra_data_present = extra_data_present;
   initial_fact.extra_data_pillar_block_hash_present = extra_data_pillar_block_hash_present;
@@ -3516,11 +3473,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         if (session_step.plan.wait_for_finalization) {
           final_chain_->waitForFinalized();
         }
-        const auto cursor = session_step.cursor;
-        const auto check = session_step.next_check;
-        const auto status = validate_final_chain_hash_from_queue_metadata();
-        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(pbft_service_->service(), cursor,
-                                                                                       check, status);
+        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(
+            pbft_service_->service(), final_chain_->rustFinalChain(), session_step.cursor, session_step.next_check, 0);
         reward_votes = fromBridgePbftVotes(session_step.reward_vote_rlps);
         continue;
       }
@@ -3600,7 +3554,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
                        << fromBridgeHash(cert_vote_step.first_bad_vote_hash);
         }
         session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(
-            pbft_service_->service(), session_step.cursor, session_step.next_check,
+            pbft_service_->service(), final_chain_->rustFinalChain(), session_step.cursor, session_step.next_check,
             cert_votes_accepted ? kPbftSyncFactValid : kPbftSyncFactInvalid);
         continue;
       }

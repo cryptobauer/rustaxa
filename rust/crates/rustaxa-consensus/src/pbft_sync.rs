@@ -1723,6 +1723,12 @@ pub struct PbftSyncAdmissionInitialFact {
     pub chain_last_hash: H256,
     pub chain_last_period: u64,
     pub block_in_chain: bool,
+    /// FinalChain hash declared by the queued PBFT block.
+    ///
+    /// The admission session retains this candidate as immutable request state
+    /// so native FinalChain validation never accepts a replacement supplied
+    /// after the cursor starts.
+    pub candidate_final_chain_hash: H256,
     /// Ordered reward-vote hashes declared by the queued PBFT block.
     ///
     /// The admission session retains these hashes as immutable request state so
@@ -1765,6 +1771,7 @@ pub struct PbftSyncAdmissionSessionStep {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftSyncAdmissionSession {
     fact: PbftSyncProcessPeriodDataRuntimeFact,
+    candidate_final_chain_hash: H256,
     reward_vote_hashes: Vec<H256>,
     cursor: u32,
     contract_error: Option<String>,
@@ -1775,6 +1782,7 @@ pub fn create_pbft_sync_admission_session(
     initial: PbftSyncAdmissionInitialFact,
 ) -> PbftSyncAdmissionSession {
     PbftSyncAdmissionSession {
+        candidate_final_chain_hash: initial.candidate_final_chain_hash,
         reward_vote_hashes: initial.reward_vote_hashes,
         fact: PbftSyncProcessPeriodDataRuntimeFact {
             block_period: initial.block_period,
@@ -1875,6 +1883,24 @@ pub fn next_pbft_sync_admission_session(
     session: &PbftSyncAdmissionSession,
 ) -> PbftSyncAdmissionSessionStep {
     sync_admission_step(session)
+}
+
+/// Returns the exact FinalChain-hash request pending on an admission cursor.
+///
+/// The tuple is `(cursor, block_period, candidate_final_chain_hash)`. Candidate
+/// identity comes only from immutable session-start facts. Non-FinalChain
+/// stages and terminal sessions return `None`; unlocked lookups must revalidate
+/// the full tuple before reporting.
+pub(crate) fn pbft_sync_admission_final_chain_hash_request(
+    session: &PbftSyncAdmissionSession,
+) -> Option<(u32, u64, H256)> {
+    let step = sync_admission_step(session);
+    (step.has_check && step.next_check == PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash)
+        .then_some((
+            step.cursor,
+            session.fact.block_period,
+            session.candidate_final_chain_hash,
+        ))
 }
 
 /// Returns the exact reward-vote selection request pending on an admission cursor.
@@ -2016,6 +2042,7 @@ mod tests {
             chain_last_hash: hash(9),
             chain_last_period: 9,
             block_in_chain: false,
+            candidate_final_chain_hash: H256::zero(),
             reward_vote_hashes: Vec::new(),
             dag_transaction_hashes: vec![hash(1)],
             period_data_transaction_hashes: vec![hash(1)],

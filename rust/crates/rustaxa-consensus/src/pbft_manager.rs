@@ -477,6 +477,23 @@ pub(crate) struct PbftSyncAdmissionPillarRequestIdentity {
     pub required_votes_period: u64,
 }
 
+/// Exact identity of one pending native sync FinalChain-hash request.
+///
+/// Generation and cursor prevent an unlocked lookup from entering a
+/// replacement session. Block period and candidate hash bind completion to the
+/// immutable queued-block facts captured at admission start.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PbftSyncAdmissionFinalChainHashRequestIdentity {
+    /// Manager-owned admission generation captured with the pending request.
+    pub generation: u64,
+    /// Exact session cursor requesting FinalChain validation.
+    pub cursor: u32,
+    /// PBFT block period used by the delayed FinalChain hash lookup.
+    pub block_period: u64,
+    /// FinalChain hash declared by the queued PBFT block.
+    pub candidate_final_chain_hash: H256,
+}
+
 /// Exact identity of one pending native sync reward-vote selection request.
 ///
 /// Generation and cursor prevent an unlocked completion from entering a
@@ -1934,6 +1951,110 @@ impl PbftManagerService {
         );
         apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
         clear_terminal_pbft_sync_admission(&mut runtime, &step);
+        Some(step)
+    }
+
+    /// Captures the exact pending sync FinalChain-hash request under one lock.
+    ///
+    /// The returned copy may cross the FinalChain storage boundary without
+    /// retaining the manager guard. `None` means no FinalChain check is pending.
+    pub(crate) fn pbft_sync_admission_final_chain_hash_request(
+        &self,
+    ) -> Option<PbftSyncAdmissionFinalChainHashRequestIdentity> {
+        let manager = self.lock();
+        let (cursor, block_period, candidate_final_chain_hash) =
+            crate::pbft_sync::pbft_sync_admission_final_chain_hash_request(
+                manager.pbft_sync_admission_session.as_ref()?,
+            )?;
+        Some(PbftSyncAdmissionFinalChainHashRequestIdentity {
+            generation: manager.pbft_sync_admission_generation,
+            cursor,
+            block_period,
+            candidate_final_chain_hash,
+        })
+    }
+
+    /// Exact-reports FinalChain status and atomically captures reward continuation.
+    ///
+    /// Generation, cursor, period, and candidate hash are revalidated before
+    /// mutation. Reporting and resulting reward-identity capture share the same
+    /// manager guard. Stale completion returns `None` without touching a
+    /// replacement session or sync queue.
+    pub(crate) fn report_pbft_sync_admission_final_chain_hash_exact(
+        &self,
+        identity: PbftSyncAdmissionFinalChainHashRequestIdentity,
+        status: crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus,
+    ) -> Option<(
+        crate::pbft_sync::PbftSyncAdmissionSessionStep,
+        Option<PbftSyncAdmissionRewardRequestIdentity>,
+    )> {
+        let mut runtime = self.lock();
+        if runtime.pbft_sync_admission_generation != identity.generation {
+            return None;
+        }
+        let current = crate::pbft_sync::pbft_sync_admission_final_chain_hash_request(
+            runtime.pbft_sync_admission_session.as_ref()?,
+        )?;
+        if current
+            != (
+                identity.cursor,
+                identity.block_period,
+                identity.candidate_final_chain_hash,
+            )
+        {
+            return None;
+        }
+        let mut step = crate::pbft_sync::report_pbft_sync_admission_status(
+            runtime.pbft_sync_admission_session.as_mut()?,
+            identity.cursor,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash,
+            status,
+            crate::pbft_sync::PbftSyncFactStatus::NotChecked,
+        );
+        apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
+        let reward_identity = crate::pbft_sync::pbft_sync_admission_reward_request(
+            runtime.pbft_sync_admission_session.as_ref()?,
+        )
+        .map(|(cursor, block_period, reward_vote_hashes)| {
+            PbftSyncAdmissionRewardRequestIdentity {
+                generation: runtime.pbft_sync_admission_generation,
+                cursor,
+                block_period,
+                reward_vote_hashes,
+            }
+        });
+        clear_terminal_pbft_sync_admission(&mut runtime, &step);
+        Some((step, reward_identity))
+    }
+
+    /// Aborts only the exact sync FinalChain request that failed internally.
+    ///
+    /// A stale failure returns `None` without consuming a replacement session;
+    /// an exact failure consumes the active session with the normal abort code.
+    pub(crate) fn abort_pbft_sync_admission_final_chain_hash_exact(
+        &self,
+        identity: PbftSyncAdmissionFinalChainHashRequestIdentity,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        let mut runtime = self.lock();
+        if runtime.pbft_sync_admission_generation != identity.generation {
+            return None;
+        }
+        let current = crate::pbft_sync::pbft_sync_admission_final_chain_hash_request(
+            runtime.pbft_sync_admission_session.as_ref()?,
+        )?;
+        if current
+            != (
+                identity.cursor,
+                identity.block_period,
+                identity.candidate_final_chain_hash,
+            )
+        {
+            return None;
+        }
+        let step = crate::pbft_sync::abort_pbft_sync_admission_session(
+            runtime.pbft_sync_admission_session.as_mut()?,
+        );
+        runtime.pbft_sync_admission_session = None;
         Some(step)
     }
 

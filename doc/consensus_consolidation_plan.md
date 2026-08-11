@@ -584,6 +584,12 @@ manager lock and only an exact completion advances the session. The compact Vote
 cursor query, generic report carrier, and separate next-step bridge operation are deleted. C++ receives weighted bytes
 only when the native task accepts them, for the retained FinalChain-facing previous-certificate payload.
 
+PBFT sync FinalChain-hash admission is also a composed native task. The manager binds the candidate hash to the exact
+admission generation, cursor, and period, performs the delayed native FinalChain lookup outside its lock, then
+exact-reports the result and consumes any reward continuation. The ordinary PBFT block-validation planner resolves the
+same hash check through the native FinalChain root. The C++ sync lookup lambda, ordinary validation branch, standalone
+hash-validation export, and its request/result carriers are deleted; C++ retains no FinalChain-hash decision logic.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT

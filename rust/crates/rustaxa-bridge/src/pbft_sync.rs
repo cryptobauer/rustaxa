@@ -21,8 +21,9 @@ use crate::ffi::{BridgeFinalChain, BridgePbftService};
 use crate::verified_votes::{
     empty_slashing_transaction_effect, slashing_transaction_effect_to_ffi,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ethereum_types::H256;
+use rustaxa_consensus::pbft_manager::PbftManagerFinalChainHashStatus;
 use rustaxa_consensus::pbft_service::PbftSyncCertBundleStep as DomainPbftSyncCertBundleStep;
 use rustaxa_consensus::pbft_sync::{
     PbftSyncAdmissionInitialFact, PbftSyncAdmissionSessionStep, PbftSyncFactStatus,
@@ -43,29 +44,48 @@ pub fn pbft_manager_runtime_begin_pbft_sync_admission(
         .unwrap_or_else(sync_admission_not_started_step)
 }
 
-/// Reports an external final-chain, certificate, or pillar validation result.
+/// Resolves a native FinalChain hash check or reports an external certificate result.
 ///
-/// When the resulting cursor requests reward votes, the native service derives
-/// and exact-reports that stage immediately from immutable session hashes. Its
-/// accepted weighted payloads travel on the returned step; stale or missing
-/// sessions return the stable not-started contract result.
+/// FinalChain lookup and exact status reporting are composed inside the native
+/// service so an intervening session cannot consume the result. When the
+/// resulting cursor requests reward votes, the service derives and exact-reports
+/// that stage immediately from immutable session hashes. Accepted weighted
+/// payloads travel on the returned step; stale or missing sessions return the
+/// stable not-started contract result. FinalChain infrastructure failures abort
+/// only the captured native request and propagate to the C++ executor.
 pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
     runtime: &BridgePbftService,
+    final_chain: &BridgeFinalChain,
     cursor: u32,
     check_code: u8,
     status: u8,
-) -> FfiPbftSyncAdmissionSessionStep {
+) -> Result<FfiPbftSyncAdmissionSessionStep> {
     let check = PbftSyncProcessRuntimeNextCheck::from_u8(check_code);
-    let Some((step, records)) = runtime
-        .0
-        .report_pbft_sync_admission_status_with_reward_votes(
-            cursor,
-            check,
-            PbftSyncRuntimeFinalChainHashStatus::from_u8(status),
-            PbftSyncFactStatus::from_u8(status),
-        )
-    else {
-        return sync_admission_not_started_step();
+    let result = if check == PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash {
+        let result = runtime
+            .0
+            .validate_pbft_sync_admission_final_chain_hash(&final_chain.0);
+        match result {
+            Some((_, _, validation))
+                if validation.status == PbftManagerFinalChainHashStatus::Unknown =>
+            {
+                return Err(anyhow!(validation.error_code));
+            }
+            Some((step, records, _)) => Some((step, records)),
+            None => None,
+        }
+    } else {
+        runtime
+            .0
+            .report_pbft_sync_admission_status_with_reward_votes(
+                cursor,
+                check,
+                PbftSyncRuntimeFinalChainHashStatus::from_u8(status),
+                PbftSyncFactStatus::from_u8(status),
+            )
+    };
+    let Some((step, records)) = result else {
+        return Ok(sync_admission_not_started_step());
     };
     let mut step = FfiPbftSyncAdmissionSessionStep::from(step);
     step.reward_vote_rlps = records
@@ -74,7 +94,7 @@ pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
             vote_rlp: record.vote_rlp,
         })
         .collect();
-    step
+    Ok(step)
 }
 
 /// Executes and reports the exact native sync pillar-vote admission task.
@@ -247,6 +267,7 @@ impl From<FfiPbftSyncAdmissionInitialFact> for PbftSyncAdmissionInitialFact {
                 .into_iter()
                 .map(|hash| H256::from(hash.hash))
                 .collect(),
+            candidate_final_chain_hash: H256::from(value.candidate_final_chain_hash),
             extra_data_required: value.extra_data_required,
             extra_data_present: value.extra_data_present,
             extra_data_pillar_block_hash_present: value.extra_data_pillar_block_hash_present,
@@ -378,6 +399,7 @@ mod tests {
             ],
             period_data_transaction_hashes: vec![FfiPbftSyncTransactionHash { hash: [5; 32] }],
             reward_vote_hashes: Vec::new(),
+            candidate_final_chain_hash: [6; 32],
             extra_data_required: true,
             extra_data_present: false,
             extra_data_pillar_block_hash_present: true,
@@ -398,6 +420,7 @@ mod tests {
         );
         assert_eq!(domain.period_data_transaction_hashes, [H256::from([5; 32])]);
         assert!(domain.reward_vote_hashes.is_empty());
+        assert_eq!(domain.candidate_final_chain_hash, H256::from([6; 32]));
         assert!(domain.extra_data_required);
         assert!(!domain.extra_data_present);
         assert!(domain.extra_data_pillar_block_hash_present);
