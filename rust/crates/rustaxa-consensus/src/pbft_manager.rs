@@ -33,7 +33,7 @@ use ethereum_types::H256;
 use rlp::RlpStream;
 use rustaxa_storage::{Column, Storage, StorageWriteBatch};
 use rustaxa_types::codec::rlp::dag::FinalizedDagBlockBundleRlp;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tiny_keccak::{Hasher, Keccak};
@@ -148,14 +148,13 @@ impl PbftFinalizedTransactionStatusPort for crate::dag_transaction_service::DagT
 ///
 /// The manager executes every consecutive action whose state and persistence
 /// it owns, then returns the first external/subsystem action or terminal step.
-/// The two booleans are leaf effects consumed by the temporary C++ shell:
-/// whether its anchor compatibility cache must be mirrored clear and whether
-/// its scalar snapshot must be refreshed. `error_code` carries a stable
+/// The booleans report whether the native candidate payload cache was cleared
+/// and whether the scalar snapshot changed. `error_code` carries a stable
 /// operation-level rejection label when the runtime step contains the more
 /// specific validation or storage status.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PbftFinalizationOwnedActionDrain {
-    /// Whether the retained C++ anchor-order compatibility cache must be cleared.
+    /// Whether the native candidate DAG payload cache was cleared.
     pub cleared_anchor_dag_cache: bool,
     /// Whether native scalar manager state changed during this drain.
     pub has_snapshot: bool,
@@ -217,7 +216,7 @@ pub struct PbftFinalizationExecutorStartRequest {
 pub struct PbftFinalizationExecutorBoundary {
     /// First external action or terminal finalization step.
     pub next_step: crate::pbft_finalize::PbftFinalizationRuntimeStep,
-    /// Whether C++ must mirror-clear its temporary anchor DAG cache.
+    /// Whether native draining cleared the candidate DAG payload cache.
     pub cleared_anchor_dag_cache: bool,
     /// Whether scalar compatibility state changed during native draining.
     pub has_snapshot: bool,
@@ -2367,6 +2366,35 @@ pub enum PbftManagerBlockValidationFactStatus {
     Unknown,
 }
 
+/// Native result of preparing one PBFT candidate's canonical DAG payload.
+///
+/// The numeric values are a stable compatibility ABI: valid, unavailable
+/// order/materialization, order-hash mismatch, and PBFT gas-limit rejection.
+/// Only `Valid` publishes a cache entry.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftCandidateDagPreparationStatus {
+    /// The canonical payload was validated and is cached by anchor.
+    Valid,
+    /// Candidate period/order or one canonical DAG block was unavailable.
+    Missing,
+    /// The canonical ordered-block hash differs from the candidate hash.
+    OrderHashInvalid,
+    /// The legacy divergence rule required a weight check and it exceeded the limit.
+    WeightInvalid,
+}
+
+impl PbftCandidateDagPreparationStatus {
+    /// Returns the stable bridge status code.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Valid => 0,
+            Self::Missing => 1,
+            Self::OrderHashInvalid => 2,
+            Self::WeightInvalid => 3,
+        }
+    }
+}
+
 impl PbftManagerBlockValidationFactStatus {
     /// Stable bridge code for a PBFT block-validation fact status.
     pub const fn as_u8(self) -> u8 {
@@ -2414,7 +2442,10 @@ pub enum PbftManagerBlockValidationNextCheck {
     ValidatePillarBlock,
     /// Resolve and verify DAG order for the candidate pivot.
     CheckDagOrder,
-    /// Check DAG block weight after Rust requested and C++ cached the order.
+    /// Reserved ABI code for legacy DAG weight rechecks.
+    ///
+    /// `CheckDagOrder` now includes DAG-order and weight validation. Stale
+    /// sessions that still report this check are treated as contract errors.
     CheckDagWeight,
     /// Unknown bridge status.
     Unknown,
@@ -2523,8 +2554,7 @@ impl PbftManagerBlockValidationStatus {
 /// - `extra_data_required`, `extra_data_present`, and
 ///   `extra_data_pillar_hash_present` let Rust validate the block's immutable
 ///   extra-data shape without requesting a live executor check.
-/// - `pivot_is_null`, `dag_order_cached`, `dag_order_required`,
-///   `pillar_block_required`, and `dag_weight_check_required` encode
+/// - `pivot_is_null`, `dag_order_required`, and `pillar_block_required` encode
 ///   deterministic branch conditions that C++ can derive from existing sidecars
 ///   without deciding final acceptance.
 ///
@@ -2546,8 +2576,6 @@ pub struct PbftManagerBlockValidationFact {
     pub pivot_hash: H256,
     /// True when the pivot hash is the null DAG anchor.
     pub pivot_is_null: bool,
-    /// True when the C++ DAG-order sidecar already has cached order for pivot.
-    pub dag_order_cached: bool,
     /// True when this validation context requires DAG order/hash validation.
     pub dag_order_required: bool,
     /// True when the active hardfork requires PBFT block extra data.
@@ -2558,8 +2586,6 @@ pub struct PbftManagerBlockValidationFact {
     pub extra_data_pillar_hash_present: bool,
     /// True when hardfork rules require local pillar-block hash comparison.
     pub pillar_block_required: bool,
-    /// True when the resolved DAG order must pass the weight check.
-    pub dag_weight_check_required: bool,
     /// PBFT-chain previous-hash validation status.
     pub pbft_chain_status: PbftManagerBlockValidationFactStatus,
     /// FinalChain/state-root validation status.
@@ -2570,7 +2596,7 @@ pub struct PbftManagerBlockValidationFact {
     pub pillar_block_status: PbftManagerBlockValidationFactStatus,
     /// DAG order lookup/hash validation status.
     pub dag_order_status: PbftManagerBlockValidationFactStatus,
-    /// DAG weight validation status.
+    /// DAG order cumulative weight validation status.
     pub dag_weight_status: PbftManagerBlockValidationFactStatus,
 }
 
@@ -2603,8 +2629,6 @@ pub struct PbftManagerBlockValidationPlan {
 ///
 /// Invariants and edge behavior:
 /// - C++ may only report a status for the check Rust most recently requested.
-/// - DAG-order reports may update `dag_weight_check_required` because that
-///   fact is discovered while executing the live DAG order check.
 /// - Reporting `NotChecked` is only accepted as a retry reset for the pending
 ///   FinalChain hash check after a wait-for-finalization outcome.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -3420,7 +3444,7 @@ pub fn plan_pbft_manager_block_validation(
         );
     }
 
-    if fact.pivot_is_null || fact.dag_order_cached || !fact.dag_order_required {
+    if fact.pivot_is_null || !fact.dag_order_required {
         return pbft_manager_block_validation_accept();
     }
 
@@ -3451,29 +3475,33 @@ pub fn plan_pbft_manager_block_validation(
         }
     }
 
-    if !fact.dag_weight_check_required {
-        return pbft_manager_block_validation_accept();
-    }
-
     match fact.dag_weight_status {
         PbftManagerBlockValidationFactStatus::NotChecked => {
-            pbft_manager_block_validation_run_check(
-                PbftManagerBlockValidationNextCheck::CheckDagWeight,
-            )
+            return pbft_manager_block_validation_contract_error(
+                "PBFT_MANAGER_BLOCK_VALIDATION_DAG_WEIGHT_NOT_CHECKED",
+            );
         }
-        PbftManagerBlockValidationFactStatus::Valid => pbft_manager_block_validation_accept(),
-        PbftManagerBlockValidationFactStatus::Invalid
-        | PbftManagerBlockValidationFactStatus::Missing => pbft_manager_block_validation_reject(
-            PbftManagerBlockValidationStatus::DagWeightInvalid,
-            "PBFT_MANAGER_BLOCK_VALIDATION_DAG_WEIGHT_INVALID",
-        ),
-        PbftManagerBlockValidationFactStatus::NotRequired
-        | PbftManagerBlockValidationFactStatus::Unknown => {
-            pbft_manager_block_validation_contract_error(
+        PbftManagerBlockValidationFactStatus::Valid => {}
+        PbftManagerBlockValidationFactStatus::NotRequired => {}
+        PbftManagerBlockValidationFactStatus::Missing => {
+            return pbft_manager_block_validation_contract_error(
+                "PBFT_MANAGER_BLOCK_VALIDATION_DAG_WEIGHT_MISSING",
+            );
+        }
+        PbftManagerBlockValidationFactStatus::Invalid => {
+            return pbft_manager_block_validation_reject(
+                PbftManagerBlockValidationStatus::DagWeightInvalid,
+                "PBFT_MANAGER_BLOCK_VALIDATION_DAG_WEIGHT_INVALID",
+            );
+        }
+        PbftManagerBlockValidationFactStatus::Unknown => {
+            return pbft_manager_block_validation_contract_error(
                 "PBFT_MANAGER_BLOCK_VALIDATION_DAG_WEIGHT_STATUS_INVALID",
-            )
+            );
         }
     }
+
+    pbft_manager_block_validation_accept()
 }
 
 /// Creates a Rust-owned PBFT block-validation session from initial facts.
@@ -3506,7 +3534,6 @@ pub fn next_pbft_manager_block_validation_session(
 pub fn report_pbft_manager_block_validation_session_check(
     session: &mut PbftManagerBlockValidationSession,
     status: PbftManagerBlockValidationFactStatus,
-    dag_weight_check_required: bool,
 ) -> PbftManagerBlockValidationPlan {
     let Some(pending_check) = session.pending_check else {
         return pbft_manager_block_validation_contract_error(
@@ -3552,12 +3579,11 @@ pub fn report_pbft_manager_block_validation_session_check(
         }
         PbftManagerBlockValidationNextCheck::CheckDagOrder => {
             session.fact.dag_order_status = status;
-            if status == PbftManagerBlockValidationFactStatus::Valid {
-                session.fact.dag_weight_check_required = dag_weight_check_required;
-            }
         }
         PbftManagerBlockValidationNextCheck::CheckDagWeight => {
-            session.fact.dag_weight_status = status;
+            return pbft_manager_block_validation_contract_error(
+                "PBFT_MANAGER_BLOCK_VALIDATION_SESSION_RETIRED_DAG_WEIGHT_CHECK",
+            );
         }
         PbftManagerBlockValidationNextCheck::None
         | PbftManagerBlockValidationNextCheck::Unknown => {
@@ -5608,7 +5634,8 @@ pub fn plan_pbft_manager_eligible_wallet_period_wait(
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerRuntime {
     snapshot: PbftManagerRuntimeSnapshot,
-    cached_anchor_dag_order_hashes: BTreeSet<H256>,
+    cached_candidate_dag_payloads:
+        BTreeMap<H256, crate::dag_service::DagRuntimeNonFinalizedSyncPayload>,
     policy: PbftManagerLifecyclePolicy,
     last_committed_reset: Option<PbftManagerCommittedReset>,
 }
@@ -5835,7 +5862,7 @@ impl PbftManagerRuntime {
     pub fn new(snapshot: PbftManagerRuntimeSnapshot) -> Self {
         Self {
             snapshot,
-            cached_anchor_dag_order_hashes: BTreeSet::new(),
+            cached_candidate_dag_payloads: BTreeMap::new(),
             policy: PbftManagerLifecyclePolicy::default(),
             last_committed_reset: None,
         }
@@ -5898,94 +5925,76 @@ impl PbftManagerRuntime {
         })
     }
 
-    /// Returns whether Rust currently tracks materialized DAG-order sidecar data for an anchor.
+    /// Returns whether Rust owns a validated candidate payload for an anchor.
     ///
     /// Inputs:
     /// - `anchor_hash`: PBFT pivot DAG block hash used as the materialized DAG-order cache key.
     ///
     /// Outputs:
-    /// - `true` when the C++ compatibility shell has reported a materialized DAG-order sidecar
-    ///   for the anchor and has not reported its removal or period-scoped cleanup.
+    /// - `true` when native preparation published the complete canonical block
+    ///   and non-finalized-transaction payload for the anchor.
     ///
     /// Invariants and edge behavior:
-    /// - Rust owns compact cache-membership metadata only. C++ remains the temporary owner of
-    ///   the live `DagBlock` vector sidecar until FinalChain/finalization object materialization
-    ///   moves behind Rust-owned effect payloads.
-    /// - The zero hash is treated like any other hash so this helper mirrors reported executor
-    ///   state exactly; callers should avoid reporting null-anchor DAG-order caches.
+    /// - Rust owns both cache identity and payload bytes. External consumers may
+    ///   clone the payload but cannot report or mutate cache membership.
+    /// - The zero hash is treated like any other key, though candidate planning
+    ///   bypasses DAG preparation for null anchors.
     pub fn has_cached_anchor_dag_order(&self, anchor_hash: H256) -> bool {
-        self.cached_anchor_dag_order_hashes.contains(&anchor_hash)
+        self.cached_candidate_dag_payloads
+            .contains_key(&anchor_hash)
     }
 
-    /// Returns the number of Rust-tracked materialized DAG-order anchor sidecars.
+    /// Returns the number of native candidate DAG payloads.
     ///
     /// Outputs:
-    /// - Count of anchor hashes reported by the C++ compatibility shell and
-    ///   still retained in the Rust runtime metadata.
+    /// - Count of validated anchor payloads retained by the manager runtime.
     ///
     /// Invariants and edge behavior:
-    /// - This is live metadata only. It is used by finalization report
-    ///   validation to prove period-scoped DAG-order cache cleanup completed on
-    ///   the Rust runtime as well as the temporary C++ sidecar map.
+    /// - Payloads are process-local and intentionally not durable. Finalization
+    ///   validation uses this count to prove period-scoped cleanup completed.
     pub fn cached_anchor_dag_order_count(&self) -> u64 {
-        self.cached_anchor_dag_order_hashes.len() as u64
+        self.cached_candidate_dag_payloads.len() as u64
     }
 
-    /// Records that the compatibility shell materialized DAG-order data for an anchor.
+    /// Publishes a fully prepared candidate payload under its anchor key.
     ///
-    /// Inputs:
-    /// - `anchor_hash`: anchor whose DAG-order `DagBlock` vector is now available to the C++
-    ///   FinalChain/finalization executor.
-    ///
-    /// Outputs:
-    /// - Returns the current runtime snapshot for bridge consistency. Scalar PBFT manager fields
-    ///   are unchanged.
-    ///
-    /// Invariants and edge behavior:
-    /// - This is live runtime metadata, not durable storage.
-    /// - Re-recording the same anchor is idempotent.
-    pub fn record_cached_anchor_dag_order(
+    /// Re-publishing an existing anchor is idempotent and preserves the first
+    /// validated payload, so concurrent preparations cannot change an anchor's
+    /// cache identity after publication.
+    pub fn cache_candidate_dag_payload(
         &mut self,
         anchor_hash: H256,
+        payload: crate::dag_service::DagRuntimeNonFinalizedSyncPayload,
     ) -> PbftManagerRuntimeSnapshot {
-        self.cached_anchor_dag_order_hashes.insert(anchor_hash);
+        self.cached_candidate_dag_payloads
+            .entry(anchor_hash)
+            .or_insert(payload);
         self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
         self.snapshot.error_code.clear();
         self.snapshot.clone()
     }
 
-    /// Removes Rust-owned DAG-order cache metadata for one anchor.
-    ///
-    /// Inputs:
-    /// - `anchor_hash`: anchor whose materialized C++ DAG-order sidecar was erased or rejected.
-    ///
-    /// Outputs:
-    /// - Returns the current runtime snapshot for bridge consistency. Scalar PBFT manager fields
-    ///   are unchanged.
-    ///
-    /// Invariants and edge behavior:
-    /// - Removing a missing anchor is idempotent.
-    pub fn remove_cached_anchor_dag_order(
-        &mut self,
+    /// Clones one cached candidate payload for an external leaf consumer.
+    pub fn cached_candidate_dag_payload(
+        &self,
         anchor_hash: H256,
-    ) -> PbftManagerRuntimeSnapshot {
-        self.cached_anchor_dag_order_hashes.remove(&anchor_hash);
-        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
-        self.snapshot.error_code.clear();
-        self.snapshot.clone()
+    ) -> Option<crate::dag_service::DagRuntimeNonFinalizedSyncPayload> {
+        self.cached_candidate_dag_payloads
+            .get(&anchor_hash)
+            .cloned()
     }
 
-    /// Clears all Rust-owned DAG-order cache metadata.
+    /// Clears all Rust-owned candidate DAG payloads.
     ///
     /// Outputs:
     /// - Returns the current runtime snapshot for bridge consistency. Scalar PBFT manager fields
     ///   are unchanged.
     ///
     /// Invariants and edge behavior:
-    /// - C++ calls this when the period-scoped materialized DAG-order sidecar cache is cleared
-    ///   after finalization cleanup.
+    /// - The existing native `ClearAnchorDagCache` finalization action invokes
+    ///   this operation; no external cache-clear report is required.
     pub fn clear_cached_anchor_dag_order(&mut self) -> PbftManagerRuntimeSnapshot {
-        self.cached_anchor_dag_order_hashes.clear();
+        self.cached_candidate_dag_payloads.clear();
         self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
         self.snapshot.error_code.clear();
         self.snapshot.clone()
@@ -8338,6 +8347,18 @@ pub fn abort_pbft_manager_runtime_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_candidate_dag_payload(
+        period: u64,
+    ) -> crate::dag_service::DagRuntimeNonFinalizedSyncPayload {
+        crate::dag_service::DagRuntimeNonFinalizedSyncPayload {
+            period,
+            storage: crate::dag::DagNonFinalizedSyncStoragePayload {
+                blocks: Vec::new(),
+                transactions: Vec::new(),
+            },
+        }
+    }
     use crate::dag::{DagManagerBlock, save_dag_block_to_storage};
     use crate::dag_service::DagServiceConfig;
     use crate::dag_transaction_service::{
@@ -9836,7 +9857,7 @@ mod tests {
         let mut runtime = manager.lock();
         runtime
             .state
-            .record_cached_anchor_dag_order(H256::repeat_byte(42));
+            .cache_candidate_dag_payload(H256::repeat_byte(42), empty_candidate_dag_payload(1));
         install_owned_finalization_runtime(
             &mut runtime,
             write_set.clone(),
@@ -12804,30 +12825,28 @@ mod tests {
     }
 
     #[test]
-    fn runtime_records_cached_anchor_dag_order_metadata() {
+    fn runtime_owns_cached_candidate_dag_payload_lifecycle() {
         let mut runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(1, 1)));
         let first_anchor = H256::from_low_u64_be(0xDA60);
         let second_anchor = H256::from_low_u64_be(0xDA61);
 
         assert!(!runtime.has_cached_anchor_dag_order(first_anchor));
 
-        let record_snapshot = runtime.record_cached_anchor_dag_order(first_anchor);
+        let first_payload = empty_candidate_dag_payload(11);
+        let record_snapshot =
+            runtime.cache_candidate_dag_payload(first_anchor, first_payload.clone());
         assert_eq!(
             record_snapshot.status,
             PbftManagerStartupRestoreStatus::Ready
         );
         assert!(runtime.has_cached_anchor_dag_order(first_anchor));
         assert!(!runtime.has_cached_anchor_dag_order(second_anchor));
-
-        let remove_snapshot = runtime.remove_cached_anchor_dag_order(first_anchor);
         assert_eq!(
-            remove_snapshot.status,
-            PbftManagerStartupRestoreStatus::Ready
+            runtime.cached_candidate_dag_payload(first_anchor),
+            Some(first_payload)
         );
-        assert!(!runtime.has_cached_anchor_dag_order(first_anchor));
 
-        runtime.record_cached_anchor_dag_order(first_anchor);
-        runtime.record_cached_anchor_dag_order(second_anchor);
+        runtime.cache_candidate_dag_payload(second_anchor, empty_candidate_dag_payload(11));
         assert!(runtime.has_cached_anchor_dag_order(first_anchor));
         assert!(runtime.has_cached_anchor_dag_order(second_anchor));
         assert_eq!(runtime.cached_anchor_dag_order_count(), 2);
@@ -13299,14 +13318,6 @@ mod tests {
         );
 
         fact.dag_order_status = PbftManagerBlockValidationFactStatus::Valid;
-        fact.dag_weight_check_required = true;
-        let plan = plan_pbft_manager_block_validation(fact.clone());
-        assert_eq!(
-            plan.next_check,
-            PbftManagerBlockValidationNextCheck::CheckDagWeight
-        );
-
-        fact.dag_weight_status = PbftManagerBlockValidationFactStatus::Valid;
         let plan = plan_pbft_manager_block_validation(fact);
         assert_eq!(plan.action, PbftManagerBlockValidationAction::Accept);
         assert_eq!(plan.status, PbftManagerBlockValidationStatus::Accepted);
@@ -13325,7 +13336,6 @@ mod tests {
         let plan = report_pbft_manager_block_validation_session_check(
             &mut session,
             PbftManagerBlockValidationFactStatus::Valid,
-            false,
         );
         assert_eq!(
             plan.next_check,
@@ -13335,7 +13345,6 @@ mod tests {
         let plan = report_pbft_manager_block_validation_session_check(
             &mut session,
             PbftManagerBlockValidationFactStatus::Valid,
-            false,
         );
         assert_eq!(
             plan.next_check,
@@ -13345,7 +13354,6 @@ mod tests {
         let plan = report_pbft_manager_block_validation_session_check(
             &mut session,
             PbftManagerBlockValidationFactStatus::Valid,
-            false,
         );
         assert_eq!(
             plan.next_check,
@@ -13355,17 +13363,6 @@ mod tests {
         let plan = report_pbft_manager_block_validation_session_check(
             &mut session,
             PbftManagerBlockValidationFactStatus::Valid,
-            true,
-        );
-        assert_eq!(
-            plan.next_check,
-            PbftManagerBlockValidationNextCheck::CheckDagWeight
-        );
-
-        let plan = report_pbft_manager_block_validation_session_check(
-            &mut session,
-            PbftManagerBlockValidationFactStatus::Valid,
-            false,
         );
         assert_eq!(plan.action, PbftManagerBlockValidationAction::Accept);
         assert_eq!(plan.status, PbftManagerBlockValidationStatus::Accepted);
@@ -13378,7 +13375,6 @@ mod tests {
         let plan = report_pbft_manager_block_validation_session_check(
             &mut session,
             PbftManagerBlockValidationFactStatus::Valid,
-            false,
         );
         assert_eq!(
             plan.next_check,
@@ -13388,7 +13384,6 @@ mod tests {
         let plan = report_pbft_manager_block_validation_session_check(
             &mut session,
             PbftManagerBlockValidationFactStatus::Missing,
-            false,
         );
         assert_eq!(
             plan.action,
@@ -13398,7 +13393,6 @@ mod tests {
         let plan = report_pbft_manager_block_validation_session_check(
             &mut session,
             PbftManagerBlockValidationFactStatus::NotChecked,
-            false,
         );
         assert_eq!(plan.action, PbftManagerBlockValidationAction::RunCheck);
         assert_eq!(
@@ -13432,7 +13426,7 @@ mod tests {
     }
 
     #[test]
-    fn block_validation_planner_accepts_null_or_cached_anchor_without_dag_checks() {
+    fn block_validation_planner_accepts_null_or_nonrequired_anchor_without_dag_checks() {
         let mut fact = block_validation_fact();
         fact.pbft_chain_status = PbftManagerBlockValidationFactStatus::Valid;
         fact.final_chain_hash_status = PbftManagerBlockValidationFactStatus::Valid;
@@ -13442,7 +13436,7 @@ mod tests {
         assert_eq!(plan.action, PbftManagerBlockValidationAction::Accept);
 
         fact.pivot_is_null = false;
-        fact.dag_order_cached = true;
+        fact.dag_order_required = false;
         let plan = plan_pbft_manager_block_validation(fact);
         assert_eq!(plan.action, PbftManagerBlockValidationAction::Accept);
     }
@@ -13554,7 +13548,6 @@ mod tests {
         let plan = report_pbft_manager_block_validation_session_check(
             &mut session,
             PbftManagerBlockValidationFactStatus::Valid,
-            false,
         );
 
         assert_eq!(plan.action, PbftManagerBlockValidationAction::ContractError);
@@ -13565,6 +13558,49 @@ mod tests {
         assert_eq!(
             plan.error_code,
             "PBFT_MANAGER_BLOCK_VALIDATION_SESSION_RETIRED_EXTRA_DATA_CHECK"
+        );
+    }
+
+    #[test]
+    fn block_validation_session_rejects_retired_dag_weight_check_reports() {
+        let mut session = create_pbft_manager_block_validation_session(block_validation_fact());
+        session.pending_check = Some(PbftManagerBlockValidationNextCheck::CheckDagWeight);
+
+        let plan = report_pbft_manager_block_validation_session_check(
+            &mut session,
+            PbftManagerBlockValidationFactStatus::Valid,
+        );
+
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::ContractError);
+        assert_eq!(
+            plan.status,
+            PbftManagerBlockValidationStatus::InvalidBridgeFacts
+        );
+        assert_eq!(
+            plan.error_code,
+            "PBFT_MANAGER_BLOCK_VALIDATION_SESSION_RETIRED_DAG_WEIGHT_CHECK"
+        );
+    }
+
+    #[test]
+    fn block_validation_planner_rejects_dag_weight_invalid_after_order_check() {
+        let mut fact = block_validation_fact();
+        fact.pbft_chain_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.final_chain_hash_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.reward_votes_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.dag_order_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.dag_weight_status = PbftManagerBlockValidationFactStatus::Invalid;
+
+        let plan = plan_pbft_manager_block_validation(fact);
+
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::Reject);
+        assert_eq!(
+            plan.status,
+            PbftManagerBlockValidationStatus::DagWeightInvalid
+        );
+        assert_eq!(
+            plan.error_code,
+            "PBFT_MANAGER_BLOCK_VALIDATION_DAG_WEIGHT_INVALID"
         );
     }
 
@@ -13619,19 +13655,17 @@ mod tests {
             period: 7,
             pivot_hash: H256::from([2; 32]),
             pivot_is_null: false,
-            dag_order_cached: false,
             dag_order_required: true,
             extra_data_required: true,
             extra_data_present: true,
             extra_data_pillar_hash_present: false,
             pillar_block_required: false,
-            dag_weight_check_required: false,
             pbft_chain_status: PbftManagerBlockValidationFactStatus::NotChecked,
             final_chain_hash_status: PbftManagerBlockValidationFactStatus::NotChecked,
             reward_votes_status: PbftManagerBlockValidationFactStatus::NotChecked,
             pillar_block_status: PbftManagerBlockValidationFactStatus::NotRequired,
             dag_order_status: PbftManagerBlockValidationFactStatus::NotChecked,
-            dag_weight_status: PbftManagerBlockValidationFactStatus::NotChecked,
+            dag_weight_status: PbftManagerBlockValidationFactStatus::Valid,
         }
     }
 }

@@ -3758,6 +3758,19 @@ Validation passes all 1,217 native consensus/bridge tests, all 50 Rust consensus
 PBFT manager admission case, the fast rewrite gate, and the exact inventory guard. The focused state-root manager case
 still stops before block validation at the existing missing latest-block FinalChain account snapshot boundary.
 
+The next `CRW-12` ownership cut moves candidate DAG preparation and cache authority into native Rust. The composed PBFT
+and DAG/transaction roots enforce legacy next-period/current-anchor order availability, canonical order hashing, the
+previous-PBFT-pivot GHOST divergence rule, and `U256` gas-limit comparison. Rust retains ordered canonical block RLPs
+by anchor, then resolves de-duplicated transaction RLPs from the live non-finalized sidecar at finalization time;
+queue-only, pending, finalized, and missing transactions remain omitted. Certified-block C++ materialization occurs at the retained finalization/EVM
+edge, while the existing native finalization action clears and proves the cache count. Three cache metadata exports are
+replaced by two task operations using existing carriers, lowering CXX functions to 368, bridge lines to 21,428, and shim
+lines to 15,508 with carriers unchanged at 310. The separate DAG-weight executor check is retired at reserved code 6;
+the stable `checkBlockWeight` C++ helper remains solely because an unchanged manager parity test calls it directly.
+Native and bridge validation passes 1,223 tests, Rust consensus C++ validation passes all 50 cases, and the focused
+null-anchor manager case passes. The isolated overweight manager case still stops earlier at the tracked missing
+latest-block FinalChain account snapshot boundary; its direct helper assertion passes before that unrelated stop.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

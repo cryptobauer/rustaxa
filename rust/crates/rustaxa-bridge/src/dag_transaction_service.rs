@@ -17,7 +17,8 @@ use rustaxa_consensus::dag_service::{
     DagProposerSessionBeginInput as NativeDagProposerSessionBeginInput,
     DagProposerSessionStep as NativeDagProposerSessionStep,
     DagProposerSigningReport as NativeDagProposerSigningReport,
-    DagProposerVdfProofReport as NativeDagProposerVdfProofReport, DagServiceConfig,
+    DagProposerVdfProofReport as NativeDagProposerVdfProofReport,
+    DagRuntimeNonFinalizedSyncPayload, DagServiceConfig,
     DagVerifyBlockGasReport as NativeDagVerifyBlockGasReport,
     DagVerifyBlockSessionInput as NativeDagVerifyBlockSessionInput,
     DagVerifyBlockSessionStep as NativeDagVerifyBlockSessionStep,
@@ -33,7 +34,8 @@ use rustaxa_consensus::dag_transaction_service::{
     DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
 };
 use rustaxa_consensus::pbft_manager::{
-    PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
+    PbftCandidateDagPreparationStatus, PbftFinalizationExecutorBoundary,
+    PbftFinalizationExecutorStartRequest,
 };
 use rustaxa_consensus::transaction_packing_service::{
     TransactionPackingEstimate, TransactionPackingSelection,
@@ -61,7 +63,73 @@ pub struct BridgeDagTransactionService {
     root: DagTransactionService,
 }
 
+/// Converts one native non-finalized DAG snapshot into its stable CXX payload.
+/// The lock-consistent input owns its period, ordered canonical blocks, and
+/// first-seen lookups; conversion preserves bytes and missing results.
+pub(crate) fn dag_non_finalized_sync_payload_to_ffi(
+    payload: DagRuntimeNonFinalizedSyncPayload,
+) -> DagManagerNonFinalizedSyncPayload {
+    DagManagerNonFinalizedSyncPayload {
+        period: payload.period,
+        blocks: payload
+            .storage
+            .blocks
+            .into_iter()
+            .map(|block| DagSyncBlockRlp {
+                hash: block.hash.into(),
+                block_rlp: block.block_rlp,
+            })
+            .collect(),
+        transactions: payload
+            .storage
+            .transactions
+            .into_iter()
+            .map(|lookup| DagTransactionRlpLookup {
+                hash: lookup.hash.into(),
+                found: lookup.found,
+                finalized: lookup.finalized,
+                tx_rlp: lookup.tx_rlp,
+            })
+            .collect(),
+    }
+}
+
+/// Returns cached candidate blocks plus finalization-time sidecar transactions.
+///
+/// Unknown anchors and native lookup failures propagate without publishing a
+/// partial carrier. The existing sync payload preserves canonical order and
+/// owned bytes across CXX.
+pub fn pbft_manager_runtime_cached_candidate_dag_payload(
+    runtime: &BridgePbftService,
+    dag_transaction_service: &BridgeDagTransactionService,
+    anchor_hash: &[u8; 32],
+) -> Result<DagManagerNonFinalizedSyncPayload> {
+    let payload = runtime
+        .0
+        .cached_candidate_dag_payload(&dag_transaction_service.root, H256::from(*anchor_hash))?;
+    Ok(dag_non_finalized_sync_payload_to_ffi(payload))
+}
+
 impl BridgeDagTransactionService {
+    /// Composes native PBFT cache/status ownership with DAG order, canonical
+    /// payload, and gas ownership without exposing either root or its locks.
+    pub(crate) fn prepare_pbft_candidate_dag(
+        &self,
+        runtime: &BridgePbftService,
+        period: u64,
+        anchor: H256,
+        expected_order_hash: H256,
+        pbft_gas_limit: u64,
+    ) -> Result<PbftCandidateDagPreparationStatus> {
+        runtime.0.prepare_candidate_dag(
+            &self.root,
+            period,
+            anchor,
+            expected_order_hash,
+            pbft_gas_limit,
+        )
+    }
+
     /// Starts or resumes PBFT finalization against the privately owned DAG root.
     ///
     /// The PBFT service owns executor serialization and the supplied request;
@@ -526,29 +594,7 @@ impl BridgeDagTransactionService {
                 .map(|hash| H256::from(hash.hash))
                 .collect(),
         )?;
-        Ok(DagManagerNonFinalizedSyncPayload {
-            period: payload.period,
-            blocks: payload
-                .storage
-                .blocks
-                .into_iter()
-                .map(|block| DagSyncBlockRlp {
-                    hash: block.hash.into(),
-                    block_rlp: block.block_rlp,
-                })
-                .collect(),
-            transactions: payload
-                .storage
-                .transactions
-                .into_iter()
-                .map(|lookup| DagTransactionRlpLookup {
-                    hash: lookup.hash.into(),
-                    found: lookup.found,
-                    finalized: lookup.finalized,
-                    tx_rlp: lookup.tx_rlp,
-                })
-                .collect(),
-        })
+        Ok(dag_non_finalized_sync_payload_to_ffi(payload))
     }
 
     pub fn dag_manager_runtime_compute_order(&self, anchor: &[u8; 32]) -> Result<DagOrder> {

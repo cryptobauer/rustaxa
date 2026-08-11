@@ -303,10 +303,11 @@ class PbftManager {
   static void reorderTransactions(SharedTransactions &transactions);
 
   /**
-   * @brief Check a block weight of gas estimation
-   * @param dag_blocks dag blocks
-   * @param period period
-   * @return true if total weight of gas estimation is less or equal to gas limit. Otherwise return false
+   * @brief Computes legacy DAG gas weight for the retained direct parity test.
+   *
+   * Production candidate validation uses native Rust DAG preparation. This
+   * helper remains only while `pbft_manager_test` directly exercises the stable
+   * C++ API.
    */
   bool checkBlockWeight(const std::vector<std::shared_ptr<DagBlock>> &dag_blocks, PbftPeriod period) const;
 
@@ -628,10 +629,6 @@ class PbftManager {
   void processPillarBlock(PbftPeriod period);
 
   std::atomic<bool> stopped_ = true;
-
-  // Multiple proposed pbft blocks could have same dag block anchor at same period so this cache improves retrieval of
-  // dag block order for specific anchor
-  mutable std::unordered_map<blk_hash_t, std::vector<std::shared_ptr<DagBlock>>> anchor_dag_block_order_cache_;
 
   std::unique_ptr<std::thread> daemon_;
   // Compatibility edge kept only for network/EVM/public materialization and lifecycle wiring while the shim owns those

@@ -9,9 +9,11 @@
 
 use crate::dag::{
     DAG_VERIFY_DPOS_STATUS_NOT_CHECKED, DagBlockStorageLookup, DagDposAuthorizationFacts,
-    DagFrontier, DagHashStorageLookup, DagPersistenceCounters, DagPivotTipsValidation,
-    DagProposerStorageTipSelectionInput, DagProposerTipSelection, DagVdfSortitionBlockInput,
-    dag_block_transaction_hashes, dag_manager_block_from_rlp, verify_dag_vdf_sortition_from_block,
+    DagFrontier, DagHashStorageLookup, DagNonFinalizedSyncStoragePayload, DagPersistenceCounters,
+    DagPivotTipsValidation, DagProposerStorageTipSelectionInput, DagProposerTipSelection,
+    DagSyncBlockRlp, DagTransactionStorageLookup, DagVdfSortitionBlockInput,
+    dag_block_transaction_hashes, dag_manager_block_from_rlp, plan_non_finalized_transaction_query,
+    verify_dag_vdf_sortition_from_block,
 };
 use crate::dag_service::{
     DagAddBlockPreparedTransaction, DagAddBlockSession, DagAddBlockStoredPlan,
@@ -52,6 +54,8 @@ use anyhow::{Context, Result, ensure};
 use ethereum_types::{H160, H256, U256};
 use rustaxa_storage::{Storage, StorageWriteBatch};
 use rustaxa_types::LegacyTransactionEnvelope;
+use rustaxa_types::codec::rlp::dag::DagBlockRlp;
+use rustaxa_types::dag::DagBlock;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -80,6 +84,18 @@ pub struct DagTransactionService {
     transaction: TransactionService,
     dag: DagService,
     sortition: SortitionService,
+}
+
+/// Canonical candidate DAG payload plus its exact PBFT gas-domain weight.
+///
+/// The payload contains blocks in deterministic DAG order. Transactions stay
+/// empty until finalization so the retained execution boundary observes the
+/// same live non-finalized sidecar epoch as legacy `getNonfinalizedTrx`.
+/// `total_gas` is accumulated as `U256`, so a maliciously large order cannot
+/// wrap before PBFT-limit comparison.
+pub(crate) struct DagPbftCandidatePayloadPreparation {
+    pub payload: DagRuntimeNonFinalizedSyncPayload,
+    pub total_gas: U256,
 }
 
 /// Canonical transaction payload supplied while preparing a DAG block.
@@ -689,6 +705,107 @@ impl DagTransactionService {
     /// released before return.
     pub fn dag_order(&self, anchor: H256) -> Result<Option<Vec<H256>>> {
         self.dag.runtime_compute_order(anchor)
+    }
+
+    /// Prepares one PBFT candidate's canonical DAG payload.
+    ///
+    /// The candidate period must be exactly the live DAG period plus one and
+    /// the requested anchor must differ from the current finalized anchor,
+    /// matching legacy `getDagBlockOrder` availability. Ordered blocks are
+    /// loaded from canonical DAG storage. Transaction RLPs are intentionally
+    /// deferred until finalization to preserve the legacy live-sidecar lookup
+    /// epoch. The exact `U256` gas sum is prepared under the DAG lock.
+    pub(crate) fn prepare_pbft_candidate_payload(
+        &self,
+        period: u64,
+        anchor: H256,
+    ) -> Result<Option<DagPbftCandidatePayloadPreparation>> {
+        let dag = self.lock_dag()?;
+        let Some(next_period) = dag.state.period().checked_add(1) else {
+            return Ok(None);
+        };
+        if period != next_period || anchor == dag.state.anchor() {
+            return Ok(None);
+        }
+        let Some(order) = dag.state.compute_order(anchor) else {
+            return Ok(None);
+        };
+        if order.is_empty() {
+            return Ok(None);
+        }
+
+        let mut blocks = Vec::with_capacity(order.len());
+        let mut total_gas = U256::zero();
+        for hash in order {
+            let Some(block_rlp) = dag
+                .storage
+                .dag()
+                .by_hash_rlp_optional(hash)
+                .context("PBFT_CANDIDATE_DAG_BLOCK_LOAD")?
+            else {
+                return Ok(None);
+            };
+            let block = DagBlock::try_from(DagBlockRlp::new(&block_rlp))
+                .context("PBFT_CANDIDATE_DAG_BLOCK_DECODE")?;
+            total_gas = total_gas.saturating_add(U256::from(block.gas_estimation));
+            blocks.push(DagSyncBlockRlp { hash, block_rlp });
+        }
+
+        Ok(Some(DagPbftCandidatePayloadPreparation {
+            payload: DagRuntimeNonFinalizedSyncPayload {
+                period,
+                storage: DagNonFinalizedSyncStoragePayload {
+                    blocks,
+                    transactions: Vec::new(),
+                },
+            },
+            total_gas,
+        }))
+    }
+
+    /// Resolves one cached PBFT candidate's transactions at finalization time.
+    ///
+    /// Block order is preserved and transaction hashes are de-duplicated by
+    /// first occurrence. Only the live non-finalized sidecar is consulted;
+    /// queue-only, durable-pending, finalized, and missing entries are omitted,
+    /// matching the retained C++ `getNonfinalizedTrx` execution boundary.
+    pub(crate) fn hydrate_pbft_candidate_transactions(
+        &self,
+        mut payload: DagRuntimeNonFinalizedSyncPayload,
+    ) -> Result<DagRuntimeNonFinalizedSyncPayload> {
+        let transaction_hashes_by_block = payload
+            .storage
+            .blocks
+            .iter()
+            .map(|block| dag_block_transaction_hashes(&block.block_rlp))
+            .collect::<Result<Vec<_>>>()?;
+        let query = plan_non_finalized_transaction_query(&transaction_hashes_by_block);
+        let requests = query
+            .query_hashes
+            .iter()
+            .enumerate()
+            .map(
+                |(input_index, hash)| TransactionServiceTransactionViewRequest {
+                    input_index: input_index as u64,
+                    hash: hash.to_fixed_bytes(),
+                },
+            )
+            .collect();
+        let views = self.transaction.non_finalized_transaction_views(requests)?;
+        payload.storage.transactions = query
+            .query_hashes
+            .into_iter()
+            .zip(views)
+            .filter_map(|(hash, view)| {
+                view.found.then_some(DagTransactionStorageLookup {
+                    hash,
+                    found: true,
+                    finalized: false,
+                    tx_rlp: view.tx_rlp,
+                })
+            })
+            .collect();
+        Ok(payload)
     }
 
     /// Returns an owned pivot-and-tips frontier from one native lock epoch.
@@ -2202,6 +2319,15 @@ mod tests {
     }
 
     fn composed_add_block_rlp(pivot: H256, level: u64, transactions: &[H256]) -> Vec<u8> {
+        composed_add_block_rlp_with_gas(pivot, level, transactions, 0)
+    }
+
+    fn composed_add_block_rlp_with_gas(
+        pivot: H256,
+        level: u64,
+        transactions: &[H256],
+        gas_estimation: u64,
+    ) -> Vec<u8> {
         let mut vdf = RlpStream::new_list(4);
         vdf.append(&vec![0x11_u8; 80]);
         vdf.append(&vec![0x22_u8]);
@@ -2218,7 +2344,7 @@ mod tests {
             block.append(hash);
         }
         block.append(&&[0_u8; 65][..]);
-        block.append(&0_u64);
+        block.append(&gas_estimation);
         block.out().to_vec()
     }
 
@@ -2461,6 +2587,97 @@ mod tests {
                 .to_string()
                 .contains("DAG_RUNTIME_SYNC_STORAGE_PAYLOAD")
         );
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn pbft_candidate_payload_enforces_period_anchor_and_u256_gas() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_pbft_candidate_payload");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let genesis = service_config().dag.genesis_hash;
+        let block_rlp = composed_add_block_rlp_with_gas(genesis, 1, &[], u64::MAX);
+        let block = dag_manager_block_from_rlp(&block_rlp)?;
+        root.lock_dag()?.state.add_block(block.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), block.hash, 1, 0, &block_rlp)?;
+
+        assert!(
+            root.prepare_pbft_candidate_payload(2, block.hash)?
+                .is_none()
+        );
+        assert!(root.prepare_pbft_candidate_payload(1, genesis)?.is_none());
+        let prepared = root
+            .prepare_pbft_candidate_payload(1, block.hash)?
+            .expect("live next-period anchor should prepare");
+        assert_eq!(prepared.payload.period, 1);
+        assert_eq!(prepared.payload.storage.blocks.len(), 1);
+        assert_eq!(prepared.payload.storage.blocks[0].hash, block.hash);
+        assert!(prepared.payload.storage.transactions.is_empty());
+        assert_eq!(prepared.total_gas, U256::from(u64::MAX));
+
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn pbft_candidate_payload_defers_and_hydrates_live_sidecar_only() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_pbft_candidate_transaction_sources");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let genesis = service_config().dag.genesis_hash;
+
+        let queue_envelope = insert_pack_transaction(
+            &root,
+            &SigningKey::from_slice(&[0x41; 32]).expect("queue signing key"),
+        )?;
+        let pending_hash = H256::repeat_byte(0x52);
+        let pending_rlp = vec![0xa7, 0x01];
+        storage.transaction().write(pending_hash, &pending_rlp)?;
+        let finalized_hash = H256::repeat_byte(0x53);
+        storage
+            .transaction()
+            .write_location(finalized_hash, 1, 0, true)?;
+        storage
+            .transaction()
+            .write_system(finalized_hash, &[0xa7, 0x02])?;
+        let missing_hash = H256::repeat_byte(0x54);
+        let sidecar_rlp = signed_legacy_transaction_rlp(
+            &SigningKey::from_slice(&[0x42; 32]).expect("sidecar signing key"),
+        );
+        let sidecar_hash = keccak256(&sidecar_rlp);
+        let transaction_hashes = [
+            queue_envelope.hash,
+            pending_hash,
+            sidecar_hash,
+            finalized_hash,
+            missing_hash,
+            sidecar_hash,
+        ];
+        let block_rlp = composed_add_block_rlp_with_gas(genesis, 1, &transaction_hashes, 10);
+        let block = dag_manager_block_from_rlp(&block_rlp)?;
+        root.lock_dag()?.state.add_block(block.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), block.hash, 1, 0, &block_rlp)?;
+
+        let prepared = root
+            .prepare_pbft_candidate_payload(1, block.hash)?
+            .expect("candidate payload");
+        assert!(prepared.payload.storage.transactions.is_empty());
+
+        root.lock_transaction()?
+            .sidecar
+            .insert_non_finalized(sidecar_hash, sidecar_rlp.clone())?;
+        let hydrated = root.hydrate_pbft_candidate_transactions(prepared.payload)?;
+        assert_eq!(hydrated.storage.transactions.len(), 1);
+        assert_eq!(hydrated.storage.transactions[0].hash, sidecar_hash);
+        assert_eq!(hydrated.storage.transactions[0].tx_rlp, sidecar_rlp);
+        assert!(hydrated.storage.transactions[0].found);
+        assert!(!hydrated.storage.transactions[0].finalized);
 
         drop(root);
         drop(storage);

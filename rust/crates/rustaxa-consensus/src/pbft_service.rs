@@ -22,24 +22,25 @@ use crate::pbft_finalize::{
     load_pbft_finalization_last_period_lambda, plan_pbft_dynamic_lambda,
 };
 use crate::pbft_manager::{
-    PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
-    PbftFinalizationOwnedActionDrain, PbftManagerAdvancePeriodPlan, PbftManagerGuard,
-    PbftManagerLifecycleTransitionRequest, PbftManagerProposalDagOrderReport,
-    PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerRuntimeActionReport,
-    PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeTickFact,
-    PbftManagerService, PbftManagerSleepPlan, PbftManagerStartupReplayPeriod,
-    PbftManagerStateActionEffectReport, PbftManagerStateActionFact,
-    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionStatus,
-    PbftManagerTransitionStorageStatus, abort_pbft_manager_runtime_session,
-    apply_executed_block_reset_storage, apply_next_voted_status_storage,
-    apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
-    base_owned_finalization_live_report, create_pbft_manager_proposal_session,
-    create_pbft_manager_runtime_from_storage, create_pbft_manager_runtime_session,
-    create_pbft_manager_state_action_effect_session, load_pbft_manager_startup_replay_period,
-    next_pbft_manager_proposal_session, next_pbft_manager_runtime_action,
-    next_pbft_manager_state_action_effect_session, plan_pbft_manager_runtime_sleep_until_next_step,
-    report_pbft_manager_proposal_dag_order, report_pbft_manager_runtime_action,
-    report_pbft_manager_state_action_effect_session, save_cert_voted_block_in_round_storage,
+    PbftCandidateDagPreparationStatus, PbftFinalizationExecutorBoundary,
+    PbftFinalizationExecutorStartRequest, PbftFinalizationOwnedActionDrain,
+    PbftManagerAdvancePeriodPlan, PbftManagerGuard, PbftManagerLifecycleTransitionRequest,
+    PbftManagerProposalDagOrderReport, PbftManagerProposalInitialFact,
+    PbftManagerProposalSessionStep, PbftManagerRuntimeActionReport, PbftManagerRuntimeSessionStep,
+    PbftManagerRuntimeSnapshot, PbftManagerRuntimeTickFact, PbftManagerService,
+    PbftManagerSleepPlan, PbftManagerStartupReplayPeriod, PbftManagerStateActionEffectReport,
+    PbftManagerStateActionFact, PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact,
+    PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
+    abort_pbft_manager_runtime_session, apply_executed_block_reset_storage,
+    apply_next_voted_status_storage, apply_pbft_manager_cursor_field_storage,
+    apply_pbft_manager_transition_storage, base_owned_finalization_live_report,
+    create_pbft_manager_proposal_session, create_pbft_manager_runtime_from_storage,
+    create_pbft_manager_runtime_session, create_pbft_manager_state_action_effect_session,
+    load_pbft_manager_startup_replay_period, next_pbft_manager_proposal_session,
+    next_pbft_manager_runtime_action, next_pbft_manager_state_action_effect_session,
+    plan_pbft_manager_runtime_sleep_until_next_step, report_pbft_manager_proposal_dag_order,
+    report_pbft_manager_runtime_action, report_pbft_manager_state_action_effect_session,
+    save_cert_voted_block_in_round_storage,
 };
 #[cfg(test)]
 use crate::pbft_period_cleanup::{PbftPeriodStateCleanupResult, cleanup_period_state_with_commit};
@@ -120,11 +121,31 @@ use crate::verified_votes::{DetermineNewRoundOutcome, PbftVoteType, TwoTPlusOneV
 use anyhow::{Context, Result};
 use ethereum_types::{H256, U256};
 use rand::Rng;
+use rlp::RlpStream;
 use rustaxa_storage::{Storage, StorageWriteBatch};
+use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+use rustaxa_types::pbft::PbftBlockLink;
 use std::sync::{Arc, Mutex};
+use tiny_keccak::{Hasher, Keccak};
 
 const SLASHING_PROOF_CACHE_MAX_SIZE: usize = 1000;
 const SLASHING_PROOF_CACHE_DELETE_STEP: usize = 100;
+
+fn pbft_candidate_dag_order_hash(
+    payload: &crate::dag_service::DagRuntimeNonFinalizedSyncPayload,
+) -> H256 {
+    let mut stream = RlpStream::new_list(1);
+    stream.begin_list(payload.storage.blocks.len());
+    for block in &payload.storage.blocks {
+        let bytes: &[u8] = block.hash.as_bytes();
+        stream.append(&bytes);
+    }
+    let mut out = [0; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(&stream.out());
+    hasher.finalize(&mut out);
+    H256(out)
+}
 
 fn final_chain_nonce_as_u256(nonce: &rustaxa_types::FinalChainNonce) -> Result<U256> {
     let bytes = nonce.to_bytes();
@@ -1380,31 +1401,82 @@ impl PbftService {
         )
     }
 
-    /// Returns whether a C++ DAG-order sidecar is registered for an anchor.
-    pub fn has_cached_anchor_dag_order(&self, anchor_hash: ethereum_types::H256) -> bool {
+    /// Prepares, validates, and caches the canonical DAG payload for a PBFT candidate.
+    ///
+    /// Cache identity is the anchor alone: a previously accepted anchor
+    /// short-circuits without revalidating period, hash, or gas limit. Fresh
+    /// preparation enforces live DAG period/current-anchor availability,
+    /// canonical order hash, and the legacy previous-PBFT-pivot GHOST `[1]`
+    /// divergence weight rule. Failed candidates publish no partial payload.
+    pub fn prepare_candidate_dag(
+        &self,
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        period: u64,
+        anchor: H256,
+        expected_order_hash: H256,
+        pbft_gas_limit: u64,
+    ) -> Result<PbftCandidateDagPreparationStatus> {
+        if self
+            .manager_state()
+            .state
+            .has_cached_anchor_dag_order(anchor)
+        {
+            return Ok(PbftCandidateDagPreparationStatus::Valid);
+        }
+
+        let Some(prepared) =
+            dag_transaction_service.prepare_pbft_candidate_payload(period, anchor)?
+        else {
+            return Ok(PbftCandidateDagPreparationStatus::Missing);
+        };
+        if pbft_candidate_dag_order_hash(&prepared.payload) != expected_order_hash {
+            return Ok(PbftCandidateDagPreparationStatus::OrderHashInvalid);
+        }
+
+        let chain_head = self.chain.head();
+        if chain_head.last_pbft_block_hash != H256::zero() {
+            let previous = self.chain.block_rlp(chain_head.last_pbft_block_hash)?;
+            anyhow::ensure!(
+                previous.found,
+                "PBFT_CANDIDATE_DAG_PREVIOUS_PBFT_BLOCK_MISSING"
+            );
+            let previous = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&previous.block_rlp))
+                .context("PBFT_CANDIDATE_DAG_PREVIOUS_PBFT_BLOCK_DECODE")?;
+            let ghost = dag_transaction_service.dag_ghost_path(
+                crate::dag_transaction_service::DagGhostPathRoot::Block(
+                    previous.pivot_dag_block_hash,
+                ),
+            )?;
+            if ghost.len() > 1
+                && anchor != ghost[1]
+                && prepared.total_gas > U256::from(pbft_gas_limit)
+            {
+                return Ok(PbftCandidateDagPreparationStatus::WeightInvalid);
+            }
+        }
+
         self.manager_state()
             .state
-            .has_cached_anchor_dag_order(anchor_hash)
+            .cache_candidate_dag_payload(anchor, prepared.payload);
+        Ok(PbftCandidateDagPreparationStatus::Valid)
     }
 
-    /// Registers one live DAG-order sidecar identity under the manager lock.
-    pub fn record_cached_anchor_dag_order(
+    /// Returns one previously validated candidate payload by anchor.
+    ///
+    /// The returned payload is owned by the caller. Unknown anchors are an
+    /// explicit error because external finalization must never materialize an
+    /// empty DAG bundle after candidate validation succeeded.
+    pub fn cached_candidate_dag_payload(
         &self,
-        anchor_hash: ethereum_types::H256,
-    ) -> PbftManagerRuntimeSnapshot {
-        self.manager_state()
+        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
+        anchor: H256,
+    ) -> Result<crate::dag_service::DagRuntimeNonFinalizedSyncPayload> {
+        let payload = self
+            .manager_state()
             .state
-            .record_cached_anchor_dag_order(anchor_hash)
-    }
-
-    /// Removes one live DAG-order sidecar identity under the manager lock.
-    pub fn remove_cached_anchor_dag_order(
-        &self,
-        anchor_hash: ethereum_types::H256,
-    ) -> PbftManagerRuntimeSnapshot {
-        self.manager_state()
-            .state
-            .remove_cached_anchor_dag_order(anchor_hash)
+            .cached_candidate_dag_payload(anchor)
+            .ok_or_else(|| anyhow::anyhow!("PBFT_CANDIDATE_DAG_CACHE_MISSING"))?;
+        dag_transaction_service.hydrate_pbft_candidate_transactions(payload)
     }
 
     /// Plans the manager's deadline sleep from one lock-consistent snapshot.
@@ -3610,6 +3682,7 @@ const fn classify_sync_reward_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag::{dag_manager_block_from_rlp, save_dag_block_to_storage};
     use crate::dag_service::DagServiceConfig;
     use crate::dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig};
     use crate::gas_pricer::GasPricerConfig;
@@ -4163,6 +4236,53 @@ mod tests {
         let link =
             PbftBlockLink::try_from(SignedPbftBlockRlp::new(&rlp)).expect("decode should succeed");
         (rlp, link)
+    }
+
+    fn pbft_block_rlp_with_pivot(
+        previous: H256,
+        pivot: H256,
+        period: u64,
+    ) -> (Vec<u8>, PbftBlockLink) {
+        let mut stream = RlpStream::new_list(8);
+        stream.append(&previous);
+        stream.append(&pivot);
+        stream.append(&H256::zero());
+        stream.append(&H256::zero());
+        stream.append(&period);
+        stream.append(&0_u64);
+        stream.append(&H256::zero());
+        stream.append(&vec![0_u8; 65]);
+        let rlp = stream.out().to_vec();
+        let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&rlp))
+            .expect("PBFT block should decode");
+        (rlp, link)
+    }
+
+    fn period_data_with_pbft_block(block_rlp: &[u8]) -> Vec<u8> {
+        let mut period_data = RlpStream::new_list(4);
+        period_data.append_raw(block_rlp, 1);
+        period_data.begin_list(0);
+        period_data.begin_list(0);
+        period_data.begin_list(0);
+        period_data.out().to_vec()
+    }
+
+    fn candidate_dag_block_rlp(pivot: H256, gas_estimation: u64) -> Vec<u8> {
+        let mut vdf = RlpStream::new_list(4);
+        vdf.append(&vec![0x11_u8; 80]);
+        vdf.append(&vec![0x22_u8]);
+        vdf.append(&vec![0x33_u8]);
+        vdf.append(&1_u16);
+        let mut block = RlpStream::new_list(8);
+        block.append(&pivot);
+        block.append(&1_u64);
+        block.append(&0_u64);
+        block.append(&vdf.out().to_vec());
+        block.begin_list(0);
+        block.begin_list(0);
+        block.append(&&[0_u8; 65][..]);
+        block.append(&gas_estimation);
+        block.out().to_vec()
     }
 
     fn dynamic_lambda_fact(finalized_period: u64) -> PbftDynamicLambdaFact {
@@ -5829,9 +5949,9 @@ mod tests {
     }
 
     #[test]
-    fn service_owns_manager_scalar_and_cache_tasks() {
+    fn service_owns_manager_scalar_and_storage_tasks() {
         let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_scalar_owner");
-        let service = PbftService::restore(storage, config(1)).unwrap();
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
 
         let broadcast = service.apply_broadcast_counters(2, 3, 4, 5);
         assert_eq!(broadcast.broadcast_votes_counter, 2);
@@ -5840,12 +5960,16 @@ mod tests {
         assert_eq!(broadcast.rebroadcast_reward_votes_counter, 5);
         assert_eq!(service.manager_snapshot(), broadcast);
 
-        let anchor = H256::repeat_byte(0x44);
-        assert!(!service.has_cached_anchor_dag_order(anchor));
-        service.record_cached_anchor_dag_order(anchor);
-        assert!(service.has_cached_anchor_dag_order(anchor));
-        service.remove_cached_anchor_dag_order(anchor);
-        assert!(!service.has_cached_anchor_dag_order(anchor));
+        assert!(
+            service
+                .cached_candidate_dag_payload(
+                    &dag_service(storage.clone()),
+                    H256::repeat_byte(0x44)
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("PBFT_CANDIDATE_DAG_CACHE_MISSING")
+        );
 
         let block_hash = H256::repeat_byte(0x55);
         let cert = service
@@ -5873,6 +5997,116 @@ mod tests {
 
         drop(service);
         let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn candidate_dag_preparation_validates_then_short_circuits_by_anchor() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_candidate_dag_owner");
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        let dag = dag_service(storage.clone());
+        let genesis = H256::repeat_byte(1);
+        let block_rlp = candidate_dag_block_rlp(genesis, 42);
+        let block = dag_manager_block_from_rlp(&block_rlp)?;
+        dag.lock_dag()?.state.add_block(block.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), block.hash, 1, 0, &block_rlp)?;
+        let prepared = dag
+            .prepare_pbft_candidate_payload(1, block.hash)?
+            .expect("candidate payload");
+        let order_hash = pbft_candidate_dag_order_hash(&prepared.payload);
+
+        assert_eq!(
+            service.prepare_candidate_dag(&dag, 1, block.hash, H256::zero(), 100)?,
+            PbftCandidateDagPreparationStatus::OrderHashInvalid
+        );
+        assert!(
+            service
+                .cached_candidate_dag_payload(&dag, block.hash)
+                .is_err()
+        );
+        assert_eq!(
+            service.prepare_candidate_dag(&dag, 1, block.hash, order_hash, 100)?,
+            PbftCandidateDagPreparationStatus::Valid
+        );
+        assert_eq!(
+            service.cached_candidate_dag_payload(&dag, block.hash)?,
+            prepared.payload
+        );
+        assert_eq!(
+            service.prepare_candidate_dag(&dag, 999, block.hash, H256::zero(), 0)?,
+            PbftCandidateDagPreparationStatus::Valid
+        );
+        assert_eq!(
+            service.prepare_candidate_dag(&dag, 1, H256::repeat_byte(9), H256::zero(), 100)?,
+            PbftCandidateDagPreparationStatus::Missing
+        );
+
+        drop(dag);
+        drop(service);
+        drop(storage);
+        fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_dag_preparation_rejects_divergent_overweight_order_without_cache() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_candidate_dag_weight");
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        let dag = dag_service(storage.clone());
+        let genesis = H256::repeat_byte(1);
+
+        dag.lock_dag()?.state.advance_empty_period(1)?;
+        let first_rlp = candidate_dag_block_rlp(genesis, 42);
+        let first = dag_manager_block_from_rlp(&first_rlp)?;
+        dag.lock_dag()?.state.add_block(first.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), first.hash, 1, 0, &first_rlp)?;
+        let second_rlp = candidate_dag_block_rlp(genesis, 43);
+        let second = dag_manager_block_from_rlp(&second_rlp)?;
+        dag.lock_dag()?.state.add_block(second.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), second.hash, 1, 0, &second_rlp)?;
+
+        let ghost = dag.dag_ghost_path(crate::dag_transaction_service::DagGhostPathRoot::Block(
+            genesis,
+        ))?;
+        assert!(ghost.len() > 1);
+        let divergent = if ghost[1] == first.hash {
+            second.hash
+        } else {
+            first.hash
+        };
+        let prepared = dag
+            .prepare_pbft_candidate_payload(2, divergent)?
+            .expect("divergent candidate payload");
+        let order_hash = pbft_candidate_dag_order_hash(&prepared.payload);
+
+        let (previous_rlp, previous) = pbft_block_rlp_with_pivot(H256::zero(), genesis, 1);
+        storage
+            .period()
+            .write(1, &period_data_with_pbft_block(&previous_rlp))?;
+        storage.period().write_pbft_period(previous.block_hash, 1)?;
+        service.pbft_chain_update(previous.block_hash, genesis)?;
+
+        assert_eq!(
+            service.prepare_candidate_dag(&dag, 2, divergent, order_hash, 41)?,
+            PbftCandidateDagPreparationStatus::WeightInvalid
+        );
+        assert!(
+            service
+                .cached_candidate_dag_payload(&dag, divergent)
+                .is_err()
+        );
+        assert_eq!(
+            service
+                .manager_state()
+                .state
+                .cached_anchor_dag_order_count(),
+            0
+        );
+
+        drop(dag);
+        drop(service);
+        drop(storage);
+        fs::remove_dir_all(path)?;
+        Ok(())
     }
 
     #[test]

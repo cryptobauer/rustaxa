@@ -1000,77 +1000,31 @@ pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
         .into()
 }
 
-/// Checks Rust-owned DAG-order cache membership metadata.
+/// Prepares and caches the canonical DAG payload for one PBFT candidate.
 ///
-/// Inputs:
-/// - `runtime`: long-lived PBFT manager runtime.
-/// - `anchor_hash`: PBFT pivot DAG block hash whose materialized sidecar
-///   availability is being queried.
-///
-/// Outputs:
-/// - Returns whether the C++ compatibility shell has reported a materialized
-///   DAG-order sidecar for the anchor.
-///
-/// Invariants and edge behavior:
-/// - Rust owns compact membership metadata only. C++ still owns the temporary
-///   `DagBlock` vector sidecar used by FinalChain/finalization executors.
-/// - The result is live runtime state and is not persisted.
-pub fn pbft_manager_runtime_has_cached_anchor_dag_order(
+/// The two services compose order, canonical storage payloads, order-hash
+/// validation, and period gas weight from the supplied immutable candidate
+/// facts. The returned scalar preserves the dedicated valid, missing,
+/// order-hash-invalid, and weight-invalid status codes.
+/// Only a valid candidate is cached; native failures return an error without
+/// publishing a partial entry.
+pub fn pbft_manager_runtime_prepare_candidate_dag(
     runtime: &BridgePbftService,
-    anchor_hash: &[u8; 32],
-) -> bool {
-    runtime
-        .0
-        .has_cached_anchor_dag_order(ethereum_types::H256::from(*anchor_hash))
-}
-
-/// Records Rust-owned DAG-order cache membership metadata.
-///
-/// Inputs:
-/// - `runtime`: long-lived PBFT manager runtime.
-/// - `anchor_hash`: PBFT pivot DAG block hash whose materialized sidecar has
-///   been accepted by the compatibility executor.
-///
-/// Outputs:
-/// - Returns the runtime snapshot for bridge consistency; scalar fields are
-///   unchanged.
-///
-/// Invariants and edge behavior:
-/// - This must be called only after C++ has materialized the matching DAG-order
-///   sidecar or refreshed an existing one.
-/// - Re-recording an anchor is idempotent.
-pub fn pbft_manager_runtime_record_cached_anchor_dag_order(
-    runtime: &BridgePbftService,
+    dag_transaction_service: &BridgeDagTransactionService,
+    period: u64,
     anchor_hash: [u8; 32],
-) -> FfiPbftManagerRuntimeSnapshot {
-    runtime
-        .0
-        .record_cached_anchor_dag_order(ethereum_types::H256::from(anchor_hash))
-        .into()
-}
-
-/// Removes Rust-owned DAG-order cache membership metadata for one anchor.
-///
-/// Inputs:
-/// - `runtime`: long-lived PBFT manager runtime.
-/// - `anchor_hash`: PBFT pivot DAG block hash whose materialized sidecar has
-///   been erased or rejected.
-///
-/// Outputs:
-/// - Returns the runtime snapshot for bridge consistency; scalar fields are
-///   unchanged.
-///
-/// Invariants and edge behavior:
-/// - Removing a missing anchor is idempotent and leaves scalar runtime state
-///   untouched.
-pub fn pbft_manager_runtime_remove_cached_anchor_dag_order(
-    runtime: &BridgePbftService,
-    anchor_hash: [u8; 32],
-) -> FfiPbftManagerRuntimeSnapshot {
-    runtime
-        .0
-        .remove_cached_anchor_dag_order(ethereum_types::H256::from(anchor_hash))
-        .into()
+    expected_order_hash: [u8; 32],
+    pbft_gas_limit: u64,
+) -> anyhow::Result<u8> {
+    Ok(dag_transaction_service
+        .prepare_pbft_candidate_dag(
+            runtime,
+            period,
+            ethereum_types::H256::from(anchor_hash),
+            ethereum_types::H256::from(expected_order_hash),
+            pbft_gas_limit,
+        )?
+        .as_u8())
 }
 
 /// Loads the local node's own pillar-block vote through PBFT-manager runtime storage.
@@ -1619,7 +1573,6 @@ fn finalization_executor_state_from_boundary(
         has_action: next_step.has_action,
         complete: next_step.complete,
         can_continue: next_step.can_continue,
-        cleared_anchor_dag_cache: boundary.cleared_anchor_dag_cache,
         has_snapshot: boundary.has_snapshot,
         expired_dag_hashes: boundary
             .expired_dag_hashes
@@ -1871,13 +1824,11 @@ impl From<FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact 
             period: value.period,
             pivot_hash: value.pivot_hash.into(),
             pivot_is_null: value.pivot_is_null,
-            dag_order_cached: value.dag_order_cached,
             dag_order_required: value.dag_order_required,
             extra_data_required: value.extra_data_required,
             extra_data_present: value.extra_data_present,
             extra_data_pillar_hash_present: value.extra_data_pillar_hash_present,
             pillar_block_required: value.pillar_block_required,
-            dag_weight_check_required: value.dag_weight_check_required,
             pbft_chain_status: PbftManagerBlockValidationFactStatus::from_u8(
                 value.pbft_chain_status,
             ),
@@ -2951,13 +2902,11 @@ mod tests {
             period: 12,
             pivot_hash: [0x22; 32],
             pivot_is_null: false,
-            dag_order_cached: true,
             dag_order_required: true,
             extra_data_required: true,
             extra_data_present: true,
             extra_data_pillar_hash_present: false,
             pillar_block_required: false,
-            dag_weight_check_required: true,
             pbft_chain_status: 1,
             final_chain_hash_status: 3,
             reward_votes_status: 4,
@@ -2974,6 +2923,10 @@ mod tests {
         assert_eq!(
             block_fact.final_chain_hash_status,
             PbftManagerBlockValidationFactStatus::Missing
+        );
+        assert_eq!(
+            block_fact.dag_weight_status,
+            PbftManagerBlockValidationFactStatus::NotChecked
         );
 
         let candidate_fact: PbftManagerCandidateAdmissionFact =

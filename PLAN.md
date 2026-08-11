@@ -1117,8 +1117,14 @@ The current Rust consensus footprint is broad but still incomplete:
    facts in legacy order, owns immutable extra-data/Ficus policy, then returns accept/reject or wait-for-finalization
    decisions while C++ still supplies the live object checks. `processPeriodData` reuses native sync planners before handing cert-vote, transaction, pillar-vote, and
    peer/queue side effects back to the PBFT sync runtime planner. Current-certificate validation/admission now calls the
-   native PBFT service directly and materializes only accepted weighted output. The next removal target is to replace the remaining
-   DAG-order/gas fact, transaction, and pillar-vote decision glue with shared Rust
+   native PBFT service directly and materializes only accepted weighted output. Candidate DAG order availability,
+   order hashing, legacy GHOST-divergence gas policy, ordered block bytes, and finalization-time non-finalized sidecar
+   lookup now compose through the native PBFT and DAG/transaction roots. Rust caches canonical block bytes by anchor,
+   resolves transaction bytes at the retained execution epoch, and clears the cache through the existing finalization
+   action; C++ materializes the result only at the retained finalization/EVM edge. Three
+   cache-membership exports, the C++ block-vector cache, and the separate DAG-weight executor check are deleted. The
+   retained direct `checkBlockWeight` helper is test-only stable-API parity surface. The next removal target is to replace
+   remaining transaction and pillar-vote decision glue with shared Rust
    executor intents that consume existing Rust FinalChain bundles. After the shared planner owns deeper sync acceptance,
    `identifyLeaderBlock`,
    `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and `secondFinish_` should collapse further into

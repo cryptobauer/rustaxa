@@ -550,6 +550,14 @@ Rust owns the Ficus presence policy before requesting pillar or DAG executor che
 directly from the retained executor loop, deleting the C++ `validateFinalChainHash` facade without adding a bridge
 function or carrier.
 
+Candidate DAG preparation now composes the native PBFT and DAG/transaction roots. Rust owns next-period/current-anchor
+availability, canonical order hashing, the previous-PBFT-pivot GHOST divergence rule, `U256` gas accumulation, ordered
+block RLPs, and finalization-time sidecar-only transaction lookup. The manager runtime caches canonical block payloads
+by anchor and its existing finalization action clears them. C++ no longer owns an anchor-to-`DagBlock` cache or executes
+a separate weight check in production; it materializes cached bytes only at the retained finalization/EVM boundary. Three
+cache-membership exports are replaced by two task operations using existing carriers, and legacy check code 6 remains
+reserved and fail-closed.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT

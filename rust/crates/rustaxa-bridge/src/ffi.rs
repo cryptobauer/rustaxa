@@ -1407,13 +1407,11 @@ pub mod rustaxa_ffi {
         period: u64,
         pivot_hash: [u8; 32],
         pivot_is_null: bool,
-        dag_order_cached: bool,
         dag_order_required: bool,
         extra_data_required: bool,
         extra_data_present: bool,
         extra_data_pillar_hash_present: bool,
         pillar_block_required: bool,
-        dag_weight_check_required: bool,
         pbft_chain_status: u8,
         final_chain_hash_status: u8,
         reward_votes_status: u8,
@@ -1592,7 +1590,6 @@ pub mod rustaxa_ffi {
         has_action: bool,
         complete: bool,
         can_continue: bool,
-        cleared_anchor_dag_cache: bool,
         has_snapshot: bool,
         expired_dag_hashes: Vec<PbftFinalizationHash>,
         refresh_dag_counters: bool,
@@ -4037,18 +4034,19 @@ pub mod rustaxa_ffi {
             round: u32,
             block_hash: [u8; 32],
         ) -> PbftManagerRuntimeSnapshot;
-        pub fn pbft_manager_runtime_has_cached_anchor_dag_order(
+        pub fn pbft_manager_runtime_prepare_candidate_dag(
             runtime: &BridgePbftService,
+            dag_transaction_service: &BridgeDagTransactionService,
+            period: u64,
+            anchor_hash: [u8; 32],
+            expected_order_hash: [u8; 32],
+            pbft_gas_limit: u64,
+        ) -> Result<u8>;
+        pub fn pbft_manager_runtime_cached_candidate_dag_payload(
+            runtime: &BridgePbftService,
+            dag_transaction_service: &BridgeDagTransactionService,
             anchor_hash: &[u8; 32],
-        ) -> bool;
-        pub fn pbft_manager_runtime_record_cached_anchor_dag_order(
-            runtime: &BridgePbftService,
-            anchor_hash: [u8; 32],
-        ) -> PbftManagerRuntimeSnapshot;
-        pub fn pbft_manager_runtime_remove_cached_anchor_dag_order(
-            runtime: &BridgePbftService,
-            anchor_hash: [u8; 32],
-        ) -> PbftManagerRuntimeSnapshot;
+        ) -> Result<DagManagerNonFinalizedSyncPayload>;
         pub fn pbft_manager_runtime_own_pillar_block_vote(
             runtime: &BridgePbftService,
         ) -> Result<Vec<u8>>;
