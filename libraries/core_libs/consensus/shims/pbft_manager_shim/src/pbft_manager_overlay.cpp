@@ -148,19 +148,14 @@ constexpr uint8_t kPbftManagerTransitionToFinishPolling = 4;
 constexpr uint8_t kPbftManagerTransitionLoopBackFinish = 5;
 constexpr uint8_t kPbftManagerTransitionDelayCertifyPoll = 6;
 constexpr uint8_t kPbftManagerTransitionDelayFinishPoll = 7;
-constexpr uint8_t kPbftManagerCandidateAdmissionValidationNotChecked = 0;
-constexpr uint8_t kPbftManagerCandidateAdmissionValidationValid = 1;
-constexpr uint8_t kPbftManagerCandidateAdmissionValidationInvalid = 2;
-constexpr uint8_t kPbftManagerCandidateAdmissionActionRequestLookup = 0;
-constexpr uint8_t kPbftManagerCandidateAdmissionActionRequestValidation = 1;
-constexpr uint8_t kPbftManagerCandidateAdmissionActionAccept = 2;
-constexpr uint8_t kPbftManagerCandidateAdmissionActionReject = 3;
-constexpr uint8_t kPbftManagerCandidateAdmissionActionDeferMissingBlock = 4;
-constexpr uint8_t kPbftManagerCandidateAdmissionActionContractError = 255;
 constexpr uint8_t kPbftManagerBlockValidationActionAccept = 1;
 constexpr uint8_t kPbftManagerBlockValidationActionReject = 2;
 constexpr uint8_t kPbftManagerBlockValidationActionWaitForFinalization = 3;
 constexpr uint8_t kPbftManagerBlockValidationActionContractError = 255;
+constexpr uint8_t kPbftProposedBlockAdmissionMissing = 0;
+constexpr uint8_t kPbftProposedBlockAdmissionAcceptedAlreadyValid = 1;
+constexpr uint8_t kPbftProposedBlockAdmissionAcceptedNewlyValidated = 2;
+constexpr uint8_t kPbftProposedBlockAdmissionRejected = 3;
 constexpr uint8_t kPillarAnchorDecisionSelectPreviousPeriod = 1;
 constexpr uint8_t kPillarAnchorDecisionRestartPostProcessing = 2;
 
@@ -1737,81 +1732,30 @@ bool PbftManager::publishProposedBlock(const std::shared_ptr<PbftBlock> &propose
 }
 
 std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(PbftPeriod period, const blk_hash_t &block_hash) {
-  rustaxa::PbftManagerCandidateAdmissionFact fact;
-  fact.period = period;
-  fact.block_hash = toBridgeHash(block_hash);
-  fact.lookup_performed = false;
-  fact.proposed_block_found = false;
-  fact.proposed_block_already_valid = false;
-  fact.validation_status = kPbftManagerCandidateAdmissionValidationNotChecked;
-
-  std::shared_ptr<PbftBlock> block;
-  std::optional<rustaxa::ProposedBlockLookup> lookup;
-  while (true) {
-    const auto plan = rustaxa::plan_pbft_manager_candidate_admission(fact);
-    if (plan.action == kPbftManagerCandidateAdmissionActionAccept) {
-      if (!block) {
-        // Rust admission decisions use owned proposed-block lookup facts. C++ materializes the accepted block only at
-        // this vote-generation/executor boundary.
-        if (!lookup.has_value() || !lookup->found) {
-          throw std::runtime_error("Rust PBFT proposed-block admission accepted missing materialized block");
-        }
-        block = std::make_shared<PbftBlock>(fromBridgeBytes(lookup->block_rlp));
-      }
-      if (plan.mark_valid) {
-        pbft_service_->service().pbft_service_proposed_blocks_mark_valid(period, toBridgeHash(block_hash));
-      }
-      return block;
+  const auto result = rustaxa::pbft_service_admit_proposed_block(
+      pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(), period,
+      toBridgeHash(block_hash),
+      kGenesisConfig.getGasLimits(period).second, kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(period),
+      kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(period));
+  if (result.status == kPbftProposedBlockAdmissionAcceptedAlreadyValid ||
+      result.status == kPbftProposedBlockAdmissionAcceptedNewlyValidated) {
+    if (result.block_rlp.empty()) {
+      throw std::runtime_error("Native PBFT proposed-block admission accepted an empty block payload");
     }
-    if (plan.action == kPbftManagerCandidateAdmissionActionReject) {
-      LOG(log_er_) << "Proposed block " << block_hash << " rejected by Rust admission planner, period " << period
-                   << ", status " << static_cast<uint64_t>(plan.status) << ", code " << std::string(plan.error_code);
-      return nullptr;
-    }
-    if (plan.action == kPbftManagerCandidateAdmissionActionDeferMissingBlock) {
-      LOG(log_dg_) << "Proposed block " << block_hash << " deferred by Rust admission planner, period " << period
-                   << ", status " << static_cast<uint64_t>(plan.status) << ", code " << std::string(plan.error_code);
-      return nullptr;
-    }
-    if (plan.action == kPbftManagerCandidateAdmissionActionContractError) {
-      throw std::runtime_error("Rust PBFT proposed-block admission planner rejected bridge facts: " +
-                               std::string(plan.error_code));
-    }
-
-    if (plan.action == kPbftManagerCandidateAdmissionActionRequestLookup) {
-      lookup = pbft_service_->service().pbft_service_proposed_blocks_get(period, toBridgeHash(block_hash));
-      fact.lookup_performed = true;
-      if (!lookup->found) {
-        LOG(log_er_) << "Unable to find proposed block " << block_hash << ", period " << period;
-        fact.proposed_block_found = false;
-        continue;
-      }
-
-      fact.proposed_block_found = true;
-      fact.proposed_block_already_valid = lookup->is_valid;
-      continue;
-    }
-
-    if (plan.action == kPbftManagerCandidateAdmissionActionRequestValidation) {
-      if (!block) {
-        if (!lookup.has_value() || !lookup->found) {
-          LOG(log_er_) << "Unable to materialize proposed block " << block_hash << " for validation, period " << period;
-          fact.validation_status = kPbftManagerCandidateAdmissionValidationInvalid;
-          continue;
-        }
-        block = std::make_shared<PbftBlock>(fromBridgeBytes(lookup->block_rlp));
-      }
-      if (!validatePbftBlock(block)) {
-        LOG(log_er_) << "Proposed block " << block_hash << " failed validation, period " << period;
-        fact.validation_status = kPbftManagerCandidateAdmissionValidationInvalid;
-      } else {
-        fact.validation_status = kPbftManagerCandidateAdmissionValidationValid;
-      }
-      continue;
-    }
-
-    throw std::runtime_error("Rust PBFT proposed-block admission planner returned unknown action");
+    // C++ materialization remains only for the retained vote-generation and executor boundary.
+    return std::make_shared<PbftBlock>(fromBridgeBytes(result.block_rlp));
   }
+  if (result.status == kPbftProposedBlockAdmissionMissing) {
+    LOG(log_dg_) << "Proposed block " << block_hash << " is not available for native admission, period " << period
+                 << ", code " << std::string(result.error_code);
+    return nullptr;
+  }
+  if (result.status == kPbftProposedBlockAdmissionRejected) {
+    LOG(log_er_) << "Proposed block " << block_hash << " rejected by native admission, period " << period
+                 << ", code " << std::string(result.error_code);
+    return nullptr;
+  }
+  throw std::runtime_error("Native PBFT proposed-block admission returned unknown status");
 }
 
 std::shared_ptr<PbftBlock> PbftManager::admitStateActionPbftBlock(const rustaxa::PbftManagerStateActionEffect &effect,

@@ -142,6 +142,18 @@ impl BridgeDagTransactionService {
             .validate_pbft_block_composed(&final_chain.0, &self.root, candidate)
     }
 
+    /// Runs complete proposed-block admission without exposing either native root.
+    pub(crate) fn admit_proposed_block(
+        &self,
+        runtime: &BridgePbftService,
+        final_chain: &BridgeFinalChain,
+        request: rustaxa_consensus::pbft_service::PbftProposedBlockAdmissionRequest,
+    ) -> Result<rustaxa_consensus::pbft_service::PbftProposedBlockAdmissionResult> {
+        runtime
+            .0
+            .admit_proposed_block(&final_chain.0, &self.root, request)
+    }
+
     /// Composes exact PBFT sync transaction admission with the private native
     /// DAG/transaction root and the external FinalChain account boundary.
     ///

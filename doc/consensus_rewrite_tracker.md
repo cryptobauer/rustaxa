@@ -4010,6 +4010,19 @@ compatibility constructor calls 0, and non-test C++ consumers 38. `CRW-12` remai
 roots and remaining manager-shaped executor facades are not yet retired. Four test-only public Rust projection wrappers
 are also deleted; the chain-state projection rule is reachable only through the coherent finalization task.
 
+The next bounded `CRW-12` contraction moves proposed-block admission into native `PbftService`. One operation now owns
+proposal lookup, canonical signed-block RLP decoding, identity checks, composed PBFT/FinalChain/reward/pillar/DAG
+validation, and the valid-cache mutation. The PBFT manager supplies only genesis gas/extra-data/pillar policy and
+materializes the accepted block at the retained vote-generation/executor boundary. The bridge candidate fact/plan
+transcript, standalone planner, public mark-valid export, C++ lookup/validation action loop, and their compatibility
+tests are deleted. Native tests cover missing, cached-valid, newly validated/marked-valid, malformed timestamp/signature
+non-mutation, and non-UTF8 extra-data parity outcomes; all 47
+`rust_consensus_tests` and the focused PBFT proposal/broadcast test pass. Measured surface falls by 41 bridge lines, 56
+shim lines, one CXX function, and one CXX carrier to 21,137 bridge lines, 14,760 shim lines, 360 CXX functions, and 300
+CXX carriers. Handles remain 18, shim directories 9, granular flags 0, partial factories 0, compatibility constructor
+calls 0, and non-test C++ consumers 38. `CRW-12` remains active because other PBFT manager validation and leader
+selection callers still materialize compatibility objects and the bridge application roots remain production-owned.
+
 ### DAG
 
 | Class | Public API groups | Dependencies | Tests | Target |

@@ -82,7 +82,7 @@ class RustProposedBlocksTest : public ::testing::Test {
   }
 };
 
-TEST_F(RustProposedBlocksTest, PushGetMarkValidAndSnapshotEntries) {
+TEST_F(RustProposedBlocksTest, PushGetAndSnapshotEntries) {
   const auto test_dir = uniqueTempDir("rustaxa_proposed_blocks_bridge");
   auto storage = create_storage(test_dir.string());
   auto service = create_pbft_service_from_storage(*storage, serviceConfig());
@@ -99,20 +99,6 @@ TEST_F(RustProposedBlocksTest, PushGetMarkValidAndSnapshotEntries) {
   EXPECT_EQ(lookup.pivot_hash, block.pivot_hash);
   EXPECT_EQ(to_std(lookup.block_rlp), to_std(block.block_rlp));
   EXPECT_FALSE(service->pbft_service_proposed_blocks_get(2, h256(0x12)).found);
-
-  service->pbft_service_proposed_blocks_mark_valid(2, block.block_hash);
-  lookup = service->pbft_service_proposed_blocks_get(2, block.block_hash);
-  EXPECT_TRUE(lookup.is_valid);
-
-  std::filesystem::remove_all(test_dir);
-}
-
-TEST_F(RustProposedBlocksTest, MarkValidThrowsForMissingBlock) {
-  const auto test_dir = uniqueTempDir("rustaxa_proposed_blocks_missing");
-  auto storage = create_storage(test_dir.string());
-  auto service = create_pbft_service_from_storage(*storage, serviceConfig());
-
-  EXPECT_THROW(service->pbft_service_proposed_blocks_mark_valid(9, h256(0x90)), std::exception);
 
   std::filesystem::remove_all(test_dir);
 }

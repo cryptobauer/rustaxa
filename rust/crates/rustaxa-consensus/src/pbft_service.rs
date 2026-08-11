@@ -122,13 +122,13 @@ use crate::slashing::{
     SlashingSubmitterFact, SlashingSubmitterIdentity, SlashingTransactionEffect,
 };
 use crate::verified_votes::{DetermineNewRoundOutcome, PbftVoteType, TwoTPlusOneVotedBlockType};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::{H256, U256};
 use rand::Rng;
-use rlp::RlpStream;
+use rlp::{Rlp, RlpStream};
 use rustaxa_storage::{Storage, StorageWriteBatch};
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
-use rustaxa_types::pbft::PbftBlockLink;
+use rustaxa_types::pbft::{PbftBlockLink, PbftBlockMetadata};
 use std::sync::{Arc, Mutex};
 use tiny_keccak::{Hasher, Keccak};
 
@@ -149,6 +149,110 @@ fn pbft_candidate_dag_order_hash(
     hasher.update(&stream.out());
     hasher.finalize(&mut out);
     H256(out)
+}
+
+fn decode_pbft_proposed_block_extra_data(block: &Rlp<'_>) -> Result<(bool, Option<H256>)> {
+    if block.item_count()? != 9 {
+        return Ok((false, None));
+    }
+
+    let bytes = block.at(7)?.data()?;
+    ensure!(
+        bytes.len() <= 1024,
+        "PBFT_PROPOSED_BLOCK_EXTRA_DATA_TOO_LARGE"
+    );
+    let extra = Rlp::new(bytes);
+    if extra.item_count().ok() != Some(6)
+        || extra.val_at::<u16>(0).is_err()
+        || extra.val_at::<u16>(1).is_err()
+        || extra.val_at::<u16>(2).is_err()
+        || extra.val_at::<u16>(3).is_err()
+        || extra.val_at::<Vec<u8>>(4).is_err()
+    {
+        return Ok((false, None));
+    }
+
+    let pillar_hash = match extra.at(5).and_then(|value| value.data()) {
+        Ok([]) => None,
+        Ok(data) if data.len() == 32 => Some(H256::from_slice(data)),
+        Ok(_) | Err(_) => return Ok((false, None)),
+    };
+    Ok((true, pillar_hash))
+}
+
+fn proposed_block_validation_candidate(
+    entry: &ProposedBlockEntry,
+    request: PbftProposedBlockAdmissionRequest,
+) -> Result<PbftBlockValidationCandidate> {
+    let block = Rlp::new(&entry.block_rlp);
+    let item_count = block.item_count()?;
+    ensure!(
+        matches!(item_count, 8 | 9),
+        "PBFT_PROPOSED_BLOCK_INVALID_FIELD_COUNT"
+    );
+    let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&entry.block_rlp))?;
+    let metadata = PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(&entry.block_rlp))?;
+    ensure!(
+        entry.period == request.period
+            && link.period == request.period
+            && metadata.period == request.period,
+        "PBFT_PROPOSED_BLOCK_PERIOD_MISMATCH"
+    );
+    ensure!(
+        entry.block_hash == request.block_hash && link.block_hash == request.block_hash,
+        "PBFT_PROPOSED_BLOCK_HASH_MISMATCH"
+    );
+    ensure!(
+        entry.pivot_hash == link.pivot_dag_block_hash,
+        "PBFT_PROPOSED_BLOCK_PIVOT_MISMATCH"
+    );
+
+    let reward_votes = block.at(6)?;
+    ensure!(
+        reward_votes.is_list(),
+        "PBFT_PROPOSED_BLOCK_REWARD_VOTES_NOT_LIST"
+    );
+    let mut reward_vote_hashes = Vec::with_capacity(reward_votes.item_count()?);
+    for index in 0..reward_votes.item_count()? {
+        let hash: H256 = reward_votes.val_at(index)?;
+        ensure!(
+            !reward_vote_hashes.contains(&hash),
+            "PBFT_PROPOSED_BLOCK_DUPLICATE_REWARD_VOTE"
+        );
+        reward_vote_hashes.push(hash);
+    }
+    let (extra_data_present, pillar_block_hash) = decode_pbft_proposed_block_extra_data(&block)?;
+
+    Ok(PbftBlockValidationCandidate {
+        fact: crate::pbft_manager::PbftManagerBlockValidationFact {
+            block_hash: link.block_hash,
+            period: link.period,
+            pivot_hash: link.pivot_dag_block_hash,
+            pivot_is_null: link.pivot_dag_block_hash == H256::zero(),
+            dag_order_required: true,
+            extra_data_required: request.extra_data_required,
+            extra_data_present,
+            extra_data_pillar_hash_present: pillar_block_hash.is_some(),
+            pillar_block_required: request.pillar_block_required,
+            pbft_chain_status:
+                crate::pbft_manager::PbftManagerBlockValidationFactStatus::NotChecked,
+            final_chain_hash_status:
+                crate::pbft_manager::PbftManagerBlockValidationFactStatus::NotChecked,
+            reward_votes_status:
+                crate::pbft_manager::PbftManagerBlockValidationFactStatus::NotChecked,
+            pillar_block_status:
+                crate::pbft_manager::PbftManagerBlockValidationFactStatus::NotChecked,
+            dag_order_status: crate::pbft_manager::PbftManagerBlockValidationFactStatus::NotChecked,
+            dag_weight_status:
+                crate::pbft_manager::PbftManagerBlockValidationFactStatus::NotChecked,
+        },
+        previous_pbft_block_hash: link.prev_block_hash,
+        candidate_final_chain_hash: block.val_at(3)?,
+        expected_order_hash: block.val_at(2)?,
+        pbft_gas_limit: request.pbft_gas_limit,
+        reward_vote_hashes,
+        pillar_block_hash,
+    })
 }
 
 fn final_chain_nonce_as_u256(nonce: &rustaxa_types::FinalChainNonce) -> Result<U256> {
@@ -537,6 +641,65 @@ pub struct PbftBlockValidationCandidate {
     pub reward_vote_hashes: Vec<H256>,
     /// Candidate pillar anchor hash when the active rules require one.
     pub pillar_block_hash: Option<H256>,
+}
+
+/// External policy required to admit one proposed PBFT block.
+///
+/// The native PBFT root owns proposal lookup, canonical block decoding,
+/// dependency validation, and valid-cache mutation. C++ supplies only the
+/// period policy that still belongs to the genesis configuration boundary.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftProposedBlockAdmissionRequest {
+    /// Proposed-block index period and expected canonical block period.
+    pub period: u64,
+    /// Proposed-block index hash and expected canonical signed-block hash.
+    pub block_hash: H256,
+    /// Gas limit used by candidate DAG divergency validation.
+    pub pbft_gas_limit: u64,
+    /// Whether the active hardfork requires a decodable extra-data payload.
+    pub extra_data_required: bool,
+    /// Whether the active schedule requires a pillar-block anchor.
+    pub pillar_block_required: bool,
+}
+
+/// Terminal status for native proposed-block admission.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftProposedBlockAdmissionStatus {
+    /// No proposal exists for the requested period and hash.
+    Missing,
+    /// The native proposal cache already records successful validation.
+    AcceptedAlreadyValid,
+    /// Native validation succeeded and the cache was marked valid.
+    AcceptedNewlyValidated,
+    /// Native validation produced a deterministic rejection or wait result.
+    Rejected,
+}
+
+impl PbftProposedBlockAdmissionStatus {
+    /// Returns the stable bridge representation of this terminal status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Missing => 0,
+            Self::AcceptedAlreadyValid => 1,
+            Self::AcceptedNewlyValidated => 2,
+            Self::Rejected => 3,
+        }
+    }
+}
+
+/// Terminal native proposed-block admission result.
+///
+/// Accepted results preserve the canonical signed block bytes for the retained
+/// C++ vote/executor materialization boundary. Missing and rejected results
+/// carry no payload. Decode, storage, and lock failures are returned as errors.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftProposedBlockAdmissionResult {
+    /// Terminal admission classification.
+    pub status: PbftProposedBlockAdmissionStatus,
+    /// Canonical signed block RLP, present only for accepted results.
+    pub block_rlp: Vec<u8>,
+    /// Stable diagnostic code for logs and bridge consumers.
+    pub error_code: &'static str,
 }
 
 /// CXX-free native owner of the complete PBFT application-service graph.
@@ -2448,6 +2611,67 @@ impl PbftService {
                 &mut session,
                 status,
             );
+        }
+    }
+
+    /// Admits one proposed PBFT block through the complete native service graph.
+    ///
+    /// The operation resolves the native proposal entry, verifies its canonical
+    /// period/hash/pivot identity, decodes all immutable validation inputs,
+    /// drives composed PBFT/FinalChain/reward/pillar/DAG validation, and marks
+    /// the entry valid only after an accepted terminal plan. Already-valid
+    /// entries bypass repeated dependency work but still undergo canonical
+    /// identity decoding. Missing and deterministic validation failures are
+    /// typed outcomes; malformed RLP and dependency failures are errors.
+    pub fn admit_proposed_block(
+        &self,
+        final_chain: &FinalChain,
+        dag_transaction_service: &DagTransactionService,
+        request: PbftProposedBlockAdmissionRequest,
+    ) -> Result<PbftProposedBlockAdmissionResult> {
+        let Some(entry) = self.proposed_block(request.period, request.block_hash) else {
+            return Ok(PbftProposedBlockAdmissionResult {
+                status: PbftProposedBlockAdmissionStatus::Missing,
+                block_rlp: Vec::new(),
+                error_code: "PBFT_PROPOSED_BLOCK_ADMISSION_MISSING",
+            });
+        };
+        let candidate = proposed_block_validation_candidate(&entry, request)?;
+        if entry.is_valid {
+            return Ok(PbftProposedBlockAdmissionResult {
+                status: PbftProposedBlockAdmissionStatus::AcceptedAlreadyValid,
+                block_rlp: entry.block_rlp,
+                error_code: "PBFT_PROPOSED_BLOCK_ADMISSION_ALREADY_VALID",
+            });
+        }
+
+        let plan =
+            self.validate_pbft_block_composed(final_chain, dag_transaction_service, candidate)?;
+        match plan.action {
+            crate::pbft_manager::PbftManagerBlockValidationAction::Accept => {
+                self.mark_proposed_block_valid(request.period, request.block_hash)?;
+                Ok(PbftProposedBlockAdmissionResult {
+                    status: PbftProposedBlockAdmissionStatus::AcceptedNewlyValidated,
+                    block_rlp: entry.block_rlp,
+                    error_code: "PBFT_PROPOSED_BLOCK_ADMISSION_VALIDATED",
+                })
+            }
+            crate::pbft_manager::PbftManagerBlockValidationAction::Reject
+            | crate::pbft_manager::PbftManagerBlockValidationAction::WaitForFinalization => {
+                Ok(PbftProposedBlockAdmissionResult {
+                    status: PbftProposedBlockAdmissionStatus::Rejected,
+                    block_rlp: Vec::new(),
+                    error_code: plan.error_code,
+                })
+            }
+            crate::pbft_manager::PbftManagerBlockValidationAction::ContractError => Err(anyhow!(
+                "native proposed-block validation contract failed: {}",
+                plan.error_code
+            )),
+            crate::pbft_manager::PbftManagerBlockValidationAction::RunCheck => Err(anyhow!(
+                "native proposed-block validation returned non-terminal action: {}",
+                plan.error_code
+            )),
         }
     }
 
@@ -4972,6 +5196,58 @@ mod tests {
         (rlp, link)
     }
 
+    fn proposed_admission_block_rlp(
+        period: u64,
+        pivot_hash: H256,
+        order_hash: H256,
+    ) -> (Vec<u8>, PbftBlockLink) {
+        proposed_admission_block_rlp_with_shape(period, pivot_hash, order_hash, false, true)
+    }
+
+    fn proposed_admission_block_rlp_with_shape(
+        period: u64,
+        pivot_hash: H256,
+        order_hash: H256,
+        invalid_timestamp: bool,
+        valid_signature: bool,
+    ) -> (Vec<u8>, PbftBlockLink) {
+        let append_unsigned_fields = |stream: &mut RlpStream| {
+            stream.append(&H256::zero());
+            stream.append(&pivot_hash);
+            stream.append(&order_hash);
+            stream.append(&H256::zero());
+            stream.append(&period);
+            if invalid_timestamp {
+                stream.append(&H256::repeat_byte(0x55));
+            } else {
+                stream.append(&0_u64);
+            }
+            stream.begin_list(0);
+        };
+        let mut unsigned = RlpStream::new_list(7);
+        append_unsigned_fields(&mut unsigned);
+        let signature = if valid_signature {
+            let signing_key = SigningKey::from_slice(&[0x63; 32]).unwrap();
+            let mut digest = [0_u8; 32];
+            let mut hasher = Keccak::v256();
+            hasher.update(&unsigned.out());
+            hasher.finalize(&mut digest);
+            let (signature, recovery_id) = signing_key.sign_prehash_recoverable(&digest).unwrap();
+            let mut bytes = signature.to_bytes().to_vec();
+            bytes.push(recovery_id.to_byte());
+            bytes
+        } else {
+            vec![0_u8; 65]
+        };
+        let mut stream = RlpStream::new_list(8);
+        append_unsigned_fields(&mut stream);
+        stream.append(&signature);
+        let rlp = stream.out().to_vec();
+        let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&rlp))
+            .expect("proposed PBFT block should decode");
+        (rlp, link)
+    }
+
     fn period_data_with_pbft_block(block_rlp: &[u8]) -> Vec<u8> {
         let mut period_data = RlpStream::new_list(4);
         period_data.append_raw(block_rlp, 1);
@@ -6523,6 +6799,155 @@ mod tests {
     }
 
     #[test]
+    fn proposed_block_admission_returns_typed_missing_result() {
+        let (path, storage) = temp_storage("rustaxa_pbft_proposed_admission_missing");
+        let service = PbftService::restore(storage.clone(), config(10)).unwrap();
+        let final_chain = final_chain_with_pillar_voters(storage.clone(), &[]);
+        let dag = dag_service(storage);
+
+        let result = service
+            .admit_proposed_block(
+                &final_chain,
+                &dag,
+                PbftProposedBlockAdmissionRequest {
+                    period: 2,
+                    block_hash: H256::repeat_byte(2),
+                    pbft_gas_limit: 1_000_000,
+                    extra_data_required: false,
+                    pillar_block_required: false,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(result.status, PbftProposedBlockAdmissionStatus::Missing);
+        assert!(result.block_rlp.is_empty());
+        drop(final_chain);
+        drop(service);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn proposed_block_admission_returns_cached_canonical_block_without_revalidation() {
+        let (path, storage) = temp_storage("rustaxa_pbft_proposed_admission_cached");
+        let service = PbftService::restore(storage.clone(), config(10)).unwrap();
+        let final_chain = final_chain_with_pillar_voters(storage.clone(), &[]);
+        let dag = dag_service(storage);
+        let (block_rlp, link) = proposed_admission_block_rlp(2, H256::zero(), H256::zero());
+        service
+            .publish_proposed_block(
+                link.period,
+                link.block_hash,
+                link.pivot_dag_block_hash,
+                block_rlp.clone(),
+            )
+            .unwrap();
+        service
+            .mark_proposed_block_valid(link.period, link.block_hash)
+            .unwrap();
+
+        let result = service
+            .admit_proposed_block(
+                &final_chain,
+                &dag,
+                PbftProposedBlockAdmissionRequest {
+                    period: link.period,
+                    block_hash: link.block_hash,
+                    pbft_gas_limit: 1_000_000,
+                    extra_data_required: false,
+                    pillar_block_required: false,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            result.status,
+            PbftProposedBlockAdmissionStatus::AcceptedAlreadyValid
+        );
+        assert_eq!(result.block_rlp, block_rlp);
+        drop(final_chain);
+        drop(service);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn proposed_block_admission_rejects_malformed_timestamp_and_signature_without_cache_mutation() {
+        let (path, storage) = temp_storage("rustaxa_pbft_proposed_admission_malformed");
+        let service = PbftService::restore(storage.clone(), config(10)).unwrap();
+        let final_chain = final_chain_with_pillar_voters(storage.clone(), &[]);
+        let dag = dag_service(storage);
+
+        for (period, invalid_timestamp, valid_signature) in [(2, true, true), (3, false, false)] {
+            let (block_rlp, link) = proposed_admission_block_rlp_with_shape(
+                period,
+                H256::zero(),
+                H256::zero(),
+                invalid_timestamp,
+                valid_signature,
+            );
+            service
+                .publish_proposed_block(
+                    link.period,
+                    link.block_hash,
+                    link.pivot_dag_block_hash,
+                    block_rlp,
+                )
+                .unwrap();
+            let result = service.admit_proposed_block(
+                &final_chain,
+                &dag,
+                PbftProposedBlockAdmissionRequest {
+                    period: link.period,
+                    block_hash: link.block_hash,
+                    pbft_gas_limit: 1_000_000,
+                    extra_data_required: false,
+                    pillar_block_required: false,
+                },
+            );
+            assert!(result.is_err());
+            assert!(
+                !service
+                    .proposed_block(link.period, link.block_hash)
+                    .expect("malformed proposal remains indexed but invalid")
+                    .is_valid
+            );
+        }
+
+        drop(final_chain);
+        drop(service);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn proposed_block_extra_data_accepts_non_utf8_implementation_bytes() {
+        let mut extra = RlpStream::new_list(6);
+        extra.append(&1_u16);
+        extra.append(&2_u16);
+        extra.append(&3_u16);
+        extra.append(&4_u16);
+        extra.append(&vec![0xff_u8, 0xfe]);
+        extra.append_empty_data();
+        let mut block = RlpStream::new_list(9);
+        block.append(&H256::zero());
+        block.append(&H256::zero());
+        block.append(&H256::zero());
+        block.append(&H256::zero());
+        block.append(&1_u64);
+        block.append(&0_u64);
+        block.begin_list(0);
+        block.append(&extra.out().to_vec());
+        block.append(&vec![0_u8; 65]);
+        let block = block.out().to_vec();
+
+        assert_eq!(
+            decode_pbft_proposed_block_extra_data(&Rlp::new(&block)).unwrap(),
+            (true, None)
+        );
+    }
+
+    #[test]
     fn restore_constructs_one_shared_network_service_with_direct_empty_egress() {
         let (path, storage) = temp_storage("rustaxa_consensus_pbft_network_service");
         let service = PbftService::restore(storage, config(10)).expect("service restores");
@@ -7785,6 +8210,61 @@ mod tests {
         assert_eq!(plan.status, Status::Accepted);
 
         drop(service);
+        let _ = fs::remove_dir_all(path);
+        Ok(())
+    }
+
+    #[test]
+    fn proposed_block_admission_composes_validation_and_marks_cache_valid() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_proposed_block_admission_valid");
+        let service = PbftService::restore(storage.clone(), config(1))?;
+        let dag = dag_service(storage.clone());
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage.clone(), &[], 2);
+        let genesis = H256::repeat_byte(1);
+        let dag_block_rlp = candidate_dag_block_rlp(genesis, 42);
+        let dag_block = dag_manager_block_from_rlp(&dag_block_rlp)?;
+        dag.lock_dag()?.state.add_block(dag_block.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), dag_block.hash, 1, 0, &dag_block_rlp)?;
+        let order_hash = pbft_candidate_dag_order_hash(
+            &dag.prepare_pbft_candidate_payload(1, dag_block.hash)?
+                .expect("payload should load")
+                .payload,
+        );
+        let (block_rlp, link) = proposed_admission_block_rlp(1, dag_block.hash, order_hash);
+        service.publish_proposed_block(
+            link.period,
+            link.block_hash,
+            link.pivot_dag_block_hash,
+            block_rlp.clone(),
+        )?;
+
+        let result = service.admit_proposed_block(
+            &final_chain,
+            &dag,
+            PbftProposedBlockAdmissionRequest {
+                period: link.period,
+                block_hash: link.block_hash,
+                pbft_gas_limit: u64::MAX,
+                extra_data_required: false,
+                pillar_block_required: false,
+            },
+        )?;
+
+        assert_eq!(
+            result.status,
+            PbftProposedBlockAdmissionStatus::AcceptedNewlyValidated
+        );
+        assert_eq!(result.block_rlp, block_rlp);
+        assert!(
+            service
+                .proposed_block(link.period, link.block_hash)
+                .expect("proposal remains indexed")
+                .is_valid
+        );
+
+        drop(final_chain);
+        drop(service);
+        drop(dag);
         let _ = fs::remove_dir_all(path);
         Ok(())
     }

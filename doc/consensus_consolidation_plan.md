@@ -612,6 +612,13 @@ export, bridge JSON builder, four caller-synthesized chain fields, and their com
 now-test-only Rust service projection wrappers are deleted too; only the private chain-state projection rule and the
 coherent finalization task remain.
 
+Proposed-block admission is now one native PBFT-root task. Rust resolves the proposal entry, decodes and verifies its
+canonical period/hash/pivot and immutable validation fields, composes all PBFT/FinalChain/reward/pillar/DAG checks, and
+marks the proposal valid only after terminal acceptance. C++ supplies only genesis gas/extra-data/pillar policy and
+materializes accepted RLP at the retained vote/executor boundary. The bridge fact/plan transcript, public mark-valid
+mutation, and C++ lookup/validation loop are deleted; remaining generic block validation is retained for sync and
+leader-selection callers that have not yet moved behind operation-shaped native tasks.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT

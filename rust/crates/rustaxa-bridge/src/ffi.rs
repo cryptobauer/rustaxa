@@ -1391,21 +1391,10 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// C++-originated facts for one Rust-owned proposed-block admission attempt.
-    struct PbftManagerCandidateAdmissionFact {
-        period: u64,
-        block_hash: [u8; 32],
-        lookup_performed: bool,
-        proposed_block_found: bool,
-        proposed_block_already_valid: bool,
-        validation_status: u8,
-    }
-
-    /// Proposed-block admission plan for C++ lookup/validation execution.
-    struct PbftManagerCandidateAdmissionPlan {
-        action: u8,
+    /// Terminal result of native proposed-block lookup and validation.
+    struct PbftProposedBlockAdmissionResult {
         status: u8,
-        mark_valid: bool,
+        block_rlp: Vec<u8>,
         error_code: String,
     }
 
@@ -4055,9 +4044,6 @@ pub mod rustaxa_ffi {
             dag_transaction_service: &BridgeDagTransactionService,
             fact: &PbftManagerBlockValidationFact,
         ) -> Result<PbftManagerBlockValidationPlan>;
-        pub fn plan_pbft_manager_candidate_admission(
-            fact: PbftManagerCandidateAdmissionFact,
-        ) -> PbftManagerCandidateAdmissionPlan;
         pub fn plan_pbft_manager_leader_candidates(
             candidates: Vec<PbftManagerLeaderCandidateInputFact>,
         ) -> PbftManagerLeaderCandidatePlan;
@@ -4078,11 +4064,16 @@ pub mod rustaxa_ffi {
             pivot_hash: &[u8; 32],
             block_rlp: Vec<u8>,
         ) -> Result<bool>;
-        pub fn pbft_service_proposed_blocks_mark_valid(
-            self: &BridgePbftService,
+        pub fn pbft_service_admit_proposed_block(
+            runtime: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            dag_transaction_service: &BridgeDagTransactionService,
             period: u64,
             block_hash: &[u8; 32],
-        ) -> Result<()>;
+            pbft_gas_limit: u64,
+            extra_data_required: bool,
+            pillar_block_required: bool,
+        ) -> Result<PbftProposedBlockAdmissionResult>;
         pub fn pbft_service_proposed_blocks_get(
             self: &BridgePbftService,
             period: u64,

@@ -26,8 +26,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerBroadcastPlan as FfiPbftManagerBroadcastPlan,
     PbftManagerBroadcastReport as FfiPbftManagerBroadcastReport,
     PbftManagerBroadcastReportResult as FfiPbftManagerBroadcastReportResult,
-    PbftManagerCandidateAdmissionFact as FfiPbftManagerCandidateAdmissionFact,
-    PbftManagerCandidateAdmissionPlan as FfiPbftManagerCandidateAdmissionPlan,
     PbftManagerEligibleWalletPeriodWaitFact as FfiPbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
@@ -53,6 +51,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerStateActionEffectReport as FfiPbftManagerStateActionEffectReport,
     PbftManagerStateActionFact as FfiPbftManagerStateActionFact,
     PbftManagerStateActionSessionStep as FfiPbftManagerStateActionSessionStep,
+    PbftProposedBlockAdmissionResult as FfiPbftProposedBlockAdmissionResult,
     PbftServiceConfig as FfiPbftServiceConfig, PbftSyncIngressStep as FfiPbftSyncIngressStep,
     PbftSyncQueueDrainReport as FfiPbftSyncQueueDrainReport,
     PbftSyncQueueDrainReportResult as FfiPbftSyncQueueDrainReportResult,
@@ -81,7 +80,6 @@ use rustaxa_consensus::pbft_finalize::{
 };
 use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
-    plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
     plan_pbft_manager_eligible_wallet_period_wait as plan_domain_pbft_manager_eligible_wallet_period_wait,
     plan_pbft_manager_finalization_wait as plan_domain_pbft_manager_finalization_wait,
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
@@ -93,18 +91,17 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
     PbftManagerBlockValidationPlan, PbftManagerBroadcastAction, PbftManagerBroadcastFact,
     PbftManagerBroadcastPlan, PbftManagerBroadcastReport, PbftManagerBroadcastReportResult,
-    PbftManagerBroadcastStatus, PbftManagerCandidateAdmissionFact,
-    PbftManagerCandidateAdmissionPlan, PbftManagerCandidateAdmissionValidationStatus,
-    PbftManagerEligibleWalletPeriodWaitFact, PbftManagerEligibleWalletPeriodWaitPlan,
-    PbftManagerFinalizationWaitFact, PbftManagerFinalizationWaitPlan,
-    PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateInputFact,
-    PbftManagerLeaderCandidatePlan, PbftManagerLeaderValidBlockCommand,
-    PbftManagerLifecycleTransitionRequest, PbftManagerProposalAction,
-    PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerProposalStatus,
-    PbftManagerProposalWalletFact, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
-    PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
-    PbftManagerRuntimeStateCode, PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact,
-    PbftManagerSleepPlan, PbftManagerStartupReplayPeriod, PbftManagerStartupReplayRangeFact,
+    PbftManagerBroadcastStatus, PbftManagerEligibleWalletPeriodWaitFact,
+    PbftManagerEligibleWalletPeriodWaitPlan, PbftManagerFinalizationWaitFact,
+    PbftManagerFinalizationWaitPlan, PbftManagerLeaderBlockValidationStatus,
+    PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
+    PbftManagerLeaderValidBlockCommand, PbftManagerLifecycleTransitionRequest,
+    PbftManagerProposalAction, PbftManagerProposalInitialFact, PbftManagerProposalSessionStep,
+    PbftManagerProposalStatus, PbftManagerProposalWalletFact, PbftManagerRuntimeAction,
+    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
+    PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerSleepPlan,
+    PbftManagerStartupReplayPeriod, PbftManagerStartupReplayRangeFact,
     PbftManagerStartupReplayRangePlan, PbftManagerStateActionEffect,
     PbftManagerStateActionEffectReport, PbftManagerStateActionEffectResultCode,
     PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
@@ -112,6 +109,7 @@ use rustaxa_consensus::pbft_manager::{
 };
 use rustaxa_consensus::pbft_service::{
     PbftBlockValidationCandidate, PbftFinalizationIntent, PbftManagerLifecycleTransitionOutcome,
+    PbftProposedBlockAdmissionRequest, PbftProposedBlockAdmissionResult,
 };
 use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
@@ -1489,11 +1487,30 @@ fn block_validation_candidate_from_ffi(
     }
 }
 
-/// Plans one Rust-owned proposed PBFT block admission attempt from live C++ facts.
-pub fn plan_pbft_manager_candidate_admission(
-    fact: FfiPbftManagerCandidateAdmissionFact,
-) -> FfiPbftManagerCandidateAdmissionPlan {
-    plan_domain_pbft_manager_candidate_admission(fact.into()).into()
+/// Admits one proposed block through native lookup, decoding, and validation.
+pub fn pbft_service_admit_proposed_block(
+    runtime: &BridgePbftService,
+    final_chain: &BridgeFinalChain,
+    dag_transaction_service: &BridgeDagTransactionService,
+    period: u64,
+    block_hash: &[u8; 32],
+    pbft_gas_limit: u64,
+    extra_data_required: bool,
+    pillar_block_required: bool,
+) -> anyhow::Result<FfiPbftProposedBlockAdmissionResult> {
+    Ok(dag_transaction_service
+        .admit_proposed_block(
+            runtime,
+            final_chain,
+            PbftProposedBlockAdmissionRequest {
+                period,
+                block_hash: (*block_hash).into(),
+                pbft_gas_limit,
+                extra_data_required,
+                pillar_block_required,
+            },
+        )?
+        .into())
 }
 
 /// Plans grouped PBFT proposal candidate validation, mark-valid commands, and leader selection.
@@ -1901,21 +1918,6 @@ impl From<FfiPbftManagerBroadcastReport> for PbftManagerBroadcastReport {
     }
 }
 
-impl From<FfiPbftManagerCandidateAdmissionFact> for PbftManagerCandidateAdmissionFact {
-    fn from(value: FfiPbftManagerCandidateAdmissionFact) -> Self {
-        Self {
-            period: value.period,
-            block_hash: value.block_hash.into(),
-            lookup_performed: value.lookup_performed,
-            proposed_block_found: value.proposed_block_found,
-            proposed_block_already_valid: value.proposed_block_already_valid,
-            validation_status: PbftManagerCandidateAdmissionValidationStatus::from_u8(
-                value.validation_status,
-            ),
-        }
-    }
-}
-
 impl From<FfiPbftManagerLeaderCandidateInputFact> for PbftManagerLeaderCandidateInputFact {
     fn from(value: FfiPbftManagerLeaderCandidateInputFact) -> Self {
         Self {
@@ -2070,6 +2072,16 @@ impl From<PbftManagerBlockValidationPlan> for FfiPbftManagerBlockValidationPlan 
     }
 }
 
+impl From<PbftProposedBlockAdmissionResult> for FfiPbftProposedBlockAdmissionResult {
+    fn from(value: PbftProposedBlockAdmissionResult) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            block_rlp: value.block_rlp,
+            error_code: value.error_code.to_string(),
+        }
+    }
+}
+
 impl From<PbftManagerProposalSessionStep> for FfiPbftManagerProposalSessionStep {
     fn from(value: PbftManagerProposalSessionStep) -> Self {
         Self {
@@ -2113,17 +2125,6 @@ impl From<PbftManagerBroadcastReportResult> for FfiPbftManagerBroadcastReportRes
             broadcast_reward_votes_counter: value.broadcast_reward_votes_counter,
             rebroadcast_reward_votes_counter: value.rebroadcast_reward_votes_counter,
             error_code: value.error_code,
-        }
-    }
-}
-
-impl From<PbftManagerCandidateAdmissionPlan> for FfiPbftManagerCandidateAdmissionPlan {
-    fn from(value: PbftManagerCandidateAdmissionPlan) -> Self {
-        Self {
-            action: value.action.as_u8(),
-            status: value.status.as_u8(),
-            mark_valid: value.mark_valid,
-            error_code: value.error_code.to_string(),
         }
     }
 }
@@ -2869,22 +2870,6 @@ mod tests {
         assert_eq!(candidate.reward_vote_hashes, vec![[0x14; 32].into()]);
         assert_eq!(candidate.pillar_block_hash, Some([0x15; 32].into()));
 
-        let candidate_fact: PbftManagerCandidateAdmissionFact =
-            FfiPbftManagerCandidateAdmissionFact {
-                period: 13,
-                block_hash: [0x33; 32],
-                lookup_performed: true,
-                proposed_block_found: true,
-                proposed_block_already_valid: false,
-                validation_status: 1,
-            }
-            .into();
-        assert_eq!(candidate_fact.period, 13);
-        assert_eq!(
-            candidate_fact.validation_status,
-            PbftManagerCandidateAdmissionValidationStatus::Valid
-        );
-
         let leader_fact: PbftManagerLeaderCandidateInputFact =
             leader_candidate_input(0x44, 0x55, 1).into();
         assert_eq!(leader_fact.vote_hash, ethereum_types::H256([0x44; 32]));
@@ -2906,20 +2891,6 @@ mod tests {
             .into();
         assert_eq!((block_plan.action, block_plan.status), (3, 3));
         assert_eq!(block_plan.error_code, "BLOCK_SENTINEL");
-
-        let candidate_plan: FfiPbftManagerCandidateAdmissionPlan =
-            PbftManagerCandidateAdmissionPlan {
-                action:
-                    rustaxa_consensus::pbft_manager::PbftManagerCandidateAdmissionAction::Accept,
-                status:
-                    rustaxa_consensus::pbft_manager::PbftManagerCandidateAdmissionStatus::AcceptedNewlyValidated,
-                mark_valid: true,
-                error_code: "CANDIDATE_SENTINEL",
-            }
-            .into();
-        assert_eq!((candidate_plan.action, candidate_plan.status), (2, 3));
-        assert!(candidate_plan.mark_valid);
-        assert_eq!(candidate_plan.error_code, "CANDIDATE_SENTINEL");
 
         let leader_plan: FfiPbftManagerLeaderCandidatePlan = PbftManagerLeaderCandidatePlan {
             status: rustaxa_consensus::pbft_manager::PbftManagerLeaderSelectionStatus::Selected,

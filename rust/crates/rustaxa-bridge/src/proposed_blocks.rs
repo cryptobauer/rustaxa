@@ -26,21 +26,6 @@ impl BridgePbftService {
         )
     }
 
-    /// Marks an existing proposed PBFT block as valid after external validation.
-    ///
-    /// The period and hash identify an entry in the service-owned index. Missing
-    /// entries return an error without mutation. This method performs no block
-    /// validation itself and must be called only after the C++ validation
-    /// executor succeeds.
-    pub fn pbft_service_proposed_blocks_mark_valid(
-        &self,
-        period: u64,
-        block_hash: &[u8; 32],
-    ) -> Result<(), anyhow::Error> {
-        self.0
-            .mark_proposed_block_valid(period, H256::from(*block_hash))
-    }
-
     /// Loads one proposed PBFT block and its cached validation flag.
     ///
     /// The returned carrier owns canonical block bytes for compatibility
