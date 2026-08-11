@@ -834,6 +834,7 @@ pub mod rustaxa_ffi {
         block_in_chain: bool,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        reward_vote_hashes: Vec<PbftFinalizationHash>,
         extra_data_required: bool,
         extra_data_present: bool,
         extra_data_pillar_block_hash_present: bool,
@@ -853,13 +854,8 @@ pub mod rustaxa_ffi {
         complete: bool,
         can_continue: bool,
         error_code: String,
-    }
-
-    /// Cursor-checked report for final-chain, reward, cert, or pillar validation.
-    struct PbftSyncAdmissionStatusReport {
-        cursor: u32,
-        check: u8,
-        status: u8,
+        /// Weighted reward-vote payloads returned only by the composed reward task.
+        reward_vote_rlps: Vec<PbftCertVoteRlp>,
     }
 
     /// Rust-owned outer drain step for C++ `pushSyncedPbftBlocksIntoChain`.
@@ -3888,13 +3884,12 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_begin_pbft_sync_admission(
             runtime: &BridgePbftService,
             fact: PbftSyncAdmissionInitialFact,
-        );
-        pub fn pbft_manager_runtime_pbft_sync_admission_next(
-            runtime: &BridgePbftService,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
             runtime: &BridgePbftService,
-            report: PbftSyncAdmissionStatusReport,
+            cursor: u32,
+            check_code: u8,
+            status: u8,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
             runtime: &BridgePbftService,
@@ -4353,9 +4348,6 @@ pub mod rustaxa_ffi {
             block_period: u64,
             requested_vote_hashes: Vec<PbftFinalizationHash>,
         ) -> Result<PbftRewardVotePayloadSelection>;
-        pub fn pbft_service_verified_votes_reward_vote_cursor(
-            self: &BridgePbftService,
-        ) -> Result<RewardVoteCursorSnapshot>;
         pub fn pbft_service_verified_votes_state_snapshot(
             self: &BridgePbftService,
         ) -> Result<VerifiedVotesStateSnapshot>;

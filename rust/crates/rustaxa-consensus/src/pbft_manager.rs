@@ -477,6 +477,23 @@ pub(crate) struct PbftSyncAdmissionPillarRequestIdentity {
     pub required_votes_period: u64,
 }
 
+/// Exact identity of one pending native sync reward-vote selection request.
+///
+/// Generation and cursor prevent an unlocked completion from entering a
+/// replacement or advanced session. Block period and ordered vote hashes bind
+/// selection to the immutable queued-block facts captured at admission start.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PbftSyncAdmissionRewardRequestIdentity {
+    /// Manager-owned admission generation captured with the pending request.
+    pub generation: u64,
+    /// Exact session cursor requesting reward-vote selection.
+    pub cursor: u32,
+    /// PBFT block period used by native reward selection.
+    pub block_period: u64,
+    /// Ordered reward-vote hashes declared by the queued PBFT block.
+    pub reward_vote_hashes: Vec<H256>,
+}
+
 /// Exact identity of one pending native sync transaction-admission request.
 ///
 /// The manager generation prevents an unlocked completion from entering a
@@ -1917,6 +1934,136 @@ impl PbftManagerService {
         );
         apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
         clear_terminal_pbft_sync_admission(&mut runtime, &step);
+        Some(step)
+    }
+
+    /// Captures the exact pending sync reward-vote request under the manager lock.
+    ///
+    /// The returned owned identity may cross the verified-vote lock without
+    /// retaining the manager guard. `None` means no reward check is pending.
+    pub(crate) fn pbft_sync_admission_reward_request(
+        &self,
+    ) -> Option<PbftSyncAdmissionRewardRequestIdentity> {
+        let manager = self.lock();
+        let (cursor, block_period, reward_vote_hashes) =
+            crate::pbft_sync::pbft_sync_admission_reward_request(
+                manager.pbft_sync_admission_session.as_ref()?,
+            )?;
+        Some(PbftSyncAdmissionRewardRequestIdentity {
+            generation: manager.pbft_sync_admission_generation,
+            cursor,
+            block_period,
+            reward_vote_hashes,
+        })
+    }
+
+    /// Reports one predecessor status and captures a resulting reward request atomically.
+    ///
+    /// The status transition, queue effects, terminal cleanup, and generation-
+    /// bound reward identity sampling share one manager guard. Therefore no
+    /// replacement session can enter between advancing to `CheckRewardVotes`
+    /// and capturing the immutable period/hash request. The optional identity
+    /// is present only when the returned active step requests reward selection.
+    pub(crate) fn report_pbft_sync_admission_status_and_capture_reward_request(
+        &self,
+        cursor: u32,
+        check: crate::pbft_sync::PbftSyncProcessRuntimeNextCheck,
+        final_chain_status: crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus,
+        fact_status: crate::pbft_sync::PbftSyncFactStatus,
+    ) -> Option<(
+        crate::pbft_sync::PbftSyncAdmissionSessionStep,
+        Option<PbftSyncAdmissionRewardRequestIdentity>,
+    )> {
+        let mut runtime = self.lock();
+        let mut step = crate::pbft_sync::report_pbft_sync_admission_status(
+            runtime.pbft_sync_admission_session.as_mut()?,
+            cursor,
+            check,
+            final_chain_status,
+            fact_status,
+        );
+        apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
+        let reward_identity = crate::pbft_sync::pbft_sync_admission_reward_request(
+            runtime.pbft_sync_admission_session.as_ref()?,
+        )
+        .map(|(cursor, block_period, reward_vote_hashes)| {
+            PbftSyncAdmissionRewardRequestIdentity {
+                generation: runtime.pbft_sync_admission_generation,
+                cursor,
+                block_period,
+                reward_vote_hashes,
+            }
+        });
+        clear_terminal_pbft_sync_admission(&mut runtime, &step);
+        Some((step, reward_identity))
+    }
+
+    /// Reports reward selection only to the exact session that requested it.
+    ///
+    /// Generation, cursor, period, and ordered hashes are revalidated before
+    /// mutation. Stale completion returns `None` and leaves any replacement
+    /// session and sync queue untouched.
+    pub(crate) fn report_pbft_sync_admission_reward_votes_exact(
+        &self,
+        identity: PbftSyncAdmissionRewardRequestIdentity,
+        status: crate::pbft_sync::PbftSyncFactStatus,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        let mut runtime = self.lock();
+        if runtime.pbft_sync_admission_generation != identity.generation {
+            return None;
+        }
+        let current = crate::pbft_sync::pbft_sync_admission_reward_request(
+            runtime.pbft_sync_admission_session.as_ref()?,
+        )?;
+        if current
+            != (
+                identity.cursor,
+                identity.block_period,
+                identity.reward_vote_hashes,
+            )
+        {
+            return None;
+        }
+        let mut step = crate::pbft_sync::report_pbft_sync_admission_status(
+            runtime.pbft_sync_admission_session.as_mut()?,
+            identity.cursor,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckRewardVotes,
+            crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::NotChecked,
+            status,
+        );
+        apply_native_pbft_sync_queue_effects(&mut runtime, &mut step);
+        clear_terminal_pbft_sync_admission(&mut runtime, &step);
+        Some(step)
+    }
+
+    /// Aborts only the exact sync reward-vote request that failed internally.
+    ///
+    /// A stale failure returns `None` without consuming a replacement session;
+    /// an exact failure consumes the active session with the normal abort code.
+    pub(crate) fn abort_pbft_sync_admission_reward_votes_exact(
+        &self,
+        identity: PbftSyncAdmissionRewardRequestIdentity,
+    ) -> Option<crate::pbft_sync::PbftSyncAdmissionSessionStep> {
+        let mut runtime = self.lock();
+        if runtime.pbft_sync_admission_generation != identity.generation {
+            return None;
+        }
+        let current = crate::pbft_sync::pbft_sync_admission_reward_request(
+            runtime.pbft_sync_admission_session.as_ref()?,
+        )?;
+        if current
+            != (
+                identity.cursor,
+                identity.block_period,
+                identity.reward_vote_hashes,
+            )
+        {
+            return None;
+        }
+        let step = crate::pbft_sync::abort_pbft_sync_admission_session(
+            runtime.pbft_sync_admission_session.as_mut()?,
+        );
+        runtime.pbft_sync_admission_session = None;
         Some(step)
     }
 

@@ -1269,6 +1269,10 @@ The current Rust consensus footprint is broad but still incomplete:
    it de-duplicates DAG references, removes hashes already supplied by period data, filters the resulting ordered lookup
    set through the native transaction owner, reads only latest sender nonces from the narrow FinalChain boundary, verifies
    canonical queue identities, and exact-reports warning and queue effects without a C++ manager relay. The PBFT sync
+   reward stage is also composed into the native admission transition: ordered reward hashes are immutable session facts,
+   verified-vote selection is generation/cursor/period/hash-bound, and only accepted weighted bytes cross back for the
+   temporary FinalChain-facing previous-certificate payload. C++ no longer drives compact VoteManager reward selection
+   or reports its result. The PBFT sync
    runtime now has a staged Rust planner for the full `processPeriodData`
    validation order: Rust returns the next required live C++ check for FinalChain, reward votes, cert votes,
    transactions, pillar data, or pillar votes until all required facts are present, then returns accept/drop/wait/report

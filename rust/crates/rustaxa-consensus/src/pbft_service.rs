@@ -2597,6 +2597,132 @@ impl PbftService {
         )
     }
 
+    /// Reports one external status and performs any resulting reward selection.
+    ///
+    /// The predecessor report and reward-request capture share one manager
+    /// critical section. If the transition requests reward votes, verified-vote
+    /// selection runs after releasing the manager lock and exact-reports using
+    /// the captured generation, cursor, period, and ordered hashes. Accepted
+    /// records are returned in request order. Deterministic rejection exposes
+    /// no records; infrastructure failure exact-aborts; stale success or
+    /// failure returns `None` without consuming a replacement session.
+    pub fn report_pbft_sync_admission_status_with_reward_votes(
+        &self,
+        cursor: u32,
+        check: crate::pbft_sync::PbftSyncProcessRuntimeNextCheck,
+        final_chain_status: crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus,
+        fact_status: crate::pbft_sync::PbftSyncFactStatus,
+    ) -> Option<(
+        crate::pbft_sync::PbftSyncAdmissionSessionStep,
+        Vec<crate::pbft_vote_payload::PbftVotePayloadRecord>,
+    )> {
+        self.report_pbft_sync_admission_status_with_reward_votes_with(
+            cursor,
+            check,
+            final_chain_status,
+            fact_status,
+            || {},
+        )
+    }
+
+    fn report_pbft_sync_admission_status_with_reward_votes_with(
+        &self,
+        cursor: u32,
+        check: crate::pbft_sync::PbftSyncProcessRuntimeNextCheck,
+        final_chain_status: crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus,
+        fact_status: crate::pbft_sync::PbftSyncFactStatus,
+        after_capture: impl FnOnce(),
+    ) -> Option<(
+        crate::pbft_sync::PbftSyncAdmissionSessionStep,
+        Vec<crate::pbft_vote_payload::PbftVotePayloadRecord>,
+    )> {
+        let (step, identity) = self
+            .manager
+            .report_pbft_sync_admission_status_and_capture_reward_request(
+                cursor,
+                check,
+                final_chain_status,
+                fact_status,
+            )?;
+        let Some(identity) = identity else {
+            return Some((step, Vec::new()));
+        };
+        after_capture();
+        self.select_and_report_pbft_sync_reward_votes(identity)
+    }
+
+    /// Selects reward-vote payloads for the exact active PBFT sync request.
+    ///
+    /// Generation, cursor, block period, and ordered reward hashes are captured
+    /// under the manager lock entirely from immutable session-start facts.
+    /// Native verified-vote selection runs after releasing that lock. Accepted
+    /// records retain request order and are returned beside the advanced step;
+    /// deterministic rejection returns an empty record list and reports the
+    /// invalid fact. Infrastructure failure exact-aborts the captured session.
+    /// Stale success or failure returns `None` without mutating or exposing
+    /// records to a replacement session.
+    pub fn validate_pbft_sync_admission_reward_votes(
+        &self,
+    ) -> Option<(
+        crate::pbft_sync::PbftSyncAdmissionSessionStep,
+        Vec<crate::pbft_vote_payload::PbftVotePayloadRecord>,
+    )> {
+        self.validate_pbft_sync_admission_reward_votes_with(|| {})
+    }
+
+    fn validate_pbft_sync_admission_reward_votes_with(
+        &self,
+        after_capture: impl FnOnce(),
+    ) -> Option<(
+        crate::pbft_sync::PbftSyncAdmissionSessionStep,
+        Vec<crate::pbft_vote_payload::PbftVotePayloadRecord>,
+    )> {
+        if !self.is_ready() {
+            return None;
+        }
+        let identity = self.manager.pbft_sync_admission_reward_request()?;
+        after_capture();
+        self.select_and_report_pbft_sync_reward_votes(identity)
+    }
+
+    fn select_and_report_pbft_sync_reward_votes(
+        &self,
+        identity: crate::pbft_manager::PbftSyncAdmissionRewardRequestIdentity,
+    ) -> Option<(
+        crate::pbft_sync::PbftSyncAdmissionSessionStep,
+        Vec<crate::pbft_vote_payload::PbftVotePayloadRecord>,
+    )> {
+        let selection = self.select_reward_vote_payloads(
+            identity.block_period,
+            identity.reward_vote_hashes.clone(),
+        );
+        match selection {
+            Ok(selection) => {
+                let accepted = selection.accepted;
+                let step = self.manager.report_pbft_sync_admission_reward_votes_exact(
+                    identity,
+                    if accepted {
+                        crate::pbft_sync::PbftSyncFactStatus::Valid
+                    } else {
+                        crate::pbft_sync::PbftSyncFactStatus::Invalid
+                    },
+                )?;
+                Some((
+                    step,
+                    if accepted {
+                        selection.selected_records
+                    } else {
+                        Vec::new()
+                    },
+                ))
+            }
+            Err(_) => self
+                .manager
+                .abort_pbft_sync_admission_reward_votes_exact(identity)
+                .map(|step| (step, Vec::new())),
+        }
+    }
+
     /// Validates and applies the exact pillar-vote bundle requested by PBFT sync.
     ///
     /// The pending generation, cursor, and required PBFT block period are
@@ -4535,6 +4661,7 @@ mod tests {
             chain_last_hash: H256::repeat_byte(0xa1),
             chain_last_period: block_period.saturating_sub(1),
             block_in_chain: false,
+            reward_vote_hashes: Vec::new(),
             dag_transaction_hashes: Vec::new(),
             period_data_transaction_hashes: Vec::new(),
             extra_data_required: true,
@@ -4604,6 +4731,7 @@ mod tests {
             chain_last_hash: H256::repeat_byte(0xa1),
             chain_last_period: 0,
             block_in_chain: false,
+            reward_vote_hashes: Vec::new(),
             dag_transaction_hashes,
             period_data_transaction_hashes,
             extra_data_required: false,
@@ -4665,6 +4793,31 @@ mod tests {
                 other => panic!("unexpected sync check {other:?}"),
             };
         }
+    }
+
+    fn advance_sync_admission_to_reward_votes(
+        service: &PbftService,
+        reward_vote_hashes: Vec<H256>,
+    ) -> crate::pbft_sync::PbftSyncAdmissionSessionStep {
+        let mut fact = sync_transaction_admission_fact(Vec::new(), Vec::new());
+        fact.block_period = 2;
+        fact.chain_last_period = 1;
+        fact.reward_vote_hashes = reward_vote_hashes;
+        assert!(service.begin_pbft_sync_admission(fact));
+        let final_chain = service.pbft_sync_admission_next().expect("sync admission");
+        let reward = service
+            .report_pbft_sync_admission_status(
+                final_chain.cursor,
+                final_chain.next_check,
+                crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::Valid,
+                crate::pbft_sync::PbftSyncFactStatus::Valid,
+            )
+            .expect("final-chain report");
+        assert_eq!(
+            reward.next_check,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
+        );
+        reward
     }
 
     fn dynamic_lambda_fact(finalized_period: u64) -> PbftDynamicLambdaFact {
@@ -7091,6 +7244,7 @@ mod tests {
             chain_last_hash: H256::repeat_byte(9),
             chain_last_period: 9,
             block_in_chain: false,
+            reward_vote_hashes: Vec::new(),
             dag_transaction_hashes: vec![H256::repeat_byte(1)],
             period_data_transaction_hashes: Vec::new(),
             extra_data_required: false,
@@ -7165,6 +7319,91 @@ mod tests {
         assert!(!mismatch.can_continue);
         assert!(service.pbft_sync_admission_next().is_none());
 
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sync_reward_admission_derives_hashes_and_reports_native_rejection() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_reward_rejected");
+        let service = PbftService::restore(storage, config(0)).unwrap();
+        service.complete_bootstrap();
+        let requested = vec![H256::repeat_byte(0x61), H256::repeat_byte(0x62)];
+        let reward_step = advance_sync_admission_to_reward_votes(&service, requested.clone());
+        let identity = service
+            .manager
+            .pbft_sync_admission_reward_request()
+            .expect("reward request identity");
+        assert_eq!(identity.cursor, reward_step.cursor);
+        assert_eq!(identity.block_period, 2);
+        assert_eq!(identity.reward_vote_hashes, requested);
+
+        let (step, records) = service
+            .validate_pbft_sync_admission_reward_votes()
+            .expect("exact reward request remains pending");
+        assert!(records.is_empty());
+        assert!(step.complete);
+        assert!(!step.plan.accept_period_data);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn atomic_predecessor_report_reward_capture_rejects_stale_completion() {
+        let (path, storage) = temp_storage("rustaxa_consensus_sync_reward_stale");
+        let service = PbftService::restore(storage, config(0)).unwrap();
+        service.complete_bootstrap();
+        let mut first = sync_transaction_admission_fact(Vec::new(), Vec::new());
+        first.block_period = 2;
+        first.chain_last_period = 1;
+        first.reward_vote_hashes = vec![H256::repeat_byte(0x71)];
+        assert!(service.begin_pbft_sync_admission(first));
+        let first_final_chain = service.pbft_sync_admission_next().unwrap();
+
+        let mut replacement = sync_transaction_admission_fact(Vec::new(), Vec::new());
+        replacement.block_period = 2;
+        replacement.chain_last_period = 1;
+        replacement.reward_vote_hashes = vec![H256::repeat_byte(0x72)];
+
+        assert!(
+            service
+                .report_pbft_sync_admission_status_with_reward_votes_with(
+                    first_final_chain.cursor,
+                    first_final_chain.next_check,
+                    crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::Valid,
+                    crate::pbft_sync::PbftSyncFactStatus::Valid,
+                    || {
+                        assert!(service.begin_pbft_sync_admission(replacement));
+                        let replacement_final_chain = service.pbft_sync_admission_next().unwrap();
+                        let replacement_reward = service
+                            .report_pbft_sync_admission_status(
+                                replacement_final_chain.cursor,
+                                replacement_final_chain.next_check,
+                                crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::Valid,
+                                crate::pbft_sync::PbftSyncFactStatus::Valid,
+                            )
+                            .unwrap();
+                        assert_eq!(
+                            replacement_reward.next_check,
+                            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
+                        );
+                    },
+                )
+                .is_none()
+        );
+        let replacement_step = service.pbft_sync_admission_next().unwrap();
+        assert_eq!(
+            replacement_step.next_check,
+            crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
+        );
+        let replacement_identity = service
+            .manager
+            .pbft_sync_admission_reward_request()
+            .unwrap();
+        assert_eq!(
+            replacement_identity.reward_vote_hashes,
+            vec![H256::repeat_byte(0x72)]
+        );
         drop(service);
         let _ = fs::remove_dir_all(path);
     }

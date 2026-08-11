@@ -10,7 +10,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftCertVoteRlp as FfiPbftCertVoteRlp,
     PbftSyncAdmissionInitialFact as FfiPbftSyncAdmissionInitialFact,
     PbftSyncAdmissionSessionStep as FfiPbftSyncAdmissionSessionStep,
-    PbftSyncAdmissionStatusReport as FfiPbftSyncAdmissionStatusReport,
     PbftSyncCertBundleCommand as FfiPbftSyncCertBundleCommand,
     PbftSyncCertBundleStep as FfiPbftSyncCertBundleStep,
     PbftSyncProcessPeriodDataRuntimePlan as FfiPbftSyncProcessPeriodDataRuntimePlan,
@@ -31,18 +30,12 @@ use rustaxa_consensus::pbft_sync::{
     PbftSyncRuntimeFinalChainHashStatus, PbftSyncTransactionWarning,
 };
 
-/// Starts a manager-owned synced-period admission cursor.
+/// Starts a manager-owned synced-period admission cursor and returns its first step.
 pub fn pbft_manager_runtime_begin_pbft_sync_admission(
     runtime: &BridgePbftService,
     fact: FfiPbftSyncAdmissionInitialFact,
-) {
-    runtime.0.begin_pbft_sync_admission(fact.into());
-}
-
-/// Returns the current admission check without advancing the cursor.
-pub fn pbft_manager_runtime_pbft_sync_admission_next(
-    runtime: &BridgePbftService,
 ) -> FfiPbftSyncAdmissionSessionStep {
+    runtime.0.begin_pbft_sync_admission(fact.into());
     runtime
         .0
         .pbft_sync_admission_next()
@@ -50,22 +43,38 @@ pub fn pbft_manager_runtime_pbft_sync_admission_next(
         .unwrap_or_else(sync_admission_not_started_step)
 }
 
-/// Reports a final-chain, reward, cert, or pillar validation result.
+/// Reports an external final-chain, certificate, or pillar validation result.
+///
+/// When the resulting cursor requests reward votes, the native service derives
+/// and exact-reports that stage immediately from immutable session hashes. Its
+/// accepted weighted payloads travel on the returned step; stale or missing
+/// sessions return the stable not-started contract result.
 pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
     runtime: &BridgePbftService,
-    report: FfiPbftSyncAdmissionStatusReport,
+    cursor: u32,
+    check_code: u8,
+    status: u8,
 ) -> FfiPbftSyncAdmissionSessionStep {
-    let check = PbftSyncProcessRuntimeNextCheck::from_u8(report.check);
-    runtime
+    let check = PbftSyncProcessRuntimeNextCheck::from_u8(check_code);
+    let Some((step, records)) = runtime
         .0
-        .report_pbft_sync_admission_status(
-            report.cursor,
+        .report_pbft_sync_admission_status_with_reward_votes(
+            cursor,
             check,
-            PbftSyncRuntimeFinalChainHashStatus::from_u8(report.status),
-            PbftSyncFactStatus::from_u8(report.status),
+            PbftSyncRuntimeFinalChainHashStatus::from_u8(status),
+            PbftSyncFactStatus::from_u8(status),
         )
-        .map(Into::into)
-        .unwrap_or_else(sync_admission_not_started_step)
+    else {
+        return sync_admission_not_started_step();
+    };
+    let mut step = FfiPbftSyncAdmissionSessionStep::from(step);
+    step.reward_vote_rlps = records
+        .into_iter()
+        .map(|record| FfiPbftCertVoteRlp {
+            vote_rlp: record.vote_rlp,
+        })
+        .collect();
+    step
 }
 
 /// Executes and reports the exact native sync pillar-vote admission task.
@@ -233,6 +242,11 @@ impl From<FfiPbftSyncAdmissionInitialFact> for PbftSyncAdmissionInitialFact {
                 .into_iter()
                 .map(|hash| H256::from(hash.hash))
                 .collect(),
+            reward_vote_hashes: value
+                .reward_vote_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
             extra_data_required: value.extra_data_required,
             extra_data_present: value.extra_data_present,
             extra_data_pillar_block_hash_present: value.extra_data_pillar_block_hash_present,
@@ -255,6 +269,7 @@ impl From<PbftSyncAdmissionSessionStep> for FfiPbftSyncAdmissionSessionStep {
             complete: value.complete,
             can_continue: value.can_continue,
             error_code: value.error_code,
+            reward_vote_rlps: Vec::new(),
         }
     }
 }
@@ -281,6 +296,7 @@ fn sync_admission_not_started_step() -> FfiPbftSyncAdmissionSessionStep {
         complete: true,
         can_continue: false,
         error_code: "PBFT_SYNC_ADMISSION_SESSION_NOT_STARTED".to_string(),
+        reward_vote_rlps: Vec::new(),
     }
 }
 
@@ -361,6 +377,7 @@ mod tests {
                 FfiPbftSyncTransactionHash { hash: [4; 32] },
             ],
             period_data_transaction_hashes: vec![FfiPbftSyncTransactionHash { hash: [5; 32] }],
+            reward_vote_hashes: Vec::new(),
             extra_data_required: true,
             extra_data_present: false,
             extra_data_pillar_block_hash_present: true,
@@ -380,6 +397,7 @@ mod tests {
             [H256::from([3; 32]), H256::from([4; 32])]
         );
         assert_eq!(domain.period_data_transaction_hashes, [H256::from([5; 32])]);
+        assert!(domain.reward_vote_hashes.is_empty());
         assert!(domain.extra_data_required);
         assert!(!domain.extra_data_present);
         assert!(domain.extra_data_pillar_block_hash_present);

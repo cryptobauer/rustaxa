@@ -48,7 +48,6 @@ use rustaxa_consensus::{
     PbftVoteAdmissionTransactionResult,
     PbftVotePersistenceResult as DomainPbftVotePersistenceResult, PbftVotePersistenceStatus,
     PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
-    RewardVoteCursorSnapshot as DomainRewardVoteCursorSnapshot,
     RewardVotePayloadSnapshot as DomainRewardVotePayloadSnapshot, RewardVoteResetApplyRequest,
     SlashingSubmitterIdentity as DomainSlashingSubmitterIdentity,
     SlashingTransactionEffect as DomainSlashingTransactionEffect,
@@ -677,15 +676,6 @@ fn leader_selection_result_to_ffi(
 }
 
 impl BridgePbftService {
-    /// Converts the native reward cursor into the stable CXX snapshot carrier.
-    pub fn pbft_service_verified_votes_reward_vote_cursor(
-        &self,
-    ) -> Result<FfiRewardVoteCursorSnapshot, anyhow::Error> {
-        self.0
-            .reward_vote_cursor_snapshot()
-            .map(reward_vote_cursor_snapshot_to_ffi)
-    }
-
     /// Converts requested CXX hashes, delegates ordered selection, and maps its typed result.
     pub fn pbft_service_verified_votes_select_reward_vote_payloads(
         &self,
@@ -754,23 +744,17 @@ fn admission_validation_request_to_domain(
     }
 }
 
-fn reward_vote_cursor_snapshot_to_ffi(
-    value: DomainRewardVoteCursorSnapshot,
-) -> FfiRewardVoteCursorSnapshot {
-    FfiRewardVoteCursorSnapshot {
-        found: value.found,
-        period: value.period,
-        round: value.round,
-        step: value.step,
-        block_hash: value.block_hash.0,
-    }
-}
-
 fn reward_vote_payload_snapshot_to_ffi(
     value: DomainRewardVotePayloadSnapshot,
 ) -> FfiRewardVotePayloadSnapshot {
     FfiRewardVotePayloadSnapshot {
-        cursor: reward_vote_cursor_snapshot_to_ffi(value.cursor),
+        cursor: FfiRewardVoteCursorSnapshot {
+            found: value.cursor.found,
+            period: value.cursor.period,
+            round: value.cursor.round,
+            step: value.cursor.step,
+            block_hash: value.cursor.block_hash.0,
+        },
         records: value
             .records
             .into_iter()

@@ -578,6 +578,12 @@ carrier are deleted. Operational failures also terminate only their captured gen
 abort path from consuming a replacement session. C++ retains only the canonical queue identities needed at the
 temporary period-data boundary.
 
+PBFT sync reward-vote admission is now consumed by that same root transition. The manager session owns the ordered
+reward hashes and binds selection to its generation, cursor, and block period; the verified-vote lookup runs outside the
+manager lock and only an exact completion advances the session. The compact VoteManager selection overloads, reward
+cursor query, generic report carrier, and separate next-step bridge operation are deleted. C++ receives weighted bytes
+only when the native task accepts them, for the retained FinalChain-facing previous-certificate payload.
+
 ### 6. Contract PBFT and vote shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT

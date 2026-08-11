@@ -955,22 +955,10 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
 
 VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
     const std::shared_ptr<PbftBlock>& pbft_block, bool copy_votes) {
-  return checkRewardVotesDetailed(pbft_block->getPeriod(), pbft_block->getBlockHash(), pbft_block->getPrevBlockHash(),
-                                  pbft_block->getRewardVotes(), copy_votes);
-}
-
-std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkRewardVotes(
-    PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
-    const std::vector<vote_hash_t>& reward_vote_hashes, bool copy_votes) {
-  auto result = checkRewardVotesDetailed(block_period, block_hash, prev_block_hash, reward_vote_hashes, copy_votes);
-  return {result.accepted, std::move(result.votes)};
-}
-
-VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
-    PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
-    const std::vector<vote_hash_t>& reward_vote_hashes, bool copy_votes) {
-  const auto cursor = pbft_service_->service().pbft_service_verified_votes_reward_vote_cursor();
-
+  const auto block_period = pbft_block->getPeriod();
+  const auto block_hash = pbft_block->getBlockHash();
+  const auto prev_block_hash = pbft_block->getPrevBlockHash();
+  const auto& reward_vote_hashes = pbft_block->getRewardVotes();
   rustaxa::PbftRewardVotePayloadSelection selection{};
   std::vector<std::shared_ptr<PbftVote>> selected_votes;
   try {
@@ -991,9 +979,7 @@ VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
     }
   } catch (const std::exception& e) {
     LOG(log_er_) << "Rust reward-vote payload selection failed for block " << block_hash << ", period: " << block_period
-                 << ", reward cursor found: " << cursor.found << ", reward cursor period: " << cursor.period
-                 << ", reward cursor round: " << cursor.round
-                 << ", reward cursor block hash: " << fromBridgeHash(cursor.block_hash) << ", error: " << e.what();
+                 << ", error: " << e.what();
     assert(false);
     RewardVoteValidationResult result;
     result.error_code = e.what();
@@ -1013,10 +999,8 @@ VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
 
   if (!plan.accepted) {
     LOG(log_er_) << "No (or not enough) reward votes found for block " << block_hash << ", period: " << block_period
-                 << ", prev. block hash: " << prev_block_hash << ", reward cursor found: " << cursor.found
-                 << ", reward cursor period: " << cursor.period << ", reward cursor round: " << cursor.round
-                 << ", selected_round: " << plan.selected_round
-                 << ", reward cursor block hash: " << fromBridgeHash(cursor.block_hash)
+                 << ", prev. block hash: " << prev_block_hash << ", selected_round: " << plan.selected_round
+                 << ", selected block hash: " << fromBridgeHash(plan.selected_block_hash)
                  << ", status: " << static_cast<uint32_t>(plan.status)
                  << ", error: " << static_cast<std::string>(plan.error_code);
     return result;
@@ -1032,16 +1016,6 @@ bool VoteManager::validateRewardVotesForBlock(const std::shared_ptr<PbftBlock>& 
 std::optional<std::vector<std::shared_ptr<PbftVote>>> VoteManager::collectRewardVotesForBlock(
     const std::shared_ptr<PbftBlock>& pbft_block) {
   auto result = checkRewardVotesDetailed(pbft_block, true);
-  if (!result.accepted) {
-    return {};
-  }
-  return std::move(result.votes);
-}
-
-std::optional<std::vector<std::shared_ptr<PbftVote>>> VoteManager::collectRewardVotesForBlock(
-    PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
-    const std::vector<vote_hash_t>& reward_vote_hashes) {
-  auto result = checkRewardVotesDetailed(block_period, block_hash, prev_block_hash, reward_vote_hashes, true);
   if (!result.accepted) {
     return {};
   }

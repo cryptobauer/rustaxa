@@ -3798,6 +3798,15 @@ compatibility test, transaction report export/carrier, and query-plan carrier ar
 shim lines to 15,118, and carriers to 305 while CXX functions remain 367. Native and bridge validation passes 1,236
 tests, all 36 remaining transaction-manager shim tests pass, and the rebuilt/focused PBFT manager path passes.
 
+The next `CRW-12` cut composes sync reward-vote selection into the existing admission status transition. Ordered reward
+hashes become immutable session-start facts; Rust captures the exact manager generation, cursor, block period, and hash
+order, releases the manager lock for verified-vote selection, and exact-reports acceptance or rejection. Infrastructure
+failure aborts only that request and stale work cannot publish weighted payloads to a replacement. The three compact
+VoteManager overloads, standalone reward-cursor CXX query, generic status-report carrier, and separate admission-next
+operation are deleted. The retained status operation automatically consumes the reward stage and returns weighted bytes
+only for temporary previous-certificate materialization. Bridge lines fall to 21,325, shim lines to 15,046, CXX
+functions to 365, and carriers to 304.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.
@@ -3906,9 +3915,9 @@ The invalid-state-root sync log now uses the popped Rust queue final-chain-hash 
 sidecar after Rust queue metadata already supplied that fact. Sync cert-vote validation now also consumes the popped
 Rust queue PBFT period/hash facts directly instead of reopening the live block sidecar only to compare vote period/hash,
 choose strict-validation intervals, or log block identity.
-Sync reward-vote validation now consumes popped Rust queue reward-vote hash metadata plus the Rust verified-vote runtime
-instead of reopening the live block sidecar only to read the requested reward hashes; copied selected `PbftVote` objects
-remain temporary previous-cert replacement payloads.
+Sync reward-vote admission now derives ordered hashes from immutable native session facts and runs verified-vote
+selection inside the PBFT service root. C++ receives only accepted weighted bytes for temporary previous-cert
+replacement materialization; it no longer invokes compact VoteManager selection/report facades.
 Sync pillar-vote validation now consumes popped Rust queue pillar-vote RLP bytes for Rust inspection and deterministic
 bundle planning, while live `PillarVote` sidecars remain only for accepted insertion side effects.
 Sync transaction finalization payloads now consume popped Rust queue transaction RLP bytes: after admission accepts,

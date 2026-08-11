@@ -1723,6 +1723,12 @@ pub struct PbftSyncAdmissionInitialFact {
     pub chain_last_hash: H256,
     pub chain_last_period: u64,
     pub block_in_chain: bool,
+    /// Ordered reward-vote hashes declared by the queued PBFT block.
+    ///
+    /// The admission session retains these hashes as immutable request state so
+    /// native reward selection never accepts a caller-supplied replacement
+    /// after the cursor has started.
+    pub reward_vote_hashes: Vec<H256>,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
     pub extra_data_required: bool,
@@ -1759,6 +1765,7 @@ pub struct PbftSyncAdmissionSessionStep {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftSyncAdmissionSession {
     fact: PbftSyncProcessPeriodDataRuntimeFact,
+    reward_vote_hashes: Vec<H256>,
     cursor: u32,
     contract_error: Option<String>,
 }
@@ -1768,6 +1775,7 @@ pub fn create_pbft_sync_admission_session(
     initial: PbftSyncAdmissionInitialFact,
 ) -> PbftSyncAdmissionSession {
     PbftSyncAdmissionSession {
+        reward_vote_hashes: initial.reward_vote_hashes,
         fact: PbftSyncProcessPeriodDataRuntimeFact {
             block_period: initial.block_period,
             block_prev_hash: initial.block_prev_hash,
@@ -1867,6 +1875,24 @@ pub fn next_pbft_sync_admission_session(
     session: &PbftSyncAdmissionSession,
 ) -> PbftSyncAdmissionSessionStep {
     sync_admission_step(session)
+}
+
+/// Returns the exact reward-vote selection request pending on an admission cursor.
+///
+/// The tuple is `(cursor, block_period, ordered_reward_vote_hashes)`. Hashes
+/// come only from immutable session-start facts. Non-reward stages and terminal
+/// sessions return `None`; unlocked selection results must revalidate the full
+/// tuple before reporting.
+pub(crate) fn pbft_sync_admission_reward_request(
+    session: &PbftSyncAdmissionSession,
+) -> Option<(u32, u64, Vec<H256>)> {
+    let step = sync_admission_step(session);
+    (step.has_check && step.next_check == PbftSyncProcessRuntimeNextCheck::CheckRewardVotes)
+        .then_some((
+            step.cursor,
+            session.fact.block_period,
+            session.reward_vote_hashes.clone(),
+        ))
 }
 
 /// Returns the exact finalized-lookup request pending on an admission cursor.
@@ -1990,6 +2016,7 @@ mod tests {
             chain_last_hash: hash(9),
             chain_last_period: 9,
             block_in_chain: false,
+            reward_vote_hashes: Vec::new(),
             dag_transaction_hashes: vec![hash(1)],
             period_data_transaction_hashes: vec![hash(1)],
             extra_data_required: pillar_votes_required,
@@ -2004,7 +2031,9 @@ mod tests {
 
     #[test]
     fn admission_session_owns_full_accepted_check_order() {
-        let mut session = create_pbft_sync_admission_session(admission_initial(true));
+        let mut initial = admission_initial(true);
+        initial.reward_vote_hashes = vec![hash(21), hash(22)];
+        let mut session = create_pbft_sync_admission_session(initial);
         let expected = [
             PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash,
             PbftSyncProcessRuntimeNextCheck::CheckRewardVotes,
@@ -2017,6 +2046,12 @@ mod tests {
             let step = next_pbft_sync_admission_session(&session);
             assert_eq!(step.status, PbftSyncAdmissionSessionStatus::Active);
             assert_eq!(step.next_check, check);
+            if check == PbftSyncProcessRuntimeNextCheck::CheckRewardVotes {
+                assert_eq!(
+                    pbft_sync_admission_reward_request(&session),
+                    Some((step.cursor, 10, vec![hash(21), hash(22)]))
+                );
+            }
             if check == PbftSyncProcessRuntimeNextCheck::CheckTransactions {
                 report_pbft_sync_admission_transactions(
                     &mut session,

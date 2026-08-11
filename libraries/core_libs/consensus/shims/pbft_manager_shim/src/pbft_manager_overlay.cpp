@@ -49,7 +49,6 @@ constexpr uint8_t kPbftSyncDposFactsReady = 0;
 constexpr uint8_t kPbftSyncFactValid = 0;
 constexpr uint8_t kPbftSyncFactInvalid = 1;
 constexpr uint8_t kPbftSyncRuntimeCheckFinalChainHash = 1;
-constexpr uint8_t kPbftSyncRuntimeCheckRewardVotes = 2;
 constexpr uint8_t kPbftSyncRuntimeCheckCertVotes = 3;
 constexpr uint8_t kPbftSyncRuntimeCheckTransactions = 4;
 constexpr uint8_t kPbftSyncRuntimeCheckPillarVotes = 6;
@@ -3497,6 +3496,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   initial_fact.block_in_chain = block_in_chain;
   initial_fact.dag_transaction_hashes = toBridgeTransactionHashes(dag_transaction_hashes);
   initial_fact.period_data_transaction_hashes = toBridgeTransactionHashes(period_data_transaction_hashes);
+  initial_fact.reward_vote_hashes = toBridgeFinalizationHashes(reward_vote_hashes);
   initial_fact.extra_data_required = extra_data_required;
   initial_fact.extra_data_present = extra_data_present;
   initial_fact.extra_data_pillar_block_hash_present = extra_data_pillar_block_hash_present;
@@ -3504,35 +3504,24 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   initial_fact.pillar_votes_present = pillar_votes_present;
   initial_fact.previous_cert_votes_present = previous_cert_votes_present;
   initial_fact.previous_cert_first_vote_has_weight = previous_cert_first_vote_has_weight;
-  rustaxa::pbft_manager_runtime_begin_pbft_sync_admission(pbft_service_->service(), std::move(initial_fact));
+  auto session_step =
+      rustaxa::pbft_manager_runtime_begin_pbft_sync_admission(pbft_service_->service(), std::move(initial_fact));
 
   std::optional<std::vector<std::shared_ptr<PbftVote>>> reward_votes;
   std::vector<std::shared_ptr<PbftVote>> cert_votes;
   std::optional<uint64_t> active_sync_cert_session;
-  auto session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_next(pbft_service_->service());
   try {
     while (session_step.has_check) {
       if (session_step.next_check == kPbftSyncRuntimeCheckFinalChainHash) {
         if (session_step.plan.wait_for_finalization) {
           final_chain_->waitForFinalized();
         }
-        rustaxa::PbftSyncAdmissionStatusReport report{};
-        report.cursor = session_step.cursor;
-        report.check = session_step.next_check;
-        report.status = validate_final_chain_hash_from_queue_metadata();
-        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(pbft_service_->service(),
-                                                                                       std::move(report));
-        continue;
-      }
-      if (session_step.next_check == kPbftSyncRuntimeCheckRewardVotes) {
-        reward_votes =
-            vote_mgr_->collectRewardVotesForBlock(block_period, pbft_block_hash, block_prev_hash, reward_vote_hashes);
-        rustaxa::PbftSyncAdmissionStatusReport report{};
-        report.cursor = session_step.cursor;
-        report.check = session_step.next_check;
-        report.status = reward_votes.has_value() ? kPbftSyncFactValid : kPbftSyncFactInvalid;
-        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(pbft_service_->service(),
-                                                                                       std::move(report));
+        const auto cursor = session_step.cursor;
+        const auto check = session_step.next_check;
+        const auto status = validate_final_chain_hash_from_queue_metadata();
+        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(pbft_service_->service(), cursor,
+                                                                                       check, status);
+        reward_votes = fromBridgePbftVotes(session_step.reward_vote_rlps);
         continue;
       }
       if (session_step.next_check == kPbftSyncRuntimeCheckCertVotes) {
@@ -3610,12 +3599,9 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
                        << cert_vote_step.two_t_plus_one << ", first bad vote "
                        << fromBridgeHash(cert_vote_step.first_bad_vote_hash);
         }
-        rustaxa::PbftSyncAdmissionStatusReport report{};
-        report.cursor = session_step.cursor;
-        report.check = session_step.next_check;
-        report.status = cert_votes_accepted ? kPbftSyncFactValid : kPbftSyncFactInvalid;
-        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(pbft_service_->service(),
-                                                                                       std::move(report));
+        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(
+            pbft_service_->service(), session_step.cursor, session_step.next_check,
+            cert_votes_accepted ? kPbftSyncFactValid : kPbftSyncFactInvalid);
         continue;
       }
       if (session_step.next_check == kPbftSyncRuntimeCheckTransactions) {
