@@ -6,24 +6,27 @@
 //! intent flags for the PBFT manager overlay to apply.
 
 use crate::ffi::rustaxa_ffi::{
+    PbftCertVoteRlp as FfiPbftCertVoteRlp,
     PbftSyncAdmissionInitialFact as FfiPbftSyncAdmissionInitialFact,
     PbftSyncAdmissionSessionStep as FfiPbftSyncAdmissionSessionStep,
     PbftSyncAdmissionStatusReport as FfiPbftSyncAdmissionStatusReport,
     PbftSyncAdmissionTransactionReport as FfiPbftSyncAdmissionTransactionReport,
-    PbftSyncCertVoteBundleFact as FfiPbftSyncCertVoteBundleFact,
-    PbftSyncCertVoteBundleValidation as FfiPbftSyncCertVoteBundleValidation,
-    PbftSyncCertVoteFact as FfiPbftSyncCertVoteFact,
+    PbftSyncCertBundleCommand as FfiPbftSyncCertBundleCommand,
+    PbftSyncCertBundleStep as FfiPbftSyncCertBundleStep,
     PbftSyncProcessPeriodDataRuntimePlan as FfiPbftSyncProcessPeriodDataRuntimePlan,
     PbftSyncTransactionHash as FfiPbftSyncTransactionHash,
     PbftSyncTransactionQueryPlan as FfiPbftSyncTransactionQueryPlan,
     PbftSyncTransactionWarning as FfiPbftSyncTransactionWarning,
 };
-use crate::ffi::BridgePbftService;
+use crate::ffi::{BridgeFinalChain, BridgePbftService};
+use crate::verified_votes::{
+    empty_slashing_transaction_effect, slashing_transaction_effect_to_ffi,
+};
+use anyhow::Result;
 use ethereum_types::H256;
+use rustaxa_consensus::pbft_service::PbftSyncCertBundleStep as DomainPbftSyncCertBundleStep;
 use rustaxa_consensus::pbft_sync::{
-    validate_pbft_sync_cert_vote_bundle as validate_domain_pbft_sync_cert_vote_bundle,
     PbftSyncAdmissionInitialFact, PbftSyncAdmissionSessionStep, PbftSyncAdmissionTransactionReport,
-    PbftSyncCertVoteBundleFact, PbftSyncCertVoteBundleValidation, PbftSyncCertVoteFact,
     PbftSyncFactStatus, PbftSyncProcessPeriodDataRuntimePlan, PbftSyncProcessRuntimeNextCheck,
     PbftSyncRuntimeFinalChainHashStatus, PbftSyncTransactionQueryPlan, PbftSyncTransactionWarning,
 };
@@ -91,42 +94,53 @@ pub fn abort_pbft_manager_runtime_pbft_sync_admission(
         .unwrap_or_else(sync_admission_not_started_step)
 }
 
-/// Validates one synced PBFT cert-vote bundle from compact C++ facts.
-///
-/// C++ remains the temporary executor for VoteManager signature/weight checks,
-/// but Rust owns the deterministic bundle-shape and threshold decision.
-pub fn validate_pbft_sync_cert_vote_bundle(
-    fact: FfiPbftSyncCertVoteBundleFact,
-) -> FfiPbftSyncCertVoteBundleValidation {
-    validate_domain_pbft_sync_cert_vote_bundle(fact.into()).into()
-}
-
-impl From<FfiPbftSyncCertVoteFact> for PbftSyncCertVoteFact {
-    fn from(value: FfiPbftSyncCertVoteFact) -> Self {
-        Self {
-            vote_hash: H256::from(value.vote_hash),
-            block_hash: H256::from(value.block_hash),
-            period: value.period,
-            round: value.round,
-            step: value.step,
-            vote_type: value.vote_type,
-            live_vote_valid: value.live_vote_valid,
-            weight_present: value.weight_present,
-            weight: value.weight,
+/// Executes one begin, report, or exact-abort command for the resumable native
+/// current-certificate admission session without exposing a bridge runtime.
+pub fn pbft_service_pbft_sync_cert_bundle_session(
+    service: &BridgePbftService,
+    final_chain: &BridgeFinalChain,
+    command: FfiPbftSyncCertBundleCommand,
+) -> Result<FfiPbftSyncCertBundleStep> {
+    match command.action {
+        0 => service
+            .0
+            .begin_pbft_sync_cert_bundle(
+                &final_chain.0,
+                command.block_period,
+                H256::from(command.block_hash),
+                command
+                    .cert_vote_rlps
+                    .into_iter()
+                    .map(|vote| vote.vote_rlp)
+                    .collect(),
+            )
+            .map(Into::into),
+        1 => service
+            .0
+            .report_pbft_sync_cert_bundle_slashing(
+                command.session_id,
+                command.effect_id,
+                H256::from(command.proof_hash),
+                command.transaction_inserted,
+            )
+            .map(Into::into),
+        2 => {
+            service.0.abort_pbft_sync_cert_bundle(command.session_id)?;
+            Ok(FfiPbftSyncCertBundleStep {
+                action: 2,
+                session_id: command.session_id,
+                effect_id: 0,
+                status: 0,
+                total_weight: 0,
+                two_t_plus_one: 0,
+                first_bad_vote_hash: [0; 32],
+                error_code: "PBFT_SYNC_CERT_BUNDLE_ABORTED".into(),
+                weighted_vote_rlps: Vec::new(),
+                has_slashing_effect: false,
+                slashing_transaction_effect: empty_slashing_transaction_effect(),
+            })
         }
-    }
-}
-
-impl From<FfiPbftSyncCertVoteBundleFact> for PbftSyncCertVoteBundleFact {
-    fn from(value: FfiPbftSyncCertVoteBundleFact) -> Self {
-        Self {
-            block_period: value.block_period,
-            block_hash: H256::from(value.block_hash),
-            votes: value.votes.into_iter().map(Into::into).collect(),
-            check_weight_threshold: value.check_weight_threshold,
-            two_t_plus_one_found: value.two_t_plus_one_found,
-            two_t_plus_one: value.two_t_plus_one,
-        }
+        _ => anyhow::bail!("PBFT_SYNC_CERT_BUNDLE_UNKNOWN_COMMAND"),
     }
 }
 
@@ -255,14 +269,29 @@ fn sync_admission_not_started_step() -> FfiPbftSyncAdmissionSessionStep {
     }
 }
 
-impl From<PbftSyncCertVoteBundleValidation> for FfiPbftSyncCertVoteBundleValidation {
-    fn from(value: PbftSyncCertVoteBundleValidation) -> Self {
+impl From<DomainPbftSyncCertBundleStep> for FfiPbftSyncCertBundleStep {
+    fn from(value: DomainPbftSyncCertBundleStep) -> Self {
+        let has_slashing_effect = value.slashing_transaction_effect.is_some();
+        let slashing_transaction_effect = value
+            .slashing_transaction_effect
+            .map(slashing_transaction_effect_to_ffi)
+            .unwrap_or_else(empty_slashing_transaction_effect);
         Self {
-            valid: value.valid,
+            action: value.action.as_u8(),
+            session_id: value.session_id,
+            effect_id: value.effect_id,
             status: value.status.as_u8(),
             total_weight: value.total_weight,
             two_t_plus_one: value.two_t_plus_one,
-            first_bad_vote_hash: value.first_bad_vote_hash.into(),
+            first_bad_vote_hash: value.first_bad_vote_hash.0,
+            error_code: value.error_code,
+            weighted_vote_rlps: value
+                .weighted_vote_rlps
+                .into_iter()
+                .map(|vote_rlp| FfiPbftCertVoteRlp { vote_rlp })
+                .collect(),
+            has_slashing_effect,
+            slashing_transaction_effect,
         }
     }
 }
@@ -279,55 +308,28 @@ impl From<PbftSyncTransactionWarning> for FfiPbftSyncTransactionWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn cert_vote(weight: u64) -> FfiPbftSyncCertVoteFact {
-        FfiPbftSyncCertVoteFact {
-            vote_hash: [weight as u8; 32],
-            block_hash: [9; 32],
-            period: 101,
-            round: 2,
-            step: 3,
-            vote_type: 3,
-            live_vote_valid: true,
-            weight_present: true,
-            weight,
-        }
-    }
+    use rustaxa_consensus::pbft_service::PbftSyncCertBundleAction as DomainPbftSyncCertBundleAction;
+    use rustaxa_consensus::pbft_sync::PbftSyncCertVoteBundleStatus as DomainPbftSyncCertVoteBundleStatus;
 
     #[test]
-    fn bridge_cert_vote_bundle_validation_projects_status() {
-        let result = validate_pbft_sync_cert_vote_bundle(FfiPbftSyncCertVoteBundleFact {
-            block_period: 101,
-            block_hash: [9; 32],
-            votes: vec![cert_vote(2), cert_vote(3)],
-            check_weight_threshold: true,
-            two_t_plus_one_found: true,
+    fn bridge_projects_terminal_cert_bundle_step() {
+        let result = FfiPbftSyncCertBundleStep::from(DomainPbftSyncCertBundleStep {
+            action: DomainPbftSyncCertBundleAction::Accepted,
+            session_id: 11,
+            effect_id: 0,
+            status: DomainPbftSyncCertVoteBundleStatus::Accepted,
+            total_weight: 10,
             two_t_plus_one: 5,
+            first_bad_vote_hash: H256::from([7; 32]),
+            error_code: String::new(),
+            weighted_vote_rlps: vec![vec![1, 2, 3]],
+            slashing_transaction_effect: None,
         });
-
         assert_eq!(
-            (
-                result.valid,
-                result.status,
-                result.total_weight,
-                result.two_t_plus_one
-            ),
-            (true, 0, 5, 5)
+            result.action,
+            DomainPbftSyncCertBundleAction::Accepted.as_u8()
         );
-
-        let result = validate_pbft_sync_cert_vote_bundle(FfiPbftSyncCertVoteBundleFact {
-            block_period: 101,
-            block_hash: [9; 32],
-            votes: vec![cert_vote(2)],
-            check_weight_threshold: true,
-            two_t_plus_one_found: true,
-            two_t_plus_one: 5,
-        });
-
-        assert_eq!(
-            (result.valid, result.status, result.total_weight),
-            (false, 10, 2)
-        );
+        assert_eq!(result.weighted_vote_rlps[0].vote_rlp, [1, 2, 3]);
     }
 
     #[test]

@@ -226,8 +226,8 @@ pub use pbft_reward_votes::{
     PbftRewardVotesStatus, plan_pbft_reward_votes,
 };
 pub use pbft_service::{
-    PbftService, PbftServiceConfig, PbftSyncIngressAction, PbftSyncIngressStep,
-    PbftVoteAdmissionWithSlashingResult,
+    PbftService, PbftServiceConfig, PbftSyncCertBundleAction, PbftSyncCertBundleStep,
+    PbftSyncIngressAction, PbftSyncIngressStep, PbftVoteAdmissionWithSlashingResult,
 };
 pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,

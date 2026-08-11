@@ -128,6 +128,12 @@ constexpr uint8_t kPbftSyncQueueDrainStatusActive = 0;
 constexpr uint8_t kPbftSyncQueueDrainStatusComplete = 1;
 constexpr uint8_t kPbftSyncTransactionWarningMissingTransaction = 1;
 constexpr uint8_t kPbftSyncTransactionWarningFinalizedTransaction = 2;
+constexpr uint8_t kPbftSyncCertBundleActionAwaitingSlashing = 0;
+constexpr uint8_t kPbftSyncCertBundleActionAccepted = 1;
+constexpr uint8_t kPbftSyncCertBundleActionRejected = 2;
+constexpr uint8_t kPbftSyncCertBundleCommandBegin = 0;
+constexpr uint8_t kPbftSyncCertBundleCommandReportSlashing = 1;
+constexpr uint8_t kPbftSyncCertBundleCommandAbort = 2;
 constexpr uint8_t kPbftManagerStartupRestoreStatusReady = 0;
 constexpr uint8_t kPbftManagerTransitionStorageStatusApplied = 0;
 constexpr uint8_t kPbftFinalizationExecutorModeFresh = 0;
@@ -535,6 +541,14 @@ std::vector<std::shared_ptr<PbftVote>> fromBridgePbftVotes(const rust::Vec<rusta
   return out;
 }
 
+u256 fromBridgeU256(const std::array<uint8_t, 32> &value) {
+  return dev::fromBigEndian<u256>(dev::bytes(value.begin(), value.end()));
+}
+
+addr_t fromBridgeAddress(const std::array<uint8_t, 20> &address) {
+  return addr_t(address.data(), addr_t::ConstructFromPointer);
+}
+
 std::vector<TransactionManagerVerifyNotFinalizedInput> toVerifyNotFinalizedFacts(
     const rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> &identities) {
   std::vector<TransactionManagerVerifyNotFinalizedInput> facts;
@@ -798,7 +812,7 @@ PbftManager::PoppedPeriodDataPayload PbftManager::popPeriodDataQueueWithMetadata
   PoppedPeriodDataPayload payload;
   payload.period_data = PeriodData{dev::bytes(plan.period_data_rlp.begin(), plan.period_data_rlp.end())};
   payload.period_data.previous_block_cert_votes = fromBridgePbftVotes(plan.previous_cert_vote_rlps);
-  auto cert_votes = fromBridgePbftVotes(plan.cert_vote_rlps);
+  payload.cert_vote_rlps = std::move(plan.cert_vote_rlps);
   payload.node_id = dev::p2p::NodeID(plan.source_peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
   payload.period = plan.entry_period;
   payload.block_hash = blk_hash_t(plan.block_hash.data(), blk_hash_t::ConstructFromPointer);
@@ -818,7 +832,7 @@ PbftManager::PoppedPeriodDataPayload PbftManager::popPeriodDataQueueWithMetadata
   payload.extra_data_pillar_block_hash_present = plan.extra_data_pillar_block_hash_present;
 
   return PoppedPeriodDataPayload{std::move(payload.period_data),
-                                 std::move(cert_votes),
+                                 std::move(payload.cert_vote_rlps),
                                  payload.node_id,
                                  plan.entry_period,
                                  payload.block_hash,
@@ -3519,7 +3533,7 @@ void PbftManager::setPbftSyncSnapshotCreationEnabled(bool enabled) {
 std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> PbftManager::processPeriodData() {
   auto popped_period_data = popPeriodDataQueueWithMetadata();
   auto period_data = std::move(popped_period_data.period_data);
-  auto cert_votes = std::move(popped_period_data.cert_votes);
+  auto cert_vote_rlps = std::move(popped_period_data.cert_vote_rlps);
   const auto node_id = popped_period_data.node_id;
   const auto pbft_block_hash = popped_period_data.block_hash;
   const auto block_period = popped_period_data.period;
@@ -3593,6 +3607,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   rustaxa::pbft_manager_runtime_begin_pbft_sync_admission(pbft_service_->service(), std::move(initial_fact));
 
   std::optional<std::vector<std::shared_ptr<PbftVote>>> reward_votes;
+  std::vector<std::shared_ptr<PbftVote>> cert_votes;
+  std::optional<uint64_t> active_sync_cert_session;
   auto session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_next(pbft_service_->service());
   try {
     while (session_step.has_check) {
@@ -3637,11 +3653,67 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
             }
           }
         }
-        const auto cert_votes_valid = validatePbftBlockCertVotes(block_period, pbft_block_hash, cert_votes);
+        rustaxa::PbftSyncCertBundleCommand cert_command{};
+        cert_command.action = kPbftSyncCertBundleCommandBegin;
+        cert_command.block_period = block_period;
+        cert_command.block_hash = toBridgeHash(pbft_block_hash);
+        cert_command.cert_vote_rlps = std::move(cert_vote_rlps);
+        auto cert_vote_step = rustaxa::pbft_service_pbft_sync_cert_bundle_session(
+            pbft_service_->service(), final_chain_->rustFinalChain(), std::move(cert_command));
+        if (cert_vote_step.action == kPbftSyncCertBundleActionAwaitingSlashing) {
+          active_sync_cert_session = cert_vote_step.session_id;
+        }
+        while (cert_vote_step.action == kPbftSyncCertBundleActionAwaitingSlashing) {
+          if (!cert_vote_step.has_slashing_effect) {
+            throw std::runtime_error("Rust sync cert-vote session requested slashing without an executable effect");
+          }
+          const auto &effect = cert_vote_step.slashing_transaction_effect;
+          if (effect.status != 0) {
+            throw std::runtime_error("Rust sync cert-vote session returned a non-executable slashing effect");
+          }
+
+          const auto &wallet = eligible_wallets_.getSigningWallet(effect.wallet_index);
+          const auto proof_hash = effect.proof_hash;
+          bytes call_data(effect.call_data.begin(), effect.call_data.end());
+          auto transaction = std::make_shared<Transaction>(
+              fromBridgeU256(effect.nonce), fromBridgeU256(effect.value), trx_mgr_->gasPriceBid(), effect.gas_limit,
+              std::move(call_data), wallet.node_secret, fromBridgeAddress(effect.contract_address),
+              kGenesisConfig.chain_id);
+          const bool transaction_inserted = trx_mgr_->insertTransaction(transaction).first;
+          rustaxa::PbftSyncCertBundleCommand report_command{};
+          report_command.action = kPbftSyncCertBundleCommandReportSlashing;
+          report_command.session_id = cert_vote_step.session_id;
+          report_command.effect_id = cert_vote_step.effect_id;
+          report_command.proof_hash = proof_hash;
+          report_command.transaction_inserted = transaction_inserted;
+          cert_vote_step = rustaxa::pbft_service_pbft_sync_cert_bundle_session(
+              pbft_service_->service(), final_chain_->rustFinalChain(), std::move(report_command));
+        }
+        active_sync_cert_session.reset();
+
+        if (cert_vote_step.has_slashing_effect) {
+          throw std::runtime_error("Rust sync cert-vote session terminated with a pending slashing effect");
+        }
+        const bool cert_votes_accepted = cert_vote_step.action == kPbftSyncCertBundleActionAccepted;
+        if (cert_votes_accepted) {
+          cert_votes = fromBridgePbftVotes(cert_vote_step.weighted_vote_rlps);
+        } else if (cert_vote_step.action != kPbftSyncCertBundleActionRejected) {
+          throw std::runtime_error("Rust sync cert-vote session returned an unknown terminal action");
+        } else if (!cert_vote_step.error_code.empty()) {
+          LOG(log_er_) << "Cert vote " << fromBridgeHash(cert_vote_step.first_bad_vote_hash)
+                       << " validation failed. Err: " << static_cast<std::string>(cert_vote_step.error_code)
+                       << ", pbft block " << pbft_block_hash;
+        } else {
+          LOG(log_wr_) << "Rust sync cert-vote bundle admission failed for PBFT block " << pbft_block_hash
+                       << ", period " << block_period << ", status " << static_cast<uint32_t>(cert_vote_step.status)
+                       << ", votes weight " << cert_vote_step.total_weight << ", two_t_plus_one "
+                       << cert_vote_step.two_t_plus_one << ", first bad vote "
+                       << fromBridgeHash(cert_vote_step.first_bad_vote_hash);
+        }
         rustaxa::PbftSyncAdmissionStatusReport report{};
         report.cursor = session_step.cursor;
         report.check = session_step.next_check;
-        report.status = cert_votes_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid;
+        report.status = cert_votes_accepted ? kPbftSyncFactValid : kPbftSyncFactInvalid;
         session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(pbft_service_->service(),
                                                                                        std::move(report));
         continue;
@@ -3681,6 +3753,17 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
       throw std::runtime_error("Rust PBFT sync admission requested unsupported external check");
     }
   } catch (...) {
+    if (active_sync_cert_session) {
+      try {
+        rustaxa::PbftSyncCertBundleCommand abort_command{};
+        abort_command.action = kPbftSyncCertBundleCommandAbort;
+        abort_command.session_id = *active_sync_cert_session;
+        rustaxa::pbft_service_pbft_sync_cert_bundle_session(
+            pbft_service_->service(), final_chain_->rustFinalChain(), std::move(abort_command));
+      } catch (...) {
+        // Preserve the original executor exception; the exact-session abort is best-effort on lock failure.
+      }
+    }
     rustaxa::abort_pbft_manager_runtime_pbft_sync_admission(pbft_service_->service());
     throw;
   }
@@ -3722,25 +3805,6 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
   return std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>>(
       {std::move(period_data), std::move(cert_votes)});
-}
-
-bool PbftManager::validatePbftBlockCertVotes(PbftPeriod block_period, const blk_hash_t &block_hash,
-                                             const std::vector<std::shared_ptr<PbftVote>> &cert_votes) const {
-  const auto validation = vote_mgr_->validateSyncedCertVoteBundle(block_period, block_hash, cert_votes);
-  if (!validation.accepted) {
-    if (!validation.validation_error.empty()) {
-      LOG(log_er_) << "Cert vote " << validation.first_bad_vote_hash
-                   << " validation failed. Err: " << validation.validation_error << ", pbft block " << block_hash;
-      return false;
-    }
-    LOG(log_wr_) << "Rust sync cert-vote bundle threshold validation failed for PBFT block " << block_hash
-                 << ", period " << block_period << ", status " << static_cast<uint32_t>(validation.status)
-                 << ", votes weight " << validation.total_weight << ", two_t_plus_one " << validation.two_t_plus_one
-                 << ", first bad vote " << validation.first_bad_vote_hash;
-    return false;
-  }
-
-  return true;
 }
 
 bool PbftManager::periodDataQueueEmpty() const {
@@ -3825,6 +3889,10 @@ const std::vector<std::pair<bool, WalletConfig>> &PbftManager::EligibleWallets::
   assert(period_ == current_pbft_period - 1);
 
   return wallets_;
+}
+
+const WalletConfig &PbftManager::EligibleWallets::getSigningWallet(size_t wallet_index) const {
+  return wallets_.at(wallet_index).second;
 }
 
 PbftPeriod PbftManager::EligibleWallets::getWalletsEligiblePeriod() const { return period_; }

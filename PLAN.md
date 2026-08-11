@@ -1096,7 +1096,11 @@ The current Rust consensus footprint is broad but still incomplete:
    vote-source decisions, encoded payload/peer retention, native fact derivation, and cleanup planning now live inside
    the PBFT manager Rust runtime. The standalone period-data queue CXX handle, shim overlay, module flag, parallel C++
    payload deque, peer sidecar, and Rust-mode PBFT-manager queue-push facade have been retired; C++ materializes `PeriodData` only after native pop for the
-   remaining validation/finalization executor and temporarily supplies normalized certificate votes.
+   remaining validation/finalization executor. Current-certificate RLP remains opaque after pop while native
+   `PbftService` owns bundle shape, strict-VRF selection, preflighted FinalChain facts, durable verified-vote admission,
+   authoritative weight and threshold decisions, and a resumable per-slashing-effect session with exact report and abort
+   correlation. C++ materializes accepted weighted votes only at the retained finalization boundary; the standalone fact
+   validator and both manager validation facades are deleted.
 9. Continue shrinking the Rust-mode `PbftManager` overlay into Rust services for candidate validation and ordered
    state-action scripts. The first grouped leader-candidate planner owns proposal candidate status derivation,
    mark-valid commands, and deterministic leader ranking; the C++ overlay only supplies live block lookup/validation
@@ -1111,8 +1115,9 @@ The current Rust consensus footprint is broad but still incomplete:
    DAG-weight facts in legacy order, then returns accept/reject or wait-for-finalization decisions while C++ still
    supplies the live object checks. `processPeriodData` now reuses that shared planner for the overlapping sync-path
    FinalChain, reward-vote, and extra-data checks before handing sync-only cert-vote, transaction, pillar-vote, and
-   peer/queue side effects back to the PBFT sync runtime planner. The next removal target is to replace the remaining
-   `validateFinalChainHash`, DAG-order/gas fact, cert-vote, transaction, and pillar-vote decision glue with shared Rust
+   peer/queue side effects back to the PBFT sync runtime planner. Current-certificate validation/admission now calls the
+   native PBFT service directly and materializes only accepted weighted output. The next removal target is to replace the remaining
+   `validateFinalChainHash`, DAG-order/gas fact, transaction, and pillar-vote decision glue with shared Rust
    executor intents that consume existing Rust FinalChain bundles. After the shared planner owns deeper sync acceptance,
    `identifyLeaderBlock`,
    `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and `secondFinish_` should collapse further into

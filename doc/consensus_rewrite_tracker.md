@@ -3726,6 +3726,25 @@ passing assertions after the fix, emits no missing-effect diagnostic, and exits 
 intermittent Boost logger TLS teardown abort remains an aggregate-suite environment baseline rather than a failure of
 this route.
 
+The next `CRW-12` ownership cut moves current-certificate validation and admission out of both C++ managers. Native
+`PbftService` now preflights the complete canonical vote bundle and all fallible FinalChain facts before mutation, owns
+the legacy strict-VRF sampling policy, and drives durable admission through an exact-id resumable session. Rust pauses
+before each ordered signing/transaction-pool slashing effect, validates and acknowledges the executor report before
+admitting the next vote, retains an unadvanced acknowledgement across failures, and exposes weighted bytes only after
+the terminal native `2t+1` decision. The
+period-data pop path keeps current certificates as `PbftCertVoteRlp` carriers until that native decision, so C++
+materializes `PbftVote` objects only at the accepted finalization boundary. The standalone compact-fact validator, its
+three carriers, `VoteManager::validateSyncedCertVoteBundle`, and `PbftManager::validatePbftBlockCertVotes` are deleted;
+one command-shaped session endpoint replaces the old validator export, holding the CXX function count at 369 while
+lowering the exact starting budgets to 21,435 bridge lines, 15,616 shim lines, and 310 carriers. Exact-session abort on
+C++ unwind prevents stale admissions from wedging later sync. Signing and transaction insertion remain explicit executor
+leaves, and the untouched pure-C++ implementation remains the reference path.
+Validation covers all 1,142 native consensus tests, all 71 bridge tests, 50 Rust consensus C++ tests, the focused PBFT
+manager executor case, the isolated large-PBFT-block network sync, the fast rewrite gate, and the exact inventory guard.
+The broader five-node smoke still stops at the previously tracked `FinalChain::prune` Rust shim stub; Python integration
+setup remains unavailable in the image because PEP 668 blocks system installation and neither `virtualenv` nor `pytest`
+is installed.
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

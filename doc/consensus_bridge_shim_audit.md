@@ -44,10 +44,10 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 21436 |
-| `shim_lines` | 15654 |
+| `bridge_lines` | 21435 |
+| `shim_lines` | 15616 |
 | `cxx_functions` | 369 |
-| `cxx_carriers` | 311 |
+| `cxx_carriers` | 310 |
 | `cxx_handles` | 18 |
 | `shim_directories` | 9 |
 | `granular_flags` | 0 |
@@ -126,7 +126,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/network.rs` | One `Network`-owned operation-specific effect root with transport-lane/source-partitioned drains, effect-ID-correlated vote admission, native PBFT-sync response construction, native latest-version proposed-block bundle admission/publication, accepted-only vote-bundle aggregation, dependency-checked publication/gossip, and no generic shadow-ingress arena | latest/v5 tarcap handler families | External boundary | Complete `CRW-N01`; weighted PBFT-sync intake is native, so retain transport-only execution while the remaining DAG/status/transaction leaves migrate. |
 | `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | Thin DTO adapters over root `PbftService` chain tasks | PBFT chain/manager shims | Internal bridge route | Native storage, restoration, lock ownership, transitions, validation, and lookup live behind task-shaped `rustaxa-consensus` root methods; migrate named C++ readers and delete the facade. |
 | `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | Thin `BridgePbftService` adapter plus manager DTO/effect adapters | App, PBFT/vote/pillar shims | Native service wrapper | Native `PbftService` owns coherent sibling restoration, composition, bootstrap readiness, weighted PBFT-sync ingress/resume, finalization start/resume, all typed executor advancement, owned-action draining, terminal cleanup, and lock-coherent snapshots; the bridge has no manager, chain, proposed-block, verified-vote, slashing, or pillar accessor and no storage-backed manager protocol fixture. Retain pure FFI/error-mapping/external-leaf sentinels while contracting the remaining C++ executor leaves. |
-| `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | CXX conversion over native sync admission plus cert-vote bundle validation conversion | PBFT manager | Internal bridge route | Native `PbftService` owns admission cursor lifecycle, report validation, terminal cleanup, bootstrap gating, and behavioral coverage; PBFT-sync egress now routes directly through the network service, so retain only intake carrier/status/error conversion until that manager client migrates. |
+| `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | CXX conversion over native synced-period and cert-vote admission | PBFT manager | Internal bridge route | Native `PbftService` owns admission cursor lifecycle, current-certificate decoding, validation, verified-vote persistence, weighting, threshold decisions, report validation, terminal cleanup, bootstrap gating, and behavioral coverage; retain only carrier/status/error conversion until the manager executor client migrates. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_generation.rs` | DTO adapters over native PBFT vote/FinalChain tasks plus the standalone signing entrypoint | Vote/PBFT shims | Internal bridge route | Signing becomes a leaf port; retained CXX carriers are removed with the vote/PBFT shim clients. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_progress.rs` | progress adapter | PBFT/vote shims | Internal bridge route | Fold into native PBFT service. |
 | `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | CXX conversion over native PBFT-root pillar tasks | pillar shim | Internal bridge route | Native `PbftService` owns current-anchor mutation/decisions, startup bootstrap, FinalChain-composed block planning, linkage, latest-finalized lookup, readiness, and access to private pillar state; retain only CXX conversion plus focused tag/status and FinalChain-handle sentinels. |

@@ -778,36 +778,31 @@ pub mod rustaxa_ffi {
         kind: u8,
     }
 
-    /// Compact fact for one synced PBFT cert vote.
-    struct PbftSyncCertVoteFact {
-        vote_hash: [u8; 32],
-        block_hash: [u8; 32],
-        period: u64,
-        round: u64,
-        step: u64,
-        vote_type: u8,
-        live_vote_valid: bool,
-        weight_present: bool,
-        weight: u64,
-    }
-
-    /// Compact fact bundle for synced PBFT cert-vote validation.
-    struct PbftSyncCertVoteBundleFact {
-        block_period: u64,
-        block_hash: [u8; 32],
-        votes: Vec<PbftSyncCertVoteFact>,
-        check_weight_threshold: bool,
-        two_t_plus_one_found: bool,
-        two_t_plus_one: u64,
-    }
-
-    /// Rust-owned synced PBFT cert-vote validation result.
-    struct PbftSyncCertVoteBundleValidation {
-        valid: bool,
+    /// One resumable step from native current-certificate admission flow.
+    struct PbftSyncCertBundleStep {
+        action: u8,
+        session_id: u64,
+        effect_id: u64,
         status: u8,
         total_weight: u64,
         two_t_plus_one: u64,
         first_bad_vote_hash: [u8; 32],
+        error_code: String,
+        weighted_vote_rlps: Vec<PbftCertVoteRlp>,
+        has_slashing_effect: bool,
+        slashing_transaction_effect: SlashingTransactionEffect,
+    }
+
+    /// Session command: 0 = begin, 1 = report slashing, 2 = exact abort.
+    struct PbftSyncCertBundleCommand {
+        action: u8,
+        block_period: u64,
+        block_hash: [u8; 32],
+        cert_vote_rlps: Vec<PbftCertVoteRlp>,
+        session_id: u64,
+        effect_id: u64,
+        proof_hash: [u8; 32],
+        transaction_inserted: bool,
     }
 
     /// Transaction hash wrapper for CXX bridge vectors.
@@ -3949,9 +3944,11 @@ pub mod rustaxa_ffi {
         pub fn abort_pbft_manager_runtime_pbft_sync_admission(
             runtime: &BridgePbftService,
         ) -> PbftSyncAdmissionSessionStep;
-        pub fn validate_pbft_sync_cert_vote_bundle(
-            fact: PbftSyncCertVoteBundleFact,
-        ) -> PbftSyncCertVoteBundleValidation;
+        pub fn pbft_service_pbft_sync_cert_bundle_session(
+            service: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            command: PbftSyncCertBundleCommand,
+        ) -> Result<PbftSyncCertBundleStep>;
 
         pub fn create_pbft_service_from_storage(
             storage: &BridgeStorage,

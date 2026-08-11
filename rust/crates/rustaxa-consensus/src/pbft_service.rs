@@ -332,26 +332,42 @@ pub struct PbftSyncIngressStep {
     pub slashing_transaction_effect: Option<SlashingTransactionEffect>,
 }
 
-/// Deterministic result of sync certificate-vote bundle validation and admission.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct PbftSyncCertVoteBundleResult {
-    /// Whether the bundle passed validation, admission, and threshold checks.
-    pub accepted: bool,
-    /// Legacy status for one of the deterministic validation stages.
+/// Native current-certificate admission session action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum PbftSyncCertBundleAction {
+    /// One external signing and transaction-insertion effect must be reported.
+    AwaitingSlashing = 0,
+    /// All votes were admitted and the native weight threshold was satisfied.
+    Accepted = 1,
+    /// Shape, vote, persistence, or threshold validation rejected the bundle.
+    Rejected = 2,
+}
+
+impl PbftSyncCertBundleAction {
+    /// Returns the stable CXX action code.
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+/// One resumable step of native current-certificate admission.
+///
+/// `AwaitingSlashing` carries exactly one effect and no authoritative weighted
+/// bundle. `Accepted` is the only action that carries weighted vote payloads.
+/// `session_id` and `effect_id` make external reports retry- and mismatch-safe.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PbftSyncCertBundleStep {
+    pub action: PbftSyncCertBundleAction,
+    pub session_id: u64,
+    pub effect_id: u64,
     pub status: PbftSyncCertVoteBundleStatus,
-    /// Summed weight accumulated from validated cert votes.
     pub total_weight: u64,
-    /// Requested `2t+1` threshold when available.
     pub two_t_plus_one: u64,
-    /// Vote hash that triggered the first terminal rejection.
     pub first_bad_vote_hash: H256,
-    /// Stable legacy-oriented diagnostic code for the terminal result.
     pub error_code: String,
-    /// Weighted cert-vote payloads in admission order when available.
     pub weighted_vote_rlps: Vec<Vec<u8>>,
-    /// Slashing effects accumulated in discovery order. Repeated proof hashes
-    /// are retained so an external failed insertion can be retried in order.
-    pub slashing_transaction_effects: Vec<SlashingTransactionEffect>,
+    pub slashing_transaction_effect: Option<SlashingTransactionEffect>,
 }
 
 fn sync_cert_bundle_error_code(status: PbftSyncCertVoteBundleStatus) -> &'static str {
@@ -376,35 +392,46 @@ fn sync_cert_bundle_error_code(status: PbftSyncCertVoteBundleStatus) -> &'static
     }
 }
 
-fn sync_cert_bundle_result(
-    validation: PbftSyncCertVoteBundleValidation,
-    weighted_vote_rlps: Vec<Vec<u8>>,
-    slashing_transaction_effects: Vec<SlashingTransactionEffect>,
-    error_code: Option<String>,
-) -> PbftSyncCertVoteBundleResult {
-    PbftSyncCertVoteBundleResult {
-        accepted: validation.valid,
-        status: validation.status,
-        total_weight: validation.total_weight,
-        two_t_plus_one: validation.two_t_plus_one,
-        first_bad_vote_hash: validation.first_bad_vote_hash,
-        error_code: error_code
-            .unwrap_or_else(|| sync_cert_bundle_error_code(validation.status).to_owned()),
-        weighted_vote_rlps: if validation.valid {
-            weighted_vote_rlps
-        } else {
-            Vec::new()
-        },
-        slashing_transaction_effects,
-    }
-}
-
 struct PbftSyncIngressSession {
     packet: DecodedPbftSyncPacketPrecheck,
     source_payload_id: u64,
     source_peer_id: [u8; 64],
     next_vote: usize,
     pending_slashing: Option<SlashingTransactionEffect>,
+}
+
+struct PbftSyncCertBundleSession {
+    session_id: u64,
+    block_period: u64,
+    block_hash: H256,
+    canonical_vote_rlps: Vec<Vec<u8>>,
+    validations: Vec<PbftCanonicalVoteValidation>,
+    prepared_weighted_vote_rlps: Vec<Option<Vec<u8>>>,
+    threshold: Option<u64>,
+    manager_period: u64,
+    manager_round: u64,
+    submitters: Vec<SlashingSubmitterFact>,
+    next_vote: usize,
+    next_effect_id: u64,
+    pending_slashing: Option<(u64, SlashingTransactionEffect)>,
+    weighted_vote_rlps: Vec<Vec<u8>>,
+    weighted_facts: Vec<PbftSyncCertVoteFact>,
+    total_weight: u64,
+}
+
+#[derive(Clone)]
+struct PbftSyncCertBundleReportAck {
+    session_id: u64,
+    effect_id: u64,
+    proof_hash: H256,
+    transaction_inserted: bool,
+    step: Option<PbftSyncCertBundleStep>,
+}
+
+struct PbftSyncCertBundleRuntime {
+    next_session_id: u64,
+    active: Option<PbftSyncCertBundleSession>,
+    last_report: Option<PbftSyncCertBundleReportAck>,
 }
 
 /// CXX-free native owner of the complete PBFT application-service graph.
@@ -425,6 +452,7 @@ pub struct PbftService {
     pillar: PillarChainService,
     network: ConsensusNetworkService,
     sync_ingress: Mutex<Option<PbftSyncIngressSession>>,
+    sync_cert_bundle: Mutex<PbftSyncCertBundleRuntime>,
     committee_size: u64,
     number_of_proposers: u64,
     slashing_submitters: Vec<SlashingSubmitterIdentity>,
@@ -455,66 +483,27 @@ impl PbftService {
             .report_double_voting_proof_submission(proof_hash, transaction_inserted)
     }
 
-    /// Validates and admits one current-certificate bundle from PBFT sync.
+    /// Begins native current-certificate admission and advances until either an
+    /// external slashing effect or a terminal validation result is reached.
     ///
-    /// The complete bundle is decoded and checked for period, round, step,
-    /// vote type, and target-block consistency before any verified-vote state
-    /// is mutated. Votes are then validated and durably admitted in input
-    /// order through the native FinalChain composition. Every hundredth PBFT
-    /// period validates every VRF proof strictly; other periods select exactly
-    /// one vote with native process randomness, preserving the legacy policy
-    /// without accepting a caller-controlled selector.
-    ///
-    /// The result contains authoritative weighted vote bytes only after the
-    /// final native `2t+1` check succeeds. Slashing transaction effects are
-    /// returned in discovery order even when a later vote rejects, because
-    /// signing and transaction-pool insertion remain external leaf effects.
-    /// Persistence and infrastructure failures return an error after any
-    /// earlier admissions that were already durably published.
-    pub fn validate_and_admit_sync_cert_vote_bundle(
+    /// The complete bundle, threshold lookup, and ordered slashing submitter
+    /// account facts are resolved before any vote state is mutated. Only one
+    /// session may be active; callers must report every `AwaitingSlashing` step
+    /// before Rust admits the next vote.
+    pub fn begin_pbft_sync_cert_bundle(
         &self,
         final_chain: &FinalChain,
         block_period: u64,
         block_hash: H256,
         canonical_vote_rlps: Vec<Vec<u8>>,
-    ) -> Result<PbftSyncCertVoteBundleResult> {
-        if canonical_vote_rlps.is_empty() {
-            return self.validate_and_admit_sync_cert_vote_bundle_with_strict_index(
-                final_chain,
-                block_period,
-                block_hash,
-                canonical_vote_rlps,
-                None,
-            );
-        }
-        let strict_index = if block_period % 100 == 0 {
-            None
-        } else {
-            Some(rand::rng().random_range(0..canonical_vote_rlps.len()))
-        };
-        self.validate_and_admit_sync_cert_vote_bundle_with_strict_index(
-            final_chain,
-            block_period,
-            block_hash,
-            canonical_vote_rlps,
-            strict_index,
-        )
-    }
-
-    fn validate_and_admit_sync_cert_vote_bundle_with_strict_index(
-        &self,
-        final_chain: &FinalChain,
-        block_period: u64,
-        block_hash: H256,
-        canonical_vote_rlps: Vec<Vec<u8>>,
-        strict_index: Option<usize>,
-    ) -> Result<PbftSyncCertVoteBundleResult> {
+    ) -> Result<PbftSyncCertBundleStep> {
         let mut inspections = Vec::with_capacity(canonical_vote_rlps.len());
         let mut shape_votes = Vec::with_capacity(canonical_vote_rlps.len());
         for vote_rlp in &canonical_vote_rlps {
             let inspection = inspect_canonical_pbft_vote(vote_rlp)?;
             if inspection.status == PbftCanonicalVoteInspectionStatus::MalformedRlp {
-                return Ok(sync_cert_bundle_result(
+                return Ok(Self::sync_cert_terminal_step(
+                    0,
                     PbftSyncCertVoteBundleValidation {
                         valid: false,
                         status: PbftSyncCertVoteBundleStatus::LiveVoteInvalid,
@@ -522,7 +511,6 @@ impl PbftService {
                         two_t_plus_one: 0,
                         first_bad_vote_hash: inspection.vote_hash,
                     },
-                    Vec::new(),
                     Vec::new(),
                     Some(inspection.error_code.to_owned()),
                 ));
@@ -541,7 +529,7 @@ impl PbftService {
             inspections.push(inspection);
         }
 
-        let shape_validation = validate_pbft_sync_cert_vote_bundle(PbftSyncCertVoteBundleFact {
+        let shape = validate_pbft_sync_cert_vote_bundle(PbftSyncCertVoteBundleFact {
             block_period,
             block_hash,
             votes: shape_votes,
@@ -549,21 +537,15 @@ impl PbftService {
             two_t_plus_one_found: false,
             two_t_plus_one: 0,
         });
-        if !shape_validation.valid {
-            return Ok(sync_cert_bundle_result(
-                shape_validation,
-                Vec::new(),
-                Vec::new(),
-                None,
-            ));
-        }
-        if block_period % 100 != 0 {
-            anyhow::ensure!(
-                strict_index.is_some_and(|index| index < canonical_vote_rlps.len()),
-                "PBFT_SYNC_CERT_BUNDLE_STRICT_INDEX_OUT_OF_RANGE"
-            );
+        if !shape.valid {
+            return Ok(Self::sync_cert_terminal_step(0, shape, Vec::new(), None));
         }
 
+        let strict_index = if block_period.is_multiple_of(100) {
+            None
+        } else {
+            Some(rand::rng().random_range(0..canonical_vote_rlps.len()))
+        };
         let threshold_plan = self
             .verified_votes_two_t_plus_one_threshold_with_final_chain(
                 final_chain,
@@ -584,24 +566,19 @@ impl PbftService {
             (plan.status == PbftTwoTPlusOneThresholdStatus::Available && plan.has_threshold)
                 .then_some(plan.threshold)
         });
-        let manager = self.manager_snapshot();
-        let mut weighted_vote_rlps = Vec::with_capacity(canonical_vote_rlps.len());
-        let mut weighted_facts = Vec::with_capacity(canonical_vote_rlps.len());
-        let mut slashing_transaction_effects = Vec::new();
-        let mut total_weight = 0_u64;
-
-        for (index, (vote_rlp, inspection)) in canonical_vote_rlps
-            .into_iter()
-            .zip(inspections.into_iter())
-            .enumerate()
+        let mut canonical_votes = Vec::with_capacity(canonical_vote_rlps.len());
+        let mut validations = Vec::with_capacity(canonical_vote_rlps.len());
+        let mut prepared_weighted_vote_rlps = Vec::with_capacity(canonical_vote_rlps.len());
+        for (index, (vote_rlp, inspection)) in
+            canonical_vote_rlps.into_iter().zip(inspections).enumerate()
         {
-            let strict_vrf = block_period % 100 == 0 || strict_index == Some(index);
             let canonical = if inspection.signature_valid {
                 build_slashing_pbft_vote_payload(&vote_rlp)?.vote_rlp
             } else {
                 vote_rlp
             };
-            let result = self.admit_and_persist_verified_vote_with_final_chain(
+            let strict_vrf = block_period.is_multiple_of(100) || strict_index == Some(index);
+            let (validation, _) = self.validate_verified_vote_with_final_chain_internal(
                 final_chain,
                 &canonical,
                 PbftVoteAdmissionValidationRequest {
@@ -611,53 +588,315 @@ impl PbftService {
                     has_preverified_weight: false,
                     preverified_weight: 0,
                 },
+                false,
+            )?;
+            let prepared_weighted = (validation.accepted && validation.weight_calculated)
+                .then(|| {
+                    build_weighted_pbft_vote_payload(&canonical, validation.calculated_weight)
+                        .map(|payload| payload.vote_rlp)
+                })
+                .transpose()?;
+            canonical_votes.push(canonical);
+            validations.push(validation);
+            prepared_weighted_vote_rlps.push(prepared_weighted);
+        }
+        let submitters = if self.slashing_enabled {
+            resolve_slashing_submitter_facts(final_chain, &self.slashing_submitters)?
+        } else {
+            Vec::new()
+        };
+        let manager = self.manager_snapshot();
+
+        let session_id = {
+            let mut runtime = self
+                .sync_cert_bundle
+                .lock()
+                .map_err(|_| anyhow::anyhow!("PBFT_SYNC_CERT_BUNDLE_LOCK_POISONED"))?;
+            anyhow::ensure!(
+                runtime.active.is_none(),
+                "PBFT_SYNC_CERT_BUNDLE_ALREADY_ACTIVE"
+            );
+            let session_id = runtime.next_session_id;
+            runtime.next_session_id = runtime.next_session_id.wrapping_add(1).max(1);
+            runtime.last_report = None;
+            runtime.active = Some(PbftSyncCertBundleSession {
+                session_id,
+                block_period,
+                block_hash,
+                canonical_vote_rlps: canonical_votes,
+                validations,
+                prepared_weighted_vote_rlps,
+                threshold,
+                manager_period: manager.period,
+                manager_round: manager.round,
+                submitters,
+                next_vote: 0,
+                next_effect_id: 1,
+                pending_slashing: None,
+                weighted_vote_rlps: Vec::new(),
+                weighted_facts: Vec::new(),
+                total_weight: 0,
+            });
+            session_id
+        };
+        let step = match self.advance_pbft_sync_cert_bundle() {
+            Ok(step) => step,
+            Err(error) => {
+                self.abort_pbft_sync_cert_bundle(session_id)?;
+                return Err(error);
+            }
+        };
+        debug_assert_eq!(step.session_id, session_id);
+        Ok(step)
+    }
+
+    /// Reports the exact external slashing effect requested by a current-cert
+    /// session and resumes admission. Duplicate identical reports return the
+    /// cached next step; stale or mismatched reports leave the pending effect
+    /// unchanged.
+    pub fn report_pbft_sync_cert_bundle_slashing(
+        &self,
+        session_id: u64,
+        effect_id: u64,
+        proof_hash: H256,
+        transaction_inserted: bool,
+    ) -> Result<PbftSyncCertBundleStep> {
+        let mut runtime = self
+            .sync_cert_bundle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PBFT_SYNC_CERT_BUNDLE_LOCK_POISONED"))?;
+        if let Some(ack) = runtime.last_report.as_ref()
+            && ack.session_id == session_id
+            && ack.effect_id == effect_id
+            && ack.proof_hash == proof_hash
+            && ack.transaction_inserted == transaction_inserted
+        {
+            if let Some(step) = ack.step.as_ref() {
+                return Ok(step.clone());
+            }
+            drop(runtime);
+            return self.advance_and_cache_pbft_sync_cert_bundle_report(
+                session_id,
+                effect_id,
+                proof_hash,
+                transaction_inserted,
+            );
+        }
+        let mut session = runtime
+            .active
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("PBFT_SYNC_CERT_BUNDLE_REPORT_MISMATCH"))?;
+        let matches = session.session_id == session_id
+            && session
+                .pending_slashing
+                .as_ref()
+                .is_some_and(|(pending_id, effect)| {
+                    *pending_id == effect_id && effect.proof_hash == proof_hash
+                });
+        if !matches {
+            runtime.active = Some(session);
+            anyhow::bail!("PBFT_SYNC_CERT_BUNDLE_REPORT_MISMATCH");
+        }
+        if let Err(error) = self
+            .report_verified_vote_slashing_transaction_submission(proof_hash, transaction_inserted)
+        {
+            runtime.active = Some(session);
+            return Err(error);
+        }
+        session.pending_slashing = None;
+        runtime.active = Some(session);
+        runtime.last_report = Some(PbftSyncCertBundleReportAck {
+            session_id,
+            effect_id,
+            proof_hash,
+            transaction_inserted,
+            step: None,
+        });
+        drop(runtime);
+        self.advance_and_cache_pbft_sync_cert_bundle_report(
+            session_id,
+            effect_id,
+            proof_hash,
+            transaction_inserted,
+        )
+    }
+
+    /// Clears only the named active current-certificate session.
+    ///
+    /// This is the exception-unwind boundary for the external signing and
+    /// transaction executor. A stale session identifier is a no-op and cannot
+    /// clear a newer admission attempt.
+    pub fn abort_pbft_sync_cert_bundle(&self, session_id: u64) -> Result<bool> {
+        let mut runtime = self
+            .sync_cert_bundle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PBFT_SYNC_CERT_BUNDLE_LOCK_POISONED"))?;
+        let matches = runtime
+            .active
+            .as_ref()
+            .is_some_and(|session| session.session_id == session_id);
+        if matches {
+            runtime.active = None;
+        }
+        if runtime
+            .last_report
+            .as_ref()
+            .is_some_and(|ack| ack.session_id == session_id)
+        {
+            runtime.last_report = None;
+        }
+        Ok(matches)
+    }
+
+    fn advance_and_cache_pbft_sync_cert_bundle_report(
+        &self,
+        session_id: u64,
+        effect_id: u64,
+        proof_hash: H256,
+        transaction_inserted: bool,
+    ) -> Result<PbftSyncCertBundleStep> {
+        let step = self.advance_pbft_sync_cert_bundle()?;
+        let mut runtime = self
+            .sync_cert_bundle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PBFT_SYNC_CERT_BUNDLE_LOCK_POISONED"))?;
+        let ack = runtime
+            .last_report
+            .as_mut()
+            .filter(|ack| {
+                ack.session_id == session_id
+                    && ack.effect_id == effect_id
+                    && ack.proof_hash == proof_hash
+                    && ack.transaction_inserted == transaction_inserted
+            })
+            .ok_or_else(|| anyhow::anyhow!("PBFT_SYNC_CERT_BUNDLE_REPORT_ACK_LOST"))?;
+        ack.step = Some(step.clone());
+        Ok(step)
+    }
+
+    fn sync_cert_terminal_step(
+        session_id: u64,
+        validation: PbftSyncCertVoteBundleValidation,
+        weighted_vote_rlps: Vec<Vec<u8>>,
+        error_code: Option<String>,
+    ) -> PbftSyncCertBundleStep {
+        PbftSyncCertBundleStep {
+            action: if validation.valid {
+                PbftSyncCertBundleAction::Accepted
+            } else {
+                PbftSyncCertBundleAction::Rejected
+            },
+            session_id,
+            effect_id: 0,
+            status: validation.status,
+            total_weight: validation.total_weight,
+            two_t_plus_one: validation.two_t_plus_one,
+            first_bad_vote_hash: validation.first_bad_vote_hash,
+            error_code: error_code
+                .unwrap_or_else(|| sync_cert_bundle_error_code(validation.status).to_owned()),
+            weighted_vote_rlps: if validation.valid {
+                weighted_vote_rlps
+            } else {
+                Vec::new()
+            },
+            slashing_transaction_effect: None,
+        }
+    }
+
+    fn advance_pbft_sync_cert_bundle(&self) -> Result<PbftSyncCertBundleStep> {
+        let mut runtime = self
+            .sync_cert_bundle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PBFT_SYNC_CERT_BUNDLE_LOCK_POISONED"))?;
+        let mut session = runtime
+            .active
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("PBFT_SYNC_CERT_BUNDLE_NO_SESSION"))?;
+        if let Some((effect_id, effect)) = session.pending_slashing.as_ref() {
+            let step = PbftSyncCertBundleStep {
+                action: PbftSyncCertBundleAction::AwaitingSlashing,
+                session_id: session.session_id,
+                effect_id: *effect_id,
+                status: PbftSyncCertVoteBundleStatus::Accepted,
+                total_weight: session.total_weight,
+                two_t_plus_one: session.threshold.unwrap_or(0),
+                first_bad_vote_hash: H256::zero(),
+                error_code: String::new(),
+                weighted_vote_rlps: Vec::new(),
+                slashing_transaction_effect: Some(effect.clone()),
+            };
+            runtime.active = Some(session);
+            return Ok(step);
+        }
+
+        while session.next_vote < session.canonical_vote_rlps.len() {
+            let index = session.next_vote;
+            let canonical = session.canonical_vote_rlps[index].clone();
+            let validation = session.validations[index].clone();
+            let result = match self.admit_and_persist_verified_vote_with_slashing_facts(
+                &canonical,
+                &validation,
                 PbftVoteEventFactFlags {
                     vote_already_known: false,
                     carries_proposed_block: true,
                     valid_stale_reward_vote: false,
                 },
                 PbftVoteProgressContext {
-                    current_period: manager.period,
-                    current_round: manager.round,
+                    current_period: session.manager_period,
+                    current_round: session.manager_round,
                     max_future_period_delta: u64::MAX,
-                    two_t_plus_one_threshold: threshold,
+                    two_t_plus_one_threshold: session.threshold,
                     require_proposed_block_sidecar: false,
                     slashing_enabled: true,
                 },
-                &self.slashing_submitters,
-            )?;
+                &session.submitters,
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    runtime.active = Some(session);
+                    return Err(error);
+                }
+            };
             if result.transaction.persistence_status == PbftVoteAdmissionPersistenceStatus::Rejected
             {
-                anyhow::bail!(
-                    "PBFT_SYNC_CERT_BUNDLE_PERSISTENCE_REJECTED: {}",
-                    result.transaction.persistence_error_code
-                );
-            }
-            if let Some(effect) = result
-                .slashing_transaction_effect
-                .filter(|effect| effect.status.as_u8() == 0)
-            {
-                slashing_transaction_effects.push(effect);
-            }
-            if !result.validation.accepted || !result.validation.weight_calculated {
-                return Ok(sync_cert_bundle_result(
+                let step = Self::sync_cert_terminal_step(
+                    session.session_id,
                     PbftSyncCertVoteBundleValidation {
                         valid: false,
                         status: PbftSyncCertVoteBundleStatus::LiveVoteInvalid,
-                        total_weight,
-                        two_t_plus_one: threshold.unwrap_or(0),
+                        total_weight: session.total_weight,
+                        two_t_plus_one: session.threshold.unwrap_or(0),
                         first_bad_vote_hash: result.validation.vote_hash,
                     },
-                    weighted_vote_rlps,
-                    slashing_transaction_effects,
+                    Vec::new(),
+                    Some(format!(
+                        "PBFT_SYNC_CERT_BUNDLE_PERSISTENCE_REJECTED: {}",
+                        result.transaction.persistence_error_code
+                    )),
+                );
+                return Ok(step);
+            }
+            if !result.validation.accepted || !result.validation.weight_calculated {
+                return Ok(Self::sync_cert_terminal_step(
+                    session.session_id,
+                    PbftSyncCertVoteBundleValidation {
+                        valid: false,
+                        status: PbftSyncCertVoteBundleStatus::LiveVoteInvalid,
+                        total_weight: session.total_weight,
+                        two_t_plus_one: session.threshold.unwrap_or(0),
+                        first_bad_vote_hash: result.validation.vote_hash,
+                    },
+                    Vec::new(),
                     Some(result.validation.error_code.to_owned()),
                 ));
             }
 
             let weight = result.validation.calculated_weight;
-            let weighted = build_weighted_pbft_vote_payload(&canonical, weight)?.vote_rlp;
-            total_weight = total_weight.saturating_add(weight);
-            weighted_facts.push(PbftSyncCertVoteFact {
+            let weighted = session.prepared_weighted_vote_rlps[index]
+                .clone()
+                .expect("accepted preflight validation must prepare weighted vote bytes");
+            session.total_weight = session.total_weight.saturating_add(weight);
+            session.weighted_facts.push(PbftSyncCertVoteFact {
                 vote_hash: result.validation.vote_hash,
                 block_hash: result.validation.block_hash,
                 period: result.validation.period,
@@ -668,22 +907,45 @@ impl PbftService {
                 weight_present: true,
                 weight,
             });
-            weighted_vote_rlps.push(weighted);
+            session.weighted_vote_rlps.push(weighted);
+            session.next_vote += 1;
+
+            if let Some(effect) = result
+                .slashing_transaction_effect
+                .filter(|effect| effect.status.as_u8() == 0)
+            {
+                let effect_id = session.next_effect_id;
+                session.next_effect_id = session.next_effect_id.wrapping_add(1).max(1);
+                session.pending_slashing = Some((effect_id, effect.clone()));
+                let step = PbftSyncCertBundleStep {
+                    action: PbftSyncCertBundleAction::AwaitingSlashing,
+                    session_id: session.session_id,
+                    effect_id,
+                    status: PbftSyncCertVoteBundleStatus::Accepted,
+                    total_weight: session.total_weight,
+                    two_t_plus_one: session.threshold.unwrap_or(0),
+                    first_bad_vote_hash: H256::zero(),
+                    error_code: String::new(),
+                    weighted_vote_rlps: Vec::new(),
+                    slashing_transaction_effect: Some(effect),
+                };
+                runtime.active = Some(session);
+                return Ok(step);
+            }
         }
 
-        let threshold_validation =
-            validate_pbft_sync_cert_vote_bundle(PbftSyncCertVoteBundleFact {
-                block_period,
-                block_hash,
-                votes: weighted_facts,
-                check_weight_threshold: true,
-                two_t_plus_one_found: threshold.is_some(),
-                two_t_plus_one: threshold.unwrap_or(0),
-            });
-        Ok(sync_cert_bundle_result(
-            threshold_validation,
-            weighted_vote_rlps,
-            slashing_transaction_effects,
+        let validation = validate_pbft_sync_cert_vote_bundle(PbftSyncCertVoteBundleFact {
+            block_period: session.block_period,
+            block_hash: session.block_hash,
+            votes: std::mem::take(&mut session.weighted_facts),
+            check_weight_threshold: true,
+            two_t_plus_one_found: session.threshold.is_some(),
+            two_t_plus_one: session.threshold.unwrap_or(0),
+        });
+        Ok(Self::sync_cert_terminal_step(
+            session.session_id,
+            validation,
+            std::mem::take(&mut session.weighted_vote_rlps),
             None,
         ))
     }
@@ -1665,6 +1927,11 @@ impl PbftService {
             pillar,
             network,
             sync_ingress: Mutex::new(None),
+            sync_cert_bundle: Mutex::new(PbftSyncCertBundleRuntime {
+                next_session_id: 1,
+                active: None,
+                last_report: None,
+            }),
             committee_size: config.committee_size,
             number_of_proposers: config.number_of_proposers,
             slashing_enabled: config.report_malicious_behaviour,
@@ -2784,12 +3051,30 @@ impl PbftService {
             request,
             false,
         )?;
+        let submitters = resolve_slashing_submitter_facts(final_chain, slashing_submitters)?;
+        self.admit_and_persist_verified_vote_with_slashing_facts(
+            canonical_vote_rlp,
+            &validation,
+            flags,
+            context,
+            &submitters,
+        )
+    }
+
+    fn admit_and_persist_verified_vote_with_slashing_facts(
+        &self,
+        canonical_vote_rlp: &[u8],
+        validation: &PbftCanonicalVoteValidation,
+        flags: PbftVoteEventFactFlags,
+        context: PbftVoteProgressContext,
+        submitters: &[SlashingSubmitterFact],
+    ) -> Result<PbftVoteAdmissionWithSlashingResult> {
         let transaction = self
             .verified_votes()
             .lock()?
             .admit_validated_vote_transactional(
                 canonical_vote_rlp,
-                &validation,
+                validation,
                 flags,
                 context,
                 |write| persist_pbft_vote_progress(self.verified_votes().storage(), write),
@@ -2809,8 +3094,6 @@ impl PbftService {
                         .ok_or_else(|| {
                             anyhow::anyhow!("PBFT_SERVICE_SLASHING_CONFLICT_MISSING_PROGRESS_FACT")
                         })?;
-                    let submitters =
-                        resolve_slashing_submitter_facts(final_chain, slashing_submitters)?;
                     self.slashing
                         .plan_double_voting_proof(DoubleVotingProofInput {
                             vote_a_hash: payloads.incoming.hash,
@@ -2823,7 +3106,7 @@ impl PbftService {
                             vote_b_step: progress_fact.identity.step,
                             vote_a_rlp: payloads.incoming.vote_rlp.clone(),
                             vote_b_rlp: payloads.conflicting.vote_rlp.clone(),
-                            submitters,
+                            submitters: submitters.to_vec(),
                         })
                         .map(Into::into)
                 })
@@ -2833,7 +3116,7 @@ impl PbftService {
         };
 
         Ok(PbftVoteAdmissionWithSlashingResult {
-            validation,
+            validation: validation.clone(),
             transaction,
             slashing_transaction_effect,
         })
@@ -3462,6 +3745,162 @@ mod tests {
         assert_eq!(submitters.len(), 2);
         assert_eq!(submitters[1].wallet_index, 7);
         assert_eq!(submitters[1].nonce, U256::from(7));
+    }
+
+    #[test]
+    fn sync_cert_bundle_rejects_shape_before_verified_vote_mutation() {
+        let (path, storage) = temp_storage("pbft_sync_cert_shape_preflight");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter_from_secret(&NODE_SECRET),
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+        let block_hash = H256::repeat_byte(0x81);
+        let wrong_period_vote = generated_vote_at_period(block_hash, 2);
+
+        let result = service
+            .begin_pbft_sync_cert_bundle(
+                &final_chain,
+                1,
+                block_hash,
+                vec![wrong_period_vote.vote_rlp],
+            )
+            .unwrap();
+
+        assert_eq!(result.action, PbftSyncCertBundleAction::Rejected);
+        assert_eq!(result.status, PbftSyncCertVoteBundleStatus::PeriodMismatch);
+        assert!(result.weighted_vote_rlps.is_empty());
+        assert!(result.slashing_transaction_effect.is_none());
+        assert_eq!(service.verified_votes_size().unwrap(), 0);
+
+        drop(final_chain);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sync_cert_bundle_pauses_reports_exact_effect_and_then_accepts() {
+        let (path, storage) = temp_storage("pbft_sync_cert_resumable_slashing");
+        let voter = voter_from_secret(&NODE_SECRET);
+        let submitter = [0x78; 20];
+        let mut service_config = config(0);
+        service_config.slashing_submitters = vec![SlashingSubmitterIdentity {
+            wallet_index: 0,
+            address: submitter,
+        }];
+        let service = PbftService::restore(storage.clone(), service_config).unwrap();
+        let final_chain = final_chain_with_vote_validator_and_account(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+            submitter,
+        );
+        let conflicting = generated_vote_at_period(H256::repeat_byte(0x82), 1);
+        let initial = service
+            .admit_and_persist_verified_vote_with_final_chain(
+                &final_chain,
+                &conflicting.vote_rlp,
+                vote_validation_request(false, 0),
+                PbftVoteEventFactFlags {
+                    vote_already_known: false,
+                    carries_proposed_block: true,
+                    valid_stale_reward_vote: false,
+                },
+                PbftVoteProgressContext {
+                    current_period: 1,
+                    current_round: 1,
+                    max_future_period_delta: u64::MAX,
+                    two_t_plus_one_threshold: Some(1),
+                    require_proposed_block_sidecar: false,
+                    slashing_enabled: true,
+                },
+                &[],
+            )
+            .unwrap();
+        assert!(initial.validation.accepted);
+
+        let block_hash = H256::repeat_byte(0x83);
+        let incoming = generated_vote_at_period(block_hash, 1);
+        let awaiting = service
+            .begin_pbft_sync_cert_bundle(&final_chain, 1, block_hash, vec![incoming.vote_rlp])
+            .unwrap();
+        assert_eq!(awaiting.action, PbftSyncCertBundleAction::AwaitingSlashing);
+        assert!(awaiting.weighted_vote_rlps.is_empty());
+        let effect = awaiting
+            .slashing_transaction_effect
+            .as_ref()
+            .expect("conflict pauses for one external effect");
+
+        assert!(
+            service
+                .report_pbft_sync_cert_bundle_slashing(
+                    awaiting.session_id,
+                    awaiting.effect_id + 1,
+                    effect.proof_hash,
+                    false,
+                )
+                .is_err()
+        );
+        let accepted = service
+            .report_pbft_sync_cert_bundle_slashing(
+                awaiting.session_id,
+                awaiting.effect_id,
+                effect.proof_hash,
+                false,
+            )
+            .unwrap();
+        assert_eq!(accepted.action, PbftSyncCertBundleAction::Accepted);
+        assert_eq!(accepted.weighted_vote_rlps.len(), 1);
+        assert!(accepted.slashing_transaction_effect.is_none());
+
+        let duplicate = service
+            .report_pbft_sync_cert_bundle_slashing(
+                awaiting.session_id,
+                awaiting.effect_id,
+                effect.proof_hash,
+                false,
+            )
+            .unwrap();
+        assert_eq!(duplicate, accepted);
+
+        let retry_hash = H256::repeat_byte(0x84);
+        let retry_vote = generated_vote_at_period(retry_hash, 1);
+        let pending = service
+            .begin_pbft_sync_cert_bundle(
+                &final_chain,
+                1,
+                retry_hash,
+                vec![retry_vote.vote_rlp.clone()],
+            )
+            .unwrap();
+        assert_eq!(pending.action, PbftSyncCertBundleAction::AwaitingSlashing);
+        assert!(
+            !service
+                .abort_pbft_sync_cert_bundle(pending.session_id + 1)
+                .unwrap()
+        );
+        assert!(
+            service
+                .abort_pbft_sync_cert_bundle(pending.session_id)
+                .unwrap()
+        );
+        let restarted = service
+            .begin_pbft_sync_cert_bundle(&final_chain, 1, retry_hash, vec![retry_vote.vote_rlp])
+            .unwrap();
+        assert_eq!(restarted.action, PbftSyncCertBundleAction::AwaitingSlashing);
+        assert_ne!(restarted.session_id, pending.session_id);
+        assert!(
+            service
+                .abort_pbft_sync_cert_bundle(restarted.session_id)
+                .unwrap()
+        );
+
+        drop(final_chain);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
     }
 
     fn signed_period_one_sync_packet() -> (Vec<u8>, Vec<u8>) {

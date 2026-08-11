@@ -316,6 +316,10 @@ The bridge module retains only CXX carrier/status/error conversion plus focused
 cert-vote sentinels. Its RocksDB-backed admission-session and egress protocol
 fixture is replaced by native service coverage and focused pure carrier/status
 projection tests.
+Current-certificate admission follows the same ownership rule through a separate native session: complete canonical
+shape and FinalChain facts are preflighted, votes publish sequentially, each slashing transaction pauses progress until
+an exact session/effect/proof report arrives, and only terminal acceptance exposes weighted payloads. The single CXX
+command endpoint covers begin, report, and exact unwind abort without introducing a bridge-owned runtime.
 The PBFT manager bridge suite likewise no longer repeats daemon ineligible
 sleep, proposal ordering/build, broadcast-counter, or deadline-wait behavior.
 Those rules remain covered by native manager tests; bridge coverage stays
@@ -532,6 +536,13 @@ transaction construction/signing/insertion, and timers; it no longer materialize
 certificate votes. Database replay still submits exact stored bytes through the narrow queue operation. The Rust-mode
 `PbftManager::periodDataQueuePush` facade, vote-RLP helper, precheck export, and redundant reward-period/block-existence
 facades are deleted.
+
+Current-certificate processing after queue pop is native as well. `PbftService` decodes and preflights the complete
+bundle, selects the strict-VRF validation policy, validates and durably admits votes against native FinalChain state,
+computes authoritative weights and the certificate threshold, and returns only ordered slashing signing/submission
+effects plus accepted weighted RLP. The PBFT overlay retains those RLP carriers without constructing `PbftVote` objects
+until acceptance, then materializes them solely for the still-external finalization push. The standalone bridge fact
+validator and the VoteManager/PbftManager validation facades are deleted.
 
 ### 6. Contract PBFT and vote shims
 
