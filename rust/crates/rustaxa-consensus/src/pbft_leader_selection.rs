@@ -1,22 +1,25 @@
 //! Native cross-sibling PBFT leader selection.
 //!
 //! Leader selection snapshots proposal votes together with proposed-block and
-//! finalized-chain membership, releases every native lock while the retained
-//! C++ block validator runs, then rebuilds and fingerprints the same state
+//! finalized-chain membership, releases every native lock while composed
+//! FinalChain/DAG validation runs, then rebuilds and fingerprints the same state
 //! before publishing proposed-block validity. This module owns that complete
 //! stale-safe task. The PBFT manager serialization domain protects finalized
 //! membership writes while the sibling locks protect their live state; CXX
 //! adapters only convert owned inputs and outputs.
 
 use crate::{
+    FinalChain,
+    dag_transaction_service::DagTransactionService,
     pbft_manager::{
-        PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateInputFact,
-        PbftManagerLeaderSelectionStatus, plan_pbft_manager_leader_candidates,
+        PbftManagerBlockValidationAction, PbftManagerLeaderBlockValidationStatus,
+        PbftManagerLeaderCandidateInputFact, PbftManagerLeaderSelectionStatus,
+        plan_pbft_manager_leader_candidates,
     },
-    pbft_service::PbftService,
+    pbft_service::{self, PbftProposedBlockAdmissionRequest, PbftService},
     pbft_vote_storage::PbftVoteStorageRecord,
     pbft_vote_validation::inspect_canonical_pbft_vote,
-    proposed_blocks::ProposedBlocks,
+    proposed_blocks::{ProposedBlockEntry, ProposedBlocks},
     verified_votes::PbftVoteType,
 };
 use anyhow::{Result, anyhow};
@@ -133,6 +136,27 @@ pub struct PbftLeaderSelectionFinishRequest {
     pub snapshot_fingerprint: [u8; 32],
     /// Exact external validation report set.
     pub validations: Vec<PbftLeaderCandidateValidation>,
+}
+
+/// Policy input for one complete authoritative leader-selection operation.
+///
+/// The period and round select already-verified proposal votes. Gas and
+/// hardfork policy configure canonical proposed-block validation after the
+/// native snapshot releases its locks. The operation returns typed empty,
+/// ineligible, or stale results; malformed payloads, storage failures, and
+/// non-terminal validation contracts are errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PbftComposedLeaderSelectionRequest {
+    /// Requested PBFT period.
+    pub period: u64,
+    /// Requested PBFT round.
+    pub round: u64,
+    /// Gas limit used by DAG preparation.
+    pub pbft_gas_limit: u64,
+    /// Whether the active hardfork requires decodable block extra-data.
+    pub extra_data_required: bool,
+    /// Whether a local pillar anchor is required.
+    pub pillar_block_required: bool,
 }
 
 /// Owned result of finishing one leader selection.
@@ -327,6 +351,79 @@ impl PbftService {
             selected_block_rlp: selected.proposed_block_rlp.clone(),
         })
     }
+
+    /// Selects one leader candidate in a single composed request.
+    ///
+    /// The method reuses snapshot and finish operations while validating each
+    /// externally validated candidate through canonical block decoding and native
+    /// composed validation against FinalChain and DAG.
+    pub fn select_leader_composed(
+        &self,
+        final_chain: &FinalChain,
+        dag_transaction_service: &DagTransactionService,
+        request: PbftComposedLeaderSelectionRequest,
+    ) -> Result<PbftLeaderSelectionResult> {
+        let snapshot = self.prepare_leader_selection(request.period, request.round)?;
+        let mut validations = Vec::with_capacity(snapshot.candidates.len());
+
+        for candidate in &snapshot.candidates {
+            if !candidate.needs_external_validation {
+                continue;
+            }
+            let entry = ProposedBlockEntry {
+                period: request.period,
+                block_hash: candidate.block_hash,
+                block_rlp: candidate.proposed_block_rlp.clone(),
+                pivot_hash: candidate.pivot_hash,
+                is_valid: candidate.proposed_block_is_valid,
+            };
+            let composed = pbft_service::proposed_block_validation_candidate(
+                &entry,
+                PbftProposedBlockAdmissionRequest {
+                    period: request.period,
+                    block_hash: candidate.block_hash,
+                    pbft_gas_limit: request.pbft_gas_limit,
+                    extra_data_required: request.extra_data_required,
+                    pillar_block_required: request.pillar_block_required,
+                },
+            )?;
+            let validation_plan =
+                self.validate_pbft_block_composed(final_chain, dag_transaction_service, composed)?;
+            let status = match validation_plan.action {
+                PbftManagerBlockValidationAction::Accept => {
+                    PbftLeaderCandidateValidationStatus::Validated
+                }
+                PbftManagerBlockValidationAction::Reject
+                | PbftManagerBlockValidationAction::WaitForFinalization => {
+                    PbftLeaderCandidateValidationStatus::Rejected
+                }
+                PbftManagerBlockValidationAction::ContractError => {
+                    return Err(anyhow!(
+                        "PBFT_COMPOSED_LEADER_SELECTION_VALIDATION_CONTRACT_ERROR: {}",
+                        validation_plan.error_code
+                    ));
+                }
+                PbftManagerBlockValidationAction::RunCheck => {
+                    return Err(anyhow!(
+                        "PBFT_COMPOSED_LEADER_SELECTION_VALIDATION_NON_TERMINAL: {}",
+                        validation_plan.error_code
+                    ));
+                }
+            };
+            validations.push(PbftLeaderCandidateValidation {
+                vote_hash: candidate.vote_hash,
+                block_hash: candidate.block_hash,
+                status,
+            });
+        }
+
+        self.finish_leader_selection(PbftLeaderSelectionFinishRequest {
+            period: request.period,
+            round: request.round,
+            snapshot_fingerprint: snapshot.snapshot_fingerprint,
+            validations,
+        })
+    }
 }
 
 fn build_leader_selection_snapshot(
@@ -482,14 +579,25 @@ fn empty_result(status: PbftLeaderSelectionStatus, error_code: &str) -> PbftLead
 mod tests {
     use super::*;
     use crate::{
+        dag::{dag_manager_block_from_rlp, save_dag_block_to_storage},
+        dag_service::DagServiceConfig,
+        dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig},
+        gas_pricer::GasPricerConfig,
         pbft_service::PbftServiceConfig,
         pbft_vote_generation::{PbftVoteGenerationInput, generate_pbft_vote},
         pbft_vote_payload::build_weighted_pbft_vote_payload,
+        sortition::{SortitionConfig, SortitionParams, VdfParams, VrfParams},
+        transaction_service::TransactionServiceConfig,
         verified_votes::VerifiedVote,
     };
-    use ethereum_types::H160;
+    use ethereum_types::{H160, U256};
     use k256::ecdsa::SigningKey;
+    use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
+    use rustaxa_types::{
+        DposTokenAmount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
+        codec::rlp::pbft::SignedPbftBlockRlp, pbft::PbftBlockLink,
+    };
     use std::time::Duration;
     use std::{
         sync::{Arc, mpsc},
@@ -596,12 +704,246 @@ mod tests {
         pivot_hash: [u8; 32],
         block_rlp: Vec<u8>,
     ) {
+        insert_proposed_block_with_period(service, 12, block_hash, pivot_hash, block_rlp);
+    }
+
+    fn insert_proposed_block_with_period(
+        service: &PbftService,
+        period: u64,
+        block_hash: [u8; 32],
+        pivot_hash: [u8; 32],
+        block_rlp: Vec<u8>,
+    ) {
         assert!(service.proposed_blocks().write().unwrap().push(
-            12,
+            period,
             H256::from(block_hash),
             H256::from(pivot_hash),
             block_rlp,
         ));
+    }
+
+    fn insert_proposal_vote_with_period(
+        service: &PbftService,
+        block_hash: [u8; 32],
+        node_secret: [u8; 32],
+        weight: u64,
+        period: u64,
+    ) -> H256 {
+        let generated = generate_pbft_vote(PbftVoteGenerationInput {
+            block_hash: block_hash.into(),
+            vote_type: PbftVoteType::Propose,
+            period,
+            round: 2,
+            step: 1,
+            node_secret,
+            vrf_secret: VRF_SECRET,
+            expected_voter: voter_from_secret(&node_secret),
+            expected_vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+        })
+        .unwrap();
+        let vote = VerifiedVote::new(
+            generated.vote_hash,
+            generated.block_hash,
+            generated.voter,
+            generated.period,
+            generated.round,
+            generated.step,
+            generated.vote_type,
+            weight,
+        )
+        .unwrap();
+        let weighted = build_weighted_pbft_vote_payload(&generated.vote_rlp, weight).unwrap();
+        let mut runtime = service.verified_votes().lock().unwrap();
+        runtime
+            .verified_votes_mut()
+            .add_verified_vote(vote.clone(), None)
+            .unwrap();
+        runtime.retain_weighted_payload(&vote, weighted).unwrap();
+        generated.vote_hash
+    }
+
+    fn test_dag_transaction_service_config() -> DagTransactionServiceConfig {
+        DagTransactionServiceConfig {
+            transaction: TransactionServiceConfig {
+                queue_max_size: 16,
+                gas_pricer_config: GasPricerConfig {
+                    percentile: 50,
+                    minimum_price: U256::one(),
+                    history_blocks: 0,
+                    is_light_node: false,
+                    blocks_gas_pricer: false,
+                },
+                proposal_dag_gas_limit: 1_000_000,
+            },
+            dag: DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+            sortition: SortitionConfig {
+                params: SortitionParams {
+                    vrf: VrfParams {
+                        threshold_upper: 0x100,
+                    },
+                    vdf: VdfParams {
+                        difficulty_min: 1,
+                        difficulty_max: 10,
+                        difficulty_stale: 5,
+                        lambda_bound: 100,
+                    },
+                },
+                changes_count_for_average: 8,
+                dag_efficiency_targets: (5_000, 10_000),
+                changing_interval: 10,
+                computation_interval: 5,
+            },
+        }
+    }
+
+    fn test_dag_transaction_service(storage: &Arc<Storage>) -> DagTransactionService {
+        DagTransactionService::restore(storage.clone(), test_dag_transaction_service_config())
+            .unwrap()
+    }
+
+    fn test_final_chain(storage: &Arc<Storage>) -> FinalChain {
+        let stake = U256::from(5_000u64).to_big_endian().to_vec();
+        FinalChain::new(
+            storage.clone(),
+            0.into(),
+            0,
+            Vec::new(),
+            vec![GenesisValidator {
+                address: [1u8; 20],
+                vrf_key: [1u8; 32],
+                total_stake: stake.clone(),
+                delegations: vec![([1u8; 20], stake)],
+                metadata: GenesisValidatorMetadata {
+                    owner: [1u8; 20],
+                    commission: 0,
+                    description: String::new(),
+                    endpoint: String::new(),
+                },
+            }],
+            GenesisDposConfig {
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 2,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn test_dag_order_hash(
+        payload: &crate::dag_service::DagRuntimeNonFinalizedSyncPayload,
+    ) -> H256 {
+        let mut stream = RlpStream::new_list(1);
+        stream.begin_list(payload.storage.blocks.len());
+        for block in &payload.storage.blocks {
+            let bytes: &[u8] = block.hash.as_bytes();
+            stream.append(&bytes);
+        }
+        let mut out = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&stream.out());
+        hasher.finalize(&mut out);
+        H256(out)
+    }
+
+    fn dag_block_with_payload(
+        pivot_hash: H256,
+        level: u64,
+        transactions: &[H256],
+        gas_estimation: u64,
+    ) -> Vec<u8> {
+        let mut vdf = RlpStream::new_list(4);
+        vdf.append(&vec![0x11_u8; 80]);
+        vdf.append(&vec![0x22_u8]);
+        vdf.append(&vec![0x33_u8]);
+        vdf.append(&1_u16);
+
+        let mut block = RlpStream::new_list(8);
+        block.append(&pivot_hash);
+        block.append(&level);
+        block.append(&0_u64);
+        block.append(&vdf.out().to_vec());
+        block.begin_list(0);
+        block.begin_list(transactions.len());
+        for hash in transactions {
+            block.append(hash);
+        }
+        block.append(&&[0_u8; 65][..]);
+        block.append(&gas_estimation);
+        block.out().to_vec()
+    }
+
+    fn composed_signed_pbft_block(period: u64) -> (Vec<u8>, PbftBlockLink) {
+        let append_unsigned = |stream: &mut RlpStream| {
+            stream.append(&H256::from_low_u64_be(period));
+            stream.append(&H256::from_low_u64_be(period + 1));
+            stream.append(&H256::from_low_u64_be(period + 2));
+            stream.append(&H256::from_low_u64_be(period + 2));
+            stream.append(&period);
+            stream.append(&1_u64);
+            stream.begin_list(0);
+        };
+        let mut unsigned = RlpStream::new_list(7);
+        append_unsigned(&mut unsigned);
+        let mut digest = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&unsigned.out());
+        hasher.finalize(&mut digest);
+        let signing_key = SigningKey::from_slice(&[0x63; 32]).unwrap();
+        let (signature, recovery_id) = signing_key.sign_prehash_recoverable(&digest).unwrap();
+        let mut signature = signature.to_bytes().to_vec();
+        signature.push(recovery_id.to_byte());
+
+        let mut stream = RlpStream::new_list(8);
+        append_unsigned(&mut stream);
+        stream.append(&signature);
+        let block_rlp = stream.out().to_vec();
+        let link =
+            PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block_rlp)).expect("block link parse");
+        (block_rlp, link)
+    }
+
+    fn composed_signed_pbft_block_with_parts(
+        period: u64,
+        pivot_hash: H256,
+        order_hash: H256,
+        final_chain_hash: H256,
+    ) -> (Vec<u8>, PbftBlockLink) {
+        let append_unsigned = |stream: &mut RlpStream| {
+            stream.append(&H256::zero());
+            stream.append(&pivot_hash);
+            stream.append(&order_hash);
+            stream.append(&final_chain_hash);
+            stream.append(&period);
+            stream.append(&0_u64);
+            stream.begin_list(0);
+        };
+        let mut unsigned = RlpStream::new_list(7);
+        append_unsigned(&mut unsigned);
+        let mut digest = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&unsigned.out());
+        hasher.finalize(&mut digest);
+        let signing_key = SigningKey::from_slice(&[0x63; 32]).unwrap();
+        let (signature, recovery_id) = signing_key.sign_prehash_recoverable(&digest).unwrap();
+        let mut signature = signature.to_bytes().to_vec();
+        signature.push(recovery_id.to_byte());
+
+        let mut stream = RlpStream::new_list(8);
+        append_unsigned(&mut stream);
+        stream.append(&signature);
+        let block_rlp = stream.out().to_vec();
+        let link =
+            PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block_rlp)).expect("block link parse");
+        (block_rlp, link)
     }
 
     fn validation(
@@ -625,6 +967,170 @@ mod tests {
             snapshot_fingerprint: snapshot.snapshot_fingerprint,
             validations,
         }
+    }
+
+    #[test]
+    fn select_leader_composed_no_candidate() {
+        let (service, storage) = test_service("select_composed_no_candidate");
+        let final_chain = test_final_chain(&storage);
+        let dag_transaction_service = test_dag_transaction_service(&storage);
+
+        let result = service
+            .select_leader_composed(
+                &final_chain,
+                &dag_transaction_service,
+                PbftComposedLeaderSelectionRequest {
+                    period: 12,
+                    round: 2,
+                    pbft_gas_limit: 1_000_000,
+                    extra_data_required: false,
+                    pillar_block_required: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.status, PbftLeaderSelectionStatus::NoCandidates);
+        assert!(!result.selected);
+    }
+
+    #[test]
+    fn select_leader_composed_selected() {
+        let (service, storage) = test_service("select_composed_selected");
+        let final_chain = test_final_chain(&storage);
+        let dag_transaction_service = test_dag_transaction_service(&storage);
+        let selected_period = 1;
+        let dag_block_rlp = dag_block_with_payload(H256::repeat_byte(1), 1, &[], 0);
+        let dag_block = dag_manager_block_from_rlp(&dag_block_rlp).unwrap();
+        dag_transaction_service
+            .lock_dag()
+            .unwrap()
+            .state
+            .add_block(dag_manager_block_from_rlp(&dag_block_rlp).unwrap())
+            .unwrap();
+        let dag_block_hash = dag_block.hash;
+        save_dag_block_to_storage(storage.as_ref(), dag_block_hash, 1, 0, &dag_block_rlp).unwrap();
+        let prepared = dag_transaction_service
+            .prepare_pbft_candidate_payload(selected_period, dag_block_hash)
+            .unwrap()
+            .expect("dag candidate payload");
+        let order_hash = test_dag_order_hash(&prepared.payload);
+
+        let (block_rlp, link) = composed_signed_pbft_block_with_parts(
+            selected_period,
+            dag_block_hash,
+            order_hash,
+            H256::zero(),
+        );
+        let block_hash: [u8; 32] = link.block_hash.into();
+        let pivot_hash: [u8; 32] = link.pivot_dag_block_hash.into();
+        let vote_hash =
+            insert_proposal_vote_with_period(&service, block_hash, NODE_SECRET, 4, selected_period);
+        insert_proposed_block_with_period(
+            &service,
+            selected_period,
+            block_hash,
+            pivot_hash,
+            block_rlp.clone(),
+        );
+
+        let entry = service
+            .proposed_blocks()
+            .read()
+            .unwrap()
+            .get(selected_period, link.block_hash)
+            .unwrap()
+            .clone();
+        let candidate = pbft_service::proposed_block_validation_candidate(
+            &entry,
+            PbftProposedBlockAdmissionRequest {
+                period: selected_period,
+                block_hash: link.block_hash,
+                pbft_gas_limit: 1_000_000,
+                extra_data_required: false,
+                pillar_block_required: false,
+            },
+        )
+        .unwrap();
+        let validation = service
+            .validate_pbft_block_composed(&final_chain, &dag_transaction_service, candidate)
+            .unwrap();
+        assert_eq!(
+            validation.action,
+            PbftManagerBlockValidationAction::Accept,
+            "{validation:?}"
+        );
+
+        let result = service
+            .select_leader_composed(
+                &final_chain,
+                &dag_transaction_service,
+                PbftComposedLeaderSelectionRequest {
+                    period: selected_period,
+                    round: 2,
+                    pbft_gas_limit: 1_000_000,
+                    extra_data_required: false,
+                    pillar_block_required: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            result.status,
+            PbftLeaderSelectionStatus::Selected,
+            "{result:?}"
+        );
+        assert!(result.selected);
+        assert_eq!(result.selected_vote.hash, vote_hash);
+        assert_eq!(result.selected_block_rlp, block_rlp);
+        assert!(
+            service
+                .proposed_blocks()
+                .read()
+                .unwrap()
+                .get(selected_period, link.block_hash)
+                .unwrap()
+                .is_valid
+        );
+    }
+
+    #[test]
+    fn select_leader_composed_rejected() {
+        let (service, storage) = test_service("select_composed_rejected");
+        let final_chain = test_final_chain(&storage);
+        let dag_transaction_service = test_dag_transaction_service(&storage);
+        let (block_rlp, link) = composed_signed_pbft_block(12);
+        let block_hash: [u8; 32] = link.block_hash.into();
+
+        insert_proposal_vote(&service, block_hash, NODE_SECRET, 4);
+        insert_proposed_block(
+            &service,
+            block_hash,
+            link.pivot_dag_block_hash.into(),
+            block_rlp,
+        );
+
+        let result = service
+            .select_leader_composed(
+                &final_chain,
+                &dag_transaction_service,
+                PbftComposedLeaderSelectionRequest {
+                    period: 12,
+                    round: 2,
+                    pbft_gas_limit: 1_000_000,
+                    extra_data_required: false,
+                    pillar_block_required: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.status, PbftLeaderSelectionStatus::NoEligible);
+        assert!(!result.selected);
+        assert!(
+            !service
+                .proposed_blocks()
+                .read()
+                .unwrap()
+                .get(12, H256::from(block_hash))
+                .unwrap()
+                .is_valid
+        );
     }
 
     #[test]

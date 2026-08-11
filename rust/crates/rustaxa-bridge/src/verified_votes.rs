@@ -1,7 +1,6 @@
 use crate::ffi::rustaxa_ffi::{
     DetermineNewRoundOutcome, PbftCanonicalVoteValidation as FfiPbftCanonicalVoteValidation,
-    PbftFinalizationHash, PbftLeaderCandidateSnapshot, PbftLeaderSelectionFinishRequest,
-    PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot,
+    PbftFinalizationHash, PbftLeaderSelectionResult,
     PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
     PbftRewardVotesResetRequest as FfiPbftRewardVotesResetRequest,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
@@ -20,14 +19,7 @@ use crate::ffi::{BridgeFinalChain, BridgePbftService};
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
 use ethereum_types::{H256, U256};
 use rustaxa_consensus::pbft_finalize::PbftFinalizedPeriodApplyResult;
-use rustaxa_consensus::pbft_leader_selection::{
-    PbftLeaderCandidateSnapshot as DomainPbftLeaderCandidateSnapshot,
-    PbftLeaderCandidateValidation as DomainPbftLeaderCandidateValidation,
-    PbftLeaderCandidateValidationStatus as DomainPbftLeaderCandidateValidationStatus,
-    PbftLeaderSelectionFinishRequest as DomainPbftLeaderSelectionFinishRequest,
-    PbftLeaderSelectionResult as DomainPbftLeaderSelectionResult,
-    PbftLeaderSelectionSnapshot as DomainPbftLeaderSelectionSnapshot,
-};
+use rustaxa_consensus::pbft_leader_selection::PbftLeaderSelectionResult as DomainPbftLeaderSelectionResult;
 use rustaxa_consensus::pbft_thresholds::{
     PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdStatus,
 };
@@ -377,44 +369,6 @@ impl BridgePbftService {
             .verified_votes_two_t_plus_one_threshold_with_final_chain(&final_chain.0, request)?;
         Ok(threshold_plan_to_ffi(plan))
     }
-
-    /// Prepares an owned native leader-selection snapshot for CXX validation.
-    ///
-    /// `period` and `round` select proposal votes at step one. The native
-    /// service serializes finalized membership and sibling state, returns
-    /// candidates in deterministic vote-hash order, and releases every Rust
-    /// lock before this method returns. Status zero means a snapshot is ready;
-    /// status one means no candidates. Manager-lock poison follows the native
-    /// manager service's invariant panic policy; sibling-lock poison, missing
-    /// retained vote payloads, and storage lookup failures are returned as
-    /// operational errors.
-    pub fn pbft_service_prepare_leader_selection(
-        &self,
-        period: u64,
-        round: u64,
-    ) -> Result<PbftLeaderSelectionSnapshot, anyhow::Error> {
-        self.0
-            .prepare_leader_selection(period, round)
-            .map(leader_selection_snapshot_to_ffi)
-    }
-
-    /// Revalidates and finishes one prepared native leader-selection snapshot.
-    ///
-    /// The request must echo the prepared period, round, and fingerprint and
-    /// contain exactly one accepted/rejected report for every candidate that
-    /// requested external validation. Unknown report codes are mapped to an
-    /// invalid report. Native state is fully revalidated before any proposed
-    /// block is marked valid; stale or malformed requests return typed
-    /// non-selected results without mutation. Operational lock/codec/planner
-    /// contract failures are returned as errors.
-    pub fn pbft_service_finish_leader_selection(
-        &self,
-        request: PbftLeaderSelectionFinishRequest,
-    ) -> Result<PbftLeaderSelectionResult, anyhow::Error> {
-        self.0
-            .finish_leader_selection(leader_selection_finish_request_to_domain(request))
-            .map(leader_selection_result_to_ffi)
-    }
 }
 
 #[cfg(test)]
@@ -601,66 +555,7 @@ mod tests {
     }
 }
 
-fn leader_candidate_snapshot_to_ffi(
-    value: DomainPbftLeaderCandidateSnapshot,
-) -> PbftLeaderCandidateSnapshot {
-    PbftLeaderCandidateSnapshot {
-        vote_hash: value.vote_hash.0,
-        block_hash: value.block_hash.0,
-        vote_record: PbftVoteStorageRecord {
-            hash: value.vote_record.hash.0,
-            vote_rlp: value.vote_record.vote_rlp,
-        },
-        proposed_block_found: value.proposed_block_found,
-        proposed_block_is_valid: value.proposed_block_is_valid,
-        proposed_block_rlp: value.proposed_block_rlp,
-        pivot_hash: value.pivot_hash.0,
-        block_in_chain: value.block_in_chain,
-        needs_external_validation: value.needs_external_validation,
-    }
-}
-
-fn leader_selection_snapshot_to_ffi(
-    value: DomainPbftLeaderSelectionSnapshot,
-) -> PbftLeaderSelectionSnapshot {
-    PbftLeaderSelectionSnapshot {
-        status: value.status.as_u8(),
-        error_code: value.error_code,
-        period: value.period,
-        round: value.round,
-        snapshot_fingerprint: value.snapshot_fingerprint,
-        candidates: value
-            .candidates
-            .into_iter()
-            .map(leader_candidate_snapshot_to_ffi)
-            .collect(),
-    }
-}
-
-fn leader_selection_finish_request_to_domain(
-    value: PbftLeaderSelectionFinishRequest,
-) -> DomainPbftLeaderSelectionFinishRequest {
-    DomainPbftLeaderSelectionFinishRequest {
-        period: value.period,
-        round: value.round,
-        snapshot_fingerprint: value.snapshot_fingerprint,
-        validations: value
-            .validations
-            .into_iter()
-            .map(|report| DomainPbftLeaderCandidateValidation {
-                vote_hash: H256::from(report.vote_hash),
-                block_hash: H256::from(report.block_hash),
-                status: match report.status {
-                    1 => DomainPbftLeaderCandidateValidationStatus::Validated,
-                    2 => DomainPbftLeaderCandidateValidationStatus::Rejected,
-                    _ => DomainPbftLeaderCandidateValidationStatus::Invalid,
-                },
-            })
-            .collect(),
-    }
-}
-
-fn leader_selection_result_to_ffi(
+pub(crate) fn leader_selection_result_to_ffi(
     value: DomainPbftLeaderSelectionResult,
 ) -> PbftLeaderSelectionResult {
     PbftLeaderSelectionResult {

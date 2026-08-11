@@ -167,6 +167,19 @@ impl BridgeDagTransactionService {
             .select_local_proposal_candidate(&final_chain.0, &self.root, request)
     }
 
+    /// Runs authoritative proposal-vote leader selection entirely inside the
+    /// native PBFT/FinalChain/DAG roots, returning only the selected payloads.
+    pub(crate) fn select_leader_composed(
+        &self,
+        runtime: &BridgePbftService,
+        final_chain: &BridgeFinalChain,
+        request: rustaxa_consensus::pbft_leader_selection::PbftComposedLeaderSelectionRequest,
+    ) -> Result<rustaxa_consensus::pbft_leader_selection::PbftLeaderSelectionResult> {
+        runtime
+            .0
+            .select_leader_composed(&final_chain.0, &self.root, request)
+    }
+
     /// Composes exact PBFT sync transaction admission with the private native
     /// DAG/transaction root and the external FinalChain account boundary.
     ///

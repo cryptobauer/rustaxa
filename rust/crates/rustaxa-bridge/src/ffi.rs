@@ -1419,62 +1419,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// Owned proposal-vote and proposed-block facts captured for external leader validation.
-    ///
-    /// `vote_record` and `proposed_block_rlp` remain valid after Rust releases
-    /// its locks. Presence, cached validity, finalized-chain membership, and
-    /// `needs_external_validation` describe the exact prepare-time state and
-    /// are included in the enclosing snapshot fingerprint.
-    struct PbftLeaderCandidateSnapshot {
-        vote_hash: [u8; 32],
-        block_hash: [u8; 32],
-        vote_record: PbftVoteStorageRecord,
-        proposed_block_found: bool,
-        proposed_block_is_valid: bool,
-        proposed_block_rlp: Vec<u8>,
-        pivot_hash: [u8; 32],
-        block_in_chain: bool,
-        needs_external_validation: bool,
-    }
-
-    /// Coherent candidate snapshot returned before external block validation.
-    ///
-    /// Candidates contain only proposal-step votes for `period`/`round`, are
-    /// sorted by vote hash, and are fingerprinted with their owned vote and
-    /// proposal payload hashes plus validity and chain-membership state. Empty
-    /// input is a successful `NoCandidates` snapshot.
-    struct PbftLeaderSelectionSnapshot {
-        status: u8,
-        error_code: String,
-        period: u64,
-        round: u64,
-        snapshot_fingerprint: [u8; 32],
-        candidates: Vec<PbftLeaderCandidateSnapshot>,
-    }
-
-    /// External validation result for one candidate from the prepared snapshot.
-    ///
-    /// Status `1` accepts and status `2` rejects. Finish requires exactly one
-    /// report for every candidate whose snapshot requested validation and no
-    /// reports for missing, finalized, null, or already-valid candidates.
-    struct PbftLeaderCandidateValidation {
-        vote_hash: [u8; 32],
-        block_hash: [u8; 32],
-        status: u8,
-    }
-
-    /// Finish request binding validation reports to one exact prepared snapshot.
-    ///
-    /// `period`, `round`, and `snapshot_fingerprint` must match a freshly
-    /// rebuilt snapshot. The request stores no server-side session and is safe
-    /// to reject as stale without mutating proposed-block validity.
-    struct PbftLeaderSelectionFinishRequest {
-        period: u64,
-        round: u64,
-        snapshot_fingerprint: [u8; 32],
-        validations: Vec<PbftLeaderCandidateValidation>,
-    }
-
     /// Final owned leader selection result after snapshot revalidation and planner execution.
     ///
     /// A selected result owns both weighted vote bytes and proposed-block RLP.
@@ -4070,6 +4014,16 @@ pub mod rustaxa_ffi {
             extra_data_required: bool,
             pillar_block_required: bool,
         ) -> Result<PbftLocalProposalSelectionResult>;
+        pub fn pbft_service_select_leader_composed(
+            runtime: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            dag_transaction_service: &BridgeDagTransactionService,
+            period: u64,
+            round: u64,
+            pbft_gas_limit: u64,
+            extra_data_required: bool,
+            pillar_block_required: bool,
+        ) -> Result<PbftLeaderSelectionResult>;
         pub fn pbft_service_proposed_blocks_get(
             self: &BridgePbftService,
             period: u64,
@@ -4313,16 +4267,6 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             request: PbftRewardVotesResetRequest,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
-        pub fn pbft_service_prepare_leader_selection(
-            self: &BridgePbftService,
-            period: u64,
-            round: u64,
-        ) -> Result<PbftLeaderSelectionSnapshot>;
-        pub fn pbft_service_finish_leader_selection(
-            self: &BridgePbftService,
-            request: PbftLeaderSelectionFinishRequest,
-        ) -> Result<PbftLeaderSelectionResult>;
-
         pub fn pbft_generate_signed_vote(
             input: PbftVoteGenerationInput,
         ) -> Result<PbftGeneratedVote>;

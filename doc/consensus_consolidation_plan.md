@@ -169,12 +169,15 @@ verified votes, proposed blocks, and finalized-chain membership. It prepares
 deterministically ordered owned candidates under the manager-before-siblings
 lock order, using the manager serialization domain to exclude finalized
 membership storage writes while sibling locks protect live state. It
-fingerprints the complete V1 snapshot, releases every native lock for retained
-C++ block validation, then revalidates the exact snapshot and external report
-set before atomically publishing planner-approved validity. Workflow,
-multi-publication, and serialization tests are native; the bridge retains one
-focused end-to-end prepare/finish and exhaustive status/payload conversion test
-around the unchanged CXX boundary.
+fingerprints the complete V1 snapshot, releases every native lock while the
+same Rust service composes PBFT, FinalChain, reward, pillar, and DAG validation,
+then revalidates the exact snapshot and report set before atomically publishing
+planner-approved validity. CXX now exposes one terminal composed selection call
+and returns only canonical selected block/vote payloads; the four transcript
+carriers, prepare/finish calls, and Rust-mode VoteManager selection facade are
+deleted. Workflow, rejection, multi-publication, serialization, and terminal
+payload tests are native; C++ retains only live-object materialization and the
+soft-vote placement boundary.
 The remaining bridge-local reward-vote finalization transcripts are also
 deleted. Native vote-runtime tests own ordered reward selection, durable
 generation-bound cursor publication, idempotence, conflict rejection, and

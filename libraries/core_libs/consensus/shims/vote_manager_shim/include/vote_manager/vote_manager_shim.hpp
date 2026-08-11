@@ -2,7 +2,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -207,32 +206,6 @@ class VoteManager {
   std::vector<std::shared_ptr<PbftVote>> getVerifiedVotes() const;
   uint64_t getVerifiedVotesSize() const;
   void cleanupVotesByPeriod(PbftPeriod pbft_period);
-  /**
-   * Selects the filtering-step leader from VoteManager-owned proposal votes.
-   *
-   * Purpose:
-   * - Keeps PBFT manager from pulling live proposal-vote sidecars only to build
-   *   Rust leader-candidate facts.
-   * - Reuses the Rust leader-candidate planner for status derivation,
-   *   mark-valid commands, and deterministic ranking.
-   *
-   * Inputs:
-   * - `period` and `round` identify the authoritative Rust-owned proposal snapshot.
-   * - `validate_block` executes only the live block validation requests selected by Rust.
-   *
-   * Outputs:
-   * - Returns the selected live proposed block and proposal vote when Rust
-   *   selected an eligible leader.
-   * - Returns empty when no proposal vote can be selected.
-   *
-   * Invariants:
-   * - Proposal votes, chain membership, and proposed-block state are read atomically by the injected PBFT service.
-   * - C++ reports identity-bound validation results against the prepared snapshot; Rust rejects stale snapshots and
-   *   applies mark-valid state before returning owned selected vote/block payloads.
-   */
-  std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlock(
-      PbftPeriod period, PbftRound round,
-      const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
   /**
    * Rust-backed round-advance decision for PBFT manager runtime reports.
    *

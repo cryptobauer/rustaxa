@@ -107,6 +107,10 @@ constexpr uint8_t kPbftManagerStateActionEffectResultSkippedNoWork = 1;
 constexpr uint8_t kPbftManagerStateActionEffectResultSkippedMissingLiveObject = 2;
 constexpr uint8_t kPbftManagerStateActionEffectResultRejectedLiveCheck = 3;
 constexpr uint8_t kPbftManagerStateActionEffectResultExecutorError = 255;
+constexpr uint8_t kPbftLeaderSelectionNoCandidates = 1;
+constexpr uint8_t kPbftLeaderSelectionNoEligibleLeader = 2;
+constexpr uint8_t kPbftLeaderSelectionStaleSnapshot = 3;
+constexpr uint8_t kPbftLeaderSelectionInvalidValidationReport = 4;
 constexpr uint8_t kPbftManagerProposalActionBuildProposal = 1;
 constexpr uint8_t kPbftManagerProposalActionSkipProposal = 2;
 constexpr uint8_t kPbftManagerProposalActionContractError = 255;
@@ -436,6 +440,17 @@ rust::Vec<uint8_t> toBridgeBytes(const Bytes &bytes) {
 }
 
 dev::bytes fromBridgeBytes(const rust::Vec<uint8_t> &bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+std::shared_ptr<PbftVote> materializeWeightedVoteFromStorageRecord(const rustaxa::PbftVoteStorageRecord &record) {
+  auto vote = std::make_shared<PbftVote>(fromBridgeBytes(record.vote_rlp));
+  if (vote->getHash() != fromBridgeHash(record.hash)) {
+    throw std::runtime_error("Rust PBFT leader result vote hash mismatches selected vote payload");
+  }
+  if (!vote->getWeight().has_value() || *vote->getWeight() == 0) {
+    throw std::runtime_error("Rust PBFT leader result vote lacks positive weight");
+  }
+  return vote;
+}
 
 template <typename Hash>
 rust::Vec<rustaxa::PbftFinalizationHash> toBridgeFinalizationHashes(const std::vector<Hash> &hashes) {
@@ -2059,20 +2074,62 @@ void PbftManager::identifyBlock_() {
       pbft_service_->service(), fact,
       [&](const auto &effect) {
         if (effect.intent == kPbftManagerStateActionIntentIdentifyLeaderAndSoftVote) {
-          const auto leader_block_data = vote_mgr_->identifyLeaderBlock(
-              period, round, [this](const auto &proposed_block) { return validatePbftBlock(proposed_block); });
-          if (!leader_block_data.has_value()) {
-            LOG(log_dg_) << "No leader block identified. Period " << period << ", round " << round;
+          const auto pbft_gas_limit = kGenesisConfig.getGasLimits(period).second;
+          const auto extra_data_required = kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(period);
+          const auto pillar_block_required =
+              kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(period);
+          const auto leader_selection = rustaxa::pbft_service_select_leader_composed(
+              pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(), period, round,
+              pbft_gas_limit, extra_data_required, pillar_block_required);
+
+          if (!leader_selection.selected) {
+            const auto status = leader_selection.status;
+            const auto error = static_cast<std::string>(leader_selection.error_code);
+            if (status == kPbftLeaderSelectionNoCandidates || status == kPbftLeaderSelectionNoEligibleLeader ||
+                status == kPbftLeaderSelectionStaleSnapshot || status == kPbftLeaderSelectionInvalidValidationReport) {
+              LOG(log_dg_) << "Rust PBFT leader selection returned no work for period " << period << ", round " << round
+                           << ", status " << static_cast<uint32_t>(status) << ": " << error;
+            } else {
+              LOG(log_er_) << "Rust PBFT leader selection failed for period " << period << ", round " << round
+                           << ", status " << static_cast<uint32_t>(status) << ": " << error;
+            }
             return kPbftManagerStateActionEffectResultSkippedNoWork;
           }
 
-          assert(leader_block_data->first->getPeriod() == period);
-          LOG(log_dg_) << "Leader block identified " << leader_block_data->first->getBlockHash() << ", period "
-                       << period << ", round " << round;
+          if (leader_selection.selected_block_rlp.empty() || leader_selection.selected_vote.vote_rlp.empty()) {
+            LOG(log_er_) << "Rust PBFT leader selection returned empty payload with selected status for period " << period
+                         << ", round " << round;
+            return kPbftManagerStateActionEffectResultSkippedNoWork;
+          }
 
-          return placeStateActionVote(PbftVoteTypes::soft_vote, leader_block_data->first->getPeriod(), round, step,
-                                      leader_block_data->first->getBlockHash(), leader_block_data->first,
-                                      "Filter leader soft vote")
+          auto selected_block = std::make_shared<PbftBlock>(fromBridgeBytes(leader_selection.selected_block_rlp));
+          auto selected_vote = materializeWeightedVoteFromStorageRecord(leader_selection.selected_vote);
+
+          if (selected_vote->getPeriod() != period || selected_block->getPeriod() != period) {
+            LOG(log_er_) << "Rust PBFT leader selection returned period mismatch for period " << period << ", round "
+                         << round << ", selection: vote period " << selected_vote->getPeriod() << ", block period "
+                         << selected_block->getPeriod();
+            return kPbftManagerStateActionEffectResultRejectedLiveCheck;
+          }
+
+          if (selected_vote->getRound() != round) {
+            LOG(log_er_) << "Rust PBFT leader selection returned round mismatch for vote " << selected_vote->getHash()
+                         << ", expected round " << round;
+            return kPbftManagerStateActionEffectResultRejectedLiveCheck;
+          }
+
+          if (selected_vote->getBlockHash() != selected_block->getBlockHash()) {
+            LOG(log_er_) << "Rust PBFT leader selection returned mismatched leader block "
+                         << selected_block->getBlockHash() << " and selected vote " << selected_vote->getBlockHash();
+            return kPbftManagerStateActionEffectResultRejectedLiveCheck;
+          }
+
+          assert(selected_block->getPeriod() == period);
+          LOG(log_dg_) << "Leader block identified " << selected_block->getBlockHash() << ", period " << period
+                       << ", round " << round;
+
+          return placeStateActionVote(PbftVoteTypes::soft_vote, selected_block->getPeriod(), round, step,
+                                     selected_block->getBlockHash(), selected_block, "Filter leader soft vote")
                      ? kPbftManagerStateActionEffectResultApplied
                      : kPbftManagerStateActionEffectResultRejectedLiveCheck;
         }

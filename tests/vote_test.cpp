@@ -114,52 +114,6 @@ TEST_F(VoteTest, add_preverified_weight_vote) {
   EXPECT_TRUE(vote_mgr->addVerifiedVote(weighted_vote));
 }
 
-#ifdef RUSTAXA_ENABLE
-TEST_F(VoteTest, rust_authoritative_leader_selection_skips_validation_without_candidates) {
-  auto node = create_nodes(1, true /*start*/).front();
-  node->getPbftManager()->stop();
-
-  bool validation_requested = false;
-  const auto leader = node->getVoteManager()->identifyLeaderBlock(
-      99999, 99999, [&validation_requested](const std::shared_ptr<PbftBlock> &) {
-        validation_requested = true;
-        return true;
-      });
-
-  EXPECT_FALSE(leader.has_value());
-  EXPECT_FALSE(validation_requested);
-}
-
-TEST_F(VoteTest, rust_authoritative_leader_selection_materializes_owned_result) {
-  auto node = create_nodes(1, true /*start*/).front();
-  auto pbft_manager = node->getPbftManager();
-  auto vote_manager = node->getVoteManager();
-  pbft_manager->stop();
-  const auto [period, round] = clearAllVotes({node});
-  const auto &wallet = node->getConfig().getFirstWallet();
-
-  auto block = std::make_shared<PbftBlock>(blk_hash_t(1), blk_hash_t(2), blk_hash_t(3), blk_hash_t(4), period,
-                                           wallet.node_addr, wallet.node_secret, std::vector<vote_hash_t>{});
-  auto vote = vote_manager->generateVoteWithWeight(block->getBlockHash(), PbftVoteTypes::propose_vote, period, round, 1,
-                                                   wallet);
-  ASSERT_NE(vote, nullptr);
-  ASSERT_TRUE(vote_manager->addVerifiedVote(vote));
-  pbft_manager->processProposedBlock(block);
-
-  bool validation_requested = false;
-  const auto leader =
-      vote_manager->identifyLeaderBlock(period, round, [&validation_requested](const std::shared_ptr<PbftBlock> &) {
-        validation_requested = true;
-        return true;
-      });
-
-  ASSERT_TRUE(leader.has_value());
-  EXPECT_TRUE(validation_requested);
-  EXPECT_EQ(leader->first->getBlockHash(), block->getBlockHash());
-  EXPECT_EQ(leader->second->getHash(), vote->getHash());
-}
-#endif
-
 TEST_F(VoteTest, round_determine_from_next_votes) {
   auto node = create_nodes(1, true /*start*/).front();
 

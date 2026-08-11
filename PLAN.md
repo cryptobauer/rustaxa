@@ -1120,7 +1120,12 @@ The current Rust consensus footprint is broad but still incomplete:
    native `PbftService` revalidates proposal signatures, VRF/DPoS weight, PBFT-chain membership, and the complete
    FinalChain/reward/pillar/DAG block contract before deterministic leader ranking, then returns only the unchanged
    input index. The C++ manager retains wallet signing and publication but no longer calls a VoteManager local-leader
-   facade or materializes leader-planner fact/command carriers. PBFT proposed-block validation also has a Rust-owned staged planner for
+   facade or materializes leader-planner fact/command carriers. Authoritative received-vote leader selection now also
+   runs as one native `PbftService` task: Rust snapshots and ranks verified proposal votes, performs composed
+   PBFT/FinalChain/reward/pillar/DAG validation for uncached candidates after releasing sibling locks, revalidates the
+   snapshot, and publishes valid-cache state before returning only canonical selected block/vote payloads. The C++
+   manager retains live-object materialization and soft-vote placement but no longer owns the VoteManager selection
+   facade or the prepare/validation-report/finish transcript. PBFT proposed-block validation also has a Rust-owned staged planner for
    the proposal path: Rust requests PBFT-chain, FinalChain hash, reward-vote, pillar-block, DAG-order, and DAG-weight
    facts in legacy order, owns immutable extra-data/Ficus policy, then returns accept/reject or wait-for-finalization
    decisions while C++ still supplies the live object checks. `processPeriodData` reuses native sync planners before handing cert-vote, transaction, pillar-vote, and
@@ -1137,7 +1142,6 @@ The current Rust consensus footprint is broad but still incomplete:
    DAG-order report carriers and two-step C++ executor protocol are deleted. The next removal target is to replace
    remaining transaction decision glue with shared Rust
    executor intents that consume existing Rust FinalChain bundles. After the shared planner owns deeper sync acceptance,
-   `identifyLeaderBlock`,
    `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and `secondFinish_` should collapse further into
    hash/object resolution plus vote/sign/gossip/storage effect execution.
 10. Port transaction queue behavior before transaction manager orchestration. The standalone Rust-mode

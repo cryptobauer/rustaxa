@@ -180,7 +180,7 @@ fn decode_pbft_proposed_block_extra_data(block: &Rlp<'_>) -> Result<(bool, Optio
     Ok((true, pillar_hash))
 }
 
-fn proposed_block_validation_candidate(
+pub(crate) fn proposed_block_validation_candidate(
     entry: &ProposedBlockEntry,
     request: PbftProposedBlockAdmissionRequest,
 ) -> Result<PbftBlockValidationCandidate> {

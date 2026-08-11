@@ -4037,6 +4037,18 @@ functions, and 299 carriers. Handles remain 18, shim directories 9, granular fla
 compatibility constructor calls 0, and non-test C++ consumers 38. `CRW-12` remains active because authoritative
 received-vote leader materialization and other manager/executor boundaries still cross C++.
 
+The next bounded `CRW-12` contraction composes authoritative received-vote leader selection inside native
+`PbftService`. Rust now snapshots deterministically ranked proposal votes and proposed-block state, releases sibling
+locks while it runs the shared PBFT/FinalChain/reward/pillar/DAG validator for uncached candidates, then revalidates the
+snapshot and atomically publishes approved validity before returning only canonical selected block/vote payloads. C++
+retains live-object materialization, payload identity checks, and soft-vote placement, but no longer owns the
+VoteManager `identifyLeaderBlock` facade or a prepare/external-validation/finish protocol. The two bridge calls and four
+CXX transcript carriers are deleted; native tests cover empty, selected, and composed-rejection outcomes. Measured
+surface falls by 118 bridge lines, 44 shim lines, one CXX function, and four CXX carriers to 20,953 bridge lines, 14,599
+shim lines, 359 CXX functions, and 295 carriers. Handles remain 18, shim directories 9, granular flags 0, partial
+factories 0, compatibility constructor calls 0, and non-test C++ consumers 38. `CRW-12` remains active because C++
+still materializes the terminal selected payloads and executes other PBFT manager effects.
+
 ### DAG
 
 | Class | Public API groups | Dependencies | Tests | Target |

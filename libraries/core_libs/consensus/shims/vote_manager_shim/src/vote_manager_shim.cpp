@@ -34,14 +34,6 @@ constexpr uint8_t kPbftVoteValidationStatusInvalidVoteType = 9;
 constexpr uint8_t kPbftVoteGenerationStatusGenerated = 0;
 constexpr uint8_t kPbftVoteGenerationStatusZeroStake = 4;
 constexpr uint8_t kPbftVoteGenerationStatusZeroTotalDpos = 5;
-constexpr uint8_t kPbftManagerLeaderBlockValidated = 1;
-constexpr uint8_t kPbftManagerLeaderBlockRejected = 2;
-constexpr uint8_t kPbftLeaderSelectionReadyOrSelected = 0;
-constexpr uint8_t kPbftLeaderSelectionNoCandidates = 1;
-constexpr uint8_t kPbftLeaderSelectionNoEligibleLeader = 2;
-constexpr uint8_t kPbftLeaderSelectionStaleSnapshot = 3;
-constexpr uint8_t kPbftLeaderSelectionInvalidValidationReport = 4;
-constexpr uint8_t kPbftLeaderSelectionServiceUnavailable = 5;
 constexpr uint8_t kPbftVoteGenerationStatusZeroWeight = 6;
 constexpr uint8_t kPbftProposerSortitionStatusFutureDposState = 4;
 constexpr uint8_t kPbftVotePersistenceStatusApplied = 0;
@@ -732,72 +724,6 @@ uint64_t VoteManager::getVerifiedVotesSize() const {
 
 void VoteManager::cleanupVotesByPeriod(PbftPeriod pbft_period) {
   pbft_service_->service().pbft_service_verified_votes_cleanup_votes_by_period(pbft_period);
-}
-
-std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> VoteManager::identifyLeaderBlock(
-    PbftPeriod period, PbftRound round,
-    const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const {
-  const auto snapshot = pbft_service_->service().pbft_service_prepare_leader_selection(period, round);
-  if (snapshot.status != kPbftLeaderSelectionReadyOrSelected) {
-    const auto error = static_cast<std::string>(snapshot.error_code);
-    if (snapshot.status == kPbftLeaderSelectionNoCandidates) {
-      LOG(log_dg_) << "Rust PBFT leader selection found no proposal candidates for period " << period << ", round "
-                   << round << ": " << error;
-    } else {
-      LOG(log_er_) << "Rust PBFT leader selection snapshot failed for period " << period << ", round " << round
-                   << ", status " << static_cast<uint32_t>(snapshot.status) << ": " << error;
-    }
-    return {};
-  }
-
-  rustaxa::PbftLeaderSelectionFinishRequest request;
-  request.period = period;
-  request.round = round;
-  request.snapshot_fingerprint = snapshot.snapshot_fingerprint;
-  request.validations.reserve(snapshot.candidates.size());
-  for (const auto& candidate : snapshot.candidates) {
-    if (!candidate.needs_external_validation) {
-      continue;
-    }
-
-    auto block = std::make_shared<PbftBlock>(fromBridgeBytes(candidate.proposed_block_rlp));
-    if (block->getBlockHash() != fromBridgeHash(candidate.block_hash)) {
-      throw std::runtime_error("Rust PBFT leader snapshot block payload mismatches candidate identity");
-    }
-
-    rustaxa::PbftLeaderCandidateValidation validation;
-    validation.vote_hash = candidate.vote_hash;
-    validation.block_hash = candidate.block_hash;
-    validation.status = validate_block(block) ? kPbftManagerLeaderBlockValidated : kPbftManagerLeaderBlockRejected;
-    request.validations.push_back(std::move(validation));
-  }
-
-  const auto result = pbft_service_->service().pbft_service_finish_leader_selection(std::move(request));
-  if (result.status != kPbftLeaderSelectionReadyOrSelected) {
-    const auto error = static_cast<std::string>(result.error_code);
-    if (result.status == kPbftLeaderSelectionNoEligibleLeader || result.status == kPbftLeaderSelectionStaleSnapshot) {
-      LOG(log_dg_) << "Rust PBFT leader selection returned no leader for period " << period << ", round " << round
-                   << ", status " << static_cast<uint32_t>(result.status) << ": " << error;
-    } else if (result.status == kPbftLeaderSelectionInvalidValidationReport ||
-               result.status == kPbftLeaderSelectionServiceUnavailable) {
-      LOG(log_er_) << "Rust PBFT leader selection rejected the validation report for period " << period << ", round "
-                   << round << ", status " << static_cast<uint32_t>(result.status) << ": " << error;
-    } else {
-      LOG(log_er_) << "Rust PBFT leader selection returned unexpected status " << static_cast<uint32_t>(result.status)
-                   << " for period " << period << ", round " << round << ": " << error;
-    }
-    return {};
-  }
-  if (!result.selected) {
-    throw std::runtime_error("Rust PBFT leader selection returned selected status without an owned leader payload");
-  }
-
-  auto vote = materializeOwnVoteRecord(result.selected_vote);
-  auto block = std::make_shared<PbftBlock>(fromBridgeBytes(result.selected_block_rlp));
-  if (vote->getPeriod() != period || block->getPeriod() != period || vote->getBlockHash() != block->getBlockHash()) {
-    throw std::runtime_error("Rust PBFT leader selection returned inconsistent owned vote and block payloads");
-  }
-  return std::pair{std::move(block), std::move(vote)};
 }
 
 std::optional<PbftRound> VoteManager::determineNewRound(PbftPeriod current_pbft_period, PbftRound current_pbft_round) {

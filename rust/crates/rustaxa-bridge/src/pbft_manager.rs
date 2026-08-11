@@ -17,6 +17,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
+    PbftLeaderSelectionResult as FfiPbftLeaderSelectionResult,
     PbftLocalProposalCandidate as FfiPbftLocalProposalCandidate,
     PbftLocalProposalSelectionResult as FfiPbftLocalProposalSelectionResult,
     PbftManagerAdvancePeriodActionReport as FfiPbftManagerAdvancePeriodActionReport,
@@ -66,8 +67,8 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::{BridgeFinalChain, BridgePbftService, BridgeStorage};
 use crate::transaction_manager::bridge_to_service_account_nonce_facts;
 use crate::verified_votes::{
-    empty_slashing_transaction_effect, slashing_submitter_identity_to_domain,
-    slashing_transaction_effect_to_ffi,
+    empty_slashing_transaction_effect, leader_selection_result_to_ffi,
+    slashing_submitter_identity_to_domain, slashing_transaction_effect_to_ffi,
 };
 use anyhow::anyhow;
 use rustaxa_consensus::dag::DagBlockPeriodStorageLookup;
@@ -77,6 +78,7 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationRuntimeAction, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
     PbftFinalizationStorageWriteStage,
 };
+use rustaxa_consensus::pbft_leader_selection::PbftComposedLeaderSelectionRequest;
 use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_eligible_wallet_period_wait as plan_domain_pbft_manager_eligible_wallet_period_wait,
@@ -1545,6 +1547,34 @@ pub fn pbft_service_select_local_proposal_candidate(
             },
         )?
         .into())
+}
+
+/// Selects the authoritative received proposal leader through one native
+/// PBFT/FinalChain/DAG operation with no CXX snapshot or validation transcript.
+#[allow(clippy::too_many_arguments)]
+pub fn pbft_service_select_leader_composed(
+    runtime: &BridgePbftService,
+    final_chain: &BridgeFinalChain,
+    dag_transaction_service: &BridgeDagTransactionService,
+    period: u64,
+    round: u64,
+    pbft_gas_limit: u64,
+    extra_data_required: bool,
+    pillar_block_required: bool,
+) -> anyhow::Result<FfiPbftLeaderSelectionResult> {
+    Ok(leader_selection_result_to_ffi(
+        dag_transaction_service.select_leader_composed(
+            runtime,
+            final_chain,
+            PbftComposedLeaderSelectionRequest {
+                period,
+                round,
+                pbft_gas_limit,
+                extra_data_required,
+                pillar_block_required,
+            },
+        )?,
+    ))
 }
 
 const FINALIZATION_EXECUTOR_MODE_FRESH: u8 = 0;
