@@ -685,7 +685,8 @@ pub(crate) struct ExternalEvmPendingPublicationMarker {
 }
 
 impl FinalChain {
-    const DB_META_LAST_NUMBER: u32 = 1;
+    /// Storage key for the latest finalized block-number metadata row.
+    pub(crate) const DB_META_LAST_NUMBER: u32 = 1;
     const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 
     pub fn new(

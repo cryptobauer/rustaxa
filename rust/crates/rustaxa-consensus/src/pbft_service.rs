@@ -4868,7 +4868,7 @@ mod tests {
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::{Rlp, RlpStream};
-    use rustaxa_storage::Config;
+    use rustaxa_storage::{Column, Config};
     use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
     use rustaxa_types::pbft::PbftBlockLink;
     use rustaxa_types::pillar::{
@@ -8025,6 +8025,35 @@ mod tests {
         assert!(!service.finalization_ready(&final_chain).unwrap());
 
         drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_ready_rejects_height_overflow() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_finalization_overflow");
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage.clone(), &[], 1);
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::FinalChainMeta,
+                &FinalChain::DB_META_LAST_NUMBER.to_le_bytes(),
+                &u64::MAX.to_le_bytes(),
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+
+        assert_eq!(
+            service
+                .finalization_ready(&final_chain)
+                .unwrap_err()
+                .to_string(),
+            "PBFT_MANAGER_FINALIZATION_WAIT_READY_HEIGHT_OVERFLOW"
+        );
+
+        drop(service);
+        drop(final_chain);
         let _ = fs::remove_dir_all(path);
     }
 

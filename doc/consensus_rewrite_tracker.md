@@ -3965,7 +3965,8 @@ FinalChain/EVM execution, proposed-block public API, network/tarcap, and model-p
 Slice 9 executor-shell closeout: PBFT next-step sleeps and ineligible-wallet polling are Rust-planned. Eligible-wallet
 readiness is folded into the native PBFT/FinalChain aggregate task. Startup finalization readiness now reads the native
 PBFT head and FinalChain height/delegation delay directly; its standalone export and two carriers are deleted, removing
-78 bridge lines and 11 shim lines while C++ retains only the stoppable polling sleep. Focused native readiness coverage,
+78 bridge lines and 11 shim lines while C++ retains only the stoppable polling sleep. Focused native ready/wait and
+exact overflow-diagnostic coverage,
 all 70 bridge tests, the `pbft_manager_test` build, and independent parity review passed. DAG proposer worker retry delay is Rust-planned through the
 worker-command planner. C++ remains the accepted host executor for OS threads, condition-variable wakeups, actual sleeps,
 network/tarcap effects, key-manager signing execution, public-query compatibility loops, and EVM/FinalChain execution
