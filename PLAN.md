@@ -75,6 +75,19 @@ Core rules:
   forbidden unless explicitly allowlisted as conformance boundaries.
 - Rust production uses one supported application composition. Granular rewrite flags and partial-service factories are
   migration scaffolding to remove, not configurations that the final Rust architecture must preserve.
+- Rust production converges on one native `ConsensusApplication` composition root. The root owns construction,
+  restoration, storage-backed consensus services, internal service lifetimes, and cross-service lock ordering. Its
+  PBFT, DAG/transaction, FinalChain, vote, pillar, slashing, sortition, rewards, and network-pipeline capabilities are
+  private implementation details and must not be exposed as separately constructible or passable CXX handles.
+- `ConsensusApplication` is a composition and lifetime boundary, not a service locator. C++ may hold one opaque
+  application bootstrap handle and operation-specific external adapters, but it may not fetch internal services,
+  borrow mutable consensus state, or pass one internal owner into another manager. Rust task APIs consume canonical
+  bytes or explicit domain inputs and return typed leaf effects whose exact results are reported back before native
+  state advances.
+- Prefer vertical subsystem cutovers that migrate every production caller, move behavioral tests, and delete the old
+  Rust-mode manager facade, constructors, handles, carriers, sidecars, and materialization together. A validated slice
+  is bounded by one coherent ownership transition, not by a small diff. Do not preserve an obsolete intermediate
+  Rust-mode manager topology merely to keep standalone C++ fixtures usable.
 - Logging and observability are not architectural blockers for Rust ownership. Do not keep deterministic consensus
   behavior in C++ merely because the legacy implementation logs at that point. Rust planners may return typed statuses,
   telemetry facts, or executor reports that C++ logs temporarily, and logging can be moved, changed, or dropped in a
@@ -784,11 +797,56 @@ listed above may remain in C++. New work extends native Rust runtimes, applicati
 When a shim or bridge path is touched, delete the complete compatibility family or reduce it to a named leaf adapter in
 the same slice.
 
+### Native Application Composition Boundary
+
+Rust-enabled production has one target composition: a native `ConsensusApplication` root constructed once by `App`.
+The root owns storage and restoration plus the private FinalChain, PBFT, DAG/transaction, vote, pillar, slashing,
+sortition, rewards, and consensus-network services. Existing `BridgePbftService`, `BridgeDagTransactionService`, broad
+`BridgeFinalChain`, and storage/query-family handles are migration scaffolding: they may survive only until their named
+production callers move to an application task or one of the external boundaries below. They are not supported
+application APIs and must not be recreated behind replacement C++ managers.
+The eventual bootstrap CXX surface is one opaque `BridgeConsensusApplication` created by one
+`create_consensus_application` operation. It exposes no internal-service accessors; operation-specific application,
+network, execution, and query APIs are invoked on or bound from the root without publishing its private owners.
+
+Construction and restoration are atomic publication boundaries: configuration and every required native sibling must
+restore successfully before C++ receives the application handle or any external adapter. Failure publishes no partial
+root. One root does not imply one global mutex: subservices retain private lock domains, application tasks own the
+declared cross-service lock order, release every native guard across external leaf execution, and generation/cursor-
+revalidate the exact result before mutation or publication. The root owns native FinalChain state and orchestration;
+concrete `StateAPI`, EVM, and `state_db/` execution remain the named C++ leaf boundary.
+
+Cross-boundary execution follows a resumable typed-effect protocol:
+
+1. C++ submits canonical bytes, opaque identities, configuration, or a client-specific request to one application task.
+2. Rust validates the request, reads private consensus state, may update only provisional session/cursor state, and
+   returns the next typed external leaf effect when physical work is required. Authoritative durable or published state
+   does not mutate until the matching result is accepted.
+3. C++ executes only the named tarcap, concrete EVM/`state_db`, signing, VDF, timer/process, or public-formatting leaf.
+4. C++ reports the exact effect identity and typed result; Rust validates it before advancing, persisting, publishing,
+   or producing the next effect.
+
+Every effect carries a native session and effect identity plus an operation-specific payload. Unknown, stale,
+cross-session, wrong-operation, and contradictory reports are rejected. Duplicate reports for a completed effect are
+idempotent, and retryable mutation effects retain a Rust-issued idempotency identity. Success requires the matching
+result variant; failure carries no success value and has a stable machine-readable code. Free-form diagnostics are
+observability only and never consensus input.
+
+Internal consensus objects and service handles do not cross CXX. Canonical RLP/bytes, hashes, scalar identities, and
+operation-specific DTOs may cross when owned by a named leaf or public client. Temporary C++ materialization is allowed
+only at that leaf and must not become authoritative state or a manager-to-manager protocol.
+
+Migration proceeds by vertical subsystem checkpoint rather than a global preparation waterfall. Once the native owner
+for a PBFT, DAG/transaction, network, or execution family exists, the same checkpoint may perform its `CRW-12` owner
+move, `CRW-14` facade deletion, `CRW-15` materialization removal, `CRW-16` shim contraction, and applicable `CRW-17`
+boundary narrowing together. It need not wait for unrelated subsystems to finish those items globally. Every checkpoint
+must still leave Rust mode buildable, retain the pure-C++ reference route, and satisfy the validation strategy.
+
 ### External Consensus Facade Boundaries
 
-Three Rust-owned facades define the long-lived external consensus contracts. They are narrow operation boundaries, not
-service locators: they must not expose consensus manager handles, mutable sidecars, storage iterators, `DbStorage`, or
-internal runtime state.
+Three shared Rust-owned facades define the long-lived external consensus contracts. They are narrow operation
+boundaries, not service locators: they must not expose consensus manager handles, mutable sidecars, storage iterators,
+`DbStorage`, or internal runtime state.
 
 | Boundary | Rust facade | Rust ownership | External executor or adapter ownership |
 | --- | --- | --- | --- |
@@ -799,6 +857,10 @@ internal runtime state.
 C++ adapters may execute or format these contracts, but they must not recreate consensus decisions from returned facts.
 Residual adapter deletion belongs in `doc/consensus_rewrite_tracker.md`; exact DTOs and methods are owned by the Rust
 facade modules and their bridge tests rather than by a separate touchpoint inventory.
+
+Signing and VDF remain operation-specific leaf calls rather than shared service facades. Host thread, timer, sleep, and
+process mechanics may remain temporarily as Rust-commanded executors, but they do not justify an internal manager or
+service handle and are deleted or narrowed when the native application scheduler takes ownership.
 
 Rules:
 
@@ -840,15 +902,17 @@ Rules:
 
 ### PBFT Manager Rust Ownership Boundary
 
-Target state: the PBFT manager protocol brain moves to Rust. The Rust-mode C++ overlay should become a compatibility
-shell and effect executor that supplies facts, calls a Rust-owned `PbftManagerRuntime`, executes returned effects, and
-reports effect results back to Rust before the runtime advances.
+Target state: the PBFT manager protocol brain, consensus queue ownership, and effect ordering live behind native
+`ConsensusApplication` tasks. The Rust-mode `PbftManager` facade is a deletion target, not the final compatibility
+surface. Until its last caller migrates, it may only execute named leaves and report exact typed results; replacement
+transport, execution, signing, timer/process, and public adapters must be operation-shaped rather than manager-shaped.
 
 Boundaries that should not move as part of the PBFT manager breakthrough:
 
-- Network/tarcap transport: peer connections, packet wrapping, gossip fanout, send policy, known-peer marking,
-  disconnect/report mechanics, and packet queue ownership stay outside the consensus manager migration. Rust may return
-  typed egress, mark-known, sync-request, and peer-report effects for the existing network executor to perform.
+- Network/tarcap transport: peer connections, packet wrapping, physical fanout, physical known-peer mutation,
+  disconnect/report execution, and lane scheduling stay outside the consensus manager migration. Rust owns consensus
+  queueing, send/gossip selection, dependency ordering, and typed egress, mark-known, sync-request, and peer-report
+  effects for the transport executor to perform.
   The current Rust-enabled route uses one `Network`-owned consensus-network API shared by the latest and v5 capability
   handler families. Its effect queue is partitioned by transport lane and PBFT gossip effects own canonical vote/block
   payloads. Verified-vote admission is an operation-specific application effect correlated by exact effect ID while the
@@ -867,8 +931,9 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
   execution, and external contract execution stay in the existing FinalChain/EVM boundary until that execution layer is
   migrated. Rust PBFT logic may plan finalization, validate facts, and request execution/finalization effects, but it
   must not absorb EVM execution into the PBFT manager.
-- Live C++ API compatibility: temporary `PbftBlock`, `PbftVote`, `PeriodData`, `DagBlock`, `Transaction`, and
-  pillar sidecar materialization may remain in the overlay while public APIs and remaining callers require those types.
+- Named leaf/public compatibility: temporary `PbftBlock`, `PbftVote`, `PeriodData`, `DagBlock`, `Transaction`, and
+  pillar materialization may remain only for a named public client or unavoidable executor leaf. An internal manager,
+  test, log, or convenient remaining caller is not a retention reason.
 - Node lifecycle and scheduling: daemon threads, sleeps, timers, startup/shutdown wiring, event emission mechanics, and
   key-manager signing may stay as effect execution until the surrounding application pipeline owns them.
 
@@ -1044,7 +1109,12 @@ The current Rust consensus footprint is broad but still incomplete:
   remaining external manager effects remain later slices.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
-### Consensus Sequencing
+### Historical Consensus Sequencing (Superseded)
+
+The numbered record below describes the incremental route used to reach the current native owners. It is not the active
+execution order. New work follows the `ConsensusApplication` vertical checkpoints in
+`doc/consensus_consolidation_plan.md` and the live queue in `doc/consensus_rewrite_tracker.md`; where this historical
+record conflicts with those authorities, it is obsolete.
 
 1. Inventory consensus APIs, dependencies, tests, and current Rust shim gaps.
 2. Create a tracker that classifies each item as Rust-backed, shim-stubbed, C++-owned temporary, or out of scope.
@@ -1454,7 +1524,7 @@ The current Rust consensus footprint is broad but still incomplete:
     transaction construction/signing, pillar signing/recovery, and
     `PillarChainManager` orchestration still depend on future FinalChain/state ports.
 
-### First Implementation Slice
+### Historical First Implementation Slice (Complete)
 
 Start with a consensus rewrite tracker, then implement Rust DAG graph logic as the first code slice.
 

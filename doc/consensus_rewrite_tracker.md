@@ -20,10 +20,15 @@ dependency-ordered **Remaining Consensus Work Queue**, while subsystem-specific 
 ## Hard Rules
 
 - Do not delegate Rust shim behavior back to legacy C++ implementation methods.
-- Keep public C++ APIs stable unless a task explicitly changes the API.
-- Main-only files referenced from upstream-owned C++ files must be included only behind `RUSTAXA_ENABLE=1` or a narrower Rustaxa feature guard.
+- Keep protocol-visible and named external/public C++ contracts stable unless a task explicitly changes them. Internal
+  Rust-mode manager APIs, constructors, callbacks, events, and object-returning methods are migration scaffolding and
+  may be deleted after their production callers migrate.
+- Main-only files referenced from upstream-owned C++ files must be included only behind the master
+  `RUSTAXA_ENABLE=1` guard.
 - Treat DPoS eligibility and vote-count behavior as required consensus functionality. Temporary defaults must stay visible in this tracker.
-- Keep network callbacks, daemon threads, peer gossip, and full-node orchestration in C++ until the Rust domain services are stable.
+- Keep only physical tarcap peer/socket mechanics, packet wrapping, send/disconnect execution, and lane scheduling in
+  C++. Rust owns consensus packet inspection, admission, routing, queueing, send/gossip selection, effect ordering, and
+  exact executor-result validation.
 - Logging is not a reason to keep consensus behavior in C++. Treat logs as boundary observability that may stay in a
   temporary C++ executor, be replaced by Rust-returned status/telemetry facts, or be cleaned up later. Ownership
   decisions should be based on state, protocol decisions, persistence, network effects, object materialization, and
@@ -32,38 +37,22 @@ dependency-ordered **Remaining Consensus Work Queue**, while subsystem-specific 
   old object materialization, or shim scaffolding. The Rust module taking ownership must already have equivalent or
   stronger coverage, and CXX boundary parity must be covered by bridge-level Rust tests or focused Rust-enabled shim tests
   before the C++ test signal is dropped.
-- New consensus rewrite APIs must be shaped for the upcoming application-owned arena/data pipeline even before the
-  concrete pipeline API lands. Prefer canonical bytes, compact facts, ingress-payload-addressable enrichment, and typed
-  protocol plans/effects over eager C++ object materialization.
+- New consensus rewrite APIs use operation-specific application pipelines. Prefer canonical bytes, compact facts,
+  exact native session/effect identities, and typed protocol plans/effects over generic shadow ingestion, payload-id
+  CXX APIs, or eager C++ object materialization.
 
-## Planned Arena/Data Pipeline Direction
+## Application-Owned Network Pipeline Direction
 
-The parallel Rust network rewrite will land an application-owned arena pipeline before this consensus feature branch is
-merged. The first ingress point is expected to accept latest-tarcap payload bytes from
-`TaraxaCapability::interpretCapabilityPacket`, write them into an application-global ingress arena, and report only
-whether ingestion succeeded. Network-level outcomes such as drop, disconnect, mark-malicious, gossip, or sync request
-will be emitted later by pipeline stages as egress events; they are not part of the ingress success contract.
-
-The planned initial CXX bridge entry point is:
-
-```rust
-pub fn ingest_network_packet(
-    self: &mut BridgeNetwork,
-    packet_type: u8,
-    from_node: [u8; 64],
-    data: Vec<u8>,
-) -> Result<bool>;
-```
-
-This API is latest-tarcap-only. Its `bool` reports ingestion success only: `true` means the payload bytes were accepted
-into the application arena/pipeline. Broken payload, protocol rejection, consensus rejection, peer action, gossip, sync,
-drop, and disconnect outcomes are produced later by downstream pipeline stages and network egress events.
+The deleted generic shadow-ingress arena and ingestion-success-only API are not target architecture. Each live packet
+family enters an operation-specific application pipeline with canonical payload bytes and compact transport facts, and
+returns a protocol status or ordered typed effects that the handler actually consumes. Rust owns consensus routing and
+effect decisions; tarcap owns only physical peer/transport execution and lane scheduling.
 
 Consensus rewrite slices should assume this future direction:
 
-- Pipeline communication is by payload reference id. A stage may wrap the ingress payload reference id with small
-  route/source/priority metadata, but large derived data should live in ingress or enrichment arenas and be referenced by
-  payload reference id.
+- Pipeline communication preserves canonical bytes under an exact native session/effect identity. An implementation may
+  use private payload references internally, but no generic payload-id arena or storage handle crosses CXX and payload
+  references never become consensus identities.
 - Each ingress event is handled by only one thread at a time. Pipeline stages should model ownership transfer of an event
   carrying a payload reference, not fanout over shared mutable ingress state.
 - The intended stage sequence is network ingress -> prefilter -> dispatcher -> pipeline-specific ring buffers -> effect
@@ -81,7 +70,7 @@ Consensus rewrite slices should assume this future direction:
   Consensus-facing APIs should be callable from those stages with raw bytes, ingress-payload-backed views, or compact
   facts instead of requiring network handler objects.
 
-The arena-backed data plane should expose multiple logical pipelines rather than one monolithic consensus pipeline.
+The application-owned data plane exposes multiple logical pipelines rather than one monolithic consensus pipeline.
 Today's C++ scheduler has three priority lanes, but consensus behavior is better represented as seven logical pipelines:
 
 | Logical pipeline | Current ingress message kinds | Cross-pipeline effects to keep explicit |
@@ -171,21 +160,22 @@ public formatting/materialization, or explicitly tracked compatibility glue. Str
 
 ## PBFT Manager Breakthrough Boundary
 
-The intended PBFT manager end state is a Rust-owned protocol runtime behind the existing C++ compatibility surface. The
-Rust runtime should own long-lived manager protocol state and expose command/event entry points that return ordered
-protocol plans. The C++ overlay should supply facts, execute effects that still belong outside consensus, and report
-effect results back before Rust advances the runtime cursor.
+The intended PBFT manager end state is a Rust-owned protocol runtime private to `ConsensusApplication`, with no
+Rust-mode manager compatibility surface. Native application tasks own long-lived manager state, consensus queues,
+command/event admission, and ordered protocol effects. Until deleted, the C++ overlay may execute only named leaves and
+must report the exact result before Rust advances the runtime cursor.
 
 Do not include these boundaries in the PBFT manager breakthrough slice:
 
-- Network/tarcap internals: peer transport, packet wrapping, gossip fanout, send policy, peer-known marking, disconnect
-  and report mechanics, and queue ownership stay outside the consensus manager migration. Rust should return typed
-  network effects for an executor instead of owning the transport.
+- Network/tarcap internals: peer transport, packet wrapping, physical fanout, physical peer-known mutation, disconnect
+  and report execution, and lane scheduling stay outside the consensus manager migration. Rust owns consensus queueing,
+  send/gossip selection, dependency ordering, and typed network effects; tarcap executes them.
 - EVM/FinalChain execution: transaction execution, gas execution, receipt/log bloom construction, external contract
   execution, and state transition execution stay behind the existing execution boundary. Rust PBFT code may plan
   finalization and validate execution facts, but not move EVM execution into the PBFT manager.
-- Live compatibility objects: temporary C++ materialization of `PbftBlock`, `PbftVote`, `PeriodData`, `DagBlock`,
-  `Transaction`, pillar sidecars, and public API return values may remain until callers no longer require those types.
+- Named leaf/public objects: temporary C++ materialization of `PbftBlock`, `PbftVote`, `PeriodData`, `DagBlock`,
+  `Transaction`, pillar values, and public API return values may remain only for a named public client or unavoidable
+  executor leaf. Internal managers, tests, logging, and convenience are not retention reasons.
 - Node lifecycle mechanics: daemon threads, sleeps, timers, startup/shutdown wiring, key-manager signing, and event
   emission mechanics may remain as executor responsibilities around the Rust protocol runtime.
 
@@ -266,7 +256,7 @@ No separate file now tracks this cleanup; `doc/consensus_rewrite_tracker.md` is 
 ### Remaining Consensus Work Queue
 
 This is the dependency-ordered execution queue for the remaining consensus rewrite. `PLAN.md` defines the ownership
-boundary, `doc/consensus_consolidation_plan.md` provides slice design and historical implementation detail, and
+boundary, `doc/consensus_consolidation_plan.md` provides active slice design and sequencing, and
 `doc/consensus_bridge_shim_audit.md` is the mechanical bridge/shim deletion inventory. Update this queue whenever a
 slice changes status or exposes a new dependency; do not create another consensus gap or cleanup tracker.
 
@@ -299,13 +289,26 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-09I` | `complete` | Finish non-EVM FinalChain adapter contraction and reconcile retained CXX carriers. | `CRW-09C` through `CRW-09H` | C++ supplies only accepted external executor/state-lifecycle operations; obsolete non-EVM fact DTOs/conversions are removed; retained carriers are classified; and `CRW-07`, the audit, and `PLAN.md` agree. |
 | `CRW-10` | `complete` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-08`; `CRW-09I`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
 | `CRW-11` | `complete` | Establish the aggressive bridge/shim deletion contract: name supported Rust-mode C++ clients, collapse compatibility policy, record measured surface budgets, and make the inventory distinguish production from test-only callers. | None | Task-owner decisions are recorded; every retained facade has a named client and deletion condition; checked metrics cover lines, exports, carriers, handles, shims, flags, partial factories, and callers; test-only exports fail the guard unless explicitly allowlisted. |
-| `CRW-12` | `active` | Move PBFT and DAG/transaction application-service ownership, construction, restoration, lock domains, and behavioral tests out of `rustaxa-bridge`; leave thin CXX wrappers. | `CRW-11` | Native Rust application/runtime owners compile and test without CXX support; `rustaxa-bridge` owns no protocol runtime state or behavioral test suite. |
+| `CRW-12` | `active` | Introduce one native `ConsensusApplication` composition root and move PBFT, DAG/transaction, FinalChain, storage, network-pipeline, construction, restoration, lock domains, and behavioral tests out of `rustaxa-bridge`; keep internal services private. | `CRW-11` | `App` constructs one native root whose implementation and behavioral tests compile without CXX support; `rustaxa-bridge` owns no protocol runtime state or behavioral test suite; and C++ cannot construct, retrieve, or pass private service handles. |
 | `CRW-13` | `complete` | Collapse granular Rust production feature topology and delete partial-service factories and compatibility-only constructors. | `CRW-11`; coordinate with `CRW-12` | One supported Rust production composition path remains; partial capability services and redundant module flags are deleted; all-Rust-disabled builds still select untouched C++. |
-| `CRW-14` | `blocked` | Retire state-free or non-production facades, starting with rewards stats, proposed blocks, verified votes, sortition params, gas pricer, then PBFT chain after client migration. | `CRW-11`; `CRW-12` where the facade calls an application service | Rewards stats, proposed blocks, verified votes, sortition params, and gas pricer are retired. PBFT chain remains blocked on its named network/RPC client migration; each selected family deletes its shim, bridge declarations, carriers, constructors, flag, and compatibility-only tests together. |
-| `CRW-15` | `blocked` | Replace internal legacy consensus object materialization with canonical bytes, opaque identities, borrowed native views, or client-specific DTOs. | `CRW-11`; native owners from `CRW-12` | Internal C++ code cannot obtain mutable Rust-owned consensus object graphs; associated sidecars, mirrors, compatibility mutexes, and revalidation protocols are deleted. |
-| `CRW-16` | `blocked` | Contract PBFT/vote/pillar and DAG/transaction/proposer manager shims into explicit leaf adapters for transport, EVM, signing, VDF, timers, and public clients. | `CRW-12` through `CRW-15` | Manager-shaped internal APIs and manager-to-manager calls are gone; remaining leaf adapters have named external clients and typed effects. |
-| `CRW-17` | `blocked` | Reduce storage and FinalChain bridge surfaces to native bootstrap ownership, public query/admin clients, storage conformance, and a narrow external-EVM executor contract. | `CRW-12` through `CRW-16`; coordinate EVM expansion with `CRW-E01` | Broad storage/query-family handles and consensus use of `BridgeFinalChain` are deleted; retained query, admin, conformance, and EVM surfaces are client-specific and minimal. |
+| `CRW-14` | `active` | Retire state-free or non-production facades per native-owned subsystem, including the remaining PBFT-chain surface after its named network/RPC clients migrate. | `CRW-11`; the selected subsystem owner from `CRW-12` | Each selected family deletes its shim, bridge declarations, carriers, constructors, flag, and compatibility-only tests together. Already-retired rewards stats, proposed blocks, verified votes, sortition params, and gas pricer remain closed; PBFT-chain deletion proceeds with its named clients rather than waiting for global `CRW-12`. |
+| `CRW-15` | `active` | Replace internal legacy consensus object materialization with canonical bytes, opaque identities, borrowed native views, or client-specific DTOs as part of each native-owned subsystem cutover. | `CRW-11`; the selected subsystem owner from `CRW-12` | Internal C++ code cannot obtain mutable Rust-owned consensus object graphs; associated sidecars, mirrors, compatibility mutexes, and revalidation protocols are deleted. |
+| `CRW-16` | `active` | Replace PBFT/vote/pillar and DAG/transaction/proposer manager shims with exact typed leaves for transport, EVM, signing, VDF, timers/process mechanics, and public clients, combining facade and materialization deletion in the same subsystem checkpoint. | The selected subsystem owner from `CRW-12`; applicable `CRW-14`/`CRW-15` family; coordinate network leaves with `CRW-N01` | Manager-shaped internal APIs, manager-to-manager calls, and the manager shim directories are gone; separately named leaf adapters have named external clients, canonical inputs, typed effects, and exact result reports. |
+| `CRW-17` | `ready` | Reduce storage and FinalChain bridge surfaces per migrated subsystem to native application bootstrap ownership, public query/admin clients, storage conformance, and a narrow external-EVM executor contract. | The selected subsystem owner from `CRW-12`; coordinate concrete execution leaves with `CRW-E01` | Broad storage/query-family handles and consensus use of `BridgeFinalChain` are deleted; retained query, admin, conformance, and EVM surfaces are client-specific and minimal. |
 | `CRW-18` | `blocked` | Final bridge/shim reduction closeout and documentation deletion. | `CRW-11` through `CRW-17`; `CRW-N01`/`CRW-E01` only where explicitly activated | Required validation passes; budgets demonstrate the intended contraction; no unclassified or unnamed compatibility surface remains; this reduction plan is deleted and only stable strategy, live inventory, and remaining tracker items survive. |
+
+`CRW-12`, `CRW-14`, `CRW-15`, `CRW-16`, and `CRW-17` are a coordinated vertical campaign, not a global waterfall.
+Once one subsystem has its native owner, a single checkpoint may complete its ownership move, facade deletion,
+materialization removal, shim contraction, and storage/FinalChain narrowing without waiting for unrelated subsystems.
+Queue status remains global, but slice readiness and completion evidence are evaluated for the selected complete family.
+The first application-root checkpoint constructs `ConsensusApplication` once in `App`, migrates Rust-mode fixtures to
+production-root injection, and deletes the non-injected Rust-mode `TransactionManager` and `DagManager` constructors.
+
+| Cluster | Native-owner prerequisite | Same-checkpoint deletion scope | Manager closeout |
+| --- | --- | --- | --- |
+| PBFT, vote, pillar | PBFT family private under `CRW-12` root | Affected `CRW-14` facades and `CRW-15` object families | PBFT portion of `CRW-16`; coordinate transport leaves with `CRW-N01` |
+| DAG, transaction, proposer | DAG/transaction family private under `CRW-12` root | Affected `CRW-14` facades and `CRW-15` object families | DAG portion of `CRW-16`; retain only named VDF/signing/network/EVM leaves |
+| Storage and FinalChain | Last selected consensus caller uses the application/query/execution API | Broad handle/query/session family under `CRW-17` | Coordinate concrete EVM leaves with `CRW-E01` |
 
 `CRW-11` is complete. The task-owner contract now retains only named tarcap transport, concrete EVM/StateAPI,
 operation-specific signing, VDF execution, public-read, and pure-C++ reference clients. The checked starting budgets are
@@ -364,8 +367,8 @@ Rust CXX tests pass 52/52; Rust-enabled FinalChain tests pass 56/56; the all-Rus
 independent review gates pass. The original rewards header/source/test have an empty diff against `upstream-main`.
 The guarded `tests/CMakeLists.txt` build-selection hook is the documented upstream-owned exception: it retains that
 test only when `RUSTAXA_ENABLE=OFF`; the existing Rust-mode core-libs CMake overlay hook merely stops
-registering the deleted shim. Remaining `CRW-14` families are blocked on `CRW-12` because their C++ facades call the
-bridge-owned PBFT or DAG/transaction application service.
+registering the deleted shim. A remaining `CRW-14` family proceeds as soon as its selected subsystem owner is private
+under `CRW-12` and its named clients migrate; it does not wait for unrelated `CRW-12` families globally.
 
 The next `CRW-13` topology contraction deletes
 `create_pillar_capable_pbft_service_for_compatibility`, its CXX export, and the Rust-mode
@@ -3096,10 +3099,11 @@ confirmed the classification-only closeout. CRW-06 is complete.
 
 #### CRW-01 selected composition boundary
 
-`CRW-01` selected a PBFT-cluster-only Rust application service. Current code mapping did not find a wider DAG,
-transaction, pillar, FinalChain, gas, or slashing root that would delete more active compatibility surface in the same
-slice. Those runtimes have independent non-PBFT consumers and remain the separately ordered work in `CRW-04` and
-`CRW-05`; collecting them behind one root now would create a service locator without reducing ownership ambiguity.
+For its original bounded slice, `CRW-01` selected a PBFT-cluster-only Rust application service. At that time, code
+mapping did not find a wider root that would delete more active compatibility surface in the same slice, and collecting
+independently exposed services would have created a service locator. The later task-owner `CRW-12` decision supersedes
+that PBFT-only target: production now converges on one private `ConsensusApplication` composition root while preserving
+the original no-service-locator rule through private services, no accessors, and operation-shaped tasks.
 
 The `CRW-02` ownership graph is:
 

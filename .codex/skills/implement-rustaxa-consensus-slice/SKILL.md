@@ -73,6 +73,12 @@ or ownership result, documentation updates, validation, and review have landed. 
 slices, keep each slice independently coherent and record concise evidence without turning planning documents into an
 implementation diary.
 
+“Bounded” describes a coherent ownership and validation boundary, not a small diff. Prefer a subsystem-wide vertical
+cutover that moves production callers and behavioral tests, preserves only named external leaves, and deletes the whole
+manager/materialization family over a sequence of DTO-level or adapter-only contractions. When the live tracker permits
+per-subsystem progress across several coordinated queue items, select the complete family rather than waiting for an
+unrelated subsystem to finish the same global phase.
+
 Select a slice only when it produces at least one concrete roadmap result:
 
 - deletes a complete ownership or compatibility family;

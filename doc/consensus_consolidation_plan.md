@@ -21,7 +21,8 @@ The reduction target is architectural:
 - Internal C++ consumers use narrow application, query, transport, or executor APIs instead of concrete consensus
   manager classes.
 - Canonical bytes, opaque identities, and client-specific views cross the boundary. Legacy `PbftBlock`, `PbftVote`,
-  `DagBlock`, `Transaction`, `PeriodData`, and pillar object graphs are materialized only for named public clients.
+  `DagBlock`, `Transaction`, `PeriodData`, and pillar object graphs are materialized only for named public clients or
+  unavoidable named executor leaves.
 - Pure-C++ behavior remains available on `cpp-reference`; preserving it does not require preserving the same internal
   class graph in Rust-enabled production.
 
@@ -34,12 +35,23 @@ The task owner has selected aggressive Rust cutover. These are implementation co
 2. Production Rust mode uses one supported feature bundle. Granular rewrite flags may remain as pure-C++/reference or
    short-lived test gates, but do not require partial Rust application services.
 3. Tests do not by themselves justify a production CXX export, compatibility constructor, or shim. Behavioral tests
-   move with the native runtime; bridge tests cover only ABI and conversion behavior.
+   move with the native runtime; bridge tests cover ABI, conversion, lifetime, error mapping, and explicitly allowlisted
+   conformance or parity boundaries.
 4. Rust owns network consensus ingress, admission, routing, queueing, and effect decisions; tarcap is a leaf transport
    executor. Rust owns EVM/FinalChain orchestration and canonical payload/result validation; C++ `StateAPI` is a leaf
    concrete EVM/`state_db` executor.
 5. Logging, timers, events, and public formatting are adapter concerns, not reasons to retain deterministic orchestration
    in C++.
+6. Rust-enabled production converges on one native `ConsensusApplication` composition root. Separate PBFT,
+   DAG/transaction, broad FinalChain, internal storage, and storage query-family handles are temporary migration
+   surfaces, not supported application topology. The client-oriented `ConsensusQueryApi` remains the named public-read
+   facade.
+7. The application root keeps internal services private. CXX crosses only through application tasks or named tarcap,
+   concrete EVM/`state_db`, signing, VDF, timer/process, and public-query leaves using canonical bytes, identities,
+   operation-specific DTOs, and exact typed effect reports.
+8. Remaining work runs as vertical subsystem cutovers. Once a subsystem has a native owner, ownership extraction,
+   facade deletion, materialization removal, shim contraction, and boundary narrowing may land in one checkpoint rather
+   than waiting for the same phase to finish globally in every subsystem.
 
 ## Non-Negotiable Boundaries
 
@@ -52,6 +64,44 @@ The task owner has selected aggressive Rust cutover. These are implementation co
   selection strategy.
 
 ## Workstreams
+
+### Remaining campaign execution model
+
+The numbered workstreams below classify responsibilities and deletion inventory; they are not a mandatory global
+waterfall. The remaining campaign uses five coherent vertical checkpoints:
+
+1. **Application-root cutover.** Add the native `ConsensusApplication` lifetime/composition owner, construct it once in
+   `App`, make its services private, migrate fixtures to explicit production-root injection, and delete the non-injected
+   Rust-mode `TransactionManager` and `DagManager` constructors. C++ may retain one opaque bootstrap holder while
+   manager facades still need leaf adapters.
+2. **PBFT cluster cutover.** Move the daemon/state-machine, vote, pillar, chain, sync, and finalization orchestration
+   behind application tasks. Network, signing, timers, and EVM remain exact typed leaves. Delete PBFT/vote/pillar
+   manager-to-manager APIs, internal object sidecars, CXX families, and complete shims when their last named leaf moves.
+3. **DAG/transaction cluster cutover.** Move proposer, verification, queue, packing, admission, and DAG lifecycle behind
+   application tasks. VDF, signing, network, and EVM gas execution remain exact typed leaves. Delete the DAG,
+   transaction, and proposer Rust-mode facades and their compatibility construction/materialization families together.
+4. **Materialization and broad-handle cutover.** Replace remaining internal `PbftBlock`, `PbftVote`, `PeriodData`,
+   `DagBlock`, `Transaction`, and pillar object graphs with canonical bytes, opaque identities, or client-specific DTOs;
+   delete exposed internal service/storage/FinalChain handles after their callers use application, query, admin,
+   conformance, or execution APIs.
+5. **Boundary closeout.** Retain only tarcap physical transport, concrete EVM/`state_db`, signing, VDF, required
+   timer/process mechanics, public-query formatting, and pure-C++ reference behavior. Delete the reduction plan after
+   the live audit and tracker prove no unnamed compatibility surface remains.
+
+Each checkpoint must migrate all selected production callers, move protocol behavior tests to the native owner, retain
+only focused CXX boundary coverage, delete the superseded family in the same change, and pass the validation tier
+required by `doc/rewrite_validation_strategy.md`. Temporary compilation breakage may exist inside a development branch,
+but every committed checkpoint must be coherent and buildable; no legacy production fallback or second Rust feature
+topology may be introduced.
+
+Every checkpoint validation envelope includes:
+
+- a normal path proving clean initialization and the migrated operation;
+- a restart path proving native restoration and publication from durable state;
+- a failure path proving sibling restoration or leaf-effect failure publishes no partial root/state and preserves exact
+  retry, abort, stale-report, and duplicate-report behavior where applicable;
+- a Rust-enabled `App` or subsystem integration path through the single root and its named leaves; and
+- an all-Rust-disabled build/test path proving untouched pure-C++ selection.
 
 ### 1. Establish a measured deletion contract
 
@@ -66,15 +116,18 @@ The task owner has selected aggressive Rust cutover. These are implementation co
 
 ### 2. Move application ownership out of `rustaxa-bridge`
 
-- Introduce a native Rust application/runtime crate or an equivalent non-bridge module boundary.
+- Introduce the native `ConsensusApplication` composition root in a CXX-free Rust crate/module and construct it once in
+  `App`.
 - Move PBFT service state and DAG/transaction/sortition service state, their construction, restoration, lock domains,
   and behavioral tests out of `rustaxa-bridge`.
-- Keep bridge-owned wrappers as thin references to native application services.
+- Keep internal services private to the root. Bridge-owned wrappers are temporary thin task adapters, not references
+  that C++ may retrieve, construct independently, or pass between managers.
 - Move bridge-module unit tests to their native domain/runtime owners; retain only CXX conversion, error mapping, and
   boundary-lifetime tests in `rustaxa-bridge`.
 
-Completion condition: removing CXX support from a native service would not require moving or rewriting its protocol
-logic or behavioral tests.
+Completion condition: `App` constructs one native root; removing CXX support from a native service would not require
+moving or rewriting its protocol logic or behavioral tests; and C++ cannot construct, retrieve, or pass private
+consensus service handles.
 
 Progress: the proposed-block and PBFT-chain sibling owners are the first bounded extractions. CXX-free
 `rustaxa-consensus::proposed_blocks::ProposedBlocksService` owns its storage lifetime, restoration, lock domain,
@@ -642,10 +695,11 @@ leader-selection callers that have not yet moved behind operation-shaped native 
 - Split the remaining C++ surface into explicit adapters: lifecycle/timer, transport, signer, VDF, EVM/FinalChain
   executor, and public query/materialization.
 - Delete manager-shaped methods after their last internal caller migrates.
-- Activate `CRW-N01` when transport contraction reaches the point where network ingress/egress blocks further deletion.
+- Continue and complete `CRW-N01` wherever transport-coupled ingress/egress blocks manager deletion.
 
 Completion condition: `pbft_manager_shim` and `vote_manager_shim` are leaf executor adapters rather than alternate
-application runtimes; completing `CRW-N01` makes them deletable or replaces them with a transport adapter.
+application runtimes, then are deleted after their last named clients use separate transport, execution, signing,
+timer/process, or public adapters. Completing `CRW-N01` removes transport as a reason to retain either manager facade.
 
 Current network-root progress: native `PbftService` constructs and owns the single `ConsensusNetworkService`; App gives
 `Network` only a thin CXX adapter cloned from that root and injects it through both tarcap capabilities into the vote,
@@ -702,6 +756,10 @@ contraction milestones rather than item completion.
 - Delete `dag_manager_shim`, `transaction_manager_shim`, and `dag_block_proposer_shim` when their remaining clients use
   application APIs.
 
+Completion condition: all three manager/proposer shim directories are deleted in Rust mode; retained VDF, signing,
+network, EVM-gas, timer/process, and public operations live in separately named leaf adapters rather than methods on a
+manager facade.
+
 ### 8. Reduce storage to bootstrap/admin/query boundaries
 
 - Separate application storage ownership from the public `DbStorage` compatibility class.
@@ -734,6 +792,12 @@ contraction milestones rather than item completion.
 Select work only from the tracker’s **Remaining Consensus Work Queue**. A slice must delete a complete ownership or
 compatibility family, move application behavior out of the bridge, or unblock a named downstream deletion. Merely
 renaming exports, combining DTOs, or reclassifying retained code is not sufficient.
+
+“Bounded” means one coherent ownership transition with an explicit validation envelope, not a small diff. Prefer a
+vertical subsystem checkpoint that combines applicable `CRW-12`, `CRW-14`, `CRW-15`, `CRW-16`, and `CRW-17` work and
+deletes a manager or materialization family over a sequence of adapter-only commits. A checkpoint may proceed when its
+selected subsystem has the required native owner; it does not wait for unrelated subsystems to finish the same queue
+items globally.
 
 Every slice must report:
 
