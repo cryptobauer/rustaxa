@@ -336,6 +336,10 @@ PBFT/FinalChain aggregate-vote task rather than a standalone CXX planner. Rust
 short-circuits mismatched periods before address lookup and returns a typed
 readiness bit; C++ retains only wallet-address projection, the public query,
 and the actual polling sleep.
+Startup finalization readiness likewise composes the native PBFT head and
+FinalChain finalized height/delegation delay directly. The detached fact/plan
+carrier family is deleted; C++ retains only the stoppable polling loop and its
+actual sleep.
 Executed-block reset, next-voted status, and manager cursor-field persistence
 transcripts now follow the same ownership rule. Native storage/runtime tests
 own commit-before-publication, accepted-field, and rejection behavior; the

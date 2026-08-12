@@ -31,8 +31,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerBroadcastReportResult as FfiPbftManagerBroadcastReportResult,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
-    PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
-    PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLifecycleTransitionRequest as FfiPbftManagerLifecycleTransitionRequest,
     PbftManagerLifecycleTransitionResult as FfiPbftManagerLifecycleTransitionResult,
     PbftManagerProposalInitialFact as FfiPbftManagerProposalInitialFact,
@@ -79,7 +77,6 @@ use rustaxa_consensus::pbft_finalize::{
 use rustaxa_consensus::pbft_leader_selection::PbftComposedLeaderSelectionRequest;
 use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
-    plan_pbft_manager_finalization_wait as plan_domain_pbft_manager_finalization_wait,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
     validate_pbft_manager_advance_period_action_report as validate_domain_pbft_manager_advance_period_action_report,
@@ -88,8 +85,7 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
     PbftManagerBlockValidationPlan, PbftManagerBroadcastAction, PbftManagerBroadcastFact,
     PbftManagerBroadcastPlan, PbftManagerBroadcastReport, PbftManagerBroadcastReportResult,
-    PbftManagerBroadcastStatus, PbftManagerFinalizationWaitFact, PbftManagerFinalizationWaitPlan,
-    PbftManagerLifecycleTransitionRequest, PbftManagerProposalAction,
+    PbftManagerBroadcastStatus, PbftManagerLifecycleTransitionRequest, PbftManagerProposalAction,
     PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerProposalStatus,
     PbftManagerProposalWalletFact, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
     PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
@@ -1264,19 +1260,12 @@ pub fn plan_pbft_manager_runtime_sleep_until_next_step(
         .into()
 }
 
-/// Plans the PBFT manager startup wait for FinalChain readiness.
-///
-/// Inputs:
-/// - `fact`: PBFT-chain size, FinalChain finalized height, delegation delay,
-///   and polling interval facts supplied by the C++ shell.
-///
-/// Outputs:
-/// - A Rust-owned wait/no-wait command. C++ keeps the startup loop and sleep
-///   execution.
-pub fn plan_pbft_manager_finalization_wait(
-    fact: FfiPbftManagerFinalizationWaitFact,
-) -> FfiPbftManagerFinalizationWaitPlan {
-    plan_domain_pbft_manager_finalization_wait(fact.into()).into()
+/// Returns whether PBFT startup can proceed based on finalization delay.
+pub fn pbft_service_finalization_ready(
+    runtime: &BridgePbftService,
+    final_chain: &BridgeFinalChain,
+) -> anyhow::Result<bool> {
+    runtime.0.finalization_ready(&final_chain.0)
 }
 
 /// Aborts the runtime-owned PBFT manager tick session.
@@ -1808,17 +1797,6 @@ impl From<FfiPbftManagerRuntimeActionReport> for PbftManagerRuntimeActionReport 
     }
 }
 
-impl From<FfiPbftManagerFinalizationWaitFact> for PbftManagerFinalizationWaitFact {
-    fn from(value: FfiPbftManagerFinalizationWaitFact) -> Self {
-        Self {
-            pbft_chain_size: value.pbft_chain_size,
-            final_chain_last_block: value.final_chain_last_block,
-            delegation_delay: value.delegation_delay,
-            polling_interval_ms: value.polling_interval_ms,
-        }
-    }
-}
-
 impl From<FfiPbftManagerStateActionFact> for PbftManagerStateActionFact {
     fn from(value: FfiPbftManagerStateActionFact) -> Self {
         Self {
@@ -2009,17 +1987,6 @@ impl From<PbftManagerSleepPlan> for FfiPbftManagerSleepPlan {
             should_sleep: value.should_sleep,
             sleep_ms: value.sleep_ms,
             step: value.step,
-            error_code: value.error_code,
-        }
-    }
-}
-
-impl From<PbftManagerFinalizationWaitPlan> for FfiPbftManagerFinalizationWaitPlan {
-    fn from(value: PbftManagerFinalizationWaitPlan) -> Self {
-        Self {
-            accepted: value.accepted,
-            should_wait: value.should_wait,
-            sleep_ms: value.sleep_ms,
             error_code: value.error_code,
         }
     }
@@ -2757,37 +2724,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_planner_carriers_preserve_normal_path_sentinels() {
-        let finalization_wait_fact: PbftManagerFinalizationWaitFact =
-            FfiPbftManagerFinalizationWaitFact {
-                pbft_chain_size: 21,
-                final_chain_last_block: 15,
-                delegation_delay: 5,
-                polling_interval_ms: 123,
-            }
-            .into();
-        assert_eq!(
-            (
-                finalization_wait_fact.pbft_chain_size,
-                finalization_wait_fact.final_chain_last_block,
-                finalization_wait_fact.delegation_delay,
-                finalization_wait_fact.polling_interval_ms,
-            ),
-            (21, 15, 5, 123)
-        );
-        let finalization_wait_plan: FfiPbftManagerFinalizationWaitPlan =
-            PbftManagerFinalizationWaitPlan {
-                accepted: true,
-                should_wait: true,
-                sleep_ms: 123,
-                error_code: "WAIT_SENTINEL".to_string(),
-            }
-            .into();
-        assert!(finalization_wait_plan.accepted);
-        assert!(finalization_wait_plan.should_wait);
-        assert_eq!(finalization_wait_plan.sleep_ms, 123);
-        assert_eq!(finalization_wait_plan.error_code, "WAIT_SENTINEL");
-
+    fn bridge_block_validation_fact_and_plan_carriers_preserve_sentinels() {
         let ffi_block_fact = FfiPbftManagerBlockValidationFact {
             block_hash: [0x11; 32],
             period: 12,

@@ -1024,6 +1024,13 @@ impl FinalChain {
         Ok(self.last_block_number_typed()?.as_u64())
     }
 
+    /// Returns the immutable DPoS delegation delay configured for this chain.
+    ///
+    /// The value is expressed in finalized block heights and requires no storage read.
+    pub(crate) fn dpos_delegation_delay(&self) -> u64 {
+        self.dpos_delegation_delay
+    }
+
     /// Returns the latest finalized block as a typed lifecycle identity.
     pub fn last_block_number_typed(&self) -> Result<FinalChainBlockNumber, anyhow::Error> {
         let Some(raw) = self

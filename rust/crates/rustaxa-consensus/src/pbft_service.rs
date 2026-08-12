@@ -3670,6 +3670,22 @@ impl PbftService {
         self.readiness.is_ready()
     }
 
+    /// Returns whether PBFT startup finalization guard has been cleared.
+    ///
+    /// The service is considered ready when the PBFT head size does not exceed
+    /// the delayed FinalChain finalization height (`final_chain_last_block +
+    /// delegation_delay`). The calculation propagates overflow instead of
+    /// wrapping, returning an explicit error code for callers.
+    pub fn finalization_ready(&self, final_chain: &FinalChain) -> Result<bool> {
+        let ready_height = final_chain
+            .last_block_number()?
+            .checked_add(final_chain.dpos_delegation_delay())
+            .ok_or(anyhow!(
+                "PBFT_MANAGER_FINALIZATION_WAIT_READY_HEIGHT_OVERFLOW"
+            ))?;
+        Ok(self.pbft_chain_head().size <= ready_height)
+    }
+
     /// Returns whether pillar startup restoration has been published complete.
     ///
     /// The result is an acquire-load of the pillar sibling's monotonic readiness
@@ -7987,6 +8003,26 @@ mod tests {
         assert!(service.is_ready());
         service.complete_bootstrap();
         assert!(service.is_ready());
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_ready_tracks_final_chain_delay() {
+        let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_finalization_ready");
+        let final_chain = final_chain_with_pillar_voters_and_delay(storage.clone(), &[], 2);
+        let service = PbftService::restore(storage.clone(), config(1)).unwrap();
+
+        assert!(service.finalization_ready(&final_chain).unwrap());
+        assert_eq!(service.pbft_chain_head().size, 0);
+
+        for index in 1..=3 {
+            service
+                .pbft_chain_update(H256::from_low_u64_be(index), H256::zero())
+                .unwrap();
+        }
+        assert!(!service.finalization_ready(&final_chain).unwrap());
 
         drop(service);
         let _ = fs::remove_dir_all(path);

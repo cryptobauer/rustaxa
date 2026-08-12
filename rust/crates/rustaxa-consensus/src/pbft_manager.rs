@@ -5668,77 +5668,6 @@ pub fn plan_pbft_manager_runtime_sleep_until_next_step(
     })
 }
 
-/// Facts required to decide whether PBFT manager startup must wait for FinalChain finalization.
-///
-/// Inputs:
-/// - `pbft_chain_size`: current PBFT-chain size observed by the C++ shell.
-/// - `final_chain_last_block`: latest finalized block number observed at the
-///   accepted FinalChain boundary.
-/// - `delegation_delay`: configured FinalChain DPoS delegation delay.
-/// - `polling_interval_ms`: executor sleep duration that C++ will run when
-///   Rust says the wait must continue.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct PbftManagerFinalizationWaitFact {
-    /// Current PBFT-chain size.
-    pub pbft_chain_size: u64,
-    /// Latest finalized FinalChain block number.
-    pub final_chain_last_block: u64,
-    /// Configured delegation delay.
-    pub delegation_delay: u64,
-    /// Polling sleep duration in milliseconds.
-    pub polling_interval_ms: u64,
-}
-
-/// Rust-owned startup finalization wait plan for the C++ sleep executor.
-///
-/// Outputs:
-/// - `should_wait` is true when PBFT is ahead of FinalChain plus delegation
-///   delay and the shell should execute `sleep_ms` before checking again.
-/// - `accepted` is false only when the readiness threshold cannot be computed.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct PbftManagerFinalizationWaitPlan {
-    /// Whether the fact bundle was accepted.
-    pub accepted: bool,
-    /// Whether C++ should continue waiting.
-    pub should_wait: bool,
-    /// Wait duration in milliseconds when `should_wait` is true.
-    pub sleep_ms: u64,
-    /// Stable error detail for rejected facts.
-    pub error_code: String,
-}
-
-/// Plans the PBFT manager startup wait for FinalChain finalization readiness.
-///
-/// Purpose:
-/// - Moves the deterministic readiness comparison out of the PBFT manager shim
-///   while C++ keeps the startup loop and sleep mechanics.
-pub fn plan_pbft_manager_finalization_wait(
-    fact: PbftManagerFinalizationWaitFact,
-) -> PbftManagerFinalizationWaitPlan {
-    let Some(ready_height) = fact
-        .final_chain_last_block
-        .checked_add(fact.delegation_delay)
-    else {
-        return PbftManagerFinalizationWaitPlan {
-            accepted: false,
-            should_wait: false,
-            sleep_ms: 0,
-            error_code: "PBFT_MANAGER_FINALIZATION_WAIT_READY_HEIGHT_OVERFLOW".to_string(),
-        };
-    };
-
-    PbftManagerFinalizationWaitPlan {
-        accepted: true,
-        should_wait: fact.pbft_chain_size > ready_height,
-        sleep_ms: if fact.pbft_chain_size > ready_height {
-            fact.polling_interval_ms
-        } else {
-            0
-        },
-        error_code: String::new(),
-    }
-}
-
 /// Long-lived PBFT manager runtime cursor owned by Rust.
 ///
 /// This runtime owns the scalar PBFT manager cursor restored from storage and
@@ -11494,31 +11423,6 @@ mod tests {
         assert_eq!(plan.sleep_ms, 1_600);
         assert_eq!(plan.step, 4);
         assert!(plan.error_code.is_empty());
-    }
-
-    #[test]
-    fn finalization_wait_planner_waits_until_delegation_delay_is_covered() {
-        let wait = plan_pbft_manager_finalization_wait(PbftManagerFinalizationWaitFact {
-            pbft_chain_size: 20,
-            final_chain_last_block: 14,
-            delegation_delay: 5,
-            polling_interval_ms: 100,
-        });
-        assert!(wait.accepted);
-        assert!(wait.should_wait);
-        assert_eq!(wait.sleep_ms, 100);
-        assert!(wait.error_code.is_empty());
-
-        let ready = plan_pbft_manager_finalization_wait(PbftManagerFinalizationWaitFact {
-            pbft_chain_size: 19,
-            final_chain_last_block: 14,
-            delegation_delay: 5,
-            polling_interval_ms: 100,
-        });
-        assert!(ready.accepted);
-        assert!(!ready.should_wait);
-        assert_eq!(ready.sleep_ms, 0);
-        assert!(ready.error_code.is_empty());
     }
 
     #[test]

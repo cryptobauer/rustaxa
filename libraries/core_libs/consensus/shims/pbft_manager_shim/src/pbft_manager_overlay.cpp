@@ -1155,21 +1155,10 @@ void PbftManager::setPbftRound(PbftRound round) {
 
 void PbftManager::waitForPeriodFinalization() {
   do {
-    // we need to be sure we finalized at least block with num lower by delegation_delay
-    rustaxa::PbftManagerFinalizationWaitFact fact{};
-    fact.pbft_chain_size = pbft_chain_->getPbftChainSize();
-    fact.final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
-    fact.delegation_delay = final_chain_->delegationDelay();
-    fact.polling_interval_ms = static_cast<uint64_t>(kPollingIntervalMs.count());
-    const auto plan = rustaxa::plan_pbft_manager_finalization_wait(fact);
-    if (!plan.accepted) {
-      throw std::runtime_error("Rust PBFT manager finalization wait planner rejected facts: " +
-                               static_cast<std::string>(plan.error_code));
-    }
-    if (!plan.should_wait) {
+    if (rustaxa::pbft_service_finalization_ready(pbft_service_->service(), final_chain_->rustFinalChain())) {
       break;
     }
-    thisThreadSleepForMilliSeconds(plan.sleep_ms);
+    thisThreadSleepForMilliSeconds(static_cast<uint64_t>(kPollingIntervalMs.count()));
   } while (!stopped_);
 }
 
