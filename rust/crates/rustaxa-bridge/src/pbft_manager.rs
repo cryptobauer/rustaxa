@@ -29,8 +29,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerBroadcastPlan as FfiPbftManagerBroadcastPlan,
     PbftManagerBroadcastReport as FfiPbftManagerBroadcastReport,
     PbftManagerBroadcastReportResult as FfiPbftManagerBroadcastReportResult,
-    PbftManagerEligibleWalletPeriodWaitFact as FfiPbftManagerEligibleWalletPeriodWaitFact,
-    PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
@@ -81,7 +79,6 @@ use rustaxa_consensus::pbft_finalize::{
 use rustaxa_consensus::pbft_leader_selection::PbftComposedLeaderSelectionRequest;
 use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
-    plan_pbft_manager_eligible_wallet_period_wait as plan_domain_pbft_manager_eligible_wallet_period_wait,
     plan_pbft_manager_finalization_wait as plan_domain_pbft_manager_finalization_wait,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
@@ -91,15 +88,13 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
     PbftManagerBlockValidationPlan, PbftManagerBroadcastAction, PbftManagerBroadcastFact,
     PbftManagerBroadcastPlan, PbftManagerBroadcastReport, PbftManagerBroadcastReportResult,
-    PbftManagerBroadcastStatus, PbftManagerEligibleWalletPeriodWaitFact,
-    PbftManagerEligibleWalletPeriodWaitPlan, PbftManagerFinalizationWaitFact,
-    PbftManagerFinalizationWaitPlan, PbftManagerLifecycleTransitionRequest,
-    PbftManagerProposalAction, PbftManagerProposalInitialFact, PbftManagerProposalSessionStep,
-    PbftManagerProposalStatus, PbftManagerProposalWalletFact, PbftManagerRuntimeAction,
-    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
-    PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
-    PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerSleepPlan,
-    PbftManagerStartupReplayPeriod, PbftManagerStartupReplayRangeFact,
+    PbftManagerBroadcastStatus, PbftManagerFinalizationWaitFact, PbftManagerFinalizationWaitPlan,
+    PbftManagerLifecycleTransitionRequest, PbftManagerProposalAction,
+    PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerProposalStatus,
+    PbftManagerProposalWalletFact, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
+    PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
+    PbftManagerRuntimeStateCode, PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact,
+    PbftManagerSleepPlan, PbftManagerStartupReplayPeriod, PbftManagerStartupReplayRangeFact,
     PbftManagerStartupReplayRangePlan, PbftManagerStateActionEffect,
     PbftManagerStateActionEffectReport, PbftManagerStateActionEffectResultCode,
     PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
@@ -1284,13 +1279,6 @@ pub fn plan_pbft_manager_finalization_wait(
     plan_domain_pbft_manager_finalization_wait(fact.into()).into()
 }
 
-/// Plans whether a PBFT manager vote-count query should wait for eligible-wallet period readiness.
-pub fn plan_pbft_manager_eligible_wallet_period_wait(
-    fact: FfiPbftManagerEligibleWalletPeriodWaitFact,
-) -> FfiPbftManagerEligibleWalletPeriodWaitPlan {
-    plan_domain_pbft_manager_eligible_wallet_period_wait(fact.into()).into()
-}
-
 /// Aborts the runtime-owned PBFT manager tick session.
 pub fn abort_pbft_manager_runtime_session(runtime: &BridgePbftService) {
     runtime.0.abort_runtime_session();
@@ -1831,16 +1819,6 @@ impl From<FfiPbftManagerFinalizationWaitFact> for PbftManagerFinalizationWaitFac
     }
 }
 
-impl From<FfiPbftManagerEligibleWalletPeriodWaitFact> for PbftManagerEligibleWalletPeriodWaitFact {
-    fn from(value: FfiPbftManagerEligibleWalletPeriodWaitFact) -> Self {
-        Self {
-            eligible_wallet_period: value.eligible_wallet_period,
-            pbft_chain_size: value.pbft_chain_size,
-            polling_interval_ms: value.polling_interval_ms,
-        }
-    }
-}
-
 impl From<FfiPbftManagerStateActionFact> for PbftManagerStateActionFact {
     fn from(value: FfiPbftManagerStateActionFact) -> Self {
         Self {
@@ -2043,15 +2021,6 @@ impl From<PbftManagerFinalizationWaitPlan> for FfiPbftManagerFinalizationWaitPla
             should_wait: value.should_wait,
             sleep_ms: value.sleep_ms,
             error_code: value.error_code,
-        }
-    }
-}
-
-impl From<PbftManagerEligibleWalletPeriodWaitPlan> for FfiPbftManagerEligibleWalletPeriodWaitPlan {
-    fn from(value: PbftManagerEligibleWalletPeriodWaitPlan) -> Self {
-        Self {
-            should_wait: value.should_wait,
-            sleep_ms: value.sleep_ms,
         }
     }
 }
@@ -2818,30 +2787,6 @@ mod tests {
         assert!(finalization_wait_plan.should_wait);
         assert_eq!(finalization_wait_plan.sleep_ms, 123);
         assert_eq!(finalization_wait_plan.error_code, "WAIT_SENTINEL");
-
-        let eligible_wait_fact: PbftManagerEligibleWalletPeriodWaitFact =
-            FfiPbftManagerEligibleWalletPeriodWaitFact {
-                eligible_wallet_period: 31,
-                pbft_chain_size: 32,
-                polling_interval_ms: 456,
-            }
-            .into();
-        assert_eq!(
-            (
-                eligible_wait_fact.eligible_wallet_period,
-                eligible_wait_fact.pbft_chain_size,
-                eligible_wait_fact.polling_interval_ms,
-            ),
-            (31, 32, 456)
-        );
-        let eligible_wait_plan: FfiPbftManagerEligibleWalletPeriodWaitPlan =
-            PbftManagerEligibleWalletPeriodWaitPlan {
-                should_wait: true,
-                sleep_ms: 456,
-            }
-            .into();
-        assert!(eligible_wait_plan.should_wait);
-        assert_eq!(eligible_wait_plan.sleep_ms, 456);
 
         let ffi_block_fact = FfiPbftManagerBlockValidationFact {
             block_hash: [0x11; 32],

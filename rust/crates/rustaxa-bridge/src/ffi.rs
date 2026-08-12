@@ -1218,19 +1218,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// C++-originated facts for eligible-wallet period readiness polling.
-    struct PbftManagerEligibleWalletPeriodWaitFact {
-        eligible_wallet_period: u64,
-        pbft_chain_size: u64,
-        polling_interval_ms: u64,
-    }
-
-    /// Rust-owned eligible-wallet period readiness wait plan.
-    struct PbftManagerEligibleWalletPeriodWaitPlan {
-        should_wait: bool,
-        sleep_ms: u64,
-    }
-
     /// C++-originated deterministic facts for one PBFT manager state action.
     struct PbftManagerStateActionFact {
         state: u8,
@@ -2243,6 +2230,7 @@ pub mod rustaxa_ffi {
     /// PBFT-facing DPoS aggregate-vote request for a supplied wallet subset.
     struct PbftFinalChainDposWalletAggregateVoteCountRequest {
         period: u64,
+        eligible_wallet_period: u64,
         addresses: Vec<PbftFinalChainDposAddress>,
     }
 
@@ -2252,6 +2240,7 @@ pub mod rustaxa_ffi {
         last_block_number: u64,
         has_aggregate_vote_count: bool,
         aggregate_vote_count: u64,
+        eligible_wallet_period_ready: bool,
         error_code: String,
     }
 
@@ -3940,9 +3929,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_finalization_wait(
             fact: PbftManagerFinalizationWaitFact,
         ) -> PbftManagerFinalizationWaitPlan;
-        pub fn plan_pbft_manager_eligible_wallet_period_wait(
-            fact: PbftManagerEligibleWalletPeriodWaitFact,
-        ) -> PbftManagerEligibleWalletPeriodWaitPlan;
         pub fn pbft_manager_runtime_begin_state_action_effect_session(
             runtime: &BridgePbftService,
             fact: PbftManagerStateActionFact,

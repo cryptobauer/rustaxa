@@ -11,7 +11,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #include "common/thread_pool.hpp"
@@ -1197,46 +1196,40 @@ std::optional<uint64_t> PbftManager::getCurrentDposTotalVotesCount() const {
 }
 
 std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
-  // Note: There is a race condition in eligible_wallets_.getWalletsEligiblePeriod(). This method works only if
-  // wallets eligible period == pbft chain size. This race condition is handled within pbft manager but
-  // getCurrentNodeVotesCount() is called externally from standalone thread and in some edge cases we need to wait until
-  // period in eligible_wallets_ is updated according to the latest chain size
-  while (true) {
-    rustaxa::PbftManagerEligibleWalletPeriodWaitFact fact{};
-    fact.eligible_wallet_period = eligible_wallets_.getWalletsEligiblePeriod();
-    fact.pbft_chain_size = pbft_chain_->getPbftChainSize();
-    fact.polling_interval_ms = 10;
-    const auto plan = rustaxa::plan_pbft_manager_eligible_wallet_period_wait(fact);
-    if (!plan.should_wait) {
-      break;
-    }
-
-    thisThreadSleepForMilliSeconds(plan.sleep_ms);
-  }
-
   try {
-    const auto period = pbft_chain_->getPbftChainSize();
-    rustaxa::PbftFinalChainDposWalletAggregateVoteCountRequest request;
-    request.period = period;
-    const auto &wallets = eligible_wallets_.getWallets(getPbftPeriod());
-    request.addresses.reserve(wallets.size());
-    for (const auto &wallet : wallets) {
-      if (!wallet.first) {
+    while (true) {
+      const auto period = pbft_chain_->getPbftChainSize();
+      rustaxa::PbftFinalChainDposWalletAggregateVoteCountRequest request;
+      request.period = period;
+      request.eligible_wallet_period = eligible_wallets_.getWalletsEligiblePeriod();
+
+      auto facts = pbft_service_->service().pbft_service_collect_dpos_wallet_aggregate_vote_count(
+          final_chain_->rustFinalChain(), request);
+      if (!facts.eligible_wallet_period_ready) {
+        thisThreadSleepForMilliSeconds(10);
         continue;
       }
-      rustaxa::PbftFinalChainDposAddress bridge_address;
-      bridge_address.address = toBridgeFixedBytes<20>(wallet.second.node_addr);
-      request.addresses.push_back(bridge_address);
-    }
 
-    const auto facts = pbft_service_->service().pbft_service_collect_dpos_wallet_aggregate_vote_count(
-        final_chain_->rustFinalChain(), request);
-    if (facts.status == kPbftSyncDposFactsReady && facts.has_aggregate_vote_count) {
-      return facts.aggregate_vote_count;
+      const auto &wallets = eligible_wallets_.getWallets(period + 1);
+      request.addresses.reserve(wallets.size());
+      for (const auto &wallet : wallets) {
+        if (wallet.first) {
+          rustaxa::PbftFinalChainDposAddress bridge_address;
+          bridge_address.address = toBridgeFixedBytes<20>(wallet.second.node_addr);
+          request.addresses.push_back(bridge_address);
+        }
+      }
+
+      facts = pbft_service_->service().pbft_service_collect_dpos_wallet_aggregate_vote_count(
+          final_chain_->rustFinalChain(), request);
+      if (facts.status == kPbftSyncDposFactsReady && facts.has_aggregate_vote_count) {
+        return facts.aggregate_vote_count;
+      }
+      LOG(log_wr_) << "Rust FinalChain PBFT node-vote fact collection failed for period " << period
+                   << ". Period is too far ahead of actual finalized pbft chain size (" << facts.last_block_number
+                   << "). Err msg: " << static_cast<std::string>(facts.error_code);
+      break;
     }
-    LOG(log_wr_) << "Rust FinalChain PBFT node-vote fact collection failed for period " << period
-                 << ". Period is too far ahead of actual finalized pbft chain size (" << facts.last_block_number
-                 << "). Err msg: " << static_cast<std::string>(facts.error_code);
   } catch (const std::exception &e) {
     LOG(log_wr_) << "Rust FinalChain PBFT node-vote fact collection failed for period "
                  << pbft_chain_->getPbftChainSize() << ". Period is too far ahead of actual finalized pbft chain size ("

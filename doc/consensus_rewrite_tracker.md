@@ -149,8 +149,9 @@ Completed closeout slices:
   ports or runtimes.
 - Obsolete public object/materialization adapters were removed where Rust DTOs were sufficient; remaining materialization
   is classified by boundary.
-- PBFT next-step sleeps, ineligible-wallet polling, startup finalization waits, eligible-wallet readiness waits, and DAG
-  proposer worker retry delay are Rust-planned. Remaining lifecycle shell code is accepted host/executor mechanics.
+- PBFT next-step sleeps, ineligible-wallet polling, startup finalization waits, and DAG proposer worker retry delay are
+  Rust-planned. Eligible-wallet readiness is composed into the native FinalChain aggregate-vote task. Remaining
+  lifecycle shell code is accepted host/executor mechanics.
 
 Future consensus cleanup should be deletion-oriented: remove adapters, broad CXX bridge DTOs, sidecar maps, and shim
 helpers once their public, network, EVM, test, or app-host consumers move. New unclassified production consensus fallback
@@ -870,7 +871,7 @@ bridge-local happy-path planner transcripts for finalization readiness,
 eligible-wallet period readiness, block validation, candidate admission, and
 leader-candidate selection. Native tests
 `finalization_wait_planner_waits_until_delegation_delay_is_covered`,
-`eligible_wallet_period_wait_planner_waits_until_period_matches_chain_size`,
+the native PBFT/FinalChain aggregate readiness cases,
 `block_validation_planner_drives_live_checks_in_legacy_order`,
 `block_validation_planner_handles_final_chain_wait_and_rejections`,
 `candidate_admission_plans_lookup_validation_and_mark_valid`, and
@@ -3960,8 +3961,8 @@ validation/insertion and finalization dispatch. Remaining `PbftVote`, `PillarVot
 than authoritative PBFT manager decision state; deleting them belongs to the VoteManager/PillarChainManager,
 FinalChain/EVM execution, proposed-block public API, network/tarcap, and model-port tracks.
 
-Slice 9 executor-shell closeout: PBFT next-step sleeps, ineligible-wallet polling, startup finalization waits, and
-eligible-wallet period readiness waits are Rust-planned. DAG proposer worker retry delay is Rust-planned through the
+Slice 9 executor-shell closeout: PBFT next-step sleeps, ineligible-wallet polling, and startup finalization waits are
+Rust-planned. Eligible-wallet readiness is now folded into the native PBFT/FinalChain aggregate task. DAG proposer worker retry delay is Rust-planned through the
 worker-command planner. C++ remains the accepted host executor for OS threads, condition-variable wakeups, actual sleeps,
 network/tarcap effects, key-manager signing execution, public-query compatibility loops, and EVM/FinalChain execution
 dispatch until the future app-host, network, and EVM migrations.
@@ -4048,6 +4049,19 @@ surface falls by 118 bridge lines, 44 shim lines, one CXX function, and four CXX
 shim lines, 359 CXX functions, and 295 carriers. Handles remain 18, shim directories 9, granular flags 0, partial
 factories 0, compatibility constructor calls 0, and non-test C++ consumers 38. `CRW-12` remains active because C++
 still materializes the terminal selected payloads and executes other PBFT manager effects.
+
+The following bounded `CRW-12` contraction folds eligible-wallet period readiness into the existing native
+PBFT/FinalChain aggregate-vote task. Rust compares the loaded eligible-wallet period with the requested PBFT period
+before any FinalChain address lookup, returns a typed not-ready outcome on mismatch, and preserves ordered duplicate
+address aggregation once ready. The C++ public-query shell now projects wallet addresses, performs the retained 10 ms
+sleep, and retries the same task; the standalone readiness planner export and its fact/plan carriers are deleted.
+Native matched, duplicate, empty, future-period, and mismatch coverage plus all 70 bridge tests pass; the focused
+`PbftManagerTest.check_get_eligible_vote_count` integration test also passes cleanly. The composite consensus gate
+still encounters the documented sequential-fixture RocksDB lock collisions in broader PBFT suites. Measured surface
+falls by 36 bridge lines, 7 shim lines, one CXX function, and two CXX
+carriers to 20,917 bridge lines, 14,592 shim lines, 358 CXX functions, and 293 carriers. Handles remain 18, shim
+directories 9, granular flags 0, partial factories 0, compatibility constructor calls 0, and non-test C++ consumers
+38. `CRW-12` remains active because the bridge application roots and other manager/executor adapters remain.
 
 ### DAG
 

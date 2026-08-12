@@ -123,6 +123,7 @@ impl BridgePbftService {
                 &final_chain.0,
                 PbftFinalChainDposWalletAggregateVoteCountRequest {
                     period: request.period,
+                    eligible_wallet_period: request.eligible_wallet_period,
                     addresses: request
                         .addresses
                         .into_iter()
@@ -257,6 +258,7 @@ impl From<PbftFinalChainDposWalletAggregateVoteCountFacts>
             last_block_number: value.last_block_number.as_u64(),
             has_aggregate_vote_count,
             aggregate_vote_count,
+            eligible_wallet_period_ready: value.eligible_wallet_period_ready,
             error_code,
         }
     }
@@ -394,6 +396,37 @@ mod tests {
             "PBFT_FINAL_CHAIN_TOTAL_VOTES_UNAVAILABLE"
         );
         assert_eq!(total_unavailable.total_vote_count, 0);
+
+        let aggregate_ready: FfiPbftFinalChainDposWalletAggregateVoteCountFacts =
+            rustaxa_consensus::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountFacts {
+                last_block_number: FinalChainBlockNumber::new(5),
+                status: PbftFinalChainFact::Ready(11),
+                eligible_wallet_period_ready: true,
+            }
+            .into();
+
+        assert_eq!(aggregate_ready.status, 0);
+        assert!(aggregate_ready.eligible_wallet_period_ready);
+        assert_eq!(aggregate_ready.aggregate_vote_count, 11);
+        assert_eq!(aggregate_ready.error_code, "");
+
+        let aggregate_unavailable: FfiPbftFinalChainDposWalletAggregateVoteCountFacts =
+            rustaxa_consensus::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountFacts {
+                last_block_number: FinalChainBlockNumber::new(5),
+                status: PbftFinalChainFact::Unavailable {
+                    error_code: "PBFT_FINAL_CHAIN_WALLET_AGGREGATE_PERIOD_MISMATCH".to_string(),
+                },
+                eligible_wallet_period_ready: false,
+            }
+            .into();
+
+        assert_eq!(aggregate_unavailable.status, 1);
+        assert!(!aggregate_unavailable.eligible_wallet_period_ready);
+        assert_eq!(aggregate_unavailable.aggregate_vote_count, 0);
+        assert_eq!(
+            aggregate_unavailable.error_code,
+            "PBFT_FINAL_CHAIN_WALLET_AGGREGATE_PERIOD_MISMATCH"
+        );
     }
 
     #[test]

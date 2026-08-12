@@ -331,6 +331,11 @@ The PBFT manager bridge suite likewise no longer repeats daemon ineligible
 sleep, proposal ordering/build, broadcast-counter, or deadline-wait behavior.
 Those rules remain covered by native manager tests; bridge coverage stays
 focused on CXX projection, persistence, and external-executor boundaries.
+Eligible-wallet period readiness is now part of the existing native
+PBFT/FinalChain aggregate-vote task rather than a standalone CXX planner. Rust
+short-circuits mismatched periods before address lookup and returns a typed
+readiness bit; C++ retains only wallet-address projection, the public query,
+and the actual polling sleep.
 Executed-block reset, next-voted status, and manager cursor-field persistence
 transcripts now follow the same ownership rule. Native storage/runtime tests
 own commit-before-publication, accepted-field, and rejection behavior; the

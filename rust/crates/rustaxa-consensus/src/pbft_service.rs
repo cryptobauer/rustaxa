@@ -4040,9 +4040,16 @@ impl PbftService {
     /// FinalChain.
     ///
     /// The head is sampled first for diagnostics. Addresses retain caller order
-    /// and duplicates, and counts use legacy wrapping `u64` addition. An empty
-    /// subset returns ready zero without a period lookup. Future or failed/corrupt
-    /// lookups are typed unavailable facts; head-sampling failure is an error.
+    /// and duplicates, and counts use legacy wrapping `u64` addition.
+    ///
+    /// Before any FinalChain address lookup, `eligible_wallet_period` must match
+    /// the requested `period`. A mismatch is a deterministic, non-error short
+    /// circuit with typed unavailable status and `eligible_wallet_period_ready =
+    /// false`. When ready, an empty subset returns ready zero without a period
+    /// lookup.
+    ///
+    /// Future or failed/corrupt lookups are typed unavailable facts; head-sampling
+    /// failure is an error.
     ///
     /// The sampled head is returned for diagnostics and is not atomically tied to
     /// the sub-reads for this request's address list.
@@ -4053,8 +4060,11 @@ impl PbftService {
     ) -> Result<PbftFinalChainDposWalletAggregateVoteCountFacts> {
         let last_block_number = final_chain.last_block_number_typed()?;
         let addresses: Vec<[u8; 20]> = request.addresses.iter().map(|address| address.0).collect();
-
-        let status = if addresses.is_empty() {
+        let status = if request.eligible_wallet_period != request.period {
+            PbftFinalChainFact::Unavailable {
+                error_code: "PBFT_FINAL_CHAIN_WALLET_AGGREGATE_PERIOD_MISMATCH".to_string(),
+            }
+        } else if addresses.is_empty() {
             PbftFinalChainFact::Ready(0)
         } else {
             match final_chain.pbft_dpos_eligible_wallet_vote_counts(request.period, &addresses) {
@@ -4076,6 +4086,7 @@ impl PbftService {
         Ok(PbftFinalChainDposWalletAggregateVoteCountFacts {
             status,
             last_block_number,
+            eligible_wallet_period_ready: request.eligible_wallet_period == request.period,
         })
     }
 
@@ -6663,6 +6674,7 @@ mod tests {
                 &final_chain,
                 crate::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountRequest {
                     period: 0,
+                    eligible_wallet_period: 0,
                     addresses: vec![H160::from(validator), H160::from([0xA1; 20])],
                 },
             )
@@ -6670,6 +6682,7 @@ mod tests {
 
         assert_eq!(ready.status.as_u8(), 0);
         assert!(ready.status.is_ready());
+        assert!(ready.eligible_wallet_period_ready);
         assert_eq!(ready.status.data_or_zero(), 5);
 
         let duplicate = service
@@ -6677,35 +6690,59 @@ mod tests {
                 &final_chain,
                 crate::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountRequest {
                     period: 0,
+                    eligible_wallet_period: 0,
                     addresses: vec![H160::from(validator), H160::from(validator)],
                 },
             )
             .expect("duplicate wallets remain part of the aggregate");
         assert_eq!(duplicate.status.data_or_zero(), 10);
+        assert!(duplicate.eligible_wallet_period_ready);
 
         let empty_future = service
             .collect_dpos_wallet_aggregate_vote_count(
                 &final_chain,
                 crate::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountRequest {
                     period: 99,
+                    eligible_wallet_period: 99,
                     addresses: Vec::new(),
                 },
             )
             .expect("empty aggregates do not require period state");
         assert!(empty_future.status.is_ready());
         assert_eq!(empty_future.status.data_or_zero(), 0);
+        assert!(empty_future.eligible_wallet_period_ready);
+
+        let ready_future = service
+            .collect_dpos_wallet_aggregate_vote_count(
+                &final_chain,
+                crate::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountRequest {
+                    period: 0,
+                    eligible_wallet_period: 1,
+                    addresses: vec![H160::from(validator)],
+                },
+            )
+            .expect("period mismatch must short-circuit with deterministic unavailable data");
+        assert_eq!(ready_future.status.as_u8(), 1);
+        assert!(ready_future.status.is_unavailable());
+        assert!(!ready_future.eligible_wallet_period_ready);
+        assert_eq!(
+            ready_future.status.error_code(),
+            "PBFT_FINAL_CHAIN_WALLET_AGGREGATE_PERIOD_MISMATCH"
+        );
 
         let unavailable = service
             .collect_dpos_wallet_aggregate_vote_count(
                 &final_chain,
                 crate::pbft_vote_generation::PbftFinalChainDposWalletAggregateVoteCountRequest {
                     period: 99,
+                    eligible_wallet_period: 99,
                     addresses: vec![H160::from(validator)],
                 },
             )
             .expect("future aggregate vote lookup should be returned as unavailable data");
         assert_eq!(unavailable.status.as_u8(), 1);
         assert!(unavailable.status.is_unavailable());
+        assert!(unavailable.eligible_wallet_period_ready);
         assert_eq!(
             unavailable.status.error_code(),
             "PBFT_FINAL_CHAIN_WALLET_VOTES_FUTURE_PERIOD"

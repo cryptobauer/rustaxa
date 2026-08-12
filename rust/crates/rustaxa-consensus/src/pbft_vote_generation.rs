@@ -119,6 +119,12 @@ impl PbftFinalChainDposAddressVoteFact {
 pub struct PbftFinalChainDposWalletAggregateVoteCountRequest {
     /// PBFT-consensus period to query.
     pub period: u64,
+    /// Current eligible-wallet period observed by PBFT manager runtime for this request.
+    ///
+    /// The aggregate is only read when this value equals `period`, ensuring PBFT
+    /// can short-circuit on a deterministic not-ready boundary before any FinalChain
+    /// address lookup.
+    pub eligible_wallet_period: u64,
     /// Ordered wallet subset for aggregate sum.
     pub addresses: Vec<H160>,
 }
@@ -133,6 +139,11 @@ pub struct PbftFinalChainDposWalletAggregateVoteCountFacts {
     pub last_block_number: FinalChainBlockNumber,
     /// Typed outcome for downstream compatibility encoding.
     pub status: PbftFinalChainFact<u64>,
+    /// Whether `eligible_wallet_period` in the request matched `period`.
+    ///
+    /// The aggregate call is only valid when this is true. A false value is a
+    /// stable boundary outcome and still returns `status = Unavailable`.
+    pub eligible_wallet_period_ready: bool,
 }
 
 /// Request for a single-wallet DPoS eligibility query.

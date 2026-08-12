@@ -5739,45 +5739,6 @@ pub fn plan_pbft_manager_finalization_wait(
     }
 }
 
-/// Facts required to decide whether PBFT manager vote-count queries must wait for eligible-wallet period readiness.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct PbftManagerEligibleWalletPeriodWaitFact {
-    /// Period currently loaded by the eligible-wallet runtime.
-    pub eligible_wallet_period: u64,
-    /// Current PBFT-chain size.
-    pub pbft_chain_size: u64,
-    /// Polling sleep duration in milliseconds.
-    pub polling_interval_ms: u64,
-}
-
-/// Rust-owned eligible-wallet period readiness plan for the C++ polling executor.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct PbftManagerEligibleWalletPeriodWaitPlan {
-    /// Whether C++ should keep waiting.
-    pub should_wait: bool,
-    /// Wait duration in milliseconds when `should_wait` is true.
-    pub sleep_ms: u64,
-}
-
-/// Plans whether PBFT manager vote-count queries should wait for eligible-wallet period readiness.
-///
-/// Purpose:
-/// - Moves the deterministic eligible-wallet-period readiness comparison out of
-///   the PBFT manager shell while C++ keeps the public-query polling loop.
-pub fn plan_pbft_manager_eligible_wallet_period_wait(
-    fact: PbftManagerEligibleWalletPeriodWaitFact,
-) -> PbftManagerEligibleWalletPeriodWaitPlan {
-    let should_wait = fact.eligible_wallet_period != fact.pbft_chain_size;
-    PbftManagerEligibleWalletPeriodWaitPlan {
-        should_wait,
-        sleep_ms: if should_wait {
-            fact.polling_interval_ms
-        } else {
-            0
-        },
-    }
-}
-
 /// Long-lived PBFT manager runtime cursor owned by Rust.
 ///
 /// This runtime owns the scalar PBFT manager cursor restored from storage and
@@ -11558,29 +11519,6 @@ mod tests {
         assert!(!ready.should_wait);
         assert_eq!(ready.sleep_ms, 0);
         assert!(ready.error_code.is_empty());
-    }
-
-    #[test]
-    fn eligible_wallet_period_wait_planner_waits_until_period_matches_chain_size() {
-        let wait = plan_pbft_manager_eligible_wallet_period_wait(
-            PbftManagerEligibleWalletPeriodWaitFact {
-                eligible_wallet_period: 8,
-                pbft_chain_size: 10,
-                polling_interval_ms: 10,
-            },
-        );
-        assert!(wait.should_wait);
-        assert_eq!(wait.sleep_ms, 10);
-
-        let ready = plan_pbft_manager_eligible_wallet_period_wait(
-            PbftManagerEligibleWalletPeriodWaitFact {
-                eligible_wallet_period: 10,
-                pbft_chain_size: 10,
-                polling_interval_ms: 10,
-            },
-        );
-        assert!(!ready.should_wait);
-        assert_eq!(ready.sleep_ms, 0);
     }
 
     #[test]
