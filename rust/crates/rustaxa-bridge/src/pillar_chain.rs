@@ -22,7 +22,7 @@ use crate::ffi::rustaxa_ffi::{
 };
 #[cfg(test)]
 use crate::ffi::BridgeStorage;
-use crate::ffi::{BridgeFinalChain, BridgePbftService};
+use crate::ffi::{BridgeApp, BridgeFinalChain};
 use anyhow::{bail, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::{
@@ -54,9 +54,33 @@ use rustaxa_consensus::{
 #[cfg(test)]
 fn create_pending_pillar_test_service_from_storage(
     storage: &BridgeStorage,
-) -> Result<Box<BridgePbftService>> {
-    crate::pbft_manager::create_pbft_service_from_storage(
+) -> Result<Box<BridgeApp>> {
+    crate::dag_transaction_service::create_consensus_application_from_storage(
         storage,
+        &[1u8; 32],
+        32,
+        100,
+        crate::ffi::rustaxa_ffi::SortitionRuntimeConfig {
+            threshold_upper: 0x100,
+            difficulty_min: 1,
+            difficulty_max: 10,
+            difficulty_stale: 5,
+            lambda_bound: 100,
+            changes_count_for_average: 8,
+            dag_efficiency_target_low: 5_000,
+            dag_efficiency_target_high: 10_000,
+            changing_interval: 10,
+            computation_interval: 5,
+        },
+        crate::ffi::rustaxa_ffi::TransactionQueueConfig { max_size: 16 },
+        crate::ffi::rustaxa_ffi::GasPricerConfig {
+            percentile: 50,
+            minimum_price: [0; 32],
+            history_blocks: 0,
+            is_light_node: false,
+            blocks_gas_pricer: false,
+        },
+        1_000_000,
         crate::ffi::rustaxa_ffi::PbftServiceConfig {
             genesis_lambda_ms: 100,
             cacti_lambda_max_ms: 100,
@@ -80,7 +104,7 @@ fn create_pending_pillar_test_service_from_storage(
     )
 }
 
-impl BridgePbftService {
+impl BridgeApp {
     pub fn pbft_service_pillar_ready(&self) -> bool {
         self.0.pillar_is_ready()
     }

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "consensus_application_test.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 using namespace rustaxa;
@@ -85,7 +86,7 @@ class RustProposedBlocksTest : public ::testing::Test {
 TEST_F(RustProposedBlocksTest, PushGetAndSnapshotEntries) {
   const auto test_dir = uniqueTempDir("rustaxa_proposed_blocks_bridge");
   auto storage = create_storage(test_dir.string());
-  auto service = create_pbft_service_from_storage(*storage, serviceConfig());
+  auto service = test::createConsensusApplication(*storage, serviceConfig());
   auto block = proposedBlock(2, 0x99);
 
   EXPECT_TRUE(

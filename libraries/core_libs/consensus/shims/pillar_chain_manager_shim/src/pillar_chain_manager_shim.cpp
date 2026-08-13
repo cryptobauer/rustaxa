@@ -274,7 +274,7 @@ const char* pillarVoteRelevancePlanStatusString(PillarVoteRelevancePlanStatus st
 
 PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus_hf_config,
                                                 const std::shared_ptr<PillarVote>& vote,
-                                                const rustaxa::BridgePbftService& service) {
+                                                const rustaxa::BridgeConsensusApplication& service) {
   if (!vote) {
     return {PillarVoteRelevancePlanStatus::kUnknown, false};
   }
@@ -292,7 +292,7 @@ PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus
 PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarVote>& vote,
                                                     const rustaxa::BridgeFinalChain& final_chain,
-                                                    const rustaxa::BridgePbftService& service) {
+                                                    const rustaxa::BridgeConsensusApplication& service) {
   if (!vote) {
     return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}};
   }
@@ -310,7 +310,7 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
 }
 
 PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> /*db*/,
-                                       SharedPbftService pbft_service,
+                                       SharedConsensusApplication pbft_service,
                                        std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
     : kFicusHfConfig(ficus_hf_config),
       pbft_service_(std::move(pbft_service)),

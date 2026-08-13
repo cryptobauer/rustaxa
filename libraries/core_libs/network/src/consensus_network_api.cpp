@@ -7,6 +7,7 @@
 
 #ifdef RUSTAXA_ENABLE
 #include "final_chain/final_chain.hpp"
+#include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa::network {
@@ -35,21 +36,29 @@ constexpr uint8_t kPbftSyncIngressMalicious = 5;
 constexpr uint8_t kPbftSyncIngressQueueRejected = 6;
 constexpr uint8_t kPbftSyncIngressAwaitingSlashing = 7;
 
+SharedConsensusApplication requireConsensusApplication(SharedConsensusApplication consensus_application) {
+  if (!consensus_application) {
+    throw std::invalid_argument("Consensus network API requires a shared consensus application");
+  }
+  return consensus_application;
+}
+
 }  // namespace
 
 class ConsensusNetworkApi::Impl final {
  public:
-  explicit Impl(const rustaxa::BridgePbftService& service)
-      : service(service), api(rustaxa::create_consensus_network_api(service)) {}
+  explicit Impl(SharedConsensusApplication consensus_application)
+      : consensus_application(requireConsensusApplication(std::move(consensus_application))),
+        api(rustaxa::create_consensus_network_api(this->consensus_application->service())) {}
 
-  const rustaxa::BridgePbftService& service;
+  SharedConsensusApplication consensus_application;
   rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
   std::mutex lanes_mutex;
   std::unordered_map<uint32_t, std::unique_ptr<std::mutex>> lane_execution_mutexes;
 };
 
-ConsensusNetworkApi::ConsensusNetworkApi(const rustaxa::BridgePbftService& service)
-    : impl_(std::make_unique<Impl>(service)) {}
+ConsensusNetworkApi::ConsensusNetworkApi(SharedConsensusApplication consensus_application)
+    : impl_(std::make_unique<Impl>(std::move(consensus_application))) {}
 ConsensusNetworkApi::~ConsensusNetworkApi() = default;
 
 rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() noexcept { return *impl_->api; }
@@ -62,8 +71,8 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(const final_chai
                                                                 const std::array<uint8_t, 64>& source_peer_id,
                                                                 const PbftSyncIngressExecutor& executor) {
   auto step = rustaxa::pbft_service_begin_pbft_sync_ingress(
-      impl_->service, final_chain.rustFinalChain(), rust::Slice<const uint8_t>(packet_rlp.data(), packet_rlp.size()),
-      source_payload_id, source_peer_id);
+      impl_->consensus_application->service(), final_chain.rustFinalChain(),
+      rust::Slice<const uint8_t>(packet_rlp.data(), packet_rlp.size()), source_payload_id, source_peer_id);
   while (step.action == kPbftSyncIngressAwaitingSlashing) {
     if (!step.has_slashing_transaction_effect || !executor.submit_slashing_transaction) {
       throw std::runtime_error("Native PBFT-sync ingress paused without an executable slashing boundary");
@@ -78,9 +87,9 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(const final_chai
         native_effect.gas_limit,
         std::vector<uint8_t>(native_effect.call_data.begin(), native_effect.call_data.end())};
     const auto transaction_inserted = executor.submit_slashing_transaction(transaction);
-    step = rustaxa::pbft_service_report_pbft_sync_ingress_slashing(impl_->service, final_chain.rustFinalChain(),
-                                                                   step.slashing_transaction_effect.proof_hash,
-                                                                   transaction_inserted);
+    step = rustaxa::pbft_service_report_pbft_sync_ingress_slashing(
+        impl_->consensus_application->service(), final_chain.rustFinalChain(),
+        step.slashing_transaction_effect.proof_hash, transaction_inserted);
   }
 
   PbftSyncIngressAction action;

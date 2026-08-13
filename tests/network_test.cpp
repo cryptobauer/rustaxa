@@ -1900,9 +1900,8 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
     identity.address = conf.wallets[wallet_index].node_addr.asArray();
     pbft_service_config.slashing_submitters.push_back(std::move(identity));
   }
-  const auto consensus_service = std::make_shared<PbftService>(
-      rustaxa::create_pbft_service_from_storage(node->getDB()->rustStorage(), pbft_service_config));
-  auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service->service());
+  auto consensus_service = createConsensusApplication(conf, *node->getDB());
+  auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service);
 
   auto first_lane_lock = network_api->lockTransportLane(6);
 
@@ -1958,6 +1957,9 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   EXPECT_EQ(executed, (std::vector<std::string>{"report", "disconnect"}));
   EXPECT_EQ(report_reasons, (std::vector<uint8_t>{3}));
   EXPECT_TRUE(network_api->api().consensus_network_drain_work(6, 0, false, 10).effects.empty());
+
+  // The facade owns the root required by direct ingress even after the caller releases its copy.
+  consensus_service.reset();
 
   std::array<uint8_t, 64> ingress_peer_id{};
   ingress_peer_id.fill(0x5a);

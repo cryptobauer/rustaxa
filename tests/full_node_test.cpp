@@ -28,22 +28,7 @@ namespace {
 
 std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage> &db) {
 #ifdef RUSTAXA_ENABLE
-  rustaxa::PbftServiceConfig config{};
-  config.genesis_lambda_ms = 1000;
-  config.cacti_lambda_max_ms = 1000;
-  config.cacti_lambda_default_ms = 1000;
-  config.max_exponential_lambda_ms = 60000;
-  config.max_steps = 13;
-  config.deadline_ms = 4000;
-  config.polling_interval_ms = 100;
-  config.ficus_activation_period = 0;
-  config.pillar_blocks_interval = 10;
-  config.sync_level_size = 10;
-  config.is_light_node = false;
-  config.light_node_history = 0;
-  config.committee_size = 5;
-  config.number_of_proposers = 20;
-  auto service = std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
+  auto service = createConsensusApplication(FullNodeConfig{}, *db);
   return std::make_shared<PbftChain>(addr_t(), std::move(service));
 #else
   return std::make_shared<PbftChain>(addr_t(), db);

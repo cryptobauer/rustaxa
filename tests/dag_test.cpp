@@ -16,29 +16,41 @@
 namespace taraxa::core_tests {
 namespace {
 
-std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage>& db) {
 #ifdef RUSTAXA_ENABLE
-  rustaxa::PbftServiceConfig config{};
-  config.genesis_lambda_ms = 1000;
-  config.cacti_lambda_max_ms = 1000;
-  config.cacti_lambda_default_ms = 1000;
-  config.max_exponential_lambda_ms = 60000;
-  config.max_steps = 13;
-  config.deadline_ms = 4000;
-  config.polling_interval_ms = 100;
-  config.ficus_activation_period = 0;
-  config.pillar_blocks_interval = 10;
-  config.sync_level_size = 10;
-  config.is_light_node = false;
-  config.light_node_history = 0;
-  config.committee_size = 5;
-  config.number_of_proposers = 20;
-  auto service = std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
-  return std::make_shared<PbftChain>(addr_t(), std::move(service));
-#else
-  return std::make_shared<PbftChain>(addr_t(), db);
-#endif
+using TestConsensusApplication = SharedConsensusApplication;
+
+TestConsensusApplication makeTestConsensusApplication(const FullNodeConfig& config,
+                                                      const std::shared_ptr<DbStorage>& db) {
+  return createConsensusApplication(config, *db);
 }
+
+std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage>&,
+                                             const TestConsensusApplication& application) {
+  return std::make_shared<PbftChain>(addr_t(), application);
+}
+
+std::shared_ptr<TransactionManager> makeTestTransactionManager(const FullNodeConfig& config,
+                                                               const std::shared_ptr<DbStorage>& db,
+                                                               const TestConsensusApplication& application) {
+  return std::make_shared<TransactionManager>(config, db, nullptr, addr_t(), application);
+}
+#else
+using TestConsensusApplication = std::nullptr_t;
+
+TestConsensusApplication makeTestConsensusApplication(const FullNodeConfig&, const std::shared_ptr<DbStorage>&) {
+  return nullptr;
+}
+
+std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage>& db, const TestConsensusApplication&) {
+  return std::make_shared<PbftChain>(addr_t(), db);
+}
+
+std::shared_ptr<TransactionManager> makeTestTransactionManager(const FullNodeConfig& config,
+                                                               const std::shared_ptr<DbStorage>& db,
+                                                               const TestConsensusApplication&) {
+  return std::make_shared<TransactionManager>(config, db, nullptr, addr_t());
+}
+#endif
 
 }  // namespace
 
@@ -191,12 +203,14 @@ TEST_F(DagTest, clear_and_draw_graph_use_current_graph) {
 // Use the example on Conflux paper
 TEST_F(DagTest, compute_epoch) {
   auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto trx_mgr = std::make_shared<TransactionManager>(FullNodeConfig(), db_ptr, nullptr, addr_t());
-  auto pbft_chain = makeTestPbftChain(db_ptr);
+  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
+  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
 #ifdef RUSTAXA_ENABLE
-  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+  auto mgr =
+      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif
@@ -298,14 +312,16 @@ TEST_F(DagTest, compute_epoch) {
 TEST_F(DagTest, dag_expiry) {
   const uint32_t EXPIRY_LIMIT = 3;
   auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto trx_mgr = std::make_shared<TransactionManager>(FullNodeConfig(), db_ptr, nullptr, addr_t());
-  auto pbft_chain = makeTestPbftChain(db_ptr);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].max_levels_per_period = 3;
   node_cfgs[0].dag_expiry_limit = EXPIRY_LIMIT;
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
+  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
+  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
 #ifdef RUSTAXA_ENABLE
-  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+  auto mgr =
+      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif
@@ -392,12 +408,14 @@ TEST_F(DagTest, dag_expiry) {
 
 TEST_F(DagTest, receive_block_in_order) {
   auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto pbft_chain = makeTestPbftChain(db_ptr);
-  auto trx_mgr = std::make_shared<TransactionManager>(FullNodeConfig(), db_ptr, nullptr, addr_t());
+  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
+  auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
 #ifdef RUSTAXA_ENABLE
-  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+  auto mgr =
+      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif
@@ -429,12 +447,14 @@ TEST_F(DagTest, receive_block_in_order) {
 // sure block order are the same
 TEST_F(DagTest, compute_epoch_2) {
   auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto pbft_chain = makeTestPbftChain(db_ptr);
-  auto trx_mgr = std::make_shared<TransactionManager>(FullNodeConfig(), db_ptr, nullptr, addr_t());
+  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
+  auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
 #ifdef RUSTAXA_ENABLE
-  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+  auto mgr =
+      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif
@@ -526,12 +546,14 @@ TEST_F(DagTest, compute_epoch_2) {
 
 TEST_F(DagTest, get_latest_pivot_tips) {
   auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto trx_mgr = std::make_shared<TransactionManager>(FullNodeConfig(), db_ptr, nullptr, addr_t());
-  auto pbft_chain = makeTestPbftChain(db_ptr);
+  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
+  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
 #ifdef RUSTAXA_ENABLE
-  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+  auto mgr =
+      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif
@@ -560,11 +582,13 @@ TEST_F(DagTest, get_latest_pivot_tips) {
 
 TEST_F(DagTest, initial_pivot) {
   auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto trx_mgr = std::make_shared<TransactionManager>(FullNodeConfig(), db_ptr, nullptr, addr_t());
-  auto pbft_chain = makeTestPbftChain(db_ptr);
+  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
+  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
 #ifdef RUSTAXA_ENABLE
-  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr);
+  auto mgr =
+      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif

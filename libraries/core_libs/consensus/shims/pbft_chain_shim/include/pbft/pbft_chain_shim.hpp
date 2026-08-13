@@ -19,7 +19,7 @@ namespace taraxa {
  * Rust-mode PBFT chain facade.
  *
  * This class preserves the public C++ `PbftChain` API while routing deterministic head state transitions and validation
- * checks to the shared Rust `PbftService` holder. It does not inherit from or delegate to the legacy C++
+ * checks to the shared Rust `ConsensusApplication` holder. It does not inherit from or delegate to the legacy C++
  * implementation.
  *
  * Invariants:
@@ -35,7 +35,7 @@ class PbftChain {
    *
    * The shared holder keeps the Rust service alive for every facade operation; no nested Rust reference is retained.
    */
-  explicit PbftChain([[maybe_unused]] addr_t node_addr, SharedPbftService pbft_service);
+  explicit PbftChain([[maybe_unused]] addr_t node_addr, SharedConsensusApplication pbft_service);
   ~PbftChain();
 
   PbftChain(const PbftChain&) = delete;
@@ -94,7 +94,7 @@ class PbftChain {
 
  private:
   mutable std::shared_mutex chain_head_access_;
-  SharedPbftService pbft_service_;
+  SharedConsensusApplication pbft_service_;
 
   LOG_OBJECTS_DEFINE
 };

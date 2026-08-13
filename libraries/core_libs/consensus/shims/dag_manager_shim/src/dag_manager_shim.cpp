@@ -309,15 +309,9 @@ rustaxa::DagVerifyBlockGasReport to_bridge_verify_block_gas_report(uint64_t bloc
 
 }  // namespace
 
-DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
-                       std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-                       std::shared_ptr<DbStorage> db)
-    : DagManager(config, node_addr, std::move(trx_mgr), std::move(pbft_chain), std::move(final_chain), db,
-                 createDagTransactionService(config, *db)) {}
-
 DagManager::DagManager(const FullNodeConfig &config, addr_t /*node_addr*/, std::shared_ptr<TransactionManager> trx_mgr,
                        std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-                       std::shared_ptr<DbStorage> db, SharedDagTransactionService dag_transaction_service)
+                       std::shared_ptr<DbStorage> db, SharedConsensusApplication dag_transaction_service)
     : trx_mgr_(std::move(trx_mgr)),
       pbft_chain_(std::move(pbft_chain)),
       final_chain_(std::move(final_chain)),

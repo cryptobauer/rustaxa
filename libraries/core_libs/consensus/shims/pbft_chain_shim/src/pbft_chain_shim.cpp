@@ -28,7 +28,7 @@ std::string head_json_string(rustaxa::PbftChainHeadPayload const& head) { return
 
 }  // namespace
 
-PbftChain::PbftChain([[maybe_unused]] addr_t node_addr, SharedPbftService pbft_service)
+PbftChain::PbftChain([[maybe_unused]] addr_t node_addr, SharedConsensusApplication pbft_service)
     : pbft_service_(std::move(pbft_service)) {
   if (!pbft_service_) {
     throw std::invalid_argument("PBFT chain requires a shared PBFT service");

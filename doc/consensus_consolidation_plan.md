@@ -74,6 +74,8 @@ waterfall. The remaining campaign uses five coherent vertical checkpoints:
    `App`, make its services private, migrate fixtures to explicit production-root injection, and delete the non-injected
    Rust-mode `TransactionManager` and `DagManager` constructors. C++ may retain one opaque bootstrap holder while
    manager facades still need leaf adapters.
+   The first vertical slice now composes PBFT and DAG/transaction/sortition behind that root and removes their separate
+   handles and factories. FinalChain and storage construction remain the explicit `CRW-17` extension of the same root.
 2. **PBFT cluster cutover.** Move the daemon/state-machine, vote, pillar, chain, sync, and finalization orchestration
    behind application tasks. Network, signing, timers, and EVM remain exact typed leaves. Delete PBFT/vote/pillar
    manager-to-manager APIs, internal object sidecars, CXX families, and complete shims when their last named leaf moves.
@@ -141,11 +143,11 @@ atomic restoration, and the shared admission-runtime mutex. The bridge owns neit
 lock. Its remaining replay/query/cleanup, own-vote/progress persistence, optimized-bundle egress, and coherent snapshot
 families are task-shaped native operations reached through `PbftService`; the bridge performs only raw CXX kind/status
 and carrier projection and cannot access the sibling guard or storage. Native
-`rustaxa-consensus::pbft_service::PbftService` now owns slashing configuration validation, coherent
-restoration of every storage-backed PBFT sibling from one handle, complete root publication, and bootstrap readiness.
-`BridgePbftService` is a one-field
-CXX adapter and retains no sibling state, storage handle, mutex, or readiness flag; durable access comes from the native
-sibling owner responsible for each operation. Native `rustaxa-consensus::slashing::SlashingProofService` owns slashing planner
+`rustaxa-consensus::pbft_service::PbftService` now owns slashing configuration validation, coherent restoration of every
+storage-backed PBFT sibling from one handle, and bootstrap readiness. It is private under `ConsensusApplication`; the
+one-field `BridgeConsensusApplication` CXX adapter retains no independent sibling state, storage handle, mutex, or
+readiness flag. Durable access comes from the native sibling owner responsible for each operation. Native
+`rustaxa-consensus::slashing::SlashingProofService` owns slashing planner
 configuration, duplicate-cache state, and its mutex; the slashing bridge now performs only DTO/status conversion around
 task-oriented plan/report calls. Native `rustaxa-consensus::pbft_readiness::PbftServiceReadiness` also owns the
 independent monotonic PBFT and pillar-bootstrap readiness atomics plus their acquire/release publication contracts; the

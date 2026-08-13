@@ -225,10 +225,7 @@ void App::init(const cli::Config &cli_conf) {
 #ifndef RUSTAXA_ENABLE
   key_manager_ = std::make_shared<KeyManager>(final_chain_);
 #endif
-#ifdef RUSTAXA_ENABLE
-  dag_transaction_service_ = createDagTransactionService(conf_, *db_);
-  trx_mgr_ = std::make_shared<TransactionManager>(conf_, db_, final_chain_, node_addr, dag_transaction_service_);
-#else
+#ifndef RUSTAXA_ENABLE
   trx_mgr_ = std::make_shared<TransactionManager>(conf_, db_, final_chain_, node_addr);
 #endif
 #ifndef RUSTAXA_ENABLE
@@ -248,59 +245,34 @@ void App::init(const cli::Config &cli_conf) {
   }
 
 #ifdef RUSTAXA_ENABLE
-  rustaxa::PbftServiceConfig pbft_manager_config{};
-  pbft_manager_config.genesis_lambda_ms = conf_.genesis.pbft.lambda_ms;
-  pbft_manager_config.cacti_lambda_max_ms = conf_.genesis.state.hardforks.cacti_hf.lambda_max;
-  pbft_manager_config.cacti_lambda_default_ms = conf_.genesis.state.hardforks.cacti_hf.lambda_default;
-  pbft_manager_config.cacti_block = conf_.genesis.state.hardforks.cacti_hf.block_num;
-  pbft_manager_config.max_exponential_lambda_ms = 60000;
-  pbft_manager_config.max_steps = 13;
-  pbft_manager_config.deadline_ms = 4 * static_cast<uint64_t>(conf_.genesis.pbft.lambda_ms);
-  pbft_manager_config.polling_interval_ms = 100;
-  pbft_manager_config.report_malicious_behaviour = conf_.report_malicious_behaviour;
-  pbft_manager_config.magnolia_activation_period = conf_.genesis.state.hardforks.magnolia_hf.block_num;
-  pbft_manager_config.ficus_activation_period = conf_.genesis.state.hardforks.ficus_hf.block_num;
-  pbft_manager_config.pillar_blocks_interval = conf_.genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
-  pbft_manager_config.sync_level_size = conf_.network.sync_level_size;
-  pbft_manager_config.is_light_node = conf_.is_light_node;
-  pbft_manager_config.light_node_history = conf_.light_node_history;
-  pbft_manager_config.committee_size = conf_.genesis.pbft.committee_size;
-  pbft_manager_config.number_of_proposers = conf_.genesis.pbft.number_of_proposers;
-  pbft_manager_config.slashing_submitters.reserve(conf_.wallets.size());
-  for (size_t wallet_index = 0; wallet_index < conf_.wallets.size(); ++wallet_index) {
-    rustaxa::SlashingSubmitterIdentity identity{};
-    identity.wallet_index = wallet_index;
-    identity.address = conf_.wallets[wallet_index].node_addr.asArray();
-    pbft_manager_config.slashing_submitters.push_back(std::move(identity));
-  }
-  pbft_service_ =
-      std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db_->rustStorage(), pbft_manager_config));
-  pbft_chain_ = std::make_shared<PbftChain>(node_addr, pbft_service_);
+  consensus_application_ = createConsensusApplication(conf_, *db_);
+  trx_mgr_ = std::make_shared<TransactionManager>(conf_, db_, final_chain_, node_addr, consensus_application_);
+  pbft_chain_ = std::make_shared<PbftChain>(node_addr, consensus_application_);
 #else
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, db_);
 #endif
 #ifdef RUSTAXA_ENABLE
-  dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_,
-                                          dag_transaction_service_);
+  dag_mgr_ =
+      std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, consensus_application_);
 #else
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
 #endif
 #ifdef RUSTAXA_ENABLE
-  vote_mgr_ = std::make_shared<VoteManager>(conf_, pbft_service_, pbft_chain_, final_chain_, trx_mgr_);
+  vote_mgr_ = std::make_shared<VoteManager>(conf_, consensus_application_, pbft_chain_, final_chain_, trx_mgr_);
 #else
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
   vote_mgr_ = std::make_shared<VoteManager>(conf_, db_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
 #endif
 #ifdef RUSTAXA_ENABLE
-  pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(conf_.genesis.state.hardforks.ficus_hf, db_,
-                                                                         pbft_service_, final_chain_, node_addr);
+  pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(
+      conf_.genesis.state.hardforks.ficus_hf, db_, consensus_application_, final_chain_, node_addr);
 #else
   pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(conf_.genesis.state.hardforks.ficus_hf, db_,
                                                                          final_chain_, key_manager_, node_addr);
 #endif
 #ifdef RUSTAXA_ENABLE
-  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_service_, dag_transaction_service_, pbft_chain_, vote_mgr_,
-                                            dag_mgr_, trx_mgr_, final_chain_, pillar_chain_mgr_);
+  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, consensus_application_, pbft_chain_, vote_mgr_, dag_mgr_,
+                                            trx_mgr_, final_chain_, pillar_chain_mgr_);
 #else
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, final_chain_,
                                             pillar_chain_mgr_);
@@ -322,7 +294,7 @@ void App::init(const cli::Config &cli_conf) {
 #endif
                                 pillar_chain_mgr_,
 #ifdef RUSTAXA_ENABLE
-                                final_chain_, std::make_shared<network::ConsensusNetworkApi>(pbft_service_->service()));
+                                final_chain_, std::make_shared<network::ConsensusNetworkApi>(consensus_application_));
 #else
                                 final_chain_);
 #endif
@@ -550,7 +522,7 @@ void App::rebuildDb() {
     rustaxa::PeriodDataQueuePushOutcome outcome;
     try {
       outcome = rustaxa::pbft_manager_runtime_period_data_queue_push(
-          pbft_service_->service(), toRustBytes(period_data_raw), dev::p2p::NodeID().asArray(),
+          consensus_application_->service(), toRustBytes(period_data_raw), dev::p2p::NodeID().asArray(),
           std::move(previous_cert_vote_payloads), std::move(current_cert_vote_payloads));
     } catch (const std::exception &e) {
       throw std::runtime_error("PBFT manager period-data queue: " + std::string(e.what()));

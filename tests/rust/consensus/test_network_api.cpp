@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "consensus_application_test.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pillar_vote.hpp"
 
@@ -79,7 +80,7 @@ struct TemporaryStorageDirectory {
 struct NetworkApiFixture {
   NetworkApiFixture()
       : storage(rustaxa::create_storage(directory.path.string())),
-        service(rustaxa::create_pbft_service_from_storage(*storage, serviceConfig())),
+        service(rustaxa::test::createConsensusApplication(*storage, serviceConfig())),
         network_api(rustaxa::create_consensus_network_api(*service)) {
     service->pbft_service_complete_pillar_bootstrap();
   }
@@ -88,7 +89,7 @@ struct NetworkApiFixture {
 
   TemporaryStorageDirectory directory;
   rust::Box<rustaxa::BridgeStorage> storage;
-  rust::Box<rustaxa::BridgePbftService> service;
+  rust::Box<rustaxa::BridgeConsensusApplication> service;
   rust::Box<rustaxa::BridgeConsensusNetworkApi> network_api;
 };
 

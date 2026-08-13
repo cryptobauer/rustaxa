@@ -426,6 +426,33 @@ impl DagTransactionService {
         })
     }
 
+    /// Restores all siblings without publishing the initial proposal-period mapping.
+    ///
+    /// This crate-private constructor lets [`crate::consensus_application::ConsensusApplication`]
+    /// defer the only DAG startup write until PBFT restoration has also succeeded.
+    pub(crate) fn restore_deferred_mapping(
+        storage: Arc<Storage>,
+        config: DagTransactionServiceConfig,
+    ) -> Result<(Self, u64)> {
+        let max_levels_per_period = config.dag.max_levels_per_period;
+        let transaction = TransactionService::restore(storage.clone(), config.transaction)?;
+        let dag = DagService::restore_deferred_mapping(storage.clone(), config.dag)?;
+        let sortition = SortitionService::restore(config.sortition, storage)?;
+        Ok((
+            Self {
+                transaction,
+                dag,
+                sortition,
+            },
+            max_levels_per_period,
+        ))
+    }
+
+    /// Publishes the deferred DAG startup mapping after all root siblings restore.
+    pub(crate) fn complete_restore_mapping(&self, max_levels_per_period: u64) -> Result<bool> {
+        self.dag.complete_restore_mapping(max_levels_per_period)
+    }
+
     /// Returns the transaction owner's queue-aware gas-price bid.
     pub fn transaction_gas_price_bid(&self) -> Result<[u8; 32]> {
         self.transaction.gas_price_bid()

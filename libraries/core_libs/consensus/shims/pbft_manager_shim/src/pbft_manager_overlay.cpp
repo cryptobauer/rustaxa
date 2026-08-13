@@ -165,7 +165,7 @@ constexpr uint8_t kPillarAnchorDecisionRestartPostProcessing = 2;
 // Returns the shared PBFT service after pillar bootstrap has completed.
 // Production decision paths fail explicitly instead of constructing or
 // falling back to a separate runtime.
-const rustaxa::BridgePbftService &requireReadyPillarService(const SharedPbftService &service) {
+const rustaxa::BridgeConsensusApplication &requireReadyPillarService(const SharedConsensusApplication &service) {
   if (!service || !service->service().pbft_service_pillar_ready()) {
     throw std::runtime_error("PBFT_SERVICE_PILLAR_UNAVAILABLE");
   }
@@ -358,8 +358,8 @@ rustaxa::PbftManagerStateActionFact makePbftManagerStateActionFact(
 
 template <typename Executor, typename Logger>
 rustaxa::PbftManagerStateActionSessionStep executeStateActionEffectSession(
-    const rustaxa::BridgePbftService &runtime, const rustaxa::PbftManagerStateActionFact &fact, Executor &&executor,
-    Logger &log_er) {
+    const rustaxa::BridgeConsensusApplication &runtime, const rustaxa::PbftManagerStateActionFact &fact,
+    Executor &&executor, Logger &log_er) {
   rustaxa::pbft_manager_runtime_begin_state_action_effect_session(runtime, fact);
   auto step = rustaxa::pbft_manager_runtime_state_action_effect_session_next(runtime);
   while (step.has_effect) {
@@ -385,7 +385,7 @@ rustaxa::PbftManagerStateActionSessionStep executeStateActionEffectSession(
 }
 
 rustaxa::PbftManagerLifecycleTransitionResult executePbftManagerLifecycleTransition(
-    rustaxa::PbftManagerLifecycleTransitionRequest request, const rustaxa::BridgePbftService &runtime,
+    rustaxa::PbftManagerLifecycleTransitionRequest request, const rustaxa::BridgeConsensusApplication &runtime,
     std::atomic<PbftRound> &round, PbftStep &step, PbftStates &state, std::chrono::milliseconds &current_round_lambda,
     std::chrono::milliseconds &next_step_time, uint32_t &rounds_count_dynamic_lambda, uint32_t &dynamic_lambda,
     bool &executed_pbft_block, std::optional<std::shared_ptr<PbftBlock>> &cert_voted_block_for_round,
@@ -657,15 +657,15 @@ rustaxa::PbftDynamicLambdaFact makePbftDynamicLambdaFact(const HardforksConfig &
 
 }  // namespace
 
-PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db, SharedPbftService pbft_service,
-                         SharedDagTransactionService dag_transaction_service, std::shared_ptr<PbftChain> pbft_chain,
+PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
+                         SharedConsensusApplication consensus_application, std::shared_ptr<PbftChain> pbft_chain,
                          std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
                          std::shared_ptr<TransactionManager> trx_mgr,
                          std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr)
     : db_(std::move(db)),
-      pbft_service_(std::move(pbft_service)),
-      dag_transaction_service_(std::move(dag_transaction_service)),
+      pbft_service_(consensus_application),
+      dag_transaction_service_(std::move(consensus_application)),
       pbft_chain_(std::move(pbft_chain)),
       vote_mgr_(std::move(vote_mgr)),
       dag_mgr_(std::move(dag_mgr)),
@@ -680,10 +680,10 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
       kGenesisConfig(conf.genesis),
       eligible_wallets_(conf.wallets) {
   if (!pbft_service_) {
-    throw std::invalid_argument("PBFT manager requires a shared PBFT service");
+    throw std::invalid_argument("PBFT manager requires a shared consensus application");
   }
   if (!dag_transaction_service_) {
-    throw std::invalid_argument("PBFT manager requires a shared DAG/transaction service");
+    throw std::invalid_argument("PBFT manager requires a shared consensus application");
   }
   // Use first wallet as default node_addr
   const auto &node_addr = dev::toAddress(conf.getFirstWallet().node_secret);
@@ -2061,8 +2061,8 @@ void PbftManager::identifyBlock_() {
           const auto pillar_block_required =
               kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(period);
           const auto leader_selection = rustaxa::pbft_service_select_leader_composed(
-              pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(), period, round,
-              pbft_gas_limit, extra_data_required, pillar_block_required);
+              pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(), period,
+              round, pbft_gas_limit, extra_data_required, pillar_block_required);
 
           if (!leader_selection.selected) {
             const auto status = leader_selection.status;
@@ -2079,8 +2079,8 @@ void PbftManager::identifyBlock_() {
           }
 
           if (leader_selection.selected_block_rlp.empty() || leader_selection.selected_vote.vote_rlp.empty()) {
-            LOG(log_er_) << "Rust PBFT leader selection returned empty payload with selected status for period " << period
-                         << ", round " << round;
+            LOG(log_er_) << "Rust PBFT leader selection returned empty payload with selected status for period "
+                         << period << ", round " << round;
             return kPbftManagerStateActionEffectResultSkippedNoWork;
           }
 
@@ -2111,7 +2111,7 @@ void PbftManager::identifyBlock_() {
                        << ", round " << round;
 
           return placeStateActionVote(PbftVoteTypes::soft_vote, selected_block->getPeriod(), round, step,
-                                     selected_block->getBlockHash(), selected_block, "Filter leader soft vote")
+                                      selected_block->getBlockHash(), selected_block, "Filter leader soft vote")
                      ? kPbftManagerStateActionEffectResultApplied
                      : kPbftManagerStateActionEffectResultRejectedLiveCheck;
         }
@@ -3557,7 +3557,7 @@ PbftManager::EligibleWallets::EligibleWallets(const std::vector<WalletConfig> &w
 }
 
 void PbftManager::EligibleWallets::updateWalletsEligibility(
-    PbftPeriod period, const SharedPbftService &pbft_service,
+    PbftPeriod period, const SharedConsensusApplication &pbft_service,
     const std::shared_ptr<final_chain::FinalChain> &final_chain) {
   assert(period > period_ || period == 0);
   assert(period <= final_chain->lastBlockNumber() + final_chain->delegationDelay());

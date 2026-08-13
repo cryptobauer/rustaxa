@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <string_view>
 
+#include "../consensus/consensus_application_test.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 using namespace rustaxa;
@@ -65,8 +66,8 @@ class StorageTest : public ::testing::Test {
     return create_dag_storage_queries(*storage);
   }
 
-  static rust::Box<BridgePbftService> pbftService(const rust::Box<BridgeStorage>& storage) {
-    return create_pbft_service_from_storage(*storage, makePbftServiceConfig());
+  static rust::Box<BridgeConsensusApplication> pbftService(const rust::Box<BridgeStorage>& storage) {
+    return test::createConsensusApplication(*storage, makePbftServiceConfig());
   }
 
   std::filesystem::path test_dir;
@@ -208,7 +209,7 @@ TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwn
   storage_shim_save_pbft_head(*seed_batch, h256(0), bytes(pbft_head));
   storage_shim_commit_batch(std::move(seed_batch), false);
 
-  auto runtime = create_pbft_service_from_storage(*storage, makePbftServiceConfig());
+  auto runtime = test::createConsensusApplication(*storage, makePbftServiceConfig());
   auto own_vote_batch = create_storage_shim_batch(*storage);
   storage_shim_save_own_verified_vote(*own_vote_batch, own_vote_hash, bytes({0x74}));
   storage_shim_commit_batch(std::move(own_vote_batch), false);

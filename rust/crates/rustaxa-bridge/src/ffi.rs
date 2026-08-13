@@ -1,4 +1,6 @@
 use crate::dag::*;
+pub(crate) use crate::dag_transaction_service::BridgeApp;
+pub use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::dag_transaction_service::*;
 use crate::final_chain::*;
 use crate::network::*;
@@ -13,7 +15,6 @@ use crate::vdf::*;
 use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusQueryApi;
 use rustaxa_consensus::FinalChain;
-use rustaxa_consensus::PbftService;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
 use std::sync::Arc;
@@ -116,14 +117,6 @@ pub struct BridgeConsensusNetworkApi(pub(crate) rustaxa_consensus::ConsensusNetw
 /// The bridge owns no sibling protocol state, storage handle, mutex, or
 /// readiness flag. It maps stable CXX inputs and outputs around the native
 /// composition without changing the native siblings' lock domains.
-pub struct BridgePbftService(pub(crate) PbftService);
-
-impl BridgePbftService {
-    pub(crate) fn complete_bootstrap(&self) {
-        self.0.complete_bootstrap();
-    }
-}
-
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod rustaxa_ffi {
     struct BlockPeriodLookup {
@@ -3318,7 +3311,7 @@ pub mod rustaxa_ffi {
         type BridgeConsensusNetworkApi;
 
         pub fn create_consensus_network_api(
-            service: &BridgePbftService,
+            service: &BridgeConsensusApplication,
         ) -> Box<BridgeConsensusNetworkApi>;
         pub fn consensus_network_drain_work(
             self: &BridgeConsensusNetworkApi,
@@ -3455,9 +3448,9 @@ pub mod rustaxa_ffi {
 
         // Consensus DAG
 
-        type BridgeDagTransactionService;
+        type BridgeConsensusApplication;
 
-        pub fn create_dag_transaction_service_from_storage(
+        pub fn create_consensus_application_from_storage(
             storage: &BridgeStorage,
             genesis: &[u8; 32],
             dag_expiry_limit: u32,
@@ -3466,33 +3459,34 @@ pub mod rustaxa_ffi {
             transaction_queue_config: TransactionQueueConfig,
             gas_pricer_config: GasPricerConfig,
             proposal_dag_gas_limit: u64,
-        ) -> Result<Box<BridgeDagTransactionService>>;
+            pbft_config: PbftServiceConfig,
+        ) -> Result<Box<BridgeConsensusApplication>>;
         /// Prepares one canonical add-block transition without mutation.
         pub fn dag_transaction_service_prepare_add_block(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             input: DagAddBlockPrepareInput,
         ) -> Result<DagAddBlockPreparation>;
         /// Atomically persists and publishes one prepared add-block transition.
         pub fn dag_transaction_service_complete_add_block(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             input: DagAddBlockCompletionInput,
         ) -> Result<DagAddBlockCommitReport>;
         /// Idempotently aborts only the matching prepared add-block cursor.
         pub fn dag_transaction_service_abort_add_block(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             cursor_id: u64,
         ) -> Result<bool>;
         /// Validates candidate pivot/tip references from Rust runtime state and
         /// storage without C++ `DagBlock` materialization.
         pub fn dag_manager_runtime_validate_pivot_tips(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             block_level: u64,
             pivot: &[u8; 32],
             tips: Vec<DagHash>,
         ) -> Result<DagPivotTipsValidation>;
         /// Applies finalized DAG order using Rust state and Rust storage.
         pub fn dag_manager_runtime_apply_finalized_order(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             new_anchor: [u8; 32],
             new_period: u64,
             finalized_order: Vec<DagHash>,
@@ -3500,59 +3494,57 @@ pub mod rustaxa_ffi {
         /// Returns non-finalized sync DAG block RLPs and referenced transaction
         /// RLPs through Rust-owned storage access.
         pub fn dag_manager_runtime_non_finalized_sync_payload(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             known_hashes: Vec<DagHash>,
         ) -> Result<DagManagerNonFinalizedSyncPayload>;
         pub fn dag_manager_runtime_compute_order(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             anchor: &[u8; 32],
         ) -> Result<DagOrder>;
         pub fn dag_manager_runtime_frontier(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> Result<DagFrontier>;
         pub fn dag_manager_runtime_ghost_path(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             source: &[u8; 32],
         ) -> Result<Vec<DagHash>>;
         pub fn dag_manager_runtime_anchor_ghost_path(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> Result<Vec<DagHash>>;
         pub fn dag_manager_runtime_graphviz_dot(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             pivot_tree: bool,
         ) -> Result<String>;
-        pub fn dag_manager_runtime_vertex_count(
-            self: &BridgeDagTransactionService,
-        ) -> Result<usize>;
-        pub fn dag_manager_runtime_edge_count(self: &BridgeDagTransactionService) -> Result<usize>;
-        pub fn dag_manager_runtime_max_level(self: &BridgeDagTransactionService) -> Result<u64>;
-        pub fn dag_manager_runtime_latest_period(self: &BridgeDagTransactionService)
-            -> Result<u64>;
+        pub fn dag_manager_runtime_vertex_count(self: &BridgeConsensusApplication)
+            -> Result<usize>;
+        pub fn dag_manager_runtime_edge_count(self: &BridgeConsensusApplication) -> Result<usize>;
+        pub fn dag_manager_runtime_max_level(self: &BridgeConsensusApplication) -> Result<u64>;
+        pub fn dag_manager_runtime_latest_period(self: &BridgeConsensusApplication) -> Result<u64>;
         pub fn dag_manager_runtime_anchors(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> Result<DagManagerAnchors>;
         pub fn dag_manager_runtime_dag_expiry_level(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> Result<u64>;
         pub fn dag_manager_runtime_non_finalized_blocks(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> Result<Vec<DagLevelHashes>>;
         pub fn dag_manager_runtime_non_finalized_blocks_size(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> Result<DagManagerNonFinalizedSize>;
         /// Returns DAG block membership from Rust graph state plus canonical
         /// Rust storage without consulting C++ compatibility caches.
         pub fn dag_manager_runtime_is_block_known(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             hash: &[u8; 32],
         ) -> Result<bool>;
         /// Loads one canonical DAG block payload from Rust storage.
         pub fn dag_manager_runtime_load_block(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             hash: &[u8; 32],
         ) -> Result<BlockRlpLookup>;
         pub fn dag_manager_runtime_plan_proposal_tip_selection(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             input: DagProposerStorageTipSelectionInput,
         ) -> Result<DagProposerTipSelectionPlan>;
         /// Opens a runtime-owned proposer cursor from wallet/configuration input.
@@ -3560,31 +3552,31 @@ pub mod rustaxa_ffi {
         /// pressure; callers must eventually consume a terminal step or call the idempotent abort function.
         #[rust_name = "service_dag_manager_runtime_begin_proposer_session"]
         pub fn dag_manager_runtime_begin_proposer_session(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             input: DagProposerSessionBeginInput,
         ) -> Result<u64>;
         /// Idempotently removes a live proposer cursor without planner or retry effects.
         /// Returns true only when this call removed the cursor; missing or already-removed ids return false.
         #[rust_name = "service_dag_manager_runtime_abort_proposer_session"]
         pub fn dag_manager_runtime_abort_proposer_session(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             session_id: u64,
         ) -> Result<bool>;
         pub fn dag_manager_runtime_period_block_hash(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             period: u64,
         ) -> Result<HashLookup>;
         pub fn dag_manager_runtime_persistence_counters(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> Result<DagPersistenceCounters>;
         #[rust_name = "service_dag_manager_runtime_begin_verify_block_session"]
         pub fn dag_manager_runtime_begin_verify_block_session(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             input: DagVerifyBlockSessionInput,
         ) -> Result<()>;
         #[rust_name = "service_dag_manager_runtime_verify_block_session_next"]
         pub fn dag_manager_runtime_verify_block_session_next(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
         ) -> Result<DagVerifyBlockSessionStep>;
         /// Resolves the active private transaction query without advancing it.
         ///
@@ -3593,13 +3585,13 @@ pub mod rustaxa_ffi {
         /// returns ordered payload views plus cursor identity for completion.
         #[rust_name = "service_dag_manager_runtime_verify_block_session_prepare_transactions"]
         pub fn dag_manager_runtime_verify_block_session_prepare_transactions(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
         ) -> Result<DagVerifyBlockTransactionPreparation>;
         /// Applies proposal-period account facts after successful C++ materialization.
         /// Rejects stale cursor/period identities without advancing the active session.
         #[rust_name = "service_dag_manager_runtime_verify_block_session_complete_transactions"]
         pub fn dag_manager_runtime_verify_block_session_complete_transactions(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             report: DagVerifyBlockTransactionCompletionReport,
         ) -> Result<DagVerifyBlockSessionStep>;
         /// Collects DPoS/VRF facts from the borrowed Rust FinalChain for the
@@ -3611,26 +3603,26 @@ pub mod rustaxa_ffi {
         /// propagate as bridge errors.
         #[rust_name = "service_dag_manager_runtime_verify_block_session_report_authorization"]
         pub fn dag_manager_runtime_verify_block_session_report_authorization(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
         ) -> Result<DagVerifyBlockSessionStep>;
         /// Verifies the active VDF action through isolated DAG and sortition
         /// lock intervals, then advances only the unchanged cursor.
         #[rust_name = "service_dag_transaction_service_verify_block_session_vdf"]
         pub fn dag_transaction_service_verify_block_session_vdf(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             request: DagVerifyBlockVdfRequest,
         ) -> Result<DagVerifyBlockSessionStep>;
         #[rust_name = "service_dag_manager_runtime_verify_block_session_report_gas"]
         pub fn dag_manager_runtime_verify_block_session_report_gas(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             report: DagVerifyBlockGasReport,
         ) -> Result<DagVerifyBlockSessionStep>;
         /// Reads the cursor's current executor instruction; terminal reads remove it.
         /// Missing ids return an invalid-report step and do not mutate retry state.
         #[rust_name = "service_dag_manager_runtime_proposer_session_next"]
         pub fn dag_manager_runtime_proposer_session_next(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             session_id: u64,
         ) -> Result<DagProposerSessionStep>;
         /// Supplies requested FinalChain facts; Rust loads and revalidates exact
@@ -3638,7 +3630,7 @@ pub mod rustaxa_ffi {
         /// Any returned error removes the cursor, so callers may also invoke abort safely during generic cleanup.
         #[rust_name = "service_dag_manager_runtime_proposer_session_report_final_chain_facts"]
         pub fn dag_manager_runtime_proposer_session_report_final_chain_facts(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             session_id: u64,
             final_chain: &BridgeFinalChain,
         ) -> Result<DagProposerSessionStep>;
@@ -3646,7 +3638,7 @@ pub mod rustaxa_ffi {
         /// Estimate-needed results keep action 1 and expose only `transaction_estimate_requests`; declared/cache-only,
         /// empty, and throttled results advance immediately. No Rust lock crosses the external EVM interval.
         pub fn dag_transaction_service_proposer_pack_prepare(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             session_id: u64,
             network_throttled: bool,
             min_transaction_gas: u64,
@@ -3656,21 +3648,21 @@ pub mod rustaxa_ffi {
         /// Finalizes the matching owner-bound transaction cursor and transfers canonical selected payloads directly into
         /// the DAG cursor. Wrong-owner or malformed estimates abort both matching cursors before returning an error.
         pub fn dag_transaction_service_proposer_pack_finalize(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             session_id: u64,
             estimates: Vec<TransactionPackSessionEstimateInput>,
         ) -> Result<DagProposerSessionStep>;
         /// Idempotently aborts matching proposer/transaction cursors. Transaction-only services fail before transaction
         /// mutation; a wrong-owner transaction cursor is never removed.
         pub fn dag_transaction_service_proposer_pack_abort(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             session_id: u64,
         ) -> Result<bool>;
         /// Polls VDF cancellation using the current Rust-derived proposal frontier level.
         /// Missing/out-of-order ids return an invalid-report step; cancellation returns a terminal cancel action.
         #[rust_name = "service_dag_manager_runtime_proposer_session_poll_vdf"]
         pub fn dag_manager_runtime_proposer_session_poll_vdf(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             session_id: u64,
         ) -> Result<DagProposerSessionStep>;
         /// Supplies proof success and canonical VDF RLP, revalidates the observation, and constructs the unsigned intent.
@@ -3678,7 +3670,7 @@ pub mod rustaxa_ffi {
         /// errors remove the cursor before throwing across CXX.
         #[rust_name = "service_dag_manager_runtime_proposer_session_report_vdf_proof"]
         pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             session_id: u64,
             report: DagProposerVdfProofReport,
         ) -> Result<DagProposerSessionStep>;
@@ -3687,7 +3679,7 @@ pub mod rustaxa_ffi {
         /// observations terminate without retry mutation, and construction errors remove the cursor.
         #[rust_name = "service_dag_manager_runtime_proposer_session_resume_stale_proof"]
         pub fn dag_manager_runtime_proposer_session_resume_stale_proof(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             session_id: u64,
         ) -> Result<DagProposerSessionStep>;
         /// Finalizes the stored unsigned intent with a 65-byte recoverable signature.
@@ -3695,13 +3687,13 @@ pub mod rustaxa_ffi {
         /// the cursor, while missing/out-of-order ids return an invalid terminal step.
         #[rust_name = "service_dag_manager_runtime_proposer_session_report_signing"]
         pub fn dag_manager_runtime_proposer_session_report_signing(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             session_id: u64,
             report: DagProposerSigningReport,
         ) -> Result<DagProposerSessionStep>;
         #[rust_name = "service_dag_manager_runtime_proposer_session_report_add_block"]
         pub fn dag_manager_runtime_proposer_session_report_add_block(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             session_id: u64,
             report: DagProposerAddBlockReport,
         ) -> Result<DagProposerSessionStep>;
@@ -3712,106 +3704,102 @@ pub mod rustaxa_ffi {
 
         // Consensus PBFT chain
 
-        type BridgePbftService;
-
-        pub fn pbft_chain_initialized_default(self: &BridgePbftService) -> bool;
-        pub fn pbft_chain_head(self: &BridgePbftService) -> PbftChainHeadPayload;
+        pub fn pbft_chain_initialized_default(self: &BridgeConsensusApplication) -> bool;
+        pub fn pbft_chain_head(self: &BridgeConsensusApplication) -> PbftChainHeadPayload;
         pub fn pbft_chain_update(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             block_hash: &[u8; 32],
             anchor_hash: &[u8; 32],
         ) -> Result<PbftChainHeadPayload>;
         pub fn pbft_chain_block_exists(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             block_hash: &[u8; 32],
         ) -> Result<bool>;
         pub fn pbft_chain_block_rlp(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             block_hash: &[u8; 32],
         ) -> Result<BlockRlpLookup>;
         pub fn pbft_manager_runtime_begin_pbft_sync_admission(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             fact: PbftSyncAdmissionInitialFact,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             cursor: u32,
             check_code: u8,
             status: u8,
         ) -> Result<PbftSyncAdmissionSessionStep>;
         pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             vote_rlps: Vec<PillarVoteRlpPayload>,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn pbft_manager_runtime_pbft_sync_admission_validate_transactions(
-            runtime: &BridgePbftService,
-            dag_transaction_service: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
+            dag_transaction_service: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             identities: Vec<PeriodDataQueueTransactionIdentity>,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn abort_pbft_manager_runtime_pbft_sync_admission(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn pbft_service_pbft_sync_cert_bundle_session(
-            service: &BridgePbftService,
+            service: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             command: PbftSyncCertBundleCommand,
         ) -> Result<PbftSyncCertBundleStep>;
 
-        pub fn create_pbft_service_from_storage(
-            storage: &BridgeStorage,
-            config: PbftServiceConfig,
-        ) -> Result<Box<BridgePbftService>>;
-        pub fn pbft_service_complete_bootstrap(service: &BridgePbftService) -> Result<()>;
+        pub fn pbft_service_complete_bootstrap(service: &BridgeConsensusApplication) -> Result<()>;
         pub fn pbft_service_begin_pbft_sync_ingress(
-            service: &BridgePbftService,
+            service: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             packet_rlp: &[u8],
             source_payload_id: u64,
             source_peer_id: [u8; 64],
         ) -> Result<PbftSyncIngressStep>;
         pub fn pbft_service_report_pbft_sync_ingress_slashing(
-            service: &BridgePbftService,
+            service: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             proof_hash: [u8; 32],
             transaction_inserted: bool,
         ) -> Result<PbftSyncIngressStep>;
         pub fn pbft_manager_runtime_load_startup_replay_period(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             period: u64,
             load_period_lambda: bool,
         ) -> Result<PbftManagerStartupReplayPeriod>;
         pub fn pbft_manager_runtime_snapshot(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_period_data_queue_snapshot(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
         ) -> Result<PeriodDataQueueSnapshot>;
         pub fn pbft_manager_runtime_period_data_queue_push(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             period_data_rlp: Vec<u8>,
             source_peer_id: [u8; 64],
             previous_cert_vote_rlps: Vec<PbftCertVoteRlp>,
             current_block_cert_vote_rlps: Vec<PbftCertVoteRlp>,
         ) -> Result<PeriodDataQueuePushOutcome>;
         pub fn pbft_manager_runtime_period_data_queue_pop(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
         ) -> Result<PeriodDataQueuePopPlan>;
-        pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgePbftService);
+        pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(
+            runtime: &BridgeConsensusApplication,
+        );
         pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
         ) -> PbftSyncQueueDrainStep;
         pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             report: PbftSyncQueueDrainReport,
         ) -> PbftSyncQueueDrainReportResult;
         pub fn plan_pbft_manager_startup_replay_ranges(
             fact: PbftManagerStartupReplayRangeFact,
         ) -> PbftManagerStartupReplayRangePlan;
         pub fn pbft_manager_runtime_plan_advance_period_after_reset(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             pbft_chain_size: u64,
         ) -> PbftManagerAdvancePeriodPlan;
         pub fn validate_pbft_manager_advance_period_action_report(
@@ -3819,82 +3807,82 @@ pub mod rustaxa_ffi {
             report: PbftManagerAdvancePeriodActionReport,
         ) -> PbftManagerAdvancePeriodActionReportResult;
         pub fn pbft_manager_runtime_apply_period_advance(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             new_period: u64,
         ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_apply_broadcast_counters(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             broadcast_votes_counter: u32,
             rebroadcast_votes_counter: u32,
             broadcast_reward_votes_counter: u32,
             rebroadcast_reward_votes_counter: u32,
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_cert_voted_block_in_round(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
         ) -> Result<Vec<u8>>;
         pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             period: u64,
             round: u32,
             block_hash: [u8; 32],
             block_rlp: Vec<u8>,
         ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             period: u64,
             round: u32,
             block_hash: [u8; 32],
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_cached_candidate_dag_payload(
-            runtime: &BridgePbftService,
-            dag_transaction_service: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
+            dag_transaction_service: &BridgeConsensusApplication,
             anchor_hash: &[u8; 32],
         ) -> Result<DagManagerNonFinalizedSyncPayload>;
         pub fn pbft_manager_runtime_own_pillar_block_vote(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
         ) -> Result<Vec<u8>>;
         pub fn pbft_manager_runtime_execute_lifecycle_transition(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             request: PbftManagerLifecycleTransitionRequest,
         ) -> Result<PbftManagerLifecycleTransitionResult>;
         pub fn pbft_manager_runtime_apply_executed_block_reset(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
         ) -> Result<PbftManagerLifecycleTransitionResult>;
         pub fn pbft_manager_runtime_apply_next_voted_status(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             status: u8,
         ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_apply_cursor_field(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             field: u8,
             value: u32,
         ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_dag_block_period(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             hash: &[u8; 32],
         ) -> Result<BlockPeriodLookup>;
         pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             fact: PbftDynamicLambdaFact,
         ) -> Result<PbftManagerFinalizationDynamicLambdaPlan>;
         pub fn pbft_manager_runtime_plan_finalization_intent(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             fact: PbftFinalizationIntentFact,
         ) -> Result<PbftFinalizationIntentPlan>;
         pub fn pbft_manager_runtime_start_finalization_executor(
-            runtime: &BridgePbftService,
-            dag_transaction_service: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
+            dag_transaction_service: &BridgeConsensusApplication,
             request: PbftFinalizationExecutorStartRequest,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_fail_finalization_external_effect(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             cursor: u32,
             status: u8,
             error_code: String,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_action(
-            runtime: &BridgePbftService,
-            dag_transaction_service: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
+            dag_transaction_service: &BridgeConsensusApplication,
             cursor: u32,
             action: u8,
             last_block: u64,
@@ -3903,36 +3891,36 @@ pub mod rustaxa_ffi {
             account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_begin_session(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             fact: PbftManagerRuntimeTickFact,
         );
         pub fn plan_pbft_manager_runtime_sleep_until_next_step(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             round_elapsed_ms: i64,
         ) -> PbftManagerSleepPlan;
         pub fn pbft_service_finalization_ready(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
         ) -> Result<bool>;
         pub fn pbft_manager_runtime_begin_state_action_effect_session(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             fact: PbftManagerStateActionFact,
         );
         pub fn pbft_manager_runtime_state_action_effect_session_next(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
         ) -> PbftManagerStateActionSessionStep;
         pub fn pbft_manager_runtime_state_action_effect_session_report(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             report: PbftManagerStateActionEffectReport,
         ) -> PbftManagerStateActionSessionStep;
         pub fn pbft_service_begin_proposal_session_with_final_chain(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             fact: PbftManagerProposalInitialFact,
         ) -> Result<()>;
         pub fn pbft_manager_proposal_session_next_with_dag(
-            runtime: &BridgePbftService,
-            dag_transaction_service: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
+            dag_transaction_service: &BridgeConsensusApplication,
         ) -> Result<PbftManagerProposalSessionStep>;
         pub fn plan_pbft_manager_broadcast(
             fact: PbftManagerBroadcastFact,
@@ -3942,32 +3930,32 @@ pub mod rustaxa_ffi {
             report: PbftManagerBroadcastReport,
         ) -> PbftManagerBroadcastReportResult;
         pub fn plan_pbft_manager_block_validation(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
-            dag_transaction_service: &BridgeDagTransactionService,
+            dag_transaction_service: &BridgeConsensusApplication,
             fact: &PbftManagerBlockValidationFact,
         ) -> Result<PbftManagerBlockValidationPlan>;
         pub fn pbft_manager_runtime_session_next(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
         ) -> PbftManagerRuntimeSessionStep;
         pub fn pbft_manager_runtime_session_report(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             report: PbftManagerRuntimeActionReport,
         ) -> PbftManagerRuntimeSessionStep;
-        pub fn abort_pbft_manager_runtime_session(runtime: &BridgePbftService);
+        pub fn abort_pbft_manager_runtime_session(runtime: &BridgeConsensusApplication);
         // Consensus proposed PBFT blocks
 
         pub fn pbft_service_publish_proposed_block(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             period: u64,
             block_hash: &[u8; 32],
             pivot_hash: &[u8; 32],
             block_rlp: Vec<u8>,
         ) -> Result<bool>;
         pub fn pbft_service_admit_proposed_block(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
-            dag_transaction_service: &BridgeDagTransactionService,
+            dag_transaction_service: &BridgeConsensusApplication,
             period: u64,
             block_hash: &[u8; 32],
             pbft_gas_limit: u64,
@@ -3975,9 +3963,9 @@ pub mod rustaxa_ffi {
             pillar_block_required: bool,
         ) -> Result<PbftProposedBlockAdmissionResult>;
         pub fn pbft_service_select_local_proposal_candidate(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
-            dag_transaction_service: &BridgeDagTransactionService,
+            dag_transaction_service: &BridgeConsensusApplication,
             candidates: Vec<PbftLocalProposalCandidate>,
             period: u64,
             round: u64,
@@ -3986,9 +3974,9 @@ pub mod rustaxa_ffi {
             pillar_block_required: bool,
         ) -> Result<PbftLocalProposalSelectionResult>;
         pub fn pbft_service_select_leader_composed(
-            runtime: &BridgePbftService,
+            runtime: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
-            dag_transaction_service: &BridgeDagTransactionService,
+            dag_transaction_service: &BridgeConsensusApplication,
             period: u64,
             round: u64,
             pbft_gas_limit: u64,
@@ -3996,21 +3984,21 @@ pub mod rustaxa_ffi {
             pillar_block_required: bool,
         ) -> Result<PbftLeaderSelectionResult>;
         pub fn pbft_service_proposed_blocks_get(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             period: u64,
             block_hash: &[u8; 32],
         ) -> ProposedBlockLookup;
         // Consensus transaction manager planning
 
         pub fn transaction_manager_runtime_gas_price_bid(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> [u8; 32];
         pub fn transaction_manager_runtime_gas_price_update(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             gas_prices: Vec<GasPricerGasPrice>,
         );
         pub fn transaction_manager_runtime_pack_prepare_sharded(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             weight_limit: u64,
             min_transaction_gas: u64,
             proposal_period: u64,
@@ -4021,49 +4009,49 @@ pub mod rustaxa_ffi {
             shard_period_interval: u64,
         ) -> Result<TransactionPackPreparedPlan>;
         pub fn transaction_manager_runtime_pack_finalize_with_estimates(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             inputs: Vec<TransactionPackSessionEstimateInput>,
         ) -> Result<TransactionPackSessionStep>;
-        pub fn transaction_manager_runtime_pack_abort(self: &BridgeDagTransactionService) -> bool;
+        pub fn transaction_manager_runtime_pack_abort(self: &BridgeConsensusApplication) -> bool;
         pub fn transaction_manager_runtime_plan_gas_estimation(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             fact: TransactionManagerGasEstimationFact,
         ) -> Result<TransactionManagerGasEstimationPlan>;
         pub fn transaction_manager_runtime_store_gas_estimation(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             result: TransactionManagerGasEstimationResult,
         ) -> Result<bool>;
         pub fn transaction_manager_runtime_transaction_count(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> u64;
         /// Returns Rust's known-transaction decision from runtime-owned queue and sidecar state.
         pub fn transaction_manager_runtime_is_transaction_known_hash(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             hash: &[u8; 32],
         ) -> Result<bool>;
         /// Inserts payloads and moves them into recently-finalized sidecar state in one Rust command.
         pub fn transaction_manager_runtime_initialize_recently_finalized_payloads(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             period: u64,
             payloads: Vec<TransactionManagerSidecarInsertInput>,
         ) -> Result<()>;
         pub fn transaction_manager_runtime_non_finalized_size(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> usize;
         pub fn transaction_manager_runtime_remove_non_finalized(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<u64>;
         /// Executes admission with FinalChain facts supplied by the C++ external-EVM boundary.
         pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             fact: TransactionManagerValidatedInsertRuntimeFact,
             final_chain_fact: TransactionManagerFinalChainAdmissionFact,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerAdmissionCommandReport>;
         /// Executes public insertTransaction verification and fact-backed admission as one Rust-owned command.
         pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             verify_fact: TransactionManagerVerifyTransactionFact,
             admission_fact: TransactionManagerValidatedInsertRuntimeFact,
             final_chain_fact: TransactionManagerFinalChainAdmissionFact,
@@ -4071,44 +4059,44 @@ pub mod rustaxa_ffi {
         ) -> Result<TransactionManagerPublicAdmissionCommandReport>;
         /// Resolves requested hashes against Rust-owned live queue payloads only.
         pub fn transaction_manager_runtime_queue_lookup_transaction_views(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             requests: Vec<TransactionManagerTransactionViewRequest>,
         ) -> Result<Vec<TransactionManagerTransactionView>>;
         pub fn transaction_manager_runtime_queue_all_transaction_groups(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> Vec<TransactionQueueTransactionGroup>;
-        pub fn transaction_manager_runtime_queue_size(self: &BridgeDagTransactionService) -> usize;
+        pub fn transaction_manager_runtime_queue_size(self: &BridgeConsensusApplication) -> usize;
         pub fn transaction_manager_runtime_queue_proposable_accounts(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> Vec<TransactionQueueProposableAccountFact>;
         pub fn transaction_manager_runtime_queue_block_finalized(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             block_number: u64,
         ) -> Vec<TransactionQueueHash>;
         pub fn transaction_manager_runtime_queue_transactions_dropped(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> bool;
         pub fn transaction_manager_runtime_queue_non_proposable_over_limit(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
         ) -> bool;
         pub fn transaction_manager_runtime_queue_min_gas_price_for_block_inclusion(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             limit: u64,
         ) -> [u8; 32];
         /// Resolves requested hashes against non-finalized/recently-finalized sidecars.
         pub fn transaction_manager_runtime_lookup_non_finalized_transaction_views(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             requests: Vec<TransactionManagerTransactionViewRequest>,
         ) -> Result<Vec<TransactionManagerTransactionView>>;
         /// Resolves requested hashes through queue, sidecars, then Rust storage.
         pub fn transaction_manager_runtime_lookup_transaction_views(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             requests: Vec<TransactionManagerTransactionViewRequest>,
             max_count: u64,
         ) -> Result<TransactionManagerTransactionViewPlan>;
         /// Resolves requested hashes through queue, sidecars, then proposal-filtered Rust storage.
         pub fn transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
-            self: &BridgeDagTransactionService,
+            self: &BridgeConsensusApplication,
             proposal_period: u64,
             requests: Vec<TransactionManagerTransactionViewRequest>,
             account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
@@ -4117,11 +4105,11 @@ pub mod rustaxa_ffi {
         /// Applies DAG transaction persistence and returns a typed command report.
         #[rust_name = "service_save_transactions_from_dag_block_command_report_with_runtime"]
         pub fn save_transactions_from_dag_block_command_report_with_runtime(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<TransactionManagerDagSaveCommandReport>;
         pub fn service_update_finalized_transactions_status_from_transaction_list(
-            service: &BridgeDagTransactionService,
+            service: &BridgeConsensusApplication,
             period: u64,
             retention_window: u64,
             account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
@@ -4133,37 +4121,37 @@ pub mod rustaxa_ffi {
         ) -> Result<TransactionManagerVerifyTransactionOutcome>;
         #[rust_name = "service_transaction_manager_filter_non_finalized_with_runtime"]
         pub fn transaction_manager_filter_non_finalized_with_runtime(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<FinalizedTransactionFilterPlan>;
         #[rust_name = "service_transaction_manager_verify_not_finalized_with_runtime"]
         pub fn transaction_manager_verify_not_finalized_with_runtime(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
             facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
         ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
         /// Rebuilds runtime recovery sidecars from Rust-backed storage.
         #[rust_name = "service_transaction_manager_recover_nonfinalized_with_runtime"]
         pub fn transaction_manager_recover_nonfinalized_with_runtime(
-            runtime: &BridgeDagTransactionService,
+            runtime: &BridgeConsensusApplication,
         ) -> Result<()>;
 
         // Consensus verified votes
 
         pub fn pbft_service_verified_votes_own_vote_records(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
         ) -> Result<Vec<PbftVoteStorageRecord>>;
-        pub fn pbft_service_verified_votes_size(self: &BridgePbftService) -> Result<u64>;
+        pub fn pbft_service_verified_votes_size(self: &BridgeConsensusApplication) -> Result<u64>;
         pub fn pbft_service_verified_votes_replay_contains(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             vote_hash: &[u8; 32],
         ) -> Result<bool>;
         pub fn pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             fact: PbftTwoTPlusOneThresholdFact,
         ) -> Result<PbftTwoTPlusOneThresholdPlan>;
         pub fn pbft_service_verified_votes_validate_with_final_chain(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             canonical_vote_rlp: &[u8],
             strict_vrf: bool,
@@ -4171,7 +4159,7 @@ pub mod rustaxa_ffi {
             number_of_proposers: u64,
         ) -> Result<PbftVoteRuntimeValidationResult>;
         pub fn pbft_service_verified_votes_admit_and_persist_with_final_chain(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             canonical_vote_rlp: &[u8],
             validation_request: PbftVoteAdmissionValidationRequest,
@@ -4180,96 +4168,98 @@ pub mod rustaxa_ffi {
             slashing_submitters: Vec<SlashingSubmitterIdentity>,
         ) -> Result<PbftVoteAdmissionRuntimeResult>;
         pub fn pbft_service_verified_votes_report_slashing_transaction_submission(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             proof_hash: &[u8; 32],
             transaction_inserted: bool,
         ) -> Result<bool>;
         pub fn pbft_service_verified_votes_determine_new_round(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             period: u64,
             current_round: u64,
         ) -> Result<DetermineNewRoundOutcome>;
         pub fn pbft_service_verified_votes_get_two_t_plus_one_voted_block(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             period: u64,
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotedBlockLookup>;
         pub fn pbft_service_verified_votes_get_two_t_plus_one_voted_block_payloads(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             period: u64,
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotePayloadsLookup>;
         pub fn pbft_service_verified_votes_cleanup_votes_by_period(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             pbft_period: u64,
         ) -> Result<()>;
         pub fn pbft_service_verified_votes_select_reward_vote_payloads(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             block_period: u64,
             requested_vote_hashes: Vec<PbftFinalizationHash>,
         ) -> Result<PbftRewardVotePayloadSelection>;
         pub fn pbft_service_verified_votes_state_snapshot(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
         ) -> Result<VerifiedVotesStateSnapshot>;
         pub fn pbft_service_verified_votes_step_payloads(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             period: u64,
             round: u64,
             step: u64,
         ) -> Result<VerifiedStepVotePayloadsLookup>;
         pub fn pbft_service_verified_votes_current_reward_snapshot(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
         ) -> Result<RewardVotePayloadSnapshot>;
         pub fn pbft_service_verified_votes_save_own_verified_vote(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             canonical_vote_rlp: &[u8],
             weight: u64,
         ) -> Result<PbftVotePersistenceResult>;
         pub fn pbft_service_verified_votes_clear_own_verified_votes(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
         ) -> Result<PbftVotePersistenceResult>;
         pub fn pbft_service_verified_votes_persist_pbft_vote_progress(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             write: PbftVoteProgressPersistenceWrite,
         ) -> Result<PbftVotePersistenceResult>;
         pub fn pbft_service_verified_votes_apply_reward_votes_reset(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             request: PbftRewardVotesResetRequest,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
         pub fn pbft_generate_signed_vote(
             input: PbftVoteGenerationInput,
         ) -> Result<PbftGeneratedVote>;
         pub fn pbft_service_generate_signed_vote_with_weight(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             input: PbftVoteGenerationInput,
             committee_size: u64,
             number_of_proposers: u64,
         ) -> Result<PbftGeneratedVote>;
         pub fn pbft_service_generate_and_validate_proposer_sortition(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             request: PbftProposerSortitionRequest,
         ) -> Result<PbftProposerSortitionResult>;
         // Consensus pillar votes
 
         pub fn pbft_service_pillar_plan_block_creation_with_final_chain(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             request: PillarBlockCreationRequest,
         ) -> Result<PillarBlockCreationWithVoteCountsPlan>;
         pub fn pbft_service_pillar_plan_block_linkage(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             request: PillarBlockLinkageRequest,
         ) -> Result<PillarBlockLinkagePlan>;
         pub fn pbft_service_pillar_latest_finalized_block_rlp(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
         ) -> Result<Vec<u8>>;
 
-        pub fn pbft_service_pillar_ready(self: &BridgePbftService) -> bool;
-        pub fn pbft_service_complete_pillar_bootstrap(self: &BridgePbftService) -> Result<()>;
+        pub fn pbft_service_pillar_ready(self: &BridgeConsensusApplication) -> bool;
+        pub fn pbft_service_complete_pillar_bootstrap(
+            self: &BridgeConsensusApplication,
+        ) -> Result<()>;
         pub fn pillar_chain_storage_apply_current_block_data(
             self: &BridgeStorage,
             data_rlp: Vec<u8>,
@@ -4305,56 +4295,56 @@ pub mod rustaxa_ffi {
         pub fn get_rounds_count_dynamic_lambda(self: &BridgeStorage) -> Result<u32>;
         pub fn get_blocks_rewards_stats(self: &BridgeStorage) -> Result<Vec<PeriodRlp>>;
         pub fn pbft_service_pillar_apply_planned_current_block_data(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             data_rlp: Vec<u8>,
             expected_anchor_generation: u64,
         ) -> Result<()>;
         pub fn pbft_service_pillar_apply_own_vote(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             vote_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn pbft_service_pillar_load_startup_bootstrap(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
         ) -> Result<PillarChainStartupBootstrap>;
         pub fn pbft_service_pillar_plan_current_anchor_decision(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             request: PillarCurrentAnchorDecisionRequest,
         ) -> Result<PillarCurrentAnchorDecisionResult>;
         pub fn pbft_service_pillar_consensus_threshold_with_final_chain(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             period: u64,
         ) -> Result<PillarConsensusThresholdLookup>;
         pub fn pbft_service_pillar_validate_single_vote_with_final_chain(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             vote_rlp: Vec<u8>,
             context: PillarVoteSingleAdmissionContext,
         ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
         pub fn pbft_service_pillar_apply_single_vote_with_final_chain(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             vote_rlp: Vec<u8>,
             context: PillarVoteSingleAdmissionContext,
             trusted_local_or_restore: bool,
         ) -> Result<PillarVoteSingleAdmissionWithFinalChainPlan>;
         pub fn pbft_service_pillar_plan_vote_relevance(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             vote_rlp: Vec<u8>,
             context: PillarVoteSingleAdmissionContext,
         ) -> Result<PillarVoteRelevancePlan>;
         pub fn pbft_service_pillar_get_verified_vote_payloads(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             period: u64,
             block_hash: &[u8; 32],
             above_threshold: bool,
         ) -> Result<PillarVotesPayloadLookup>;
         pub fn pbft_service_pillar_prepare_finalized_block_for_pbft(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             request: PillarBlockFinalizationRequest,
         ) -> Result<PillarBlockFinalizationPrepareResult>;
         pub fn pbft_service_pillar_ack_finalize_block_for_pbft(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             request: PillarBlockFinalizationAcknowledgeRequest,
         ) -> Result<PillarBlockFinalizationAcknowledgeResult>;
 
@@ -4803,17 +4793,17 @@ pub mod rustaxa_ffi {
             position: u64,
         ) -> Result<Vec<u8>>;
         pub fn pbft_service_collect_dpos_total_vote_count(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             request: PbftFinalChainDposTotalVoteCountRequest,
         ) -> Result<PbftFinalChainDposTotalVoteCountFacts>;
         pub fn pbft_service_collect_dpos_wallet_aggregate_vote_count(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             request: PbftFinalChainDposWalletAggregateVoteCountRequest,
         ) -> Result<PbftFinalChainDposWalletAggregateVoteCountFacts>;
         pub fn pbft_service_collect_dpos_wallet_eligibility_batch(
-            self: &BridgePbftService,
+            self: &BridgeConsensusApplication,
             final_chain: &BridgeFinalChain,
             request: PbftFinalChainDposWalletEligibilityBatchRequest,
         ) -> Result<PbftFinalChainDposWalletEligibilityBatchFacts>;

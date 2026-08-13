@@ -316,21 +316,43 @@ TransactionStatus transactionStatusFromBridge(uint8_t status) {
 
 }  // namespace
 
-SharedDagTransactionService createDagTransactionService(const FullNodeConfig& config, DbStorage& db) {
-  return std::make_shared<DagTransactionService>(rustaxa::create_dag_transaction_service_from_storage(
+SharedConsensusApplication createConsensusApplication(const FullNodeConfig& config, DbStorage& db) {
+  rustaxa::PbftServiceConfig pbft_config{};
+  pbft_config.genesis_lambda_ms = config.genesis.pbft.lambda_ms;
+  pbft_config.cacti_lambda_max_ms = config.genesis.state.hardforks.cacti_hf.lambda_max;
+  pbft_config.cacti_lambda_default_ms = config.genesis.state.hardforks.cacti_hf.lambda_default;
+  pbft_config.cacti_block = config.genesis.state.hardforks.cacti_hf.block_num;
+  pbft_config.max_exponential_lambda_ms = 60000;
+  pbft_config.max_steps = 13;
+  pbft_config.deadline_ms = 4 * static_cast<uint64_t>(config.genesis.pbft.lambda_ms);
+  pbft_config.polling_interval_ms = 100;
+  pbft_config.report_malicious_behaviour = config.report_malicious_behaviour;
+  pbft_config.magnolia_activation_period = config.genesis.state.hardforks.magnolia_hf.block_num;
+  pbft_config.ficus_activation_period = config.genesis.state.hardforks.ficus_hf.block_num;
+  pbft_config.pillar_blocks_interval = config.genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
+  pbft_config.sync_level_size = config.network.sync_level_size;
+  pbft_config.is_light_node = config.is_light_node;
+  pbft_config.light_node_history = config.light_node_history;
+  pbft_config.committee_size = config.genesis.pbft.committee_size;
+  pbft_config.number_of_proposers = config.genesis.pbft.number_of_proposers;
+  pbft_config.slashing_submitters.reserve(config.wallets.size());
+  for (size_t wallet_index = 0; wallet_index < config.wallets.size(); ++wallet_index) {
+    rustaxa::SlashingSubmitterIdentity identity{};
+    identity.wallet_index = wallet_index;
+    identity.address = config.wallets[wallet_index].node_addr.asArray();
+    pbft_config.slashing_submitters.push_back(std::move(identity));
+  }
+
+  return std::make_shared<ConsensusApplication>(rustaxa::create_consensus_application_from_storage(
       db.rustStorage(), config.genesis.dag_genesis_block.getHash().asArray(), config.dag_expiry_limit,
       config.max_levels_per_period, sortitionRuntimeConfigFromNodeConfig(config),
       rustaxa::TransactionQueueConfig{config.transactions_pool_size}, gasPricerConfigFromNodeConfig(config),
-      config.propose_dag_gas_limit));
+      config.propose_dag_gas_limit, std::move(pbft_config)));
 }
 
 TransactionManager::TransactionManager(const FullNodeConfig& conf, std::shared_ptr<DbStorage> db,
-                                       std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
-    : TransactionManager(conf, db, std::move(final_chain), node_addr, createDagTransactionService(conf, *db)) {}
-
-TransactionManager::TransactionManager(const FullNodeConfig& conf, std::shared_ptr<DbStorage> db,
                                        std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr,
-                                       SharedDagTransactionService dag_transaction_service)
+                                       SharedConsensusApplication dag_transaction_service)
     : kConf(conf),
       final_chain_(std::move(final_chain)),
       dag_transaction_service_(std::move(dag_transaction_service)),

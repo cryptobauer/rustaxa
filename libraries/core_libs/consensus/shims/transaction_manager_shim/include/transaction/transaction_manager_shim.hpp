@@ -54,9 +54,6 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
    */
   util::event::Event<TransactionManager, const trx_hash_t &> const transaction_added_{};
 
-  TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
-                     std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr);
-
   /**
    * Constructs the production facade over an application-owned composed service.
    *
@@ -66,7 +63,7 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
    */
   TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
                      std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr,
-                     SharedDagTransactionService dag_transaction_service);
+                     SharedConsensusApplication consensus_application);
 
   TransactionManager(const TransactionManager &) = delete;
   TransactionManager(TransactionManager &&) = delete;
@@ -343,7 +340,7 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
   const FullNodeConfig &kConf;
   static constexpr uint64_t kEstimateGasLimit = 200000;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
-  SharedDagTransactionService dag_transaction_service_;
+  SharedConsensusApplication dag_transaction_service_;
   util::ThreadPool estimation_thread_pool_;
   mutable std::shared_mutex transactions_mutex_;
   mutable std::mutex pack_mutex_;

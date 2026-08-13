@@ -8,32 +8,30 @@
 namespace taraxa {
 
 /**
- * Shared C++ lifetime owner for the Rust PBFT application service.
+ * Shared C++ lifetime owner for the Rust consensus application.
  *
- * One instance owns one `BridgePbftService` box. `App` shares this holder with
- * the retained manager, chain, proposed-block, verified-vote, and slashing
- * facades so none borrows a nested Rust reference or restores independent
- * production state. Rust owns synchronization of the sibling manager, chain,
- * proposed-block, verified-vote, and slashing lock domains; this holder only
- * provides RAII lifetime sharing.
+ * One instance owns one `BridgeConsensusApplication` root. `App` shares this holder with retained manager, chain,
+ * proposed-block, verified-vote, pillar-chain, and network facades so no shim borrows a nested Rust reference. Rust
+ * owns runtime synchronization and lock-domain partitioning; this holder only provides RAII lifetime sharing.
  */
-class PbftService final {
+class ConsensusApplication final {
  public:
-  /** Takes exclusive ownership of a fully restored Rust PBFT service. */
-  explicit PbftService(rust::Box<rustaxa::BridgePbftService> service) : service_(std::move(service)) {}
+  /** Takes exclusive ownership of a fully restored Rust consensus application root. */
+  explicit ConsensusApplication(rust::Box<rustaxa::BridgeConsensusApplication> service)
+      : service_(std::move(service)) {}
 
-  PbftService(const PbftService&) = delete;
-  PbftService(PbftService&&) = delete;
-  PbftService& operator=(const PbftService&) = delete;
-  PbftService& operator=(PbftService&&) = delete;
+  ConsensusApplication(const ConsensusApplication&) = delete;
+  ConsensusApplication(ConsensusApplication&&) = delete;
+  ConsensusApplication& operator=(const ConsensusApplication&) = delete;
+  ConsensusApplication& operator=(ConsensusApplication&&) = delete;
 
   /** Returns the shared service receiver while this holder remains alive. */
-  const rustaxa::BridgePbftService& service() const noexcept { return *service_; }
+  const rustaxa::BridgeConsensusApplication& service() const noexcept { return *service_; }
 
  private:
-  rust::Box<rustaxa::BridgePbftService> service_;
+  rust::Box<rustaxa::BridgeConsensusApplication> service_;
 };
 
-using SharedPbftService = std::shared_ptr<PbftService>;
+using SharedConsensusApplication = std::shared_ptr<ConsensusApplication>;
 
 }  // namespace taraxa

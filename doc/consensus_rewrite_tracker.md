@@ -303,6 +303,10 @@ materialization removal, shim contraction, and storage/FinalChain narrowing with
 Queue status remains global, but slice readiness and completion evidence are evaluated for the selected complete family.
 The first application-root checkpoint constructs `ConsensusApplication` once in `App`, migrates Rust-mode fixtures to
 production-root injection, and deletes the non-injected Rust-mode `TransactionManager` and `DagManager` constructors.
+That checkpoint is now implemented for the PBFT and DAG/transaction/sortition graphs: `App` and focused fixtures inject
+one opaque `BridgeConsensusApplication`, the two standalone bridge factories/handles are gone, and DAG initialization is
+deferred until PBFT restoration succeeds. `CRW-12` remains active because FinalChain and storage bootstrap have not yet
+moved behind the native root.
 
 | Cluster | Native-owner prerequisite | Same-checkpoint deletion scope | Manager closeout |
 | --- | --- | --- | --- |

@@ -15,7 +15,7 @@ use crate::ffi::rustaxa_ffi::{
     VerifiedStepVotePayloadsLookup, VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome,
     VerifiedVotePayload, VerifiedVoteStateSnapshotEntry, VerifiedVotesStateSnapshot,
 };
-use crate::ffi::{BridgeFinalChain, BridgePbftService};
+use crate::ffi::{BridgeApp, BridgeFinalChain};
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
 use ethereum_types::{H256, U256};
 use rustaxa_consensus::pbft_finalize::PbftFinalizedPeriodApplyResult;
@@ -227,7 +227,7 @@ fn vote_progress_write_to_domain(
 }
 
 #[allow(clippy::too_many_arguments)]
-impl BridgePbftService {
+impl BridgeApp {
     fn publish_vote_validation(
         &self,
         validation: PbftCanonicalVoteValidation,
@@ -570,7 +570,7 @@ pub(crate) fn leader_selection_result_to_ffi(
     }
 }
 
-impl BridgePbftService {
+impl BridgeApp {
     /// Converts requested CXX hashes, delegates ordered selection, and maps its typed result.
     pub fn pbft_service_verified_votes_select_reward_vote_payloads(
         &self,
@@ -987,7 +987,7 @@ impl From<VerifiedVote> for VerifiedVotePayload {
     }
 }
 
-impl BridgePbftService {
+impl BridgeApp {
     /// Reads one canonical verified-vote count under the service lock boundary.
     pub fn pbft_service_verified_votes_size(&self) -> Result<u64, anyhow::Error> {
         self.0.verified_votes_size()

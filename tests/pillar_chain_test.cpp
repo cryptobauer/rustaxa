@@ -10,27 +10,13 @@
 #endif
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "test_util/test_util.hpp"
+#include "transaction/dag_transaction_service.hpp"
 
 namespace taraxa::core_tests {
 
 #ifdef RUSTAXA_ENABLE
-SharedPbftService makeInjectedPillarTestService(const std::shared_ptr<DbStorage>& db) {
-  rustaxa::PbftServiceConfig service_config{};
-  service_config.genesis_lambda_ms = 1000;
-  service_config.cacti_lambda_max_ms = 1000;
-  service_config.cacti_lambda_default_ms = 1000;
-  service_config.max_exponential_lambda_ms = 60000;
-  service_config.max_steps = 13;
-  service_config.deadline_ms = 4000;
-  service_config.polling_interval_ms = 100;
-  service_config.ficus_activation_period = 0;
-  service_config.pillar_blocks_interval = 10;
-  service_config.sync_level_size = 10;
-  service_config.is_light_node = false;
-  service_config.light_node_history = 0;
-  service_config.committee_size = 5;
-  service_config.number_of_proposers = 20;
-  return std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), service_config));
+SharedConsensusApplication makeInjectedPillarTestService(const std::shared_ptr<DbStorage>& db) {
+  return createConsensusApplication(FullNodeConfig{}, *db);
 }
 #endif
 

@@ -245,7 +245,7 @@ void requireApplied(const rustaxa::PbftVotePersistenceResult& result, const char
   throw std::runtime_error(err.str());
 }
 
-void persistVoteProgressToRustStorage(const SharedPbftService& pbft_service,
+void persistVoteProgressToRustStorage(const SharedConsensusApplication& pbft_service,
                                       const std::shared_ptr<PbftVote>& extra_reward_vote,
                                       std::optional<TwoTPlusOneVotedBlockType> two_t_plus_one_type,
                                       const std::vector<std::shared_ptr<PbftVote>>& two_t_plus_one_votes) {
@@ -442,7 +442,7 @@ std::shared_ptr<PbftVote> materializeOwnVoteRecord(const rustaxa::PbftVoteStorag
 
 }  // namespace
 
-VoteManager::VoteManager(const FullNodeConfig& config, SharedPbftService pbft_service,
+VoteManager::VoteManager(const FullNodeConfig& config, SharedConsensusApplication pbft_service,
                          std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<TransactionManager> trx_manager)
     : kPbftConfig(config.genesis.pbft),

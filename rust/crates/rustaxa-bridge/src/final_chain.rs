@@ -1,8 +1,8 @@
 use crate::ffi::rustaxa_ffi;
+use crate::ffi::BridgeApp;
 use crate::ffi::BridgeConsensusExecutionApi;
 use crate::ffi::BridgeFinalChain;
 use crate::ffi::BridgeFinalChainExecutionSession;
-use crate::ffi::BridgePbftService;
 use crate::ffi::BridgeStorage;
 use crate::pbft_manager::pbft_manager_runtime_begin_proposal_session_with_hash;
 use rustaxa_consensus::{Account, FinalChain};
@@ -994,7 +994,7 @@ impl BridgeFinalChain {
     }
 }
 
-impl BridgePbftService {
+impl BridgeApp {
     /// Starts PBFT proposal planning with the authoritative FinalChain hash for the proposal period.
     ///
     /// C++ supplies only proposal observations and executor-owned DAG/wallet facts. This method
@@ -1015,9 +1015,8 @@ impl BridgePbftService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dag_transaction_service::create_dag_transaction_service_from_storage;
+    use crate::dag_transaction_service::create_consensus_application_from_storage;
     use crate::ffi::{BridgeDagStorageQueries, BridgeStorage};
-    use crate::pbft_manager::create_pbft_service_from_storage;
     use crate::storage::{create_dag_storage_queries, create_storage};
     use ethereum_types::{H256, U256};
     use k256::ecdsa::SigningKey;
@@ -1231,37 +1230,8 @@ mod tests {
         .expect("final chain should initialize")
     }
 
-    fn make_pbft_service(storage: &BridgeStorage) -> Box<BridgePbftService> {
-        create_pbft_service_from_storage(
-            storage,
-            rustaxa_ffi::PbftServiceConfig {
-                genesis_lambda_ms: 100,
-                cacti_lambda_max_ms: 1500,
-                cacti_lambda_default_ms: 500,
-                cacti_block: 1,
-                max_exponential_lambda_ms: 60_000,
-                max_steps: 13,
-                deadline_ms: 1000,
-                polling_interval_ms: 100,
-                report_malicious_behaviour: true,
-                magnolia_activation_period: 0,
-                ficus_activation_period: 0,
-                pillar_blocks_interval: 10,
-                sync_level_size: 10,
-                is_light_node: false,
-                light_node_history: 0,
-                committee_size: 1,
-                number_of_proposers: 1,
-                slashing_submitters: Vec::new(),
-            },
-        )
-        .expect("PBFT service should initialize")
-    }
-
-    fn make_dag_transaction_service(
-        storage: &BridgeStorage,
-    ) -> Box<crate::dag_transaction_service::BridgeDagTransactionService> {
-        create_dag_transaction_service_from_storage(
+    fn make_consensus_application(storage: &BridgeStorage) -> Box<BridgeApp> {
+        create_consensus_application_from_storage(
             storage,
             &[1u8; 32],
             32,
@@ -1287,8 +1257,28 @@ mod tests {
                 blocks_gas_pricer: false,
             },
             1_000_000,
+            rustaxa_ffi::PbftServiceConfig {
+                genesis_lambda_ms: 100,
+                cacti_lambda_max_ms: 1500,
+                cacti_lambda_default_ms: 500,
+                cacti_block: 1,
+                max_exponential_lambda_ms: 60_000,
+                max_steps: 13,
+                deadline_ms: 1000,
+                polling_interval_ms: 100,
+                report_malicious_behaviour: true,
+                magnolia_activation_period: 0,
+                ficus_activation_period: 0,
+                pillar_blocks_interval: 10,
+                sync_level_size: 10,
+                is_light_node: false,
+                light_node_history: 0,
+                committee_size: 1,
+                number_of_proposers: 1,
+                slashing_submitters: Vec::new(),
+            },
         )
-        .expect("Dag transaction service should initialize")
+        .expect("PBFT service should initialize")
     }
 
     fn ffi_transaction(
@@ -2261,13 +2251,12 @@ mod tests {
         let storage = create_storage(storage_path).expect("storage should initialize");
         let final_chain =
             make_final_chain_with_storage(&storage, vec![genesis_validator(validator, 10_000)]);
-        let pbft_service = make_pbft_service(&storage);
-        let dag_transaction_service = make_dag_transaction_service(&storage);
+        let consensus_application = make_consensus_application(&storage);
 
         let plan = crate::pbft_manager::plan_pbft_manager_block_validation(
-            &pbft_service,
+            &consensus_application,
             &final_chain,
-            &dag_transaction_service,
+            &consensus_application,
             &rustaxa_ffi::PbftManagerBlockValidationFact {
                 block_hash: [0x11; 32],
                 period: 1,
@@ -2309,7 +2298,7 @@ mod tests {
             vec![genesis_validator(validator, 10_000)],
             5,
         );
-        let pbft_service = make_pbft_service(&storage);
+        let pbft_service = make_consensus_application(&storage);
 
         let ready = final_chain
             .0

@@ -1,3 +1,4 @@
+pub mod consensus_application;
 pub mod consensus_execution_api;
 pub mod consensus_pipeline;
 pub mod consensus_query_api;
@@ -46,6 +47,7 @@ pub mod verified_votes;
 mod final_chain;
 pub mod final_chain_execution;
 
+pub use consensus_application::{ConsensusApplication, ConsensusApplicationConfig};
 pub use consensus_execution_api::ConsensusExecutionApi;
 pub use consensus_pipeline::{
     Address20, ConsensusEffect, ConsensusEvent, ConsensusPlan, DagBlockEvent, DagSyncEvent,

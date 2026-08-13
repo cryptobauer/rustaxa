@@ -21,7 +21,7 @@ namespace taraxa {
 
 class Network;
 class PbftBlock;
-class PbftService;
+class ConsensusApplication;
 class TransactionManager;
 
 /**
@@ -146,8 +146,9 @@ class VoteManager {
    * - Public C++ API remains identical during the rewrite.
    * - Unported methods keep explicit shim-local forwarding TODOs.
    */
-  VoteManager(const FullNodeConfig& config, SharedPbftService pbft_service, std::shared_ptr<PbftChain> pbft_chain,
-              std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<TransactionManager> trx_manager);
+  VoteManager(const FullNodeConfig& config, SharedConsensusApplication pbft_service,
+              std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
+              std::shared_ptr<TransactionManager> trx_manager);
   ~VoteManager() = default;
   VoteManager(const VoteManager&) = delete;
   VoteManager(VoteManager&&) = delete;
@@ -674,7 +675,7 @@ class VoteManager {
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<TransactionManager> trx_manager_;
-  SharedPbftService pbft_service_;
+  SharedConsensusApplication pbft_service_;
 
   std::atomic<PbftPeriod> current_pbft_period_{0};
   std::atomic<PbftRound> current_pbft_round_{0};

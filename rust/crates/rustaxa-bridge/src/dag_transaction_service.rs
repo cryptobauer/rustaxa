@@ -1,5 +1,6 @@
 use crate::ffi::rustaxa_ffi::*;
-use crate::ffi::{BridgeFinalChain, BridgePbftService, BridgeStorage};
+use crate::ffi::{BridgeFinalChain, BridgeStorage};
+use crate::pbft_manager::pbft_service_config_from_ffi;
 use crate::transaction_manager::{
     bridge_to_service_account_nonce_facts, bridge_to_service_final_chain_admission_fact,
     bridge_to_service_gas_estimation_request, bridge_to_service_queue_entry,
@@ -28,8 +29,7 @@ use rustaxa_consensus::dag_transaction_service::{
     DagAddBlockCompletion as NativeDagAddBlockCompletion,
     DagAddBlockPrepareRequest as NativeDagAddBlockPrepareRequest,
     DagAddBlockTransactionPayload as NativeDagAddBlockTransactionPayload, DagGhostPathRoot,
-    DagGraphView, DagProposerPackPrepareRequest, DagProposerPackStep, DagTransactionService,
-    DagTransactionServiceConfig,
+    DagGraphView, DagProposerPackPrepareRequest, DagProposerPackStep, DagTransactionServiceConfig,
     DagVerifyBlockTransactionCompletionReport as NativeDagVerifyBlockTransactionCompletionReport,
     DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
 };
@@ -49,17 +49,23 @@ use rustaxa_consensus::transaction_service::{
     TransactionServicePayload, TransactionServiceTransactionView,
     TransactionServiceVerifyNotFinalizedFact,
 };
+use rustaxa_consensus::{ConsensusApplication, ConsensusApplicationConfig};
+use std::sync::Arc;
 
-/// CXX wrapper over the native DAG application root.
-///
-/// [`DagTransactionService`] owns sibling construction, restoration, lifetime,
-/// and lock order. This bridge type retains only CXX conversion and temporary
-/// FFI-shaped task adapters. Proposer and verification fact collection releases
-/// every native guard for external FinalChain, EVM, VDF, signing, network, and
-/// callback work, then reacquires through the native root and revalidates the
-/// exact cursor before applying results.
-pub struct BridgeDagTransactionService {
-    root: DagTransactionService,
+/// Opaque CXX lifetime receiver for one fully restored native application.
+/// The second field is an in-process shared borrow for temporary DAG task
+/// adapters; neither native service is constructible or retrievable from CXX.
+pub struct BridgeConsensusApplication(
+    pub(crate) ConsensusApplication,
+    Arc<rustaxa_consensus::dag_transaction_service::DagTransactionService>,
+);
+
+pub(crate) type BridgeApp = BridgeConsensusApplication;
+
+impl BridgeConsensusApplication {
+    pub(crate) fn complete_bootstrap(&self) {
+        self.0.complete_bootstrap();
+    }
 }
 
 /// Converts one native non-finalized DAG snapshot into its stable CXX payload.
@@ -99,13 +105,13 @@ pub(crate) fn dag_non_finalized_sync_payload_to_ffi(
 /// partial carrier. The existing sync payload preserves canonical order and
 /// owned bytes across CXX.
 pub fn pbft_manager_runtime_cached_candidate_dag_payload(
-    runtime: &BridgePbftService,
-    dag_transaction_service: &BridgeDagTransactionService,
+    runtime: &BridgeApp,
+    dag_transaction_service: &BridgeApp,
     anchor_hash: &[u8; 32],
 ) -> Result<DagManagerNonFinalizedSyncPayload> {
     let payload = runtime
         .0
-        .cached_candidate_dag_payload(&dag_transaction_service.root, H256::from(*anchor_hash))?;
+        .cached_candidate_dag_payload(&dag_transaction_service.1, H256::from(*anchor_hash))?;
     Ok(dag_non_finalized_sync_payload_to_ffi(payload))
 }
 
@@ -117,67 +123,67 @@ pub fn pbft_manager_runtime_cached_candidate_dag_payload(
 /// retained C++ signing/materialization boundary. Missing sessions and native
 /// storage failures remain explicit contract/error results.
 pub fn pbft_manager_proposal_session_next_with_dag(
-    runtime: &BridgePbftService,
-    dag_transaction_service: &BridgeDagTransactionService,
+    runtime: &BridgeApp,
+    dag_transaction_service: &BridgeApp,
 ) -> Result<PbftManagerProposalSessionStep> {
     Ok(runtime
         .0
-        .proposal_session_next_with_dag(&dag_transaction_service.root)?
+        .proposal_session_next_with_dag(&dag_transaction_service.1)?
         .map(Into::into)
         .unwrap_or_else(crate::pbft_manager::proposal_session_not_started_step))
 }
 
-impl BridgeDagTransactionService {
+impl BridgeApp {
     /// Composes ordinary validation across the opaque PBFT and DAG roots.
     /// Immutable candidate facts produce one terminal plan; storage and lock
     /// failures propagate without exposing either root or publishing partial state.
     pub(crate) fn validate_pbft_block(
         &self,
-        runtime: &BridgePbftService,
+        runtime: &BridgeApp,
         final_chain: &BridgeFinalChain,
         candidate: rustaxa_consensus::pbft_service::PbftBlockValidationCandidate,
     ) -> Result<rustaxa_consensus::pbft_manager::PbftManagerBlockValidationPlan> {
         runtime
             .0
-            .validate_pbft_block_composed(&final_chain.0, &self.root, candidate)
+            .validate_pbft_block_composed(&final_chain.0, &self.1, candidate)
     }
 
     /// Runs complete proposed-block admission without exposing either native root.
     pub(crate) fn admit_proposed_block(
         &self,
-        runtime: &BridgePbftService,
+        runtime: &BridgeApp,
         final_chain: &BridgeFinalChain,
         request: rustaxa_consensus::pbft_service::PbftProposedBlockAdmissionRequest,
     ) -> Result<rustaxa_consensus::pbft_service::PbftProposedBlockAdmissionResult> {
         runtime
             .0
-            .admit_proposed_block(&final_chain.0, &self.root, request)
+            .admit_proposed_block(&final_chain.0, &self.1, request)
     }
 
     /// Runs complete local proposal validation and ranking without exposing
     /// either native root or materializing a consensus object in the bridge.
     pub(crate) fn select_local_proposal_candidate(
         &self,
-        runtime: &BridgePbftService,
+        runtime: &BridgeApp,
         final_chain: &BridgeFinalChain,
         request: rustaxa_consensus::pbft_service::PbftLocalProposalSelectionRequest,
     ) -> Result<rustaxa_consensus::pbft_service::PbftLocalProposalSelectionResult> {
         runtime
             .0
-            .select_local_proposal_candidate(&final_chain.0, &self.root, request)
+            .select_local_proposal_candidate(&final_chain.0, &self.1, request)
     }
 
     /// Runs authoritative proposal-vote leader selection entirely inside the
     /// native PBFT/FinalChain/DAG roots, returning only the selected payloads.
     pub(crate) fn select_leader_composed(
         &self,
-        runtime: &BridgePbftService,
+        runtime: &BridgeApp,
         final_chain: &BridgeFinalChain,
         request: rustaxa_consensus::pbft_leader_selection::PbftComposedLeaderSelectionRequest,
     ) -> Result<rustaxa_consensus::pbft_leader_selection::PbftLeaderSelectionResult> {
         runtime
             .0
-            .select_leader_composed(&final_chain.0, &self.root, request)
+            .select_leader_composed(&final_chain.0, &self.1, request)
     }
 
     /// Composes exact PBFT sync transaction admission with the private native
@@ -188,13 +194,13 @@ impl BridgeDagTransactionService {
     /// guard; storage/account errors become an exact native terminal step.
     pub(crate) fn validate_pbft_sync_admission_transactions(
         &self,
-        runtime: &BridgePbftService,
+        runtime: &BridgeApp,
         final_chain: &BridgeFinalChain,
         identities: Vec<rustaxa_consensus::period_data_queue::PeriodDataQueueTransactionIdentity>,
     ) -> Option<rustaxa_consensus::pbft_sync::PbftSyncAdmissionSessionStep> {
         runtime
             .0
-            .validate_pbft_sync_admission_transactions(&self.root, &final_chain.0, identities)
+            .validate_pbft_sync_admission_transactions(&self.1, &final_chain.0, identities)
     }
 
     /// Starts or resumes PBFT finalization against the privately owned DAG root.
@@ -206,10 +212,10 @@ impl BridgeDagTransactionService {
     /// publishing a partial executor boundary.
     pub(crate) fn start_finalization_executor(
         &self,
-        runtime: &BridgePbftService,
+        runtime: &BridgeApp,
         request: PbftFinalizationExecutorStartRequest,
     ) -> anyhow::Result<PbftFinalizationExecutorBoundary> {
-        runtime.0.start_finalization_executor(&self.root, request)
+        runtime.0.start_finalization_executor(&self.1, request)
     }
 
     /// Advances one cursor-bound PBFT finalization action against private state.
@@ -222,7 +228,7 @@ impl BridgeDagTransactionService {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_finalization_action(
         &self,
-        runtime: &BridgePbftService,
+        runtime: &BridgeApp,
         cursor: u32,
         action: u8,
         last_block: u64,
@@ -231,7 +237,7 @@ impl BridgeDagTransactionService {
         account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
     ) -> anyhow::Result<PbftFinalizationExecutorBoundary> {
         runtime.0.advance_finalization_action(
-            &self.root,
+            &self.1,
             cursor,
             action,
             last_block,
@@ -242,12 +248,9 @@ impl BridgeDagTransactionService {
     }
 }
 
-/// Converts CXX configuration and constructs the native application root.
-///
-/// All restoration, shared storage ownership, error ordering, and publication
-/// are owned by [`DagTransactionService`]. This wrapper is returned only for the
-/// remaining named C++ DAG, transaction, sortition, gas, and PBFT clients.
-pub fn create_dag_transaction_service_from_storage(
+/// Converts complete CXX bootstrap configuration and restores one native root.
+/// Errors publish no handle; all sibling services share `storage`.
+pub fn create_consensus_application_from_storage(
     storage: &BridgeStorage,
     genesis: &[u8; 32],
     dag_expiry_limit: u32,
@@ -256,27 +259,32 @@ pub fn create_dag_transaction_service_from_storage(
     transaction_queue_config: TransactionQueueConfig,
     gas_pricer_config: GasPricerConfig,
     proposal_dag_gas_limit: u64,
-) -> Result<Box<BridgeDagTransactionService>> {
-    let root = DagTransactionService::restore(
+    pbft_config: PbftServiceConfig,
+) -> Result<Box<BridgeApp>> {
+    let root = ConsensusApplication::restore(
         storage.0.clone(),
-        DagTransactionServiceConfig {
-            transaction: TransactionServiceConfig {
-                queue_max_size: transaction_queue_config.max_size,
-                gas_pricer_config: domain_gas_pricer_config(gas_pricer_config),
-                proposal_dag_gas_limit,
+        ConsensusApplicationConfig {
+            dag_transaction: DagTransactionServiceConfig {
+                transaction: TransactionServiceConfig {
+                    queue_max_size: transaction_queue_config.max_size,
+                    gas_pricer_config: domain_gas_pricer_config(gas_pricer_config),
+                    proposal_dag_gas_limit,
+                },
+                dag: DagServiceConfig {
+                    genesis_hash: H256::from(*genesis),
+                    dag_expiry_limit,
+                    max_levels_per_period,
+                },
+                sortition: sortition_config.into(),
             },
-            dag: DagServiceConfig {
-                genesis_hash: H256::from(*genesis),
-                dag_expiry_limit,
-                max_levels_per_period,
-            },
-            sortition: sortition_config.into(),
+            pbft: pbft_service_config_from_ffi(pbft_config)?,
         },
     )?;
-    Ok(Box::new(BridgeDagTransactionService { root }))
+    let dag_root = root.dag_transaction_arc_for_bridge();
+    Ok(Box::new(BridgeConsensusApplication(root, dag_root)))
 }
 
-impl BridgeDagTransactionService {
+impl BridgeApp {
     pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
         &self,
         fact: TransactionManagerValidatedInsertRuntimeFact,
@@ -284,7 +292,7 @@ impl BridgeDagTransactionService {
         input: TransactionQueueInsertInput,
     ) -> Result<TransactionManagerAdmissionCommandReport> {
         Ok(crate::transaction_manager::service_admission_to_bridge(
-            self.root.transaction_execute_admission(
+            self.1.transaction_execute_admission(
                 bridge_to_service_validated_admission_fact(fact),
                 bridge_to_service_final_chain_admission_fact(final_chain_fact),
                 bridge_to_service_queue_entry(&input),
@@ -300,7 +308,7 @@ impl BridgeDagTransactionService {
         input: TransactionQueueInsertInput,
     ) -> Result<TransactionManagerPublicAdmissionCommandReport> {
         Ok(service_public_admission_to_bridge(
-            self.root.transaction_execute_public_admission(
+            self.1.transaction_execute_public_admission(
                 consensus_verify_transaction_fact_from_ffi_fact(verify_fact),
                 bridge_to_service_validated_admission_fact(admission_fact),
                 bridge_to_service_final_chain_admission_fact(final_chain_fact),
@@ -310,7 +318,7 @@ impl BridgeDagTransactionService {
     }
 
     pub fn transaction_manager_runtime_gas_price_update(&self, gas_prices: Vec<GasPricerGasPrice>) {
-        self.root
+        self.1
             .transaction_update_gas_prices(
                 gas_prices
                     .into_iter()
@@ -333,7 +341,7 @@ impl BridgeDagTransactionService {
         shard_period_interval: u64,
     ) -> Result<TransactionPackPreparedPlan> {
         Ok(service_pack_prepared_to_bridge(
-            self.root.transaction_prepare_compatibility_pack(
+            self.1.transaction_prepare_compatibility_pack(
                 TransactionServiceCompatibilityPackRequest {
                     weight_limit,
                     min_transaction_gas,
@@ -353,7 +361,7 @@ impl BridgeDagTransactionService {
         inputs: Vec<TransactionPackSessionEstimateInput>,
     ) -> Result<TransactionPackSessionStep> {
         Ok(service_pack_finalized_to_bridge(
-            self.root.transaction_finalize_compatibility_pack(
+            self.1.transaction_finalize_compatibility_pack(
                 inputs
                     .into_iter()
                     .map(|input| TransactionServicePackEstimate {
@@ -368,7 +376,7 @@ impl BridgeDagTransactionService {
     }
 
     pub fn transaction_manager_runtime_pack_abort(&self) -> bool {
-        match self.root.transaction_abort_compatibility_pack() {
+        match self.1.transaction_abort_compatibility_pack() {
             Ok(aborted) => aborted,
             Err(error)
                 if error
@@ -385,7 +393,7 @@ impl BridgeDagTransactionService {
         &self,
         result: TransactionManagerGasEstimationResult,
     ) -> Result<bool> {
-        self.root
+        self.1
             .transaction_store_gas_estimation(TransactionServiceGasEstimationResult {
                 hash: H256::from(result.hash),
                 proposal_period: result.proposal_period,
@@ -399,7 +407,7 @@ impl BridgeDagTransactionService {
         period: u64,
         payloads: Vec<TransactionManagerSidecarInsertInput>,
     ) -> Result<()> {
-        self.root.transaction_initialize_recently_finalized(
+        self.1.transaction_initialize_recently_finalized(
             period,
             payloads
                 .into_iter()
@@ -415,7 +423,7 @@ impl BridgeDagTransactionService {
         &self,
         requests: Vec<TransactionManagerSidecarLookupRequest>,
     ) -> Result<u64> {
-        self.root.transaction_remove_non_finalized(
+        self.1.transaction_remove_non_finalized(
             requests
                 .into_iter()
                 .map(|request| H256::from(request.hash))
@@ -427,7 +435,7 @@ impl BridgeDagTransactionService {
         &self,
         block_number: u64,
     ) -> Vec<TransactionQueueHash> {
-        self.root
+        self.1
             .transaction_queue_block_finalized(block_number)
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
             .into_iter()
@@ -436,7 +444,7 @@ impl BridgeDagTransactionService {
     }
 
     pub fn transaction_manager_runtime_gas_price_bid(&self) -> [u8; 32] {
-        self.root
+        self.1
             .transaction_gas_price_bid()
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
     }
@@ -446,13 +454,13 @@ impl BridgeDagTransactionService {
         fact: TransactionManagerGasEstimationFact,
     ) -> Result<TransactionManagerGasEstimationPlan> {
         Ok(service_to_bridge_gas_estimation_plan(
-            self.root
+            self.1
                 .transaction_plan_gas_estimation(bridge_to_service_gas_estimation_request(fact))?,
         ))
     }
 
     pub fn transaction_manager_runtime_transaction_count(&self) -> u64 {
-        self.root
+        self.1
             .transaction_count()
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
     }
@@ -461,11 +469,11 @@ impl BridgeDagTransactionService {
         &self,
         hash: &[u8; 32],
     ) -> Result<bool> {
-        self.root.transaction_is_known(*hash)
+        self.1.transaction_is_known(*hash)
     }
 
     pub fn transaction_manager_runtime_non_finalized_size(&self) -> usize {
-        self.root
+        self.1
             .transaction_non_finalized_size()
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
     }
@@ -475,7 +483,7 @@ impl BridgeDagTransactionService {
         requests: Vec<TransactionManagerTransactionViewRequest>,
     ) -> Result<Vec<TransactionManagerTransactionView>> {
         Ok(self
-            .root
+            .1
             .transaction_queue_views(bridge_to_service_transaction_view_requests(requests))?
             .into_iter()
             .map(service_to_bridge_transaction_view)
@@ -486,14 +494,14 @@ impl BridgeDagTransactionService {
         &self,
     ) -> Vec<TransactionQueueTransactionGroup> {
         service_transaction_groups_to_bridge(
-            self.root
+            self.1
                 .transaction_queue_groups()
                 .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED"),
         )
     }
 
     pub fn transaction_manager_runtime_queue_size(&self) -> usize {
-        self.root
+        self.1
             .transaction_queue_size()
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
     }
@@ -501,7 +509,7 @@ impl BridgeDagTransactionService {
     pub fn transaction_manager_runtime_queue_proposable_accounts(
         &self,
     ) -> Vec<TransactionQueueProposableAccountFact> {
-        self.root
+        self.1
             .transaction_queue_proposable_accounts()
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
             .into_iter()
@@ -510,13 +518,13 @@ impl BridgeDagTransactionService {
     }
 
     pub fn transaction_manager_runtime_queue_transactions_dropped(&self) -> bool {
-        self.root
+        self.1
             .transaction_queue_dropped()
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
     }
 
     pub fn transaction_manager_runtime_queue_non_proposable_over_limit(&self) -> bool {
-        self.root
+        self.1
             .transaction_queue_non_proposable_over_limit()
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
     }
@@ -525,7 +533,7 @@ impl BridgeDagTransactionService {
         &self,
         limit: u64,
     ) -> [u8; 32] {
-        self.root
+        self.1
             .transaction_queue_min_gas_price(limit)
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
     }
@@ -535,7 +543,7 @@ impl BridgeDagTransactionService {
         requests: Vec<TransactionManagerTransactionViewRequest>,
     ) -> Result<Vec<TransactionManagerTransactionView>> {
         Ok(self
-            .root
+            .1
             .transaction_non_finalized_views(bridge_to_service_transaction_view_requests(requests))?
             .into_iter()
             .map(service_to_bridge_transaction_view)
@@ -548,7 +556,7 @@ impl BridgeDagTransactionService {
         max_count: u64,
     ) -> Result<TransactionManagerTransactionViewPlan> {
         Ok(service_to_bridge_transaction_view_plan(
-            self.root.transaction_views(
+            self.1.transaction_views(
                 bridge_to_service_transaction_view_requests(requests),
                 max_count,
             )?,
@@ -563,7 +571,7 @@ impl BridgeDagTransactionService {
         max_count: u64,
     ) -> Result<TransactionManagerTransactionViewPlan> {
         Ok(service_to_bridge_transaction_view_plan(
-            self.root.proposal_transaction_views(
+            self.1.proposal_transaction_views(
                 proposal_period,
                 bridge_to_service_transaction_view_requests(requests),
                 bridge_to_service_account_nonce_facts(account_nonce_facts),
@@ -613,7 +621,7 @@ impl BridgeDagTransactionService {
         new_period: u64,
         finalized_order: Vec<DagHash>,
     ) -> Result<DagManagerFinalizationApplyPayload> {
-        let report = self.root.apply_finalized_order(
+        let report = self.1.apply_finalized_order(
             H256::from(new_anchor),
             new_period,
             finalized_order
@@ -638,7 +646,7 @@ impl BridgeDagTransactionService {
         pivot: &[u8; 32],
         tips: Vec<DagHash>,
     ) -> Result<DagPivotTipsValidation> {
-        let validation = self.root.dag_validate_references(
+        let validation = self.1.dag_validate_references(
             block_level,
             H256::from(*pivot),
             tips.into_iter().map(|hash| H256::from(hash.hash)).collect(),
@@ -655,7 +663,7 @@ impl BridgeDagTransactionService {
         &self,
         known_hashes: Vec<DagHash>,
     ) -> Result<DagManagerNonFinalizedSyncPayload> {
-        let payload = self.root.dag_non_finalized_sync(
+        let payload = self.1.dag_non_finalized_sync(
             known_hashes
                 .into_iter()
                 .map(|hash| H256::from(hash.hash))
@@ -665,7 +673,7 @@ impl BridgeDagTransactionService {
     }
 
     pub fn dag_manager_runtime_compute_order(&self, anchor: &[u8; 32]) -> Result<DagOrder> {
-        match self.root.dag_order(H256::from(*anchor))? {
+        match self.1.dag_order(H256::from(*anchor))? {
             Some(hashes) => Ok(DagOrder {
                 found: true,
                 hashes: to_dag_hashes(hashes),
@@ -678,7 +686,7 @@ impl BridgeDagTransactionService {
     }
 
     pub fn dag_manager_runtime_frontier(&self) -> Result<DagFrontier> {
-        let frontier = self.root.dag_frontier()?;
+        let frontier = self.1.dag_frontier()?;
         Ok(DagFrontier {
             pivot: frontier.pivot.into(),
             tips: to_dag_hashes(frontier.tips),
@@ -687,18 +695,18 @@ impl BridgeDagTransactionService {
 
     pub fn dag_manager_runtime_ghost_path(&self, source: &[u8; 32]) -> Result<Vec<DagHash>> {
         let path = self
-            .root
+            .1
             .dag_ghost_path(DagGhostPathRoot::Block(H256::from(*source)))?;
         Ok(to_dag_hashes(path))
     }
 
     pub fn dag_manager_runtime_anchor_ghost_path(&self) -> Result<Vec<DagHash>> {
-        let path = self.root.dag_ghost_path(DagGhostPathRoot::CurrentAnchor)?;
+        let path = self.1.dag_ghost_path(DagGhostPathRoot::CurrentAnchor)?;
         Ok(to_dag_hashes(path))
     }
 
     pub fn dag_manager_runtime_graphviz_dot(&self, pivot_tree: bool) -> Result<String> {
-        self.root.dag_graphviz(if pivot_tree {
+        self.1.dag_graphviz(if pivot_tree {
             DagGraphView::PivotTree
         } else {
             DagGraphView::Complete
@@ -706,25 +714,25 @@ impl BridgeDagTransactionService {
     }
 
     pub fn dag_manager_runtime_vertex_count(&self) -> Result<usize> {
-        usize::try_from(self.root.dag_runtime_status()?.vertex_count)
+        usize::try_from(self.1.dag_runtime_status()?.vertex_count)
             .context("DAG_RUNTIME_VERTEX_COUNT_PLATFORM_OVERFLOW")
     }
 
     pub fn dag_manager_runtime_edge_count(&self) -> Result<usize> {
-        usize::try_from(self.root.dag_runtime_status()?.edge_count)
+        usize::try_from(self.1.dag_runtime_status()?.edge_count)
             .context("DAG_RUNTIME_EDGE_COUNT_PLATFORM_OVERFLOW")
     }
 
     pub fn dag_manager_runtime_max_level(&self) -> Result<u64> {
-        Ok(self.root.dag_runtime_status()?.max_level)
+        Ok(self.1.dag_runtime_status()?.max_level)
     }
 
     pub fn dag_manager_runtime_latest_period(&self) -> Result<u64> {
-        Ok(self.root.dag_runtime_status()?.period)
+        Ok(self.1.dag_runtime_status()?.period)
     }
 
     pub fn dag_manager_runtime_anchors(&self) -> Result<DagManagerAnchors> {
-        let anchors = self.root.dag_runtime_status()?.anchors;
+        let anchors = self.1.dag_runtime_status()?.anchors;
         Ok(DagManagerAnchors {
             old_anchor: anchors.old.into(),
             anchor: anchors.current.into(),
@@ -732,12 +740,12 @@ impl BridgeDagTransactionService {
     }
 
     pub fn dag_manager_runtime_dag_expiry_level(&self) -> Result<u64> {
-        Ok(self.root.dag_runtime_status()?.expiry_level)
+        Ok(self.1.dag_runtime_status()?.expiry_level)
     }
 
     pub fn dag_manager_runtime_non_finalized_blocks(&self) -> Result<Vec<DagLevelHashes>> {
         let blocks = self
-            .root
+            .1
             .dag_non_finalized_index()?
             .levels
             .into_iter()
@@ -752,7 +760,7 @@ impl BridgeDagTransactionService {
     pub fn dag_manager_runtime_non_finalized_blocks_size(
         &self,
     ) -> Result<DagManagerNonFinalizedSize> {
-        let summary = self.root.dag_non_finalized_summary()?;
+        let summary = self.1.dag_non_finalized_summary()?;
         Ok(DagManagerNonFinalizedSize {
             levels: summary.levels,
             blocks: summary.blocks,
@@ -760,11 +768,11 @@ impl BridgeDagTransactionService {
     }
 
     pub fn dag_manager_runtime_is_block_known(&self, hash: &[u8; 32]) -> Result<bool> {
-        self.root.dag_is_block_known(H256::from(*hash))
+        self.1.dag_is_block_known(H256::from(*hash))
     }
 
     pub fn dag_manager_runtime_load_block(&self, hash: &[u8; 32]) -> Result<BlockRlpLookup> {
-        let lookup = self.root.dag_load_block(H256::from(*hash))?;
+        let lookup = self.1.dag_load_block(H256::from(*hash))?;
         Ok(BlockRlpLookup {
             found: lookup.found,
             block_rlp: lookup.block_rlp,
@@ -775,7 +783,7 @@ impl BridgeDagTransactionService {
         &self,
         input: DagProposerStorageTipSelectionInput,
     ) -> Result<DagProposerTipSelectionPlan> {
-        let plan = self.root.dag_select_proposer_tips(
+        let plan = self.1.dag_select_proposer_tips(
             rustaxa_consensus::dag::DagProposerStorageTipSelectionInput {
                 frontier_tips: input
                     .frontier_tips
@@ -797,7 +805,7 @@ impl BridgeDagTransactionService {
     }
 
     pub fn dag_manager_runtime_period_block_hash(&self, period: u64) -> Result<HashLookup> {
-        let lookup = self.root.dag_period_block_hash(period)?;
+        let lookup = self.1.dag_period_block_hash(period)?;
         Ok(HashLookup {
             found: lookup.found,
             hash: lookup.hash.into(),
@@ -805,7 +813,7 @@ impl BridgeDagTransactionService {
     }
 
     pub fn dag_manager_runtime_persistence_counters(&self) -> Result<DagPersistenceCounters> {
-        let counters = self.root.dag_persistence_counters()?;
+        let counters = self.1.dag_persistence_counters()?;
         Ok(DagPersistenceCounters {
             dag_blocks: counters.dag_blocks,
             dag_edges: counters.dag_edges,
@@ -818,23 +826,21 @@ impl BridgeDagTransactionService {
         &self,
         input: DagAddBlockPrepareInput,
     ) -> Result<DagAddBlockPreparation> {
-        let preparation = self
-            .root
-            .prepare_add_block(NativeDagAddBlockPrepareRequest {
-                expected_hash: H256::from(input.expected_block_hash),
-                block_rlp: input.block_rlp,
-                validate_hash: input.validate_block_hash,
-                save: input.save,
-                proposed: input.proposed,
-                transactions: input
-                    .transactions
-                    .into_iter()
-                    .map(|payload| NativeDagAddBlockTransactionPayload {
-                        hash: H256::from(payload.hash),
-                        transaction_rlp: payload.trx_rlp,
-                    })
-                    .collect(),
-            })?;
+        let preparation = self.1.prepare_add_block(NativeDagAddBlockPrepareRequest {
+            expected_hash: H256::from(input.expected_block_hash),
+            block_rlp: input.block_rlp,
+            validate_hash: input.validate_block_hash,
+            save: input.save,
+            proposed: input.proposed,
+            transactions: input
+                .transactions
+                .into_iter()
+                .map(|payload| NativeDagAddBlockTransactionPayload {
+                    hash: H256::from(payload.hash),
+                    transaction_rlp: payload.trx_rlp,
+                })
+                .collect(),
+        })?;
         Ok(DagAddBlockPreparation {
             cursor_id: preparation.cursor_id,
             block_level: preparation.block_level,
@@ -863,7 +869,7 @@ impl BridgeDagTransactionService {
         &self,
         input: DagAddBlockCompletionInput,
     ) -> Result<DagAddBlockCommitReport> {
-        let report = self.root.complete_add_block(NativeDagAddBlockCompletion {
+        let report = self.1.complete_add_block(NativeDagAddBlockCompletion {
             cursor_id: input.cursor_id,
             account_nonce_facts: input
                 .account_nonce_facts
@@ -894,7 +900,7 @@ impl BridgeDagTransactionService {
     /// Idempotently aborts the matching add-block cursor without affecting a
     /// newer or unrelated preparation.
     pub fn dag_transaction_service_abort_add_block(&self, cursor_id: u64) -> Result<bool> {
-        self.root.abort_add_block(cursor_id)
+        self.1.abort_add_block(cursor_id)
     }
 }
 
@@ -906,10 +912,10 @@ fn to_dag_hashes(hashes: Vec<H256>) -> Vec<DagHash> {
 }
 
 pub fn service_save_transactions_from_dag_block_command_report_with_runtime(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<TransactionManagerDagSaveCommandReport> {
-    let outcome = service.root.transaction_save_dag_transactions(
+    let outcome = service.1.transaction_save_dag_transactions(
         facts
             .into_iter()
             .map(|fact| DagTransactionSaveInput {
@@ -933,7 +939,7 @@ pub fn service_save_transactions_from_dag_block_command_report_with_runtime(
 /// plus external-EVM account nonce facts; Rust derives hashes and owns all
 /// mutation. No per-transaction fact or mutation report crosses CXX.
 pub fn service_update_finalized_transactions_status_from_transaction_list(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     period: u64,
     retention_window: u64,
     account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
@@ -941,7 +947,7 @@ pub fn service_update_finalized_transactions_status_from_transaction_list(
 ) -> Result<()> {
     let facts: Vec<TransactionServiceFinalizedStatusFact> =
         finalized_status_facts_from_transaction_list_rlp(&transaction_list_rlp)?;
-    service.root.transaction_update_finalized_status(
+    service.1.transaction_update_finalized_status(
         period,
         retention_window,
         bridge_to_service_account_nonce_facts(account_nonce_facts),
@@ -951,12 +957,12 @@ pub fn service_update_finalized_transactions_status_from_transaction_list(
 }
 
 pub fn service_transaction_manager_filter_non_finalized_with_runtime(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     requests: Vec<TransactionManagerSidecarLookupRequest>,
 ) -> Result<FinalizedTransactionFilterPlan> {
     Ok(FinalizedTransactionFilterPlan {
         not_finalized: service
-            .root
+            .1
             .transaction_filter_non_finalized(
                 requests
                     .into_iter()
@@ -977,10 +983,10 @@ pub fn service_transaction_manager_filter_non_finalized_with_runtime(
 }
 
 pub fn service_transaction_manager_verify_not_finalized_with_runtime(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
 ) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
-    let outcome = service.root.transaction_verify_not_finalized(
+    let outcome = service.1.transaction_verify_not_finalized(
         facts
             .into_iter()
             .map(|fact| TransactionServiceVerifyNotFinalizedFact {
@@ -1000,9 +1006,9 @@ pub fn service_transaction_manager_verify_not_finalized_with_runtime(
 }
 
 pub fn service_transaction_manager_recover_nonfinalized_with_runtime(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
 ) -> Result<()> {
-    service.root.transaction_recover_non_finalized().map(|_| ())
+    service.1.transaction_recover_non_finalized().map(|_| ())
 }
 
 /// Prepares one DAG-owned transaction pack without exposing private pack configuration.
@@ -1012,7 +1018,7 @@ pub fn service_transaction_manager_recover_nonfinalized_with_runtime(
 /// both owner-bound cursors, or directly advances the DAG cursor when declared gas/cache facts complete packing. No lock
 /// guard survives this call, so C++ may perform EVM callbacks after it returns. Any failure aborts both matching cursors.
 pub fn dag_transaction_service_proposer_pack_prepare(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
     network_throttled: bool,
     min_transaction_gas: u64,
@@ -1020,7 +1026,7 @@ pub fn dag_transaction_service_proposer_pack_prepare(
     last_block_number: u64,
 ) -> Result<DagProposerSessionStep> {
     service
-        .root
+        .1
         .prepare_proposer_pack(DagProposerPackPrepareRequest {
             session_id,
             network_throttled,
@@ -1036,12 +1042,12 @@ pub fn dag_transaction_service_proposer_pack_prepare(
 /// The bridge converts the plain estimator report once. Native code revalidates
 /// and advances both owner-bound cursors under DAG-then-transaction locking.
 pub fn dag_transaction_service_proposer_pack_finalize(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
     estimates: Vec<TransactionPackSessionEstimateInput>,
 ) -> Result<DagProposerSessionStep> {
     service
-        .root
+        .1
         .finalize_proposer_pack(
             session_id,
             estimates
@@ -1059,10 +1065,10 @@ pub fn dag_transaction_service_proposer_pack_finalize(
 
 /// Idempotently aborts the matching native transaction and DAG proposer cursors.
 pub fn dag_transaction_service_proposer_pack_abort(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
 ) -> Result<bool> {
-    service.root.abort_proposer_pack(session_id)
+    service.1.abort_proposer_pack(session_id)
 }
 
 fn proposer_pack_step_to_bridge(step: DagProposerPackStep) -> DagProposerSessionStep {
@@ -1242,11 +1248,11 @@ fn service_pack_finalized_to_bridge(
 }
 
 pub fn service_dag_manager_runtime_begin_verify_block_session(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     input: DagVerifyBlockSessionInput,
 ) -> Result<()> {
     service
-        .root
+        .1
         .begin_verify_block_session(NativeDagVerifyBlockSessionInput {
             block_hash: input.block_hash,
             block_level: input.block_level,
@@ -1271,10 +1277,10 @@ pub fn service_dag_manager_runtime_begin_verify_block_session(
 }
 
 pub fn service_dag_manager_runtime_verify_block_session_next(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
 ) -> Result<DagVerifyBlockSessionStep> {
     service
-        .root
+        .1
         .next_verify_block_session()
         .map(native_verify_block_step_to_bridge)
 }
@@ -1286,9 +1292,9 @@ pub fn service_dag_manager_runtime_verify_block_session_next(
 /// later completion to this exact session after C++ has materialized and
 /// hash-validated every returned payload.
 pub fn service_dag_manager_runtime_verify_block_session_prepare_transactions(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
 ) -> Result<DagVerifyBlockTransactionPreparation> {
-    let plan = service.root.prepare_verify_block_transactions()?;
+    let plan = service.1.prepare_verify_block_transactions()?;
     Ok(DagVerifyBlockTransactionPreparation {
         cursor_id: plan.cursor_id,
         proposal_period: plan.proposal_period,
@@ -1307,11 +1313,11 @@ pub fn service_dag_manager_runtime_verify_block_session_prepare_transactions(
 /// proposal-period filtering completes before the DAG action advances. Any
 /// identity or lookup error leaves the session unchanged.
 pub fn service_dag_manager_runtime_verify_block_session_complete_transactions(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     report: DagVerifyBlockTransactionCompletionReport,
 ) -> Result<DagVerifyBlockSessionStep> {
     service
-        .root
+        .1
         .complete_verify_block_transactions(NativeDagVerifyBlockTransactionCompletionReport {
             cursor_id: report.cursor_id,
             proposal_period: report.proposal_period,
@@ -1362,21 +1368,21 @@ fn native_verify_block_step_to_bridge(
 /// every service lock released, and the unchanged cursor is revalidated before
 /// facts advance it. Infrastructure failures remove only the matching cursor.
 pub fn service_dag_manager_runtime_verify_block_session_report_authorization(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     final_chain: &BridgeFinalChain,
 ) -> Result<DagVerifyBlockSessionStep> {
     service
-        .root
+        .1
         .report_verify_block_authorization_with_final_chain(&final_chain.0)
         .map(native_verify_block_step_to_bridge)
 }
 
 pub fn service_dag_manager_runtime_verify_block_session_report_gas(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     report: DagVerifyBlockGasReport,
 ) -> Result<DagVerifyBlockSessionStep> {
     service
-        .root
+        .1
         .report_verify_block_gas(NativeDagVerifyBlockGasReport {
             block_gas_estimation: report.block_gas_estimation,
             estimated_transactions_weight: report.estimated_transactions_weight,
@@ -1389,11 +1395,11 @@ pub fn service_dag_manager_runtime_verify_block_session_report_gas(
 /// Executes cursor-bound DAG VDF verification across isolated DAG and
 /// sortition lock intervals.
 pub fn service_dag_transaction_service_verify_block_session_vdf(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     request: DagVerifyBlockVdfRequest,
 ) -> Result<DagVerifyBlockSessionStep> {
     service
-        .root
+        .1
         .verify_block_vdf(NativeDagVerifyBlockVdfRequest {
             cursor_id: request.cursor_id,
             block_rlp: request.block_rlp,
@@ -1409,11 +1415,11 @@ pub fn service_dag_transaction_service_verify_block_session_vdf(
 /// sidecar counts are captured with session creation and retained by the DAG
 /// cursor for threshold and skip decisions.
 pub fn service_dag_manager_runtime_begin_proposer_session(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     input: DagProposerSessionBeginInput,
 ) -> Result<u64> {
     service
-        .root
+        .1
         .begin_proposer_session(NativeDagProposerSessionBeginInput {
             max_non_finalized_transactions: input.max_non_finalized_transactions,
             dag_expiry_level_limit: input.dag_expiry_level_limit,
@@ -1435,18 +1441,18 @@ pub fn service_dag_manager_runtime_begin_proposer_session(
 }
 
 pub fn service_dag_manager_runtime_abort_proposer_session(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
 ) -> Result<bool> {
-    service.root.abort_proposer_session(session_id)
+    service.1.abort_proposer_session(session_id)
 }
 
 pub fn service_dag_manager_runtime_proposer_session_next(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
 ) -> Result<DagProposerSessionStep> {
     service
-        .root
+        .1
         .next_proposer_session(session_id)
         .map(proposer_session_step_to_bridge)
 }
@@ -1460,33 +1466,33 @@ pub fn service_dag_manager_runtime_proposer_session_next(
 /// `DAG_PROPOSER_SESSION_SORTITION_PARAMS_STALE_RETRY` without advancement;
 /// operational lookup failures remove only the exact snapshotted session.
 pub fn service_dag_manager_runtime_proposer_session_report_final_chain_facts(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
     final_chain: &BridgeFinalChain,
 ) -> Result<DagProposerSessionStep> {
     service
-        .root
+        .1
         .report_proposer_final_chain_facts_with_final_chain(session_id, &final_chain.0)
         .map(proposer_session_step_to_bridge)
 }
 
 pub fn service_dag_manager_runtime_proposer_session_poll_vdf(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
 ) -> Result<DagProposerSessionStep> {
     service
-        .root
+        .1
         .poll_proposer_vdf(session_id)
         .map(proposer_session_step_to_bridge)
 }
 
 pub fn service_dag_manager_runtime_proposer_session_report_vdf_proof(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
     report: DagProposerVdfProofReport,
 ) -> Result<DagProposerSessionStep> {
     service
-        .root
+        .1
         .report_proposer_vdf_proof(
             session_id,
             NativeDagProposerVdfProofReport {
@@ -1498,22 +1504,22 @@ pub fn service_dag_manager_runtime_proposer_session_report_vdf_proof(
 }
 
 pub fn service_dag_manager_runtime_proposer_session_resume_stale_proof(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
 ) -> Result<DagProposerSessionStep> {
     service
-        .root
+        .1
         .resume_proposer_stale_proof(session_id)
         .map(proposer_session_step_to_bridge)
 }
 
 pub fn service_dag_manager_runtime_proposer_session_report_signing(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
     report: DagProposerSigningReport,
 ) -> Result<DagProposerSessionStep> {
     service
-        .root
+        .1
         .report_proposer_signing(
             session_id,
             NativeDagProposerSigningReport {
@@ -1524,12 +1530,12 @@ pub fn service_dag_manager_runtime_proposer_session_report_signing(
 }
 
 pub fn service_dag_manager_runtime_proposer_session_report_add_block(
-    service: &BridgeDagTransactionService,
+    service: &BridgeApp,
     session_id: u64,
     report: DagProposerAddBlockReport,
 ) -> Result<DagProposerSessionStep> {
     service
-        .root
+        .1
         .report_proposer_add_block(
             session_id,
             NativeDagProposerAddBlockReport {

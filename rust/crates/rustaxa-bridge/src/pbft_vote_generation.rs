@@ -18,7 +18,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftProposerSortitionResult as FfiPbftProposerSortitionResult,
     PbftVoteGenerationInput as FfiPbftVoteGenerationInput,
 };
-use crate::ffi::{BridgeFinalChain, BridgePbftService};
+use crate::ffi::{BridgeApp, BridgeFinalChain};
 use anyhow::Result;
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::pbft_vote_generation::{
@@ -40,7 +40,7 @@ pub fn pbft_generate_signed_vote(
     Ok(generate_pbft_vote(input.try_into()?)?.into())
 }
 
-impl BridgePbftService {
+impl BridgeApp {
     /// Generates one canonical signed and weighted PBFT vote from live Rust FinalChain state.
     ///
     /// The caller supplies wallet/signing input and immutable committee configuration. The

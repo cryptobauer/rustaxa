@@ -12,11 +12,11 @@ use crate::ffi::rustaxa_ffi::{
     PillarVoteSingleAdmissionPreparePlan as FfiPillarVoteSingleAdmissionPreparePlan,
     PillarVoteSingleAdmissionWithFinalChainPlan, PillarVotesPayloadLookup,
 };
-use crate::ffi::{BridgeFinalChain, BridgePbftService};
+use crate::ffi::{BridgeApp, BridgeFinalChain};
 use anyhow::Result;
 
 #[allow(dead_code)]
-impl BridgePbftService {
+impl BridgeApp {
     pub fn pbft_service_pillar_validate_single_vote_with_final_chain(
         &self,
         final_chain: &BridgeFinalChain,

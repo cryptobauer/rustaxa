@@ -12,8 +12,13 @@
 
 namespace rustaxa {
 class BridgeConsensusNetworkApi;
-class BridgePbftService;
+class BridgeConsensusApplication;
 }  // namespace rustaxa
+
+namespace taraxa {
+class ConsensusApplication;
+using SharedConsensusApplication = std::shared_ptr<ConsensusApplication>;
+}  // namespace taraxa
 
 namespace taraxa::final_chain {
 class FinalChain;
@@ -122,16 +127,13 @@ struct PbftSyncIngressExecutor {
 /**
  * Owns the main-only Rust consensus network facade for one Network instance.
  *
- * Construction clones the network service already owned by the application
- * PBFT root and borrows that root for direct queue admission; it cannot create
- * a second protocol runtime or queue. The application must keep the supplied
- * PBFT service alive through this facade's lifetime. Destruction releases only
- * this opaque adapter. Native state access is synchronized in Rust, while
- * callers retain the lane lock across physical transport and acknowledgement.
+ * Construction retains the application root and clones its network service for effect dispatch; it cannot create a
+ * second protocol runtime or queue. Destruction releases the adapter and its shared root ownership. Native state access
+ * is synchronized in Rust, while callers retain the lane lock across physical transport and acknowledgement.
  */
 class ConsensusNetworkApi final {
  public:
-  explicit ConsensusNetworkApi(const rustaxa::BridgePbftService& service);
+  explicit ConsensusNetworkApi(SharedConsensusApplication consensus_application);
   ~ConsensusNetworkApi();
 
   ConsensusNetworkApi(const ConsensusNetworkApi&) = delete;

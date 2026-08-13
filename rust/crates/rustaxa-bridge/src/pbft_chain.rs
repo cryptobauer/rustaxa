@@ -1,14 +1,14 @@
 //! PBFT-chain bridge adapters backed by the Rust consensus and storage implementations.
 //!
 //! `PbftChain`-facing queries and storage lookups are implemented on
-//! [`BridgePbftService`]. Chain state is protected by its own read/write lock,
+//! [`BridgeApp`]. Chain state is protected by its own read/write lock,
 //! so public reads do not contend on the separately synchronized manager.
 
 use crate::ffi::rustaxa_ffi::{BlockRlpLookup as FfiBlockRlpLookup, PbftChainHeadPayload};
-use crate::ffi::BridgePbftService;
+use crate::ffi::BridgeApp;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_chain::{PbftBlockStorageLookup, PbftChainHead};
-impl BridgePbftService {
+impl BridgeApp {
     /// Returns whether storage recovery initialized the default PBFT chain head.
     pub fn pbft_chain_initialized_default(&self) -> bool {
         self.0.pbft_chain_initialized_default()

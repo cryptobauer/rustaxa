@@ -74,7 +74,7 @@ struct PillarVoteRelevancePlan {
  */
 PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus_hf_config,
                                                 const std::shared_ptr<PillarVote>& vote,
-                                                const rustaxa::BridgePbftService& service);
+                                                const rustaxa::BridgeConsensusApplication& service);
 
 /**
  * Stable logging helper for explicit reason reporting.
@@ -147,7 +147,7 @@ struct PillarVoteValidationPlan {
 PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarVote>& vote,
                                                     const rustaxa::BridgeFinalChain& final_chain,
-                                                    const rustaxa::BridgePbftService& service);
+                                                    const rustaxa::BridgeConsensusApplication& service);
 
 /**
  * Stable logging helper for explicit validation reason reporting.
@@ -208,7 +208,7 @@ class PillarChainManager {
    *   bridge failure is reported as an exception; no legacy fallback occurs.
    */
   PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> db,
-                     SharedPbftService pbft_service, std::shared_ptr<final_chain::FinalChain> final_chain,
+                     SharedConsensusApplication pbft_service, std::shared_ptr<final_chain::FinalChain> final_chain,
                      addr_t node_addr);
 
   /**
@@ -409,7 +409,7 @@ class PillarChainManager {
  private:
   const FicusHardforkConfig& kFicusHfConfig;
 
-  SharedPbftService pbft_service_;
+  SharedConsensusApplication pbft_service_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
 

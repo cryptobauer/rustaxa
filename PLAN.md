@@ -747,11 +747,10 @@ Completed closeout slices:
    Rust finalization/add/sync plans own DAG consensus decisions. The Rust-mode public facade is detached from the dead
    legacy compile scaffold: it imports no original manager header or `DagManagerOld`, and feature-on builds exclude the
    original `dag_manager.cpp`; pure-C++ builds retain the untouched original implementation.
-   App bootstrap now owns one `BridgeDagTransactionService` CXX wrapper over native `DagTransactionService`, which
-   composes `DagService`, `SortitionService`, and `TransactionService` siblings behind their Rust mutexes.
-   `TransactionManager` and `DagManager` share that root instead of
-   owning or passing separate runtime handles; full construction restores all three domains and the initial proposal-period
-   mapping before publication. Native transaction publication follows durable count and gas-history restoration.
+   App bootstrap now owns one `BridgeConsensusApplication` CXX wrapper over native `ConsensusApplication`, which
+   composes the PBFT and DAG/transaction/sortition graphs behind private Rust lock domains. `TransactionManager` and
+   `DagManager` receive that root instead of owning or passing separate runtime handles; full construction restores both
+   graphs before publication. Native transaction publication follows durable count and gas-history restoration.
    The native root owns add-block preparation, canonical transaction inspection, cursor validation, one shared
    DAG/transaction storage batch, post-commit publication, finalized-order storage cleanup, and sibling transaction
    sidecar cleanup. The service also owns the DAG-proposer transaction-pack transition: proposal/shard limits stay private, an
@@ -800,14 +799,12 @@ the same slice.
 ### Native Application Composition Boundary
 
 Rust-enabled production has one target composition: a native `ConsensusApplication` root constructed once by `App`.
-The root owns storage and restoration plus the private FinalChain, PBFT, DAG/transaction, vote, pillar, slashing,
-sortition, rewards, and consensus-network services. Existing `BridgePbftService`, `BridgeDagTransactionService`, broad
-`BridgeFinalChain`, and storage/query-family handles are migration scaffolding: they may survive only until their named
-production callers move to an application task or one of the external boundaries below. They are not supported
-application APIs and must not be recreated behind replacement C++ managers.
-The eventual bootstrap CXX surface is one opaque `BridgeConsensusApplication` created by one
-`create_consensus_application` operation. It exposes no internal-service accessors; operation-specific application,
-network, execution, and query APIs are invoked on or bound from the root without publishing its private owners.
+The first vertical checkpoint owns restoration plus the private PBFT and DAG/transaction/sortition graphs, including
+vote, pillar, slashing, and consensus-network services. FinalChain and storage bootstrap remain explicit `CRW-17` work.
+The deleted `BridgePbftService` and `BridgeDagTransactionService` handles must not be recreated behind replacement C++
+managers. The bootstrap CXX surface is one opaque `BridgeConsensusApplication` created by one
+`create_consensus_application_from_storage` operation. It exposes no internal-service accessors; operation-specific
+application and network APIs are invoked on or bound from the root without publishing its private owners.
 
 Construction and restoration are atomic publication boundaries: configuration and every required native sibling must
 restore successfully before C++ receives the application handle or any external adapter. Failure publishes no partial
@@ -1217,7 +1214,7 @@ record conflicts with those authorities, it is obsolete.
 10. Port transaction queue behavior before transaction manager orchestration. The standalone Rust-mode
    `TransactionQueue` compatibility overlay and CXX handle are retired. Native
    `rustaxa-consensus::transaction_service::TransactionService`, embedded by the application-owned
-   `BridgeDagTransactionService`, is the sole production owner of the native Rust queue, including
+   `ConsensusApplication`, is the sole production owner of the native Rust queue, including
    deterministic metadata, per-account nonce ordering,
    same-nonce replacement, non-proposer expiry, limits, gas-price thresholds, canonical payload retention,
    known-transaction cache expiry, overflow/drop observation, and finalized-account purge planning. Rust-enabled
@@ -1316,9 +1313,9 @@ record conflicts with those authorities, it is obsolete.
    runtime, and its shared mutex. The bridge temporarily borrows that native guard for cross-domain validation,
    leader-selection, finalization, and typed effect conversion but owns no verified-vote runtime state or lock. The
    CXX-free native `PbftService` now validates slashing configuration, restores every storage-backed PBFT sibling from
-   one handle, publishes only the complete root, and owns bootstrap readiness. `BridgePbftService` is a one-field CXX
-   adapter with no sibling state, storage handle,
-   mutex, or readiness flag; each native sibling owner supplies the exact durable handle for its operation. Native
+   one handle, and owns bootstrap readiness. It is private under `ConsensusApplication`; the one-field
+   `BridgeConsensusApplication` CXX adapter has no independent sibling state, storage handle, mutex, or readiness flag.
+   Each native sibling owner supplies the exact durable handle for its operation. Native
    `SlashingProofService` likewise owns the configured double-vote
    planner, bounded submitted-proof cache, and mutex; the bridge performs evidence/status conversion and C++ retains
    account/gas lookup plus transaction signing and submission execution. The C++ slashing facade also temporarily
@@ -1462,8 +1459,9 @@ record conflicts with those authorities, it is obsolete.
    received-vote RLP inspection, signed and unsigned vote hash derivation, recovered voter identity, signature and VRF
    proof checks, Rust-computed received-vote weight, the replay cache, PBFT sortition-threshold formula, Rust-owned
    `2t+1` threshold lookup/current-period cache, and local proposer-sortition screening. The threshold path now composes
-   its live Rust PBFT-chain size and exact-period FinalChain DPoS total inside `BridgePbftService`, so C++ supplies only
-   period, vote type, and committee configuration. Local proposer sortition now likewise composes identity validation,
+   its live Rust PBFT-chain size and exact-period FinalChain DPoS total inside the private `PbftService` reached through
+   `BridgeConsensusApplication`, so C++ supplies only period, vote type, and committee configuration. Local proposer
+   sortition now likewise composes identity validation,
    voter/total DPoS reads, proposer proof generation/verification, and weight calculation behind one PBFT-service call;
    VoteManager admission now also composes canonical inspection, voter/total DPoS reads, VRF-key lookup, validation,
    and transactional publication behind one Rust service call; only separate PBFT-manager consumers of the generic

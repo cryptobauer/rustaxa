@@ -54,20 +54,10 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
     MissingTip
   };
 
-  /**
-   * Preserves standalone test construction by creating a private composed service.
-   *
-   * Production `App` uses the overload below so `TransactionManager` and
-   * `DagManager` share one application-owned service.
-   */
-  explicit DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
-                      std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-                      std::shared_ptr<DbStorage> db);
-
   /** Constructs the production DAG facade over the application-owned service. */
   DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
              std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-             std::shared_ptr<DbStorage> db, SharedDagTransactionService dag_transaction_service);
+             std::shared_ptr<DbStorage> db, SharedConsensusApplication consensus_application);
   ~DagManager();
 
   DagManager(const DagManager &) = delete;
@@ -264,7 +254,7 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   mutable std::shared_mutex rust_graphs_mutex_;
   mutable std::shared_mutex dag_finalization_mutex_;
   mutable std::mutex rust_add_block_session_mutex_;
-  SharedDagTransactionService dag_transaction_service_;
+  SharedConsensusApplication dag_transaction_service_;
 };
 
 }  // namespace taraxa

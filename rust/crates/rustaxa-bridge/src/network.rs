@@ -40,7 +40,7 @@ const fn vote_ingress_context_to_domain(
 /// root, so every C++ wrapper observes the same effect IDs, dependency state,
 /// and protocol siblings. Peer transport and packet framing remain external.
 pub fn create_consensus_network_api(
-    service: &crate::ffi::BridgePbftService,
+    service: &crate::ffi::BridgeApp,
 ) -> Box<BridgeConsensusNetworkApi> {
     Box::new(BridgeConsensusNetworkApi(service.0.network_service()))
 }

@@ -1,8 +1,8 @@
 use crate::ffi::rustaxa_ffi::ProposedBlockLookup;
-use crate::ffi::BridgePbftService;
+use crate::ffi::BridgeApp;
 use ethereum_types::H256;
 
-impl BridgePbftService {
+impl BridgeApp {
     /// Publishes a proposed PBFT block through the native PBFT service.
     ///
     /// Storage is committed before live index mutation so failed writes or

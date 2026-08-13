@@ -5,7 +5,7 @@
 //! facts, runs the deterministic planner, and returns u8-coded side-effect
 //! intent flags for the PBFT manager overlay to apply.
 
-use crate::dag_transaction_service::BridgeDagTransactionService;
+use crate::dag_transaction_service::BridgeApp;
 use crate::ffi::rustaxa_ffi::{
     PbftCertVoteRlp as FfiPbftCertVoteRlp,
     PbftSyncAdmissionInitialFact as FfiPbftSyncAdmissionInitialFact,
@@ -17,7 +17,7 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueueTransactionIdentity as FfiPeriodDataQueueTransactionIdentity,
     PillarVoteRlpPayload,
 };
-use crate::ffi::{BridgeFinalChain, BridgePbftService};
+use crate::ffi::BridgeFinalChain;
 use crate::verified_votes::{
     empty_slashing_transaction_effect, slashing_transaction_effect_to_ffi,
 };
@@ -33,7 +33,7 @@ use rustaxa_consensus::pbft_sync::{
 
 /// Starts a manager-owned synced-period admission cursor and returns its first step.
 pub fn pbft_manager_runtime_begin_pbft_sync_admission(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     fact: FfiPbftSyncAdmissionInitialFact,
 ) -> FfiPbftSyncAdmissionSessionStep {
     runtime.0.begin_pbft_sync_admission(fact.into());
@@ -54,7 +54,7 @@ pub fn pbft_manager_runtime_begin_pbft_sync_admission(
 /// stable not-started contract result. FinalChain infrastructure failures abort
 /// only the captured native request and propagate to the C++ executor.
 pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     final_chain: &BridgeFinalChain,
     cursor: u32,
     check_code: u8,
@@ -105,7 +105,7 @@ pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
 /// legacy invalid-fact result. A stale or missing cursor returns the existing
 /// not-started contract step without mutating a replacement.
 pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     final_chain: &BridgeFinalChain,
     vote_rlps: Vec<PillarVoteRlpPayload>,
 ) -> FfiPbftSyncAdmissionSessionStep {
@@ -136,8 +136,8 @@ pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
 /// a stale completion returns the not-started step without mutating its
 /// replacement.
 pub fn pbft_manager_runtime_pbft_sync_admission_validate_transactions(
-    runtime: &BridgePbftService,
-    dag_transaction_service: &BridgeDagTransactionService,
+    runtime: &BridgeApp,
+    dag_transaction_service: &BridgeApp,
     final_chain: &BridgeFinalChain,
     identities: Vec<FfiPeriodDataQueueTransactionIdentity>,
 ) -> FfiPbftSyncAdmissionSessionStep {
@@ -163,7 +163,7 @@ pub fn pbft_manager_runtime_pbft_sync_admission_validate_transactions(
 
 /// Aborts and clears the current synced-period admission cursor.
 pub fn abort_pbft_manager_runtime_pbft_sync_admission(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
 ) -> FfiPbftSyncAdmissionSessionStep {
     runtime
         .0
@@ -175,7 +175,7 @@ pub fn abort_pbft_manager_runtime_pbft_sync_admission(
 /// Executes one begin, report, or exact-abort command for the resumable native
 /// current-certificate admission session without exposing a bridge runtime.
 pub fn pbft_service_pbft_sync_cert_bundle_session(
-    service: &BridgePbftService,
+    service: &BridgeApp,
     final_chain: &BridgeFinalChain,
     command: FfiPbftSyncCertBundleCommand,
 ) -> Result<FfiPbftSyncCertBundleStep> {

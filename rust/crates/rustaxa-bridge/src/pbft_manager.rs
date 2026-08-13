@@ -5,7 +5,6 @@
 //! existing manager methods and reports each action result before the session
 //! advances.
 
-use crate::dag_transaction_service::BridgeDagTransactionService;
 use crate::ffi::rustaxa_ffi::{
     BlockPeriodLookup as FfiBlockPeriodLookup, PbftCertVoteRlp as FfiPbftCertVoteRlp,
     PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig,
@@ -60,7 +59,7 @@ use crate::ffi::rustaxa_ffi::{
     PillarVoteRlpPayload as FfiPillarVoteRlpPayload,
     TransactionQueueAccountNonceFact as FfiTransactionQueueAccountNonceFact,
 };
-use crate::ffi::{BridgeFinalChain, BridgePbftService, BridgeStorage};
+use crate::ffi::{BridgeApp, BridgeFinalChain};
 use crate::transaction_manager::bridge_to_service_account_nonce_facts;
 use crate::verified_votes::{
     empty_slashing_transaction_effect, leader_selection_result_to_ffi,
@@ -107,7 +106,7 @@ use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainStatus, PbftSyncQueueDrainStep,
 };
 use rustaxa_consensus::period_data_queue::EncodedPeriodDataQueuePushRequest;
-use rustaxa_consensus::{PbftService, PbftServiceConfig, PbftSyncIngressStep};
+use rustaxa_consensus::{PbftServiceConfig, PbftSyncIngressStep};
 
 impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
     for PbftFinalizationStorageWriteStage
@@ -391,11 +390,10 @@ fn broadcast_status_from_u8(value: u8) -> PbftManagerBroadcastStatus {
 /// - Missing legacy round/step/lambda fields keep existing compatibility
 ///   defaults through the storage repository.
 /// - Rejected startup facts return a Rust error before C++ mirrors are updated.
-pub fn create_pbft_service_from_storage(
-    storage: &BridgeStorage,
+pub(crate) fn pbft_service_config_from_ffi(
     config: FfiPbftServiceConfig,
-) -> anyhow::Result<Box<BridgePbftService>> {
-    let config = PbftServiceConfig {
+) -> anyhow::Result<PbftServiceConfig> {
+    Ok(PbftServiceConfig {
         genesis_lambda_ms: to_startup_u32(config.genesis_lambda_ms, "GENESIS_LAMBDA")?,
         cacti_lambda_max_ms: to_startup_u32(config.cacti_lambda_max_ms, "CACTI_LAMBDA_MAX")?,
         cacti_lambda_default_ms: to_startup_u32(
@@ -421,11 +419,7 @@ pub fn create_pbft_service_from_storage(
             .into_iter()
             .map(slashing_submitter_identity_to_domain)
             .collect(),
-    };
-    Ok(Box::new(BridgePbftService(PbftService::restore(
-        storage.0.clone(),
-        config,
-    )?)))
+    })
 }
 
 fn pbft_sync_ingress_step_to_ffi(value: PbftSyncIngressStep) -> FfiPbftSyncIngressStep {
@@ -449,7 +443,7 @@ fn pbft_sync_ingress_step_to_ffi(value: PbftSyncIngressStep) -> FfiPbftSyncIngre
 
 /// Begins or replaces the native PBFT-sync ingress session.
 pub fn pbft_service_begin_pbft_sync_ingress(
-    service: &BridgePbftService,
+    service: &BridgeApp,
     final_chain: &BridgeFinalChain,
     packet_rlp: &[u8],
     source_payload_id: u64,
@@ -468,7 +462,7 @@ pub fn pbft_service_begin_pbft_sync_ingress(
 
 /// Reports one pending slashing effect and advances the same ingress session.
 pub fn pbft_service_report_pbft_sync_ingress_slashing(
-    service: &BridgePbftService,
+    service: &BridgeApp,
     final_chain: &BridgeFinalChain,
     proof_hash: [u8; 32],
     transaction_inserted: bool,
@@ -485,7 +479,7 @@ pub fn pbft_service_report_pbft_sync_ingress_slashing(
 /// threads observe every replay mutation performed before this call. Live
 /// daemon, proposal, and sync-session entry points remain fail-closed until the
 /// application completes replay and calls this function.
-pub fn pbft_service_complete_bootstrap(service: &BridgePbftService) -> anyhow::Result<()> {
+pub fn pbft_service_complete_bootstrap(service: &BridgeApp) -> anyhow::Result<()> {
     service.complete_bootstrap();
     Ok(())
 }
@@ -508,7 +502,7 @@ pub fn pbft_service_complete_bootstrap(service: &BridgePbftService) -> anyhow::R
 /// - `found = false` is an explicit missing-period result and does not trigger
 ///   a legacy storage fallback.
 pub fn pbft_manager_runtime_load_startup_replay_period(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     period: u64,
     load_period_lambda: bool,
 ) -> anyhow::Result<crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod> {
@@ -535,7 +529,7 @@ fn startup_replay_period_into_ffi(
 }
 
 /// Returns the current Rust-owned PBFT manager runtime snapshot.
-pub fn pbft_manager_runtime_snapshot(runtime: &BridgePbftService) -> FfiPbftManagerRuntimeSnapshot {
+pub fn pbft_manager_runtime_snapshot(runtime: &BridgeApp) -> FfiPbftManagerRuntimeSnapshot {
     runtime.0.manager_snapshot().into()
 }
 
@@ -556,7 +550,7 @@ pub fn pbft_manager_runtime_snapshot(runtime: &BridgePbftService) -> FfiPbftMana
 /// - C++ no longer reads individual queue internals through separate bridge
 ///   exports.
 pub fn pbft_manager_runtime_period_data_queue_snapshot(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
 ) -> anyhow::Result<FfiPeriodDataQueueSnapshot> {
     let snapshot = runtime.0.period_data_queue_snapshot()?;
     Ok(FfiPeriodDataQueueSnapshot {
@@ -626,7 +620,7 @@ fn queue_drain_report_from_ffi(value: FfiPbftSyncQueueDrainReport) -> PbftSyncQu
 /// - C++ calls this once at the start of each `pushSyncedPbftBlocksIntoChain`
 ///   pass. Rust retains the encoded `PeriodData` payloads and peer identities;
 ///   the planner session requires no parallel C++ queue or standalone handle.
-pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgePbftService) {
+pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgeApp) {
     runtime.0.begin_pbft_sync_queue_drain();
 }
 
@@ -636,7 +630,7 @@ pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgePbftServ
 /// applies and acknowledges cleanup, and validates reports; C++ temporarily
 /// materializes popped periods, pushes blocks, and publishes network sync state.
 pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
 ) -> FfiPbftSyncQueueDrainStep {
     runtime
         .0
@@ -659,7 +653,7 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
 /// - Invalid, mismatched, or failed reports terminate the runtime-owned session
 ///   exactly as the retired standalone bridge session did.
 pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     report: FfiPbftSyncQueueDrainReport,
 ) -> FfiPbftSyncQueueDrainReportResult {
     runtime
@@ -678,7 +672,7 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
 /// Sequencing rejection is returned as an outcome and checked period overflow
 /// is returned as an error without partial queue mutation.
 pub fn pbft_manager_runtime_period_data_queue_push(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     period_data_rlp: Vec<u8>,
     source_peer_id: [u8; 64],
     previous_cert_vote_rlps: Vec<FfiPbftCertVoteRlp>,
@@ -697,7 +691,7 @@ pub fn pbft_manager_runtime_period_data_queue_push(
 
 /// Pops one encoded PBFT sync payload and its executor facts from runtime state.
 pub fn pbft_manager_runtime_period_data_queue_pop(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
 ) -> anyhow::Result<FfiPeriodDataQueuePopPlan> {
     Ok(runtime.0.pop_period_data_queue()?.into())
 }
@@ -810,7 +804,7 @@ pub fn plan_pbft_manager_startup_replay_ranges(
 /// returned effect list owns the surrounding advance-period order while C++
 /// remains the temporary executor.
 pub fn pbft_manager_runtime_plan_advance_period_after_reset(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     pbft_chain_size: u64,
 ) -> FfiPbftManagerAdvancePeriodPlan {
     runtime
@@ -854,7 +848,7 @@ pub fn validate_pbft_manager_advance_period_action_report(
 /// exception so the C++ Boolean executor boundary can log and return failure;
 /// native state and reset provenance remain retryable.
 pub fn pbft_manager_runtime_apply_period_advance(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     new_period: u64,
 ) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
     runtime.0.apply_period_advance(new_period).map(Into::into)
@@ -878,7 +872,7 @@ pub fn pbft_manager_runtime_apply_period_advance(
 /// - Zero counters are rejected by the runtime and returned as an invalid
 ///   snapshot without mutating the previous counter state.
 pub fn pbft_manager_runtime_apply_broadcast_counters(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     broadcast_votes_counter: u32,
     rebroadcast_votes_counter: u32,
     broadcast_reward_votes_counter: u32,
@@ -913,7 +907,7 @@ pub fn pbft_manager_runtime_apply_broadcast_counters(
 /// - Storage read errors are returned to C++ instead of being mapped to an
 ///   empty result.
 pub fn pbft_manager_runtime_cert_voted_block_in_round(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
 ) -> anyhow::Result<Vec<u8>> {
     runtime.0.cert_voted_block_in_round()
 }
@@ -937,7 +931,7 @@ pub fn pbft_manager_runtime_cert_voted_block_in_round(
 /// - C++ must update its live `cert_voted_block_for_round_` sidecar only after
 ///   this call succeeds and the returned snapshot is ready.
 pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     period: u64,
     round: u32,
     block_hash: [u8; 32],
@@ -970,7 +964,7 @@ pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
 /// - C++ may still keep a temporary `PbftBlock` object for APIs and vote
 ///   generation, but Rust owns the compact metadata used by protocol planners.
 pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     period: u64,
     round: u32,
     block_hash: [u8; 32],
@@ -995,15 +989,13 @@ pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
 ///   PBFT manager runtime's storage handle.
 /// - C++ still materializes the temporary `PillarVote` sidecar for network
 ///   gossip until pillar vote network payloads move to Rust.
-pub fn pbft_manager_runtime_own_pillar_block_vote(
-    runtime: &BridgePbftService,
-) -> anyhow::Result<Vec<u8>> {
+pub fn pbft_manager_runtime_own_pillar_block_vote(runtime: &BridgeApp) -> anyhow::Result<Vec<u8>> {
     runtime.0.own_pillar_block_vote()
 }
 
 /// Plans, persists, and commits one lifecycle transition as a Rust-owned operation.
 pub fn pbft_manager_runtime_execute_lifecycle_transition(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     request: FfiPbftManagerLifecycleTransitionRequest,
 ) -> anyhow::Result<FfiPbftManagerLifecycleTransitionResult> {
     let outcome = runtime
@@ -1061,7 +1053,7 @@ fn lifecycle_transition_result_from_domain(
 /// - The Rust runtime changes only after that Rust storage write succeeds.
 /// - The returned snapshot is the authoritative source for C++ live mirrors.
 pub fn pbft_manager_runtime_apply_executed_block_reset(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
 ) -> anyhow::Result<FfiPbftManagerLifecycleTransitionResult> {
     let outcome = runtime.0.apply_executed_block_reset();
     Ok(FfiPbftManagerLifecycleTransitionResult {
@@ -1096,7 +1088,7 @@ pub fn pbft_manager_runtime_apply_executed_block_reset(
 /// - Unsupported status ids are rejected by `rustaxa-consensus`; this is not a
 ///   generic PBFT manager status write bridge.
 pub fn pbft_manager_runtime_apply_next_voted_status(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     status: u8,
 ) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
     runtime.0.apply_next_voted_status(status).map(Into::into)
@@ -1118,7 +1110,7 @@ pub fn pbft_manager_runtime_apply_next_voted_status(
 ///   owned by the finalization/dynamic-lambda storage paths.
 /// - The runtime snapshot changes only after Rust storage accepts the write.
 pub fn pbft_manager_runtime_apply_cursor_field(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     field: u8,
     value: u32,
 ) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
@@ -1140,7 +1132,7 @@ pub fn pbft_manager_runtime_apply_cursor_field(
 ///   but the durable lookup is owned by `rustaxa-consensus` over
 ///   `rustaxa-storage`.
 pub fn pbft_manager_runtime_dag_block_period(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     hash: &[u8; 32],
 ) -> anyhow::Result<FfiBlockPeriodLookup> {
     let lookup = runtime
@@ -1164,7 +1156,7 @@ fn dag_block_period_lookup_into_ffi(lookup: DagBlockPeriodStorageLookup) -> FfiB
 /// coherent chain-head/persisted-payload snapshot. The bridge only converts
 /// caller facts and maps fallible native results into the CXX plan.
 pub fn pbft_manager_runtime_plan_finalization_intent(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     fact: FfiPbftFinalizationIntentFact,
 ) -> anyhow::Result<FfiPbftFinalizationIntentPlan> {
     Ok(runtime.0.plan_finalization_intent(fact.into())?.into())
@@ -1188,7 +1180,7 @@ pub fn pbft_manager_runtime_plan_finalization_intent(
 /// - `finalized_period = 0` with active dynamic-lambda is treated as having no
 ///   previous persisted lambda, matching the lower-bound lookup contract.
 pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     fact: FfiPbftDynamicLambdaFact,
 ) -> anyhow::Result<FfiPbftManagerFinalizationDynamicLambdaPlan> {
     let decision = runtime
@@ -1219,16 +1211,14 @@ pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
 /// - Starting a new tick replaces any incomplete previous tick, matching the
 ///   legacy per-loop allocation behavior.
 pub fn pbft_manager_runtime_begin_session(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     fact: FfiPbftManagerRuntimeTickFact,
 ) {
     runtime.0.begin_runtime_session(fact.into());
 }
 
 /// Returns the next requested action for the runtime-owned tick session.
-pub fn pbft_manager_runtime_session_next(
-    runtime: &BridgePbftService,
-) -> FfiPbftManagerRuntimeSessionStep {
+pub fn pbft_manager_runtime_session_next(runtime: &BridgeApp) -> FfiPbftManagerRuntimeSessionStep {
     runtime
         .0
         .runtime_session_next()
@@ -1238,7 +1228,7 @@ pub fn pbft_manager_runtime_session_next(
 
 /// Reports one C++-executed action back to the runtime-owned tick session.
 pub fn pbft_manager_runtime_session_report(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     report: FfiPbftManagerRuntimeActionReport,
 ) -> FfiPbftManagerRuntimeSessionStep {
     runtime
@@ -1251,7 +1241,7 @@ pub fn pbft_manager_runtime_session_report(
 /// Plans whether the C++ PBFT manager shell should wait using the Rust runtime
 /// deadline.
 pub fn plan_pbft_manager_runtime_sleep_until_next_step(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     round_elapsed_ms: i64,
 ) -> FfiPbftManagerSleepPlan {
     runtime
@@ -1262,14 +1252,14 @@ pub fn plan_pbft_manager_runtime_sleep_until_next_step(
 
 /// Returns whether PBFT startup can proceed based on finalization delay.
 pub fn pbft_service_finalization_ready(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     final_chain: &BridgeFinalChain,
 ) -> anyhow::Result<bool> {
     runtime.0.finalization_ready(&final_chain.0)
 }
 
 /// Aborts the runtime-owned PBFT manager tick session.
-pub fn abort_pbft_manager_runtime_session(runtime: &BridgePbftService) {
+pub fn abort_pbft_manager_runtime_session(runtime: &BridgeApp) {
     runtime.0.abort_runtime_session();
 }
 
@@ -1308,7 +1298,7 @@ fn runtime_session_not_started_step() -> FfiPbftManagerRuntimeSessionStep {
 /// - Starting a new session replaces any previous incomplete state-action
 ///   cursor, matching the legacy per-call session allocation behavior.
 pub fn pbft_manager_runtime_begin_state_action_effect_session(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     fact: FfiPbftManagerStateActionFact,
 ) {
     runtime.0.begin_state_action_effect_session(fact.into());
@@ -1316,7 +1306,7 @@ pub fn pbft_manager_runtime_begin_state_action_effect_session(
 
 /// Returns the next effect requested by the runtime-owned state-action session.
 pub fn pbft_manager_runtime_state_action_effect_session_next(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
 ) -> FfiPbftManagerStateActionSessionStep {
     runtime
         .0
@@ -1327,7 +1317,7 @@ pub fn pbft_manager_runtime_state_action_effect_session_next(
 
 /// Reports one C++-executed state-action effect to Rust and returns the next step.
 pub fn pbft_manager_runtime_state_action_effect_session_report(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     report: FfiPbftManagerStateActionEffectReport,
 ) -> FfiPbftManagerStateActionSessionStep {
     runtime
@@ -1374,7 +1364,7 @@ fn state_action_effect_session_not_started_step() -> FfiPbftManagerStateActionSe
 /// - Starting a new proposal replaces any incomplete previous proposal, matching
 ///   the legacy per-call allocation behavior.
 pub(crate) fn pbft_manager_runtime_begin_proposal_session_with_hash(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     fact: FfiPbftManagerProposalInitialFact,
     final_chain_hash: Option<[u8; 32]>,
 ) {
@@ -1386,7 +1376,7 @@ pub(crate) fn pbft_manager_runtime_begin_proposal_session_with_hash(
 /// Returns the next proposal-construction action or build command.
 #[cfg(test)]
 pub(crate) fn pbft_manager_proposal_session_next(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
 ) -> FfiPbftManagerProposalSessionStep {
     runtime
         .0
@@ -1430,9 +1420,9 @@ pub fn report_pbft_manager_broadcast(
 /// native chain, FinalChain, reward, extra-data, pillar, and DAG checks. It returns a
 /// terminal plan or typed wait/error.
 pub fn plan_pbft_manager_block_validation(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     final_chain: &BridgeFinalChain,
-    dag_transaction_service: &BridgeDagTransactionService,
+    dag_transaction_service: &BridgeApp,
     fact: &FfiPbftManagerBlockValidationFact,
 ) -> anyhow::Result<FfiPbftManagerBlockValidationPlan> {
     Ok(dag_transaction_service
@@ -1466,9 +1456,9 @@ fn block_validation_candidate_from_ffi(
 
 /// Admits one proposed block through native lookup, decoding, and validation.
 pub fn pbft_service_admit_proposed_block(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     final_chain: &BridgeFinalChain,
-    dag_transaction_service: &BridgeDagTransactionService,
+    dag_transaction_service: &BridgeApp,
     period: u64,
     block_hash: &[u8; 32],
     pbft_gas_limit: u64,
@@ -1494,9 +1484,9 @@ pub fn pbft_service_admit_proposed_block(
 /// composed block validation, and deterministic leader ranking.
 #[allow(clippy::too_many_arguments)]
 pub fn pbft_service_select_local_proposal_candidate(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     final_chain: &BridgeFinalChain,
-    dag_transaction_service: &BridgeDagTransactionService,
+    dag_transaction_service: &BridgeApp,
     candidates: Vec<FfiPbftLocalProposalCandidate>,
     period: u64,
     round: u64,
@@ -1530,9 +1520,9 @@ pub fn pbft_service_select_local_proposal_candidate(
 /// PBFT/FinalChain/DAG operation with no CXX snapshot or validation transcript.
 #[allow(clippy::too_many_arguments)]
 pub fn pbft_service_select_leader_composed(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     final_chain: &BridgeFinalChain,
-    dag_transaction_service: &BridgeDagTransactionService,
+    dag_transaction_service: &BridgeApp,
     period: u64,
     round: u64,
     pbft_gas_limit: u64,
@@ -1643,8 +1633,8 @@ fn finalization_executor_state_from_boundary(
 ///   one of the typed finalization advancement APIs after executing one
 ///   external action.
 pub fn pbft_manager_runtime_start_finalization_executor(
-    runtime: &BridgePbftService,
-    dag_transaction_service: &BridgeDagTransactionService,
+    runtime: &BridgeApp,
+    dag_transaction_service: &BridgeApp,
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     let mode = match request.mode {
@@ -1688,7 +1678,7 @@ pub fn pbft_manager_runtime_start_finalization_executor(
 /// - Cursor mismatch, missing action, and unknown action preserve the same
 ///   finalization executor contract as successful typed advancement APIs.
 pub fn pbft_manager_runtime_fail_finalization_external_effect(
-    runtime: &BridgePbftService,
+    runtime: &BridgeApp,
     cursor: u32,
     status: u8,
     error_code: String,
@@ -1715,8 +1705,8 @@ pub fn pbft_manager_runtime_fail_finalization_external_effect(
 /// Outputs:
 /// - The next PBFT finalization executor state.
 pub fn pbft_manager_runtime_advance_finalization_action(
-    runtime: &BridgePbftService,
-    dag_transaction_service: &BridgeDagTransactionService,
+    runtime: &BridgeApp,
+    dag_transaction_service: &BridgeApp,
     cursor: u32,
     action: u8,
     last_block: u64,

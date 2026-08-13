@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "common/encoding_solidity.hpp"
+#include "consensus_application_test.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace rustaxa::core_tests {
@@ -84,8 +85,8 @@ rustaxa::PbftServiceConfig makePbftServiceConfig() {
   return config;
 }
 
-rust::Box<rustaxa::BridgePbftService> createReadyPillarService(const rustaxa::BridgeStorage& storage) {
-  auto service = rustaxa::create_pbft_service_from_storage(storage, makePbftServiceConfig());
+rust::Box<rustaxa::BridgeConsensusApplication> createReadyPillarService(const rustaxa::BridgeStorage& storage) {
+  auto service = rustaxa::test::createConsensusApplication(storage, makePbftServiceConfig());
   service->pbft_service_complete_pillar_bootstrap();
   return service;
 }

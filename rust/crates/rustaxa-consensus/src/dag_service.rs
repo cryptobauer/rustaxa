@@ -463,7 +463,11 @@ pub(crate) struct DagFinalizationCommit {
 }
 
 impl DagServiceState {
-    fn restore(storage: Arc<Storage>, config: DagServiceConfig) -> Result<Self> {
+    fn restore(
+        storage: Arc<Storage>,
+        config: DagServiceConfig,
+        persist_mapping: bool,
+    ) -> Result<Self> {
         let mut state = Self {
             state: DagManagerState::new(config.genesis_hash, config.dag_expiry_limit)?,
             storage,
@@ -476,8 +480,19 @@ impl DagServiceState {
             pending_add_block: None,
         };
         state.restore_graph()?;
-        ensure_proposal_period_mapping(state.storage.as_ref(), config.max_levels_per_period, 0)?;
+        if persist_mapping {
+            ensure_proposal_period_mapping(
+                state.storage.as_ref(),
+                config.max_levels_per_period,
+                0,
+            )?;
+        }
         Ok(state)
+    }
+
+    /// Validates and publishes proposal-period mapping status from storage.
+    pub fn complete_restore_mapping(&self, max_levels_per_period: u64) -> Result<bool> {
+        ensure_proposal_period_mapping(self.storage.as_ref(), max_levels_per_period, 0)
     }
 
     fn restore_graph(&mut self) -> Result<()> {
@@ -2194,8 +2209,29 @@ pub(crate) struct DagService {
 impl DagService {
     /// Restores all DAG state before publishing the mutex-owning service.
     pub fn restore(storage: Arc<Storage>, config: DagServiceConfig) -> Result<Self> {
+        Self::restore_with_mapping(storage, config, true)
+    }
+
+    /// Restores all DAG state without populating proposal-period mapping.
+    pub fn restore_deferred_mapping(
+        storage: Arc<Storage>,
+        config: DagServiceConfig,
+    ) -> Result<Self> {
+        Self::restore_with_mapping(storage, config, false)
+    }
+
+    /// Completes deferred proposal-period mapping after companion restoration.
+    pub fn complete_restore_mapping(&self, max_levels_per_period: u64) -> Result<bool> {
+        self.lock()?.complete_restore_mapping(max_levels_per_period)
+    }
+
+    fn restore_with_mapping(
+        storage: Arc<Storage>,
+        config: DagServiceConfig,
+        persist_mapping: bool,
+    ) -> Result<Self> {
         Ok(Self {
-            state: Mutex::new(DagServiceState::restore(storage, config)?),
+            state: Mutex::new(DagServiceState::restore(storage, config, persist_mapping)?),
         })
     }
 
