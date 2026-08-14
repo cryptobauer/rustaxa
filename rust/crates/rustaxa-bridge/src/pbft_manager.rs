@@ -57,6 +57,7 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueueTransactionIdentity as FfiPeriodDataQueueTransactionIdentity,
     PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
     PillarVoteRlpPayload as FfiPillarVoteRlpPayload,
+    SlashingSubmitterIdentity as FfiSlashingSubmitterIdentity,
     TransactionQueueAccountNonceFact as FfiTransactionQueueAccountNonceFact,
 };
 use crate::ffi::BridgeApp;
@@ -414,11 +415,6 @@ pub(crate) fn pbft_service_config_from_ffi(
         light_node_history: config.light_node_history,
         committee_size: config.committee_size,
         number_of_proposers: config.number_of_proposers,
-        slashing_submitters: config
-            .slashing_submitters
-            .into_iter()
-            .map(slashing_submitter_identity_to_domain)
-            .collect(),
     })
 }
 
@@ -447,6 +443,7 @@ pub fn pbft_service_begin_pbft_sync_ingress(
     packet_rlp: &[u8],
     source_payload_id: u64,
     source_peer_id: [u8; 64],
+    slashing_submitters: Vec<FfiSlashingSubmitterIdentity>,
 ) -> anyhow::Result<FfiPbftSyncIngressStep> {
     service
         .0
@@ -455,6 +452,10 @@ pub fn pbft_service_begin_pbft_sync_ingress(
             packet_rlp,
             source_payload_id,
             source_peer_id,
+            slashing_submitters
+                .into_iter()
+                .map(slashing_submitter_identity_to_domain)
+                .collect(),
         )
         .map(pbft_sync_ingress_step_to_ffi)
 }

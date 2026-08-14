@@ -119,6 +119,13 @@ struct PbftSyncSlashingTransaction {
   std::vector<uint8_t> call_data;
 };
 
+/** Concrete-EVM account facts used only by native PBFT-sync slashing admission. */
+struct PbftSyncSlashingSubmitterFact {
+  size_t wallet_index = 0;
+  std::array<uint8_t, 32> nonce{};
+  std::array<uint8_t, 32> balance{};
+};
+
 /** Narrow physical executor for a native double-voting slashing transaction. */
 struct PbftSyncIngressExecutor {
   std::function<bool(const PbftSyncSlashingTransaction&)> submit_slashing_transaction;
@@ -199,10 +206,9 @@ class ConsensusNetworkApi final {
    *
    * Rust owns raw decoding, relevance and author checks, FinalChain DPoS
    * queries, and storage-first proposal publication. The caller retains only
-   * the opaque FinalChain leaf lifetime and peer-level error handling.
+   * peer-level error handling.
    */
-  PbftBlocksBundleOutcome admitPbftBlocksBundle(const final_chain::FinalChain& final_chain,
-                                                const std::vector<uint8_t>& packet_rlp, uint64_t source_payload_id);
+  PbftBlocksBundleOutcome admitPbftBlocksBundle(const std::vector<uint8_t>& packet_rlp, uint64_t source_payload_id);
 
   /**
    * Admits one original PBFT-sync packet through the native application root.
@@ -214,9 +220,9 @@ class ConsensusNetworkApi final {
    * vote. Transport facts remain available for legacy peer bookkeeping without
    * materializing consensus objects in C++.
    */
-  PbftSyncIngressOutcome admitPbftSyncPacket(const final_chain::FinalChain& final_chain,
-                                             const std::vector<uint8_t>& packet_rlp, uint64_t source_payload_id,
+  PbftSyncIngressOutcome admitPbftSyncPacket(const std::vector<uint8_t>& packet_rlp, uint64_t source_payload_id,
                                              const std::array<uint8_t, 64>& source_peer_id,
+                                             const std::vector<PbftSyncSlashingSubmitterFact>& slashing_submitters,
                                              const PbftSyncIngressExecutor& executor);
 
   /**

@@ -374,6 +374,7 @@ std::shared_ptr<DagBlock> DagManager::getDagBlock(const blk_hash_t &hash) const 
 
 std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::verifyBlock(
     const std::shared_ptr<DagBlock> &blk, const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
+  std::scoped_lock verify_session_lock(rust_verify_block_session_mutex_);
   const auto &block_hash = blk->getHash();
   SharedTransactions all_block_trxs;
   all_block_trxs.reserve(blk->getTrxs().size());
@@ -450,8 +451,7 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     throw std::runtime_error("DagManager: Rust verifyBlock session did not request authorization facts");
   }
 
-  step = rustaxa::dag_manager_runtime_verify_block_session_report_authorization(
-      dag_transaction_service_->service(), *final_chain_->rust_final_chain_.value());
+  step = rustaxa::dag_manager_runtime_verify_block_session_report_authorization(dag_transaction_service_->service());
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
   }
@@ -835,8 +835,8 @@ rustaxa::DagProposerSessionStep DagManager::proposerSessionNext(uint64_t session
 }
 
 rustaxa::DagProposerSessionStep DagManager::reportProposerFinalChainFacts(uint64_t session_id) {
-  return rustaxa::dag_manager_runtime_proposer_session_report_final_chain_facts(
-      dag_transaction_service_->service(), session_id, *final_chain_->rust_final_chain_.value());
+  return rustaxa::dag_manager_runtime_proposer_session_report_final_chain_facts(dag_transaction_service_->service(),
+                                                                                session_id);
 }
 
 rustaxa::DagProposerSessionStep DagManager::pollProposerVdfWait(uint64_t session_id) {

@@ -8,9 +8,6 @@
 #include "network/network.hpp"
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
 #include "pbft/pbft_manager.hpp"
-#ifdef RUSTAXA_ENABLE
-#include "rustaxa-bridge/ffi.rs.h"
-#endif
 #include "test_util/test_util.hpp"
 
 namespace taraxa::core_tests {
@@ -179,13 +176,6 @@ TEST_F(VoteTest, rust_generated_own_vote_materializes_persists_and_reloads) {
   const auto own_votes = node->getVoteManager()->getOwnVerifiedVotes();
   ASSERT_EQ(own_votes.size(), 1);
   EXPECT_EQ(own_votes[0]->rlp(true, true), weighted_vote_rlp);
-
-#ifdef RUSTAXA_ENABLE
-  auto vote_queries = rustaxa::create_pbft_vote_storage_queries(node->getDB()->rustStorage());
-  const auto raw_stored_votes = vote_queries->get_own_verified_votes();
-  ASSERT_EQ(raw_stored_votes.size(), 1);
-  EXPECT_EQ(dev::bytes(raw_stored_votes[0].data.begin(), raw_stored_votes[0].data.end()), weighted_vote_rlp);
-#endif
 
   const auto reloaded_votes = node->getDB()->getOwnVerifiedVotes();
   ASSERT_EQ(reloaded_votes.size(), 1);

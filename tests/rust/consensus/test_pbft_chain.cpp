@@ -74,12 +74,14 @@ class RustPbftChainTest : public ::testing::Test {
     if (std::filesystem::exists(test_dir)) {
       std::filesystem::remove_all(test_dir);
     }
-    auto storage = create_storage(test_dir.string());
-    auto batch = create_storage_shim_batch(*storage);
-    const auto head = head_json(size, non_empty_size, last_block);
-    storage_shim_save_pbft_head(*batch, h256(0), bytes(head));
-    storage_shim_commit_batch(std::move(batch), false);
-    auto chain = test::createConsensusApplication(*storage, makePbftServiceConfig());
+    {
+      auto bootstrap = test::createConsensusApplication(test_dir, makePbftServiceConfig());
+      auto batch = create_storage_shim_batch(*bootstrap);
+      const auto head = head_json(size, non_empty_size, last_block);
+      storage_shim_save_pbft_head(*batch, h256(0), bytes(head));
+      storage_shim_commit_batch(std::move(batch), false);
+    }
+    auto chain = test::createConsensusApplication(test_dir, makePbftServiceConfig());
     std::filesystem::remove_all(test_dir);
     return chain;
   }

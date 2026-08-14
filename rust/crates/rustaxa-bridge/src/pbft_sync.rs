@@ -185,6 +185,11 @@ pub fn pbft_service_pbft_sync_cert_bundle_session(
                     .into_iter()
                     .map(|vote| vote.vote_rlp)
                     .collect(),
+                command
+                    .slashing_submitters
+                    .into_iter()
+                    .map(crate::verified_votes::slashing_submitter_identity_to_domain)
+                    .collect(),
             )
             .map(Into::into),
         1 => service

@@ -49,7 +49,7 @@ pub mod final_chain_execution;
 
 pub use consensus_application::{
     ConsensusApplication, ConsensusApplicationBootstrap, ConsensusApplicationConfig,
-    ConsensusFinalChainConfig,
+    ConsensusFinalChainConfig, consensus_application_test_bootstrap,
 };
 pub use consensus_execution_api::ConsensusExecutionApi;
 pub use consensus_pipeline::{

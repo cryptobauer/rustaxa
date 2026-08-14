@@ -7,15 +7,12 @@
 #include "pbft/pbft_service.hpp"
 #include "pbft/period_data.hpp"
 #include "storage/storage.hpp"
+#include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/test_util.hpp"
 #include "transaction/dag_transaction_service.hpp"
 
 namespace taraxa::core_tests {
 namespace {
-
-SharedConsensusApplication makeService(const std::shared_ptr<DbStorage>& db) {
-  return createConsensusApplication(FullNodeConfig{}, *db);
-}
 
 std::shared_ptr<PbftBlock> makeBlock(PbftPeriod period, uint64_t seed) {
   std::vector<vote_hash_t> reward_votes_hashes;
@@ -29,12 +26,13 @@ struct PbftChainShimDataTest : WithDataDir {};
 
 TEST_F(PbftChainShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
   const auto block = makeBlock(1, 303);
-  auto db = std::make_shared<DbStorage>(data_dir);
+  auto storage = makeConsensusStorageFixture(FullNodeConfig{}, data_dir);
+  auto db = storage.db;
   auto batch = db->createWriteBatch();
   db->savePeriodData(PeriodData(block, {}), batch);
   db->commitWriteBatch(batch);
 
-  PbftChain chain(addr_t{}, makeService(db));
+  PbftChain chain(addr_t{}, storage.application);
   db.reset();
 
   EXPECT_TRUE(chain.findPbftBlockInChain(block->getBlockHash()));
@@ -51,8 +49,9 @@ TEST_F(PbftChainShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
 
 TEST_F(PbftChainShimDataTest, sharedServicePublishesOneChainStateAcrossFacades) {
   const auto block = makeBlock(1, 505);
-  auto db = std::make_shared<DbStorage>(data_dir);
-  auto service = makeService(db);
+  auto storage = makeConsensusStorageFixture(FullNodeConfig{}, data_dir);
+  auto db = storage.db;
+  auto service = storage.application;
 
   PbftChain writer(addr_t{}, service);
   PbftChain reader(addr_t{}, service);

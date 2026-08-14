@@ -65,9 +65,9 @@ pub struct FinalChainLogBloomIndexUpdate<'a> {
 /// Transaction index mutation committed with finalized-block visibility.
 ///
 /// Each item writes the legacy finalized transaction location and receipt-by-hash
-/// lookup for one transaction in the finalized block. The repository commits
-/// these rows before `LAST_NUMBER`, so restart and RPC readers cannot observe a
-/// finalized head whose transaction index rows are missing.
+/// lookup for one transaction in the finalized block. System entries also carry
+/// their canonical payload for the `system_transaction` column. The repository
+/// commits these rows before `LAST_NUMBER`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FinalChainTransactionIndexUpdate<'a> {
     /// Canonical transaction hash used by both legacy indexes.
@@ -76,6 +76,8 @@ pub struct FinalChainTransactionIndexUpdate<'a> {
     pub position: u32,
     /// Whether the location points to a system transaction.
     pub is_system: bool,
+    /// Canonical system transaction RLP, or `None` for regular transactions.
+    pub system_transaction_rlp: Option<&'a [u8]>,
     /// Canonical legacy transaction receipt RLP.
     pub receipt_rlp: &'a [u8],
 }
@@ -633,6 +635,30 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             update.transaction_hash.as_bytes(),
             location.out().as_ref(),
         )?;
+        if let Some(transaction_rlp) = update.system_transaction_rlp {
+            if !update.is_system {
+                bail!("regular final-chain transaction cannot carry a system transaction payload");
+            }
+            if transaction_rlp.is_empty() {
+                bail!("system final-chain transaction cannot carry an empty canonical payload");
+            }
+            use tiny_keccak::{Hasher, Keccak};
+            let mut hasher = Keccak::v256();
+            hasher.update(transaction_rlp);
+            let mut canonical_hash = [0u8; 32];
+            hasher.finalize(&mut canonical_hash);
+            if canonical_hash != update.transaction_hash.0 {
+                bail!("system final-chain transaction payload hash does not match its index key");
+            }
+            self.db.batch_put(
+                batch,
+                Column::SystemTransaction,
+                update.transaction_hash.as_bytes(),
+                transaction_rlp,
+            )?;
+        } else if update.is_system {
+            bail!("system final-chain transaction is missing its canonical payload");
+        }
         self.db.batch_put(
             batch,
             Column::FinalChainReceiptByTrxHash,
@@ -1121,6 +1147,7 @@ mod tests {
                 transaction_hash: H256::from_low_u64_be(0x7777),
                 position: 2,
                 is_system: false,
+                system_transaction_rlp: None,
                 receipt_rlp: b"receipt-by-hash",
             }],
             Some(FinalChainPeriodSystemTransactionsUpdate {
@@ -1174,6 +1201,29 @@ mod tests {
             Some(b"system-hashes".to_vec())
         );
         assert_eq!(repo.external_evm_pending_publication_raw().unwrap(), None);
+    }
+
+    #[test]
+    fn system_transaction_index_rejects_missing_or_mismatched_payload() {
+        let db = Arc::new(MockFinalChainStore::new());
+        let repo = FinalChainRepository::new(db.clone());
+        for (payload, expected) in [(&[][..], "empty"), (&[0xc0][..], "hash")] {
+            let mut batch = db.create_batch();
+            let error = repo
+                .write_transaction_index_update(
+                    1,
+                    &mut batch,
+                    FinalChainTransactionIndexUpdate {
+                        transaction_hash: H256::zero(),
+                        position: 0,
+                        is_system: true,
+                        system_transaction_rlp: Some(payload),
+                        receipt_rlp: &[],
+                    },
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains(expected));
+        }
     }
 
     #[test]

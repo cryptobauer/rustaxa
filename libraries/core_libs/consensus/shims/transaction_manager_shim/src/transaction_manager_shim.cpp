@@ -13,7 +13,9 @@
 
 #include "common/encoding_rlp.hpp"
 #include "config/config.hpp"
+#include "config/version.hpp"
 #include "dag/dag_block.hpp"
+#include "final_chain/final_chain.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/system_transaction.hpp"
 #include "transaction/transaction_manager.hpp"
@@ -316,7 +318,7 @@ TransactionStatus transactionStatusFromBridge(uint8_t status) {
 
 }  // namespace
 
-SharedConsensusApplication createConsensusApplication(const FullNodeConfig& config, DbStorage& db) {
+SharedConsensusApplication createConsensusApplication(const FullNodeConfig& config) {
   rustaxa::PbftServiceConfig pbft_config{};
   pbft_config.genesis_lambda_ms = config.genesis.pbft.lambda_ms;
   pbft_config.cacti_lambda_max_ms = config.genesis.state.hardforks.cacti_hf.lambda_max;
@@ -335,19 +337,17 @@ SharedConsensusApplication createConsensusApplication(const FullNodeConfig& conf
   pbft_config.light_node_history = config.light_node_history;
   pbft_config.committee_size = config.genesis.pbft.committee_size;
   pbft_config.number_of_proposers = config.genesis.pbft.number_of_proposers;
-  pbft_config.slashing_submitters.reserve(config.wallets.size());
-  for (size_t wallet_index = 0; wallet_index < config.wallets.size(); ++wallet_index) {
-    rustaxa::SlashingSubmitterIdentity identity{};
-    identity.wallet_index = wallet_index;
-    identity.address = config.wallets[wallet_index].node_addr.asArray();
-    pbft_config.slashing_submitters.push_back(std::move(identity));
-  }
-
-  return std::make_shared<ConsensusApplication>(rustaxa::create_consensus_application_from_storage(
-      db.rustStorage(), config.genesis.dag_genesis_block.getHash().asArray(), config.dag_expiry_limit,
-      config.max_levels_per_period, sortitionRuntimeConfigFromNodeConfig(config),
-      rustaxa::TransactionQueueConfig{config.transactions_pool_size}, gasPricerConfigFromNodeConfig(config),
-      config.propose_dag_gas_limit, std::move(pbft_config)));
+  return std::make_shared<ConsensusApplication>(rustaxa::create_consensus_application(
+      config.db_path.string(), TARAXA_DB_MAJOR_VERSION, TARAXA_DB_MINOR_VERSION,
+      config.genesis.genesisHash().asArray(), config.genesis.dag_genesis_block.getHash().asArray(),
+      config.dag_expiry_limit, config.max_levels_per_period,
+      sortitionRuntimeConfigFromNodeConfig(config), rustaxa::TransactionQueueConfig{config.transactions_pool_size},
+      gasPricerConfigFromNodeConfig(config), config.propose_dag_gas_limit, std::move(pbft_config),
+      config.genesis.pbft.gas_limit, config.genesis.dag_genesis_block.getTimestamp(),
+      final_chain::makeGenesisAccounts(config.genesis.state), final_chain::makeGenesisValidators(config.genesis.state),
+      final_chain::makeGenesisDposConfig(config.genesis.state.dpos,
+                                        config.genesis.state.hardforks.magnolia_hf.block_num),
+      final_chain::makeFinalChainRewardsConfig(config)));
 }
 
 TransactionManager::TransactionManager(const FullNodeConfig& conf, std::shared_ptr<DbStorage> db,

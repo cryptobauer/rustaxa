@@ -43,32 +43,25 @@ constexpr uint8_t kPbftVoteAdmissionPersistenceRejected = 2;
 constexpr uint8_t kPbftTwoTPlusOneThresholdStatusAvailable = 0;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
-
 uint256_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
   return uint256_hash_t(hash.data(), uint256_hash_t::ConstructFromPointer);
 }
-
 std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) { return address.asArray(); }
-
 u256 fromBridgeU256(const std::array<uint8_t, 32>& value) {
   return dev::fromBigEndian<u256>(dev::bytes(value.begin(), value.end()));
 }
-
 template <size_t N, typename FixedHash>
 std::array<uint8_t, N> toBridgeFixedBytes(const FixedHash& value) {
   std::array<uint8_t, N> out{};
   std::copy(value.data(), value.data() + N, out.begin());
   return out;
 }
-
 addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
 }
-
 vote_hash_t fromBridgeVoteHash(const std::array<uint8_t, 32>& hash) {
   return vote_hash_t(hash.data(), vote_hash_t::ConstructFromPointer);
 }
-
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
   rust::Vec<uint8_t> out;
   out.reserve(bytes.size());
@@ -77,16 +70,31 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
   }
   return out;
 }
-
-rust::Vec<rustaxa::SlashingSubmitterIdentity> makeSlashingSubmitterIdentities(const FullNodeConfig& config) {
+std::array<uint8_t, 32> toBridgeU256(const u256& value) {
+  std::array<uint8_t, 32> out{};
+  const auto bytes = dev::toBigEndian(value);
+  std::copy(bytes.begin(), bytes.end(), out.begin() + (out.size() - bytes.size()));
+  return out;
+}
+/**
+ * Resolve the retained concrete-EVM account facts needed by native slashing admission.
+ * Wallet order is stable, missing accounts become zero, and resolution stops at the first funded signing wallet.
+ */
+rust::Vec<rustaxa::SlashingSubmitterIdentity> makeSlashingSubmitterFacts(
+    const FullNodeConfig& config, const std::shared_ptr<final_chain::FinalChain>& final_chain) {
   rust::Vec<rustaxa::SlashingSubmitterIdentity> submitters;
   submitters.reserve(config.wallets.size());
   for (size_t index = 0; index < config.wallets.size(); ++index) {
     const auto& wallet = config.wallets[index];
-    rustaxa::SlashingSubmitterIdentity identity{};
-    identity.wallet_index = index;
-    identity.address = toBridgeAddress(wallet.node_addr);
-    submitters.push_back(std::move(identity));
+    const auto account = final_chain->getAccount(wallet.node_addr).value_or(state_api::ZeroAccount);
+    rustaxa::SlashingSubmitterIdentity fact{};
+    fact.wallet_index = index;
+    fact.nonce = toBridgeU256(account.nonce);
+    fact.balance = toBridgeU256(account.balance);
+    submitters.push_back(std::move(fact));
+    if (account.balance != 0) {
+      break;
+    }
   }
   return submitters;
 }
@@ -522,8 +530,8 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
   }
 
   const auto runtime_result = pbft_service_->service().pbft_service_verified_votes_admit_and_persist_with_final_chain(
-      final_chain_->rustFinalChain(), toBridgeByteSlice(canonical_vote_rlp), std::move(admission_request),
-      makeVoteEventFactFlags(), progress_context, makeSlashingSubmitterIdentities(kConfig));
+      toBridgeByteSlice(canonical_vote_rlp), std::move(admission_request),
+      makeVoteEventFactFlags(), progress_context, makeSlashingSubmitterFacts(kConfig, final_chain_));
   if (!runtime_result.has_validation) {
     LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()
                  << " without runtime validation details, status: " << static_cast<uint32_t>(runtime_result.status)
@@ -929,7 +937,7 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
   const auto generation_input = makeVoteGenerationInput(blockhash, vote_type, period, round, step, wallet);
   try {
     const auto generated = pbft_service_->service().pbft_service_generate_signed_vote_with_weight(
-        final_chain_->rustFinalChain(), generation_input, kPbftConfig.committee_size, kPbftConfig.number_of_proposers);
+        generation_input, kPbftConfig.committee_size, kPbftConfig.number_of_proposers);
     if (generated.status == kPbftVoteGenerationStatusZeroStake) {
       requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroStake, "zero-stake weighted vote");
       return nullptr;
@@ -1025,7 +1033,7 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
 
   try {
     validation_result = pbft_service_->service().pbft_service_verified_votes_validate_with_final_chain(
-        final_chain_->rustFinalChain(), toBridgeByteSlice(canonical_vote_rlp), strict, kPbftConfig.committee_size,
+        toBridgeByteSlice(canonical_vote_rlp), strict, kPbftConfig.committee_size,
         kPbftConfig.number_of_proposers);
     validation = validation_result.validation;
 
@@ -1130,7 +1138,7 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
   rustaxa::PbftTwoTPlusOneThresholdPlan threshold_plan{};
   try {
     threshold_plan = pbft_service_->service().pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
-        final_chain_->rustFinalChain(), threshold_fact);
+        threshold_fact);
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Err msg: " << e.what()
                  << ". Rust composed threshold lookup failed";
@@ -1161,7 +1169,7 @@ bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound p
   try {
     auto sortition_request = makeProposerSortitionRequest(pbft_period, pbft_round, wallet, kPbftConfig);
     const auto sortition_result = pbft_service_->service().pbft_service_generate_and_validate_proposer_sortition(
-        final_chain_->rustFinalChain(), std::move(sortition_request));
+        std::move(sortition_request));
     if (sortition_result.accepted) {
       return true;
     }
@@ -1213,6 +1221,10 @@ VoteManager::ProposalWalletFacts VoteManager::proposalWalletFacts(
   }
 
   return result;
+}
+
+rust::Vec<rustaxa::SlashingSubmitterIdentity> VoteManager::slashingSubmitterFacts() const {
+  return makeSlashingSubmitterFacts(kConfig, final_chain_);
 }
 
 std::optional<blk_hash_t> VoteManager::getTwoTPlusOneVotedBlock(PbftPeriod period, PbftRound round,

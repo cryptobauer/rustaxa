@@ -1155,7 +1155,7 @@ void PbftManager::setPbftRound(PbftRound round) {
 
 void PbftManager::waitForPeriodFinalization() {
   do {
-    if (rustaxa::pbft_service_finalization_ready(pbft_service_->service(), final_chain_->rustFinalChain())) {
+    if (rustaxa::pbft_service_finalization_ready(pbft_service_->service())) {
       break;
     }
     thisThreadSleepForMilliSeconds(static_cast<uint64_t>(kPollingIntervalMs.count()));
@@ -1168,7 +1168,7 @@ std::optional<uint64_t> PbftManager::getCurrentDposTotalVotesCount() const {
     rustaxa::PbftFinalChainDposTotalVoteCountRequest request;
     request.period = period;
     const auto facts =
-        pbft_service_->service().pbft_service_collect_dpos_total_vote_count(final_chain_->rustFinalChain(), request);
+        pbft_service_->service().pbft_service_collect_dpos_total_vote_count(request);
     if (facts.status == kPbftSyncDposFactsReady && facts.has_total_vote_count) {
       return facts.total_vote_count;
     }
@@ -1193,7 +1193,7 @@ std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
       request.eligible_wallet_period = eligible_wallets_.getWalletsEligiblePeriod();
 
       auto facts = pbft_service_->service().pbft_service_collect_dpos_wallet_aggregate_vote_count(
-          final_chain_->rustFinalChain(), request);
+          request);
       if (!facts.eligible_wallet_period_ready) {
         thisThreadSleepForMilliSeconds(10);
         continue;
@@ -1210,7 +1210,7 @@ std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
       }
 
       facts = pbft_service_->service().pbft_service_collect_dpos_wallet_aggregate_vote_count(
-          final_chain_->rustFinalChain(), request);
+          request);
       if (facts.status == kPbftSyncDposFactsReady && facts.has_aggregate_vote_count) {
         return facts.aggregate_vote_count;
       }
@@ -1730,7 +1730,7 @@ bool PbftManager::publishProposedBlock(const std::shared_ptr<PbftBlock> &propose
 
 std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(PbftPeriod period, const blk_hash_t &block_hash) {
   const auto result = rustaxa::pbft_service_admit_proposed_block(
-      pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(), period,
+      pbft_service_->service(), dag_transaction_service_->service(), period,
       toBridgeHash(block_hash), kGenesisConfig.getGasLimits(period).second,
       kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(period),
       kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(period));
@@ -2061,7 +2061,7 @@ void PbftManager::identifyBlock_() {
           const auto pillar_block_required =
               kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(period);
           const auto leader_selection = rustaxa::pbft_service_select_leader_composed(
-              pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(), period,
+              pbft_service_->service(), dag_transaction_service_->service(), period,
               round, pbft_gas_limit, extra_data_required, pillar_block_required);
 
           if (!leader_selection.selected) {
@@ -2396,7 +2396,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
     }
 
     const auto selection = rustaxa::pbft_service_select_local_proposal_candidate(
-        pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(),
+        pbft_service_->service(), dag_transaction_service_->service(),
         std::move(candidates), propose_period, propose_round, pbft_gas_limit,
         kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(propose_period),
         kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(propose_period));
@@ -2512,7 +2512,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
   fact.has_non_finalized_fallback = non_finalized_fallback_hash.has_value();
   fact.non_finalized_fallback_hash = toBridgeHash(non_finalized_fallback_hash.value_or(kNullBlockHash));
 
-  pbft_service_->service().pbft_service_begin_proposal_session_with_final_chain(final_chain_->rustFinalChain(), fact);
+  pbft_service_->service().pbft_service_begin_proposal_session_with_final_chain(fact);
   const auto step = rustaxa::pbft_manager_proposal_session_next_with_dag(pbft_service_->service(),
                                                                          dag_transaction_service_->service());
 
@@ -2605,7 +2605,7 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   fact.extra_data_pillar_hash_present = pillar_hash.has_value();
   fact.pillar_block_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
   const auto plan = rustaxa::plan_pbft_manager_block_validation(
-      pbft_service_->service(), final_chain_->rustFinalChain(), dag_transaction_service_->service(), fact);
+      pbft_service_->service(), dag_transaction_service_->service(), fact);
 
   if (plan.action == kPbftManagerBlockValidationActionAccept) {
     return true;
@@ -3377,7 +3377,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
           final_chain_->waitForFinalized();
         }
         session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(
-            pbft_service_->service(), final_chain_->rustFinalChain(), session_step.cursor, session_step.next_check, 0);
+            pbft_service_->service(), session_step.cursor, session_step.next_check, 0);
         reward_votes = fromBridgePbftVotes(session_step.reward_vote_rlps);
         continue;
       }
@@ -3404,8 +3404,9 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         cert_command.block_period = block_period;
         cert_command.block_hash = toBridgeHash(pbft_block_hash);
         cert_command.cert_vote_rlps = std::move(cert_vote_rlps);
+        cert_command.slashing_submitters = vote_mgr_->slashingSubmitterFacts();
         auto cert_vote_step = rustaxa::pbft_service_pbft_sync_cert_bundle_session(
-            pbft_service_->service(), final_chain_->rustFinalChain(), std::move(cert_command));
+            pbft_service_->service(), std::move(cert_command));
         if (cert_vote_step.action == kPbftSyncCertBundleActionAwaitingSlashing) {
           active_sync_cert_session = cert_vote_step.session_id;
         }
@@ -3433,7 +3434,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
           report_command.proof_hash = proof_hash;
           report_command.transaction_inserted = transaction_inserted;
           cert_vote_step = rustaxa::pbft_service_pbft_sync_cert_bundle_session(
-              pbft_service_->service(), final_chain_->rustFinalChain(), std::move(report_command));
+              pbft_service_->service(), std::move(report_command));
         }
         active_sync_cert_session.reset();
 
@@ -3457,19 +3458,19 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
                        << fromBridgeHash(cert_vote_step.first_bad_vote_hash);
         }
         session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(
-            pbft_service_->service(), final_chain_->rustFinalChain(), session_step.cursor, session_step.next_check,
+            pbft_service_->service(), session_step.cursor, session_step.next_check,
             cert_votes_accepted ? kPbftSyncFactValid : kPbftSyncFactInvalid);
         continue;
       }
       if (session_step.next_check == kPbftSyncRuntimeCheckTransactions) {
         session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_validate_transactions(
-            pbft_service_->service(), dag_transaction_service_->service(), final_chain_->rustFinalChain(),
+            pbft_service_->service(), dag_transaction_service_->service(),
             std::move(period_data_transaction_identities));
         continue;
       }
       if (session_step.next_check == kPbftSyncRuntimeCheckPillarVotes) {
         session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
-            pbft_service_->service(), final_chain_->rustFinalChain(), toBridgePillarVoteRlps(pillar_vote_rlps));
+            pbft_service_->service(), toBridgePillarVoteRlps(pillar_vote_rlps));
         continue;
       }
       rustaxa::abort_pbft_manager_runtime_pbft_sync_admission(pbft_service_->service());
@@ -3481,8 +3482,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         rustaxa::PbftSyncCertBundleCommand abort_command{};
         abort_command.action = kPbftSyncCertBundleCommandAbort;
         abort_command.session_id = *active_sync_cert_session;
-        rustaxa::pbft_service_pbft_sync_cert_bundle_session(pbft_service_->service(), final_chain_->rustFinalChain(),
-                                                            std::move(abort_command));
+        rustaxa::pbft_service_pbft_sync_cert_bundle_session(pbft_service_->service(), std::move(abort_command));
       } catch (...) {
         // Preserve the original executor exception; the exact-session abort is best-effort on lock failure.
       }
@@ -3572,7 +3572,7 @@ void PbftManager::EligibleWallets::updateWalletsEligibility(
   }
 
   const auto facts = pbft_service->service().pbft_service_collect_dpos_wallet_eligibility_batch(
-      final_chain->rustFinalChain(), request);
+      request);
   if (facts.status != kPbftSyncDposFactsReady) {
     throw std::runtime_error("Rust FinalChain PBFT wallet-eligibility batch fact collection failed: " +
                              static_cast<std::string>(facts.error_code));

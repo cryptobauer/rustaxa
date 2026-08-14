@@ -140,6 +140,64 @@ std::array<uint8_t, 32> h256Array(uint8_t last_byte) {
   return out;
 }
 
+rust::Vec<uint8_t> u64Be(uint64_t value) {
+  rust::Vec<uint8_t> bytes;
+  while (value != 0) {
+    bytes.push_back(static_cast<uint8_t>(value & 0xff));
+    value >>= 8;
+  }
+  std::reverse(bytes.begin(), bytes.end());
+  return bytes;
+}
+
+rust::Box<rustaxa::BridgeConsensusApplication> createConformanceApplication(const fs::path& path) {
+  rustaxa::SortitionRuntimeConfig sortition{};
+  sortition.threshold_upper = 0x100;
+  sortition.difficulty_min = 1;
+  sortition.difficulty_max = 10;
+  sortition.difficulty_stale = 5;
+  sortition.lambda_bound = 100;
+  sortition.changes_count_for_average = 8;
+  sortition.dag_efficiency_target_low = 5'000;
+  sortition.dag_efficiency_target_high = 10'000;
+  sortition.changing_interval = 10;
+  sortition.computation_interval = 5;
+
+  rustaxa::GasPricerConfig gas_pricer{};
+  gas_pricer.percentile = 50;
+
+  rustaxa::PbftServiceConfig pbft{};
+  pbft.genesis_lambda_ms = 100;
+  pbft.cacti_lambda_max_ms = 1'500;
+  pbft.cacti_lambda_default_ms = 500;
+  pbft.cacti_block = 1;
+  pbft.max_exponential_lambda_ms = 60'000;
+  pbft.max_steps = 13;
+  pbft.deadline_ms = 1'000;
+  pbft.polling_interval_ms = 100;
+  pbft.pillar_blocks_interval = 10;
+  pbft.sync_level_size = 10;
+  pbft.committee_size = 1;
+  pbft.number_of_proposers = 1;
+
+  rustaxa::GenesisDposConfig dpos{};
+  dpos.eligibility_balance_threshold = u64Be(1'000);
+  dpos.vote_eligibility_balance_step = u64Be(1'000);
+  dpos.validator_maximum_stake = u64Be(30'000);
+
+  rustaxa::FinalChainRewardsConfig rewards{};
+  rewards.aspen_part_one_period = UINT64_MAX;
+  rewards.fix_claim_all_block_num = UINT64_MAX;
+  rewards.fix_redelegate_block_num = UINT64_MAX;
+
+  auto genesis = h256Array(0xAB);
+  auto dag_genesis = h256Array(0xAC);
+  return rustaxa::create_consensus_application(path.string(), 1, 0, genesis, dag_genesis, 32, 1'000'000, sortition,
+                                               rustaxa::TransactionQueueConfig{16}, gas_pricer, 1'000'000,
+                                               std::move(pbft), 1'000'000, 0, {}, {}, std::move(dpos),
+                                               std::move(rewards));
+}
+
 std::vector<uint8_t> encodeSingleHashListRlp(const std::array<uint8_t, 32>& hash) {
   // RLP([hash32]) = 0xE1 0xA0 <32-bytes>
   std::vector<uint8_t> out;
@@ -173,52 +231,55 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   static constexpr uint8_t kPbftMgrStatusExecutedBlock = 0;
   static constexpr uint8_t kPbftMgrStatusNextVotedSoftValue = 2;
 
-  auto storage = rustaxa::create_storage(db_path.string());
-  auto dag_queries = rustaxa::create_dag_storage_queries(*storage);
-  auto pbft_queries = rustaxa::create_pbft_storage_queries(*storage);
-  auto final_chain_queries = rustaxa::create_final_chain_storage_queries(*storage);
-  auto transaction_queries = rustaxa::create_transaction_storage_queries(*storage);
-  auto period_queries = rustaxa::create_period_storage_queries(*storage);
+  auto runtime = createConformanceApplication(db_path);
+  auto dag_queries = rustaxa::create_dag_storage_queries(*runtime);
+  auto pbft_queries = rustaxa::create_pbft_storage_queries(*runtime);
+  auto final_chain_queries = rustaxa::create_final_chain_storage_queries(*runtime);
+  auto transaction_queries = rustaxa::create_transaction_storage_queries(*runtime);
+  auto period_queries = rustaxa::create_period_storage_queries(*runtime);
 
   // Baseline API coverage
-  transcript.add("status_default_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
+  transcript.add("status_default_executed_blk",
+                 toString(runtime->get_status_field(kStatusFieldExecutedBlkCount)));
   transcript.add("pbft_mgr_field_default_round", toString(pbft_queries->get_pbft_mgr_field(kPbftMgrFieldRound)));
   transcript.add("pbft_mgr_status_default_executed_block",
                  toString(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock)));
   transcript.add("proposal_period_missing",
-                 optionalToString(toOptional(dag_queries->get_proposal_period_for_dag_level(100))));
-  transcript.add("period_lambda_missing", optionalToString(toOptional(storage->get_period_lambda(7, false))));
-  transcript.add("rounds_count_dynamic_lambda_default", toString(storage->get_rounds_count_dynamic_lambda()));
-  transcript.add("genesis_missing_before", toString(storage->get_genesis_hash().empty()));
+                 optionalToString(toOptional(dag_queries->get_proposal_period_for_dag_level(1'000'001))));
+  transcript.add("period_lambda_missing",
+                 optionalToString(toOptional(runtime->get_period_lambda(7, false))));
+  transcript.add("rounds_count_dynamic_lambda_default",
+                 toString(runtime->get_rounds_count_dynamic_lambda()));
+  transcript.add("genesis_present_before", toString(runtime->get_genesis_hash().size() == 32));
 
-  auto genesis_hash = h256Array(0xAB);
-  rustaxa::storage_shim_set_genesis_hash(*storage, genesis_hash);
-  transcript.add("genesis_after_set_len", toString(storage->get_genesis_hash().size()));
-
-  auto status_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto status_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_status_field(*status_batch, kStatusFieldTrxCount, 11);
   rustaxa::storage_shim_save_pbft_mgr_field(*status_batch, kPbftMgrFieldRound, 17);
   rustaxa::storage_shim_save_pbft_mgr_status(*status_batch, kPbftMgrStatusNextVotedSoftValue, true);
   rustaxa::storage_shim_commit_batch(std::move(status_batch), false);
-  auto proposal_period_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto proposal_period_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_proposal_period_dag_level(*proposal_period_batch, 100, 50);
   rustaxa::storage_shim_commit_batch(std::move(proposal_period_batch), false);
-  auto period_lambda_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto period_lambda_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_period_lambda(*period_lambda_batch, 7, 42);
   rustaxa::storage_shim_commit_batch(std::move(period_lambda_batch), false);
-  auto dynamic_lambda_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto dynamic_lambda_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_rounds_count_dynamic_lambda(*dynamic_lambda_batch, 23);
   rustaxa::storage_shim_commit_batch(std::move(dynamic_lambda_batch), false);
 
-  transcript.add("status_trx_count_after_save", toString(storage->get_status_field(kStatusFieldTrxCount)));
+  transcript.add("status_trx_count_after_save",
+                 toString(runtime->get_status_field(kStatusFieldTrxCount)));
   transcript.add("pbft_mgr_field_round_after_save", toString(pbft_queries->get_pbft_mgr_field(kPbftMgrFieldRound)));
   transcript.add("pbft_mgr_status_next_voted_soft_after_save",
                  toString(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusNextVotedSoftValue)));
   transcript.add("proposal_period_level_100_after_save",
                  optionalToString(toOptional(dag_queries->get_proposal_period_for_dag_level(100))));
-  transcript.add("period_lambda_exact_after_save", optionalToString(toOptional(storage->get_period_lambda(7, false))));
-  transcript.add("period_lambda_closest_after_save", optionalToString(toOptional(storage->get_period_lambda(8, true))));
-  transcript.add("rounds_count_dynamic_lambda_after_save", toString(storage->get_rounds_count_dynamic_lambda()));
+  transcript.add("period_lambda_exact_after_save",
+                 optionalToString(toOptional(runtime->get_period_lambda(7, false))));
+  transcript.add("period_lambda_closest_after_save",
+                 optionalToString(toOptional(runtime->get_period_lambda(8, true))));
+  transcript.add("rounds_count_dynamic_lambda_after_save",
+                 toString(runtime->get_rounds_count_dynamic_lambda()));
 
   // DAG missing + save/update/remove paths
   auto dag_hash_1 = h256Array(0x11);
@@ -230,17 +291,17 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("dag_missing_block", toString(dag_queries->get_dag_block(dag_missing).empty()));
   transcript.add("dag_missing_period", toString(!dag_queries->get_dag_block_period_lookup(dag_missing).found));
 
-  auto dag_save_primary_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto dag_save_primary_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_dag_block(*dag_save_primary_batch, dag_hash_1, 1, toRustVec(dag_rlp), 1, 1);
   rustaxa::storage_shim_commit_batch(std::move(dag_save_primary_batch), false);
-  auto dag_save_secondary_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto dag_save_secondary_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_dag_block(*dag_save_secondary_batch, dag_hash_2, 1, toRustVec(dag_rlp), 2, 3);
   rustaxa::storage_shim_commit_batch(std::move(dag_save_secondary_batch), false);
   transcript.add("dag_saved_primary", toString(dag_queries->dag_block_in_db(dag_hash_1)));
   transcript.add("dag_saved_batch", toString(dag_queries->dag_block_in_db(dag_hash_2)));
   transcript.add("dag_level_1_count", toString(dag_queries->get_blocks_by_level(1).size() / 32));
 
-  auto dag_period_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto dag_period_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_dag_block_period(*dag_period_batch, dag_hash_1, 7, 2);
   rustaxa::storage_shim_commit_batch(std::move(dag_period_batch), false);
   auto dag_period = dag_queries->get_dag_block_period_lookup(dag_hash_1);
@@ -248,15 +309,17 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("dag_period_lookup_period", toString(dag_period.period));
   transcript.add("dag_period_lookup_position", toString(dag_period.position));
 
-  auto dag_counter_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto dag_counter_batch = rustaxa::create_storage_shim_batch(*runtime);
   rust::Vec<rustaxa::DagCounterUpdate> dag_counter_updates;
   dag_counter_updates.push_back(rustaxa::DagCounterUpdate{dag_hash_3, 2, 2});
   rustaxa::storage_shim_update_dag_block_counters(*dag_counter_batch, std::move(dag_counter_updates), 3, 6);
   rustaxa::storage_shim_commit_batch(std::move(dag_counter_batch), false);
-  transcript.add("dag_counters_nonzero", toString(storage->get_status_field(kStatusFieldDagBlkCount) > 0 &&
-                                                  storage->get_status_field(kStatusFieldDagEdgeCount) > 0));
+  transcript.add(
+      "dag_counters_nonzero",
+      toString(runtime->get_status_field(kStatusFieldDagBlkCount) > 0 &&
+               runtime->get_status_field(kStatusFieldDagEdgeCount) > 0));
 
-  auto dag_remove_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto dag_remove_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_remove_dag_block(*dag_remove_batch, dag_hash_2);
   rustaxa::storage_shim_commit_batch(std::move(dag_remove_batch), false);
   transcript.add("dag_removed_batch_hash", toString(!dag_queries->dag_block_in_db(dag_hash_2)));
@@ -266,7 +329,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   // Period by PBFT hash mapping
   auto pbft_hash = h256Array(0x44);
   auto pbft_missing = h256Array(0x45);
-  auto pbft_period_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto pbft_period_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_pbft_block_period(*pbft_period_batch, pbft_hash, 99);
   rustaxa::storage_shim_commit_batch(std::move(pbft_period_batch), false);
   auto pbft_lookup = period_queries->get_period_from_pbft_hash(pbft_hash);
@@ -279,7 +342,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
 
   auto pbft_head_hash = h256Array(0x71);
   transcript.add("pbft_head_missing_len", toString(pbft_queries->get_pbft_head(pbft_head_hash).size()));
-  auto pbft_head_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto pbft_head_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_pbft_head(*pbft_head_batch, pbft_head_hash,
                                        toRustVec(std::vector<uint8_t>{'h', 'e', 'a', 'd'}));
   rustaxa::storage_shim_commit_batch(std::move(pbft_head_batch), false);
@@ -291,7 +354,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   auto sys_hash = h256Array(0x53);
   auto tx_rlp = std::vector<uint8_t>{0xC0};
 
-  auto tx_seed_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto tx_seed_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_transaction(*tx_seed_batch, tx_hash_1, toRustVec(tx_rlp));
   rustaxa::storage_shim_save_transaction(*tx_seed_batch, tx_hash_2, toRustVec(tx_rlp));
   rustaxa::storage_shim_commit_batch(std::move(tx_seed_batch), false);
@@ -299,7 +362,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("tx_hash_1_in_db", toString(transaction_queries->transaction_in_db(tx_hash_1)));
   transcript.add("tx_hash_1_finalized_before", toString(transaction_queries->transaction_finalized(tx_hash_1)));
 
-  auto tx_location_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto tx_location_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_transaction_location(*tx_location_batch, tx_hash_1, 12, 0, false);
   rustaxa::storage_shim_commit_batch(std::move(tx_location_batch), false);
   transcript.add("tx_hash_1_finalized_after", toString(transaction_queries->transaction_finalized(tx_hash_1)));
@@ -308,7 +371,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("tx_hash_1_lookup_nonempty", toString(!transaction_queries->get_transaction(tx_hash_1).empty()));
   transcript.add("tx_period_map_size", toString(transaction_queries->get_all_transaction_period().size()));
 
-  auto tx_remove_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto tx_remove_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_remove_transaction(*tx_remove_batch, tx_hash_2);
   rustaxa::storage_shim_commit_batch(std::move(tx_remove_batch), false);
   transcript.add("tx_hash_2_removed", toString(!transaction_queries->transaction_in_db(tx_hash_2)));
@@ -318,12 +381,12 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   tx_finalized_vector.push_back(transaction_queries->transaction_finalized(tx_hash_2) ? '1' : '0');
   transcript.add("tx_finalized_vector", tx_finalized_vector);
 
-  auto system_tx_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto system_tx_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_system_transaction(*system_tx_batch, sys_hash, toRustVec(tx_rlp));
   rustaxa::storage_shim_commit_batch(std::move(system_tx_batch), false);
   transcript.add("system_tx_lookup_nonempty", toString(!transaction_queries->get_system_transaction(sys_hash).empty()));
 
-  auto period_system_hashes_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto period_system_hashes_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_period_system_transactions_hashes(*period_system_hashes_batch, 12,
                                                                toRustVec(encodeSingleHashListRlp(sys_hash)));
   rustaxa::storage_shim_commit_batch(std::move(period_system_hashes_batch), false);
@@ -331,7 +394,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("period_system_hashes_count", toString(period_sys_hashes.size() / 32));
 
   auto period_data_raw = std::vector<uint8_t>{0xC6, 0xC0, 0xC0, 0xC0, 0xE1, 0xC0, 0xC0};
-  auto period_data_batch = rustaxa::create_storage_shim_batch(*storage);
+  auto period_data_batch = rustaxa::create_storage_shim_batch(*runtime);
   rustaxa::storage_shim_save_period_data(*period_data_batch, 33, toRustVec(period_data_raw));
   rustaxa::storage_shim_commit_batch(std::move(period_data_batch), false);
   transcript.add("period_data_raw_len", toString(period_queries->get_period_data_raw(33).size()));
@@ -349,7 +412,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   auto blooms_value = std::vector<uint8_t>{'b', 'l', 'm'};
 
   rustaxa::storage_shim_seed_final_chain_conformance_lookup_rows(
-      *storage, meta_key, toRustVec(meta_value), block_number, block_hash, toRustVec(block_value), receipt_hash,
+      *runtime, meta_key, toRustVec(meta_value), block_number, block_hash, toRustVec(block_value), receipt_hash,
       toRustVec(receipt_value), blooms_chunk, toRustVec(blooms_value), 15, toRustVec(std::vector<uint8_t>{0xC0}));
 
   auto meta_lookup = final_chain_queries->get_final_chain_meta_value(meta_key);
@@ -377,14 +440,12 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("pbft_mgr_field_default_round", toString(storage.getPbftMgrField(PbftMgrField::Round)));
   transcript.add("pbft_mgr_status_default_executed_block",
                  toString(storage.getPbftMgrStatus(PbftMgrStatus::ExecutedBlock)));
-  transcript.add("proposal_period_missing", optionalToString(storage.getProposalPeriodForDagLevel(100)));
+  transcript.add("proposal_period_missing", optionalToString(storage.getProposalPeriodForDagLevel(1'000'001)));
   transcript.add("period_lambda_missing", optionalToString(storage.getPeriodLambda(7, false)));
   transcript.add("rounds_count_dynamic_lambda_default", toString(storage.getRoundsCountDynamicLambda()));
-  transcript.add("genesis_missing_before", toString(!storage.getGenesisHash().has_value()));
-
   storage.setGenesisHash(h256(0xAB));
   auto genesis_after_set = storage.getGenesisHash();
-  transcript.add("genesis_after_set_len", toString(genesis_after_set ? genesis_after_set->asBytes().size() : 0));
+  transcript.add("genesis_present_before", toString(genesis_after_set && genesis_after_set->asBytes().size() == 32));
 
   storage.saveStatusField(StatusDbField::TrxCount, 11);
   storage.savePbftMgrField(PbftMgrField::Round, 17);

@@ -54,20 +54,20 @@ class StorageTest : public ::testing::Test {
     return std::vector<uint8_t>(values.begin(), values.end());
   }
 
-  static rust::Box<BridgePbftVoteStorageQueries> voteQueries(const rust::Box<BridgeStorage>& storage) {
-    return create_pbft_vote_storage_queries(*storage);
+  static rust::Box<BridgePbftVoteStorageQueries> voteQueries(const rust::Box<BridgeConsensusApplication>& application) {
+    return create_pbft_vote_storage_queries(*application);
   }
 
-  static rust::Box<BridgePbftStorageQueries> pbftQueries(const rust::Box<BridgeStorage>& storage) {
-    return create_pbft_storage_queries(*storage);
+  static rust::Box<BridgePbftStorageQueries> pbftQueries(const rust::Box<BridgeConsensusApplication>& application) {
+    return create_pbft_storage_queries(*application);
   }
 
-  static rust::Box<BridgeDagStorageQueries> dagQueries(const rust::Box<BridgeStorage>& storage) {
-    return create_dag_storage_queries(*storage);
+  static rust::Box<BridgeDagStorageQueries> dagQueries(const rust::Box<BridgeConsensusApplication>& application) {
+    return create_dag_storage_queries(*application);
   }
 
-  static rust::Box<BridgeConsensusApplication> pbftService(const rust::Box<BridgeStorage>& storage) {
-    return test::createConsensusApplication(*storage, makePbftServiceConfig());
+  rust::Box<BridgeConsensusApplication> application() const {
+    return test::createConsensusApplication(test_dir, makePbftServiceConfig());
   }
 
   std::filesystem::path test_dir;
@@ -98,20 +98,20 @@ PbftServiceConfig makePbftServiceConfig() {
 }
 
 TEST_F(StorageTest, CreateStorage) {
-  auto storage = create_storage(test_dir.string());
+  auto storage = application();
   // rust::Box cannot be null, so this is effectively a constructor smoke test
   SUCCEED();
 }
 
 TEST_F(StorageTest, MissingDagBlockReturnsEmptyPayload) {
-  auto storage = create_storage(test_dir.string());
+  auto storage = application();
   const auto hash = h256(0x11);
   auto value = dagQueries(storage)->get_dag_block(hash);
   EXPECT_TRUE(value.empty());
 }
 
 TEST_F(StorageTest, DagBlockPeriodLookupReflectsFoundState) {
-  auto storage = create_storage(test_dir.string());
+  auto storage = application();
   const auto missing = h256(0x22);
   auto lookup = dagQueries(storage)->get_dag_block_period_lookup(missing);
   EXPECT_FALSE(lookup.found);
@@ -127,26 +127,26 @@ TEST_F(StorageTest, DagBlockPeriodLookupReflectsFoundState) {
 }
 
 TEST_F(StorageTest, PersistPbftVoteProgressRejectsMissingRetainedRewardPayload) {
-  auto storage = create_storage(test_dir.string());
+  auto storage = application();
 
   PbftVoteProgressPersistenceWrite write{};
   write.has_extra_reward_vote = true;
   write.extra_reward_vote_hash = h256(0x44);
 
-  EXPECT_THROW(pbftService(storage)->pbft_service_verified_votes_persist_pbft_vote_progress(write), std::exception);
+  EXPECT_THROW(storage->pbft_service_verified_votes_persist_pbft_vote_progress(write), std::exception);
 
   auto vote_queries = voteQueries(storage);
   EXPECT_TRUE(vote_queries->get_reward_votes().empty());
 }
 
 TEST_F(StorageTest, PersistPbftVoteProgressRejectsInvalidTwoTPlusOneKind) {
-  auto storage = create_storage(test_dir.string());
+  auto storage = application();
 
   PbftVoteProgressPersistenceWrite write{};
   write.has_two_t_plus_one_bundle = true;
   write.two_t_plus_one_kind = 99;
 
-  auto result = pbftService(storage)->pbft_service_verified_votes_persist_pbft_vote_progress(write);
+  auto result = storage->pbft_service_verified_votes_persist_pbft_vote_progress(write);
   EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
   EXPECT_FALSE(result.error_code.empty());
   auto vote_queries = voteQueries(storage);
@@ -154,7 +154,7 @@ TEST_F(StorageTest, PersistPbftVoteProgressRejectsInvalidTwoTPlusOneKind) {
 }
 
 TEST_F(StorageTest, PersistPbftVoteProgressRejectsMissingNativeTwoTPlusOneMapping) {
-  auto storage = create_storage(test_dir.string());
+  auto storage = application();
 
   PbftVoteProgressPersistenceWrite write{};
   write.has_two_t_plus_one_bundle = true;
@@ -164,14 +164,13 @@ TEST_F(StorageTest, PersistPbftVoteProgressRejectsMissingNativeTwoTPlusOneMappin
   write.two_t_plus_one_step = 3;
   write.two_t_plus_one_block_hash = h256(0x55);
 
-  EXPECT_THROW(pbftService(storage)->pbft_service_verified_votes_persist_pbft_vote_progress(write), std::exception);
+  EXPECT_THROW(storage->pbft_service_verified_votes_persist_pbft_vote_progress(write), std::exception);
   auto vote_queries = voteQueries(storage);
   EXPECT_TRUE(vote_queries->get_all_two_t_plus_one_votes().empty());
 }
 
 TEST_F(StorageTest, ClearOwnVerifiedVotesCommitsRustOwnedBatch) {
-  auto storage = create_storage(test_dir.string());
-  auto pbft_service = pbftService(storage);
+  auto storage = application();
   auto own_vote_hash = h256(0x66);
   auto seed_batch = create_storage_shim_batch(*storage);
   storage_shim_save_own_verified_vote(*seed_batch, own_vote_hash, bytes({0x72}));
@@ -179,16 +178,16 @@ TEST_F(StorageTest, ClearOwnVerifiedVotesCommitsRustOwnedBatch) {
   auto vote_queries = voteQueries(storage);
   ASSERT_EQ(vote_queries->get_own_verified_votes().size(), 1u);
 
-  auto result = pbft_service->pbft_service_verified_votes_clear_own_verified_votes();
+  auto result = storage->pbft_service_verified_votes_clear_own_verified_votes();
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
   EXPECT_EQ(result.applied_writes, 1u);
   EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());
 }
 
 TEST_F(StorageTest, ClearOwnVerifiedVotesTreatsEmptyStorageAsNoOp) {
-  auto storage = create_storage(test_dir.string());
+  auto storage = application();
 
-  auto result = pbftService(storage)->pbft_service_verified_votes_clear_own_verified_votes();
+  auto result = storage->pbft_service_verified_votes_clear_own_verified_votes();
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
   EXPECT_EQ(result.applied_writes, 0u);
   auto vote_queries = voteQueries(storage);
@@ -196,21 +195,23 @@ TEST_F(StorageTest, ClearOwnVerifiedVotesTreatsEmptyStorageAsNoOp) {
 }
 
 TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwnVoteCleanup) {
-  auto storage = create_storage(test_dir.string());
   const auto own_vote_hash = h256(0x99);
 
-  auto seed_batch = create_storage_shim_batch(*storage);
-  storage_shim_save_pbft_mgr_field(*seed_batch, 0, 1);
-  storage_shim_save_pbft_mgr_field(*seed_batch, 1, 1);
-  storage_shim_save_pbft_mgr_status(*seed_batch, 2, true);
-  storage_shim_save_pbft_mgr_status(*seed_batch, 3, true);
-  const std::string pbft_head =
-      R"({"head_hash":"0x0000000000000000000000000000000000000000000000000000000000000000","size":0,"non_empty_size":0,"last_pbft_block_hash":"0x0000000000000000000000000000000000000000000000000000000000000000"})";
-  storage_shim_save_pbft_head(*seed_batch, h256(0), bytes(pbft_head));
-  storage_shim_commit_batch(std::move(seed_batch), false);
+  {
+    auto bootstrap = application();
+    auto seed_batch = create_storage_shim_batch(*bootstrap);
+    storage_shim_save_pbft_mgr_field(*seed_batch, 0, 1);
+    storage_shim_save_pbft_mgr_field(*seed_batch, 1, 1);
+    storage_shim_save_pbft_mgr_status(*seed_batch, 2, true);
+    storage_shim_save_pbft_mgr_status(*seed_batch, 3, true);
+    const std::string pbft_head =
+        R"({"head_hash":"0x0000000000000000000000000000000000000000000000000000000000000000","size":0,"non_empty_size":0,"last_pbft_block_hash":"0x0000000000000000000000000000000000000000000000000000000000000000"})";
+    storage_shim_save_pbft_head(*seed_batch, h256(0), bytes(pbft_head));
+    storage_shim_commit_batch(std::move(seed_batch), false);
+  }
 
-  auto runtime = test::createConsensusApplication(*storage, makePbftServiceConfig());
-  auto own_vote_batch = create_storage_shim_batch(*storage);
+  auto runtime = application();
+  auto own_vote_batch = create_storage_shim_batch(*runtime);
   storage_shim_save_own_verified_vote(*own_vote_batch, own_vote_hash, bytes({0x74}));
   storage_shim_commit_batch(std::move(own_vote_batch), false);
   PbftManagerLifecycleTransitionRequest request{};
@@ -219,7 +220,7 @@ TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwn
   request.target_round = 7;
   auto result = pbft_manager_runtime_execute_lifecycle_transition(*runtime, request);
 
-  auto pbft_queries = pbftQueries(storage);
+  auto pbft_queries = pbftQueries(runtime);
   EXPECT_EQ(result.status, kPbftManagerTransitionStorageApplied);
   EXPECT_TRUE(result.error_code.empty());
   EXPECT_EQ(result.snapshot.round, 7u);
@@ -228,6 +229,6 @@ TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwn
   EXPECT_EQ(pbft_queries->get_pbft_mgr_field(1), 1u);
   EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(2));
   EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(3));
-  auto vote_queries = voteQueries(storage);
+  auto vote_queries = voteQueries(runtime);
   EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());
 }

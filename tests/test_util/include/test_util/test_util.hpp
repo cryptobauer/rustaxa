@@ -197,6 +197,10 @@ class TestConfig : public cli::Config {
   TestConfig(const FullNodeConfig& cfg) : cli::Config() {
     node_configured_ = true;
     node_config_ = FullNodeConfig(cfg);
+    const auto rpc_disabled = !cfg.network.rpc || (!cfg.network.rpc->http_port && !cfg.network.rpc->ws_port);
+    if (rpc_disabled && !cfg.network.graphql) {
+      plugins_.clear();
+    }
     enableTestRpc();
     if (cfg.is_light_node) {
       enableLightNode();

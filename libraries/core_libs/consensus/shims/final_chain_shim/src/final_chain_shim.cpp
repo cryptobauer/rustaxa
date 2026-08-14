@@ -181,7 +181,9 @@ rustaxa::FinalChainExecutionRequest make_final_chain_execution_request(const Per
   return request;
 }
 
-rust::Vec<rustaxa::GenesisAccount> make_genesis_accounts(const state_api::Config& config) {
+}  // namespace
+
+rust::Vec<rustaxa::GenesisAccount> makeGenesisAccounts(const state_api::Config& config) {
   auto effective_balances = config.initial_balances;
   for (const auto& validator : config.dpos.initial_validators) {
     for (const auto& [delegator, amount] : validator.delegations) {
@@ -204,7 +206,7 @@ rust::Vec<rustaxa::GenesisAccount> make_genesis_accounts(const state_api::Config
   return accounts;
 }
 
-rust::Vec<rustaxa::GenesisValidator> make_genesis_validators(const state_api::Config& config) {
+rust::Vec<rustaxa::GenesisValidator> makeGenesisValidators(const state_api::Config& config) {
   rust::Vec<rustaxa::GenesisValidator> validators;
   validators.reserve(config.dpos.initial_validators.size());
   for (const auto& validator : config.dpos.initial_validators) {
@@ -232,8 +234,8 @@ rust::Vec<rustaxa::GenesisValidator> make_genesis_validators(const state_api::Co
   return validators;
 }
 
-rustaxa::GenesisDposConfig make_genesis_dpos_config(const state_api::DPOSConfig& config,
-                                                    uint64_t dag_vdf_sortition_total_vote_count_until_period) {
+rustaxa::GenesisDposConfig makeGenesisDposConfig(const state_api::DPOSConfig& config,
+                                                 uint64_t dag_vdf_sortition_total_vote_count_until_period) {
   rustaxa::GenesisDposConfig dpos_config;
   dpos_config.eligibility_balance_threshold = into_big_endian_vec(config.eligibility_balance_threshold);
   dpos_config.vote_eligibility_balance_step = into_big_endian_vec(config.vote_eligibility_balance_step);
@@ -246,7 +248,7 @@ rustaxa::GenesisDposConfig make_genesis_dpos_config(const state_api::DPOSConfig&
   return dpos_config;
 }
 
-rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::FullNodeConfig& config) {
+rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const taraxa::FullNodeConfig& config) {
   rustaxa::FinalChainRewardsConfig rewards_config;
   rewards_config.committee_size = config.genesis.pbft.committee_size;
   rewards_config.magnolia_period = config.genesis.state.hardforks.magnolia_hf.block_num;
@@ -291,6 +293,8 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   }
   return rewards_config;
 }
+
+namespace {
 
 h256 into_h256(const rust::Vec<uint8_t>& bytes, const char* api_name) {
   if (bytes.size() != 32) {
@@ -409,23 +413,22 @@ rustaxa::FinalChainEvmExecutionReport make_evm_execution_report(
 }  // namespace
 
 FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config,
-                       [[maybe_unused]] const addr_t& node_addr)
+                       [[maybe_unused]] const addr_t& node_addr, SharedConsensusApplication consensus_application)
     : db_(db),
-      rust_final_chain_(rustaxa::create_final_chain_with_rewards_config(
-          db->rustStorage(), config.genesis.pbft.gas_limit, config.genesis.dag_genesis_block.getTimestamp(),
-          make_genesis_accounts(config.genesis.state), make_genesis_validators(config.genesis.state),
-          make_genesis_dpos_config(config.genesis.state.dpos, config.genesis.state.hardforks.magnolia_hf.block_num),
-          make_final_chain_rewards_config(config))),
+      consensus_application_(std::move(consensus_application)),
       rust_execution_api_(rustaxa::create_consensus_execution_api()),
       state_api_([this](auto n) { return blockHash(n).value_or(ZeroHash()); }, config.genesis.state,
                  config.opts_final_chain, {db->stateDbStoragePath().string()}),
       external_evm_state_api_(state_api_, state_api_mutex_),
       config_(config) {
+  if (!consensus_application_) {
+    throw std::invalid_argument("FinalChain requires the native consensus application root");
+  }
   recoverExternalEvmPendingPublication();
   delegation_delay_ = config.genesis.state.dpos.delegation_delay;
   block_gas_limit_ = config.genesis.pbft.gas_limit;
   max_levels_per_period_ = config.max_levels_per_period;
-  auto execution_status = rust_final_chain_.value()->get_execution_status();
+  auto execution_status = consensus_application_->service().get_execution_status();
   num_executed_dag_blk_ = execution_status.executed_dag_block_count;
   num_executed_trx_ = execution_status.executed_transaction_count;
 }
@@ -632,7 +635,7 @@ bool FinalChain::ExternalEvmStateApiClient::accountHasCode(EthBlockNumber block_
 
 void FinalChain::recoverExternalEvmPendingPublication() {
   const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
-  auto recovery_report = rust_final_chain_.value()->recover_external_evm_pending_publication(
+  auto recovery_report = consensus_application_->service().recover_external_evm_pending_publication(
       state_descriptor.blk_num, into_bytes_array(state_descriptor.state_root));
   if (recovery_report.status == kFinalChainEvmPublicationStatusRejected) {
     throw DbException("FinalChain startup rejected Rust external EVM publication recovery: " +
@@ -663,33 +666,33 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
     throw DbException("FinalChain::finalize Rust execution runtime returned unexpected action " +
                       std::to_string(step.action));
   }
-  auto commit_report =
-      rust_execution_api_.value()->consensus_execution_commit_session(*rust_final_chain_.value(), std::move(session));
-  if (commit_report.status != kFinalChainExecutionStatusComplete || !commit_report.error_code.empty()) {
-    throw DbException("FinalChain::finalize Rust execution runtime failed commit: " +
-                      std::string(commit_report.error_code));
+  auto result = commitNativeSession(std::move(session), std::move(period_data), std::move(finalized_dag_blk_hashes));
+  return ready_finalization_result(std::move(result));
+}
+
+std::shared_ptr<const FinalizationResult> FinalChain::commitNativeSession(
+    rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, PeriodData&& period_data,
+    std::vector<h256>&& finalized_dag_blk_hashes) {
+  auto report = rust_execution_api_.value()->consensus_execution_commit_session(
+      consensus_application_->service(), std::move(session));
+  if (report.status != kFinalChainExecutionStatusComplete || !report.error_code.empty()) {
+    throw DbException("FinalChain::finalize Rust execution runtime failed native commit: " +
+                      std::string(report.error_code));
   }
-  auto header_data = into_string(commit_report.block_header_rlp);
+  auto header_data = into_string(report.block_header_rlp);
   auto header = BlockHeader::fromRLP(dev::RLP(header_data));
   TransactionReceipts receipts;
-  receipts.reserve(commit_report.receipts.size());
-  for (auto const& receipt : commit_report.receipts) {
+  receipts.reserve(report.receipts.size());
+  for (auto const& receipt : report.receipts) {
     auto receipt_data = into_string(receipt.data);
     receipts.push_back(util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_data)));
   }
   auto result = std::make_shared<FinalizationResult>(FinalizationResult{
-      {
-          period_data.pbft_blk->getBeneficiary(),
-          period_data.pbft_blk->getTimestamp(),
-          std::move(finalized_dag_blk_hashes),
-          period_data.pbft_blk->getBlockHash(),
-      },
-      std::move(header),
-      std::move(period_data.transactions),
-      std::move(receipts),
-  });
+      {period_data.pbft_blk->getBeneficiary(), period_data.pbft_blk->getTimestamp(),
+       std::move(finalized_dag_blk_hashes), period_data.pbft_blk->getBlockHash()},
+      std::move(header), std::move(period_data.transactions), std::move(receipts)});
   block_finalized_emitter_.emit(result);
-  return ready_finalization_result(std::move(result));
+  return result;
 }
 
 std::vector<SharedTransaction> FinalChain::makeSystemTransactions(
@@ -697,13 +700,13 @@ std::vector<SharedTransaction> FinalChain::makeSystemTransactions(
   const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
   const auto is_pillar_block_period =
       config_.genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(request.period + delegationDelay());
+  auto system_facts = external_evm_state_api_.collectSystemTransactionFacts(
+      request, is_pillar_block_period, block_gas_limit_, bridge_contract_address);
   auto plan = rust_execution_api_.value()->consensus_execution_plan_system_transactions(
-      external_evm_state_api_.collectSystemTransactionFacts(request, is_pillar_block_period, block_gas_limit_,
-                                                            bridge_contract_address));
+      system_facts);
   if (plan.request_id != request.request_id || plan.period != request.period) {
     throw DbException("FinalChain::makeSystemTransactions Rust plan identity mismatch");
   }
-
   std::vector<SharedTransaction> system_transactions;
   system_transactions.reserve(plan.transactions.size());
   for (const auto& tx_rlp : plan.transactions) {
@@ -716,7 +719,6 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, rustaxa::FinalChainExecutionStep step,
     PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, std::shared_ptr<DagBlock>&& anchor) {
   block_applying_emitter_.emit(lastBlockNumber() + 1);
-
   auto all_transactions = period_data.transactions;
   if (step.action == kFinalChainExecutionActionProvideSystemTransactions) {
     auto system_transactions = makeSystemTransactions(step.system_transaction_request);
@@ -732,8 +734,10 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     }
     step =
         rust_execution_api_.value()->consensus_execution_report_system_transactions(*session, std::move(system_report));
+    if (step.action == kFinalChainExecutionActionCommitNative) {
+      return commitNativeSession(std::move(session), std::move(period_data), std::move(finalized_dag_blk_hashes));
+    }
   }
-
   if (step.action != kFinalChainExecutionActionExecuteExternalEvm) {
     throw DbException("FinalChain::finalize expected external EVM execution action, got " +
                       std::to_string(step.action) + ": " + std::string(step.error_code));
@@ -741,17 +745,15 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
   if (step.evm_request.transactions.size() != all_transactions.size()) {
     throw DbException("FinalChain::finalize external EVM request transaction count mismatch");
   }
-
   auto execution = external_evm_state_api_.executeTransactions(step.evm_request, all_transactions,
                                                                period_data.pbft_blk->getBeneficiary(), block_gas_limit_,
                                                                period_data.pbft_blk->getTimestamp());
-  step = rust_execution_api_.value()->consensus_execution_report_execution_result(*rust_final_chain_.value(), *session,
-                                                                                  std::move(execution.report));
+  step = rust_execution_api_.value()->consensus_execution_report_execution_result(
+      consensus_application_->service(), *session, std::move(execution.report));
   if (step.action != kFinalChainExecutionActionDistributeExternalEvmRewards) {
     throw DbException("FinalChain::finalize expected external EVM rewards action, got " + std::to_string(step.action) +
                       ": " + std::string(step.error_code));
   }
-
   auto rewards_execution = external_evm_state_api_.distributeRewards(step.evm_rewards_request);
   auto commit_plan = rust_execution_api_.value()->consensus_execution_report_rewards_result(
       *session, std::move(rewards_execution.report));
@@ -760,7 +762,7 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
                       std::string(commit_plan.error_code));
   }
   auto state_commit_intent = rust_execution_api_.value()->consensus_execution_prepare_external_evm_state_commit(
-      *rust_final_chain_.value(), *session,
+      consensus_application_->service(), *session,
       rustaxa::FinalChainProposalPeriodDagLevelUpdate{
           .has_update = !!anchor, .level = anchor ? anchor->getLevel() + max_levels_per_period_ : 0});
   if (state_commit_intent.status != kFinalChainEvmStateCommitIntentReadyToCommit ||
@@ -768,30 +770,28 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     throw DbException("FinalChain::finalize Rust external EVM state commit intent failed: " +
                       std::string(state_commit_intent.error_code));
   }
-
   auto state_commit_result = external_evm_state_api_.commitState();
   if (state_commit_result.status != kFinalChainEvmLifecycleStatusCommitted) {
     const auto error_code = std::string(state_commit_result.error_code);
     auto rejected_decision = rust_execution_api_.value()->consensus_execution_report_state_commit_result(
-        *rust_final_chain_.value(), *session, std::move(state_commit_result));
+        consensus_application_->service(), *session, std::move(state_commit_result));
     if (rejected_decision.status != kFinalChainEvmCommitDecisionRejected) {
       throw DbException("FinalChain::finalize Rust external EVM lifecycle unexpectedly accepted failed state commit");
     }
     throw DbException("FinalChain::finalize StateAPI external EVM state commit failed: " + error_code);
   }
   auto decision = rust_execution_api_.value()->consensus_execution_report_state_commit_result(
-      *rust_final_chain_.value(), *session, std::move(state_commit_result));
+      consensus_application_->service(), *session, std::move(state_commit_result));
   if (decision.status != kFinalChainEvmCommitDecisionReadyToPublish || !decision.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust external EVM lifecycle rejected: " + std::string(decision.error_code));
   }
-
   auto publication_step = rust_execution_api_.value()->consensus_execution_next_execution_request(*session);
   if (publication_step.action != kFinalChainExecutionActionPublishExternalEvmStorage) {
     throw DbException("FinalChain::finalize expected external EVM storage publication action, got " +
                       std::to_string(publication_step.action) + ": " + std::string(publication_step.error_code));
   }
-  auto publication_report =
-      rust_execution_api_.value()->consensus_execution_publish_state_commit(*rust_final_chain_.value(), *session);
+  auto publication_report = rust_execution_api_.value()->consensus_execution_publish_state_commit(
+      consensus_application_->service(), *session);
   if (publication_report.status != kFinalChainEvmPublicationStatusApplied &&
       publication_report.status != kFinalChainEvmPublicationStatusAlreadyApplied) {
     throw DbException("FinalChain::finalize Rust external EVM publication rejected: " +
@@ -805,8 +805,7 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
   }
   num_executed_dag_blk_ = publication_report.executed_dag_block_count;
   num_executed_trx_ = publication_report.executed_transaction_count;
-
-  auto block_header_data = into_string(rust_final_chain_.value()->get_block_header(publication_report.period));
+  auto block_header_data = into_string(consensus_application_->service().get_block_header(publication_report.period));
   auto blk_header = BlockHeader::fromRLP(dev::RLP(block_header_data));
   auto result = std::make_shared<FinalizationResult>(FinalizationResult{
       {
@@ -825,7 +824,7 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
 
 std::shared_ptr<const BlockHeader> FinalChain::blockHeader(std::optional<EthBlockNumber> n) const {
   auto const block_number = n.value_or(lastBlockNumber());
-  auto rust_header = rust_final_chain_.value()->get_block_header(static_cast<uint64_t>(block_number));
+  auto rust_header = consensus_application_->service().get_block_header(static_cast<uint64_t>(block_number));
   if (rust_header.empty()) {
     return nullptr;
   }
@@ -834,10 +833,10 @@ std::shared_ptr<const BlockHeader> FinalChain::blockHeader(std::optional<EthBloc
   return BlockHeader::fromRLP(dev::RLP(header_data));
 }
 
-EthBlockNumber FinalChain::lastBlockNumber() const { return rust_final_chain_.value()->get_last_block_number(); }
+EthBlockNumber FinalChain::lastBlockNumber() const { return consensus_application_->service().get_last_block_number(); }
 
 std::optional<EthBlockNumber> FinalChain::blockNumber(h256 const& h) const {
-  auto rust_lookup = rust_final_chain_.value()->get_block_number(into_bytes_array(h));
+  auto rust_lookup = consensus_application_->service().get_block_number(into_bytes_array(h));
   if (!rust_lookup.found) {
     return std::nullopt;
   }
@@ -846,7 +845,7 @@ std::optional<EthBlockNumber> FinalChain::blockNumber(h256 const& h) const {
 
 std::optional<h256> FinalChain::blockHash(std::optional<EthBlockNumber> n) const {
   auto const block_number = n.value_or(lastBlockNumber());
-  auto rust_hash = rust_final_chain_.value()->get_block_hash(static_cast<uint64_t>(block_number));
+  auto rust_hash = consensus_application_->service().get_block_hash(static_cast<uint64_t>(block_number));
   if (rust_hash.empty()) {
     return std::nullopt;
   }
@@ -880,16 +879,20 @@ std::shared_ptr<const TransactionHashes> FinalChain::transactionHashes(std::opti
 const SharedTransactions FinalChain::transactions(std::optional<EthBlockNumber> n) const {
   SharedTransactions ret;
   auto const block_number = n.value_or(lastBlockNumber());
-  auto rust_transactions = rust_final_chain_.value()->get_transaction_rlps(block_number);
+  auto rust_transactions = consensus_application_->service().get_transaction_rlps(block_number);
   ret.reserve(rust_transactions.size());
   for (auto const& transaction : rust_transactions) {
-    ret.push_back(std::make_shared<Transaction>(into_bytes(transaction.data), false));
+    if (transaction.is_system) {
+      ret.push_back(std::make_shared<SystemTransaction>(into_bytes(transaction.data)));
+    } else {
+      ret.push_back(std::make_shared<Transaction>(into_bytes(transaction.data), false));
+    }
   }
   return ret;
 }
 
 std::optional<TransactionLocation> FinalChain::transactionLocation(h256 const& trx_hash) const {
-  auto rust_location = rust_final_chain_.value()->get_transaction_location(into_bytes_array(trx_hash));
+  auto rust_location = consensus_application_->service().get_transaction_location(into_bytes_array(trx_hash));
   if (rust_location.empty()) {
     return std::nullopt;
   }
@@ -899,7 +902,7 @@ std::optional<TransactionLocation> FinalChain::transactionLocation(h256 const& t
 
 std::optional<TransactionReceipt> FinalChain::transactionReceipt(EthBlockNumber blk_n, uint64_t position,
                                                                  std::optional<trx_hash_t>) const {
-  auto receipt = rust_final_chain_.value()->get_transaction_receipt(blk_n, position);
+  auto receipt = consensus_application_->service().get_transaction_receipt(blk_n, position);
   if (receipt.empty()) {
     return std::nullopt;
   }
@@ -916,14 +919,14 @@ std::shared_ptr<Transaction> FinalChain::transaction(EthBlockNumber blk_n, uint3
 }
 
 uint64_t FinalChain::transactionCount(std::optional<EthBlockNumber> n) const {
-  return rust_final_chain_.value()->get_transaction_count(static_cast<uint64_t>(n.value_or(lastBlockNumber())));
+  return consensus_application_->service().get_transaction_count(static_cast<uint64_t>(n.value_or(lastBlockNumber())));
 }
 
 std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const& b, EthBlockNumber from,
                                                        EthBlockNumber to) const {
   std::array<uint8_t, 256> bloom{};
   std::memcpy(bloom.data(), b.data(), bloom.size());
-  auto rust_blocks = rust_final_chain_.value()->get_blocks_with_bloom(bloom, from, to);
+  auto rust_blocks = consensus_application_->service().get_blocks_with_bloom(bloom, from, to);
   std::vector<EthBlockNumber> blocks;
   blocks.reserve(rust_blocks.size());
   for (auto const block : rust_blocks) {
@@ -940,9 +943,20 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
     return external_evm_state_api_.account(requested_block, addr);
   }
 
-  auto rust_account = blk_n.has_value()
-                          ? rust_final_chain_.value()->get_account_at_block(*blk_n, into_address_array(addr))
-                          : rust_final_chain_.value()->get_account(into_address_array(addr));
+  rustaxa::AccountLookup rust_account;
+  try {
+    rust_account = blk_n.has_value()
+                       ? consensus_application_->service().get_account_at_block(*blk_n, into_address_array(addr))
+                       : consensus_application_->service().get_account(into_address_array(addr));
+  } catch (const std::exception& error) {
+    // External-EVM publications deliberately omit native account snapshots. When the requested native height is ahead
+    // of the retained EVM state, use its latest committed snapshot for the concrete-EVM account boundary.
+    if (std::string(error.what()).find("account snapshot unavailable") != std::string::npos) {
+      return external_evm_state_api_.account(state_descriptor.blk_num, addr);
+    }
+    throw DbException("FinalChain::getAccount requested block " + std::to_string(requested_block) +
+                      " beyond external EVM head " + std::to_string(state_descriptor.blk_num) + ": " + error.what());
+  }
   if (!rust_account.found) {
     return std::nullopt;
   }
@@ -994,7 +1008,7 @@ state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx
     request.gas_price = into_big_endian_vec(trx.gas_price);
     request.gas_limit = trx.gas;
     request.input = into_rust_vec(trx.input);
-    auto outcome = rust_final_chain_.value()->call(std::move(request));
+    auto outcome = consensus_application_->service().call(std::move(request));
 
     state_api::ExecutionResult result;
     result.code_retval = into_bytes(outcome.code_retval);
@@ -1053,15 +1067,15 @@ std::string FinalChain::trace(std::vector<state_api::EVMTransaction> state_trxs,
 }
 
 uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber blk_num) const {
-  return rust_final_chain_.value()->get_dpos_eligible_total_vote_count(blk_num);
+  return consensus_application_->service().get_dpos_eligible_total_vote_count(blk_num);
 }
 
 uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const {
-  return rust_final_chain_.value()->get_dpos_eligible_vote_count(blk_num, into_address_array(addr));
+  return consensus_application_->service().get_dpos_eligible_vote_count(blk_num, into_address_array(addr));
 }
 
 bool FinalChain::dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) const {
-  return rust_final_chain_.value()->get_dpos_is_eligible(blk_num, into_address_array(addr));
+  return consensus_application_->service().get_dpos_is_eligible(blk_num, into_address_array(addr));
 }
 
 void FinalChain::prune(EthBlockNumber) { throw_unimplemented_final_chain_api("prune"); }
@@ -1069,7 +1083,7 @@ void FinalChain::prune(EthBlockNumber) { throw_unimplemented_final_chain_api("pr
 void FinalChain::waitForFinalized() { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
 
 std::vector<state_api::ValidatorStake> FinalChain::dposValidatorsTotalStakes(EthBlockNumber blk_num) const {
-  auto rust_stakes = rust_final_chain_.value()->get_dpos_validators_total_stakes(blk_num);
+  auto rust_stakes = consensus_application_->service().get_dpos_validators_total_stakes(blk_num);
   std::vector<state_api::ValidatorStake> stakes;
   stakes.reserve(rust_stakes.size());
   for (const auto& rust_stake : rust_stakes) {
@@ -1082,83 +1096,53 @@ std::vector<state_api::ValidatorStake> FinalChain::dposValidatorsTotalStakes(Eth
 }
 
 uint256_t FinalChain::dposTotalAmountDelegated(EthBlockNumber blk_num) const {
-  auto delegated = rust_final_chain_.value()->get_dpos_total_amount_delegated(blk_num);
+  auto delegated = consensus_application_->service().get_dpos_total_amount_delegated(blk_num);
   return dev::fromBigEndian<u256>(dev::bytes(delegated.begin(), delegated.end()));
 }
 
 uint64_t FinalChain::dposYield(EthBlockNumber blk_num) const {
-  return rust_final_chain_.value()->get_dpos_yield(blk_num);
+  return consensus_application_->service().get_dpos_yield(blk_num);
 }
 
 u256 FinalChain::dposTotalSupply(EthBlockNumber blk_num) const {
-  auto supply = rust_final_chain_.value()->get_dpos_total_supply(blk_num);
+  auto supply = consensus_application_->service().get_dpos_total_supply(blk_num);
   return dev::fromBigEndian<u256>(dev::bytes(supply.begin(), supply.end()));
 }
 
 h256 FinalChain::getBridgeRoot(EthBlockNumber blk_num) const {
   const static auto get_bridge_root_method = util::EncodingSolidity::packFunctionCall("getBridgeRoot()");
-  const auto requested_block = blk_num;
-  const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
-  const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
-  if (requested_block > state_descriptor.blk_num) {
-    if (!external_evm_state_api_.accountHasCode(state_descriptor.blk_num, bridge_contract_address)) {
-      return ZeroHash();
-    }
-    throw DbException("FinalChain::getBridgeRoot requires committed external-EVM state for block " +
-                      std::to_string(requested_block));
-  }
-  if (!external_evm_state_api_.accountHasCode(requested_block, bridge_contract_address)) {
-    return ZeroHash();
-  }
-  const auto block_header = blockHeader(requested_block);
-  if (!block_header) {
-    throw DbException("FinalChain::getBridgeRoot missing committed block header for block " +
-                      std::to_string(requested_block));
-  }
-
-  const auto result = external_evm_state_api_.dryRunTransaction(
-      *block_header,
-      state_api::EVMTransaction{dev::ZeroAddress, 1, bridge_contract_address, state_api::ZeroAccount.nonce, 0, 10000000,
-                                get_bridge_root_method},
-      true);
-  if (!result.code_err.empty() || !result.consensus_err.empty()) {
-    throw DbException("FinalChain::getBridgeRoot bridge-contract read failed: " + result.code_err +
-                      result.consensus_err);
-  }
-  return into_h256(result.code_retval, "getBridgeRoot");
+  return readBridgeContractHash(blk_num, get_bridge_root_method, "getBridgeRoot");
 }
 
 h256 FinalChain::getBridgeEpoch(EthBlockNumber blk_num) const {
   const static auto get_bridge_epoch_method = util::EncodingSolidity::packFunctionCall("finalizedEpoch()");
-  const auto requested_block = blk_num;
+  return readBridgeContractHash(blk_num, get_bridge_epoch_method, "getBridgeEpoch");
+}
+
+h256 FinalChain::readBridgeContractHash(EthBlockNumber block_number, const bytes& method,
+                                        const char* api_name) const {
   const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
   const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
-  if (requested_block > state_descriptor.blk_num) {
-    if (!external_evm_state_api_.accountHasCode(state_descriptor.blk_num, bridge_contract_address)) {
-      return ZeroHash();
-    }
-    throw DbException("FinalChain::getBridgeEpoch requires committed external-EVM state for block " +
-                      std::to_string(requested_block));
-  }
-  if (!external_evm_state_api_.accountHasCode(requested_block, bridge_contract_address)) {
+  // Native-only finalizations advance the canonical block height without changing EVM state. Query the latest committed
+  // EVM snapshot at or before the requested native block, matching the retained concrete-EVM call boundary.
+  const auto evm_block = std::min(block_number, state_descriptor.blk_num);
+  if (!external_evm_state_api_.accountHasCode(evm_block, bridge_contract_address)) {
     return ZeroHash();
   }
-  const auto block_header = blockHeader(requested_block);
+  const auto block_header = blockHeader(evm_block);
   if (!block_header) {
-    throw DbException("FinalChain::getBridgeEpoch missing committed block header for block " +
-                      std::to_string(requested_block));
+    throw DbException("FinalChain::" + std::string(api_name) + " missing committed block header for block " +
+                      std::to_string(evm_block));
   }
-
   const auto result = external_evm_state_api_.dryRunTransaction(
       *block_header,
       state_api::EVMTransaction{dev::ZeroAddress, 1, bridge_contract_address, state_api::ZeroAccount.nonce, 0, 10000000,
-                                get_bridge_epoch_method},
+                                method},
       true);
-  if (!result.code_err.empty() || !result.consensus_err.empty()) {
-    throw DbException("FinalChain::getBridgeEpoch bridge-contract read failed: " + result.code_err +
-                      result.consensus_err);
+  if (result.code_retval.empty()) {
+    return ZeroHash();
   }
-  return into_h256(result.code_retval, "getBridgeEpoch");
+  return into_h256(result.code_retval, api_name);
 }
 
 std::pair<val_t, bool> FinalChain::getBalance(addr_t const& addr) const {

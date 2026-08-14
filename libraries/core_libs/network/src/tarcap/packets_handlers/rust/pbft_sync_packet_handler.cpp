@@ -1,5 +1,6 @@
 #include "network/tarcap/packets_handlers/rust/pbft_sync_packet_handler.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 
 #include "final_chain/final_chain.hpp"
@@ -18,6 +19,27 @@ u256 fromBridgeU256(const std::array<uint8_t, 32>& value) {
 
 addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
+}
+
+std::array<uint8_t, 32> toBridgeU256(const u256& value) {
+  std::array<uint8_t, 32> out{};
+  const auto bytes = dev::toBigEndian(value);
+  std::copy(bytes.begin(), bytes.end(), out.begin() + (out.size() - bytes.size()));
+  return out;
+}
+
+std::vector<network::PbftSyncSlashingSubmitterFact> makeSlashingSubmitterFacts(
+    const FullNodeConfig& config, const std::shared_ptr<final_chain::FinalChain>& final_chain) {
+  std::vector<network::PbftSyncSlashingSubmitterFact> submitters;
+  submitters.reserve(config.wallets.size());
+  for (size_t index = 0; index < config.wallets.size(); ++index) {
+    const auto account = final_chain->getAccount(config.wallets[index].node_addr).value_or(state_api::ZeroAccount);
+    submitters.push_back({index, toBridgeU256(account.nonce), toBridgeU256(account.balance)});
+    if (account.balance != 0) {
+      break;
+    }
+  }
+  return submitters;
 }
 
 }  // namespace
@@ -54,7 +76,8 @@ void RustPbftSyncPacketHandler::process(const threadpool::PacketData& packet_dat
 
   const auto packet_rlp = packet_data.rlp_.data().toBytes();
   const auto ingress = consensus_network_api_->admitPbftSyncPacket(
-      *final_chain_, packet_rlp, packet_data.id_, peer->getId().asArray(),
+      packet_rlp, packet_data.id_, peer->getId().asArray(),
+      makeSlashingSubmitterFacts(kConf, final_chain_),
       network::PbftSyncIngressExecutor{[this](const auto& effect) { return executeSlashingTransaction(effect); }});
   if (ingress.action == network::PbftSyncIngressAction::kMalicious) {
     LOG(log_er_) << "Native PBFT-sync ingress rejected packet: " << ingress.error_code;

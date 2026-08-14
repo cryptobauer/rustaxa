@@ -1,6 +1,4 @@
 use crate::ffi::rustaxa_ffi::*;
-#[cfg(test)]
-use crate::ffi::BridgeStorage;
 use crate::pbft_manager::pbft_service_config_from_ffi;
 use crate::transaction_manager::{
     bridge_to_service_account_nonce_facts, bridge_to_service_final_chain_admission_fact,
@@ -257,7 +255,8 @@ pub fn create_consensus_application(
     storage_path: &str,
     schema_major: u32,
     schema_minor: u32,
-    genesis: &[u8; 32],
+    storage_genesis: &[u8; 32],
+    dag_genesis: &[u8; 32],
     dag_expiry_limit: u32,
     max_levels_per_period: u64,
     sortition_config: SortitionRuntimeConfig,
@@ -276,7 +275,7 @@ pub fn create_consensus_application(
         storage_path: storage_path.into(),
         schema_major,
         schema_minor,
-        genesis_hash: H256::from(*genesis),
+        storage_genesis_hash: H256::from(*storage_genesis),
         final_chain: crate::final_chain::consensus_final_chain_config_from_ffi(
             final_chain_block_gas_limit,
             final_chain_genesis_timestamp,
@@ -293,7 +292,7 @@ pub fn create_consensus_application(
                     proposal_dag_gas_limit,
                 },
                 dag: DagServiceConfig {
-                    genesis_hash: H256::from(*genesis),
+                    genesis_hash: H256::from(*dag_genesis),
                     dag_expiry_limit,
                     max_levels_per_period,
                 },
@@ -302,6 +301,25 @@ pub fn create_consensus_application(
             pbft: pbft_service_config_from_ffi(pbft_config)?,
         },
     }
+    .bootstrap()?;
+    let dag_root = root.dag_transaction_arc_for_bridge();
+    Ok(Box::new(BridgeConsensusApplication(root, dag_root)))
+}
+
+/// Builds the production-shaped application root used by Rust bridge tests.
+/// Tests may vary validators and delegation delay; bootstrap failures publish
+/// no partial storage, FinalChain, or consensus-service handle.
+#[cfg(test)]
+pub(crate) fn create_test_consensus_application(
+    storage_path: &str,
+    genesis_validators: Vec<GenesisValidator>,
+    delegation_delay: u64,
+) -> Result<Box<BridgeApp>> {
+    let root = rustaxa_consensus::consensus_application_test_bootstrap(
+        storage_path.into(),
+        crate::final_chain::genesis_validators_from_ffi(genesis_validators),
+        delegation_delay,
+    )
     .bootstrap()?;
     let dag_root = root.dag_transaction_arc_for_bridge();
     Ok(Box::new(BridgeConsensusApplication(root, dag_root)))

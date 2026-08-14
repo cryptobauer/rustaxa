@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "common/types.hpp"
+#include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa {
@@ -25,7 +26,8 @@ namespace fs = std::filesystem;
 //   that must not become production Rust consensus storage authority.
 class DbStorage : public DbStorageOld {
  public:
-  explicit DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_block = 0, uint32_t max_open_files = 0,
+  explicit DbStorage(SharedConsensusApplication consensus_application, fs::path const& path,
+                     uint32_t db_snapshot_each_n_pbft_block = 0, uint32_t max_open_files = 0,
                      uint32_t db_max_snapshots = 0, PbftPeriod db_revert_to_period = 0, addr_t node_addr = addr_t(),
                      bool rebuild = false);
 
@@ -219,8 +221,8 @@ class DbStorage : public DbStorageOld {
   void saveBlockRewardsStats(uint64_t period, const rewards::BlockStats& stats, Batch& write_batch);
   bool hasMajorVersionChanged();
   void compactColumn(Column const& column);
-  rustaxa::BridgeStorage& rustStorage();
-  const rustaxa::BridgeStorage& rustStorage() const;
+  /** Returns the root-bound public consensus query adapter owned by this storage facade. */
+  std::shared_ptr<rust::Box<rustaxa::BridgeConsensusQueryApi>> consensusQueryApi() const;
 
   template <typename T>
   void clearColumnHistory(std::unordered_set<T>& to_keep, Column c) {
@@ -250,13 +252,14 @@ class DbStorage : public DbStorageOld {
   std::string lookupFinalChainLogBloomsChunk(const Slice& key) const;
   std::string lookupFinalChainReceiptByTrxHash(const Slice& key) const;
 
-  std::optional<::rust::Box<rustaxa::BridgeStorage>> rust_storage_;
+  SharedConsensusApplication consensus_application_;
   std::optional<::rust::Box<rustaxa::BridgeDagStorageQueries>> dag_queries_;
   std::optional<::rust::Box<rustaxa::BridgePbftStorageQueries>> pbft_queries_;
   std::optional<::rust::Box<rustaxa::BridgePbftVoteStorageQueries>> pbft_vote_queries_;
   std::optional<::rust::Box<rustaxa::BridgeTransactionStorageQueries>> transaction_queries_;
   std::optional<::rust::Box<rustaxa::BridgeFinalChainStorageQueries>> final_chain_queries_;
   std::optional<::rust::Box<rustaxa::BridgePeriodStorageQueries>> period_queries_;
+  std::shared_ptr<rust::Box<rustaxa::BridgeConsensusQueryApi>> consensus_query_api_;
   std::unordered_map<Batch*, ::rust::Box<rustaxa::BridgeStorageBatch>> rust_batches_;
   std::mutex rust_batches_mutex_;
 };

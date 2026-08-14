@@ -11,6 +11,7 @@
 
 #include "common/init.hpp"
 #include "final_chain/final_chain.hpp"
+#include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/samples.hpp"
 #include "transaction/transaction.hpp"
 #include "transaction/transaction_manager.hpp"
@@ -30,10 +31,11 @@ TEST(TransactionManagerShimTest, rustModeTransactionManagerOwnsSharedIdentity) {
 struct TransactionManagerShimFixture : NodesTest {};
 
 TEST_F(TransactionManagerShimFixture, transactionMutexAccessorReturnsStableShimOwnedLock) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
 
   auto* first = &trx_mgr.getTransactionsMutex();
   auto* second = &trx_mgr.getTransactionsMutex();
@@ -43,24 +45,25 @@ TEST_F(TransactionManagerShimFixture, transactionMutexAccessorReturnsStableShimO
 }
 
 TEST_F(TransactionManagerShimFixture, sharedIdentityBelongsToStandaloneFacade) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  auto trx_mgr =
-      std::make_shared<TransactionManager>(cfg, db, final_chain, addr_t{}, createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  auto trx_mgr = std::make_shared<TransactionManager>(cfg, db, final_chain, addr_t{}, storage.application);
 
   EXPECT_EQ(trx_mgr->shared_from_this(), trx_mgr);
 }
 
 TEST_F(TransactionManagerShimFixture, gasPriceBidAndFinalizedUpdatesUseNativeBlockOracle) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
   cfg.blocks_gas_pricer = true;
   cfg.genesis.gas_price.percentile = 50;
   cfg.genesis.gas_price.blocks = 10;
   cfg.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price = 1;
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t{}, createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t{}, storage.application);
   const auto secret = dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
                                   dev::Secret::ConstructFromStringType::FromHex);
   const auto transaction = [&secret](uint64_t nonce, uint64_t gas_price) {
@@ -77,21 +80,23 @@ TEST_F(TransactionManagerShimFixture, gasPriceBidAndFinalizedUpdatesUseNativeBlo
 }
 
 TEST_F(TransactionManagerShimFixture, gasPriceBidUsesNativePoolModeFloor) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
   cfg.blocks_gas_pricer = false;
   cfg.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price = 10;
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t{}, createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t{}, storage.application);
 
   EXPECT_EQ(trx_mgr.gasPriceBid(), 10);
 }
 
 TEST_F(TransactionManagerShimFixture, rustPlannerPreservesPackTrxsSelectionAndEstimations) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 4,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -110,10 +115,11 @@ TEST_F(TransactionManagerShimFixture, rustPlannerPreservesPackTrxsSelectionAndEs
 }
 
 TEST_F(TransactionManagerShimFixture, rustEstimateTransactionGasUsesRustRuntimeDecisions) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   auto transaction =
       std::make_shared<Transaction>(1, 0, 1, 300000, dev::bytes(),
                                     dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -129,10 +135,11 @@ TEST_F(TransactionManagerShimFixture, rustEstimateTransactionGasUsesRustRuntimeD
 }
 
 TEST_F(TransactionManagerShimFixture, rustEstimateTransactionsUsesShimEstimator) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 2,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -146,10 +153,11 @@ TEST_F(TransactionManagerShimFixture, rustEstimateTransactionsUsesShimEstimator)
 }
 
 TEST_F(TransactionManagerShimFixture, rustStoragePersistsDagTransactionsBeforeLiveCacheMutation) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 4,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -185,10 +193,11 @@ TEST_F(TransactionManagerShimFixture, rustStoragePersistsDagTransactionsBeforeLi
 }
 
 TEST_F(TransactionManagerShimFixture, rustGetTransactionPrefersLiveCachesThenStorage) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 1,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -211,7 +220,7 @@ TEST_F(TransactionManagerShimFixture, rustGetTransactionPrefersLiveCachesThenSto
   EXPECT_EQ(from_cache->getHash(), cached_view.front()->getHash());
   EXPECT_EQ(from_cache->rlp(), cached_view.front()->rlp());
 
-  TransactionManager restart_trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  TransactionManager restart_trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto from_storage = restart_trx_mgr.getTransaction(transactions[0]->getHash());
   ASSERT_TRUE(from_storage);
   EXPECT_NE(from_storage.get(), transactions[0].get());
@@ -220,21 +229,22 @@ TEST_F(TransactionManagerShimFixture, rustGetTransactionPrefersLiveCachesThenSto
 }
 
 TEST_F(TransactionManagerShimFixture, rustGetTransactionsCombinesLiveAndRustStorageLookups) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 2,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
                                                   dev::Secret::ConstructFromStringType::FromHex));
 
   {
-    TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+    TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
     ASSERT_TRUE(trx_mgr.insertTransaction(transactions[0]).first);
     trx_mgr.saveTransactionsFromDagBlock({transactions[0]});
   }
 
-  TransactionManager restart_trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  TransactionManager restart_trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   ASSERT_TRUE(restart_trx_mgr.insertTransaction(transactions[1]).first);
 
   const auto materialized = restart_trx_mgr.getTransactions(
@@ -248,10 +258,11 @@ TEST_F(TransactionManagerShimFixture, rustGetTransactionsCombinesLiveAndRustStor
 }
 
 TEST_F(TransactionManagerShimFixture, rustGetTransactionsBoundedViewPreservesInputOrderAndDuplicates) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  auto trx_mgr = TransactionManager(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  auto trx_mgr = TransactionManager(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 3,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -283,11 +294,15 @@ TEST_F(TransactionManagerShimFixture, rustGetTransactionsBoundedViewPreservesInp
 }
 
 TEST_F(TransactionManagerShimFixture, rustDagTransactionPersistenceFailureDoesNotMutateLiveState) {
-  auto db = std::make_shared<DbStorage>(data_dir);
-  db->saveStatusField(StatusDbField::TrxCount, std::numeric_limits<uint64_t>::max());
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  {
+    auto bootstrap = makeConsensusStorageFixture(cfg, data_dir);
+    bootstrap.db->saveStatusField(StatusDbField::TrxCount, std::numeric_limits<uint64_t>::max());
+  }
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 1,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -304,16 +319,17 @@ TEST_F(TransactionManagerShimFixture, rustDagTransactionPersistenceFailureDoesNo
 }
 
 TEST_F(TransactionManagerShimFixture, rustRecoverNonfinalizedTransactionsSkipsFinalizedPayloads) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
   const auto transactions =
       samples::createSignedTrxSamples(1, 2,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
                                                   dev::Secret::ConstructFromStringType::FromHex));
 
   {
-    TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+    auto storage = makeConsensusStorageFixture(cfg, data_dir);
+    auto db = storage.db;
+    auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+    TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
     for (const auto& trx : transactions) {
       ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
     }
@@ -324,7 +340,10 @@ TEST_F(TransactionManagerShimFixture, rustRecoverNonfinalizedTransactionsSkipsFi
     db->commitWriteBatch(batch);
   }
 
-  TransactionManager restart_trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager restart_trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   EXPECT_EQ(restart_trx_mgr.getNonfinalizedTrxSize(), 0);
   restart_trx_mgr.recoverNonfinalizedTransactions();
   EXPECT_EQ(restart_trx_mgr.getNonfinalizedTrxSize(), 1);
@@ -338,10 +357,11 @@ TEST_F(TransactionManagerShimFixture, rustRecoverNonfinalizedTransactionsSkipsFi
 }
 
 TEST_F(TransactionManagerShimFixture, expiredNonFinalizedSidecarCleanupDeletesStorageRow) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 1,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -361,10 +381,11 @@ TEST_F(TransactionManagerShimFixture, expiredNonFinalizedSidecarCleanupDeletesSt
 }
 
 TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsInitializationRetainsLivePayloadsInRust) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 2,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -384,10 +405,11 @@ TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsInitializationRet
 }
 
 TEST_F(TransactionManagerShimFixture, rustIsTransactionKnownIncludesRustSidecarMembership) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 1,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -401,10 +423,11 @@ TEST_F(TransactionManagerShimFixture, rustIsTransactionKnownIncludesRustSidecarM
 }
 
 TEST_F(TransactionManagerShimFixture, rustInsertTransactionUsesRustPlannerForKnownSidecarHashes) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 1,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -421,10 +444,11 @@ TEST_F(TransactionManagerShimFixture, rustInsertTransactionUsesRustPlannerForKno
 }
 
 TEST_F(TransactionManagerShimFixture, rustBlockFinalizedPurgesNonProposableQueueEntries) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   auto oversized_tx = std::make_shared<Transaction>(1, 1, 10, cfg.propose_dag_gas_limit + 1, dev::bytes(),
                                                     dev::KeyPair::create().secret(), addr_t::random());
   const auto oversized_tx_hash = oversized_tx->getHash();
@@ -444,10 +468,11 @@ TEST_F(TransactionManagerShimFixture, rustBlockFinalizedPurgesNonProposableQueue
 }
 
 TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsUpdateAppliesCleanupAndKnownMarking) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 2,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -483,11 +508,15 @@ TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsUpdateAppliesClea
 }
 
 TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsStorageFailureDoesNotMutateLiveState) {
-  auto db = std::make_shared<DbStorage>(data_dir);
-  db->saveStatusField(StatusDbField::TrxCount, std::numeric_limits<uint64_t>::max());
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  {
+    auto bootstrap = makeConsensusStorageFixture(cfg, data_dir);
+    bootstrap.db->saveStatusField(StatusDbField::TrxCount, std::numeric_limits<uint64_t>::max());
+  }
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 1,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -511,15 +540,16 @@ TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsStorageFailureDoe
 }
 
 TEST_F(TransactionManagerShimFixture, rustNonFinalizedReadHelpersUseLiveState) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 3,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
                                                   dev::Secret::ConstructFromStringType::FromHex));
 
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   for (auto const& trx : transactions) {
     ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
   }
@@ -538,15 +568,16 @@ TEST_F(TransactionManagerShimFixture, rustNonFinalizedReadHelpersUseLiveState) {
 }
 
 TEST_F(TransactionManagerShimFixture, rustExcludeFinalizedTransactionsUsesRecentCacheAndStorageState) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 3,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
                                                   dev::Secret::ConstructFromStringType::FromHex));
 
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   for (auto const& trx : transactions) {
     ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
   }
@@ -573,9 +604,10 @@ TEST_F(TransactionManagerShimFixture, rustExcludeFinalizedTransactionsUsesRecent
 }
 
 TEST_F(TransactionManagerShimFixture, rustVerifyTransactionsNotFinalizedUsesRecentCacheAndStorageState) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(0, 2,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -585,7 +617,7 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionsNotFinalizedUsesRece
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
                                                   dev::Secret::ConstructFromStringType::FromHex));
 
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   for (auto const& trx : transactions) {
     ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
   }
@@ -612,15 +644,16 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionsNotFinalizedUsesRece
 }
 
 TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersUseRustQueueViews) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 2,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
                                                   dev::Secret::ConstructFromStringType::FromHex));
 
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   for (auto const& trx : transactions) {
     ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
   }
@@ -647,10 +680,11 @@ TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersUseRustQueueViews) {
 }
 
 TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsChainIdMismatch) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   auto bad_chain_id_transaction =
       std::make_shared<Transaction>(1, 100, 1000000000, 100000, dev::bytes(),
                                     dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -664,10 +698,11 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsChainIdMismatc
 }
 
 TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsInvalidGasLimit) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   auto max_gas_limit = cfg.genesis.state.hardforks.soleirolia_hf.trx_max_gas_limit;
 
   const auto tx =
@@ -682,7 +717,6 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsInvalidGasLimi
 }
 
 TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsInvalidSignature) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
 
   const auto valid_transactions =
@@ -706,18 +740,21 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsInvalidSignatu
 
   const auto invalid_signature_trx = std::make_shared<Transaction>(with_invalid_signature.invalidate());
   cfg.genesis.chain_id = invalid_signature_trx->getChainID();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto result = trx_mgr.verifyTransaction(invalid_signature_trx);
   EXPECT_FALSE(result.first);
   EXPECT_EQ(result.second, "invalid signature");
 }
 
 TEST_F(TransactionManagerShimFixture, rustInsertTransactionRejectsKnownTransaction) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto transactions =
       samples::createSignedTrxSamples(1, 1,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -731,10 +768,11 @@ TEST_F(TransactionManagerShimFixture, rustInsertTransactionRejectsKnownTransacti
 }
 
 TEST_F(TransactionManagerShimFixture, rustInsertTransactionRejectsAlreadyFinalizedTransaction) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto unknown_sender = dev::Secret::random();
   const auto finalized_tx =
       std::make_shared<Transaction>(0, 100, 1000000000, 100000, dev::bytes(), unknown_sender, addr_t::random());
@@ -752,10 +790,11 @@ TEST_F(TransactionManagerShimFixture, rustInsertTransactionRejectsAlreadyFinaliz
 }
 
 TEST_F(TransactionManagerShimFixture, rustInsertTransactionEmitsTransactionAddedEvent) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   auto transaction =
       samples::createSignedTrxSamples(1, 1,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -780,10 +819,11 @@ TEST_F(TransactionManagerShimFixture, rustInsertTransactionEmitsTransactionAdded
 }
 
 TEST_F(TransactionManagerShimFixture, rustInsertTransactionDoesNotEmitForKnownFastPath) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   auto transaction =
       samples::createSignedTrxSamples(1, 1,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -805,10 +845,11 @@ TEST_F(TransactionManagerShimFixture, rustInsertTransactionDoesNotEmitForKnownFa
 }
 
 TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionEmitsTransactionAddedEvent) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   auto transaction =
       samples::createSignedTrxSamples(1, 1,
                                       dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
@@ -833,10 +874,11 @@ TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionEmitsTransac
 }
 
 TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionDoesNotEmitForNonProposableAdmission) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   auto transaction = samples::createSignedTrxSamples(1, 1, dev::KeyPair::create().secret())[0];
 
   std::promise<trx_hash_t> emitted_hash;
@@ -851,10 +893,11 @@ TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionDoesNotEmitF
 }
 
 TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionKeepsDemotedMatchingNonceTransactionMaterialized) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
   const auto sender_secret = dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
                                          dev::Secret::ConstructFromStringType::FromHex);
 
@@ -881,10 +924,11 @@ TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionKeepsDemoted
 }
 
 TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionStoresNonProposableTransactionsAsKnownLiveCache) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
-  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), createConsensusApplication(cfg, *db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, storage.application);
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t(), storage.application);
 
   auto oversized_tx = std::make_shared<Transaction>(1, 1, 10, cfg.propose_dag_gas_limit + 1, dev::bytes(),
                                                     dev::KeyPair::create().secret(), addr_t::random());

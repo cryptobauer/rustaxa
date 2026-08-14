@@ -15,6 +15,7 @@
 #include "final_chain/trie_common.hpp"
 #include "libdevcore/CommonJS.h"
 #include "network/rpc/eth/Eth.h"
+#include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/gtest.hpp"
 #include "test_util/samples.hpp"
 #include "test_util/test_util.hpp"
@@ -30,8 +31,11 @@ struct advance_check_opts {
 };
 
 struct FinalChainTest : WithDataDir {
-  std::shared_ptr<DbStorage> db{new DbStorage(data_dir / "db")};
   FullNodeConfig cfg = FullNodeConfig();
+  std::shared_ptr<DbStorage> db;
+#ifdef RUSTAXA_ENABLE
+  SharedConsensusApplication consensus_application;
+#endif
   std::shared_ptr<final_chain::FinalChain> SUT;
   bool assume_only_toplevel_transfers = true;
   std::unordered_map<addr_t, u256> expected_balances;
@@ -51,8 +55,23 @@ struct FinalChainTest : WithDataDir {
     }
   }
 
-  void init() {
+  void resetSut() {
+    SUT.reset();
+    db.reset();
+#ifdef RUSTAXA_ENABLE
+    consensus_application.reset();
+    cfg.db_path = data_dir / "db";
+    consensus_application = createConsensusApplication(cfg);
+    db = std::make_shared<DbStorage>(consensus_application, cfg.db_path);
+    SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, consensus_application);
+#else
+    db = std::make_shared<DbStorage>(data_dir / "db");
     SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+#endif
+  }
+
+  void init() {
+    resetSut();
     const auto& effective_balances = effective_initial_balances(cfg.genesis.state);
     cfg.genesis.state.dpos.yield_percentage = 0;
     for (const auto& [addr, _] : cfg.genesis.state.initial_balances) {
@@ -399,7 +418,7 @@ TEST_F(FinalChainTest, nonce_above_u64_round_trips_account_receipt_and_restart) 
   init();
 
   auto transaction = std::make_shared<Transaction>(high_nonce, 100, 1'000'000'000, 100'000, dev::bytes(),
-                                                    sender_keys.secret(), receiver, cfg.genesis.chain_id);
+                                                   sender_keys.secret(), receiver, cfg.genesis.chain_id);
   const auto result = advance({transaction});
   ASSERT_EQ(result->trx_receipts.size(), 1u);
   EXPECT_EQ(result->trx_receipts.front().status_code, 1);
@@ -407,8 +426,7 @@ TEST_F(FinalChainTest, nonce_above_u64_round_trips_account_receipt_and_restart) 
   ASSERT_TRUE(SUT->transactionReceipt(1, 0));
   EXPECT_EQ(SUT->transactionReceipt(1, 0)->status_code, result->trx_receipts.front().status_code);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   ASSERT_TRUE(SUT->getAccount(sender_keys.address()));
   EXPECT_EQ(SUT->getAccount(sender_keys.address())->nonce, high_nonce + 1);
   ASSERT_TRUE(SUT->transactionReceipt(1, 0));
@@ -549,8 +567,7 @@ TEST_F(FinalChainTest, cornus_underfunded_gas_cap_advances_equal_and_skipped_non
   constexpr uint64_t kInitialBalance = 500'000;
   constexpr uint64_t kTransferValue = 123;
 
-  const dev::KeyPair pre_cornus_sender{
-      dev::Secret("7777777777777777777777777777777777777777777777777777777777777777")};
+  const dev::KeyPair pre_cornus_sender{dev::Secret("7777777777777777777777777777777777777777777777777777777777777777")};
   const dev::KeyPair cornus_equal_sender{
       dev::Secret("9999999999999999999999999999999999999999999999999999999999999999")};
   const dev::KeyPair cornus_skipped_sender{
@@ -570,7 +587,7 @@ TEST_F(FinalChainTest, cornus_underfunded_gas_cap_advances_equal_and_skipped_non
 
   const auto underfunded = [&](const dev::KeyPair& sender, uint64_t nonce) {
     return std::make_shared<Transaction>(nonce, kTransferValue, kGasPrice, kGasLimit, bytes{}, sender.secret(),
-                                          receiver.address(), cfg.genesis.chain_id);
+                                         receiver.address(), cfg.genesis.chain_id);
   };
 
   const auto pre_cornus = advance({underfunded(pre_cornus_sender, 0)}, {.expect_to_fail = true});
@@ -604,8 +621,7 @@ TEST_F(FinalChainTest, cornus_underfunded_gas_cap_advances_equal_and_skipped_non
   const auto pre_receipt = pre_cornus->trx_receipts.front();
   const auto equal_receipt = cornus_equal->trx_receipts.front();
   const auto skipped_receipt = cornus_skipped->trx_receipts.front();
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 3);
   EXPECT_EQ(SUT->getAccount(pre_cornus_sender.address())->nonce, 0);
   EXPECT_EQ(SUT->getAccount(pre_cornus_sender.address())->balance, u256(kInitialBalance % kGasPrice));
@@ -1216,8 +1232,7 @@ TEST_F(FinalChainTest, native_slashing_value_custody_commits_only_for_successful
   };
 
   assert_persisted_state(SUT);
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   assert_persisted_state(SUT);
 }
@@ -1451,8 +1466,7 @@ TEST_F(FinalChainTest, native_slashing_semantic_invalid_double_voting_proofs_res
   };
 
   assert_persisted_state(SUT);
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   assert_persisted_state(SUT);
 }
@@ -1592,9 +1606,8 @@ TEST_F(FinalChainTest, native_slashing_malformed_nested_proof_aborts_finalizatio
   std::vector<std::pair<const char*, bytes>> malformed_inputs;
   malformed_inputs.reserve(malformed_votes.size() + 1);
   for (const auto& [name, malformed_vote] : malformed_votes) {
-    malformed_inputs.emplace_back(
-        name, util::EncodingSolidity::packFunctionCall("commitDoubleVotingProof(bytes,bytes)", malformed_vote,
-                                                       vote->rlp()));
+    malformed_inputs.emplace_back(name, util::EncodingSolidity::packFunctionCall("commitDoubleVotingProof(bytes,bytes)",
+                                                                                 malformed_vote, vote->rlp()));
   }
   // A zero dynamic offset aliases the ABI head. Legacy extraction reaches nested
   // vote decoding; Rust and C++ must both reject the malformed nested payload.
@@ -1727,8 +1740,7 @@ TEST_F(FinalChainTest, native_slashing_reads_preserve_value_gas_and_nonce_semant
   };
 
   assert_persisted_state(SUT);
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   assert_persisted_state(SUT);
 }
@@ -1868,8 +1880,7 @@ TEST_F(FinalChainTest, native_dpos_eligibility_reads_match_fixed_gas_and_cornus_
   };
 
   assert_persisted_state(SUT);
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   assert_persisted_state(SUT);
 }
@@ -2045,8 +2056,7 @@ TEST_F(FinalChainTest, native_dpos_singleton_reads_match_live_state_gas_and_corn
   };
 
   assert_persisted_state(SUT);
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   assert_persisted_state(SUT);
 }
@@ -2315,8 +2325,7 @@ TEST_F(FinalChainTest, native_dpos_validator_page_reads_cover_gas_cornus_boundar
   };
   assert_accounts(SUT);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   EXPECT_EQ(SUT->getAccount(sender.address())->nonce, 10);
   for (size_t i = 0; i < persisted_after_block1.size(); ++i) {
@@ -2494,8 +2503,7 @@ TEST_F(FinalChainTest, dpos_delegations_direct_read_page_reads_cover_restart_and
     EXPECT_EQ(block2_page0.entries[idx].reward, block1_page0.entries[idx].reward);
   }
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   ASSERT_EQ(SUT->lastBlockNumber(), 2);
   const auto restarted_block1_page0 = query_page(baseline_batch0_input, 1);
   const auto restarted_block2_page0 = query_page(baseline_batch0_input, 2);
@@ -2742,8 +2750,7 @@ TEST_F(FinalChainTest, native_dpos_undelegations_page_reads_cover_cornus_gated_s
   ASSERT_TRUE(dpos_account);
   EXPECT_EQ(dpos_account->balance, u256(kInitialStake + kDelegatorStake + kReadableValue));
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   const auto restarted_delegator_account = SUT->getAccount(delegator.address());
   ASSERT_TRUE(restarted_delegator_account);
@@ -2803,7 +2810,7 @@ TEST_F(FinalChainTest, native_dpos_delegate_pre_cornus_value_affordability_charg
   };
   const auto delegate_input = util::EncodingSolidity::packFunctionCall("delegate(address)", validator.address());
   const auto delegate_tx = std::make_shared<Transaction>(0, kDelegationValue, kGasPrice, kGasLimit, delegate_input,
-                                                          sender.secret(), kDposContractAddress, cfg.genesis.chain_id);
+                                                         sender.secret(), kDposContractAddress, cfg.genesis.chain_id);
 
   const auto failed_result = advance({delegate_tx}, {.dont_assume_all_trx_success = true});
   ASSERT_EQ(failed_result->trx_receipts.size(), 1u);
@@ -2820,8 +2827,8 @@ TEST_F(FinalChainTest, native_dpos_delegate_pre_cornus_value_affordability_charg
 
   // The failed delegate consumed the complete gas cap, leaving exactly the value
   // remainder. A zero-fee continuation confirms that the sender can proceed at nonce 1.
-  const auto continuation_tx = std::make_shared<Transaction>(1, kRemainingBalance, 0, 21'000, bytes{},
-                                                              sender.secret(), receiver.address(), cfg.genesis.chain_id);
+  const auto continuation_tx = std::make_shared<Transaction>(1, kRemainingBalance, 0, 21'000, bytes{}, sender.secret(),
+                                                             receiver.address(), cfg.genesis.chain_id);
   const auto continuation_result = advance({continuation_tx});
   ASSERT_EQ(continuation_result->trx_receipts.size(), 1u);
   EXPECT_EQ(continuation_result->trx_receipts.front().status_code, 1);
@@ -2832,8 +2839,7 @@ TEST_F(FinalChainTest, native_dpos_delegate_pre_cornus_value_affordability_charg
   EXPECT_EQ(SUT->dposTotalAmountDelegated(2), initial_total_delegated);
   expect_same_stakes(SUT->dposValidatorsTotalStakes(2));
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   EXPECT_EQ(SUT->getAccount(sender.address())->nonce, 2);
   EXPECT_EQ(SUT->getAccount(sender.address())->balance, u256(0));
@@ -3201,8 +3207,7 @@ TEST_F(FinalChainTest, native_dpos_get_total_delegation_reads_cover_cornus_gated
 
   assert_sticky_reject(SUT, 2, malformed_total_input);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 6);
   const auto restarted_sender_account = SUT->getAccount(delegator.address());
   ASSERT_TRUE(restarted_sender_account);
@@ -3330,8 +3335,7 @@ TEST_F(FinalChainTest, native_dpos_delegate_persists_receipt_and_state) {
   EXPECT_EQ(result->final_chain_blk->log_bloom, expected_receipt.bloom());
   assert_persisted_delegate(SUT);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   assert_persisted_delegate(SUT);
 }
@@ -3440,8 +3444,7 @@ TEST_F(FinalChainTest, native_dpos_delegate_to_missing_validator_rolls_back_stat
   EXPECT_EQ(result->final_chain_blk->log_bloom, expected_receipt.bloom());
   assert_failed_delegate_persists(SUT);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   assert_failed_delegate_persists(SUT);
 }
@@ -3554,8 +3557,7 @@ TEST_F(FinalChainTest, native_dpos_redelegate_persists_receipt_and_state) {
   EXPECT_EQ(result->final_chain_blk->log_bloom, expected_receipt.bloom());
   assert_persisted_redelegate(SUT);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   assert_persisted_redelegate(SUT);
 }
@@ -3656,8 +3658,7 @@ TEST_F(FinalChainTest, native_dpos_redelegate_to_missing_validator_rolls_back_st
   EXPECT_EQ(result->final_chain_blk->log_bloom, expected_receipt.bloom());
   assert_failed_redelegate_persists(SUT);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   assert_failed_redelegate_persists(SUT);
 }
@@ -3762,8 +3763,7 @@ TEST_F(FinalChainTest, native_dpos_redelegate_to_maxed_validator_rolls_back_stat
   EXPECT_EQ(result->final_chain_blk->log_bloom, expected_receipt.bloom());
   assert_failed_redelegate_persists(SUT);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   assert_failed_redelegate_persists(SUT);
 }
@@ -3839,8 +3839,7 @@ TEST_F(FinalChainTest, native_dpos_redelegate_pre_mutation_failures_roll_back_st
   };
   assert_unchanged(SUT);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   ASSERT_EQ(SUT->lastBlockNumber(), 1);
   assert_unchanged(SUT);
 }
@@ -3919,8 +3918,7 @@ TEST_F(FinalChainTest, native_dpos_redelegate_correction_applies_only_at_fix_blo
   EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(3), source_validator.address()),
             initial_stake + kBugAmount);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 3);
   EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(3), source_validator.address()),
             initial_stake + kBugAmount);
@@ -4285,8 +4283,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v1_pre_mutation_failures_roll_back
     EXPECT_EQ(stakes[idx].stake, initial_stakes[idx].stake);
   }
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   const auto delegator_account_after_restart = SUT->getAccount(delegator.address());
   ASSERT_TRUE(delegator_account_after_restart);
@@ -4504,8 +4501,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_pre_mutation_failures_roll_back
   EXPECT_EQ(to_u256(pending_v2_after.code_retval, 64), u256(0));
   const auto missing_id_v2_after = query_missing_id_v2(SUT);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   for (size_t i = 0; i < expected_receipts.size(); ++i) {
     const auto persisted_receipt = SUT->transactionReceipt(1, i);
@@ -4767,8 +4763,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_confirm_cancel_failures_restart
   ASSERT_TRUE(dpos_account_after_block2);
   EXPECT_EQ(dpos_account_after_block2->balance, initial_dpos_balance);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   const auto persisted_block2_header = SUT->blockHeader(2);
   ASSERT_TRUE(persisted_block2_header);
@@ -4875,8 +4870,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v1_create_query_cancel_success_and
   EXPECT_EQ(to_u256(created_log.data, 0), u256(kUndelegationAmount));
   EXPECT_EQ(result1->final_chain_blk->log_bloom, result1->trx_receipts[0].bloom());
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   const auto pending_after_create = query_pending(SUT, 1, delegator.address());
   ASSERT_GE(pending_after_create.size(), 224u);
   EXPECT_EQ(pending_after_create.size(), 224u);
@@ -4991,8 +4985,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v1_confirm_locked_fail_then_unlock
   const auto result1 = advance({undelegate_tx}, {.dont_assume_no_logs = true});
   EXPECT_EQ(result1->trx_receipts[0].status_code, 1);
   EXPECT_EQ(result1->trx_receipts[0].gas_used, IntrinsicGas(undelegate_tx->getData(), false) + 60'000);
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   const auto pending_after_create = query_pending(SUT, 1);
   ASSERT_GE(pending_after_create.size(), 224u);
   EXPECT_EQ(to_u256(pending_after_create, 64), 1);
@@ -5369,8 +5362,7 @@ TEST_F(FinalChainTest, native_dpos_register_validator_business_failures_roll_bac
 
   assert_failed_persists(SUT, 1);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   assert_failed_persists(SUT, 1);
 }
@@ -5503,8 +5495,7 @@ TEST_F(FinalChainTest, native_dpos_claim_rewards_from_sender_without_delegation_
   EXPECT_EQ(claim_result->trx_receipts[1].status_code, continuation_receipt_expected.status_code);
   assert_failed_claim_state(SUT, sender_expected_balance_after_block, 1, 2, block_gas);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   assert_failed_claim_state(
       SUT, u256(kSenderInitialBalance - kExpectedGas * kGasPrice - continuation_receipt_expected.gas_used * kGasPrice),
@@ -5569,11 +5560,11 @@ TEST_F(FinalChainTest, native_dpos_claim_commission_rewards_failures_charge_gas_
   const auto malformed_gas = action_gas(malformed_input);
 
   const auto absent_tx = std::make_shared<Transaction>(0, kClaimValue, kGasPrice, kGasLimit, absent_input,
-                                                        sender.secret(), kDposContract, cfg.genesis.chain_id);
+                                                       sender.secret(), kDposContract, cfg.genesis.chain_id);
   const auto wrong_owner_tx = std::make_shared<Transaction>(0, kClaimValue, kGasPrice, kGasLimit, wrong_owner_input,
-                                                             wrong_owner.secret(), kDposContract, cfg.genesis.chain_id);
-  const auto malformed_tx = std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, malformed_input,
-                                                           sender.secret(), kDposContract, cfg.genesis.chain_id);
+                                                            wrong_owner.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto malformed_tx = std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, malformed_input, sender.secret(),
+                                                          kDposContract, cfg.genesis.chain_id);
   const auto continuation_tx =
       std::make_shared<Transaction>(2, 0, kGasPrice, kGasLimit, dev::bytes(), sender.secret(), sender.address());
   const auto result = advance({absent_tx, wrong_owner_tx, malformed_tx, continuation_tx},
@@ -5642,8 +5633,7 @@ TEST_F(FinalChainTest, native_dpos_claim_commission_rewards_failures_charge_gas_
   };
 
   assert_state(SUT);
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   assert_state(SUT);
 }
@@ -5791,8 +5781,7 @@ TEST_F(FinalChainTest, native_dpos_claim_commission_rewards_pays_and_retains_pen
   EXPECT_EQ(SUT->dposTotalAmountDelegated(4), u256(kInitialStake));
   EXPECT_EQ(SUT->dposValidatorsTotalStakes(4).size(), 2u);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 4);
   EXPECT_TRUE(validator_exists(SUT, validator.address()));
   const auto restarted_validator_state = query_validator(SUT, validator.address()).code_retval;
@@ -5965,8 +5954,7 @@ TEST_F(FinalChainTest, native_dpos_validator_owner_updates_cover_failures_value_
   const auto block1_receipts = block1->trx_receipts;
   const auto block4_receipts = block4->trx_receipts;
   const auto block5_receipts = block5->trx_receipts;
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 5);
   assert_validator(SUT);
   EXPECT_EQ(SUT->getAccount(kDposContract)->balance, dpos_balance_before + kInfoValue + kCommissionValue);
@@ -6097,8 +6085,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_premagnolia_deletes_validator_a
   EXPECT_EQ(SUT->getAccount(kDposContract)->balance, dpos_balance_before_confirm - kStake);
   EXPECT_FALSE(validator_exists(SUT));
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   EXPECT_FALSE(validator_exists(SUT));
   EXPECT_EQ(SUT->getAccount(owner.address())->balance, owner_balance_before_confirm + kStake);
@@ -6246,8 +6233,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_cancel_and_claim_all_rewards_sa
   EXPECT_EQ(SUT->getAccount(delegator.address())->balance, expected_delegator_balance);
   EXPECT_EQ(SUT->getAccount(kDposContract)->balance, expected_contract_balance);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   const auto restarted_validator_state = query_validator(SUT, validator.address()).code_retval;
   ASSERT_GE(restarted_validator_state.size(), 192u);
@@ -6342,8 +6328,7 @@ TEST_F(FinalChainTest, native_dpos_claim_all_rewards_gas_uses_live_membership_wi
   };
 
   assert_live_membership_and_delayed_eligibility(SUT);
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   assert_live_membership_and_delayed_eligibility(SUT);
 }
@@ -6623,8 +6608,7 @@ TEST_F(FinalChainTest, native_dpos_abi_decode_failure_and_invalid_metadata_rollb
   const auto sender_balance_after_block3 =
       sender_balance_after_block2 - block3_result->trx_receipts[0].gas_used * kGasPrice - kMinimumDeposit;
   const auto restart_validator_state = get_validator(SUT, validator.address());
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 3);
   const auto restarted_sender = SUT->getAccount(sender.address());
   ASSERT_TRUE(restarted_sender);
@@ -6789,8 +6773,7 @@ TEST_F(FinalChainTest, native_dpos_transfer_into_contract_selector_phalaenopsis_
   EXPECT_EQ(post_block3_dpos->balance, expected_dpos_after_block3);
   assert_no_dpos_mutation(SUT, 3);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 3);
   const auto restarted_sender = SUT->getAccount(sender.address());
   ASSERT_TRUE(restarted_sender);
@@ -6847,8 +6830,7 @@ TEST_F(FinalChainTest, native_dpos_pre_cornus_nonpayable_value_transfers_on_succ
   EXPECT_EQ(owner_account->balance, initial_owner_balance - expected_gas - kTransferredValue);
   EXPECT_EQ(SUT->getAccount(kDposContract)->balance, initial_dpos_balance + kTransferredValue);
 
-  SUT.reset();
-  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  resetSut();
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   EXPECT_EQ(SUT->getAccount(owner.address())->balance, initial_owner_balance - expected_gas - kTransferredValue);
   EXPECT_EQ(SUT->getAccount(kDposContract)->balance, initial_dpos_balance + kTransferredValue);

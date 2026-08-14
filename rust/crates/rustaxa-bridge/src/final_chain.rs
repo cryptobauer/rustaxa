@@ -1,13 +1,10 @@
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeApp;
 use crate::ffi::BridgeConsensusExecutionApi;
-use crate::ffi::BridgeFinalChain;
 use crate::ffi::BridgeFinalChainExecutionSession;
-use crate::ffi::BridgeStorage;
 use crate::pbft_manager::pbft_manager_runtime_begin_proposal_session_with_hash;
 use rustaxa_consensus::Account;
 use rustaxa_consensus::ConsensusFinalChainConfig;
-use rustaxa_consensus::FinalChain;
 use rustaxa_types::FinalChainNonce;
 
 fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
@@ -219,7 +216,10 @@ fn system_transaction_plan_to_ffi(
         transactions: plan
             .transactions
             .into_iter()
-            .map(|data| rustaxa_ffi::TxRlp { data })
+            .map(|data| rustaxa_ffi::TxRlp {
+                data,
+                is_system: false,
+            })
             .collect(),
     }
 }
@@ -438,50 +438,6 @@ fn commit_report_to_ffi(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn create_final_chain(
-    storage: &BridgeStorage,
-    block_gas_limit: u64,
-    genesis_timestamp: u64,
-    genesis_accounts: Vec<rustaxa_ffi::GenesisAccount>,
-    genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
-    genesis_dpos_config: rustaxa_ffi::GenesisDposConfig,
-) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
-    create_final_chain_with_rewards_config(
-        storage,
-        block_gas_limit.into(),
-        genesis_timestamp,
-        genesis_accounts,
-        genesis_validators,
-        genesis_dpos_config,
-        rustaxa_ffi::FinalChainRewardsConfig {
-            committee_size: 0,
-            magnolia_period: 0,
-            phalaenopsis_period: u64::MAX,
-            aspen_part_one_period: u64::MAX,
-            fix_claim_all_block_num: u64::MAX,
-            fix_redelegate_block_num: u64::MAX,
-            aspen_part_two_period: 0,
-            max_block_author_reward_percent: 0,
-            dag_proposers_reward_percent: 0,
-            yield_percentage: 0,
-            dpos_blocks_per_year: 0,
-            dpos_delegation_locking_period: 0,
-            cornus_period: 0,
-            cornus_delegation_locking_period: 0,
-            genesis_balance_sum: Vec::new(),
-            aspen_max_supply: Vec::new(),
-            aspen_generated_rewards: Vec::new(),
-            cacti_period: 0,
-            cacti_delegation_locking_period: 0,
-            magnolia_jail_time: 0,
-            cacti_jail_time: 0,
-            frequency_rules: Vec::new(),
-            redelegations: Vec::new(),
-        },
-    )
-}
-
 pub(crate) fn genesis_dpos_config_from_ffi(
     config: rustaxa_ffi::GenesisDposConfig,
 ) -> Result<rustaxa_consensus::GenesisDposConfig, anyhow::Error> {
@@ -554,36 +510,7 @@ pub(crate) fn consensus_final_chain_config_from_ffi(
         .into_iter()
         .map(genesis_account_from_ffi)
         .collect::<Result<Vec<_>, _>>()?;
-    let genesis_validators = genesis_validators
-        .into_iter()
-        .map(|validator| {
-            let rustaxa_ffi::GenesisValidator {
-                address,
-                owner,
-                vrf_key,
-                commission,
-                description,
-                endpoint,
-                total_stake,
-                delegations,
-            } = validator;
-            rustaxa_consensus::GenesisValidator {
-                address,
-                vrf_key,
-                total_stake,
-                delegations: delegations
-                    .into_iter()
-                    .map(|delegation| (delegation.delegator, delegation.stake))
-                    .collect(),
-                metadata: rustaxa_consensus::GenesisValidatorMetadata {
-                    owner,
-                    commission,
-                    description,
-                    endpoint,
-                },
-            }
-        })
-        .collect();
+    let genesis_validators = genesis_validators_from_ffi(genesis_validators);
     Ok(ConsensusFinalChainConfig {
         block_gas_limit: block_gas_limit.into(),
         genesis_timestamp,
@@ -635,20 +562,10 @@ pub(crate) fn consensus_final_chain_config_from_ffi(
     })
 }
 
-pub fn create_final_chain_with_rewards_config(
-    storage: &BridgeStorage,
-    block_gas_limit: u64,
-    genesis_timestamp: u64,
-    genesis_accounts: Vec<rustaxa_ffi::GenesisAccount>,
+pub(crate) fn genesis_validators_from_ffi(
     genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
-    genesis_dpos_config: rustaxa_ffi::GenesisDposConfig,
-    rewards_config: rustaxa_ffi::FinalChainRewardsConfig,
-) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
-    let genesis_accounts = genesis_accounts
-        .into_iter()
-        .map(genesis_account_from_ffi)
-        .collect::<Result<Vec<_>, _>>()?;
-    let genesis_validators = genesis_validators
+) -> Vec<rustaxa_consensus::GenesisValidator> {
+    genesis_validators
         .into_iter()
         .map(|validator| {
             let rustaxa_ffi::GenesisValidator {
@@ -677,58 +594,7 @@ pub fn create_final_chain_with_rewards_config(
                 },
             }
         })
-        .collect();
-    let final_chain = FinalChain::new_with_rewards_config(
-        storage.0.clone(),
-        block_gas_limit.into(),
-        genesis_timestamp,
-        genesis_accounts,
-        genesis_validators,
-        genesis_dpos_config_from_ffi(genesis_dpos_config)?,
-        rustaxa_consensus::FinalChainRewardsConfig {
-            committee_size: rewards_config.committee_size,
-            magnolia_period: rewards_config.magnolia_period.into(),
-            phalaenopsis_period: rewards_config.phalaenopsis_period.into(),
-            aspen_part_one_period: rewards_config.aspen_part_one_period.into(),
-            fix_claim_all_block_num: rewards_config.fix_claim_all_block_num.into(),
-            fix_redelegate_block_num: rewards_config.fix_redelegate_block_num.into(),
-            aspen_part_two_period: rewards_config.aspen_part_two_period.into(),
-            max_block_author_reward_percent: rewards_config.max_block_author_reward_percent,
-            dag_proposers_reward_percent: rewards_config.dag_proposers_reward_percent,
-            yield_percentage: rewards_config.yield_percentage,
-            dpos_blocks_per_year: rewards_config.dpos_blocks_per_year,
-            dpos_delegation_locking_period: rewards_config.dpos_delegation_locking_period,
-            cornus_period: rewards_config.cornus_period.into(),
-            cornus_delegation_locking_period: rewards_config.cornus_delegation_locking_period,
-            genesis_balance_sum: if rewards_config.genesis_balance_sum.is_empty() {
-                None
-            } else {
-                Some(rewards_token_amount_from_ffi(
-                    &rewards_config.genesis_balance_sum,
-                    "genesis_balance_sum",
-                )?)
-            },
-            aspen_max_supply: rewards_token_amount_from_ffi(
-                &rewards_config.aspen_max_supply,
-                "aspen_max_supply",
-            )?,
-            aspen_generated_rewards: rewards_token_amount_from_ffi(
-                &rewards_config.aspen_generated_rewards,
-                "aspen_generated_rewards",
-            )?,
-            cacti_period: rewards_config.cacti_period.into(),
-            cacti_delegation_locking_period: rewards_config.cacti_delegation_locking_period,
-            magnolia_jail_time: rewards_config.magnolia_jail_time,
-            cacti_jail_time: rewards_config.cacti_jail_time,
-            rewards_distribution_frequency: rewards_config
-                .frequency_rules
-                .into_iter()
-                .map(|rule| (rule.from_period.into(), rule.frequency))
-                .collect(),
-            redelegations: redelegation_corrections_from_ffi(rewards_config.redelegations)?,
-        },
-    )?;
-    Ok(Box::new(BridgeFinalChain(final_chain)))
+        .collect()
 }
 
 pub fn create_final_chain_execution_session(
@@ -920,10 +786,7 @@ impl BridgeApp {
         Ok(final_chain.transaction_location(*hash)?.unwrap_or_default())
     }
 
-    pub fn get_transaction_count(
-        self: &BridgeApp,
-        period: u64,
-    ) -> Result<u64, anyhow::Error> {
+    pub fn get_transaction_count(self: &BridgeApp, period: u64) -> Result<u64, anyhow::Error> {
         let final_chain = self.0.final_chain_for_bridge();
         final_chain.transaction_count(period.into())
     }
@@ -992,8 +855,7 @@ impl BridgeApp {
         address: &[u8; 20],
     ) -> Result<u64, anyhow::Error> {
         let final_chain = self.0.final_chain_for_bridge();
-        final_chain
-            .dpos_eligible_vote_count(block_number.into(), *address)
+        final_chain.dpos_eligible_vote_count(block_number.into(), *address)
     }
 
     pub fn get_dpos_eligible_total_vote_count(
@@ -1036,10 +898,7 @@ impl BridgeApp {
         final_chain.dpos_total_amount_delegated(block_number.into())
     }
 
-    pub fn get_dpos_yield(
-        self: &BridgeApp,
-        block_number: u64,
-    ) -> Result<u64, anyhow::Error> {
+    pub fn get_dpos_yield(self: &BridgeApp, block_number: u64) -> Result<u64, anyhow::Error> {
         let final_chain = self.0.final_chain_for_bridge();
         final_chain.dpos_yield(block_number.into())
     }
@@ -1085,9 +944,9 @@ impl BridgeApp {
     ) -> Result<Vec<rustaxa_ffi::TxRlp>, anyhow::Error> {
         let final_chain = self.0.final_chain_for_bridge();
         Ok(final_chain
-            .transaction_rlps(period.into())?
+            .transaction_rlps_with_system_marker(period.into())?
             .into_iter()
-            .map(|data| rustaxa_ffi::TxRlp { data })
+            .map(|(data, is_system)| rustaxa_ffi::TxRlp { data, is_system })
             .collect())
     }
 
@@ -1129,9 +988,9 @@ impl BridgeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dag_transaction_service::create_consensus_application_from_storage;
-    use crate::ffi::{BridgeDagStorageQueries, BridgeStorage};
-    use crate::storage::{create_dag_storage_queries, create_storage};
+    use crate::dag_transaction_service::create_test_consensus_application;
+    use crate::ffi::BridgeDagStorageQueries;
+    use crate::storage::create_dag_storage_queries;
     use ethereum_types::{H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
@@ -1284,8 +1143,8 @@ mod tests {
         }
     }
 
-    fn dag_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries> {
-        create_dag_storage_queries(storage)
+    fn dag_queries(runtime: &BridgeApp) -> Box<BridgeDagStorageQueries> {
+        create_dag_storage_queries(runtime)
     }
 
     fn genesis_validator(address: [u8; 20], stake: u64) -> rustaxa_ffi::GenesisValidator {
@@ -1307,92 +1166,17 @@ mod tests {
     fn make_final_chain(
         storage_path: &str,
         genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
-    ) -> Box<BridgeFinalChain> {
-        let storage = create_storage(storage_path).expect("storage should initialize");
-        make_final_chain_with_storage_and_delegation_delay(&storage, genesis_validators, 0)
+    ) -> Box<BridgeApp> {
+        make_final_chain_with_delegation_delay(storage_path, genesis_validators, 0)
     }
 
-    fn make_final_chain_with_storage(
-        storage: &BridgeStorage,
-        genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
-    ) -> Box<BridgeFinalChain> {
-        make_final_chain_with_storage_and_delegation_delay(storage, genesis_validators, 0)
-    }
-
-    fn make_final_chain_with_storage_and_delegation_delay(
-        storage: &BridgeStorage,
+    fn make_final_chain_with_delegation_delay(
+        storage_path: &str,
         genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
         delegation_delay: u64,
-    ) -> Box<BridgeFinalChain> {
-        create_final_chain(
-            storage,
-            0,
-            0,
-            vec![],
-            genesis_validators,
-            rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: u256_be(1_000),
-                vote_eligibility_balance_step: u256_be(1_000),
-                validator_maximum_stake: u256_be(30_000),
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize")
-    }
-
-    fn make_consensus_application(storage: &BridgeStorage) -> Box<BridgeApp> {
-        create_consensus_application_from_storage(
-            storage,
-            &[1u8; 32],
-            32,
-            100,
-            rustaxa_ffi::SortitionRuntimeConfig {
-                threshold_upper: 0x100,
-                difficulty_min: 1,
-                difficulty_max: 10,
-                difficulty_stale: 5,
-                lambda_bound: 100,
-                changes_count_for_average: 8,
-                dag_efficiency_target_low: 5_000,
-                dag_efficiency_target_high: 10_000,
-                changing_interval: 10,
-                computation_interval: 5,
-            },
-            rustaxa_ffi::TransactionQueueConfig { max_size: 16 },
-            rustaxa_ffi::GasPricerConfig {
-                percentile: 50,
-                minimum_price: [0u8; 32],
-                history_blocks: 0,
-                is_light_node: false,
-                blocks_gas_pricer: false,
-            },
-            1_000_000,
-            rustaxa_ffi::PbftServiceConfig {
-                genesis_lambda_ms: 100,
-                cacti_lambda_max_ms: 1500,
-                cacti_lambda_default_ms: 500,
-                cacti_block: 1,
-                max_exponential_lambda_ms: 60_000,
-                max_steps: 13,
-                deadline_ms: 1000,
-                polling_interval_ms: 100,
-                report_malicious_behaviour: true,
-                magnolia_activation_period: 0,
-                ficus_activation_period: 0,
-                pillar_blocks_interval: 10,
-                sync_level_size: 10,
-                is_light_node: false,
-                light_node_history: 0,
-                committee_size: 1,
-                number_of_proposers: 1,
-                slashing_submitters: Vec::new(),
-            },
-        )
-        .expect("PBFT service should initialize")
+    ) -> Box<BridgeApp> {
+        create_test_consensus_application(storage_path, genesis_validators, delegation_delay)
+            .expect("consensus application should initialize")
     }
 
     fn ffi_transaction(
@@ -1796,12 +1580,12 @@ mod tests {
     }
 
     fn execution_session_plan_external_evm_publication(
-        final_chain: &BridgeFinalChain,
+        final_chain: &BridgeApp,
         session: &mut BridgeFinalChainExecutionSession,
     ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
         Ok(
             rustaxa_consensus::final_chain_execution_session_plan_external_evm_publication(
-                &final_chain.0,
+                final_chain.0.final_chain_for_bridge(),
                 &mut session.state,
             ),
         )
@@ -1856,43 +1640,43 @@ mod tests {
     }
 
     fn execution_session_publish_external_evm_publication(
-        final_chain: &BridgeFinalChain,
+        final_chain: &BridgeApp,
         session: &mut BridgeFinalChainExecutionSession,
     ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
         Ok(external_evm_publication_report_to_ffi(
             rustaxa_consensus::final_chain_execution_session_publish_external_evm_publication(
-                &final_chain.0,
+                final_chain.0.final_chain_for_bridge(),
                 &mut session.state,
             )?,
         ))
     }
 
     fn execution_session_persist_external_evm_pending_publication(
-        final_chain: &BridgeFinalChain,
+        final_chain: &BridgeApp,
         session: &mut BridgeFinalChainExecutionSession,
     ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
         Ok(external_evm_publication_report_to_ffi(
             rustaxa_consensus::final_chain_execution_session_persist_external_evm_pending_publication(
-                &final_chain.0,
+                final_chain.0.final_chain_for_bridge(),
                 &mut session.state,
             )?,
         ))
     }
 
     fn execution_session_report_external_evm_state_commit_result(
-        final_chain: &BridgeFinalChain,
+        final_chain: &BridgeApp,
         session: &mut BridgeFinalChainExecutionSession,
         result: rustaxa_ffi::FinalChainExternalEvmStateCommitResult,
     ) -> Result<rustaxa_consensus::FinalChainExternalEvmCommitDecision, anyhow::Error> {
         rustaxa_consensus::final_chain_execution_session_report_external_evm_state_commit_result(
-            &final_chain.0,
+            final_chain.0.final_chain_for_bridge(),
             &mut session.state,
             external_evm_state_commit_result_from_ffi(result),
         )
     }
 
     fn assert_transaction_location(
-        final_chain: &BridgeFinalChain,
+        final_chain: &BridgeApp,
         hash: &[u8; 32],
         period: u64,
         position: u32,
@@ -1915,7 +1699,7 @@ mod tests {
         period: u64,
     ) -> (
         PathBuf,
-        Box<BridgeFinalChain>,
+        Box<BridgeApp>,
         Box<BridgeFinalChainExecutionSession>,
         rustaxa_consensus::FinalChainExternalEvmCommitPlan,
         rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
@@ -1999,7 +1783,7 @@ mod tests {
         period: u64,
     ) -> (
         PathBuf,
-        Box<BridgeFinalChain>,
+        Box<BridgeApp>,
         Box<BridgeFinalChainExecutionSession>,
     ) {
         let temp_dir = unique_temp_dir(prefix);
@@ -2108,7 +1892,7 @@ mod tests {
     }
 
     fn ready_external_evm_commit_decision(
-        final_chain: &BridgeFinalChain,
+        final_chain: &BridgeApp,
         session: &mut BridgeFinalChainExecutionSession,
         plan: &rustaxa_consensus::FinalChainExternalEvmCommitPlan,
         publication: &rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
@@ -2152,18 +1936,19 @@ mod tests {
     }
 
     fn publish_external_evm_publication_via_rust(
-        final_chain: &BridgeFinalChain,
+        final_chain: &BridgeApp,
         publication: rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
         decision: rustaxa_consensus::FinalChainExternalEvmCommitDecision,
     ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationReport, anyhow::Error> {
         final_chain
             .0
+            .final_chain_for_bridge()
             .publish_external_evm_publication(publication, decision)
     }
 
     fn ready_external_evm_commit_decision_via_execution_api(
         api: &BridgeConsensusExecutionApi,
-        final_chain: &BridgeFinalChain,
+        final_chain: &BridgeApp,
         session: &mut BridgeFinalChainExecutionSession,
         proposal_period_dag_level_update: rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate,
     ) -> rustaxa_ffi::FinalChainExternalEvmCommitDecision {
@@ -2229,11 +2014,12 @@ mod tests {
     }
 
     fn assert_external_evm_publication_audit_matches(
-        final_chain: &BridgeFinalChain,
+        final_chain: &BridgeApp,
         publication: &rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
     ) {
         let audit = final_chain
             .0
+            .final_chain_for_bridge()
             .audit_external_evm_publication(publication.clone())
             .expect("external EVM publication audit should run");
         assert_eq!(
@@ -2336,11 +2122,11 @@ mod tests {
         let validator = [0xB1u8; 20];
         let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_final_chain_facts");
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
-        let storage = create_storage(storage_path).expect("storage should initialize");
         let final_chain =
-            make_final_chain_with_storage(&storage, vec![genesis_validator(validator, 10_000)]);
+            make_final_chain(storage_path, vec![genesis_validator(validator, 10_000)]);
         let ready = final_chain
             .0
+            .final_chain_for_bridge()
             .pbft_final_chain_hash(0)
             .expect("ready PBFT hash lookup should return");
         assert_eq!(ready, Some([0; 32]));
@@ -2348,12 +2134,12 @@ mod tests {
 
         let unavailable = final_chain
             .0
+            .final_chain_for_bridge()
             .pbft_final_chain_hash(1)
             .expect("future PBFT hash lookup should return");
         assert_eq!(unavailable, None);
 
         drop(final_chain);
-        drop(storage);
         let _ = fs::remove_dir_all(temp_dir);
     }
 
@@ -2362,14 +2148,11 @@ mod tests {
         let validator = [0xB3u8; 20];
         let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_final_chain_missing_wait");
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
-        let storage = create_storage(storage_path).expect("storage should initialize");
-        let final_chain =
-            make_final_chain_with_storage(&storage, vec![genesis_validator(validator, 10_000)]);
-        let consensus_application = make_consensus_application(&storage);
+        let consensus_application =
+            make_final_chain(storage_path, vec![genesis_validator(validator, 10_000)]);
 
         let plan = crate::pbft_manager::plan_pbft_manager_block_validation(
             &consensus_application,
-            &final_chain,
             &consensus_application,
             &rustaxa_ffi::PbftManagerBlockValidationFact {
                 block_hash: [0x11; 32],
@@ -2395,8 +2178,7 @@ mod tests {
             "PBFT_MANAGER_BLOCK_VALIDATION_FINAL_CHAIN_HASH_MISSING"
         );
 
-        drop(final_chain);
-        drop(storage);
+        drop(consensus_application);
         let _ = fs::remove_dir_all(temp_dir);
     }
 
@@ -2406,16 +2188,15 @@ mod tests {
         let temp_dir =
             unique_temp_dir("rustaxa_bridge_pbft_final_chain_delegation_delay_validation");
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
-        let storage = create_storage(storage_path).expect("storage should initialize");
-        let final_chain = make_final_chain_with_storage_and_delegation_delay(
-            &storage,
+        let pbft_service = make_final_chain_with_delegation_delay(
+            storage_path,
             vec![genesis_validator(validator, 10_000)],
             5,
         );
-        let pbft_service = make_consensus_application(&storage);
 
-        let ready = final_chain
+        let ready = pbft_service
             .0
+            .final_chain_for_bridge()
             .pbft_final_chain_hash(5)
             .expect("delegation-delay boundary period should be ready");
         assert_eq!(ready, Some([0; 32]));
@@ -2423,7 +2204,7 @@ mod tests {
         crate::pbft_manager::pbft_service_complete_bootstrap(&pbft_service)
             .expect("PBFT service should accept proposal commands");
         pbft_service
-            .pbft_service_begin_proposal_session_with_final_chain(&final_chain, proposal_fact(5))
+            .pbft_service_begin_proposal_session_with_final_chain(proposal_fact(5))
             .expect("ready proposal hash should start a session");
         let proposal = crate::pbft_manager::pbft_manager_proposal_session_next(&pbft_service);
         assert_eq!(
@@ -2436,14 +2217,15 @@ mod tests {
         );
         assert_eq!(proposal.final_chain_hash, [0; 32]);
 
-        let future = final_chain
+        let future = pbft_service
             .0
+            .final_chain_for_bridge()
             .pbft_final_chain_hash(6)
             .expect("future PBFT hash lookup should return");
         assert_eq!(future, None);
 
         pbft_service
-            .pbft_service_begin_proposal_session_with_final_chain(&final_chain, proposal_fact(6))
+            .pbft_service_begin_proposal_session_with_final_chain(proposal_fact(6))
             .expect("missing proposal hash should remain a typed session outcome");
         let proposal = crate::pbft_manager::pbft_manager_proposal_session_next(&pbft_service);
         assert_eq!(
@@ -2455,8 +2237,6 @@ mod tests {
             PbftManagerProposalStatus::MissingFinalChainHash.as_u8()
         );
 
-        drop(final_chain);
-        drop(storage);
         drop(pbft_service);
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -3293,6 +3073,7 @@ mod tests {
         mutated_publication.receipts_rlp.push(0xff);
         let mutated_audit = final_chain
             .0
+            .final_chain_for_bridge()
             .audit_external_evm_publication(mutated_publication)
             .expect("mutated publication audit should run");
         assert_eq!(
@@ -3306,14 +3087,12 @@ mod tests {
 
         drop(session);
         drop(final_chain);
-        let storage = create_storage(storage_path).expect("storage should reopen");
-        let proposal_period = dag_queries(&storage)
+        let reloaded = make_final_chain(storage_path, vec![]);
+        let proposal_period = dag_queries(&reloaded)
             .get_proposal_period_for_dag_level(42)
             .unwrap();
         assert!(proposal_period.found);
         assert_eq!(proposal_period.period, 1);
-        drop(storage);
-        let reloaded = make_final_chain(storage_path, vec![]);
         assert_eq!(reloaded.get_last_block_number().unwrap(), 1);
         assert_eq!(reloaded.get_block_hash(1).unwrap(), block_hash.to_vec());
         assert_eq!(
@@ -3399,23 +3178,17 @@ mod tests {
 
         drop(session);
         drop(final_chain);
-        let storage = create_storage(storage_path).expect("storage should reopen");
-        let persisted_stats = storage.get_blocks_rewards_stats().unwrap();
+        let reloaded = make_final_chain(storage_path, vec![]);
+        let persisted_stats = reloaded.get_blocks_rewards_stats().unwrap();
         assert_eq!(persisted_stats.len(), 1);
         assert_eq!(persisted_stats[0].period, 1);
         assert_eq!(persisted_stats[0].data, rewards_stats_rlp);
-        drop(storage);
-
-        let reloaded = make_final_chain(storage_path, vec![]);
         assert_eq!(reloaded.get_last_block_number().unwrap(), 1);
-        drop(reloaded);
-        let storage =
-            create_storage(storage_path).expect("storage should reopen after final chain");
-        let persisted_stats = storage.get_blocks_rewards_stats().unwrap();
+        let persisted_stats = reloaded.get_blocks_rewards_stats().unwrap();
         assert_eq!(persisted_stats.len(), 1);
         assert_eq!(persisted_stats[0].period, 1);
         assert_eq!(persisted_stats[0].data, vec![0xc3, 0x01, 0x02, 0x03]);
-        drop(storage);
+        drop(reloaded);
         let _ = fs::remove_dir_all(temp_dir);
     }
 

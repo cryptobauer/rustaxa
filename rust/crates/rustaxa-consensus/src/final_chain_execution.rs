@@ -387,14 +387,15 @@ pub struct FinalChainExternalEvmCommitPlan {
 /// Transaction publication fact derived from an external-EVM commit plan.
 ///
 /// Each item maps one transaction hash to its finalized block position,
-/// system-transaction marker, and canonical receipt RLP. Future storage commit
-/// wiring can pass these facts directly to the Rust storage batch without
-/// reparsing EVM receipts in C++.
+/// system-transaction marker, canonical transaction RLP, and canonical receipt
+/// RLP. The transaction payload lets native publication persist system
+/// transactions atomically with their location and receipt indexes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmTransactionPublication {
     pub transaction_hash: [u8; 32],
     pub position: FinalChainTransactionPosition,
     pub is_system: bool,
+    pub transaction_rlp: Vec<u8>,
     pub receipt_rlp: Vec<u8>,
 }
 
@@ -694,10 +695,11 @@ pub fn abort_final_chain_execution_session(
 
 /// Returns the next action that the owner must perform for the session.
 ///
-/// Native-supported requests produce a `COMMIT_NATIVE` action. Requests with
-/// arbitrary EVM transactions produce `EXECUTE_EXTERNAL_EVM` only when the
-/// caller opted into `FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED`;
-/// otherwise they are rejected explicitly.
+/// Native-only requests produce a `COMMIT_NATIVE` action. External-EVM-capable
+/// requests first ask the retained executor for system transactions, even when
+/// the regular transaction list is empty. An empty report with no arbitrary EVM
+/// work returns to native commit; a system transaction or arbitrary EVM call
+/// produces `EXECUTE_EXTERNAL_EVM` only in the external-EVM mode.
 pub fn final_chain_execution_session_next(
     session: &mut FinalChainExecutionSession,
 ) -> FinalChainExecutionStep {
@@ -941,6 +943,14 @@ fn final_chain_execution_session_report_system_transactions_with_count(
         };
     let mut all_transactions = regular_transactions;
     all_transactions.extend(system_transactions.clone());
+    if count_external_evm_transactions(&all_transactions) == 0 && system_transactions.is_empty() {
+        session.system_transaction_request = None;
+        session.system_transactions.clear();
+        session.evm_request = None;
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_READY;
+        session.error_code.clear();
+        return final_chain_execution_session_next(session);
+    }
     let evm_request = FinalChainEvmExecutionRequest {
         request_id: execution_request_id(
             session.block_number,
@@ -1938,7 +1948,9 @@ impl FinalChainExecutionSession {
         let ordered_transactions = classify_ordered_execution_transactions(&request.transactions)
             .expect("regular transaction count was validated");
         let external_evm_transaction_count = count_external_evm_transactions(&ordered_transactions);
-        if external_evm_transaction_count == 0 {
+        if external_evm_transaction_count == 0
+            && request.mode != FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED
+        {
             return Self {
                 request,
                 metadata,
@@ -2276,6 +2288,7 @@ fn build_external_evm_publication_plan(
                 transaction_hash: transaction.hash,
                 position: transaction.position,
                 is_system: transaction.is_system,
+                transaction_rlp: transaction.rlp.clone(),
                 receipt_rlp: receipt.clone(),
             })
         })
@@ -2522,6 +2535,9 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
         hasher.update(&publication.transaction_hash);
         hasher.update(&publication.position.as_u32().to_be_bytes());
         hasher.update(&[u8::from(publication.is_system)]);
+        if !publication.transaction_rlp.is_empty() {
+            hash_bytes_with_len(&mut hasher, &publication.transaction_rlp);
+        }
         hash_bytes_with_len(&mut hasher, &publication.receipt_rlp);
     }
     hasher.update(&plan.executed_dag_blocks.to_be_bytes());
@@ -3249,6 +3265,26 @@ mod tests {
             step.error_code,
             "FINAL_CHAIN_EXECUTION_REQUIRES_EXTERNAL_EVM"
         );
+    }
+
+    #[test]
+    fn external_evm_mode_checks_system_transactions_before_empty_native_commit() {
+        let mut session = create_final_chain_execution_session(valid_request(
+            Vec::new(),
+            FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+        ));
+
+        let system_step = final_chain_execution_session_next(&mut session);
+        assert_eq!(
+            system_step.action,
+            FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS
+        );
+        assert_eq!(system_step.system_transaction_request.period, 7.into());
+
+        let step = provide_system_transactions(&mut session, Vec::new());
+        assert_eq!(step.status, FINAL_CHAIN_EXECUTION_STATUS_READY);
+        assert_eq!(step.action, FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE);
+        assert!(step.evm_request.transactions.is_empty());
     }
 
     #[test]

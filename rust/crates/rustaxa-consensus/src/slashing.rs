@@ -352,9 +352,11 @@ fn legacy_pbft_vote_hash(block_hash: H256, vrf_sortition_rlp: &[u8]) -> H256 {
 
 /// Account facts for a configured wallet that may submit a slashing proof.
 ///
-/// C++ supplies these facts in configured wallet order after reading FinalChain
-/// account state. Rust uses only the legacy funding rule, `balance != 0`, and
-/// returns the selected wallet index to C++ for signing.
+/// The CXX application composition supplies these facts in configured wallet
+/// order after reading the retained concrete-EVM FinalChain boundary. Fully
+/// native callers may resolve the same facts from native FinalChain state. Rust
+/// uses only the legacy funding rule, `balance != 0`, and returns the selected
+/// wallet index to C++ for signing.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlashingSubmitterFact {
     /// Stable index into the application-configured wallet sequence.
@@ -367,19 +369,23 @@ pub struct SlashingSubmitterFact {
 
 /// Ordered application identity eligible to submit a planned slashing proof.
 ///
-/// The application supplies identities in configured wallet order. Native PBFT
-/// admission borrows FinalChain to resolve addresses in order until it finds the
-/// first funded submitter, then invokes the deterministic planner. Missing
-/// accounts become zero-valued facts; a lookup failure before selection aborts
-/// the composed admission call after the already-committed vote transition,
-/// matching the former leaf executor boundary's ordering. Wallets after the
-/// selected submitter are not queried.
+/// Fully native application composition supplies identities in configured
+/// wallet order. Native PBFT admission borrows FinalChain to resolve addresses
+/// in order until it finds the first funded submitter, then invokes the
+/// deterministic planner. Missing accounts become zero-valued facts; a lookup
+/// failure before selection aborts the composed admission call after the
+/// already-committed vote transition, matching the former leaf executor
+/// boundary's ordering. Wallets after the selected submitter are not queried.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SlashingSubmitterIdentity {
     /// Stable index into the application-owned signing wallet sequence.
     pub wallet_index: usize,
     /// Canonical account address whose latest nonce and balance are sampled.
     pub address: [u8; 20],
+    /// Concrete-EVM nonce supplied for live admission; zero during bootstrap.
+    pub nonce: U256,
+    /// Concrete-EVM balance supplied for live admission; zero during bootstrap.
+    pub balance: U256,
 }
 
 /// Concurrency-safe service boundary for slashing proof planning.

@@ -171,13 +171,15 @@ void App::init(const cli::Config &cli_conf) {
     assert(false);
   }
 #ifdef RUSTAXA_ENABLE
-  if (conf_.db_config.rebuild_db || conf_.db_config.migrate_only || conf_.db_config.db_revert_to_period != 0 ||
-      conf_.db_config.rebuild_db_period != 0) {
+  if (conf_.db_config.rebuild_db || conf_.db_config.migrate_only || conf_.db_config.migrate_receipts_by_period ||
+      conf_.db_config.db_revert_to_period != 0 || conf_.db_config.rebuild_db_period != 0) {
     throw std::runtime_error(
-        "Rust consensus mode does not support rebuild-db, migrate-only, rebuild-db-period, or db-revert-to-period");
+        "Rust consensus mode does not support rebuild, revert, or legacy migration startup modes");
   }
+  consensus_application_ = createConsensusApplication(conf_);
 #endif
   {
+#ifndef RUSTAXA_ENABLE
     if (conf_.db_config.rebuild_db) {
       old_db_ = std::make_shared<DbStorage>(conf_.db_path, conf_.db_config.db_snapshot_each_n_pbft_block,
                                             conf_.db_config.db_max_open_files, conf_.db_config.db_max_snapshots,
@@ -215,12 +217,14 @@ void App::init(const cli::Config &cli_conf) {
     if (db_->getDagBlocksCount() == 0) {
       db_->setGenesisHash(conf_.genesis.genesisHash());
     }
+#else
+    db_ = std::make_shared<DbStorage>(consensus_application_, conf_.db_path,
+                                      conf_.db_config.db_snapshot_each_n_pbft_block,
+                                      conf_.db_config.db_max_open_files, conf_.db_config.db_max_snapshots,
+                                      conf_.db_config.db_revert_to_period, node_addr, false);
+#endif
   }
   LOG(log_nf_) << "DB initialized ...";
-
-#ifdef RUSTAXA_ENABLE
-  consensus_application_ = createConsensusApplication(conf_, *db_);
-#endif
 
   if (conf_.network.prometheus) {
     auto &config = *conf_.network.prometheus;
@@ -232,7 +236,11 @@ void App::init(const cli::Config &cli_conf) {
     LOG(log_nf_) << "Prometheus: config values aren't specified. Metrics collecting is disabled";
   }
 
+#ifdef RUSTAXA_ENABLE
+  final_chain_ = std::make_shared<final_chain::FinalChain>(db_, conf_, node_addr, consensus_application_);
+#else
   final_chain_ = std::make_shared<final_chain::FinalChain>(db_, conf_, node_addr);
+#endif
 #ifndef RUSTAXA_ENABLE
   key_manager_ = std::make_shared<KeyManager>(final_chain_);
 #endif

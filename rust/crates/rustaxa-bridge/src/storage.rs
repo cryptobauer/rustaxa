@@ -1,11 +1,10 @@
 use crate::ffi::rustaxa_ffi;
+use crate::ffi::BridgeConsensusApplication;
 use crate::ffi::BridgeDagStorageQueries;
 use crate::ffi::BridgeFinalChainStorageQueries;
 use crate::ffi::BridgePbftStorageQueries;
 use crate::ffi::BridgePbftVoteStorageQueries;
-use crate::ffi::BridgeConsensusApplication;
 use crate::ffi::BridgePeriodStorageQueries;
-use crate::ffi::BridgeStorage;
 use crate::ffi::BridgeStorageBatch;
 use crate::ffi::BridgeTransactionStorageQueries;
 #[cfg(test)]
@@ -22,22 +21,9 @@ use rustaxa_consensus::{
     save_current_pillar_block_data_storage, save_finalized_pillar_block_storage,
     save_own_pillar_block_vote_storage,
 };
-#[cfg(test)]
-use rustaxa_storage::Config;
 use rustaxa_storage::Storage;
-#[cfg(test)]
-use std::path::PathBuf;
 use std::sync::Arc;
 
-#[cfg(test)]
-pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>, anyhow::Error> {
-    let path_buf = PathBuf::from(path);
-    let config = Config::new(path_buf);
-    let storage = Arc::new(Storage::new(config)?);
-    Ok(Box::new(BridgeStorage(storage)))
-}
-
-#[cfg(not(test))]
 fn runtime_storage(runtime: &BridgeConsensusApplication) -> Arc<Storage> {
     runtime.0.storage_for_bridge().clone()
 }
@@ -55,16 +41,6 @@ fn runtime_storage(runtime: &BridgeConsensusApplication) -> Arc<Storage> {
 /// - callers can materialize legacy C++ `PbftVote` objects without retaining a
 ///   broad `BridgeStorage` query surface for vote-list reads
 /// - the handle does not mutate storage or decode votes.
-#[cfg(test)]
-pub fn create_pbft_vote_storage_queries(
-    storage: &BridgeStorage,
-) -> Box<BridgePbftVoteStorageQueries> {
-    Box::new(BridgePbftVoteStorageQueries {
-        storage: storage.0.clone(),
-    })
-}
-
-#[cfg(not(test))]
 pub fn create_pbft_vote_storage_queries(
     runtime: &BridgeConsensusApplication,
 ) -> Box<BridgePbftVoteStorageQueries> {
@@ -86,14 +62,6 @@ pub fn create_pbft_vote_storage_queries(
 /// - callers can inspect PBFT scalar/head compatibility rows without retaining
 ///   broad `BridgeStorage` read methods
 /// - the handle does not mutate storage or decode PBFT block objects.
-#[cfg(test)]
-pub fn create_pbft_storage_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
-    Box::new(BridgePbftStorageQueries {
-        storage: storage.0.clone(),
-    })
-}
-
-#[cfg(not(test))]
 pub fn create_pbft_storage_queries(
     runtime: &BridgeConsensusApplication,
 ) -> Box<BridgePbftStorageQueries> {
@@ -115,15 +83,9 @@ pub fn create_pbft_storage_queries(
 /// - callers can materialize legacy DAG objects and indexes at public/query
 ///   boundaries without retaining broad `BridgeStorage` DAG reads
 /// - the handle does not mutate storage or decode DAG block payloads.
-#[cfg(test)]
-pub fn create_dag_storage_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries> {
-    Box::new(BridgeDagStorageQueries {
-        storage: storage.0.clone(),
-    })
-}
-
-#[cfg(not(test))]
-pub fn create_dag_storage_queries(runtime: &BridgeConsensusApplication) -> Box<BridgeDagStorageQueries> {
+pub fn create_dag_storage_queries(
+    runtime: &BridgeConsensusApplication,
+) -> Box<BridgeDagStorageQueries> {
     Box::new(BridgeDagStorageQueries {
         storage: runtime_storage(runtime),
     })
@@ -142,16 +104,6 @@ pub fn create_dag_storage_queries(runtime: &BridgeConsensusApplication) -> Box<B
 /// - C++ callers can keep materializing legacy transaction objects at public
 ///   API boundaries without retaining broad `BridgeStorage` transaction reads
 /// - the handle does not mutate storage or decode transaction payloads.
-#[cfg(test)]
-pub fn create_transaction_storage_queries(
-    storage: &BridgeStorage,
-) -> Box<BridgeTransactionStorageQueries> {
-    Box::new(BridgeTransactionStorageQueries {
-        storage: storage.0.clone(),
-    })
-}
-
-#[cfg(not(test))]
 pub fn create_transaction_storage_queries(
     runtime: &BridgeConsensusApplication,
 ) -> Box<BridgeTransactionStorageQueries> {
@@ -175,16 +127,6 @@ pub fn create_transaction_storage_queries(
 /// - callers can resolve FinalChain compatibility rows without retaining broad
 ///   `BridgeStorage` lookup methods.
 /// - the handle does not mutate storage.
-#[cfg(test)]
-pub fn create_final_chain_storage_queries(
-    storage: &BridgeStorage,
-) -> Box<BridgeFinalChainStorageQueries> {
-    Box::new(BridgeFinalChainStorageQueries {
-        storage: storage.0.clone(),
-    })
-}
-
-#[cfg(not(test))]
 pub fn create_final_chain_storage_queries(
     runtime: &BridgeConsensusApplication,
 ) -> Box<BridgeFinalChainStorageQueries> {
@@ -207,14 +149,6 @@ pub fn create_final_chain_storage_queries(
 /// - callers can resolve period rows for compatibility materialization without
 ///   retaining broad `BridgeStorage` period read methods.
 /// - the handle does not mutate storage.
-#[cfg(test)]
-pub fn create_period_storage_queries(storage: &BridgeStorage) -> Box<BridgePeriodStorageQueries> {
-    Box::new(BridgePeriodStorageQueries {
-        storage: storage.0.clone(),
-    })
-}
-
-#[cfg(not(test))]
 pub fn create_period_storage_queries(
     runtime: &BridgeConsensusApplication,
 ) -> Box<BridgePeriodStorageQueries> {
@@ -229,15 +163,6 @@ pub fn create_period_storage_queries(
 /// storage handle needed to append and commit it. This replaces the previous
 /// bridge-global integer batch registry while the public C++ `Batch&` surface is
 /// still being retired.
-#[cfg(test)]
-pub fn create_storage_shim_batch(storage: &BridgeStorage) -> Box<BridgeStorageBatch> {
-    Box::new(BridgeStorageBatch {
-        storage: storage.0.clone(),
-        batch: Some(storage.0.create_write_batch()),
-    })
-}
-
-#[cfg(not(test))]
 pub fn create_storage_shim_batch(runtime: &BridgeConsensusApplication) -> Box<BridgeStorageBatch> {
     let storage = runtime_storage(runtime);
     Box::new(BridgeStorageBatch {
@@ -329,7 +254,10 @@ impl BridgeConsensusApplication {
     /// The scalar is returned exactly as stored; missing/malformed rows and storage
     /// failures retain the native metadata error behavior.
     pub fn get_rounds_count_dynamic_lambda(&self) -> Result<u32, anyhow::Error> {
-        self.0.storage_for_bridge().metadata().rounds_count_dynamic_lambda()
+        self.0
+            .storage_for_bridge()
+            .metadata()
+            .rounds_count_dynamic_lambda()
     }
 
     /// Loads every persisted block-rewards statistics row as `(period, RLP)` payloads.
@@ -349,10 +277,7 @@ impl BridgeConsensusApplication {
 
     /// Persists current pillar-block sidecar data through consensus-owned storage.
     pub fn pillar_chain_storage_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
-        save_current_pillar_block_data_storage(
-            self.0.storage_for_bridge().as_ref(),
-            &data_rlp,
-        )
+        save_current_pillar_block_data_storage(self.0.storage_for_bridge().as_ref(), &data_rlp)
     }
 
     /// Persists this node's own pillar-block vote through consensus-owned storage.
@@ -400,136 +325,6 @@ impl BridgeConsensusApplication {
             .pillar()
             .rlp(period)?
             .unwrap_or_default())
-    }
-}
-
-impl BridgeStorage {
-    /// Loads the canonical genesis-hash metadata bytes for `DbStorage` compatibility.
-    ///
-    /// Returns empty bytes when the row is missing and propagates native storage errors.
-    /// The method is read-only and preserves the stored bytes without decoding them.
-    pub fn get_genesis_hash(&self) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.metadata().genesis_hash()?.unwrap_or_default())
-    }
-
-    /// Loads at most `count` latest sortition-parameter change RLP payloads.
-    ///
-    /// Results preserve native storage ordering and canonical bytes. A CXX `u64`
-    /// count that cannot fit `usize` saturates to `usize::MAX`; storage errors propagate.
-    pub fn get_last_sortition_params(
-        &self,
-        count: u64,
-    ) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
-        // C++ passes size_t across the bridge; on the same architecture, size_t and usize are equal.
-        // This conversion should never fail on 32-bit or 64-bit systems.
-        let count = usize::try_from(count).unwrap_or(usize::MAX);
-        let changes = self.0.metadata().last_sortition_params_changes_rlp(count)?;
-        Ok(changes
-            .into_iter()
-            .map(|data| rustaxa_ffi::BlockRlp { data })
-            .collect())
-    }
-
-    /// Loads the canonical sortition-parameter change RLP for `period`.
-    ///
-    /// Returns empty bytes when no change exists, performs no decoding or mutation,
-    /// and propagates native storage errors unchanged.
-    pub fn get_params_change_for_period(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .metadata()
-            .params_change_for_period_rlp(period)?
-            .unwrap_or_default())
-    }
-
-    /// Loads one numeric compatibility status field selected by its stable field code.
-    ///
-    /// Unknown fields and storage failures are returned as native errors; this method
-    /// neither supplies defaults nor mutates metadata.
-    pub fn get_status_field(&self, field: u8) -> Result<u64, anyhow::Error> {
-        self.0.metadata().status_field(field)
-    }
-
-    /// Loads the dynamic lambda for `period`, optionally selecting the closest row.
-    ///
-    /// The result distinguishes absence with `found = false` and a zero placeholder.
-    /// Closest-period semantics and storage errors are owned by native storage.
-    pub fn get_period_lambda(
-        &self,
-        period: u64,
-        find_closest: bool,
-    ) -> Result<rustaxa_ffi::PeriodLambda, anyhow::Error> {
-        let value = self.0.metadata().period_lambda(period, find_closest)?;
-        Ok(match value {
-            Some(value) => rustaxa_ffi::PeriodLambda { found: true, value },
-            None => rustaxa_ffi::PeriodLambda {
-                found: false,
-                value: 0,
-            },
-        })
-    }
-
-    /// Loads the persisted dynamic-lambda rounds counter.
-    ///
-    /// The scalar is returned exactly as stored; missing/malformed rows and storage
-    /// failures retain the native metadata error behavior.
-    pub fn get_rounds_count_dynamic_lambda(&self) -> Result<u32, anyhow::Error> {
-        self.0.metadata().rounds_count_dynamic_lambda()
-    }
-
-    /// Loads every persisted block-rewards statistics row as `(period, RLP)` payloads.
-    ///
-    /// Native storage determines ordering. Canonical RLP bytes are not decoded or
-    /// rewritten, and any iteration or storage failure is propagated.
-    pub fn get_blocks_rewards_stats(&self) -> Result<Vec<rustaxa_ffi::PeriodRlp>, anyhow::Error> {
-        let stats = self.0.metadata().block_rewards_stats_rlp()?;
-        Ok(stats
-            .into_iter()
-            .map(|(period, data)| rustaxa_ffi::PeriodRlp { period, data })
-            .collect())
-    }
-
-    /// Persists current pillar-block sidecar data through consensus-owned storage.
-    pub fn pillar_chain_storage_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
-        save_current_pillar_block_data_storage(self.0.as_ref(), &data_rlp)
-    }
-
-    /// Persists this node's own pillar-block vote through consensus-owned storage.
-    pub fn pillar_chain_storage_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
-        save_own_pillar_block_vote_storage(self.0.as_ref(), &vote_rlp)
-    }
-
-    /// Persists a finalized pillar block through consensus-owned storage.
-    pub fn pillar_chain_storage_apply_finalized_block(
-        &self,
-        period: u64,
-        pillar_block_rlp: Vec<u8>,
-    ) -> Result<()> {
-        save_finalized_pillar_block_storage(self.0.as_ref(), period, &pillar_block_rlp)
-    }
-
-    /// Loads this node's own pillar-block vote bytes, returning empty bytes when
-    /// no vote is stored.
-    pub fn pillar_chain_storage_load_own_vote(&self) -> Result<Vec<u8>> {
-        consensus_load_own_pillar_block_vote_storage(self.0.as_ref())
-    }
-
-    /// Loads current pillar-block sidecar bytes, returning empty bytes when
-    /// missing.
-    pub fn pillar_chain_storage_load_current_block_data(&self) -> Result<Vec<u8>> {
-        consensus_load_current_pillar_block_data_storage(self.0.as_ref())
-    }
-
-    /// Loads the latest finalized pillar block bytes, returning empty bytes when
-    /// no finalized pillar block is stored.
-    pub fn pillar_chain_storage_load_latest_block(&self) -> Result<Vec<u8>> {
-        consensus_load_latest_pillar_block_storage(self.0.as_ref())
-    }
-
-    /// Loads a finalized pillar block by period, returning empty bytes when no
-    /// block is stored for that period.
-    pub fn pillar_chain_storage_load_block(&self, period: u64) -> Result<Vec<u8>> {
-        Ok(self.0.pillar().rlp(period)?.unwrap_or_default())
     }
 }
 
@@ -875,7 +670,10 @@ impl BridgeTransactionStorageQueries {
         let trxs = self.storage.transaction().all_nonfinalized_rlp()?;
         Ok(trxs
             .into_iter()
-            .map(|data| rustaxa_ffi::TxRlp { data })
+            .map(|data| rustaxa_ffi::TxRlp {
+                data,
+                is_system: false,
+            })
             .collect())
     }
 
@@ -1097,14 +895,6 @@ pub fn storage_shim_save_block_rewards_stats(
 /// The Rust storage repository owns the aggregate delete and commits it as a
 /// native storage batch. The C++ shim uses this only for the public
 /// `DbStorage::deleteColumnData(block_rewards_stats)` compatibility route.
-#[cfg(test)]
-pub fn storage_shim_clear_block_rewards_stats(
-    storage: &BridgeStorage,
-) -> Result<(), anyhow::Error> {
-    storage.0.metadata().clear_block_rewards_stats()
-}
-
-#[cfg(not(test))]
 pub fn storage_shim_clear_block_rewards_stats(
     runtime: &BridgeConsensusApplication,
 ) -> Result<(), anyhow::Error> {
@@ -1120,15 +910,6 @@ pub fn storage_shim_clear_block_rewards_stats(
 /// The storage repository owns the legacy single-value key and write-once
 /// behavior. The C++ shim supplies the already validated 32-byte hash from its
 /// public `DbStorage` compatibility API.
-#[cfg(test)]
-pub fn storage_shim_set_genesis_hash(
-    storage: &BridgeStorage,
-    hash: &[u8; 32],
-) -> Result<(), anyhow::Error> {
-    storage.0.metadata().set_genesis_hash_if_empty(hash)
-}
-
-#[cfg(not(test))]
 pub fn storage_shim_set_genesis_hash(
     runtime: &BridgeConsensusApplication,
     hash: &[u8; 32],
@@ -1151,38 +932,6 @@ pub fn storage_shim_set_genesis_hash(
 /// FinalChain repository. The helper does not perform partial repair if a write
 /// conflict or RocksDB error occurs.
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub fn storage_shim_seed_final_chain_conformance_lookup_rows(
-    storage: &BridgeStorage,
-    meta_key: u32,
-    meta_value: Vec<u8>,
-    block_number: u64,
-    block_hash: &[u8; 32],
-    block_header_rlp: Vec<u8>,
-    receipt_hash: &[u8; 32],
-    receipt_rlp: Vec<u8>,
-    blooms_chunk: &[u8; 32],
-    blooms_rlp: Vec<u8>,
-    receipt_period: u64,
-    receipts_rlp: Vec<u8>,
-) -> Result<(), anyhow::Error> {
-    storage.0.final_chain().write_conformance_lookup_rows(
-        meta_key,
-        &meta_value,
-        block_number,
-        H256::from(*block_hash),
-        &block_header_rlp,
-        H256::from(*receipt_hash),
-        &receipt_rlp,
-        H256::from(*blooms_chunk),
-        &blooms_rlp,
-        receipt_period,
-        &receipts_rlp,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-#[cfg(not(test))]
 pub fn storage_shim_seed_final_chain_conformance_lookup_rows(
     runtime: &BridgeConsensusApplication,
     meta_key: u32,
@@ -1666,7 +1415,9 @@ fn transaction_rlp_lookups(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag_transaction_service::create_test_consensus_application;
     use std::fs;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
@@ -1677,8 +1428,17 @@ mod tests {
         std::env::temp_dir().join(format!("{name}_{nonce}"))
     }
 
-    fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
-        create_transaction_storage_queries(storage)
+    fn storage_fixture(path: &str) -> (Box<BridgeConsensusApplication>, Arc<Storage>) {
+        let application = create_test_consensus_application(path, Vec::new(), 0)
+            .expect("consensus application should initialize");
+        let storage = application.0.storage_for_bridge().clone();
+        (application, storage)
+    }
+
+    fn transaction_queries(
+        application: &BridgeConsensusApplication,
+    ) -> Box<BridgeTransactionStorageQueries> {
+        create_transaction_storage_queries(application)
     }
 
     fn period_data_rlp(transaction_rlps: &[Vec<u8>]) -> Vec<u8> {
@@ -1700,19 +1460,18 @@ mod tests {
     fn storage_shim_genesis_hash_preserves_write_once_behavior() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_storage_genesis_hash");
         {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
+            let (application, _storage) =
+                storage_fixture(temp_dir.to_str().expect("temp path should be valid UTF-8"));
 
-            assert!(storage.get_genesis_hash().unwrap().is_empty());
+            assert_eq!(application.get_genesis_hash().unwrap(), vec![1; 32]);
 
-            storage_shim_set_genesis_hash(&storage, &[0xAB; 32])
-                .expect("first genesis hash should persist");
-            assert_eq!(storage.get_genesis_hash().unwrap(), vec![0xAB; 32]);
+            storage_shim_set_genesis_hash(&application, &[0xAB; 32])
+                .expect("replacement genesis hash should be a no-op");
+            assert_eq!(application.get_genesis_hash().unwrap(), vec![1; 32]);
 
-            storage_shim_set_genesis_hash(&storage, &[0xCD; 32])
+            storage_shim_set_genesis_hash(&application, &[0xCD; 32])
                 .expect("second genesis hash should be a no-op");
-            assert_eq!(storage.get_genesis_hash().unwrap(), vec![0xAB; 32]);
+            assert_eq!(application.get_genesis_hash().unwrap(), vec![1; 32]);
         }
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -1721,21 +1480,20 @@ mod tests {
     fn storage_shim_clear_block_rewards_stats_removes_all_periods() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_storage_clear_rewards");
         {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
+            let (application, _storage) =
+                storage_fixture(temp_dir.to_str().expect("temp path should be valid UTF-8"));
 
-            let mut batch = create_storage_shim_batch(&storage);
+            let mut batch = create_storage_shim_batch(&application);
             storage_shim_save_block_rewards_stats(&mut batch, 3, vec![0xC1, 0xA3])
                 .expect("first stats row should stage");
             storage_shim_save_block_rewards_stats(&mut batch, 7, vec![0xC1, 0xA7])
                 .expect("second stats row should stage");
             storage_shim_commit_batch(batch, false).expect("stats rows should commit");
-            assert_eq!(storage.get_blocks_rewards_stats().unwrap().len(), 2);
+            assert_eq!(application.get_blocks_rewards_stats().unwrap().len(), 2);
 
-            storage_shim_clear_block_rewards_stats(&storage)
+            storage_shim_clear_block_rewards_stats(&application)
                 .expect("storage shim clear should remove stats");
-            assert!(storage.get_blocks_rewards_stats().unwrap().is_empty());
+            assert!(application.get_blocks_rewards_stats().unwrap().is_empty());
         }
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -1744,41 +1502,35 @@ mod tests {
     fn transaction_rlp_batch_lookup_reads_pending_finalized_system_and_missing() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_storage_transaction_rlps");
         {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
+            let (_application, storage) =
+                storage_fixture(temp_dir.to_str().expect("temp path should be valid UTF-8"));
             let pending = vec![0xC1, 0xA1];
             let finalized = vec![0xC1, 0xA2];
             let system = vec![0xC1, 0xA3];
 
             storage
-                .0
                 .transaction()
                 .write(H256::from([1u8; 32]), &pending)
                 .expect("pending transaction should save");
             storage
-                .0
                 .period()
                 .write(7, &period_data_rlp(std::slice::from_ref(&finalized)))
                 .expect("period data should save");
             storage
-                .0
                 .transaction()
                 .write_location(H256::from([2u8; 32]), 7, 0, false)
                 .expect("regular finalized location should save");
             storage
-                .0
                 .transaction()
                 .write_system(H256::from([3u8; 32]), &system)
                 .expect("system transaction should save");
             storage
-                .0
                 .transaction()
                 .write_location(H256::from([3u8; 32]), 8, 0, true)
                 .expect("system finalized location should save");
 
             let lookup = transaction_rlp_lookups(
-                &storage.0,
+                &storage,
                 vec![
                     H256::from([1u8; 32]),
                     H256::from([2u8; 32]),
@@ -1814,13 +1566,11 @@ mod tests {
     fn save_non_finalized_transactions_batch_updates_trx_count_status() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_storage_save_non_finalized_transactions");
         {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
+            let (application, storage) =
+                storage_fixture(temp_dir.to_str().expect("temp path should be valid UTF-8"));
 
             let existing_tx_count = 3u64;
             storage
-                .0
                 .metadata()
                 .write_status_field(
                     rustaxa_storage::StatusField::TrxCount as u8,
@@ -1829,7 +1579,7 @@ mod tests {
                 .expect("pre-seeded transaction count should persist");
 
             rustaxa_consensus::save_non_finalized_transactions(
-                &storage.0,
+                &storage,
                 vec![
                     rustaxa_consensus::NonFinalizedTransactionStoragePayload {
                         hash: H256::from([10u8; 32]),
@@ -1845,20 +1595,20 @@ mod tests {
             .expect("batch write should persist accepted transactions");
 
             assert_eq!(
-                storage
+                application
                     .get_status_field(rustaxa_storage::StatusField::TrxCount as u8)
                     .expect("trx count status should load"),
                 existing_tx_count + 2,
             );
             assert_eq!(
-                transaction_queries(&storage)
+                transaction_queries(&application)
                     .get_transaction(&[10u8; 32])
                     .expect("tx 10 should be retrievable"),
                 vec![1],
             );
 
             rustaxa_consensus::save_non_finalized_transactions(
-                &storage.0,
+                &storage,
                 vec![rustaxa_consensus::NonFinalizedTransactionStoragePayload {
                     hash: H256::from([13u8; 32]),
                     trx_rlp: vec![5],
@@ -1868,13 +1618,13 @@ mod tests {
             .expect("second batch write should persist accepted tx");
 
             assert_eq!(
-                storage
+                application
                     .get_status_field(rustaxa_storage::StatusField::TrxCount as u8)
                     .expect("trx count status should load"),
                 existing_tx_count + 3,
             );
             assert_eq!(
-                transaction_queries(&storage)
+                transaction_queries(&application)
                     .get_transaction(&[13u8; 32])
                     .expect("tx 13 should be persisted"),
                 vec![5],

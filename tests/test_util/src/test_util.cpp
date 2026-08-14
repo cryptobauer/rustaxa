@@ -263,6 +263,12 @@ NodesTest::NodesTest() {
                               "550b7971fc2de6c5998d87"
                               "84051c5be69abc9644"));
   overwriteFromJsons();
+  for (size_t i = 0; i < node_cfgs.size(); ++i) {
+    auto& cfg = node_cfgs[i];
+    cfg.data_path = data_dir / ("node" + std::to_string(i));
+    cfg.db_path = cfg.data_path / "db";
+    cfg.log_path = cfg.data_path / "log";
+  }
   CleanupDirs();
 }
 

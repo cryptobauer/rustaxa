@@ -499,6 +499,8 @@ class VoteManager {
   };
   ProposalWalletFacts proposalWalletFacts(PbftPeriod pbft_period, PbftRound pbft_round,
                                           const std::vector<std::pair<bool, WalletConfig>>& wallets) const;
+  /** Returns ordered concrete-EVM account facts for native slashing admission. */
+  rust::Vec<rustaxa::SlashingSubmitterIdentity> slashingSubmitterFacts() const;
   /**
    * Compact verified-vote facts consumed by PBFT manager state-action planning.
    *

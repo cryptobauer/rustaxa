@@ -21,8 +21,7 @@ inline ConsensusQueryApiPtr createConsensusQueryApi(const std::shared_ptr<taraxa
   if (!db) {
     return {};
   }
-  return std::make_shared<rust::Box<rustaxa::BridgeConsensusQueryApi>>(
-      rustaxa::create_consensus_query_api(db->rustStorage()));
+  return db->consensusQueryApi();
 }
 #endif
 

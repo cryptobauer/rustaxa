@@ -5,11 +5,15 @@
 //! may invoke task-family operations through this root, but CXX never receives
 //! a separately constructible service or a service accessor.
 
+use crate::dag_service::DagServiceConfig;
 use crate::dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig};
 use crate::final_chain::FinalChain;
+use crate::gas_pricer::GasPricerConfig;
 use crate::pbft_service::{PbftService, PbftServiceConfig};
+use crate::sortition::{SortitionConfig, SortitionParams, VdfParams, VrfParams};
+use crate::transaction_service::TransactionServiceConfig;
 use anyhow::{Context, Result, bail};
-use ethereum_types::H256;
+use ethereum_types::{H256, U256};
 use rustaxa_storage::{Config, StatusField, Storage};
 use rustaxa_types::{
     FinalChainGas, FinalChainRewardsConfig, GenesisAccount, GenesisDposConfig, GenesisValidator,
@@ -69,8 +73,8 @@ pub struct ConsensusApplicationBootstrap {
     pub schema_major: u32,
     /// Expected durable database minor version within `schema_major`.
     pub schema_minor: u32,
-    /// Exact genesis identity persisted for fresh storage and verified on restart.
-    pub genesis_hash: H256,
+    /// Exact full-genesis identity persisted for fresh storage and verified on restart.
+    pub storage_genesis_hash: H256,
     /// Native FinalChain construction input.
     pub final_chain: ConsensusFinalChainConfig,
     /// Native DAG/transaction/sortition and PBFT restoration input.
@@ -81,25 +85,21 @@ impl ConsensusApplicationBootstrap {
     /// Opens storage and constructs one fully restored native application root.
     ///
     /// Existing nonzero schema majors must equal `schema_major`; same-major
-    /// minor changes are accepted and atomically publish the requested major and
-    /// minor pair. Fresh storage receives both values. Genesis is write-once and
-    /// is compared byte-for-byte after the conditional write. The configured DAG
-    /// genesis must equal the durable application genesis, preventing sibling
-    /// services from starting with different chain identities.
+    /// minor mismatches fail closed because legacy schema migrations are not a
+    /// native bootstrap responsibility. Fresh storage atomically receives both values. Genesis is write-once and
+    /// is compared byte-for-byte after the conditional write. The DAG service's
+    /// distinct genesis-block hash remains part of its own configuration; it is
+    /// intentionally not substituted for the full genesis-configuration identity.
     pub fn bootstrap(self) -> Result<ConsensusApplication> {
         if self.schema_major == 0 {
             bail!("CONSENSUS_APPLICATION_SCHEMA_MAJOR_ZERO");
         }
-        if self.consensus.dag_transaction.dag.genesis_hash != self.genesis_hash {
-            bail!("CONSENSUS_APPLICATION_DAG_GENESIS_MISMATCH");
-        }
-
         let storage = Arc::new(
             Storage::new(Config::new(self.storage_path))
                 .context("CONSENSUS_APPLICATION_STORAGE_OPEN_FAILED")?,
         );
         initialize_schema_version(&storage, self.schema_major, self.schema_minor)?;
-        initialize_and_verify_genesis(&storage, self.genesis_hash)?;
+        initialize_and_verify_genesis(&storage, self.storage_genesis_hash)?;
 
         let final_chain = Arc::new(
             FinalChain::new_with_rewards_config(
@@ -139,6 +139,11 @@ fn initialize_schema_version(
     }
     if stored_major == u64::from(expected_major) && stored_minor == u64::from(expected_minor) {
         return Ok(());
+    }
+    if stored_major != 0 {
+        bail!(
+            "CONSENSUS_APPLICATION_SCHEMA_MINOR_MISMATCH: stored {stored_minor}, expected {expected_minor}"
+        );
     }
 
     let mut batch = storage.create_write_batch();
@@ -280,84 +285,122 @@ impl Deref for ConsensusApplication {
     }
 }
 
+/// Returns the deterministic native bootstrap shared by downstream boundary tests.
+///
+/// The fixture uses one storage owner and the production bootstrap path. Callers
+/// may vary validators and the DPoS delegation delay; all other consensus inputs
+/// are fixed. This helper does not open storage or publish a partial application.
+#[doc(hidden)]
+pub fn consensus_application_test_bootstrap(
+    storage_path: PathBuf,
+    genesis_validators: Vec<GenesisValidator>,
+    delegation_delay: u64,
+) -> ConsensusApplicationBootstrap {
+    let mut consensus = deterministic_test_config();
+    consensus
+        .dag_transaction
+        .transaction
+        .gas_pricer_config
+        .minimum_price = U256::zero();
+    ConsensusApplicationBootstrap {
+        storage_path,
+        schema_major: 1,
+        schema_minor: 0,
+        storage_genesis_hash: H256::repeat_byte(1),
+        final_chain: ConsensusFinalChainConfig {
+            block_gas_limit: FinalChainGas::ZERO,
+            genesis_timestamp: 0,
+            genesis_accounts: Vec::new(),
+            genesis_validators,
+            genesis_dpos: GenesisDposConfig {
+                eligibility_balance_threshold: U256::from(1_000).into(),
+                vote_eligibility_balance_step: U256::from(1_000).into(),
+                validator_maximum_stake: U256::from(30_000).into(),
+                delegation_delay,
+                ..GenesisDposConfig::default()
+            },
+            rewards: FinalChainRewardsConfig {
+                aspen_part_one_period: u64::MAX.into(),
+                ..FinalChainRewardsConfig::default()
+            },
+        },
+        consensus,
+    }
+}
+
+fn deterministic_test_config() -> ConsensusApplicationConfig {
+    ConsensusApplicationConfig {
+        dag_transaction: DagTransactionServiceConfig {
+            transaction: TransactionServiceConfig {
+                queue_max_size: 16,
+                gas_pricer_config: GasPricerConfig {
+                    percentile: 50,
+                    minimum_price: U256::one(),
+                    history_blocks: 0,
+                    is_light_node: false,
+                    blocks_gas_pricer: false,
+                },
+                proposal_dag_gas_limit: 1_000_000,
+            },
+            dag: DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+            sortition: SortitionConfig {
+                params: SortitionParams {
+                    vrf: VrfParams {
+                        threshold_upper: 0x100,
+                    },
+                    vdf: VdfParams {
+                        difficulty_min: 1,
+                        difficulty_max: 10,
+                        difficulty_stale: 5,
+                        lambda_bound: 100,
+                    },
+                },
+                changes_count_for_average: 8,
+                dag_efficiency_targets: (5_000, 10_000),
+                changing_interval: 10,
+                computation_interval: 5,
+            },
+        },
+        pbft: PbftServiceConfig {
+            genesis_lambda_ms: 100,
+            cacti_lambda_max_ms: 1_500,
+            cacti_lambda_default_ms: 500,
+            cacti_block: 1,
+            max_exponential_lambda_ms: 60_000,
+            max_steps: 13,
+            deadline_ms: 1_000,
+            polling_interval_ms: 100,
+            report_malicious_behaviour: true,
+            magnolia_activation_period: 0,
+            ficus_activation_period: 0,
+            pillar_blocks_interval: 10,
+            sync_level_size: 10,
+            is_light_node: false,
+            light_node_history: 0,
+            committee_size: 1,
+            number_of_proposers: 1,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dag_service::DagServiceConfig;
-    use crate::gas_pricer::GasPricerConfig;
-    use crate::sortition::{SortitionConfig, SortitionParams, VdfParams, VrfParams};
-    use crate::transaction_service::TransactionServiceConfig;
-    use ethereum_types::{H256, U256};
+    use ethereum_types::H256;
     use rustaxa_storage::{Config, StatusField};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn config() -> ConsensusApplicationConfig {
-        ConsensusApplicationConfig {
-            dag_transaction: DagTransactionServiceConfig {
-                transaction: TransactionServiceConfig {
-                    queue_max_size: 16,
-                    gas_pricer_config: GasPricerConfig {
-                        percentile: 50,
-                        minimum_price: U256::one(),
-                        history_blocks: 0,
-                        is_light_node: false,
-                        blocks_gas_pricer: false,
-                    },
-                    proposal_dag_gas_limit: 1_000_000,
-                },
-                dag: DagServiceConfig {
-                    genesis_hash: H256::repeat_byte(1),
-                    dag_expiry_limit: 32,
-                    max_levels_per_period: 100,
-                },
-                sortition: SortitionConfig {
-                    params: SortitionParams {
-                        vrf: VrfParams {
-                            threshold_upper: 0x100,
-                        },
-                        vdf: VdfParams {
-                            difficulty_min: 1,
-                            difficulty_max: 10,
-                            difficulty_stale: 5,
-                            lambda_bound: 100,
-                        },
-                    },
-                    changes_count_for_average: 8,
-                    dag_efficiency_targets: (5_000, 10_000),
-                    changing_interval: 10,
-                    computation_interval: 5,
-                },
-            },
-            pbft: PbftServiceConfig {
-                genesis_lambda_ms: 100,
-                cacti_lambda_max_ms: 1_500,
-                cacti_lambda_default_ms: 500,
-                cacti_block: 1,
-                max_exponential_lambda_ms: 60_000,
-                max_steps: 13,
-                deadline_ms: 1_000,
-                polling_interval_ms: 100,
-                report_malicious_behaviour: true,
-                magnolia_activation_period: 0,
-                ficus_activation_period: 0,
-                pillar_blocks_interval: 10,
-                sync_level_size: 10,
-                is_light_node: false,
-                light_node_history: 0,
-                committee_size: 1,
-                number_of_proposers: 1,
-                slashing_submitters: Vec::new(),
-            },
-        }
-    }
 
     fn bootstrap(path: std::path::PathBuf) -> ConsensusApplicationBootstrap {
         ConsensusApplicationBootstrap {
             storage_path: path,
             schema_major: 7,
             schema_minor: 3,
-            genesis_hash: H256::repeat_byte(1),
+            storage_genesis_hash: H256::repeat_byte(1),
             final_chain: ConsensusFinalChainConfig {
                 block_gas_limit: 1_000_000.into(),
                 genesis_timestamp: 42,
@@ -366,7 +409,7 @@ mod tests {
                 genesis_dpos: GenesisDposConfig::default(),
                 rewards: FinalChainRewardsConfig::default(),
             },
-            consensus: config(),
+            consensus: deterministic_test_config(),
         }
     }
 
@@ -422,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn native_bootstrap_restarts_and_updates_same_major_minor_version() {
+    fn native_bootstrap_rejects_same_major_minor_mismatch_without_migrating() {
         let path = temp_path("consensus_application_native_restart");
         bootstrap(path.clone())
             .bootstrap()
@@ -430,27 +473,25 @@ mod tests {
 
         let mut restarted = bootstrap(path.clone());
         restarted.schema_minor = 4;
-        let root = restarted.bootstrap().expect("restart bootstrap");
-        assert_eq!(
-            root.storage
-                .metadata()
-                .status_field(StatusField::DbMajorVersion as u8)
-                .unwrap(),
-            7
+        let error = match restarted.bootstrap() {
+            Ok(_) => panic!("minor mismatch must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("CONSENSUS_APPLICATION_SCHEMA_MINOR_MISMATCH")
         );
+
+        let storage = Storage::new(Config::new(path.clone())).expect("storage reopens");
         assert_eq!(
-            root.storage
+            storage
                 .metadata()
                 .status_field(StatusField::DbMinorVersion as u8)
                 .unwrap(),
-            4
+            3
         );
-        assert_eq!(
-            root.storage.dag().proposal_period_at_level(100).unwrap(),
-            Some(0)
-        );
-
-        drop(root);
+        drop(storage);
         let _ = fs::remove_dir_all(path);
     }
 
@@ -462,8 +503,7 @@ mod tests {
             .expect("fresh bootstrap");
 
         let mut mismatched = bootstrap(path.clone());
-        mismatched.genesis_hash = H256::repeat_byte(2);
-        mismatched.consensus.dag_transaction.dag.genesis_hash = H256::repeat_byte(2);
+        mismatched.storage_genesis_hash = H256::repeat_byte(2);
         let error = match mismatched.bootstrap() {
             Ok(_) => panic!("genesis mismatch must reject bootstrap"),
             Err(error) => error,

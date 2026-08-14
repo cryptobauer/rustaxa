@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "consensus_application_test.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 using namespace rustaxa;
@@ -282,10 +283,25 @@ class RustFinalChainTest : public ::testing::Test {
     return validators;
   }
 
-  static rust::Box<BridgeFinalChain> create_final_chain_for_test(BridgeStorage& storage,
-                                                                 rust::Vec<GenesisValidator> validators) {
-    return create_final_chain_with_rewards_config(storage, 0, 0, genesis_accounts(), std::move(validators),
-                                                  genesis_dpos_config(), default_rewards_config());
+  static PbftServiceConfig pbft_config() {
+    PbftServiceConfig config{};
+    config.genesis_lambda_ms = 100;
+    config.cacti_lambda_max_ms = 100;
+    config.cacti_lambda_default_ms = 100;
+    config.max_exponential_lambda_ms = 60'000;
+    config.max_steps = 13;
+    config.deadline_ms = 400;
+    config.polling_interval_ms = 100;
+    config.pillar_blocks_interval = 10;
+    config.sync_level_size = 10;
+    config.committee_size = 5;
+    config.number_of_proposers = 20;
+    return config;
+  }
+
+  rust::Box<BridgeConsensusApplication> create_final_chain_for_test(rust::Vec<GenesisValidator> validators) {
+    return test::createConsensusApplication(test_dir, pbft_config(), 32, 10, genesis_accounts(), std::move(validators),
+                                            genesis_dpos_config(), default_rewards_config());
   }
 
   static FinalChainCall dpos_call(uint64_t block_number, rust::Vec<uint8_t> input) {
@@ -308,8 +324,7 @@ class RustFinalChainTest : public ::testing::Test {
 TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
   const auto validator_address = address(0x10);
   const auto unknown_address = address(0x20);
-  auto storage = create_storage(test_dir.string());
-  auto final_chain = create_final_chain_for_test(*storage, genesis_validators(validator_address));
+  auto final_chain = create_final_chain_for_test(genesis_validators(validator_address));
 
   EXPECT_EQ(final_chain->get_dpos_eligible_total_vote_count(0), 10u);
   EXPECT_EQ(final_chain->get_dpos_eligible_vote_count(0, validator_address), 10u);
@@ -346,8 +361,7 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
 
 TEST_F(RustFinalChainTest, DposQueriesRejectMissingNonGenesisSnapshot) {
   const auto validator_address = address(0x10);
-  auto storage = create_storage(test_dir.string());
-  auto final_chain = create_final_chain_for_test(*storage, genesis_validators(validator_address));
+  auto final_chain = create_final_chain_for_test(genesis_validators(validator_address));
 
   EXPECT_THROW(final_chain->get_dpos_eligible_total_vote_count(1), std::exception);
   EXPECT_THROW(final_chain->get_dpos_eligible_vote_count(1, validator_address), std::exception);
@@ -358,8 +372,7 @@ TEST_F(RustFinalChainTest, DposQueriesRejectMissingNonGenesisSnapshot) {
 TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorMetadata) {
   const auto validator_address = address(0x10);
   const auto owner = address(0x11);
-  auto storage = create_storage(test_dir.string());
-  auto final_chain = create_final_chain_for_test(*storage, genesis_validators(validator_address));
+  auto final_chain = create_final_chain_for_test(genesis_validators(validator_address));
 
   auto outcome = final_chain->call(dpos_call(0, get_validator_input(validator_address)));
   const auto owner_word = abi_address_word(owner);
@@ -388,8 +401,7 @@ TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorPages) {
   validators.push_back(genesis_validator(first_validator, first_owner, "first"));
   validators.push_back(genesis_validator(second_validator, second_owner, "second"));
 
-  auto storage = create_storage(test_dir.string());
-  auto final_chain = create_final_chain_for_test(*storage, std::move(validators));
+  auto final_chain = create_final_chain_for_test(std::move(validators));
 
   auto all = final_chain->call(dpos_call(0, get_validators_input(0)));
   ASSERT_EQ(std::string(all.code_err), "");
@@ -407,8 +419,7 @@ TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorPages) {
 
 TEST_F(RustFinalChainTest, DposCallExecutesMutationsTransientlyAndReturnsLogs) {
   const auto validator_address = address(0x10);
-  auto storage = create_storage(test_dir.string());
-  auto final_chain = create_final_chain_for_test(*storage, genesis_validators(validator_address));
+  auto final_chain = create_final_chain_for_test(genesis_validators(validator_address));
 
   auto claim_rewards_outcome = final_chain->call(dpos_call(0, get_claim_rewards_input(validator_address)));
   ASSERT_EQ(std::string(claim_rewards_outcome.code_err), "Delegation does not exist");

@@ -86,18 +86,24 @@ T save_as(const Slice& key) {
 }
 }  // namespace
 
-DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_block, uint32_t max_open_files,
-                     uint32_t db_max_snapshots, PbftPeriod db_revert_to_period, addr_t node_addr, bool rebuild)
+DbStorage::DbStorage(SharedConsensusApplication consensus_application, fs::path const& path,
+                     uint32_t db_snapshot_each_n_pbft_block, uint32_t max_open_files, uint32_t db_max_snapshots,
+                     PbftPeriod db_revert_to_period, addr_t node_addr, bool rebuild)
     : DbStorageOld(path, db_snapshot_each_n_pbft_block, max_open_files, db_max_snapshots, db_revert_to_period,
-                   node_addr, rebuild) {
+                   node_addr, rebuild),
+      consensus_application_(std::move(consensus_application)) {
   try {
-    rust_storage_ = rustaxa::create_storage(path.string());
-    dag_queries_ = rustaxa::create_dag_storage_queries(*rust_storage_.value());
-    pbft_queries_ = rustaxa::create_pbft_storage_queries(*rust_storage_.value());
-    pbft_vote_queries_ = rustaxa::create_pbft_vote_storage_queries(*rust_storage_.value());
-    transaction_queries_ = rustaxa::create_transaction_storage_queries(*rust_storage_.value());
-    final_chain_queries_ = rustaxa::create_final_chain_storage_queries(*rust_storage_.value());
-    period_queries_ = rustaxa::create_period_storage_queries(*rust_storage_.value());
+    if (!consensus_application_) {
+      throw std::invalid_argument("DbStorage requires the native consensus application root");
+    }
+    dag_queries_ = rustaxa::create_dag_storage_queries(consensus_application_->service());
+    pbft_queries_ = rustaxa::create_pbft_storage_queries(consensus_application_->service());
+    pbft_vote_queries_ = rustaxa::create_pbft_vote_storage_queries(consensus_application_->service());
+    transaction_queries_ = rustaxa::create_transaction_storage_queries(consensus_application_->service());
+    final_chain_queries_ = rustaxa::create_final_chain_storage_queries(consensus_application_->service());
+    period_queries_ = rustaxa::create_period_storage_queries(consensus_application_->service());
+    consensus_query_api_ = std::make_shared<rust::Box<rustaxa::BridgeConsensusQueryApi>>(
+        rustaxa::create_consensus_query_api(consensus_application_->service()));
     kMajorVersion_ = static_cast<uint32_t>(getStatusField(StatusDbField::DbMajorVersion));
     auto const minor_version = static_cast<uint32_t>(getStatusField(StatusDbField::DbMinorVersion));
     if (kMajorVersion_ != 0 && kMajorVersion_ != TARAXA_DB_MAJOR_VERSION) {
@@ -112,8 +118,10 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
 }
 
 Batch DbStorage::createWriteBatch() { return Batch(); }
-
 DbStorage::~DbStorage() = default;
+std::shared_ptr<rust::Box<rustaxa::BridgeConsensusQueryApi>> DbStorage::consensusQueryApi() const {
+  return consensus_query_api_;
+}
 
 rustaxa::BridgeStorageBatch& DbStorage::getOrCreateRustBatch(Batch& batch) {
   std::lock_guard<std::mutex> lock(rust_batches_mutex_);
@@ -122,7 +130,7 @@ rustaxa::BridgeStorageBatch& DbStorage::getOrCreateRustBatch(Batch& batch) {
     return *it->second;
   }
 
-  auto rust_batch = rustaxa::create_storage_shim_batch(*rust_storage_.value());
+  auto rust_batch = rustaxa::create_storage_shim_batch(consensus_application_->service());
   auto [inserted_it, _] = rust_batches_.emplace(&batch, std::move(rust_batch));
   return *inserted_it->second;
 }
@@ -148,49 +156,27 @@ void DbStorage::commitWriteBatch(Batch& write_batch, const rocksdb::WriteOptions
 }
 
 void DbStorage::commitWriteBatch(Batch& write_batch) { commitWriteBatch(write_batch, async_write_); }
-
-void DbStorage::DeleteRange(const Column& col, uint64_t begin, uint64_t end) {
-  (void)col;
-  (void)begin;
-  (void)end;
-  throw_admin_compat_unsupported("DeleteRange");
-}
-
-void DbStorage::CompactRange(const Column& col, uint64_t begin, uint64_t end) {
-  (void)col;
-  (void)begin;
-  (void)end;
-  throw_admin_compat_unsupported("CompactRange");
-}
-
-bool DbStorage::createSnapshot(PbftPeriod period) {
-  (void)period;
-  throw_admin_compat_unsupported("createSnapshot");
-}
+void DbStorage::DeleteRange(const Column&, uint64_t, uint64_t) { throw_admin_compat_unsupported("DeleteRange"); }
+void DbStorage::CompactRange(const Column&, uint64_t, uint64_t) { throw_admin_compat_unsupported("CompactRange"); }
+bool DbStorage::createSnapshot(PbftPeriod) { throw_admin_compat_unsupported("createSnapshot"); }
 
 void DbStorage::disableSnapshots() { snapshots_enabled_ = false; }
-
 void DbStorage::enableSnapshots() { snapshots_enabled_ = true; }
-
 void DbStorage::deleteColumnData(const Column& c) {
   if (c.ordinal_ == Columns::block_rewards_stats.ordinal_) {
-    rustaxa::storage_shim_clear_block_rewards_stats(*rust_storage_.value());
+    rustaxa::storage_shim_clear_block_rewards_stats(consensus_application_->service());
     return;
   }
 
   throw DbException("DbStorage::deleteColumnData(" + c.name() +
                     ") is a RUSTAXA_ADMIN_COMPAT_UNSUPPORTED boundary in Rust shim mode");
 }
-
 uint32_t DbStorage::getMajorVersion() const { return kMajorVersion_; }
-
-std::unique_ptr<rocksdb::Iterator> DbStorage::getColumnIterator(const Column& c) {
-  (void)c;
+std::unique_ptr<rocksdb::Iterator> DbStorage::getColumnIterator(const Column&) {
   throw_query_compat_read("getColumnIterator(Column)");
 }
 
-std::unique_ptr<rocksdb::Iterator> DbStorage::getColumnIterator(rocksdb::ColumnFamilyHandle* c) {
-  (void)c;
+std::unique_ptr<rocksdb::Iterator> DbStorage::getColumnIterator(rocksdb::ColumnFamilyHandle*) {
   throw_query_compat_read("getColumnIterator(ColumnFamilyHandle*)");
 }
 
@@ -264,17 +250,13 @@ void DbStorage::updateDbVersions() {
   kMajorVersion_ = TARAXA_DB_MAJOR_VERSION;
 }
 
-rustaxa::BridgeStorage& DbStorage::rustStorage() { return *rust_storage_.value(); }
-
-const rustaxa::BridgeStorage& DbStorage::rustStorage() const { return *rust_storage_.value(); }
-
 void DbStorage::setGenesisHash(const h256& genesis_hash) {
   auto bytes = into_bytes_array(genesis_hash);
-  rustaxa::storage_shim_set_genesis_hash(*rust_storage_.value(), bytes);
+  rustaxa::storage_shim_set_genesis_hash(consensus_application_->service(), bytes);
 }
 
 std::optional<h256> DbStorage::getGenesisHash() {
-  auto rust_hash = rust_storage_.value()->get_genesis_hash();
+  auto rust_hash = consensus_application_->service().get_genesis_hash();
   if (!rust_hash.empty()) {
     return h256(dev::bytes(rust_hash.begin(), rust_hash.end()));
   }
@@ -293,8 +275,7 @@ std::shared_ptr<DagBlock> DbStorage::getDagBlock(blk_hash_t const& hash) {
 
 bool DbStorage::dagBlockInDb(blk_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
-  if (dag_queries_.value()->dag_block_in_db(h_arr)) return true;
-  return false;
+  return dag_queries_.value()->dag_block_in_db(h_arr);
 }
 
 std::set<blk_hash_t> DbStorage::getBlocksByLevel(level_t level) {
@@ -309,7 +290,6 @@ std::set<blk_hash_t> DbStorage::getBlocksByLevel(level_t level) {
 }
 
 level_t DbStorage::getLastBlocksLevel() const { return dag_queries_.value()->get_last_blocks_level(); }
-
 std::vector<std::shared_ptr<DagBlock>> DbStorage::getDagBlocksAtLevel(level_t level, int number_of_levels) {
   std::vector<std::shared_ptr<DagBlock>> res;
   auto blocks_rlp = dag_queries_.value()->get_dag_blocks_at_level(level, (uint32_t)number_of_levels);
@@ -369,7 +349,6 @@ void DbStorage::mirrorDagBlockCounters(uint64_t dag_blocks_count, uint64_t dag_e
 }
 
 uint64_t DbStorage::getDagBlocksCount() const { return dag_blocks_count_.load(); }
-
 uint64_t DbStorage::getDagEdgeCount() const { return dag_edge_count_.load(); }
 
 void DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_batch_p) {
@@ -412,7 +391,7 @@ void DbStorage::saveSortitionParamsChange(PbftPeriod period, const SortitionPara
 std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count) {
   std::deque<SortitionParamsChange> changes;
 
-  auto rust_changes = rust_storage_.value()->get_last_sortition_params(static_cast<uint64_t>(count));
+  auto rust_changes = consensus_application_->service().get_last_sortition_params(static_cast<uint64_t>(count));
   for (auto const& change_rlp : rust_changes) {
     auto bytes = dev::bytes(change_rlp.data.begin(), change_rlp.data.end());
     changes.emplace_back(SortitionParamsChange::from_rlp(dev::RLP(bytes)));
@@ -421,7 +400,7 @@ std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count
 }
 
 std::optional<SortitionParamsChange> DbStorage::getParamsChangeForPeriod(PbftPeriod period) {
-  auto rust_change = rust_storage_.value()->get_params_change_for_period(period);
+  auto rust_change = consensus_application_->service().get_params_change_for_period(period);
   if (rust_change.empty()) {
     return {};
   }
@@ -556,11 +535,12 @@ std::vector<std::shared_ptr<PillarVote>> DbStorage::getPeriodPillarVotes(PbftPer
 void DbStorage::savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>& pillar_block) {
   auto pillar_rlp_bytes = pillar_block->getRlp();
   auto pillar_rlp = into_rust_vec(pillar_rlp_bytes);
-  rust_storage_.value()->pillar_chain_storage_apply_finalized_block(pillar_block->getPeriod(), std::move(pillar_rlp));
+  consensus_application_->service().pillar_chain_storage_apply_finalized_block(pillar_block->getPeriod(),
+                                                                                std::move(pillar_rlp));
 }
 
 std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getPillarBlock(PbftPeriod period) const {
-  auto data = rust_storage_.value()->pillar_chain_storage_load_block(period);
+  auto data = consensus_application_->service().pillar_chain_storage_load_block(period);
   if (data.empty()) {
     return {};
   }
@@ -570,7 +550,7 @@ std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getPillarBlock(PbftPeriod 
 }
 
 std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getLatestPillarBlock() const {
-  auto data = rust_storage_.value()->pillar_chain_storage_load_latest_block();
+  auto data = consensus_application_->service().pillar_chain_storage_load_latest_block();
   if (data.empty()) {
     return {};
   }
@@ -582,11 +562,11 @@ std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getLatestPillarBlock() con
 void DbStorage::saveOwnPillarBlockVote(const std::shared_ptr<PillarVote>& vote) {
   auto vote_bytes = util::rlp_enc(vote);
   auto vote_rlp = into_rust_vec(vote_bytes);
-  rust_storage_.value()->pillar_chain_storage_apply_own_vote(std::move(vote_rlp));
+  consensus_application_->service().pillar_chain_storage_apply_own_vote(std::move(vote_rlp));
 }
 
 std::shared_ptr<PillarVote> DbStorage::getOwnPillarBlockVote() const {
-  auto data = rust_storage_.value()->pillar_chain_storage_load_own_vote();
+  auto data = consensus_application_->service().pillar_chain_storage_load_own_vote();
   if (data.empty()) {
     return nullptr;
   }
@@ -598,11 +578,11 @@ std::shared_ptr<PillarVote> DbStorage::getOwnPillarBlockVote() const {
 void DbStorage::saveCurrentPillarBlockData(const pillar_chain::CurrentPillarBlockDataDb& current_pillar_block_data) {
   auto data_bytes = util::rlp_enc(current_pillar_block_data);
   auto data_rlp = into_rust_vec(data_bytes);
-  rust_storage_.value()->pillar_chain_storage_apply_current_block_data(std::move(data_rlp));
+  consensus_application_->service().pillar_chain_storage_apply_current_block_data(std::move(data_rlp));
 }
 
 std::optional<pillar_chain::CurrentPillarBlockDataDb> DbStorage::getCurrentPillarBlockData() const {
-  auto data = rust_storage_.value()->pillar_chain_storage_load_current_block_data();
+  auto data = consensus_application_->service().pillar_chain_storage_load_current_block_data();
   if (data.empty()) {
     return {};
   }
@@ -792,7 +772,7 @@ bool DbStorage::transactionFinalized(trx_hash_t const& hash) {
 }
 
 uint64_t DbStorage::getStatusField(StatusDbField const& field) {
-  return rust_storage_.value()->get_status_field(static_cast<uint8_t>(field));
+  return consensus_application_->service().get_status_field(static_cast<uint8_t>(field));
 }
 
 uint64_t DbStorage::getNumTransactionExecuted() { return getStatusField(StatusDbField::ExecutedTrxCount); }
@@ -1072,7 +1052,7 @@ void DbStorage::savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batc
 }
 
 std::optional<uint32_t> DbStorage::getPeriodLambda(PbftPeriod period, bool find_closest) {
-  auto rust_value = rust_storage_.value()->get_period_lambda(period, find_closest);
+  auto rust_value = consensus_application_->service().get_period_lambda(period, find_closest);
   if (rust_value.found) {
     return rust_value.value;
   }
@@ -1083,12 +1063,14 @@ void DbStorage::saveRoundsCountDynamicLambda(uint32_t rounds_count, Batch& write
   rustaxa::storage_shim_save_rounds_count_dynamic_lambda(getOrCreateRustBatch(write_batch), rounds_count);
 }
 
-uint32_t DbStorage::getRoundsCountDynamicLambda() { return rust_storage_.value()->get_rounds_count_dynamic_lambda(); }
+uint32_t DbStorage::getRoundsCountDynamicLambda() {
+  return consensus_application_->service().get_rounds_count_dynamic_lambda();
+}
 
 std::unordered_map<PbftPeriod, rewards::BlockStats> DbStorage::getBlocksRewardsStats() const {
   std::unordered_map<PbftPeriod, rewards::BlockStats> rewards_stats;
 
-  auto rust_stats = rust_storage_.value()->get_blocks_rewards_stats();
+  auto rust_stats = consensus_application_->service().get_blocks_rewards_stats();
   rewards_stats.reserve(rust_stats.size());
   for (auto const& stat : rust_stats) {
     auto bytes = dev::bytes(stat.data.begin(), stat.data.end());

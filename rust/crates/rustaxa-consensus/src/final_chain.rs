@@ -1232,7 +1232,19 @@ impl FinalChain {
     }
 
     pub fn transaction_count(&self, period: FinalChainBlockNumber) -> Result<u64, anyhow::Error> {
-        self.storage.transaction().count(period.as_u64())
+        let regular = self.storage.transaction().count(period.as_u64())?;
+        let system_hashes = self
+            .storage
+            .transaction()
+            .period_system_hashes_rlp(period.as_u64())?;
+        let system = if system_hashes.is_empty() {
+            0
+        } else {
+            Rlp::new(&system_hashes).item_count()? as u64
+        };
+        regular
+            .checked_add(system)
+            .ok_or_else(|| anyhow::anyhow!("final-chain transaction count overflow"))
     }
 
     /// Returns the persisted FinalChain execution counters from Rust storage.
@@ -2179,15 +2191,50 @@ impl FinalChain {
         &self,
         period: FinalChainBlockNumber,
     ) -> Result<Vec<Vec<u8>>, anyhow::Error> {
+        Ok(self
+            .transaction_rlps_with_system_marker(period)?
+            .into_iter()
+            .map(|(transaction, _)| transaction)
+            .collect())
+    }
+
+    /// Returns canonical finalized transaction RLPs with persisted system markers.
+    ///
+    /// Regular transactions retain period-data order and system transactions
+    /// follow in their persisted period hash-list order. Missing system payloads
+    /// are reported as corruption rather than silently omitted.
+    pub fn transaction_rlps_with_system_marker(
+        &self,
+        period: FinalChainBlockNumber,
+    ) -> Result<Vec<(Vec<u8>, bool)>, anyhow::Error> {
         let period_data = self.storage.period().data_raw(period.as_u64())?;
-        if period_data.is_empty() {
-            return Ok(vec![]);
+        let mut transaction_rlps = Vec::new();
+        if !period_data.is_empty() {
+            let period_data_rlp = Rlp::new(&period_data);
+            let transactions = period_data_rlp.at(3)?;
+            transaction_rlps.reserve(transactions.item_count()?);
+            for i in 0..transactions.item_count()? {
+                transaction_rlps.push((transactions.at(i)?.as_raw().to_vec(), false));
+            }
         }
-        let period_data_rlp = Rlp::new(&period_data);
-        let transactions = period_data_rlp.at(3)?;
-        let mut transaction_rlps = Vec::with_capacity(transactions.item_count()?);
-        for i in 0..transactions.item_count()? {
-            transaction_rlps.push(transactions.at(i)?.as_raw().to_vec());
+        let system_hashes = self
+            .storage
+            .transaction()
+            .period_system_hashes_rlp(period.as_u64())?;
+        if !system_hashes.is_empty() {
+            let hashes = Rlp::new(&system_hashes);
+            transaction_rlps.reserve(hashes.item_count()?);
+            for index in 0..hashes.item_count()? {
+                let hash = H256::from_slice(hashes.at(index)?.data()?);
+                let transaction =
+                    self.storage
+                        .transaction()
+                        .system_rlp(hash)?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("missing finalized system transaction {hash:#x}")
+                        })?;
+                transaction_rlps.push((transaction, true));
+            }
         }
         Ok(transaction_rlps)
     }
@@ -2519,6 +2566,24 @@ impl FinalChain {
         let dpos_snapshot = self.dpos_snapshot_at_finalized_block(last_block)?;
         let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot)?;
 
+        for publication in &plan.transaction_publications {
+            if publication.is_system {
+                anyhow::ensure!(
+                    !publication.transaction_rlp.is_empty(),
+                    "FINAL_CHAIN_EVM_PUBLICATION_SYSTEM_TRANSACTION_PAYLOAD_MISSING"
+                );
+                use tiny_keccak::{Hasher, Keccak};
+                let mut hasher = Keccak::v256();
+                hasher.update(&publication.transaction_rlp);
+                let mut canonical_hash = [0u8; 32];
+                hasher.finalize(&mut canonical_hash);
+                anyhow::ensure!(
+                    canonical_hash == publication.transaction_hash,
+                    "FINAL_CHAIN_EVM_PUBLICATION_SYSTEM_TRANSACTION_HASH_MISMATCH"
+                );
+            }
+        }
+
         let transaction_index_updates = plan
             .transaction_publications
             .iter()
@@ -2526,6 +2591,9 @@ impl FinalChain {
                 transaction_hash: H256::from(publication.transaction_hash),
                 position: publication.position.as_u32(),
                 is_system: publication.is_system,
+                system_transaction_rlp: publication
+                    .is_system
+                    .then_some(publication.transaction_rlp.as_slice()),
                 receipt_rlp: publication.receipt_rlp.as_slice(),
             })
             .collect::<Vec<_>>();
@@ -2948,6 +3016,7 @@ impl FinalChain {
                     transaction_hash: H256::from(transaction.hash),
                     position: position.as_u32(),
                     is_system: false,
+                    system_transaction_rlp: None,
                     receipt_rlp: encoded_receipts[position.as_u32() as usize].as_slice(),
                 })
             })
@@ -7873,10 +7942,11 @@ fn encode_external_evm_publication_plan(plan: &FinalChainExternalEvmPublicationP
     stream.append(&plan.system_transaction_hashes_rlp);
     stream.begin_list(plan.transaction_publications.len());
     for publication in &plan.transaction_publications {
-        stream.begin_list(4);
+        stream.begin_list(5);
         stream.append(&publication.transaction_hash.as_slice());
         stream.append(&publication.position.as_u32());
         stream.append(&publication.is_system);
+        stream.append(&publication.transaction_rlp);
         stream.append(&publication.receipt_rlp);
     }
     stream.append(&plan.executed_dag_blocks);
@@ -7905,9 +7975,16 @@ fn decode_external_evm_publication_plan(
     let mut transaction_publications = Vec::with_capacity(publications.item_count()?);
     for index in 0..publications.item_count()? {
         let publication = publications.at(index)?;
-        if publication.item_count()? != 4 {
+        let publication_item_count = publication.item_count()?;
+        if publication_item_count != 4 && publication_item_count != 5 {
             anyhow::bail!(
-                "external EVM transaction publication marker payload must contain four fields"
+                "external EVM transaction publication marker payload must contain four or five fields"
+            );
+        }
+        let is_system = publication.val_at(2)?;
+        if publication_item_count == 4 && is_system {
+            anyhow::bail!(
+                "legacy external EVM system transaction publication marker has no recoverable canonical payload"
             );
         }
         transaction_publications.push(
@@ -7917,8 +7994,13 @@ fn decode_external_evm_publication_plan(
                     "external EVM transaction publication hash",
                 )?,
                 position: FinalChainTransactionPosition::new(publication.val_at(1)?),
-                is_system: publication.val_at(2)?,
-                receipt_rlp: publication.val_at(3)?,
+                is_system,
+                transaction_rlp: if publication_item_count == 5 {
+                    publication.val_at(3)?
+                } else {
+                    Vec::new()
+                },
+                receipt_rlp: publication.val_at(publication_item_count - 1)?,
             },
         );
     }
@@ -31039,6 +31121,7 @@ mod tests {
                     transaction_hash: [9; 32],
                     position,
                     is_system: true,
+                    transaction_rlp: vec![0xc0],
                     receipt_rlp: vec![0xc0],
                 },
             ],
@@ -31068,6 +31151,32 @@ mod tests {
             error
                 .to_string()
                 .starts_with("FINAL_CHAIN_EVM_PUBLICATION_INDEXED_LOG_BLOOM_INVALID_LENGTH:")
+        );
+    }
+
+    #[test]
+    fn external_evm_publication_marker_rejects_legacy_system_payload_gap() {
+        let encoded =
+            encode_external_evm_publication_plan(&FinalChainExternalEvmPublicationPlan::default());
+        let encoded_rlp = Rlp::new(&encoded);
+        let mut legacy = RlpStream::new_list(encoded_rlp.item_count().unwrap());
+        for index in 0..encoded_rlp.item_count().unwrap() {
+            if index == 9 {
+                legacy.begin_list(1);
+                legacy.begin_list(4);
+                legacy.append(&[7u8; 32].as_slice());
+                legacy.append(&0u32);
+                legacy.append(&true);
+                legacy.append(&vec![0xc0]);
+            } else {
+                legacy.append_raw(encoded_rlp.at(index).unwrap().as_raw(), 1);
+            }
+        }
+        let error = decode_external_evm_publication_plan(&Rlp::new(&legacy.out())).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no recoverable canonical payload")
         );
     }
 

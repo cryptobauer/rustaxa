@@ -12,6 +12,7 @@
 #include "final_chain/final_chain.hpp"
 #include "logger/logger.hpp"
 #include "pbft/pbft_manager.hpp"
+#include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/samples.hpp"
 #include "transaction/transaction_manager.hpp"
 #ifndef RUSTAXA_ENABLE
@@ -19,9 +20,12 @@
 #endif
 
 #ifdef RUSTAXA_ENABLE
-#define RUST_CONSENSUS_APPLICATION(config, db) , createConsensusApplication(config, *db)
+#define RUST_CONSENSUS_APPLICATION(config, db) , storage.application
+#define TEST_FINAL_CHAIN(db, config) \
+  std::make_shared<final_chain::FinalChain>(db, config, addr_t{}, storage.application)
 #else
 #define RUST_CONSENSUS_APPLICATION(config, db)
+#define TEST_FINAL_CHAIN(db, config) std::make_shared<final_chain::FinalChain>(db, config, addr_t{})
 #endif
 
 namespace taraxa::core_tests {
@@ -122,9 +126,10 @@ TEST_F(TransactionTest, sig) {
 }
 
 TEST_F(TransactionTest, verifiers) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = TEST_FINAL_CHAIN(db, cfg);
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t() RUST_CONSENSUS_APPLICATION(cfg, db));
   // insert trx
   std::thread t([&trx_mgr]() {
@@ -143,10 +148,10 @@ TEST_F(TransactionTest, verifiers) {
 }
 
 TEST_F(TransactionTest, transaction_limit) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  TransactionManager trx_mgr(cfg, db, std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}),
-                             addr_t() RUST_CONSENSUS_APPLICATION(cfg, db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  TransactionManager trx_mgr(cfg, db, TEST_FINAL_CHAIN(db, cfg), addr_t() RUST_CONSENSUS_APPLICATION(cfg, db));
   // insert trx
   std::thread t([&trx_mgr]() {
     for (auto const& t : *g_signed_trx_samples) {
@@ -165,10 +170,10 @@ TEST_F(TransactionTest, transaction_limit) {
 }
 
 TEST_F(TransactionTest, prepare_signed_trx_for_propose) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  TransactionManager trx_mgr(cfg, db, std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}),
-                             addr_t() RUST_CONSENSUS_APPLICATION(cfg, db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  TransactionManager trx_mgr(cfg, db, TEST_FINAL_CHAIN(db, cfg), addr_t() RUST_CONSENSUS_APPLICATION(cfg, db));
   std::thread insertTrx([&trx_mgr]() {
     for (auto const& t : *g_signed_trx_samples) {
       trx_mgr.insertTransaction(t);
@@ -196,9 +201,10 @@ TEST_F(TransactionTest, prepare_signed_trx_for_propose) {
 }
 
 TEST_F(TransactionTest, transaction_low_nonce) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = TEST_FINAL_CHAIN(db, cfg);
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t() RUST_CONSENSUS_APPLICATION(cfg, db));
   const auto& trx_2 = g_signed_trx_samples[1];
   auto& trx_1 = g_signed_trx_samples[0];
@@ -268,10 +274,10 @@ TEST_F(TransactionTest, transaction_low_nonce) {
 }
 
 TEST_F(TransactionTest, transaction_concurrency) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  TransactionManager trx_mgr(cfg, db, std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}),
-                             addr_t() RUST_CONSENSUS_APPLICATION(cfg, db));
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  TransactionManager trx_mgr(cfg, db, TEST_FINAL_CHAIN(db, cfg), addr_t() RUST_CONSENSUS_APPLICATION(cfg, db));
   bool stopped = false;
   // Insert transactions to memory pool and keep trying to insert them again on separate thread, it should always fail
   std::thread insertTrx([&trx_mgr, &stopped]() {
@@ -661,9 +667,10 @@ TEST_F(TransactionTest, typed_deserialization) {
   GTEST_FAIL();
 }
 TEST_F(TransactionTest, zero_gas_price_limit) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = TEST_FINAL_CHAIN(db, cfg);
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t() RUST_CONSENSUS_APPLICATION(cfg, db));
   auto make_trx_with_price = [](uint64_t price) {
     return std::make_shared<Transaction>(1, 100, price, 100000, dev::bytes(), g_secret, addr_t::random());
@@ -683,10 +690,11 @@ TEST_F(TransactionTest, zero_gas_price_limit) {
 }
 
 TEST_F(TransactionTest, gas_price_limiting) {
-  auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
   auto minimum_price = cfg.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price = 10;
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain = TEST_FINAL_CHAIN(db, cfg);
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t() RUST_CONSENSUS_APPLICATION(cfg, db));
   auto make_trx_with_price = [](uint64_t price) {
     return std::make_shared<Transaction>(1, 100, price, 100000, dev::bytes(), g_secret, addr_t::random());

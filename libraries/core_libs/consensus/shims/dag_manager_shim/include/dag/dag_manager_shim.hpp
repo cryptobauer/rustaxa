@@ -253,6 +253,9 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   // updates performed by this facade.
   mutable std::shared_mutex rust_graphs_mutex_;
   mutable std::shared_mutex dag_finalization_mutex_;
+  // Native block verification currently owns one resumable cursor, so the shim
+  // must keep each begin/effect/complete sequence contiguous across packet workers.
+  mutable std::mutex rust_verify_block_session_mutex_;
   mutable std::mutex rust_add_block_session_mutex_;
   SharedConsensusApplication dag_transaction_service_;
 };

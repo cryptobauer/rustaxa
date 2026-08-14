@@ -24,8 +24,8 @@ std::array<uint8_t, 32> h256(uint8_t last_byte) {
   return hash;
 }
 
-rust::Box<BridgePbftStorageQueries> pbftQueries(const rust::Box<BridgeStorage>& storage) {
-  return create_pbft_storage_queries(*storage);
+rust::Box<BridgePbftStorageQueries> pbftQueries(const rust::Box<BridgeConsensusApplication>& application) {
+  return create_pbft_storage_queries(*application);
 }
 
 constexpr uint8_t kPbftFinalizationAnchorNull = 0;
@@ -203,18 +203,10 @@ struct FinalizationServices {
 
 FinalizationServices managerRuntimeForFinalizationSession() {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_session");
-  auto storage = create_storage(test_dir.string());
-  return FinalizationServices{test::createConsensusApplication(*storage, makePbftServiceConfig(false))};
+  return FinalizationServices{test::createConsensusApplication(test_dir, makePbftServiceConfig(false))};
 }
 
-void seedRewardCertVote(BridgeStorage& storage, BridgeConsensusApplication& service) {
-  rust::Vec<GenesisAccount> accounts;
-  rust::Vec<GenesisValidator> validators;
-  GenesisDposConfig dpos_config{};
-  FinalChainRewardsConfig rewards_config{};
-  auto final_chain = create_final_chain_with_rewards_config(storage, 0, 0, std::move(accounts), std::move(validators),
-                                                            std::move(dpos_config), std::move(rewards_config));
-
+void seedRewardCertVote(BridgeConsensusApplication& service) {
   const taraxa::secret_t node_secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
                                      dev::Secret::ConstructFromStringType::FromHex);
   const taraxa::vrf_wrapper::vrf_sk_t vrf_secret(
@@ -239,20 +231,19 @@ void seedRewardCertVote(BridgeStorage& storage, BridgeConsensusApplication& serv
   context.two_t_plus_one_threshold = 1;
   context.slashing_enabled = true;
   const auto result = service.pbft_service_verified_votes_admit_and_persist_with_final_chain(
-      *final_chain, rust::Slice<const uint8_t>(vote_rlp.data(), vote_rlp.size()), validation, flags, context,
+      rust::Slice<const uint8_t>(vote_rlp.data(), vote_rlp.size()), validation, flags, context,
       rust::Vec<SlashingSubmitterIdentity>{});
   ASSERT_TRUE(result.transition_published);
 }
 
 PbftFinalizationIntentPlan finalizationIntentPlan(PbftFinalizationIntentFact fact, bool persist_block = false) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_intent");
-  auto storage = create_storage(test_dir.string());
+  auto runtime = test::createConsensusApplication(test_dir, makePbftServiceConfig(false));
   if (persist_block) {
-    auto batch = create_storage_shim_batch(*storage);
+    auto batch = create_storage_shim_batch(*runtime);
     storage_shim_save_pbft_block_period(*batch, fact.block_hash, fact.block_period);
     storage_shim_commit_batch(std::move(batch), false);
   }
-  auto runtime = test::createConsensusApplication(*storage, makePbftServiceConfig(false));
   return pbft_manager_runtime_plan_finalization_intent(*runtime, std::move(fact));
 }
 
@@ -293,15 +284,17 @@ void expectNoFinalizationStorageWrites(const PbftFinalizationStorageWritePlan& s
 
 TEST(RustPbftSyncTest, ManagerStartupRestoreRecordsRuntimeSnapshotFromStorage) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_startup_snapshot");
-  auto storage = create_storage(test_dir.string());
-  auto seed_batch = create_storage_shim_batch(*storage);
-  storage_shim_save_pbft_mgr_field(*seed_batch, kPbftMgrFieldRound, 2);
-  storage_shim_save_pbft_mgr_field(*seed_batch, kPbftMgrFieldStep, 2);
-  storage_shim_save_pbft_mgr_field(*seed_batch, kPbftMgrFieldLambda, 1'500);
-  storage_shim_save_pbft_mgr_status(*seed_batch, kPbftMgrStatusExecutedBlock, true);
-  storage_shim_save_pbft_mgr_status(*seed_batch, kPbftMgrStatusNextVotedValue, true);
-  storage_shim_commit_batch(std::move(seed_batch), false);
-  const auto runtime = test::createConsensusApplication(*storage, makePbftServiceConfig());
+  {
+    auto bootstrap = test::createConsensusApplication(test_dir, makePbftServiceConfig());
+    auto seed_batch = create_storage_shim_batch(*bootstrap);
+    storage_shim_save_pbft_mgr_field(*seed_batch, kPbftMgrFieldRound, 2);
+    storage_shim_save_pbft_mgr_field(*seed_batch, kPbftMgrFieldStep, 2);
+    storage_shim_save_pbft_mgr_field(*seed_batch, kPbftMgrFieldLambda, 1'500);
+    storage_shim_save_pbft_mgr_status(*seed_batch, kPbftMgrStatusExecutedBlock, true);
+    storage_shim_save_pbft_mgr_status(*seed_batch, kPbftMgrStatusNextVotedValue, true);
+    storage_shim_commit_batch(std::move(seed_batch), false);
+  }
+  const auto runtime = test::createConsensusApplication(test_dir, makePbftServiceConfig());
   const auto snapshot = pbft_manager_runtime_snapshot(*runtime);
 
   EXPECT_EQ(snapshot.status, kPbftManagerStartupStatusReady);
@@ -314,7 +307,7 @@ TEST(RustPbftSyncTest, ManagerStartupRestoreRecordsRuntimeSnapshotFromStorage) {
   EXPECT_TRUE(snapshot.executed_pbft_block);
   EXPECT_TRUE(snapshot.already_next_voted_value);
   EXPECT_FALSE(snapshot.already_next_voted_null);
-  EXPECT_EQ(pbftQueries(storage)->get_pbft_mgr_field(kPbftMgrFieldStep), 4);
+  EXPECT_EQ(pbftQueries(runtime)->get_pbft_mgr_field(kPbftMgrFieldStep), 4);
 
   std::filesystem::remove_all(test_dir);
 }
@@ -410,8 +403,7 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
 
 TEST(RustPbftSyncTest, FinalizationBoundaryUsesSingleApplicationRoot) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_sortition_invariant");
-  auto storage = create_storage(test_dir.string());
-  auto runtime = test::createConsensusApplication(*storage, makePbftServiceConfig(false));
+  auto runtime = test::createConsensusApplication(test_dir, makePbftServiceConfig(false));
   const auto plan =
       withoutRewardVoteReset(pbft_manager_runtime_plan_finalization_intent(*runtime, makeFinalizationFact()));
   auto boundary = startFreshFinalizationExecutor(
@@ -452,9 +444,8 @@ TEST(RustPbftSyncTest, FinalizationBoundaryRejectsMissingNativeRewardVotes) {
 
 TEST(RustPbftSyncTest, FinalizationBoundaryAdvancesNativeRewardVotes) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_reward_success");
-  auto storage = create_storage(test_dir.string());
-  auto runtime = test::createConsensusApplication(*storage, makePbftServiceConfig(false));
-  seedRewardCertVote(*storage, *runtime);
+  auto runtime = test::createConsensusApplication(test_dir, makePbftServiceConfig(false));
+  seedRewardCertVote(*runtime);
   const auto plan = pbft_manager_runtime_plan_finalization_intent(*runtime, makeFinalizationFact());
 
   auto boundary = startFreshFinalizationExecutor(
@@ -476,9 +467,8 @@ TEST(RustPbftSyncTest, FinalizationBoundaryAdvancesNativeRewardVotes) {
 
 TEST(RustPbftSyncTest, FinalizationResumeReplaysAuthenticatedRewardPublication) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_reward_resume");
-  auto storage = create_storage(test_dir.string());
-  auto runtime = test::createConsensusApplication(*storage, makePbftServiceConfig(false));
-  seedRewardCertVote(*storage, *runtime);
+  auto runtime = test::createConsensusApplication(test_dir, makePbftServiceConfig(false));
+  seedRewardCertVote(*runtime);
   auto fact = makeFinalizationFact();
   fact.request_dynamic_lambda_update = false;
   const auto plan = pbft_manager_runtime_plan_finalization_intent(*runtime, std::move(fact));
@@ -502,8 +492,7 @@ TEST(RustPbftSyncTest, FinalizationResumeReplaysAuthenticatedRewardPublication) 
 
 TEST(RustPbftSyncTest, FinalizationResumeReplaysAuthenticatedSortitionPublication) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_sortition_resume");
-  auto storage = create_storage(test_dir.string());
-  auto runtime = test::createConsensusApplication(*storage, makePbftServiceConfig(false), 32, 1);
+  auto runtime = test::createConsensusApplication(test_dir, makePbftServiceConfig(false), 32, 1);
   auto fact = makeFinalizationFact();
   fact.request_dynamic_lambda_update = false;
   const auto plan = withoutRewardVoteReset(pbft_manager_runtime_plan_finalization_intent(*runtime, std::move(fact)));

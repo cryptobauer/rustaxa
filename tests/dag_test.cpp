@@ -11,6 +11,7 @@
 #endif
 #include "dag/dag_manager.hpp"
 #include "logger/logger.hpp"
+#include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/test_util.hpp"
 
 namespace taraxa::core_tests {
@@ -19,9 +20,8 @@ namespace {
 #ifdef RUSTAXA_ENABLE
 using TestConsensusApplication = SharedConsensusApplication;
 
-TestConsensusApplication makeTestConsensusApplication(const FullNodeConfig& config,
-                                                      const std::shared_ptr<DbStorage>& db) {
-  return createConsensusApplication(config, *db);
+TestConsensusApplication testConsensusApplication(const ConsensusStorageFixture& storage) {
+  return storage.application;
 }
 
 std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage>&,
@@ -37,9 +37,7 @@ std::shared_ptr<TransactionManager> makeTestTransactionManager(const FullNodeCon
 #else
 using TestConsensusApplication = std::nullptr_t;
 
-TestConsensusApplication makeTestConsensusApplication(const FullNodeConfig&, const std::shared_ptr<DbStorage>&) {
-  return nullptr;
-}
+TestConsensusApplication testConsensusApplication(const ConsensusStorageFixture&) { return nullptr; }
 
 std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage>& db, const TestConsensusApplication&) {
   return std::make_shared<PbftChain>(addr_t(), db);
@@ -202,8 +200,9 @@ TEST_F(DagTest, clear_and_draw_graph_use_current_graph) {
 
 // Use the example on Conflux paper
 TEST_F(DagTest, compute_epoch) {
-  auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto storage = makeConsensusStorageFixture(node_cfgs[0], data_dir / "db");
+  auto db_ptr = storage.db;
+  auto consensus_application = testConsensusApplication(storage);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
   auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
@@ -311,12 +310,13 @@ TEST_F(DagTest, compute_epoch) {
 
 TEST_F(DagTest, dag_expiry) {
   const uint32_t EXPIRY_LIMIT = 3;
-  auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].max_levels_per_period = 3;
   node_cfgs[0].dag_expiry_limit = EXPIRY_LIMIT;
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
-  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto storage = makeConsensusStorageFixture(node_cfgs[0], data_dir / "db");
+  auto db_ptr = storage.db;
+  auto consensus_application = testConsensusApplication(storage);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
   auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
 #ifdef RUSTAXA_ENABLE
@@ -407,8 +407,9 @@ TEST_F(DagTest, dag_expiry) {
 }
 
 TEST_F(DagTest, receive_block_in_order) {
-  auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto storage = makeConsensusStorageFixture(node_cfgs[0], data_dir / "db");
+  auto db_ptr = storage.db;
+  auto consensus_application = testConsensusApplication(storage);
   auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
@@ -446,8 +447,9 @@ TEST_F(DagTest, receive_block_in_order) {
 // Use the example on Conflux paper, insert block in different order and make
 // sure block order are the same
 TEST_F(DagTest, compute_epoch_2) {
-  auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto storage = makeConsensusStorageFixture(node_cfgs[0], data_dir / "db");
+  auto db_ptr = storage.db;
+  auto consensus_application = testConsensusApplication(storage);
   auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
@@ -545,8 +547,9 @@ TEST_F(DagTest, compute_epoch_2) {
 }
 
 TEST_F(DagTest, get_latest_pivot_tips) {
-  auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto storage = makeConsensusStorageFixture(node_cfgs[0], data_dir / "db");
+  auto db_ptr = storage.db;
+  auto consensus_application = testConsensusApplication(storage);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
   auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
@@ -581,8 +584,9 @@ TEST_F(DagTest, get_latest_pivot_tips) {
 }
 
 TEST_F(DagTest, initial_pivot) {
-  auto db_ptr = std::make_shared<DbStorage>(data_dir / "db");
-  auto consensus_application = makeTestConsensusApplication(node_cfgs[0], db_ptr);
+  auto storage = makeConsensusStorageFixture(node_cfgs[0], data_dir / "db");
+  auto db_ptr = storage.db;
+  auto consensus_application = testConsensusApplication(storage);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
   auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   node_cfgs[0].genesis.pbft.gas_limit = 100000;

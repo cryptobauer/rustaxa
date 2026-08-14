@@ -9,21 +9,17 @@
 #include "pbft/pbft_service.hpp"
 #endif
 #include "pillar_chain/pillar_chain_manager.hpp"
+#include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/test_util.hpp"
 #include "transaction/dag_transaction_service.hpp"
 
 namespace taraxa::core_tests {
 
-#ifdef RUSTAXA_ENABLE
-SharedConsensusApplication makeInjectedPillarTestService(const std::shared_ptr<DbStorage>& db) {
-  return createConsensusApplication(FullNodeConfig{}, *db);
-}
-#endif
-
 struct PillarChainTest : NodesTest {};
 
 TEST_F(PillarChainTest, pillar_chain_db) {
-  auto db_ptr = std::make_shared<DbStorage>(data_dir);
+  auto storage = makeConsensusStorageFixture(FullNodeConfig{}, data_dir);
+  auto db_ptr = storage.db;
   auto& db = *db_ptr;
 
   // Pillar chain
@@ -411,16 +407,21 @@ TEST_F(PillarChainTest, addVerifiedPillarVote_insertsWithRecoveredIdentityWeight
   cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
   cfg.genesis.state.hardforks.ficus_hf.pillar_blocks_interval = 4;
 
-  auto db = std::make_shared<DbStorage>(data_dir);
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
 #ifdef RUSTAXA_ENABLE
   const auto current_pillar_block = std::make_shared<pillar_chain::PillarBlock>(
       0, h256{}, blk_hash_t{}, h256{}, 0, std::vector<pillar_chain::PillarBlock::ValidatorVoteCountChange>{});
   db->saveCurrentPillarBlockData({current_pillar_block, {}});
-  auto pillar_chain_manager =
-      pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
-                                       final_chain, cfg.getFirstWallet().node_addr);
+  db.reset();
+  reopenConsensusStorageFixture(storage, cfg, data_dir);
+  db = storage.db;
+  auto final_chain =
+      std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr, storage.application);
+  auto pillar_chain_manager = pillar_chain::PillarChainManager(
+      cfg.genesis.state.hardforks.ficus_hf, db, storage.application, final_chain, cfg.getFirstWallet().node_addr);
 #else
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
   auto pillar_chain_manager = pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, final_chain,
                                                                nullptr, cfg.getFirstWallet().node_addr);
 #endif
@@ -471,14 +472,15 @@ TEST_F(PillarChainTest, startupRestoresOwnVoteOutsideLiveAnchor) {
   cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
   cfg.genesis.state.hardforks.ficus_hf.pillar_blocks_interval = 4;
 
-  auto db = std::make_shared<DbStorage>(data_dir);
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain =
+      std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr, storage.application);
   const auto vote = std::make_shared<PillarVote>(cfg.getFirstWallet().node_secret, PbftPeriod{1}, blk_hash_t{0xBAD});
   db->saveOwnPillarBlockVote(vote);
 
-  auto pillar_chain_manager =
-      pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
-                                       final_chain, cfg.getFirstWallet().node_addr);
+  auto pillar_chain_manager = pillar_chain::PillarChainManager(
+      cfg.genesis.state.hardforks.ficus_hf, db, storage.application, final_chain, cfg.getFirstWallet().node_addr);
 
   const auto restored = pillar_chain_manager.getVerifiedPillarVotes(vote->getPeriod(), vote->getBlockHash(), false);
   ASSERT_EQ(restored.size(), 1u);
@@ -495,11 +497,12 @@ TEST_F(PillarChainTest, addVerifiedPillarVote_rejectsInvalidRustInspectedSignatu
   cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
   cfg.genesis.state.hardforks.ficus_hf.pillar_blocks_interval = 4;
 
-  auto db = std::make_shared<DbStorage>(data_dir);
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
-  auto pillar_chain_manager =
-      pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
-                                       final_chain, cfg.getFirstWallet().node_addr);
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  auto final_chain =
+      std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr, storage.application);
+  auto pillar_chain_manager = pillar_chain::PillarChainManager(
+      cfg.genesis.state.hardforks.ficus_hf, db, storage.application, final_chain, cfg.getFirstWallet().node_addr);
 
   const auto vote_period = PbftPeriod{1};
   const auto valid_vote = PillarVote(cfg.getFirstWallet().node_secret, vote_period, blk_hash_t(11));
@@ -522,14 +525,18 @@ TEST_F(PillarChainTest, validatePillarVote_usesRustRecoveredIdentityForUniquenes
   cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
   cfg.genesis.state.hardforks.ficus_hf.pillar_blocks_interval = 4;
 
-  auto db = std::make_shared<DbStorage>(data_dir);
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
   const auto current_pillar_block = std::make_shared<pillar_chain::PillarBlock>(
       0, h256{}, blk_hash_t{}, h256{}, 0, std::vector<pillar_chain::PillarBlock::ValidatorVoteCountChange>{});
   db->saveCurrentPillarBlockData({current_pillar_block, {}});
-  auto pillar_chain_manager =
-      pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
-                                       final_chain, cfg.getFirstWallet().node_addr);
+  db.reset();
+  reopenConsensusStorageFixture(storage, cfg, data_dir);
+  db = storage.db;
+  auto final_chain =
+      std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr, storage.application);
+  auto pillar_chain_manager = pillar_chain::PillarChainManager(
+      cfg.genesis.state.hardforks.ficus_hf, db, storage.application, final_chain, cfg.getFirstWallet().node_addr);
 
   const auto vote =
       std::make_shared<PillarVote>(cfg.getFirstWallet().node_secret, PbftPeriod{1}, current_pillar_block->getHash());
@@ -551,14 +558,18 @@ TEST_F(PillarChainTest, injectedService_rejectsInvalidRustInspectedSignature) {
   cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
   cfg.genesis.state.hardforks.ficus_hf.pillar_blocks_interval = 4;
 
-  auto db = std::make_shared<DbStorage>(data_dir);
-  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
   const auto current_pillar_block = std::make_shared<pillar_chain::PillarBlock>(
       0, h256{}, blk_hash_t{}, h256{}, 0, std::vector<pillar_chain::PillarBlock::ValidatorVoteCountChange>{});
   db->saveCurrentPillarBlockData({current_pillar_block, {}});
-  auto pillar_chain_manager =
-      pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
-                                       final_chain, cfg.getFirstWallet().node_addr);
+  db.reset();
+  reopenConsensusStorageFixture(storage, cfg, data_dir);
+  db = storage.db;
+  auto final_chain =
+      std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr, storage.application);
+  auto pillar_chain_manager = pillar_chain::PillarChainManager(
+      cfg.genesis.state.hardforks.ficus_hf, db, storage.application, final_chain, cfg.getFirstWallet().node_addr);
 
   const auto valid_vote = PillarVote(cfg.getFirstWallet().node_secret, PbftPeriod{1}, current_pillar_block->getHash());
   auto signature = valid_vote.getVoteSignature();

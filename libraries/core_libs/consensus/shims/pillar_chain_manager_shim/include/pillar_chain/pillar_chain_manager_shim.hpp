@@ -146,7 +146,6 @@ struct PillarVoteValidationPlan {
  */
 PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarVote>& vote,
-                                                    const rustaxa::BridgeFinalChain& final_chain,
                                                     const rustaxa::BridgeConsensusApplication& service);
 
 /**

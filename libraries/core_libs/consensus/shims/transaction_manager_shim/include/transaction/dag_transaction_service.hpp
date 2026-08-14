@@ -9,9 +9,8 @@
 namespace taraxa {
 
 struct FullNodeConfig;
-class DbStorage;
-
-/** Builds the single fully restored Rust-mode consensus application root. */
-SharedConsensusApplication createConsensusApplication(const FullNodeConfig& config, DbStorage& db);
+/** Builds the sole Rust-mode root from `config`, publishing it only after storage/schema/genesis validation,
+ * FinalChain construction, and DAG/transaction/PBFT restoration all succeed. */
+SharedConsensusApplication createConsensusApplication(const FullNodeConfig& config);
 
 }  // namespace taraxa

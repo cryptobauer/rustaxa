@@ -85,8 +85,8 @@ rustaxa::PbftServiceConfig makePbftServiceConfig() {
   return config;
 }
 
-rust::Box<rustaxa::BridgeConsensusApplication> createReadyPillarService(const rustaxa::BridgeStorage& storage) {
-  auto service = rustaxa::test::createConsensusApplication(storage, makePbftServiceConfig());
+rust::Box<rustaxa::BridgeConsensusApplication> createReadyPillarService(const std::filesystem::path& storage_path) {
+  auto service = rustaxa::test::createConsensusApplication(storage_path, makePbftServiceConfig());
   service->pbft_service_complete_pillar_bootstrap();
   return service;
 }
@@ -97,8 +97,7 @@ TEST(PillarVoteBundleBridgeTest, currentAnchorDecisionsAndThresholdUseRuntimeSta
   const taraxa::PbftPeriod current_period{130};
   const auto current_anchor = makeCurrentPillarAnchor(current_period);
   const auto test_dir = tempStoragePath("rustaxa_pillar_current_anchor_decisions");
-  auto storage = rustaxa::create_storage(test_dir.string());
-  auto pillar_service = createReadyPillarService(*storage);
+  auto pillar_service = createReadyPillarService(test_dir);
 
   rustaxa::PillarCurrentAnchorDecisionRequest request{};
   request.operation = 0;
@@ -143,8 +142,7 @@ TEST(PillarVoteBundleBridgeTest, currentAnchorDecisionsAndThresholdUseRuntimeSta
 
 TEST(PillarVoteBundleBridgeTest, preparePillarFinalizationReturnsMissingCurrentBlock) {
   const auto test_dir = tempStoragePath("rustaxa_pillar_finalize_prepare_missing_current");
-  auto storage = rustaxa::create_storage(test_dir.string());
-  auto pillar_service = createReadyPillarService(*storage);
+  auto pillar_service = createReadyPillarService(test_dir);
 
   rustaxa::PillarBlockFinalizationRequest request{};
   request.requested_pillar_block_hash = {};
@@ -165,8 +163,7 @@ TEST(PillarVoteBundleBridgeTest, preparePillarFinalizationReturnsMissingCurrentB
 TEST(PillarVoteBundleBridgeTest, preparePillarFinalizationWithCurrentBlockCanReachHashMismatchPath) {
   const auto current_anchor = makeCurrentPillarAnchor(100);
   const auto test_dir = tempStoragePath("rustaxa_pillar_finalize_prepare_hash_mismatch");
-  auto storage = rustaxa::create_storage(test_dir.string());
-  auto pillar_service = createReadyPillarService(*storage);
+  auto pillar_service = createReadyPillarService(test_dir);
   pillar_service->pbft_service_pillar_apply_planned_current_block_data(makeBytes(current_anchor.current_data_rlp), 0);
 
   rustaxa::PillarBlockFinalizationRequest request{};

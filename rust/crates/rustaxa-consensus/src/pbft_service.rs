@@ -333,8 +333,6 @@ pub struct PbftServiceConfig {
     pub committee_size: u64,
     /// Proposal committee size used by strict sync-certificate validation.
     pub number_of_proposers: u64,
-    /// Ordered application identities eligible to submit slashing proofs.
-    pub slashing_submitters: Vec<SlashingSubmitterIdentity>,
 }
 
 /// Native dynamic-lambda decision composed with its durable prior-lambda fact.
@@ -581,6 +579,7 @@ struct PbftSyncIngressSession {
     source_payload_id: u64,
     source_peer_id: [u8; 64],
     next_vote: usize,
+    slashing_submitters: Vec<SlashingSubmitterIdentity>,
     pending_slashing: Option<SlashingTransactionEffect>,
 }
 
@@ -774,7 +773,6 @@ pub struct PbftService {
     sync_cert_bundle: Mutex<PbftSyncCertBundleRuntime>,
     committee_size: u64,
     number_of_proposers: u64,
-    slashing_submitters: Vec<SlashingSubmitterIdentity>,
     slashing_enabled: bool,
 }
 
@@ -815,6 +813,7 @@ impl PbftService {
         block_period: u64,
         block_hash: H256,
         canonical_vote_rlps: Vec<Vec<u8>>,
+        slashing_submitters: Vec<SlashingSubmitterIdentity>,
     ) -> Result<PbftSyncCertBundleStep> {
         let mut inspections = Vec::with_capacity(canonical_vote_rlps.len());
         let mut shape_votes = Vec::with_capacity(canonical_vote_rlps.len());
@@ -897,18 +896,20 @@ impl PbftService {
                 vote_rlp
             };
             let strict_vrf = block_period.is_multiple_of(100) || strict_index == Some(index);
-            let (validation, _) = self.validate_verified_vote_with_final_chain_internal(
-                final_chain,
-                &canonical,
-                PbftVoteAdmissionValidationRequest {
-                    strict_vrf,
-                    committee_size: self.committee_size,
-                    number_of_proposers: self.number_of_proposers,
-                    has_preverified_weight: false,
-                    preverified_weight: 0,
-                },
-                false,
-            )?;
+            let (validation, _) = self
+                .validate_verified_vote_with_final_chain_internal(
+                    final_chain,
+                    &canonical,
+                    PbftVoteAdmissionValidationRequest {
+                        strict_vrf,
+                        committee_size: self.committee_size,
+                        number_of_proposers: self.number_of_proposers,
+                        has_preverified_weight: false,
+                        preverified_weight: 0,
+                    },
+                    false,
+                )
+                .context("PBFT_SYNC_CERT_VOTE_VALIDATION")?;
             let prepared_weighted = (validation.accepted && validation.weight_calculated)
                 .then(|| {
                     build_weighted_pbft_vote_payload(&canonical, validation.calculated_weight)
@@ -920,7 +921,14 @@ impl PbftService {
             prepared_weighted_vote_rlps.push(prepared_weighted);
         }
         let submitters = if self.slashing_enabled {
-            resolve_slashing_submitter_facts(final_chain, &self.slashing_submitters)?
+            slashing_submitters
+                .into_iter()
+                .map(|identity| SlashingSubmitterFact {
+                    wallet_index: identity.wallet_index,
+                    nonce: identity.nonce,
+                    balance: identity.balance,
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -1152,7 +1160,7 @@ impl PbftService {
             let index = session.next_vote;
             let canonical = session.canonical_vote_rlps[index].clone();
             let validation = session.validations[index].clone();
-            let result = match self.admit_and_persist_verified_vote_with_slashing_facts(
+            let result = match self.admit_validated_vote_with_slashing_facts(
                 &canonical,
                 &validation,
                 PbftVoteEventFactFlags {
@@ -1282,6 +1290,7 @@ impl PbftService {
         packet_rlp: &[u8],
         source_payload_id: u64,
         source_peer_id: [u8; 64],
+        slashing_submitters: Vec<SlashingSubmitterIdentity>,
     ) -> Result<PbftSyncIngressStep> {
         *self
             .sync_ingress
@@ -1319,6 +1328,7 @@ impl PbftService {
                 source_payload_id,
                 source_peer_id,
                 next_vote: 0,
+                slashing_submitters,
                 pending_slashing: None,
             });
         self.advance_pbft_sync_ingress(final_chain)
@@ -1408,7 +1418,7 @@ impl PbftService {
             let vote =
                 session.packet.period_data.entry.previous_cert_vote_rlps[session.next_vote].clone();
             let manager = self.manager_snapshot();
-            let result = self.admit_and_persist_verified_vote_with_final_chain(
+            let result = self.admit_and_persist_verified_vote_with_external_slashing_facts(
                 final_chain,
                 &vote,
                 PbftVoteAdmissionValidationRequest {
@@ -1431,7 +1441,7 @@ impl PbftService {
                     require_proposed_block_sidecar: false,
                     slashing_enabled: self.slashing_enabled,
                 },
-                &self.slashing_submitters,
+                &session.slashing_submitters,
             )?;
             if !result.validation.accepted {
                 let step = Self::sync_ingress_step(
@@ -2456,7 +2466,6 @@ impl PbftService {
             committee_size: config.committee_size,
             number_of_proposers: config.number_of_proposers,
             slashing_enabled: config.report_malicious_behaviour,
-            slashing_submitters: config.slashing_submitters,
         })
     }
 
@@ -2784,18 +2793,20 @@ impl PbftService {
                 "PBFT_LOCAL_PROPOSAL_BLOCK_VOTE_MISMATCH"
             );
 
-            let (validation, _) = self.validate_verified_vote_with_final_chain_internal(
-                final_chain,
-                &candidate.vote_rlp,
-                PbftVoteAdmissionValidationRequest {
-                    strict_vrf: true,
-                    committee_size: self.committee_size,
-                    number_of_proposers: self.number_of_proposers,
-                    has_preverified_weight: false,
-                    preverified_weight: 0,
-                },
-                false,
-            )?;
+            let (validation, _) = self
+                .validate_verified_vote_with_final_chain_internal(
+                    final_chain,
+                    &candidate.vote_rlp,
+                    PbftVoteAdmissionValidationRequest {
+                        strict_vrf: true,
+                        committee_size: self.committee_size,
+                        number_of_proposers: self.number_of_proposers,
+                        has_preverified_weight: false,
+                        preverified_weight: 0,
+                    },
+                    false,
+                )
+                .context("PBFT_LOCAL_PROPOSAL_VOTE_VALIDATION")?;
             let valid_weight = validation.accepted
                 && validation.weight_calculated
                 && validation.calculated_weight > 0;
@@ -2806,15 +2817,19 @@ impl PbftService {
                     "PBFT_LOCAL_PROPOSAL_EMBEDDED_WEIGHT_MISMATCH"
                 );
             }
-            let block_in_chain = self.pbft_chain_block_exists(link.block_hash)?;
+            let block_in_chain = self
+                .pbft_chain_block_exists(link.block_hash)
+                .context("PBFT_LOCAL_PROPOSAL_CHAIN_LOOKUP")?;
             let block_validation_status = if !valid_weight || block_in_chain {
                 PbftManagerLeaderBlockValidationStatus::Rejected
             } else {
-                let validation_plan = self.validate_pbft_block_composed(
-                    final_chain,
-                    dag_transaction_service,
-                    block_candidate,
-                )?;
+                let validation_plan = self
+                    .validate_pbft_block_composed(
+                        final_chain,
+                        dag_transaction_service,
+                        block_candidate,
+                    )
+                    .context("PBFT_LOCAL_PROPOSAL_BLOCK_VALIDATION")?;
                 match validation_plan.action {
                     PbftManagerBlockValidationAction::Accept => {
                         PbftManagerLeaderBlockValidationStatus::Validated
@@ -4284,7 +4299,7 @@ impl PbftService {
             false,
         )?;
         let submitters = resolve_slashing_submitter_facts(final_chain, slashing_submitters)?;
-        self.admit_and_persist_verified_vote_with_slashing_facts(
+        self.admit_validated_vote_with_slashing_facts(
             canonical_vote_rlp,
             &validation,
             flags,
@@ -4293,7 +4308,46 @@ impl PbftService {
         )
     }
 
-    fn admit_and_persist_verified_vote_with_slashing_facts(
+    /// Validates and persists one vote using slashing account facts resolved at
+    /// the retained external-EVM boundary.
+    ///
+    /// FinalChain remains authoritative for DPoS vote validation. The supplied
+    /// facts carry only wallet order, nonce, and balance for slashing submission;
+    /// malformed vote data, validation failures, and storage errors remain
+    /// terminal without publishing a partial admission transition.
+    pub fn admit_and_persist_verified_vote_with_external_slashing_facts(
+        &self,
+        final_chain: &FinalChain,
+        canonical_vote_rlp: &[u8],
+        request: PbftVoteAdmissionValidationRequest,
+        flags: PbftVoteEventFactFlags,
+        context: PbftVoteProgressContext,
+        submitters: &[SlashingSubmitterIdentity],
+    ) -> Result<PbftVoteAdmissionWithSlashingResult> {
+        let (validation, _) = self.validate_verified_vote_with_final_chain_internal(
+            final_chain,
+            canonical_vote_rlp,
+            request,
+            false,
+        )?;
+        let submitters = submitters
+            .iter()
+            .map(|identity| SlashingSubmitterFact {
+                wallet_index: identity.wallet_index,
+                nonce: identity.nonce,
+                balance: identity.balance,
+            })
+            .collect::<Vec<_>>();
+        self.admit_validated_vote_with_slashing_facts(
+            canonical_vote_rlp,
+            &validation,
+            flags,
+            context,
+            &submitters,
+        )
+    }
+
+    fn admit_validated_vote_with_slashing_facts(
         &self,
         canonical_vote_rlp: &[u8],
         validation: &PbftCanonicalVoteValidation,
@@ -4924,7 +4978,6 @@ mod tests {
             light_node_history: 0,
             committee_size: 1,
             number_of_proposers: 1,
-            slashing_submitters: Vec::new(),
         }
     }
 
@@ -4950,14 +5003,20 @@ mod tests {
             SlashingSubmitterIdentity {
                 wallet_index: 2,
                 address: [2; 20],
+                nonce: U256::zero(),
+                balance: U256::zero(),
             },
             SlashingSubmitterIdentity {
                 wallet_index: 7,
                 address: [7; 20],
+                nonce: U256::zero(),
+                balance: U256::zero(),
             },
             SlashingSubmitterIdentity {
                 wallet_index: 9,
                 address: [9; 20],
+                nonce: U256::zero(),
+                balance: U256::zero(),
             },
         ];
         let mut queried = Vec::new();
@@ -5000,6 +5059,7 @@ mod tests {
                 1,
                 block_hash,
                 vec![wrong_period_vote.vote_rlp],
+                Vec::new(),
             )
             .unwrap();
 
@@ -5019,11 +5079,7 @@ mod tests {
         let (path, storage) = temp_storage("pbft_sync_cert_resumable_slashing");
         let voter = voter_from_secret(&NODE_SECRET);
         let submitter = [0x78; 20];
-        let mut service_config = config(0);
-        service_config.slashing_submitters = vec![SlashingSubmitterIdentity {
-            wallet_index: 0,
-            address: submitter,
-        }];
+        let service_config = config(0);
         let service = PbftService::restore(storage.clone(), service_config).unwrap();
         let final_chain = final_chain_with_vote_validator_and_account(
             storage,
@@ -5032,6 +5088,12 @@ mod tests {
             5_000,
             submitter,
         );
+        let submitter_facts = vec![SlashingSubmitterIdentity {
+            wallet_index: 0,
+            address: submitter,
+            nonce: U256::zero(),
+            balance: U256::from(1_000_000u64),
+        }];
         let conflicting = generated_vote_at_period(H256::repeat_byte(0x82), 1);
         let initial = service
             .admit_and_persist_verified_vote_with_final_chain(
@@ -5059,7 +5121,13 @@ mod tests {
         let block_hash = H256::repeat_byte(0x83);
         let incoming = generated_vote_at_period(block_hash, 1);
         let awaiting = service
-            .begin_pbft_sync_cert_bundle(&final_chain, 1, block_hash, vec![incoming.vote_rlp])
+            .begin_pbft_sync_cert_bundle(
+                &final_chain,
+                1,
+                block_hash,
+                vec![incoming.vote_rlp],
+                submitter_facts.clone(),
+            )
             .unwrap();
         assert_eq!(awaiting.action, PbftSyncCertBundleAction::AwaitingSlashing);
         assert!(awaiting.weighted_vote_rlps.is_empty());
@@ -5108,6 +5176,7 @@ mod tests {
                 1,
                 retry_hash,
                 vec![retry_vote.vote_rlp.clone()],
+                submitter_facts.clone(),
             )
             .unwrap();
         assert_eq!(pending.action, PbftSyncCertBundleAction::AwaitingSlashing);
@@ -5122,7 +5191,13 @@ mod tests {
                 .unwrap()
         );
         let restarted = service
-            .begin_pbft_sync_cert_bundle(&final_chain, 1, retry_hash, vec![retry_vote.vote_rlp])
+            .begin_pbft_sync_cert_bundle(
+                &final_chain,
+                1,
+                retry_hash,
+                vec![retry_vote.vote_rlp],
+                submitter_facts,
+            )
             .unwrap();
         assert_eq!(restarted.action, PbftSyncCertBundleAction::AwaitingSlashing);
         assert_ne!(restarted.session_id, pending.session_id);
@@ -5253,7 +5328,7 @@ mod tests {
         let peer = [0x5a; 64];
 
         let step = service
-            .begin_pbft_sync_ingress(&final_chain, &packet_rlp, 41, peer)
+            .begin_pbft_sync_ingress(&final_chain, &packet_rlp, 41, peer, Vec::new())
             .unwrap();
         assert_eq!(step.action, PbftSyncIngressAction::EnqueuedContinue);
         assert_eq!(step.source_payload_id, 41);
@@ -5279,11 +5354,12 @@ mod tests {
             source_payload_id: 1,
             source_peer_id: [1; 64],
             next_vote: 0,
+            slashing_submitters: Vec::new(),
             pending_slashing: None,
         });
 
         let step = service
-            .begin_pbft_sync_ingress(&final_chain, &[0xc1, 0x80], 42, [2; 64])
+            .begin_pbft_sync_ingress(&final_chain, &[0xc1, 0x80], 42, [2; 64], Vec::new())
             .unwrap();
         assert_eq!(step.action, PbftSyncIngressAction::Malicious);
         assert_eq!(step.source_payload_id, 42);
@@ -5304,11 +5380,7 @@ mod tests {
             });
             let voter = voter_from_secret(&NODE_SECRET);
             let submitter = [0x77; 20];
-            let mut service_config = config(10);
-            service_config.slashing_submitters = vec![SlashingSubmitterIdentity {
-                wallet_index: 0,
-                address: submitter,
-            }];
+            let service_config = config(10);
             let service = PbftService::restore(storage.clone(), service_config).unwrap();
             let final_chain = final_chain_with_vote_validator_and_account(
                 storage.clone(),
@@ -5357,7 +5429,18 @@ mod tests {
                 signed_period_two_sync_packet(&[incoming.vote_rlp.clone()], conflicting.vote_hash);
             let peer = [0x6b; 64];
             let awaiting = service
-                .begin_pbft_sync_ingress(&final_chain, &packet_rlp, 81, peer)
+                .begin_pbft_sync_ingress(
+                    &final_chain,
+                    &packet_rlp,
+                    81,
+                    peer,
+                    vec![SlashingSubmitterIdentity {
+                        wallet_index: 0,
+                        address: [0; 20],
+                        nonce: U256::zero(),
+                        balance: U256::from(1_000_000u64),
+                    }],
+                )
                 .unwrap();
             assert_eq!(awaiting.action, PbftSyncIngressAction::AwaitingSlashing);
             let effect = awaiting

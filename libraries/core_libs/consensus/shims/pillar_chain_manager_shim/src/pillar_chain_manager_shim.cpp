@@ -291,7 +291,6 @@ PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus
 
 PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarVote>& vote,
-                                                    const rustaxa::BridgeFinalChain& final_chain,
                                                     const rustaxa::BridgeConsensusApplication& service) {
   if (!vote) {
     return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}};
@@ -300,7 +299,7 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
   rustaxa::PillarVoteSingleAdmissionPreparePlan prepared{};
   try {
     prepared = service.pbft_service_pillar_validate_single_vote_with_final_chain(
-        final_chain, toRustBytes(vote->rlp()), toSingleVoteAdmissionContext(ficus_hf_config));
+        toRustBytes(vote->rlp()), toSingleVoteAdmissionContext(ficus_hf_config));
   } catch (const std::exception&) {
     return {PillarVoteValidationPlanStatus::kUnknown, false, vote->getPeriod(), vote->getHash(), {}};
   }
@@ -357,7 +356,6 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
   rustaxa::PillarBlockCreationWithVoteCountsPlan creation_plan{};
   try {
     creation_plan = pbft_service_->service().pbft_service_pillar_plan_block_creation_with_final_chain(
-        final_chain_->rustFinalChain(),
         toBridgeCreationRequest(kFicusHfConfig, period, block_header, bridge_root, bridge_epoch));
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to plan pillar block creation in Rust for period " << period << ": " << e.what();
@@ -631,7 +629,7 @@ bool PillarChainManager::validatePillarVote(const std::shared_ptr<PillarVote> vo
   }
 
   const auto validation_plan =
-      validatePillarVoteWithRust(kFicusHfConfig, vote, final_chain_->rustFinalChain(), pbft_service_->service());
+      validatePillarVoteWithRust(kFicusHfConfig, vote, pbft_service_->service());
   const auto vote_period = validation_plan.period;
 
   if (!validation_plan.is_valid) {
@@ -693,7 +691,7 @@ PillarChainManager::PillarVoteAdmissionReport PillarChainManager::admitPillarVot
     return {};
   }
   const auto insert_outcome = pbft_service_->service().pbft_service_pillar_apply_single_vote_with_final_chain(
-      final_chain_->rustFinalChain(), toRustBytes(vote->rlp()), toSingleVoteAdmissionContext(kFicusHfConfig),
+      toRustBytes(vote->rlp()), toSingleVoteAdmissionContext(kFicusHfConfig),
       trusted_local_or_restore);
   const auto vote_hash = fromBridgeHash(insert_outcome.vote_hash);
   const auto recovered_voter = fromBridgeAddress(insert_outcome.voter);
@@ -784,7 +782,7 @@ std::optional<uint64_t> PillarChainManager::getPillarConsensusThreshold(PbftPeri
 
   try {
     const auto lookup = pbft_service_->service().pbft_service_pillar_consensus_threshold_with_final_chain(
-        final_chain_->rustFinalChain(), period);
+        period);
     if (!lookup.available) {
       LOG(log_er_) << "Unable to get dpos total votes count for period " << period
                    << " to calculate pillar consensus threshold: " << static_cast<std::string>(lookup.error_code);

@@ -14,12 +14,9 @@ use crate::transaction_manager::*;
 use crate::vdf::*;
 use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusQueryApi;
-use rustaxa_consensus::FinalChain;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
 use std::sync::Arc;
-
-pub struct BridgeStorage(pub Arc<Storage>);
 
 /// Typed PBFT vote-list query handle for C++ compatibility materializers.
 ///
@@ -84,10 +81,7 @@ pub struct BridgeStorageBatch {
     pub batch: Option<StorageWriteBatch>,
 }
 
-/// Internal FinalChain container retained for non-CXX Rust-only construction and
-/// test-only helper paths that still operate directly on the native chain object.
-pub struct BridgeFinalChain(pub FinalChain);
-
+/// Opaque state for one in-progress FinalChain execution session.
 pub struct BridgeFinalChainExecutionSession {
     pub state: rustaxa_consensus::FinalChainExecutionSession,
 }
@@ -268,6 +262,7 @@ pub mod rustaxa_ffi {
 
     struct TxRlp {
         data: Vec<u8>,
+        is_system: bool,
     }
 
     /// Rust-inspected legacy transaction facts.
@@ -679,18 +674,15 @@ pub mod rustaxa_ffi {
         price: [u8; 32],
     }
 
-    /// One configured signing identity for native slashing account lookup.
-    ///
-    /// Entries preserve application wallet order. Rust borrows FinalChain to
-    /// resolve the address into the latest nonce and balance and returns only
-    /// the selected wallet index in a transaction effect.
+    /// Bootstrap identity or live concrete-EVM slashing account fact in stable wallet order.
     struct SlashingSubmitterIdentity {
         wallet_index: usize,
         address: [u8; 20],
+        nonce: [u8; 32],
+        balance: [u8; 32],
     }
 
     /// Typed Rust-owned slashing transaction effect.
-    ///
     /// Status zero is the only executable effect. Non-zero statuses describe
     /// why a published double-vote conflict produced no transaction. Raw vote
     /// evidence never crosses this boundary.
@@ -794,6 +786,7 @@ pub mod rustaxa_ffi {
         block_period: u64,
         block_hash: [u8; 32],
         cert_vote_rlps: Vec<PbftCertVoteRlp>,
+        slashing_submitters: Vec<SlashingSubmitterIdentity>,
         session_id: u64,
         effect_id: u64,
         proof_hash: [u8; 32],
@@ -1061,7 +1054,6 @@ pub mod rustaxa_ffi {
         light_node_history: u64,
         committee_size: u64,
         number_of_proposers: u64,
-        slashing_submitters: Vec<SlashingSubmitterIdentity>,
     }
 
     /// One terminal or slashing-resumable native PBFT-sync ingress step.
@@ -3458,7 +3450,8 @@ pub mod rustaxa_ffi {
             storage_path: &str,
             schema_major: u32,
             schema_minor: u32,
-            genesis: &[u8; 32],
+            storage_genesis: &[u8; 32],
+            dag_genesis: &[u8; 32],
             dag_expiry_limit: u32,
             max_levels_per_period: u64,
             sortition_config: SortitionRuntimeConfig,
@@ -3762,6 +3755,7 @@ pub mod rustaxa_ffi {
             packet_rlp: &[u8],
             source_payload_id: u64,
             source_peer_id: [u8; 64],
+            slashing_submitters: Vec<SlashingSubmitterIdentity>,
         ) -> Result<PbftSyncIngressStep>;
         pub fn pbft_service_report_pbft_sync_ingress_slashing(
             service: &BridgeConsensusApplication,
@@ -4279,8 +4273,10 @@ pub mod rustaxa_ffi {
             period: u64,
         ) -> Result<Vec<u8>>;
         pub fn get_genesis_hash(self: &BridgeConsensusApplication) -> Result<Vec<u8>>;
-        pub fn get_last_sortition_params(self: &BridgeConsensusApplication, count: u64)
-            -> Result<Vec<BlockRlp>>;
+        pub fn get_last_sortition_params(
+            self: &BridgeConsensusApplication,
+            count: u64,
+        ) -> Result<Vec<BlockRlp>>;
         pub fn get_params_change_for_period(
             self: &BridgeConsensusApplication,
             period: u64,
@@ -4348,7 +4344,6 @@ pub mod rustaxa_ffi {
 
         // Storage
 
-        type BridgeStorage;
         type BridgeDagStorageQueries;
         type BridgePbftStorageQueries;
         type BridgePbftVoteStorageQueries;
@@ -4360,7 +4355,9 @@ pub mod rustaxa_ffi {
         pub fn create_pbft_storage_queries(
             runtime: &BridgeConsensusApplication,
         ) -> Box<BridgePbftStorageQueries>;
-        pub fn create_dag_storage_queries(runtime: &BridgeConsensusApplication) -> Box<BridgeDagStorageQueries>;
+        pub fn create_dag_storage_queries(
+            runtime: &BridgeConsensusApplication,
+        ) -> Box<BridgeDagStorageQueries>;
         pub fn create_pbft_vote_storage_queries(
             runtime: &BridgeConsensusApplication,
         ) -> Box<BridgePbftVoteStorageQueries>;
@@ -4675,10 +4672,8 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusApplication,
             hash: &[u8; 32],
         ) -> Result<Vec<u8>>;
-        pub fn get_transaction_count(
-            self: &BridgeConsensusApplication,
-            period: u64,
-        ) -> Result<u64>;
+        pub fn get_transaction_count(self: &BridgeConsensusApplication, period: u64)
+            -> Result<u64>;
         pub fn get_execution_status(
             self: &BridgeConsensusApplication,
         ) -> Result<FinalChainExecutionStatus>;
@@ -4688,8 +4683,10 @@ pub mod rustaxa_ffi {
             from: u64,
             to: u64,
         ) -> Result<Vec<u64>>;
-        pub fn get_account(self: &BridgeConsensusApplication, address: &[u8; 20])
-            -> Result<AccountLookup>;
+        pub fn get_account(
+            self: &BridgeConsensusApplication,
+            address: &[u8; 20],
+        ) -> Result<AccountLookup>;
         pub fn get_account_at_block(
             self: &BridgeConsensusApplication,
             block_number: u64,

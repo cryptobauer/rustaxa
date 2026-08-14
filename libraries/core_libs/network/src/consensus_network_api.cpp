@@ -6,7 +6,6 @@
 #include <utility>
 
 #ifdef RUSTAXA_ENABLE
-#include "final_chain/final_chain.hpp"
 #include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
@@ -65,14 +64,24 @@ rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() noexcept { return
 
 const rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() const noexcept { return *impl_->api; }
 
-PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(const final_chain::FinalChain& final_chain,
-                                                                const std::vector<uint8_t>& packet_rlp,
+PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(const std::vector<uint8_t>& packet_rlp,
                                                                 uint64_t source_payload_id,
                                                                 const std::array<uint8_t, 64>& source_peer_id,
+                                                                const std::vector<PbftSyncSlashingSubmitterFact>& slashing_submitters,
                                                                 const PbftSyncIngressExecutor& executor) {
+  rust::Vec<rustaxa::SlashingSubmitterIdentity> native_submitters;
+  native_submitters.reserve(slashing_submitters.size());
+  for (const auto& submitter : slashing_submitters) {
+    rustaxa::SlashingSubmitterIdentity native{};
+    native.wallet_index = submitter.wallet_index;
+    native.nonce = submitter.nonce;
+    native.balance = submitter.balance;
+    native_submitters.push_back(std::move(native));
+  }
   auto step = rustaxa::pbft_service_begin_pbft_sync_ingress(
-      impl_->consensus_application->service(), final_chain.rustFinalChain(),
-      rust::Slice<const uint8_t>(packet_rlp.data(), packet_rlp.size()), source_payload_id, source_peer_id);
+      impl_->consensus_application->service(),
+      rust::Slice<const uint8_t>(packet_rlp.data(), packet_rlp.size()), source_payload_id, source_peer_id,
+      std::move(native_submitters));
   while (step.action == kPbftSyncIngressAwaitingSlashing) {
     if (!step.has_slashing_transaction_effect || !executor.submit_slashing_transaction) {
       throw std::runtime_error("Native PBFT-sync ingress paused without an executable slashing boundary");
@@ -88,7 +97,7 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(const final_chai
         std::vector<uint8_t>(native_effect.call_data.begin(), native_effect.call_data.end())};
     const auto transaction_inserted = executor.submit_slashing_transaction(transaction);
     step = rustaxa::pbft_service_report_pbft_sync_ingress_slashing(
-        impl_->consensus_application->service(), final_chain.rustFinalChain(),
+        impl_->consensus_application->service(),
         step.slashing_transaction_effect.proof_hash, transaction_inserted);
   }
 
@@ -325,16 +334,15 @@ PbftNextVotesBundleRequestOutcome ConsensusNetworkApi::servePbftNextVotesBundleR
                                            static_cast<std::string>(decision.error_code)};
 }
 
-PbftBlocksBundleOutcome ConsensusNetworkApi::admitPbftBlocksBundle(const final_chain::FinalChain& final_chain,
-                                                                   const std::vector<uint8_t>& packet_rlp,
+PbftBlocksBundleOutcome ConsensusNetworkApi::admitPbftBlocksBundle(const std::vector<uint8_t>& packet_rlp,
                                                                    uint64_t source_payload_id) {
   rust::Vec<uint8_t> bridge_packet;
   bridge_packet.reserve(packet_rlp.size());
   for (const auto byte : packet_rlp) {
     bridge_packet.push_back(byte);
   }
-  const auto decision = api().consensus_network_ingest_pbft_blocks_bundle(final_chain.rustFinalChain(),
-                                                                          std::move(bridge_packet), source_payload_id);
+  const auto decision = api().consensus_network_ingest_pbft_blocks_bundle(
+      impl_->consensus_application->service(), std::move(bridge_packet), source_payload_id);
   return PbftBlocksBundleOutcome{decision.status, static_cast<std::string>(decision.error_code)};
 }
 

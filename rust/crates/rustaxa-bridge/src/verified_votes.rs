@@ -148,6 +148,8 @@ pub(crate) fn slashing_submitter_identity_to_domain(
     DomainSlashingSubmitterIdentity {
         wallet_index: value.wallet_index,
         address: value.address,
+        nonce: U256::from_big_endian(&value.nonce),
+        balance: U256::from_big_endian(&value.balance),
     }
 }
 
@@ -299,14 +301,16 @@ impl BridgeApp {
             .into_iter()
             .map(slashing_submitter_identity_to_domain)
             .collect::<Vec<_>>();
-        let result = self.0.admit_and_persist_verified_vote_with_final_chain(
-            self.0.final_chain_for_bridge(),
-            canonical_vote_rlp,
-            request,
-            flags_to_domain(flags),
-            context_to_domain(&context),
-            &slashing_submitters,
-        )?;
+        let result = self
+            .0
+            .admit_and_persist_verified_vote_with_external_slashing_facts(
+                self.0.final_chain_for_bridge(),
+                canonical_vote_rlp,
+                request,
+                flags_to_domain(flags),
+                context_to_domain(&context),
+                &slashing_submitters,
+            )?;
         let weighted_vote_rlp = if result.validation.accepted && result.validation.weight_calculated
         {
             build_weighted_pbft_vote_payload(

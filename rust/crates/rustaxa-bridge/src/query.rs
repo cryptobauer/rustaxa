@@ -5,8 +5,6 @@
 //! `ConsensusQueryApi` calls without handing public layers manager pointers,
 //! storage iterators, or mutable compatibility sidecars.
 
-#[cfg(test)]
-use crate::ffi::BridgeStorage;
 use crate::ffi::{rustaxa_ffi, BridgeApp, BridgeConsensusQueryApi};
 
 fn query_hash_lookup_to_ffi(lookup: rustaxa_consensus::QueryHashLookup) -> rustaxa_ffi::HashLookup {
@@ -521,6 +519,7 @@ impl BridgeConsensusQueryApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag_transaction_service::create_test_consensus_application;
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
@@ -533,7 +532,7 @@ mod tests {
 
     #[allow(clippy::too_many_arguments)]
     fn seed_final_chain_conformance_lookup_rows(
-        storage: &BridgeStorage,
+        storage: &rustaxa_storage::Storage,
         meta_key: u32,
         meta_value: Vec<u8>,
         block_number: u64,
@@ -547,7 +546,6 @@ mod tests {
         receipts_rlp: Vec<u8>,
     ) {
         storage
-            .0
             .final_chain()
             .write_conformance_lookup_rows(
                 meta_key,
@@ -563,6 +561,13 @@ mod tests {
                 &receipts_rlp,
             )
             .expect("final-chain conformance rows should seed");
+    }
+
+    fn query_fixture(path: &str) -> (Box<BridgeApp>, std::sync::Arc<rustaxa_storage::Storage>) {
+        let application = create_test_consensus_application(path, Vec::new(), 0)
+            .expect("consensus application should initialize");
+        let storage = application.0.storage_for_bridge().clone();
+        (application, storage)
     }
 
     fn period_data_rlp(pbft_block_rlp: &[u8]) -> Vec<u8> {
@@ -857,9 +862,8 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
-        let storage =
-            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
-        let api = create_consensus_query_api(&storage);
+        let (application, storage) = query_fixture(temp_dir.to_str().expect("utf8 temp path"));
+        let api = create_consensus_query_api(&application);
         let block_hash = H256::from_low_u64_be(88);
         let pbft_block_rlp = vec![0xC2, 0x03, 0x04];
         let query_bloom = {
@@ -871,9 +875,7 @@ mod tests {
         root_chunk[0] = query_bloom.into();
         let mut leaf_chunk = rustaxa_storage::zero_final_chain_log_bloom_chunk();
         leaf_chunk[15] = query_bloom.into();
-
         storage
-            .0
             .period()
             .write(15, &period_data_rlp(&pbft_block_rlp))
             .unwrap();
@@ -905,7 +907,6 @@ mod tests {
             15,
             vec![],
         );
-
         let view = api.consensus_query_final_chain_block_by_number(15).unwrap();
         assert!(view.found);
         assert_eq!(view.number, 15);
@@ -917,7 +918,6 @@ mod tests {
         assert_eq!(view.log_bloom.len(), 256);
         assert_eq!(view.log_bloom, vec![0xBB; 256]);
         assert!(view.has_pbft_hash);
-
         let lookup = api.consensus_query_pbft_block_hash_by_period(15).unwrap();
         assert!(lookup.found);
         assert_eq!(lookup.hash, view.pbft_block_hash);
@@ -935,21 +935,19 @@ mod tests {
             api.consensus_query_final_chain_last_block_number().unwrap(),
             15
         );
-        storage.0.metadata().write_period_lambda(15, 1234).unwrap();
+        storage.metadata().write_period_lambda(15, 1234).unwrap();
         let sortition_change = SortitionParamsChange {
             period: 12,
             interval_efficiency: 4_200,
             threshold_upper: 1_234,
         };
         storage
-            .0
             .metadata()
             .write_sortition_params_change(12, &sortition_change.to_rlp_bytes())
             .unwrap();
         let status_dag_block_rlp = dag_block_rlp();
         let status_dag_block_hash = keccak256(&status_dag_block_rlp);
         storage
-            .0
             .dag()
             .write(
                 H256::from(status_dag_block_hash.0),
@@ -958,28 +956,20 @@ mod tests {
                 &status_dag_block_rlp,
             )
             .unwrap();
+        storage.dag().write_proposal_period_at_level(5, 12).unwrap();
         storage
-            .0
-            .dag()
-            .write_proposal_period_at_level(5, 12)
-            .unwrap();
-        storage
-            .0
             .metadata()
             .write_status_field(rustaxa_storage::StatusField::ExecutedBlkCount as u8, 21)
             .unwrap();
         storage
-            .0
             .metadata()
             .write_status_field(rustaxa_storage::StatusField::ExecutedTrxCount as u8, 34)
             .unwrap();
         storage
-            .0
             .metadata()
             .write_status_field(rustaxa_storage::StatusField::DagBlkCount as u8, 55)
             .unwrap();
         storage
-            .0
             .metadata()
             .write_status_field(rustaxa_storage::StatusField::TrxCount as u8, 89)
             .unwrap();
@@ -996,8 +986,11 @@ mod tests {
             .unwrap();
         assert!(proposal_period.found);
         assert_eq!(proposal_period.value, 12);
+        // The application bootstrap installs the genesis range, so nearby
+        // levels inherit the latest mapped period. A level beyond the
+        // configured 100-level window remains absent.
         assert!(
-            !api.consensus_query_proposal_period_for_dag_level(6)
+            !api.consensus_query_proposal_period_for_dag_level(106)
                 .unwrap()
                 .found
         );
@@ -1023,13 +1016,12 @@ mod tests {
             sortition_change_view.threshold_upper_min,
             THRESHOLD_UPPER_MIN_VALUE
         );
-        assert!(
-            !api.consensus_query_sortition_params_change_by_period(11)
-                .unwrap()
-                .found
-        );
+        let bootstrap_sortition_change = api
+            .consensus_query_sortition_params_change_by_period(11)
+            .unwrap();
+        assert!(bootstrap_sortition_change.found);
+        assert_eq!(bootstrap_sortition_change.period, 0);
         storage
-            .0
             .metadata()
             .write_sortition_params_change(16, &[0xC1])
             .unwrap();
@@ -1056,7 +1048,6 @@ mod tests {
             .consensus_query_final_chain_blocks_with_bloom(&[0x11; 256], 1, 15)
             .unwrap()
             .is_empty());
-
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
@@ -1068,18 +1059,14 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
-        let storage =
-            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
-        let api = create_consensus_query_api(&storage);
+        let (application, storage) = query_fixture(temp_dir.to_str().expect("utf8 temp path"));
+        let api = create_consensus_query_api(&application);
         let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let pbft_block = signed_pbft_block_rlp(&signing_key);
-
         storage
-            .0
             .period()
             .write(7, &period_data_rlp_with_dag_bundle(&pbft_block))
             .unwrap();
-
         let view = api
             .consensus_query_pbft_schedule_block_by_period(7)
             .unwrap();
@@ -1096,13 +1083,11 @@ mod tests {
         assert_eq!(view.extra_data.major_version, 1);
         assert_eq!(view.extra_data.node_implementation, "rustaxa-test");
         assert!(view.dag_blocks_order.is_empty());
-
         assert!(
             !api.consensus_query_pbft_schedule_block_by_period(8)
                 .unwrap()
                 .found
         );
-
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
@@ -1114,18 +1099,14 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
-        let storage =
-            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
-        let api = create_consensus_query_api(&storage);
+        let (application, storage) = query_fixture(temp_dir.to_str().expect("utf8 temp path"));
+        let api = create_consensus_query_api(&application);
         let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let pbft_block = signed_pbft_block_rlp(&signing_key);
-
         storage
-            .0
             .period()
             .write(7, &period_data_rlp(&pbft_block))
             .unwrap();
-
         let view = api.consensus_query_pbft_node_version_by_period(7).unwrap();
         assert!(view.found);
         assert_eq!(
@@ -1140,13 +1121,11 @@ mod tests {
         assert_eq!(view.major_version, 1);
         assert_eq!(view.minor_version, 2);
         assert_eq!(view.patch_version, 3);
-
         assert!(
             !api.consensus_query_pbft_node_version_by_period(8)
                 .unwrap()
                 .found
         );
-
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
@@ -1158,17 +1137,14 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
-        let storage =
-            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
-        let api = create_consensus_query_api(&storage);
+        let (application, storage) = query_fixture(temp_dir.to_str().expect("utf8 temp path"));
+        let api = create_consensus_query_api(&application);
         let block_hash = H256::from_low_u64_be(42);
         let proof = vec![0x77; 80];
         let signature = vec![0x11; 65];
         let optimized_vote = optimized_vote_rlp(&proof, &signature);
         let expected_vote = canonical_pbft_vote_rlp(12, 3, 3, block_hash, &proof, &signature);
-
         storage
-            .0
             .period()
             .write(
                 13,
@@ -1181,7 +1157,6 @@ mod tests {
                 ),
             )
             .unwrap();
-
         let view = api
             .consensus_query_pbft_previous_block_cert_votes_by_period(13)
             .unwrap();
@@ -1198,7 +1173,6 @@ mod tests {
                 .unwrap()
                 .found
         );
-
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
@@ -1210,9 +1184,8 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
-        let storage =
-            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
-        let api = create_consensus_query_api(&storage);
+        let (application, storage) = query_fixture(temp_dir.to_str().expect("utf8 temp path"));
+        let api = create_consensus_query_api(&application);
         let block = PillarBlock {
             period: 10,
             state_root: H256::from_low_u64_be(0x10),
@@ -1231,16 +1204,13 @@ mod tests {
         };
         let votes_bundle_rlp =
             encode_optimized_pillar_votes_bundle_rlp(std::slice::from_ref(&vote)).unwrap();
-
-        storage
+        application
             .pillar_chain_storage_apply_finalized_block(10, block.encode_rlp())
             .unwrap();
         storage
-            .0
             .period()
             .write(11, &period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
             .unwrap();
-
         let view = api.consensus_query_pillar_block_data_by_period(10).unwrap();
         assert!(view.found);
         assert_eq!(view.pbft_period, 10);
@@ -1262,13 +1232,11 @@ mod tests {
         let (r, vs) = vote.compact_signature_words();
         assert_eq!(view.signatures[0].r, r);
         assert_eq!(view.signatures[0].vs, vs);
-
         assert!(
             !api.consensus_query_pillar_block_data_by_period(12)
                 .unwrap()
                 .found
         );
-
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
@@ -1280,23 +1248,18 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
-        let storage =
-            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
-        let api = create_consensus_query_api(&storage);
+        let (application, storage) = query_fixture(temp_dir.to_str().expect("utf8 temp path"));
+        let api = create_consensus_query_api(&application);
         let block_rlp = dag_block_rlp();
         let block_hash = keccak256(&block_rlp);
-
         storage
-            .0
             .dag()
             .write(H256::from(block_hash.0), 5, 1, &block_rlp)
             .unwrap();
         storage
-            .0
             .dag()
             .write_period(H256::from(block_hash.0), 9, 2)
             .unwrap();
-
         let view = api
             .consensus_query_dag_block_by_hash(&block_hash.0)
             .unwrap();
@@ -1312,15 +1275,12 @@ mod tests {
         assert_eq!(view.vdf_sol1, vec![0x22, 0x23]);
         assert_eq!(view.vdf_sol2, vec![0x33, 0x34]);
         assert_eq!(view.vdf_difficulty, 7);
-
         let level_views = api.consensus_query_dag_blocks_by_level(5, 1).unwrap();
         assert_eq!(level_views.len(), 1);
         assert_eq!(level_views[0].hash, block_hash.0);
         assert_eq!(level_views[0].block_rlp, block_rlp);
-
         let (dag_bundle, canonical_block) = signed_finalized_dag_bundle_rlp();
         storage
-            .0
             .period()
             .write(7, &period_data_with_dag_bundle_rlp(&dag_bundle))
             .unwrap();
@@ -1350,36 +1310,27 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
-        let storage =
-            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
-        let api = create_consensus_query_api(&storage);
+        let (application, storage) = query_fixture(temp_dir.to_str().expect("utf8 temp path"));
+        let api = create_consensus_query_api(&application);
         let pending_hash = H256::from_low_u64_be(1);
         let finalized_hash = H256::from_low_u64_be(2);
         let missing_hash = H256::from_low_u64_be(3);
         let system_hash = H256::from_low_u64_be(4);
 
+        storage.transaction().write(pending_hash, &[0x11]).unwrap();
         storage
-            .0
-            .transaction()
-            .write(pending_hash, &[0x11])
-            .unwrap();
-        storage
-            .0
             .transaction()
             .write_location(finalized_hash, 8, 0, false)
             .unwrap();
         storage
-            .0
             .period()
             .write(8, &period_data_with_transactions_rlp(&[vec![0x22]]))
             .unwrap();
         storage
-            .0
             .transaction()
             .write_location(system_hash, 9, 0, true)
             .unwrap();
         storage
-            .0
             .transaction()
             .write_system(system_hash, &[0x44])
             .unwrap();
@@ -1445,15 +1396,13 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
-        let storage =
-            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
-        let api = create_consensus_query_api(&storage);
+        let (application, storage) = query_fixture(temp_dir.to_str().expect("utf8 temp path"));
+        let api = create_consensus_query_api(&application);
         let block_hash = H256::from_low_u64_be(0x24);
         let first_rlp = vec![0x22];
         let second_rlp = vec![0x33];
 
         storage
-            .0
             .period()
             .write(
                 12,
@@ -1539,21 +1488,18 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
-        let storage =
-            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
-        let api = create_consensus_query_api(&storage);
+        let (application, storage) = query_fixture(temp_dir.to_str().expect("utf8 temp path"));
+        let api = create_consensus_query_api(&application);
         let trx_hash = H256::from_low_u64_be(0x21);
         let block_hash = H256::from_low_u64_be(0x24);
         let trx_rlp = vec![0x31];
         let receipt_rlp = vec![0x41];
 
         storage
-            .0
             .transaction()
             .write_location(trx_hash, 12, 0, false)
             .unwrap();
         storage
-            .0
             .period()
             .write(
                 12,

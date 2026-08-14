@@ -79,8 +79,7 @@ struct TemporaryStorageDirectory {
 
 struct NetworkApiFixture {
   NetworkApiFixture()
-      : storage(rustaxa::create_storage(directory.path.string())),
-        service(rustaxa::test::createConsensusApplication(*storage, serviceConfig())),
+      : service(rustaxa::test::createConsensusApplication(directory.path, serviceConfig())),
         network_api(rustaxa::create_consensus_network_api(*service)) {
     service->pbft_service_complete_pillar_bootstrap();
   }
@@ -88,7 +87,6 @@ struct NetworkApiFixture {
   rustaxa::BridgeConsensusNetworkApi* operator->() { return &*network_api; }
 
   TemporaryStorageDirectory directory;
-  rust::Box<rustaxa::BridgeStorage> storage;
   rust::Box<rustaxa::BridgeConsensusApplication> service;
   rust::Box<rustaxa::BridgeConsensusNetworkApi> network_api;
 };

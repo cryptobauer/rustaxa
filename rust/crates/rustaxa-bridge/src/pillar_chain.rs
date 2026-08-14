@@ -21,8 +21,6 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
 use crate::ffi::BridgeApp;
-#[cfg(test)]
-use crate::ffi::BridgeStorage;
 use anyhow::{bail, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::{
@@ -52,56 +50,8 @@ use rustaxa_consensus::{
 /// state. This wrapper supplies deterministic test configuration but leaves the
 /// bootstrap gate pending so boundary tests can verify readiness precedence.
 #[cfg(test)]
-fn create_pending_pillar_test_service_from_storage(
-    storage: &BridgeStorage,
-) -> Result<Box<BridgeApp>> {
-    crate::dag_transaction_service::create_consensus_application_from_storage(
-        storage,
-        &[1u8; 32],
-        32,
-        100,
-        crate::ffi::rustaxa_ffi::SortitionRuntimeConfig {
-            threshold_upper: 0x100,
-            difficulty_min: 1,
-            difficulty_max: 10,
-            difficulty_stale: 5,
-            lambda_bound: 100,
-            changes_count_for_average: 8,
-            dag_efficiency_target_low: 5_000,
-            dag_efficiency_target_high: 10_000,
-            changing_interval: 10,
-            computation_interval: 5,
-        },
-        crate::ffi::rustaxa_ffi::TransactionQueueConfig { max_size: 16 },
-        crate::ffi::rustaxa_ffi::GasPricerConfig {
-            percentile: 50,
-            minimum_price: [0; 32],
-            history_blocks: 0,
-            is_light_node: false,
-            blocks_gas_pricer: false,
-        },
-        1_000_000,
-        crate::ffi::rustaxa_ffi::PbftServiceConfig {
-            genesis_lambda_ms: 100,
-            cacti_lambda_max_ms: 100,
-            cacti_lambda_default_ms: 100,
-            cacti_block: u64::MAX,
-            max_exponential_lambda_ms: 60_000,
-            max_steps: 13,
-            deadline_ms: 400,
-            polling_interval_ms: 100,
-            report_malicious_behaviour: true,
-            magnolia_activation_period: 0,
-            ficus_activation_period: 0,
-            pillar_blocks_interval: 10,
-            sync_level_size: 10,
-            is_light_node: false,
-            light_node_history: 0,
-            committee_size: 1,
-            number_of_proposers: 1,
-            slashing_submitters: Vec::new(),
-        },
-    )
+fn create_pending_pillar_test_service(storage_path: &str) -> Result<Box<BridgeApp>> {
+    crate::dag_transaction_service::create_test_consensus_application(storage_path, Vec::new(), 0)
 }
 
 impl BridgeApp {
@@ -308,9 +258,8 @@ impl From<ConsensusPillarBlockCreationWithVoteCountsPlan>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag_transaction_service::create_test_consensus_application;
     use crate::ffi::rustaxa_ffi;
-    use crate::final_chain::create_final_chain;
-    use crate::storage::create_storage;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -327,15 +276,9 @@ mod tests {
         ethereum_types::U256::from(value).to_big_endian().to_vec()
     }
 
-    fn final_chain_with_validator(
-        storage: &BridgeStorage,
-        address: [u8; 20],
-    ) -> Box<BridgeFinalChain> {
-        create_final_chain(
-            storage,
-            0,
-            0,
-            Vec::new(),
+    fn application_with_validator(storage_path: &str, address: [u8; 20]) -> Box<BridgeApp> {
+        create_test_consensus_application(
+            storage_path,
             vec![rustaxa_ffi::GenesisValidator {
                 address,
                 owner: address,
@@ -349,18 +292,9 @@ mod tests {
                     stake: u256_be(5_000),
                 }],
             }],
-            rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: u256_be(1_000),
-                vote_eligibility_balance_step: u256_be(1_000),
-                validator_maximum_stake: u256_be(30_000),
-                minimum_deposit: Vec::new(),
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
+            0,
         )
-        .expect("FinalChain should initialize")
+        .expect("consensus application should initialize")
     }
 
     fn anchor_request(operation: u8) -> FfiPillarCurrentAnchorDecisionRequest {
@@ -377,10 +311,9 @@ mod tests {
     fn current_anchor_adapter_preserves_readiness_tag_and_status_mapping() {
         let temp_dir = unique_temp_dir("pillar_bridge_anchor_adapter");
         {
-            let storage = create_storage(temp_dir.to_str().expect("UTF-8 temp path"))
-                .expect("storage should initialize");
-            let service = create_pending_pillar_test_service_from_storage(&storage)
-                .expect("pending PBFT service should restore");
+            let service =
+                create_pending_pillar_test_service(temp_dir.to_str().expect("UTF-8 temp path"))
+                    .expect("pending PBFT service should restore");
             let unavailable = match service
                 .pbft_service_pillar_plan_current_anchor_decision(anchor_request(99))
             {
@@ -425,77 +358,76 @@ mod tests {
     fn typed_storage_adapter_preserves_bytes_missing_reads_and_errors() {
         let temp_dir = unique_temp_dir("pillar_bridge_storage_adapter");
         {
-            let storage = create_storage(temp_dir.to_str().expect("UTF-8 temp path"))
-                .expect("storage should initialize");
-            let storage_for_ops = BridgeStorage(storage.0.clone());
-            drop(storage);
-            assert!(storage_for_ops
+            let service =
+                create_pending_pillar_test_service(temp_dir.to_str().expect("UTF-8 temp path"))
+                    .expect("consensus application should initialize");
+            assert!(service
                 .pillar_chain_storage_load_current_block_data()
                 .expect("missing current read")
                 .is_empty());
-            assert!(storage_for_ops
+            assert!(service
                 .pillar_chain_storage_load_own_vote()
                 .expect("missing own-vote read")
                 .is_empty());
-            assert!(storage_for_ops
+            assert!(service
                 .pillar_chain_storage_load_latest_block()
                 .expect("missing latest read")
                 .is_empty());
-            assert!(storage_for_ops
+            assert!(service
                 .pillar_chain_storage_load_block(42)
                 .expect("missing period read")
                 .is_empty());
 
-            storage_for_ops
+            service
                 .pillar_chain_storage_apply_current_block_data(vec![0xc1, 0x01])
                 .expect("current bytes should persist");
-            storage_for_ops
+            service
                 .pillar_chain_storage_apply_own_vote(vec![0xc1, 0x02])
                 .expect("own-vote bytes should persist");
-            storage_for_ops
+            service
                 .pillar_chain_storage_apply_finalized_block(42, vec![0xc1, 0x03])
                 .expect("finalized bytes should persist");
             assert_eq!(
-                storage_for_ops
+                service
                     .pillar_chain_storage_load_current_block_data()
                     .expect("current bytes should load"),
                 vec![0xc1, 0x01]
             );
             assert_eq!(
-                storage_for_ops
+                service
                     .pillar_chain_storage_load_own_vote()
                     .expect("own-vote bytes should load"),
                 vec![0xc1, 0x02]
             );
             assert_eq!(
-                storage_for_ops
+                service
                     .pillar_chain_storage_load_latest_block()
                     .expect("latest bytes should load"),
                 vec![0xc1, 0x03]
             );
             assert_eq!(
-                storage_for_ops
+                service
                     .pillar_chain_storage_load_block(42)
                     .expect("period bytes should load"),
                 vec![0xc1, 0x03]
             );
 
             assert_eq!(
-                storage_for_ops
+                service
                     .pillar_chain_storage_apply_current_block_data(Vec::new())
                     .expect_err("empty current payload must reject")
                     .to_string(),
                 "PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"
             );
             assert_eq!(
-                storage_for_ops
+                service
                     .pillar_chain_storage_apply_own_vote(Vec::new())
                     .expect_err("empty own-vote payload must reject")
                     .to_string(),
                 "PILLAR_OWN_VOTE_EMPTY_PAYLOAD"
             );
             assert_eq!(
-                storage_for_ops
+                service
                     .pillar_chain_storage_apply_finalized_block(43, Vec::new())
                     .expect_err("empty finalized payload must reject")
                     .to_string(),
@@ -509,18 +441,14 @@ mod tests {
     fn final_chain_handle_adapter_projects_native_block_creation() {
         let temp_dir = unique_temp_dir("pillar_bridge_final_chain_adapter");
         {
-            let storage = create_storage(temp_dir.to_str().expect("UTF-8 temp path"))
-                .expect("storage should initialize");
-            let final_chain = final_chain_with_validator(&storage, [9; 20]);
-            let service = create_pending_pillar_test_service_from_storage(&storage)
-                .expect("PBFT service should restore");
+            let service =
+                application_with_validator(temp_dir.to_str().expect("UTF-8 temp path"), [9; 20]);
             service
                 .pbft_service_complete_pillar_bootstrap()
                 .expect("pillar service should become ready");
 
             let plan = service
                 .pbft_service_pillar_plan_block_creation_with_final_chain(
-                    &final_chain,
                     FfiPillarBlockCreationRequest {
                         pillar_block_period: 0,
                         state_root: [1; 32],

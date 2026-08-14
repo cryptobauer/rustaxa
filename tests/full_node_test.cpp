@@ -18,6 +18,7 @@
 #include "graphql/query.hpp"
 #include "graphql/subscription.hpp"
 #include "plugin/light.hpp"
+#include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/samples.hpp"
 #include "test_util/test_util.hpp"
 #include "transaction/transaction_manager.hpp"
@@ -26,11 +27,13 @@
 namespace taraxa::core_tests {
 namespace {
 
-std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage> &db) {
+std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage> &db,
+                                             const ConsensusStorageFixture &storage) {
 #ifdef RUSTAXA_ENABLE
-  auto service = createConsensusApplication(FullNodeConfig{}, *db);
-  return std::make_shared<PbftChain>(addr_t(), std::move(service));
+  (void)db;
+  return std::make_shared<PbftChain>(addr_t(), storage.application);
 #else
+  (void)storage;
   return std::make_shared<PbftChain>(addr_t(), db);
 #endif
 }
@@ -112,7 +115,8 @@ TEST_F(FullNodeTest, save_period_lambda_cacti_hf) {
 }
 
 TEST_F(FullNodeTest, db_test) {
-  auto db_ptr = std::make_shared<DbStorage>(data_dir);
+  auto storage = makeConsensusStorageFixture(FullNodeConfig{}, data_dir);
+  auto db_ptr = storage.db;
   auto &db = *db_ptr;
   auto blk1 = std::make_shared<DagBlock>(blk_hash_t(1), 1, vec_blk_t{}, vec_trx_t{trx_hash_t(1), trx_hash_t(2)},
                                          sig_t(777), blk_hash_t(0xB1), addr_t(999));
@@ -301,7 +305,7 @@ TEST_F(FullNodeTest, db_test) {
   }
 
   // pbft_blocks (head)
-  auto pbft_chain = makeTestPbftChain(db_ptr);
+  auto pbft_chain = makeTestPbftChain(db_ptr, storage);
   db.savePbftHead(pbft_chain->getHeadHash(), pbft_chain->getJsonStr());
   EXPECT_EQ(db.getPbftHead(pbft_chain->getHeadHash()), pbft_chain->getJsonStr());
   batch = db.createWriteBatch();

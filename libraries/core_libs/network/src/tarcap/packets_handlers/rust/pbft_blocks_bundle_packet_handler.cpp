@@ -35,7 +35,7 @@ void RustPbftBlocksBundlePacketHandler::process(const threadpool::PacketData& pa
   }
 
   const auto packet_rlp = packet_data.rlp_.data().toBytes();
-  const auto outcome = consensus_network_api_->admitPbftBlocksBundle(*final_chain_, packet_rlp, packet_data.id_);
+  const auto outcome = consensus_network_api_->admitPbftBlocksBundle(packet_rlp, packet_data.id_);
   if (outcome.status != 0) {
     throw MaliciousPeerException(outcome.error_code);
   }

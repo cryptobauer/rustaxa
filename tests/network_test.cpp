@@ -1874,33 +1874,9 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   const auto node_cfgs = make_node_cfgs(1, 1, 5);
   const auto nodes = create_nodes(node_cfgs, true);
   const auto& node = nodes[0];
-  const auto& conf = node->getConfig();
-
-  rustaxa::PbftServiceConfig pbft_service_config{};
-  pbft_service_config.genesis_lambda_ms = conf.genesis.pbft.lambda_ms;
-  pbft_service_config.cacti_lambda_max_ms = conf.genesis.state.hardforks.cacti_hf.lambda_max;
-  pbft_service_config.cacti_lambda_default_ms = conf.genesis.state.hardforks.cacti_hf.lambda_default;
-  pbft_service_config.cacti_block = conf.genesis.state.hardforks.cacti_hf.block_num;
-  pbft_service_config.max_exponential_lambda_ms = 60000;
-  pbft_service_config.max_steps = 13;
-  pbft_service_config.deadline_ms = 4 * static_cast<uint64_t>(conf.genesis.pbft.lambda_ms);
-  pbft_service_config.polling_interval_ms = 100;
-  pbft_service_config.report_malicious_behaviour = conf.report_malicious_behaviour;
-  pbft_service_config.magnolia_activation_period = conf.genesis.state.hardforks.magnolia_hf.block_num;
-  pbft_service_config.ficus_activation_period = conf.genesis.state.hardforks.ficus_hf.block_num;
-  pbft_service_config.pillar_blocks_interval = conf.genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
-  pbft_service_config.sync_level_size = conf.network.sync_level_size;
-  pbft_service_config.is_light_node = conf.is_light_node;
-  pbft_service_config.light_node_history = conf.light_node_history;
-  pbft_service_config.committee_size = conf.genesis.pbft.committee_size;
-  pbft_service_config.number_of_proposers = conf.genesis.pbft.number_of_proposers;
-  for (size_t wallet_index = 0; wallet_index < conf.wallets.size(); ++wallet_index) {
-    rustaxa::SlashingSubmitterIdentity identity{};
-    identity.wallet_index = wallet_index;
-    identity.address = conf.wallets[wallet_index].node_addr.asArray();
-    pbft_service_config.slashing_submitters.push_back(std::move(identity));
-  }
-  auto consensus_service = createConsensusApplication(conf, *node->getDB());
+  auto conf = node->getConfig();
+  conf.db_path = data_dir / "consensus_network_api";
+  auto consensus_service = createConsensusApplication(conf);
   auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service);
 
   auto first_lane_lock = network_api->lockTransportLane(6);
@@ -1964,7 +1940,7 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   std::array<uint8_t, 64> ingress_peer_id{};
   ingress_peer_id.fill(0x5a);
   const auto malformed_sync_packet = network_api->admitPbftSyncPacket(
-      *node->getFinalChain(), {0xC1, 0x80}, 74, ingress_peer_id,
+      {0xC1, 0x80}, 74, ingress_peer_id, {},
       network::PbftSyncIngressExecutor{[](const network::PbftSyncSlashingTransaction&) { return false; }});
   EXPECT_EQ(malformed_sync_packet.action, network::PbftSyncIngressAction::kMalicious);
   EXPECT_EQ(malformed_sync_packet.error_code, "NETWORK_PBFT_SYNC_PACKET_MALFORMED");

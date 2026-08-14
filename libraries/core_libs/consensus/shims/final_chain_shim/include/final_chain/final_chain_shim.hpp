@@ -15,6 +15,7 @@
 #include "config/config.hpp"
 #include "final_chain/data.hpp"
 #include "final_chain/state_api.hpp"
+#include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
 
@@ -31,6 +32,16 @@ class ConsensusNetworkApi;
 }
 
 namespace taraxa::final_chain {
+
+/** Converts genesis state into the native application bootstrap account carrier. */
+rust::Vec<rustaxa::GenesisAccount> makeGenesisAccounts(const state_api::Config& config);
+/** Converts genesis validators into the native application bootstrap carrier. */
+rust::Vec<rustaxa::GenesisValidator> makeGenesisValidators(const state_api::Config& config);
+/** Converts DPoS policy into the native application bootstrap carrier. */
+rustaxa::GenesisDposConfig makeGenesisDposConfig(
+    const state_api::DPOSConfig& config, uint64_t dag_vdf_sortition_total_vote_count_until_period);
+/** Converts rewards and hardfork policy into the native application bootstrap carrier. */
+rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const taraxa::FullNodeConfig& config);
 
 // Rust-mode final-chain shim facade.
 // This class is a standalone surface in Rust-enabled builds.
@@ -51,7 +62,7 @@ class FinalChain {
 
   ~FinalChain() = default;
   FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config,
-             [[maybe_unused]] const addr_t& node_addr);
+             [[maybe_unused]] const addr_t& node_addr, SharedConsensusApplication consensus_application);
   FinalChain(const FinalChain&) = delete;
   FinalChain(FinalChain&&) = delete;
 
@@ -140,9 +151,6 @@ class FinalChain {
   SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
 
  private:
-  /** Borrows the Rust owner synchronously for friend consensus facades. */
-  const rustaxa::BridgeFinalChain& rustFinalChain() const { return *rust_final_chain_.value(); }
-
   /**
    * Thin adapter for the external EVM `StateAPI` client used by Rust-enabled FinalChain publication.
    *
@@ -212,6 +220,14 @@ class FinalChain {
    */
   std::vector<SharedTransaction> makeSystemTransactions(const rustaxa::FinalChainSystemTransactionRequest& request);
 
+  /** Read one 32-byte bridge-contract view at the latest applicable committed EVM snapshot; failures return zero. */
+  h256 readBridgeContractHash(EthBlockNumber block_number, const bytes& method, const char* api_name) const;
+
+  /** Commit one Rust-native session and materialize the legacy completion DTO; validation or decoding failures throw. */
+  std::shared_ptr<const FinalizationResult> commitNativeSession(
+      rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, PeriodData&& period_data,
+      std::vector<h256>&& finalized_dag_blk_hashes);
+
   /**
    * Complete any Rust-owned external-EVM FinalChain publication left pending by
    * a crash after `StateAPI::transition_state_commit()`.
@@ -234,7 +250,7 @@ class FinalChain {
       PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, std::shared_ptr<DagBlock>&& anchor);
 
   std::shared_ptr<DbStorage> db_;
-  std::optional<::rust::Box<rustaxa::BridgeFinalChain>> rust_final_chain_;
+  SharedConsensusApplication consensus_application_;
   std::optional<::rust::Box<rustaxa::BridgeConsensusExecutionApi>> rust_execution_api_;
   EthBlockNumber delegation_delay_ = 0;
   uint64_t block_gas_limit_ = 0;
