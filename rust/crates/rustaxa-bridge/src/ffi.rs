@@ -4253,39 +4253,48 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusApplication,
         ) -> Result<()>;
         pub fn pillar_chain_storage_apply_current_block_data(
-            self: &BridgeStorage,
+            self: &BridgeConsensusApplication,
             data_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn pillar_chain_storage_apply_own_vote(
-            self: &BridgeStorage,
+            self: &BridgeConsensusApplication,
             vote_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn pillar_chain_storage_apply_finalized_block(
-            self: &BridgeStorage,
+            self: &BridgeConsensusApplication,
             period: u64,
             pillar_block_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn pillar_chain_storage_load_own_vote(self: &BridgeStorage) -> Result<Vec<u8>>;
-        pub fn pillar_chain_storage_load_current_block_data(
-            self: &BridgeStorage,
+        pub fn pillar_chain_storage_load_own_vote(
+            self: &BridgeConsensusApplication,
         ) -> Result<Vec<u8>>;
-        pub fn pillar_chain_storage_load_latest_block(self: &BridgeStorage) -> Result<Vec<u8>>;
+        pub fn pillar_chain_storage_load_current_block_data(
+            self: &BridgeConsensusApplication,
+        ) -> Result<Vec<u8>>;
+        pub fn pillar_chain_storage_load_latest_block(
+            self: &BridgeConsensusApplication,
+        ) -> Result<Vec<u8>>;
         pub fn pillar_chain_storage_load_block(
-            self: &BridgeStorage,
+            self: &BridgeConsensusApplication,
             period: u64,
         ) -> Result<Vec<u8>>;
-        pub fn get_genesis_hash(self: &BridgeStorage) -> Result<Vec<u8>>;
-        pub fn get_last_sortition_params(self: &BridgeStorage, count: u64)
+        pub fn get_genesis_hash(self: &BridgeConsensusApplication) -> Result<Vec<u8>>;
+        pub fn get_last_sortition_params(self: &BridgeConsensusApplication, count: u64)
             -> Result<Vec<BlockRlp>>;
-        pub fn get_params_change_for_period(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
-        pub fn get_status_field(self: &BridgeStorage, field: u8) -> Result<u64>;
+        pub fn get_params_change_for_period(
+            self: &BridgeConsensusApplication,
+            period: u64,
+        ) -> Result<Vec<u8>>;
+        pub fn get_status_field(self: &BridgeConsensusApplication, field: u8) -> Result<u64>;
         pub fn get_period_lambda(
-            self: &BridgeStorage,
+            self: &BridgeConsensusApplication,
             period: u64,
             find_closest: bool,
         ) -> Result<PeriodLambda>;
-        pub fn get_rounds_count_dynamic_lambda(self: &BridgeStorage) -> Result<u32>;
-        pub fn get_blocks_rewards_stats(self: &BridgeStorage) -> Result<Vec<PeriodRlp>>;
+        pub fn get_rounds_count_dynamic_lambda(self: &BridgeConsensusApplication) -> Result<u32>;
+        pub fn get_blocks_rewards_stats(
+            self: &BridgeConsensusApplication,
+        ) -> Result<Vec<PeriodRlp>>;
         pub fn pbft_service_pillar_apply_planned_current_block_data(
             self: &BridgeConsensusApplication,
             data_rlp: Vec<u8>,
@@ -4348,24 +4357,25 @@ pub mod rustaxa_ffi {
         type BridgePeriodStorageQueries;
         type BridgeStorageBatch;
 
-        pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>>;
         pub fn create_pbft_storage_queries(
-            storage: &BridgeStorage,
+            runtime: &BridgeConsensusApplication,
         ) -> Box<BridgePbftStorageQueries>;
-        pub fn create_dag_storage_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries>;
+        pub fn create_dag_storage_queries(runtime: &BridgeConsensusApplication) -> Box<BridgeDagStorageQueries>;
         pub fn create_pbft_vote_storage_queries(
-            storage: &BridgeStorage,
+            runtime: &BridgeConsensusApplication,
         ) -> Box<BridgePbftVoteStorageQueries>;
         pub fn create_transaction_storage_queries(
-            storage: &BridgeStorage,
+            runtime: &BridgeConsensusApplication,
         ) -> Box<BridgeTransactionStorageQueries>;
         pub fn create_final_chain_storage_queries(
-            storage: &BridgeStorage,
+            runtime: &BridgeConsensusApplication,
         ) -> Box<BridgeFinalChainStorageQueries>;
         pub fn create_period_storage_queries(
-            storage: &BridgeStorage,
+            runtime: &BridgeConsensusApplication,
         ) -> Box<BridgePeriodStorageQueries>;
-        pub fn create_storage_shim_batch(storage: &BridgeStorage) -> Box<BridgeStorageBatch>;
+        pub fn create_storage_shim_batch(
+            runtime: &BridgeConsensusApplication,
+        ) -> Box<BridgeStorageBatch>;
         pub fn storage_shim_save_status_field(
             batch: &mut BridgeStorageBatch,
             field: u8,
@@ -4390,14 +4400,16 @@ pub mod rustaxa_ffi {
             period: u64,
             stats_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn storage_shim_clear_block_rewards_stats(storage: &BridgeStorage) -> Result<()>;
+        pub fn storage_shim_clear_block_rewards_stats(
+            runtime: &BridgeConsensusApplication,
+        ) -> Result<()>;
         pub fn storage_shim_set_genesis_hash(
-            storage: &BridgeStorage,
+            runtime: &BridgeConsensusApplication,
             hash: &[u8; 32],
         ) -> Result<()>;
         #[allow(clippy::too_many_arguments)]
         pub fn storage_shim_seed_final_chain_conformance_lookup_rows(
-            storage: &BridgeStorage,
+            runtime: &BridgeConsensusApplication,
             meta_key: u32,
             meta_value: Vec<u8>,
             block_number: u64,
