@@ -59,7 +59,7 @@ use crate::ffi::rustaxa_ffi::{
     PillarVoteRlpPayload as FfiPillarVoteRlpPayload,
     TransactionQueueAccountNonceFact as FfiTransactionQueueAccountNonceFact,
 };
-use crate::ffi::{BridgeApp, BridgeFinalChain};
+use crate::ffi::BridgeApp;
 use crate::transaction_manager::bridge_to_service_account_nonce_facts;
 use crate::verified_votes::{
     empty_slashing_transaction_effect, leader_selection_result_to_ffi,
@@ -444,7 +444,6 @@ fn pbft_sync_ingress_step_to_ffi(value: PbftSyncIngressStep) -> FfiPbftSyncIngre
 /// Begins or replaces the native PBFT-sync ingress session.
 pub fn pbft_service_begin_pbft_sync_ingress(
     service: &BridgeApp,
-    final_chain: &BridgeFinalChain,
     packet_rlp: &[u8],
     source_payload_id: u64,
     source_peer_id: [u8; 64],
@@ -452,7 +451,7 @@ pub fn pbft_service_begin_pbft_sync_ingress(
     service
         .0
         .begin_pbft_sync_ingress(
-            &final_chain.0,
+            &service.0.final_chain_for_bridge(),
             packet_rlp,
             source_payload_id,
             source_peer_id,
@@ -463,13 +462,16 @@ pub fn pbft_service_begin_pbft_sync_ingress(
 /// Reports one pending slashing effect and advances the same ingress session.
 pub fn pbft_service_report_pbft_sync_ingress_slashing(
     service: &BridgeApp,
-    final_chain: &BridgeFinalChain,
     proof_hash: [u8; 32],
     transaction_inserted: bool,
 ) -> anyhow::Result<FfiPbftSyncIngressStep> {
     service
         .0
-        .report_pbft_sync_ingress_slashing(&final_chain.0, proof_hash.into(), transaction_inserted)
+        .report_pbft_sync_ingress_slashing(
+            &service.0.final_chain_for_bridge(),
+            proof_hash.into(),
+            transaction_inserted,
+        )
         .map(pbft_sync_ingress_step_to_ffi)
 }
 
@@ -1251,11 +1253,10 @@ pub fn plan_pbft_manager_runtime_sleep_until_next_step(
 }
 
 /// Returns whether PBFT startup can proceed based on finalization delay.
-pub fn pbft_service_finalization_ready(
-    runtime: &BridgeApp,
-    final_chain: &BridgeFinalChain,
-) -> anyhow::Result<bool> {
-    runtime.0.finalization_ready(&final_chain.0)
+pub fn pbft_service_finalization_ready(runtime: &BridgeApp) -> anyhow::Result<bool> {
+    runtime
+        .0
+        .finalization_ready(&runtime.0.final_chain_for_bridge())
 }
 
 /// Aborts the runtime-owned PBFT manager tick session.
@@ -1421,16 +1422,11 @@ pub fn report_pbft_manager_broadcast(
 /// terminal plan or typed wait/error.
 pub fn plan_pbft_manager_block_validation(
     runtime: &BridgeApp,
-    final_chain: &BridgeFinalChain,
     dag_transaction_service: &BridgeApp,
     fact: &FfiPbftManagerBlockValidationFact,
 ) -> anyhow::Result<FfiPbftManagerBlockValidationPlan> {
     Ok(dag_transaction_service
-        .validate_pbft_block(
-            runtime,
-            final_chain,
-            block_validation_candidate_from_ffi(fact),
-        )?
+        .validate_pbft_block(runtime, block_validation_candidate_from_ffi(fact))?
         .into())
 }
 
@@ -1457,7 +1453,6 @@ fn block_validation_candidate_from_ffi(
 /// Admits one proposed block through native lookup, decoding, and validation.
 pub fn pbft_service_admit_proposed_block(
     runtime: &BridgeApp,
-    final_chain: &BridgeFinalChain,
     dag_transaction_service: &BridgeApp,
     period: u64,
     block_hash: &[u8; 32],
@@ -1468,7 +1463,6 @@ pub fn pbft_service_admit_proposed_block(
     Ok(dag_transaction_service
         .admit_proposed_block(
             runtime,
-            final_chain,
             PbftProposedBlockAdmissionRequest {
                 period,
                 block_hash: (*block_hash).into(),
@@ -1485,7 +1479,6 @@ pub fn pbft_service_admit_proposed_block(
 #[allow(clippy::too_many_arguments)]
 pub fn pbft_service_select_local_proposal_candidate(
     runtime: &BridgeApp,
-    final_chain: &BridgeFinalChain,
     dag_transaction_service: &BridgeApp,
     candidates: Vec<FfiPbftLocalProposalCandidate>,
     period: u64,
@@ -1497,7 +1490,6 @@ pub fn pbft_service_select_local_proposal_candidate(
     Ok(dag_transaction_service
         .select_local_proposal_candidate(
             runtime,
-            final_chain,
             PbftLocalProposalSelectionRequest {
                 candidates: candidates
                     .into_iter()
@@ -1521,7 +1513,6 @@ pub fn pbft_service_select_local_proposal_candidate(
 #[allow(clippy::too_many_arguments)]
 pub fn pbft_service_select_leader_composed(
     runtime: &BridgeApp,
-    final_chain: &BridgeFinalChain,
     dag_transaction_service: &BridgeApp,
     period: u64,
     round: u64,
@@ -1532,7 +1523,6 @@ pub fn pbft_service_select_leader_composed(
     Ok(leader_selection_result_to_ffi(
         dag_transaction_service.select_leader_composed(
             runtime,
-            final_chain,
             PbftComposedLeaderSelectionRequest {
                 period,
                 round,

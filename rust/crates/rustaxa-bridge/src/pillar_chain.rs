@@ -20,9 +20,9 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCount as FfiPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
+use crate::ffi::BridgeApp;
 #[cfg(test)]
 use crate::ffi::BridgeStorage;
-use crate::ffi::{BridgeApp, BridgeFinalChain};
 use anyhow::{bail, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::{
@@ -151,11 +151,13 @@ impl BridgeApp {
     /// `rustaxa-consensus` and is forwarded as-is.
     pub fn pbft_service_pillar_plan_block_creation_with_final_chain(
         &self,
-        final_chain: &BridgeFinalChain,
         request: FfiPillarBlockCreationRequest,
     ) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
         self.0
-            .plan_pillar_block_creation_with_final_chain(&final_chain.0, request.into())
+            .plan_pillar_block_creation_with_final_chain(
+                &self.0.final_chain_for_bridge(),
+                request.into(),
+            )
             .map(Into::into)
     }
 

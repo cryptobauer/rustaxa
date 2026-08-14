@@ -294,7 +294,7 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-14` | `active` | Retire state-free or non-production facades per native-owned subsystem, including the remaining PBFT-chain surface after its named network/RPC clients migrate. | `CRW-11`; the selected subsystem owner from `CRW-12` | Each selected family deletes its shim, bridge declarations, carriers, constructors, flag, and compatibility-only tests together. Already-retired rewards stats, proposed blocks, verified votes, sortition params, and gas pricer remain closed; PBFT-chain deletion proceeds with its named clients rather than waiting for global `CRW-12`. |
 | `CRW-15` | `active` | Replace internal legacy consensus object materialization with canonical bytes, opaque identities, borrowed native views, or client-specific DTOs as part of each native-owned subsystem cutover. | `CRW-11`; the selected subsystem owner from `CRW-12` | Internal C++ code cannot obtain mutable Rust-owned consensus object graphs; associated sidecars, mirrors, compatibility mutexes, and revalidation protocols are deleted. |
 | `CRW-16` | `active` | Replace PBFT/vote/pillar and DAG/transaction/proposer manager shims with exact typed leaves for transport, EVM, signing, VDF, timers/process mechanics, and public clients, combining facade and materialization deletion in the same subsystem checkpoint. | The selected subsystem owner from `CRW-12`; applicable `CRW-14`/`CRW-15` family; coordinate network leaves with `CRW-N01` | Manager-shaped internal APIs, manager-to-manager calls, and the manager shim directories are gone; separately named leaf adapters have named external clients, canonical inputs, typed effects, and exact result reports. |
-| `CRW-17` | `ready` | Reduce storage and FinalChain bridge surfaces per migrated subsystem to native application bootstrap ownership, public query/admin clients, storage conformance, and a narrow external-EVM executor contract. | The selected subsystem owner from `CRW-12`; coordinate concrete execution leaves with `CRW-E01` | Broad storage/query-family handles and consensus use of `BridgeFinalChain` are deleted; retained query, admin, conformance, and EVM surfaces are client-specific and minimal. |
+| `CRW-17` | `active` | Reduce storage and FinalChain bridge surfaces per migrated subsystem to native application bootstrap ownership, public query/admin clients, storage conformance, and a narrow external-EVM executor contract. | The selected subsystem owner from `CRW-12`; coordinate concrete execution leaves with `CRW-E01` | Broad storage/query-family handles and consensus use of `BridgeFinalChain` are deleted; retained query, admin, conformance, and EVM surfaces are client-specific and minimal. |
 | `CRW-18` | `blocked` | Final bridge/shim reduction closeout and documentation deletion. | `CRW-11` through `CRW-17`; `CRW-N01`/`CRW-E01` only where explicitly activated | Required validation passes; budgets demonstrate the intended contraction; no unclassified or unnamed compatibility surface remains; this reduction plan is deleted and only stable strategy, live inventory, and remaining tracker items survive. |
 
 `CRW-12`, `CRW-14`, `CRW-15`, `CRW-16`, and `CRW-17` are a coordinated vertical campaign, not a global waterfall.
@@ -303,10 +303,12 @@ materialization removal, shim contraction, and storage/FinalChain narrowing with
 Queue status remains global, but slice readiness and completion evidence are evaluated for the selected complete family.
 The first application-root checkpoint constructs `ConsensusApplication` once in `App`, migrates Rust-mode fixtures to
 production-root injection, and deletes the non-injected Rust-mode `TransactionManager` and `DagManager` constructors.
-That checkpoint is now implemented for the PBFT and DAG/transaction/sortition graphs: `App` and focused fixtures inject
-one opaque `BridgeConsensusApplication`, the two standalone bridge factories/handles are gone, and DAG initialization is
-deferred until PBFT restoration succeeds. `CRW-12` remains active because FinalChain and storage bootstrap have not yet
-moved behind the native root.
+That checkpoint is implemented for the PBFT and DAG/transaction/sortition graphs, and its first `CRW-17` extension moves
+native storage opening, schema/genesis preflight, and FinalChain construction behind the same consumed bootstrap. `App`
+and focused fixtures inject one opaque `BridgeConsensusApplication`; production no longer constructs or passes sibling
+storage or FinalChain roots; and DAG initialization remains deferred until every sibling restores. `CRW-12` stays active
+until bridge runtime state and behavioral suites finish moving native. `CRW-17` stays active while broad storage
+compatibility/query families are narrowed to the named public-query, admin, conformance, and external-EVM clients.
 
 | Cluster | Native-owner prerequisite | Same-checkpoint deletion scope | Manager closeout |
 | --- | --- | --- | --- |

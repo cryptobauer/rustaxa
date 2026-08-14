@@ -12,19 +12,18 @@ use crate::ffi::rustaxa_ffi::{
     PillarVoteSingleAdmissionPreparePlan as FfiPillarVoteSingleAdmissionPreparePlan,
     PillarVoteSingleAdmissionWithFinalChainPlan, PillarVotesPayloadLookup,
 };
-use crate::ffi::{BridgeApp, BridgeFinalChain};
+use crate::ffi::BridgeApp;
 use anyhow::Result;
 
 #[allow(dead_code)]
 impl BridgeApp {
     pub fn pbft_service_pillar_validate_single_vote_with_final_chain(
         &self,
-        final_chain: &BridgeFinalChain,
         vote_rlp: Vec<u8>,
         context: PillarVoteSingleAdmissionContext,
     ) -> Result<FfiPillarVoteSingleAdmissionPreparePlan> {
         let result = self.0.validate_single_pillar_vote_with_final_chain(
-            &final_chain.0,
+            self.0.final_chain_for_bridge(),
             vote_rlp,
             native_single_context(context),
         )?;
@@ -38,13 +37,12 @@ impl BridgeApp {
 
     pub fn pbft_service_pillar_apply_single_vote_with_final_chain(
         &self,
-        final_chain: &BridgeFinalChain,
         vote_rlp: Vec<u8>,
         context: PillarVoteSingleAdmissionContext,
         trusted_local_or_restore: bool,
     ) -> Result<PillarVoteSingleAdmissionWithFinalChainPlan> {
         let result = self.0.apply_single_pillar_vote_with_final_chain(
-            &final_chain.0,
+            self.0.final_chain_for_bridge(),
             vote_rlp,
             native_single_context(context),
             trusted_local_or_restore,
@@ -65,12 +63,11 @@ impl BridgeApp {
 
     pub fn pbft_service_pillar_consensus_threshold_with_final_chain(
         &self,
-        final_chain: &BridgeFinalChain,
         period: u64,
     ) -> Result<PillarConsensusThresholdLookup> {
         let result = self
             .0
-            .pillar_consensus_threshold_with_final_chain(&final_chain.0, period)?;
+            .pillar_consensus_threshold_with_final_chain(self.0.final_chain_for_bridge(), period)?;
         Ok(PillarConsensusThresholdLookup {
             available: result.available,
             threshold: result.threshold,

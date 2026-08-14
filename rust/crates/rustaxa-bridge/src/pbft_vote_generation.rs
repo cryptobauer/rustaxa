@@ -18,7 +18,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftProposerSortitionResult as FfiPbftProposerSortitionResult,
     PbftVoteGenerationInput as FfiPbftVoteGenerationInput,
 };
-use crate::ffi::{BridgeApp, BridgeFinalChain};
+use crate::ffi::BridgeApp;
 use anyhow::Result;
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::pbft_vote_generation::{
@@ -51,7 +51,6 @@ impl BridgeApp {
     /// service lock or FinalChain handle is retained after the synchronous call.
     pub fn pbft_service_generate_signed_vote_with_weight(
         &self,
-        final_chain: &BridgeFinalChain,
         input: FfiPbftVoteGenerationInput,
         committee_size: u64,
         number_of_proposers: u64,
@@ -60,7 +59,7 @@ impl BridgeApp {
         Ok(self
             .0
             .generate_signed_vote_with_weight(
-                &final_chain.0,
+                &self.0.final_chain_for_bridge(),
                 input,
                 committee_size,
                 number_of_proposers,
@@ -75,13 +74,12 @@ impl BridgeApp {
     /// Identity and proof validation errors are returned as boundary errors.
     pub fn pbft_service_generate_and_validate_proposer_sortition(
         &self,
-        final_chain: &BridgeFinalChain,
         request: FfiPbftProposerSortitionRequest,
     ) -> Result<FfiPbftProposerSortitionResult> {
         Ok(self
             .0
             .generate_and_validate_proposer_sortition(
-                &final_chain.0,
+                &self.0.final_chain_for_bridge(),
                 PbftProposerSortitionRequest::try_from(request)?,
             )?
             .into())
@@ -93,13 +91,12 @@ impl BridgeApp {
     /// `PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE` with a dedicated error string.
     pub fn pbft_service_collect_dpos_total_vote_count(
         &self,
-        final_chain: &BridgeFinalChain,
         request: FfiPbftFinalChainDposTotalVoteCountRequest,
     ) -> Result<FfiPbftFinalChainDposTotalVoteCountFacts> {
         Ok(self
             .0
             .collect_dpos_total_vote_count(
-                &final_chain.0,
+                &self.0.final_chain_for_bridge(),
                 PbftFinalChainDposTotalVoteCountRequest {
                     period: request.period,
                 },
@@ -114,13 +111,12 @@ impl BridgeApp {
     /// codes instead of silently returning partial totals.
     pub fn pbft_service_collect_dpos_wallet_aggregate_vote_count(
         &self,
-        final_chain: &BridgeFinalChain,
         request: FfiPbftFinalChainDposWalletAggregateVoteCountRequest,
     ) -> Result<FfiPbftFinalChainDposWalletAggregateVoteCountFacts> {
         Ok(self
             .0
             .collect_dpos_wallet_aggregate_vote_count(
-                &final_chain.0,
+                &self.0.final_chain_for_bridge(),
                 PbftFinalChainDposWalletAggregateVoteCountRequest {
                     period: request.period,
                     eligible_wallet_period: request.eligible_wallet_period,
@@ -140,13 +136,12 @@ impl BridgeApp {
     /// callers can distinguish future snapshots and infrastructure failures.
     pub fn pbft_service_collect_dpos_wallet_eligibility_batch(
         &self,
-        final_chain: &BridgeFinalChain,
         request: FfiPbftFinalChainDposWalletEligibilityBatchRequest,
     ) -> Result<FfiPbftFinalChainDposWalletEligibilityBatchFacts> {
         Ok(self
             .0
             .collect_dpos_wallet_eligibility_batch(
-                &final_chain.0,
+                &self.0.final_chain_for_bridge(),
                 PbftFinalChainDposWalletEligibilityBatchRequest {
                     period: request.period,
                     addresses: request

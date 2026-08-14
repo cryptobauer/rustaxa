@@ -2,6 +2,7 @@
 //! routing, lane-local queue ordering, and effect-result validation while callers execute typed effects.
 
 use crate::ffi::rustaxa_ffi;
+use crate::ffi::BridgeApp;
 use crate::ffi::BridgeConsensusNetworkApi;
 use rustaxa_consensus::pbft_vote_ingress::{PbftVoteIngressContext, PbftVoteIngressFact};
 use rustaxa_consensus::verified_votes::PbftVoteType;
@@ -300,13 +301,16 @@ impl BridgeConsensusNetworkApi {
     /// uniqueness, DPoS queries, and storage-first proposal publication.
     pub fn consensus_network_ingest_pbft_blocks_bundle(
         &self,
-        final_chain: &crate::ffi::BridgeFinalChain,
+        runtime: &BridgeApp,
         packet_rlp: Vec<u8>,
         source_payload_id: u64,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.0
-                .ingest_pbft_blocks_bundle(&final_chain.0, &packet_rlp, source_payload_id)?,
+            self.0.ingest_pbft_blocks_bundle(
+                runtime.0.final_chain_for_bridge(),
+                &packet_rlp,
+                source_payload_id,
+            )?,
         ))
     }
 }

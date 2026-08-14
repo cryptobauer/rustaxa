@@ -799,11 +799,13 @@ the same slice.
 ### Native Application Composition Boundary
 
 Rust-enabled production has one target composition: a native `ConsensusApplication` root constructed once by `App`.
-The first vertical checkpoint owns restoration plus the private PBFT and DAG/transaction/sortition graphs, including
-vote, pillar, slashing, and consensus-network services. FinalChain and storage bootstrap remain explicit `CRW-17` work.
+The root opens native storage, verifies schema and genesis identity, constructs FinalChain, and restores the private
+PBFT and DAG/transaction/sortition graphs, including vote, pillar, slashing, and consensus-network services, before C++
+can publish it. Rust mode fails closed for legacy rebuild, revert, and migration-only startup modes until native admin
+operations replace those workflows; pure-C++ mode retains the upstream maintenance path.
 The deleted `BridgePbftService` and `BridgeDagTransactionService` handles must not be recreated behind replacement C++
 managers. The bootstrap CXX surface is one opaque `BridgeConsensusApplication` created by one
-`create_consensus_application_from_storage` operation. It exposes no internal-service accessors; operation-specific
+`create_consensus_application` operation. It exposes no internal-service accessors; operation-specific
 application and network APIs are invoked on or bound from the root without publishing its private owners.
 
 Construction and restoration are atomic publication boundaries: configuration and every required native sibling must

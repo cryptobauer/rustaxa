@@ -170,6 +170,13 @@ void App::init(const cli::Config &cli_conf) {
     LOG(log_er_) << "Genesis block is invalid";
     assert(false);
   }
+#ifdef RUSTAXA_ENABLE
+  if (conf_.db_config.rebuild_db || conf_.db_config.migrate_only || conf_.db_config.db_revert_to_period != 0 ||
+      conf_.db_config.rebuild_db_period != 0) {
+    throw std::runtime_error(
+        "Rust consensus mode does not support rebuild-db, migrate-only, rebuild-db-period, or db-revert-to-period");
+  }
+#endif
   {
     if (conf_.db_config.rebuild_db) {
       old_db_ = std::make_shared<DbStorage>(conf_.db_path, conf_.db_config.db_snapshot_each_n_pbft_block,
@@ -211,6 +218,10 @@ void App::init(const cli::Config &cli_conf) {
   }
   LOG(log_nf_) << "DB initialized ...";
 
+#ifdef RUSTAXA_ENABLE
+  consensus_application_ = createConsensusApplication(conf_, *db_);
+#endif
+
   if (conf_.network.prometheus) {
     auto &config = *conf_.network.prometheus;
     LOG(log_nf_) << "Prometheus: server started at " << config.address << ":" << config.listen_port
@@ -245,7 +256,6 @@ void App::init(const cli::Config &cli_conf) {
   }
 
 #ifdef RUSTAXA_ENABLE
-  consensus_application_ = createConsensusApplication(conf_, *db_);
   trx_mgr_ = std::make_shared<TransactionManager>(conf_, db_, final_chain_, node_addr, consensus_application_);
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, consensus_application_);
 #else

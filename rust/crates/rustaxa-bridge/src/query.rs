@@ -5,7 +5,9 @@
 //! `ConsensusQueryApi` calls without handing public layers manager pointers,
 //! storage iterators, or mutable compatibility sidecars.
 
-use crate::ffi::{rustaxa_ffi, BridgeConsensusQueryApi, BridgeStorage};
+#[cfg(test)]
+use crate::ffi::BridgeStorage;
+use crate::ffi::{rustaxa_ffi, BridgeApp, BridgeConsensusQueryApi};
 
 fn query_hash_lookup_to_ffi(lookup: rustaxa_consensus::QueryHashLookup) -> rustaxa_ffi::HashLookup {
     rustaxa_ffi::HashLookup {
@@ -272,10 +274,10 @@ fn transaction_receipt_view_to_ffi(
     }
 }
 
-/// Creates a stateless public consensus query facade.
-pub fn create_consensus_query_api(storage: &BridgeStorage) -> Box<BridgeConsensusQueryApi> {
+/// Creates a stateless public consensus query facade over application-owned storage.
+pub fn create_consensus_query_api(runtime: &BridgeApp) -> Box<BridgeConsensusQueryApi> {
     Box::new(BridgeConsensusQueryApi(
-        rustaxa_consensus::ConsensusQueryApi::new(storage.0.clone()),
+        rustaxa_consensus::ConsensusQueryApi::new(runtime.0.storage_for_bridge().clone()),
     ))
 }
 

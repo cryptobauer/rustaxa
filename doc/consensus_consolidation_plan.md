@@ -74,8 +74,9 @@ waterfall. The remaining campaign uses five coherent vertical checkpoints:
    `App`, make its services private, migrate fixtures to explicit production-root injection, and delete the non-injected
    Rust-mode `TransactionManager` and `DagManager` constructors. C++ may retain one opaque bootstrap holder while
    manager facades still need leaf adapters.
-   The first vertical slice now composes PBFT and DAG/transaction/sortition behind that root and removes their separate
-   handles and factories. FinalChain and storage construction remain the explicit `CRW-17` extension of the same root.
+   The first two vertical slices now compose PBFT, DAG/transaction/sortition, storage, and FinalChain behind that root
+   and remove their separate production bootstrap handles and factories. Public query, storage admin/conformance, and
+   concrete EVM/`StateAPI` execution remain narrow named adapters rather than alternate composition roots.
 2. **PBFT cluster cutover.** Move the daemon/state-machine, vote, pillar, chain, sync, and finalization orchestration
    behind application tasks. Network, signing, timers, and EVM remain exact typed leaves. Delete PBFT/vote/pillar
    manager-to-manager APIs, internal object sidecars, CXX families, and complete shims when their last named leaf moves.

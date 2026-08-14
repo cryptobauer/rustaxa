@@ -5,7 +5,6 @@
 //! facts, runs the deterministic planner, and returns u8-coded side-effect
 //! intent flags for the PBFT manager overlay to apply.
 
-use crate::dag_transaction_service::BridgeApp;
 use crate::ffi::rustaxa_ffi::{
     PbftCertVoteRlp as FfiPbftCertVoteRlp,
     PbftSyncAdmissionInitialFact as FfiPbftSyncAdmissionInitialFact,
@@ -17,7 +16,7 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueueTransactionIdentity as FfiPeriodDataQueueTransactionIdentity,
     PillarVoteRlpPayload,
 };
-use crate::ffi::BridgeFinalChain;
+use crate::ffi::BridgeApp;
 use crate::verified_votes::{
     empty_slashing_transaction_effect, slashing_transaction_effect_to_ffi,
 };
@@ -55,7 +54,6 @@ pub fn pbft_manager_runtime_begin_pbft_sync_admission(
 /// only the captured native request and propagate to the C++ executor.
 pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
     runtime: &BridgeApp,
-    final_chain: &BridgeFinalChain,
     cursor: u32,
     check_code: u8,
     status: u8,
@@ -64,7 +62,7 @@ pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
     let result = if check == PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash {
         let result = runtime
             .0
-            .validate_pbft_sync_admission_final_chain_hash(&final_chain.0);
+            .validate_pbft_sync_admission_final_chain_hash(&runtime.0.final_chain_for_bridge());
         match result {
             Some((_, _, validation))
                 if validation.status == PbftManagerFinalChainHashStatus::Unknown =>
@@ -106,13 +104,12 @@ pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
 /// not-started contract step without mutating a replacement.
 pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
     runtime: &BridgeApp,
-    final_chain: &BridgeFinalChain,
     vote_rlps: Vec<PillarVoteRlpPayload>,
 ) -> FfiPbftSyncAdmissionSessionStep {
     runtime
         .0
         .validate_pbft_sync_admission_pillar_votes(
-            &final_chain.0,
+            &runtime.0.final_chain_for_bridge(),
             vote_rlps
                 .into_iter()
                 .map(
@@ -138,13 +135,11 @@ pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
 pub fn pbft_manager_runtime_pbft_sync_admission_validate_transactions(
     runtime: &BridgeApp,
     dag_transaction_service: &BridgeApp,
-    final_chain: &BridgeFinalChain,
     identities: Vec<FfiPeriodDataQueueTransactionIdentity>,
 ) -> FfiPbftSyncAdmissionSessionStep {
     dag_transaction_service
         .validate_pbft_sync_admission_transactions(
             runtime,
-            final_chain,
             identities
                 .into_iter()
                 .map(|identity| {
@@ -176,14 +171,13 @@ pub fn abort_pbft_manager_runtime_pbft_sync_admission(
 /// current-certificate admission session without exposing a bridge runtime.
 pub fn pbft_service_pbft_sync_cert_bundle_session(
     service: &BridgeApp,
-    final_chain: &BridgeFinalChain,
     command: FfiPbftSyncCertBundleCommand,
 ) -> Result<FfiPbftSyncCertBundleStep> {
     match command.action {
         0 => service
             .0
             .begin_pbft_sync_cert_bundle(
-                &final_chain.0,
+                &service.0.final_chain_for_bridge(),
                 command.block_period,
                 H256::from(command.block_hash),
                 command

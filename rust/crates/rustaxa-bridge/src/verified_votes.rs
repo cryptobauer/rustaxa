@@ -15,7 +15,7 @@ use crate::ffi::rustaxa_ffi::{
     VerifiedStepVotePayloadsLookup, VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome,
     VerifiedVotePayload, VerifiedVoteStateSnapshotEntry, VerifiedVotesStateSnapshot,
 };
-use crate::ffi::{BridgeApp, BridgeFinalChain};
+use crate::ffi::BridgeApp;
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
 use ethereum_types::{H256, U256};
 use rustaxa_consensus::pbft_finalize::PbftFinalizedPeriodApplyResult;
@@ -260,7 +260,6 @@ impl BridgeApp {
     /// error status.
     pub fn pbft_service_verified_votes_validate_with_final_chain(
         &self,
-        final_chain: &BridgeFinalChain,
         canonical_vote_rlp: &[u8],
         strict_vrf: bool,
         committee_size: u64,
@@ -273,9 +272,12 @@ impl BridgeApp {
             has_preverified_weight: false,
             preverified_weight: 0,
         });
-        let (validation, replay, weighted_vote_rlp) = self
-            .0
-            .validate_verified_vote_with_final_chain(&final_chain.0, canonical_vote_rlp, request)?;
+        let (validation, replay, weighted_vote_rlp) =
+            self.0.validate_verified_vote_with_final_chain(
+                self.0.final_chain_for_bridge(),
+                canonical_vote_rlp,
+                request,
+            )?;
         self.publish_vote_validation(validation, replay, weighted_vote_rlp.unwrap_or_default())
     }
 
@@ -286,7 +288,6 @@ impl BridgeApp {
     /// persistence writes are wrapped in one transactional Rust admission session.
     pub fn pbft_service_verified_votes_admit_and_persist_with_final_chain(
         &self,
-        final_chain: &BridgeFinalChain,
         canonical_vote_rlp: &[u8],
         validation_request: PbftVoteAdmissionValidationRequest,
         flags: PbftVoteEventFactFlags,
@@ -299,7 +300,7 @@ impl BridgeApp {
             .map(slashing_submitter_identity_to_domain)
             .collect::<Vec<_>>();
         let result = self.0.admit_and_persist_verified_vote_with_final_chain(
-            &final_chain.0,
+            self.0.final_chain_for_bridge(),
             canonical_vote_rlp,
             request,
             flags_to_domain(flags),
@@ -357,7 +358,6 @@ impl BridgeApp {
     /// fail-closed statuses; the FinalChain handle is never retained.
     pub fn pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
         &self,
-        final_chain: &BridgeFinalChain,
         fact: FfiPbftTwoTPlusOneThresholdFact,
     ) -> Result<FfiPbftTwoTPlusOneThresholdPlan, anyhow::Error> {
         let request = match threshold_fact_from_request(&fact) {
@@ -366,7 +366,10 @@ impl BridgeApp {
         };
         let plan = self
             .0
-            .verified_votes_two_t_plus_one_threshold_with_final_chain(&final_chain.0, request)?;
+            .verified_votes_two_t_plus_one_threshold_with_final_chain(
+                self.0.final_chain_for_bridge(),
+                request,
+            )?;
         Ok(threshold_plan_to_ffi(plan))
     }
 }

@@ -5,7 +5,9 @@ use crate::ffi::BridgeFinalChain;
 use crate::ffi::BridgeFinalChainExecutionSession;
 use crate::ffi::BridgeStorage;
 use crate::pbft_manager::pbft_manager_runtime_begin_proposal_session_with_hash;
-use rustaxa_consensus::{Account, FinalChain};
+use rustaxa_consensus::Account;
+use rustaxa_consensus::ConsensusFinalChainConfig;
+use rustaxa_consensus::FinalChain;
 use rustaxa_types::FinalChainNonce;
 
 fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
@@ -480,7 +482,7 @@ pub(crate) fn create_final_chain(
     )
 }
 
-fn genesis_dpos_config_from_ffi(
+pub(crate) fn genesis_dpos_config_from_ffi(
     config: rustaxa_ffi::GenesisDposConfig,
 ) -> Result<rustaxa_consensus::GenesisDposConfig, anyhow::Error> {
     let amount = |bytes: &[u8]| {
@@ -506,7 +508,7 @@ fn genesis_dpos_config_from_ffi(
 /// CXX retains byte-vector carriers for compatibility. Rust accepts every
 /// unsigned big-endian value through 32 bytes and rejects wider inputs before
 /// constructing or publishing a FinalChain instance.
-fn rewards_token_amount_from_ffi(
+pub(crate) fn rewards_token_amount_from_ffi(
     bytes: &[u8],
     field: &'static str,
 ) -> Result<rustaxa_types::DposTokenAmount, anyhow::Error> {
@@ -519,7 +521,7 @@ fn rewards_token_amount_from_ffi(
 /// Vector order and duplicate entries are consensus-significant and are
 /// retained exactly. Amounts wider than `U256` fail construction before a
 /// FinalChain instance is published.
-fn redelegation_corrections_from_ffi(
+pub(crate) fn redelegation_corrections_from_ffi(
     corrections: Vec<rustaxa_ffi::RedelegationCorrection>,
 ) -> Result<Vec<rustaxa_consensus::RedelegationCorrection>, anyhow::Error> {
     corrections
@@ -538,6 +540,99 @@ fn redelegation_corrections_from_ffi(
             })
         })
         .collect()
+}
+
+pub(crate) fn consensus_final_chain_config_from_ffi(
+    block_gas_limit: u64,
+    genesis_timestamp: u64,
+    genesis_accounts: Vec<rustaxa_ffi::GenesisAccount>,
+    genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
+    genesis_dpos_config: rustaxa_ffi::GenesisDposConfig,
+    rewards_config: rustaxa_ffi::FinalChainRewardsConfig,
+) -> Result<ConsensusFinalChainConfig, anyhow::Error> {
+    let genesis_accounts = genesis_accounts
+        .into_iter()
+        .map(genesis_account_from_ffi)
+        .collect::<Result<Vec<_>, _>>()?;
+    let genesis_validators = genesis_validators
+        .into_iter()
+        .map(|validator| {
+            let rustaxa_ffi::GenesisValidator {
+                address,
+                owner,
+                vrf_key,
+                commission,
+                description,
+                endpoint,
+                total_stake,
+                delegations,
+            } = validator;
+            rustaxa_consensus::GenesisValidator {
+                address,
+                vrf_key,
+                total_stake,
+                delegations: delegations
+                    .into_iter()
+                    .map(|delegation| (delegation.delegator, delegation.stake))
+                    .collect(),
+                metadata: rustaxa_consensus::GenesisValidatorMetadata {
+                    owner,
+                    commission,
+                    description,
+                    endpoint,
+                },
+            }
+        })
+        .collect();
+    Ok(ConsensusFinalChainConfig {
+        block_gas_limit: block_gas_limit.into(),
+        genesis_timestamp,
+        genesis_accounts,
+        genesis_validators,
+        genesis_dpos: genesis_dpos_config_from_ffi(genesis_dpos_config)?,
+        rewards: rustaxa_consensus::FinalChainRewardsConfig {
+            committee_size: rewards_config.committee_size,
+            magnolia_period: rewards_config.magnolia_period.into(),
+            phalaenopsis_period: rewards_config.phalaenopsis_period.into(),
+            aspen_part_one_period: rewards_config.aspen_part_one_period.into(),
+            fix_claim_all_block_num: rewards_config.fix_claim_all_block_num.into(),
+            fix_redelegate_block_num: rewards_config.fix_redelegate_block_num.into(),
+            aspen_part_two_period: rewards_config.aspen_part_two_period.into(),
+            max_block_author_reward_percent: rewards_config.max_block_author_reward_percent,
+            dag_proposers_reward_percent: rewards_config.dag_proposers_reward_percent,
+            yield_percentage: rewards_config.yield_percentage,
+            dpos_blocks_per_year: rewards_config.dpos_blocks_per_year,
+            dpos_delegation_locking_period: rewards_config.dpos_delegation_locking_period,
+            cornus_period: rewards_config.cornus_period.into(),
+            cornus_delegation_locking_period: rewards_config.cornus_delegation_locking_period,
+            genesis_balance_sum: if rewards_config.genesis_balance_sum.is_empty() {
+                None
+            } else {
+                Some(rewards_token_amount_from_ffi(
+                    &rewards_config.genesis_balance_sum,
+                    "genesis_balance_sum",
+                )?)
+            },
+            aspen_max_supply: rewards_token_amount_from_ffi(
+                &rewards_config.aspen_max_supply,
+                "aspen_max_supply",
+            )?,
+            aspen_generated_rewards: rewards_token_amount_from_ffi(
+                &rewards_config.aspen_generated_rewards,
+                "aspen_generated_rewards",
+            )?,
+            cacti_period: rewards_config.cacti_period.into(),
+            cacti_delegation_locking_period: rewards_config.cacti_delegation_locking_period,
+            magnolia_jail_time: rewards_config.magnolia_jail_time,
+            cacti_jail_time: rewards_config.cacti_jail_time,
+            rewards_distribution_frequency: rewards_config
+                .frequency_rules
+                .into_iter()
+                .map(|rule| (rule.from_period.into(), rule.frequency))
+                .collect(),
+            redelegations: redelegation_corrections_from_ffi(rewards_config.redelegations)?,
+        },
+    })
 }
 
 pub fn create_final_chain_with_rewards_config(
@@ -659,11 +754,11 @@ impl BridgeConsensusExecutionApi {
     /// native execution transcript.
     pub fn consensus_execution_commit_session(
         &self,
-        final_chain: &BridgeFinalChain,
+        runtime: &crate::ffi::BridgeApp,
         session: Box<BridgeFinalChainExecutionSession>,
     ) -> Result<rustaxa_ffi::FinalChainExecutionCommitReport, anyhow::Error> {
         self.0
-            .commit_session(&final_chain.0, session.state)
+            .commit_session(runtime.0.final_chain_for_bridge(), session.state)
             .map(commit_report_to_ffi)
     }
 
@@ -700,12 +795,12 @@ impl BridgeConsensusExecutionApi {
     /// publish FinalChain storage.
     pub fn consensus_execution_report_execution_result(
         &self,
-        final_chain: &BridgeFinalChain,
+        runtime: &crate::ffi::BridgeApp,
         session: &mut BridgeFinalChainExecutionSession,
         report: rustaxa_ffi::FinalChainEvmExecutionReport,
     ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
         execution_step_to_ffi(self.0.report_execution_result(
-            &final_chain.0,
+            runtime.0.final_chain_for_bridge(),
             &mut session.state,
             evm_report_from_ffi(report)?,
         ))
@@ -742,13 +837,13 @@ impl BridgeConsensusExecutionApi {
     /// the pending publication marker.
     pub fn consensus_execution_prepare_external_evm_state_commit(
         &self,
-        final_chain: &BridgeFinalChain,
+        runtime: &crate::ffi::BridgeApp,
         session: &mut BridgeFinalChainExecutionSession,
         proposal_period_update: rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate,
     ) -> Result<rustaxa_ffi::FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
         Ok(external_evm_state_commit_intent_to_ffi(
             self.0.prepare_external_evm_state_commit(
-                &final_chain.0,
+                runtime.0.final_chain_for_bridge(),
                 &mut session.state,
                 proposal_period_dag_level_update_from_ffi(proposal_period_update),
             )?,
@@ -758,13 +853,13 @@ impl BridgeConsensusExecutionApi {
     /// Reports the external state DB commit result and returns Rust's publication decision.
     pub fn consensus_execution_report_state_commit_result(
         &self,
-        final_chain: &BridgeFinalChain,
+        runtime: &crate::ffi::BridgeApp,
         session: &mut BridgeFinalChainExecutionSession,
         result: rustaxa_ffi::FinalChainExternalEvmStateCommitResult,
     ) -> Result<rustaxa_ffi::FinalChainExternalEvmCommitDecision, anyhow::Error> {
         Ok(external_evm_commit_decision_to_ffi(
             self.0.report_state_commit_result(
-                &final_chain.0,
+                runtime.0.final_chain_for_bridge(),
                 &mut session.state,
                 external_evm_state_commit_result_from_ffi(result),
             )?,
@@ -774,26 +869,28 @@ impl BridgeConsensusExecutionApi {
     /// Publishes Rust FinalChain storage after a committed external state result.
     pub fn consensus_execution_publish_state_commit(
         &self,
-        final_chain: &BridgeFinalChain,
+        runtime: &crate::ffi::BridgeApp,
         session: &mut BridgeFinalChainExecutionSession,
     ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
         Ok(external_evm_publication_report_to_ffi(
             self.0
-                .publish_state_commit(&final_chain.0, &mut session.state)?,
+                .publish_state_commit(runtime.0.final_chain_for_bridge(), &mut session.state)?,
         ))
     }
 }
 
-impl BridgeFinalChain {
-    pub fn get_last_block_number(self: &BridgeFinalChain) -> Result<u64, anyhow::Error> {
-        self.0.last_block_number()
+impl BridgeApp {
+    pub fn get_last_block_number(self: &BridgeApp) -> Result<u64, anyhow::Error> {
+        let final_chain = self.0.final_chain_for_bridge();
+        final_chain.last_block_number()
     }
 
     pub fn get_block_number(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         hash: &[u8; 32],
     ) -> Result<rustaxa_ffi::FinalChainBlockNumberLookup, anyhow::Error> {
-        Ok(match self.0.block_number(*hash)? {
+        let final_chain = self.0.final_chain_for_bridge();
+        Ok(match final_chain.block_number(*hash)? {
             Some(value) => rustaxa_ffi::FinalChainBlockNumberLookup { found: true, value },
             None => rustaxa_ffi::FinalChainBlockNumberLookup {
                 found: false,
@@ -802,36 +899,40 @@ impl BridgeFinalChain {
         })
     }
 
-    pub fn get_block_hash(self: &BridgeFinalChain, num: u64) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
+    pub fn get_block_hash(self: &BridgeApp, num: u64) -> Result<Vec<u8>, anyhow::Error> {
+        let final_chain = self.0.final_chain_for_bridge();
+        Ok(final_chain
             .block_hash(num.into())
             .map_err(|e| anyhow::anyhow!(e))?
             .unwrap_or_default())
     }
 
-    pub fn get_block_header(self: &BridgeFinalChain, num: u64) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.block_header(num.into())?.unwrap_or_default())
+    pub fn get_block_header(self: &BridgeApp, num: u64) -> Result<Vec<u8>, anyhow::Error> {
+        let final_chain = self.0.final_chain_for_bridge();
+        Ok(final_chain.block_header(num.into())?.unwrap_or_default())
     }
 
     pub fn get_transaction_location(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         hash: &[u8; 32],
     ) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.transaction_location(*hash)?.unwrap_or_default())
+        let final_chain = self.0.final_chain_for_bridge();
+        Ok(final_chain.transaction_location(*hash)?.unwrap_or_default())
     }
 
     pub fn get_transaction_count(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         period: u64,
     ) -> Result<u64, anyhow::Error> {
-        self.0.transaction_count(period.into())
+        let final_chain = self.0.final_chain_for_bridge();
+        final_chain.transaction_count(period.into())
     }
 
     pub fn get_execution_status(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
     ) -> Result<rustaxa_ffi::FinalChainExecutionStatus, anyhow::Error> {
-        let status = self.0.execution_status()?;
+        let final_chain = self.0.final_chain_for_bridge();
+        let status = final_chain.execution_status()?;
         Ok(rustaxa_ffi::FinalChainExecutionStatus {
             executed_dag_block_count: status.executed_dag_block_count,
             executed_transaction_count: status.executed_transaction_count,
@@ -841,23 +942,25 @@ impl BridgeFinalChain {
     /// Returns finalized block numbers whose Rust FinalChain bloom index
     /// contains the supplied query bloom over the inclusive block range.
     pub fn get_blocks_with_bloom(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         bloom: &[u8; 256],
         from: u64,
         to: u64,
     ) -> Result<Vec<u64>, anyhow::Error> {
-        self.0
+        let final_chain = self.0.final_chain_for_bridge();
+        final_chain
             .with_block_bloom(&(*bloom).into(), from.into(), to.into())
             .map(|blocks| blocks.into_iter().map(Into::into).collect())
     }
 
     pub fn recover_external_evm_pending_publication(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         committed_period: u64,
         committed_state_root: &[u8; 32],
     ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
+        let final_chain = self.0.final_chain_for_bridge();
         Ok(external_evm_publication_report_to_ffi(
-            self.0.recover_external_evm_pending_publication(
+            final_chain.recover_external_evm_pending_publication(
                 committed_period,
                 *committed_state_root,
             )?,
@@ -865,52 +968,57 @@ impl BridgeFinalChain {
     }
 
     pub fn get_account(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         address: &[u8; 20],
     ) -> Result<rustaxa_ffi::AccountLookup, anyhow::Error> {
-        Ok(account_to_lookup(self.0.account(*address)?))
+        let final_chain = self.0.final_chain_for_bridge();
+        Ok(account_to_lookup(final_chain.account(*address)?))
     }
 
     pub fn get_account_at_block(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         block_number: u64,
         address: &[u8; 20],
     ) -> Result<rustaxa_ffi::AccountLookup, anyhow::Error> {
+        let final_chain = self.0.final_chain_for_bridge();
         Ok(account_to_lookup(
-            self.0.account_at_block(block_number.into(), *address)?,
+            final_chain.account_at_block(block_number.into(), *address)?,
         ))
     }
 
     pub fn get_dpos_eligible_vote_count(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         block_number: u64,
         address: &[u8; 20],
     ) -> Result<u64, anyhow::Error> {
-        self.0
+        let final_chain = self.0.final_chain_for_bridge();
+        final_chain
             .dpos_eligible_vote_count(block_number.into(), *address)
     }
 
     pub fn get_dpos_eligible_total_vote_count(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         block_number: u64,
     ) -> Result<u64, anyhow::Error> {
-        self.0.dpos_eligible_total_vote_count(block_number.into())
+        let final_chain = self.0.final_chain_for_bridge();
+        final_chain.dpos_eligible_total_vote_count(block_number.into())
     }
 
     pub fn get_dpos_is_eligible(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         block_number: u64,
         address: &[u8; 20],
     ) -> Result<bool, anyhow::Error> {
-        self.0.dpos_is_eligible(block_number.into(), *address)
+        let final_chain = self.0.final_chain_for_bridge();
+        final_chain.dpos_is_eligible(block_number.into(), *address)
     }
 
     pub fn get_dpos_validators_total_stakes(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         block_number: u64,
     ) -> Result<Vec<rustaxa_ffi::DposValidatorStake>, anyhow::Error> {
-        Ok(self
-            .0
+        let final_chain = self.0.final_chain_for_bridge();
+        Ok(final_chain
             .dpos_validators_total_stakes(block_number.into())?
             .into_iter()
             .map(|stake| rustaxa_ffi::DposValidatorStake {
@@ -921,31 +1029,35 @@ impl BridgeFinalChain {
     }
 
     pub fn get_dpos_total_amount_delegated(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         block_number: u64,
     ) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.dpos_total_amount_delegated(block_number.into())
+        let final_chain = self.0.final_chain_for_bridge();
+        final_chain.dpos_total_amount_delegated(block_number.into())
     }
 
     pub fn get_dpos_yield(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         block_number: u64,
     ) -> Result<u64, anyhow::Error> {
-        self.0.dpos_yield(block_number.into())
+        let final_chain = self.0.final_chain_for_bridge();
+        final_chain.dpos_yield(block_number.into())
     }
 
     pub fn get_dpos_total_supply(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         block_number: u64,
     ) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.dpos_total_supply(block_number.into())
+        let final_chain = self.0.final_chain_for_bridge();
+        final_chain.dpos_total_supply(block_number.into())
     }
 
     pub fn call(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         request: rustaxa_ffi::FinalChainCall,
     ) -> Result<rustaxa_ffi::FinalChainCallOutcome, anyhow::Error> {
-        let outcome = self.0.call(final_chain_call_request_from_ffi(request)?)?;
+        let final_chain = self.0.final_chain_for_bridge();
+        let outcome = final_chain.call(final_chain_call_request_from_ffi(request)?)?;
         Ok(rustaxa_ffi::FinalChainCallOutcome {
             code_retval: outcome.code_retval,
             logs: outcome
@@ -968,11 +1080,11 @@ impl BridgeFinalChain {
     }
 
     pub fn get_transaction_rlps(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         period: u64,
     ) -> Result<Vec<rustaxa_ffi::TxRlp>, anyhow::Error> {
-        Ok(self
-            .0
+        let final_chain = self.0.final_chain_for_bridge();
+        Ok(final_chain
             .transaction_rlps(period.into())?
             .into_iter()
             .map(|data| rustaxa_ffi::TxRlp { data })
@@ -980,12 +1092,12 @@ impl BridgeFinalChain {
     }
 
     pub fn get_transaction_receipt(
-        self: &BridgeFinalChain,
+        self: &BridgeApp,
         period: u64,
         position: u64,
     ) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
+        let final_chain = self.0.final_chain_for_bridge();
+        Ok(final_chain
             .transaction_receipt_rlp(
                 period.into(),
                 transaction_receipt_position_from_ffi(position)?,
@@ -1003,10 +1115,12 @@ impl BridgeApp {
     /// return an error and leave the previous cursor unchanged.
     pub fn pbft_service_begin_proposal_session_with_final_chain(
         &self,
-        final_chain: &BridgeFinalChain,
         fact: rustaxa_ffi::PbftManagerProposalInitialFact,
     ) -> Result<(), anyhow::Error> {
-        let final_chain_hash = final_chain.0.pbft_final_chain_hash(fact.period)?;
+        let final_chain_hash = self
+            .0
+            .final_chain_for_bridge()
+            .pbft_final_chain_hash(fact.period)?;
         pbft_manager_runtime_begin_proposal_session_with_hash(self, fact, final_chain_hash);
         Ok(())
     }
