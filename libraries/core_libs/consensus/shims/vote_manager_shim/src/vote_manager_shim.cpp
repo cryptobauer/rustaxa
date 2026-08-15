@@ -10,8 +10,8 @@
 #include <utility>
 
 #include "common/constants.hpp"
+#include "consensus/consensus_application.hpp"
 #include "pbft/pbft_manager.hpp"
-#include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
 #include "transaction/transaction.hpp"
@@ -451,11 +451,10 @@ std::shared_ptr<PbftVote> materializeOwnVoteRecord(const rustaxa::PbftVoteStorag
 }  // namespace
 
 VoteManager::VoteManager(const FullNodeConfig& config, SharedConsensusApplication pbft_service,
-                         std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
+                         std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<TransactionManager> trx_manager)
     : kPbftConfig(config.genesis.pbft),
       kConfig(config),
-      pbft_chain_(std::move(pbft_chain)),
       final_chain_(std::move(final_chain)),
       trx_manager_(std::move(trx_manager)),
       pbft_service_(std::move(pbft_service)) {
@@ -530,8 +529,8 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
   }
 
   const auto runtime_result = pbft_service_->service().pbft_service_verified_votes_admit_and_persist_with_final_chain(
-      toBridgeByteSlice(canonical_vote_rlp), std::move(admission_request),
-      makeVoteEventFactFlags(), progress_context, makeSlashingSubmitterFacts(kConfig, final_chain_));
+      toBridgeByteSlice(canonical_vote_rlp), std::move(admission_request), makeVoteEventFactFlags(), progress_context,
+      makeSlashingSubmitterFacts(kConfig, final_chain_));
   if (!runtime_result.has_validation) {
     LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()
                  << " without runtime validation details, status: " << static_cast<uint32_t>(runtime_result.status)
@@ -1033,8 +1032,7 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
 
   try {
     validation_result = pbft_service_->service().pbft_service_verified_votes_validate_with_final_chain(
-        toBridgeByteSlice(canonical_vote_rlp), strict, kPbftConfig.committee_size,
-        kPbftConfig.number_of_proposers);
+        toBridgeByteSlice(canonical_vote_rlp), strict, kPbftConfig.committee_size, kPbftConfig.number_of_proposers);
     validation = validation_result.validation;
 
     if (static_cast<std::string>(validation.error_code) == "PBFT_CANONICAL_VOTE_MALFORMED_RLP") {
@@ -1137,8 +1135,8 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
 
   rustaxa::PbftTwoTPlusOneThresholdPlan threshold_plan{};
   try {
-    threshold_plan = pbft_service_->service().pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
-        threshold_fact);
+    threshold_plan =
+        pbft_service_->service().pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(threshold_fact);
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Err msg: " << e.what()
                  << ". Rust composed threshold lookup failed";
@@ -1168,8 +1166,8 @@ bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound p
                                              const WalletConfig& wallet) const {
   try {
     auto sortition_request = makeProposerSortitionRequest(pbft_period, pbft_round, wallet, kPbftConfig);
-    const auto sortition_result = pbft_service_->service().pbft_service_generate_and_validate_proposer_sortition(
-        std::move(sortition_request));
+    const auto sortition_result =
+        pbft_service_->service().pbft_service_generate_and_validate_proposer_sortition(std::move(sortition_request));
     if (sortition_result.accepted) {
       return true;
     }

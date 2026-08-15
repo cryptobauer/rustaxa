@@ -28,7 +28,7 @@ namespace taraxa::net {
 namespace {
 LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBase> &node) {
   LiveStatusSnapshot snapshot;
-  const auto chain_size = node->getPbftChain()->getPbftChainSize();
+  const auto chain_size = node->getPbftProgress().finalized_period;
   const auto dpos_total_votes = node->getPbftManager()->getCurrentDposTotalVotesCount();
   const auto dpos_node_votes = node->getPbftManager()->getCurrentNodeVotesCount();
   const auto dpos_quorum = node->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote);

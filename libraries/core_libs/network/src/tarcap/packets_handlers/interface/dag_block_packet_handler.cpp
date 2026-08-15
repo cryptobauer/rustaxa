@@ -5,7 +5,7 @@ namespace taraxa::network::tarcap {
 IDagBlockPacketHandler::IDagBlockPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                                std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                                std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-                                               std::shared_ptr<PbftChain> pbft_chain,
+                                               net::ConsensusQueryClient pbft_chain,
                                                std::shared_ptr<PbftManager> pbft_mgr,
                                                std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE

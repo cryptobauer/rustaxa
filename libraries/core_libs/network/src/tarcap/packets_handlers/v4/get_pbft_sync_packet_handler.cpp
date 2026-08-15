@@ -1,8 +1,8 @@
 #include "network/tarcap/packets_handlers/v4/get_pbft_sync_packet_handler.hpp"
 
+#include "network/consensus_query.hpp"
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
-#include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "vote/pbft_vote.hpp"
 #include "vote/votes_bundle_rlp.hpp"
@@ -18,7 +18,7 @@ void GetPbftSyncPacketHandler::process(const threadpool::PacketData& packet_data
   LOG(log_tr_) << "Received GetPbftSyncPacket Block";
 
   // Here need PBFT chain size, not synced period since synced blocks has not verified yet.
-  const size_t my_chain_size = pbft_chain_->getPbftChainSize();
+  const size_t my_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
   if (packet.height_to_sync > my_chain_size) {
     // Node update peers PBFT chain size in status packet. Should not request syncing period bigger than pbft chain size
     std::ostringstream err_msg;

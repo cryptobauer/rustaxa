@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/packet_handler.hpp"
+#include "network/consensus_query.hpp"
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 
 namespace taraxa {
@@ -21,7 +22,7 @@ class GetPbftSyncPacketHandler : public PacketHandler {
   GetPbftSyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                            std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                            std::shared_ptr<PbftSyncingState> pbft_syncing_state, std::shared_ptr<PbftManager> pbft_mgr,
-                           std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
+                           net::ConsensusQueryClient pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
                            std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync egress.
 #endif
@@ -40,7 +41,7 @@ class GetPbftSyncPacketHandler : public PacketHandler {
 
   std::shared_ptr<PbftSyncingState> pbft_syncing_state_;
   std::shared_ptr<PbftManager> pbft_mgr_;
-  std::shared_ptr<PbftChain> pbft_chain_;
+  net::ConsensusQueryClient pbft_chain_;
   std::shared_ptr<VoteManager> vote_mgr_;
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<DbStorage> db_;  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync egress storage.

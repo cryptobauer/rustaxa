@@ -49,7 +49,7 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &input) {
 ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                              std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                              std::shared_ptr<PbftManager> pbft_mgr,
-                                             std::shared_ptr<PbftChain> pbft_chain,
+                                             net::ConsensusQueryClient pbft_chain,
                                              std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
                                              std::shared_ptr<SlashingManager> slashing_manager,
@@ -429,7 +429,8 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
 
             std::optional<VotePacket::OptionalData> optional_packet_data;
             if (gossip_block && !peer.second->isPbftBlockKnown(gossip_vote->getBlockHash())) {
-              optional_packet_data = VotePacket::OptionalData{gossip_block, pbft_chain_->getPbftChainSize()};
+              optional_packet_data =
+                  VotePacket::OptionalData{gossip_block, net::consensusPbftProgress(pbft_chain_).finalized_period};
             }
 
             if (sealAndSend(peer.first, SubprotocolPacketType::kVotePacket,

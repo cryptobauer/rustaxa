@@ -1,9 +1,9 @@
 #include "network/tarcap/packets_handlers/latest/status_packet_handler.hpp"
 
 #include "config/version.hpp"
+#include "network/consensus_query.hpp"
 #include "network/tarcap/packets/latest/status_packet.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
-#include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
 #ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
@@ -28,7 +28,7 @@ constexpr uint8_t kNetworkStatusPlanStatusLightNodeHistoryUnavailable = 8;
 StatusPacketHandler::StatusPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                          std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                          std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-                                         std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<PbftManager> pbft_mgr,
+                                         net::ConsensusQueryClient pbft_chain, std::shared_ptr<PbftManager> pbft_mgr,
                                          std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE
                                          std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:

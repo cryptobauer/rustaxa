@@ -9,9 +9,9 @@
 
 #include "common/event.hpp"
 #include "common/types.hpp"
+#include "consensus/consensus_application.hpp"
 #include "final_chain/data.hpp"
 #include "logger/logger.hpp"
-#include "pbft/pbft_service.hpp"
 #include "pillar_chain/pillar_block.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pillar_vote.hpp"

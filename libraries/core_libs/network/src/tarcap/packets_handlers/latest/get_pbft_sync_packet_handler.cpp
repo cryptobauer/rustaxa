@@ -2,11 +2,11 @@
 
 #include <cassert>
 
+#include "network/consensus_query.hpp"
 #include "network/tarcap/packets/latest/pbft_blocks_bundle_packet.hpp"
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/pbft_blocks_bundle_packet_handler.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
-#include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
 #ifndef RUSTAXA_ENABLE
 #include "storage/storage.hpp"
@@ -20,7 +20,7 @@ namespace taraxa::network::tarcap {
 GetPbftSyncPacketHandler::GetPbftSyncPacketHandler(
     const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-    std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
+    std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
     std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
                                     // legacy sync egress.
@@ -49,7 +49,7 @@ void GetPbftSyncPacketHandler::process(const threadpool::PacketData &packet_data
   LOG(log_tr_) << "Received GetPbftSyncPacket Block";
 
   // Here need PBFT chain size, not synced period since synced blocks has not verified yet.
-  const size_t my_chain_size = pbft_chain_->getPbftChainSize();
+  const size_t my_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
   if (packet.height_to_sync > my_chain_size) {
     // Node update peers PBFT chain size in status packet. Should not request syncing period start bigger than pbft
     // chain size

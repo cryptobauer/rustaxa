@@ -174,8 +174,8 @@ void wait_for_balances(const std::vector<std::shared_ptr<AppBase>>& nodes, const
       }
       // wait for the same chain size on all nodes
       for (const auto& n : nodes) {
-        WAIT_EXPECT_EQ(ctx, node->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks(),
-                       n->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks());
+        WAIT_EXPECT_EQ(ctx, node->getPbftProgress().non_empty_finalized_periods,
+                       n->getPbftProgress().non_empty_finalized_periods);
       }
     }
   });

@@ -33,6 +33,7 @@ fn period_lambda_to_ffi(lambda: rustaxa_consensus::QueryPeriodLambda) -> rustaxa
 fn chain_stats_view_to_ffi(view: rustaxa_consensus::ChainStatsView) -> rustaxa_ffi::ChainStatsView {
     rustaxa_ffi::ChainStatsView {
         pbft_period: view.pbft_period,
+        non_empty_pbft_periods: view.non_empty_pbft_periods,
         dag_blocks_count: view.dag_blocks_count,
         transactions_count: view.transactions_count,
         dag_blocks_executed: view.dag_blocks_executed,
@@ -275,11 +276,19 @@ fn transaction_receipt_view_to_ffi(
 /// Creates a stateless public consensus query facade over application-owned storage.
 pub fn create_consensus_query_api(runtime: &BridgeApp) -> Box<BridgeConsensusQueryApi> {
     Box::new(BridgeConsensusQueryApi(
-        rustaxa_consensus::ConsensusQueryApi::new(runtime.0.storage_for_bridge().clone()),
+        runtime.0.consensus_query_api_for_bridge(),
     ))
 }
 
 impl BridgeConsensusQueryApi {
+    /// Returns durable finalized PBFT membership for transport readers.
+    pub fn consensus_query_pbft_sync_block_exists(
+        &self,
+        block_hash: &[u8; 32],
+    ) -> Result<bool, anyhow::Error> {
+        self.0.pbft_sync_block_exists(*block_hash)
+    }
+
     /// Returns the canonical PBFT block hash for a finalized period.
     pub fn consensus_query_pbft_block_hash_by_period(
         &self,
@@ -335,7 +344,7 @@ impl BridgeConsensusQueryApi {
         ))
     }
 
-    /// Returns storage-backed public chain statistics.
+    /// Returns live PBFT progress with persisted public chain statistics.
     pub fn consensus_query_chain_stats(
         &self,
     ) -> Result<rustaxa_ffi::ChainStatsView, anyhow::Error> {
@@ -856,6 +865,46 @@ mod tests {
     }
 
     #[test]
+    fn root_query_projects_live_pbft_progress_and_sync_membership() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rustaxa_bridge_root_pbft_query_{}",
+            std::process::id()
+        ));
+        let application = create_test_consensus_application(
+            temp_dir.to_str().expect("temporary path should be UTF-8"),
+            Vec::new(),
+            0,
+        )
+        .expect("consensus application should initialize");
+        let api = create_consensus_query_api(&application);
+        let block_hash = H256::from_low_u64_be(1);
+
+        application
+            .0
+            .pbft_chain_update(block_hash, H256::from_low_u64_be(2))
+            .expect("live chain update should succeed");
+        application
+            .0
+            .storage_for_bridge()
+            .period()
+            .write_pbft_period(block_hash, 1)
+            .expect("durable PBFT membership should be seeded");
+        let progress = api.consensus_query_chain_stats().unwrap();
+        assert_eq!(progress.pbft_period, 1);
+        assert_eq!(progress.non_empty_pbft_periods, 1);
+        assert!(api
+            .consensus_query_pbft_sync_block_exists(&block_hash.0)
+            .unwrap());
+        assert!(!api
+            .consensus_query_pbft_sync_block_exists(&H256::from_low_u64_be(99).0)
+            .unwrap());
+
+        drop(api);
+        drop(application);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn bridge_consensus_query_api_reads_public_block_view() {
         let temp_dir = std::env::temp_dir().join(format!(
             "rustaxa_bridge_consensus_query_api_{}",
@@ -864,6 +913,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
         let (application, storage) = query_fixture(temp_dir.to_str().expect("utf8 temp path"));
         let api = create_consensus_query_api(&application);
+        for period in 1..=15 {
+            application
+                .0
+                .pbft_chain_update(
+                    H256::from_low_u64_be(period),
+                    H256::from_low_u64_be(period + 100),
+                )
+                .expect("live PBFT progress should advance");
+        }
         let block_hash = H256::from_low_u64_be(88);
         let pbft_block_rlp = vec![0xC2, 0x03, 0x04];
         let query_bloom = {
@@ -1030,6 +1088,7 @@ mod tests {
             .is_err());
         let chain_stats = api.consensus_query_chain_stats().unwrap();
         assert_eq!(chain_stats.pbft_period, 15);
+        assert_eq!(chain_stats.non_empty_pbft_periods, 15);
         assert_eq!(chain_stats.dag_blocks_count, 55);
         assert_eq!(chain_stats.transactions_count, 89);
         assert_eq!(chain_stats.dag_blocks_executed, 21);

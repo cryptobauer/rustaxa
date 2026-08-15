@@ -18,7 +18,7 @@ constexpr uint8_t kNetworkStatusPlanStatusSyncNotNeeded = 3;
 ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                        std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                        std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-                                       std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<PbftManager> pbft_mgr,
+                                       net::ConsensusQueryClient pbft_chain, std::shared_ptr<PbftManager> pbft_mgr,
                                        std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE
                                        std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
@@ -48,7 +48,7 @@ void ISyncPacketHandler::startSyncingPbft() {
   rustaxa::NetworkPbftSyncStartFacts facts{};
   facts.local_pbft_syncing = false;
   facts.local_pbft_synced_period = pbft_mgr_->pbftSyncingPeriod();
-  facts.local_pbft_chain_size = pbft_chain_->getPbftChainSize();
+  facts.local_pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
   for (const auto& peer_entry : peers_state_->getAllPeers()) {
     rustaxa::NetworkPbftSyncPeerCandidate candidate{};
     candidate.peer_id = peer_entry.first.asArray();
@@ -145,7 +145,7 @@ void ISyncPacketHandler::startSyncingPbft() {
     }
   } else {
     LOG(this->log_nf_) << "Restarting syncing PBFT not needed since our pbft chain size: " << pbft_sync_period << "("
-                       << pbft_chain_->getPbftChainSize() << ")"
+                       << net::consensusPbftProgress(pbft_chain_).finalized_period << ")"
                        << " is greater or equal than max node pbft chain size:" << peer->pbft_chain_size_;
 #ifdef RUSTAXA_ENABLE
     pbft_mgr_->setPbftSyncSnapshotCreationEnabled(true);
@@ -195,7 +195,7 @@ bool ISyncPacketHandler::sendStatus(const dev::p2p::NodeID& node_id, bool initia
                << ", node version " << TARAXA_VERSION;
 
   auto dag_max_level = dag_mgr_->getMaxLevel();
-  auto pbft_chain_size = pbft_chain_->getPbftChainSize();
+  auto pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
   const auto pbft_round = pbft_mgr_->getPbftRound();
 
 #ifdef RUSTAXA_ENABLE

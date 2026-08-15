@@ -38,8 +38,8 @@
 #ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/v4/get_pbft_sync_packet_handler.hpp"
 #endif
+#include "network/consensus_query.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
-#include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "transaction/transaction_manager.hpp"
@@ -67,7 +67,7 @@ TaraxaCapability::TaraxaCapability(
 #ifndef RUSTAXA_ENABLE
     std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
-    std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
+    std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
     std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
 #ifndef RUSTAXA_ENABLE
     std::shared_ptr<SlashingManager> slashing_manager,
@@ -309,7 +309,7 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
 #ifndef RUSTAXA_ENABLE
        const std::shared_ptr<DbStorage> &db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
-       const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
+       const std::shared_ptr<PbftManager> &pbft_mgr, const net::ConsensusQueryClient &pbft_chain,
        const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
        const std::shared_ptr<TransactionManager> &trx_mgr,
 #ifndef RUSTAXA_ENABLE
@@ -410,7 +410,7 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
 #ifndef RUSTAXA_ENABLE
        const std::shared_ptr<DbStorage> &db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
-       const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
+       const std::shared_ptr<PbftManager> &pbft_mgr, const net::ConsensusQueryClient &pbft_chain,
        const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
        const std::shared_ptr<TransactionManager> &trx_mgr,
 #ifndef RUSTAXA_ENABLE

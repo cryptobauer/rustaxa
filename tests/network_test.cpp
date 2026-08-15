@@ -16,8 +16,8 @@
 #include "dag/dag_block_proposer.hpp"
 #include "logger/logger.hpp"
 #ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
 #include "network/consensus_network_api.hpp"
-#include "pbft/pbft_service.hpp"
 #endif
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/dag_block_packet_handler.hpp"
@@ -151,8 +151,8 @@ TEST_F(NetworkTest, transfer_lot_of_blocks) {
       dag_mgr1->addDagBlock(dag_blocks[i], {trxs[i]});
   }
   wait({1s, 200ms}, [&](auto& ctx) { WAIT_EXPECT_NE(ctx, dag_mgr1->getDagBlock(block_hash), nullptr) });
-  const auto node1_period = node1->getPbftChain()->getPbftChainSize();
-  const auto node2_period = node2->getPbftChain()->getPbftChainSize();
+  const auto node1_period = node1->getPbftProgress().finalized_period;
+  const auto node2_period = node2->getPbftProgress().finalized_period;
   std::cout << "node1 period " << node1_period << ", node2 period " << node2_period << std::endl;
   nw2->getSpecificHandler<network::tarcap::IDagBlockPacketHandler>(network::SubprotocolPacketType::kDagBlockPacket)
       ->requestDagBlocks(nw2->getPeer(nw1->getNodeId()));
@@ -214,6 +214,7 @@ TEST_F(NetworkTest, propagate_block) {
   });
 }
 
+#ifndef RUSTAXA_ENABLE
 TEST_F(NetworkTest, DISABLED_update_peer_chainsize) {
   auto node_cfgs = make_node_cfgs(2, 1, 5);
   auto nodes = launch_nodes(node_cfgs);
@@ -253,6 +254,7 @@ TEST_F(NetworkTest, DISABLED_update_peer_chainsize) {
   EXPECT_HAPPENS({5s, 100ms},
                  [&](auto& ctx) { WAIT_EXPECT_EQ(ctx, nw2->getPeer(node1_id)->pbft_chain_size_, expected_chain_size) });
 }
+#endif
 
 TEST_F(NetworkTest, malicious_peers) {
   FullNodeConfig conf;
@@ -328,16 +330,14 @@ TEST_F(NetworkTest, sync_large_pbft_block) {
     nodes[0]->getTransactionManager()->insertTransaction(signed_trxs[i]);
   }
 
-  const auto node1_pbft_chain = nodes[0]->getPbftChain();
   nodes[0]->getPbftManager()->start();
-  EXPECT_HAPPENS({30s, 100ms}, [&](auto& ctx) {
-    WAIT_EXPECT_GT(ctx, node1_pbft_chain->getPbftChainSizeExcludingEmptyPbftBlocks(), 0)
-  });
+  EXPECT_HAPPENS({30s, 100ms},
+                 [&](auto& ctx) { WAIT_EXPECT_GT(ctx, nodes[0]->getPbftProgress().non_empty_finalized_periods, 0) });
   nodes[0]->getPbftManager()->stop();
 
   // Verify that a block over MAX_PACKET_SIZE is created
   auto total_size = 0;
-  auto non_empty_last_period = node1_pbft_chain->getPbftChainSize();
+  auto non_empty_last_period = nodes[0]->getPbftProgress().finalized_period;
   while (non_empty_last_period > 0) {
     auto pbft_block = nodes[0]->getDB()->getPbftBlock(non_empty_last_period);
     if (!pbft_block.has_value()) {
@@ -362,11 +362,9 @@ TEST_F(NetworkTest, sync_large_pbft_block) {
 
   // Launch node2, node2 own 0 balance, could not vote
   auto nodes2 = launch_nodes({node_cfgs[1]});
-  const auto node2_pbft_chain = nodes2[0]->getPbftChain();
-
   // verify that the large pbft block is synced
   EXPECT_HAPPENS({100s, 100ms}, [&](auto& ctx) {
-    WAIT_EXPECT_EQ(ctx, node2_pbft_chain->getPbftChainSize(), node1_pbft_chain->getPbftChainSize())
+    WAIT_EXPECT_EQ(ctx, nodes2[0]->getPbftProgress().finalized_period, nodes[0]->getPbftProgress().finalized_period)
   });
 
   auto pbft_blocks1 = nodes[0]->getDB()->getPbftBlock(non_empty_last_period);
@@ -538,6 +536,33 @@ TEST_F(NetworkTest, node_sync) {
 // Test creates a PBFT chain on one node and verifies
 // that the second node syncs with it and that the resulting
 // chain on the other end is the same
+#ifdef RUSTAXA_ENABLE
+TEST_F(NetworkTest, rust_mode_pbft_sync_via_query_client) {
+  auto node_cfgs = make_node_cfgs(2, 1, 20);
+  auto node1 = create_nodes({node_cfgs[0]}, true /*start*/).front();
+
+  EXPECT_HAPPENS({30s, 100ms},
+                 [&](auto& ctx) { WAIT_EXPECT_GE(ctx, node1->getPbftProgress().finalized_period, PbftPeriod{2}) });
+  node1->getPbftManager()->stop();
+  const auto expected_period = node1->getPbftProgress().finalized_period;
+  const auto node1_query = net::createConsensusQueryApi(node1->getDB());
+  ASSERT_TRUE(node1_query);
+  const auto expected_block = (*node1_query)->consensus_query_pbft_block_hash_by_period(expected_period);
+  ASSERT_TRUE(expected_block.found);
+
+  auto node2 = create_nodes({node_cfgs[1]}, true /*start*/).front();
+  EXPECT_TRUE(wait_connect({node1, node2}));
+  EXPECT_HAPPENS({45s, 100ms},
+                 [&](auto& ctx) { WAIT_EXPECT_EQ(ctx, node2->getPbftProgress().finalized_period, expected_period) });
+  const auto node2_query = net::createConsensusQueryApi(node2->getDB());
+  ASSERT_TRUE(node2_query);
+  const auto synced_block = (*node2_query)->consensus_query_pbft_block_hash_by_period(expected_period);
+  ASSERT_TRUE(synced_block.found);
+  EXPECT_EQ(synced_block.hash, expected_block.hash);
+}
+#endif
+
+#ifndef RUSTAXA_ENABLE
 TEST_F(NetworkTest, node_pbft_sync) {
   auto node_cfgs = make_node_cfgs(2, 1, 20);
   auto node1 = create_nodes({node_cfgs[0]}, true /*start*/).front();
@@ -607,7 +632,7 @@ TEST_F(NetworkTest, node_pbft_sync) {
   }
 
   uint64_t expect_pbft_chain_size = 1;
-  EXPECT_EQ(node1->getPbftChain()->getPbftChainSize(), expect_pbft_chain_size);
+  EXPECT_EQ(node1->getPbftProgress().finalized_period, expect_pbft_chain_size);
 
   // generate second PBFT block sample
   prev_block_hash = pbft_block1.getBlockHash();
@@ -668,14 +693,14 @@ TEST_F(NetworkTest, node_pbft_sync) {
   }
 
   expect_pbft_chain_size = 2;
-  EXPECT_EQ(node1->getPbftChain()->getPbftChainSize(), expect_pbft_chain_size);
+  EXPECT_EQ(node1->getPbftProgress().finalized_period, expect_pbft_chain_size);
 
   auto node2 = create_nodes({node_cfgs[1]}, true /*start*/).front();
   EXPECT_TRUE(wait_connect({node1, node2}));
 
   std::cout << "Waiting Sync for max 2 minutes..." << std::endl;
   EXPECT_HAPPENS({2min, 100ms}, [&](auto& ctx) {
-    WAIT_EXPECT_EQ(ctx, node2->getPbftChain()->getPbftChainSize(), expect_pbft_chain_size)
+    WAIT_EXPECT_EQ(ctx, node2->getPbftProgress().finalized_period, expect_pbft_chain_size)
   });
   std::shared_ptr<PbftChain> pbft_chain2 = node2->getPbftChain();
   blk_hash_t second_pbft_block_hash = pbft_chain2->getLastPbftBlockHash();
@@ -743,7 +768,7 @@ TEST_F(NetworkTest, node_pbft_sync_without_enough_votes) {
   db1->addPbftHeadToBatch(pbft_chain_head_hash, pbft_chain_head_str, batch);
   db1->commitWriteBatch(batch);
   PbftPeriod expect_pbft_chain_size = 1;
-  EXPECT_EQ(node1->getPbftChain()->getPbftChainSize(), expect_pbft_chain_size);
+  EXPECT_EQ(node1->getPbftProgress().finalized_period, expect_pbft_chain_size);
 
   // generate second PBFT block sample
   prev_block_hash = pbft_block1.getBlockHash();
@@ -793,7 +818,7 @@ TEST_F(NetworkTest, node_pbft_sync_without_enough_votes) {
   db1->commitWriteBatch(batch);
 
   expect_pbft_chain_size = 2;
-  EXPECT_EQ(node1->getPbftChain()->getPbftChainSize(), expect_pbft_chain_size);
+  EXPECT_EQ(node1->getPbftProgress().finalized_period, expect_pbft_chain_size);
 
   auto node2 = create_nodes({node_cfgs[1]}, true /*start*/).front();
   std::cout << "Waiting Sync for max 1 minutes..." << std::endl;
@@ -805,6 +830,7 @@ TEST_F(NetworkTest, node_pbft_sync_without_enough_votes) {
   }
   EXPECT_EQ(node2->getPbftManager()->pbftSyncingPeriod(), expect_pbft_chain_size);
 }
+#endif
 
 // Test PBFT next votes sycning when node is behind of PBFT round with peer
 TEST_F(NetworkTest, pbft_next_votes_sync_in_behind_round) {
@@ -871,10 +897,10 @@ TEST_F(NetworkTest, pbft_next_votes_sync_in_same_round) {
   clearAllVotes({node1, node2});
 
   auto node1_pbft_2t_plus_1 =
-      node1_vote_mgr->getPbftTwoTPlusOne(node1->getPbftChain()->getPbftChainSize(), PbftVoteTypes::next_vote).value();
+      node1_vote_mgr->getPbftTwoTPlusOne(node1->getPbftProgress().finalized_period, PbftVoteTypes::next_vote).value();
   EXPECT_EQ(node1_pbft_2t_plus_1, 1);
   auto node2_pbft_2t_plus_1 =
-      node2_vote_mgr->getPbftTwoTPlusOne(node2->getPbftChain()->getPbftChainSize(), PbftVoteTypes::next_vote).value();
+      node2_vote_mgr->getPbftTwoTPlusOne(node2->getPbftProgress().finalized_period, PbftVoteTypes::next_vote).value();
   EXPECT_EQ(node2_pbft_2t_plus_1, 1);
 
   // Node1 generate 1 next vote voted at kNullBlockHash
@@ -1652,8 +1678,8 @@ TEST_F(NetworkTest, node_full_sync) {
     for (int j = 1; j < numberOfNodes - 1; j++) {
       WAIT_EXPECT_EQ(ctx, nodes[j]->getDagManager()->getNumVerticesInDag().first,
                      nodes[0]->getDagManager()->getNumVerticesInDag().first);
-      WAIT_EXPECT_EQ(ctx, nodes[j]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks(),
-                     nodes[0]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks());
+      WAIT_EXPECT_EQ(ctx, nodes[j]->getPbftProgress().non_empty_finalized_periods,
+                     nodes[0]->getPbftProgress().non_empty_finalized_periods);
     }
   });
 
@@ -1680,8 +1706,8 @@ TEST_F(NetworkTest, node_full_sync) {
       for (int j = 1; j < numberOfNodes - 1; j++) {
         WAIT_EXPECT_EQ(ctx, nodes[j]->getDagManager()->getNumVerticesInDag().first,
                        nodes[0]->getDagManager()->getNumVerticesInDag().first);
-        WAIT_EXPECT_EQ(ctx, nodes[j]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks(),
-                       nodes[0]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks());
+        WAIT_EXPECT_EQ(ctx, nodes[j]->getPbftProgress().non_empty_finalized_periods,
+                       nodes[0]->getPbftProgress().non_empty_finalized_periods);
       }
     });
   }
@@ -1734,8 +1760,8 @@ TEST_F(NetworkTest, node_full_sync) {
       for (int j = 1; j < numberOfNodes; j++) {
         WAIT_EXPECT_EQ(ctx, nodes[j]->getDagManager()->getNumVerticesInDag().first,
                        nodes[0]->getDagManager()->getNumVerticesInDag().first);
-        WAIT_EXPECT_EQ(ctx, nodes[j]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks(),
-                       nodes[0]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks());
+        WAIT_EXPECT_EQ(ctx, nodes[j]->getPbftProgress().non_empty_finalized_periods,
+                       nodes[0]->getPbftProgress().non_empty_finalized_periods);
       }
     });
   }

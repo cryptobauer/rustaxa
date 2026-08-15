@@ -1,10 +1,10 @@
 #include "network/tarcap/packets_handlers/latest/common/ext_syncing_packet_handler.hpp"
 
+#include "network/consensus_query.hpp"
 #include "network/tarcap/packets/latest/get_dag_sync_packet.hpp"
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
-#include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -39,7 +39,7 @@ rustaxa::NetworkPbftSyncPeerCandidate toNetworkSyncPeerCandidate(const std::shar
 ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                                  std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                                  std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-                                                 std::shared_ptr<PbftChain> pbft_chain,
+                                                 net::ConsensusQueryClient pbft_chain,
                                                  std::shared_ptr<PbftManager> pbft_mgr,
                                                  std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE

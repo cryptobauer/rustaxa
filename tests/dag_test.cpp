@@ -24,10 +24,7 @@ TestConsensusApplication testConsensusApplication(const ConsensusStorageFixture&
   return storage.application;
 }
 
-std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage>&,
-                                             const TestConsensusApplication& application) {
-  return std::make_shared<PbftChain>(addr_t(), application);
-}
+std::nullptr_t makeTestPbftChain(const std::shared_ptr<DbStorage>&, const TestConsensusApplication&) { return nullptr; }
 
 std::shared_ptr<TransactionManager> makeTestTransactionManager(const FullNodeConfig& config,
                                                                const std::shared_ptr<DbStorage>& db,
@@ -204,12 +201,11 @@ TEST_F(DagTest, compute_epoch) {
   auto db_ptr = storage.db;
   auto consensus_application = testConsensusApplication(storage);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
-  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
+  [[maybe_unused]] auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
 #ifdef RUSTAXA_ENABLE
-  auto mgr =
-      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif
@@ -318,10 +314,9 @@ TEST_F(DagTest, dag_expiry) {
   auto db_ptr = storage.db;
   auto consensus_application = testConsensusApplication(storage);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
-  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
+  [[maybe_unused]] auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
 #ifdef RUSTAXA_ENABLE
-  auto mgr =
-      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif
@@ -410,13 +405,12 @@ TEST_F(DagTest, receive_block_in_order) {
   auto storage = makeConsensusStorageFixture(node_cfgs[0], data_dir / "db");
   auto db_ptr = storage.db;
   auto consensus_application = testConsensusApplication(storage);
-  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
+  [[maybe_unused]] auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
 #ifdef RUSTAXA_ENABLE
-  auto mgr =
-      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif
@@ -450,13 +444,12 @@ TEST_F(DagTest, compute_epoch_2) {
   auto storage = makeConsensusStorageFixture(node_cfgs[0], data_dir / "db");
   auto db_ptr = storage.db;
   auto consensus_application = testConsensusApplication(storage);
-  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
+  [[maybe_unused]] auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
 #ifdef RUSTAXA_ENABLE
-  auto mgr =
-      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif
@@ -551,12 +544,11 @@ TEST_F(DagTest, get_latest_pivot_tips) {
   auto db_ptr = storage.db;
   auto consensus_application = testConsensusApplication(storage);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
-  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
+  [[maybe_unused]] auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   const blk_hash_t GENESIS = node_cfgs[0].genesis.dag_genesis_block.getHash();
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
 #ifdef RUSTAXA_ENABLE
-  auto mgr =
-      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif
@@ -588,11 +580,10 @@ TEST_F(DagTest, initial_pivot) {
   auto db_ptr = storage.db;
   auto consensus_application = testConsensusApplication(storage);
   auto trx_mgr = makeTestTransactionManager(node_cfgs[0], db_ptr, consensus_application);
-  auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
+  [[maybe_unused]] auto pbft_chain = makeTestPbftChain(db_ptr, consensus_application);
   node_cfgs[0].genesis.pbft.gas_limit = 100000;
 #ifdef RUSTAXA_ENABLE
-  auto mgr =
-      std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, consensus_application);
+  auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, nullptr, db_ptr, consensus_application);
 #else
   auto mgr = std::make_shared<DagManager>(node_cfgs[0], addr_t(), trx_mgr, pbft_chain, nullptr, db_ptr, nullptr);
 #endif

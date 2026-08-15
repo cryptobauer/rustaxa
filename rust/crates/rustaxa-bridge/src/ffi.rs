@@ -96,9 +96,10 @@ pub struct BridgeConsensusExecutionApi(pub ConsensusExecutionApi);
 
 /// Rust-owned public consensus query facade.
 ///
-/// The facade owns only a cloned Rust storage handle and returns stable read
-/// DTOs for public adapters. It does not expose consensus managers, storage
-/// iterators, or mutable sidecars.
+/// Production instances combine a cloned Rust storage handle with a live PBFT
+/// read handle owned by the application root. Storage-only instances remain
+/// available for isolated query fixtures. The facade returns stable read DTOs
+/// without exposing consensus managers, storage iterators, or mutable sidecars.
 pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
 
 /// Thin CXX adapter over the PBFT-root-owned native network service.
@@ -216,9 +217,11 @@ pub mod rustaxa_ffi {
         value: u32,
     }
 
-    /// Storage-backed chain statistics for `taraxa_getChainStats`.
+    /// Client-oriented live PBFT progress and persisted chain statistics for
+    /// `taraxa_getChainStats`.
     struct ChainStatsView {
         pbft_period: u64,
+        non_empty_pbft_periods: u64,
         dag_blocks_count: u64,
         transactions_count: u64,
         dag_blocks_executed: u64,
@@ -751,10 +754,9 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    struct PbftChainHeadPayload {
-        head_hash: [u8; 32],
-        size: u64,
-        non_empty_size: u64,
+    /// Coherent finalized-chain context for application-root PBFT manager tasks.
+    struct PbftManagerChainContext {
+        finalized_period: u64,
         last_pbft_block_hash: [u8; 32],
         last_non_null_anchor_hash: [u8; 32],
     }
@@ -3207,6 +3209,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             period: u64,
         ) -> Result<HashLookup>;
+        pub fn consensus_query_pbft_sync_block_exists(
+            self: &BridgeConsensusQueryApi,
+            block_hash: &[u8; 32],
+        ) -> Result<bool>;
         pub fn consensus_query_final_chain_block_by_number(
             self: &BridgeConsensusQueryApi,
             number: u64,
@@ -3705,23 +3711,15 @@ pub mod rustaxa_ffi {
         ) -> DagProposerWorkerCommand;
         pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
 
-        // Consensus PBFT chain
+        // Application-root PBFT manager tasks
 
-        pub fn pbft_chain_initialized_default(self: &BridgeConsensusApplication) -> bool;
-        pub fn pbft_chain_head(self: &BridgeConsensusApplication) -> PbftChainHeadPayload;
-        pub fn pbft_chain_update(
-            self: &BridgeConsensusApplication,
-            block_hash: &[u8; 32],
-            anchor_hash: &[u8; 32],
-        ) -> Result<PbftChainHeadPayload>;
-        pub fn pbft_chain_block_exists(
-            self: &BridgeConsensusApplication,
+        pub fn pbft_manager_current_chain_context(
+            runtime: &BridgeConsensusApplication,
+        ) -> PbftManagerChainContext;
+        pub fn pbft_manager_chain_block_exists(
+            runtime: &BridgeConsensusApplication,
             block_hash: &[u8; 32],
         ) -> Result<bool>;
-        pub fn pbft_chain_block_rlp(
-            self: &BridgeConsensusApplication,
-            block_hash: &[u8; 32],
-        ) -> Result<BlockRlpLookup>;
         pub fn pbft_manager_runtime_begin_pbft_sync_admission(
             runtime: &BridgeConsensusApplication,
             fact: PbftSyncAdmissionInitialFact,

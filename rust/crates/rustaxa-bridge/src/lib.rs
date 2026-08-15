@@ -3,7 +3,6 @@ mod dag_transaction_service;
 mod ffi;
 mod final_chain;
 mod network;
-mod pbft_chain;
 mod pbft_manager;
 mod pbft_sync;
 mod pbft_vote_generation;

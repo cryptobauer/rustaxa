@@ -6,7 +6,7 @@
 #include "logger/logger.hpp"
 #include "pbft/pbft_manager.hpp"
 #ifdef RUSTAXA_ENABLE
-#include "pbft/pbft_service.hpp"
+#include "consensus/consensus_application.hpp"
 #endif
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "test_util/consensus_storage_fixture.hpp"
@@ -86,7 +86,7 @@ TEST_F(PillarChainTest, pillar_blocks_create) {
       pillar_blocks_count * node_cfgs[0].genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
   ASSERT_HAPPENS({20s, 250ms}, [&](auto& ctx) {
     for (const auto& node : nodes) {
-      WAIT_EXPECT_GE(ctx, node->getPbftChain()->getPbftChainSize(), min_amount_of_pbft_blocks + 1)
+      WAIT_EXPECT_GE(ctx, node->getPbftProgress().finalized_period, min_amount_of_pbft_blocks + 1)
     }
   });
 
@@ -125,7 +125,7 @@ TEST_F(PillarChainTest, votes_count_changes) {
         }
       }
     });
-    auto chain_size = nodes[0]->getPbftChain()->getPbftChainSize();
+    auto chain_size = nodes[0]->getPbftProgress().finalized_period;
 
     // Wait until new pillar block with changed validators vote_counts is created
     auto new_pillar_block_period = chain_size -
@@ -133,7 +133,7 @@ TEST_F(PillarChainTest, votes_count_changes) {
                                    node_cfgs[0].genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
     EXPECT_HAPPENS({20s, 250ms}, [&](auto& ctx) {
       for (const auto& node : nodes) {
-        if (ctx.fail_if(node->getPbftChain()->getPbftChainSize() < new_pillar_block_period + 1)) {
+        if (ctx.fail_if(node->getPbftProgress().finalized_period < new_pillar_block_period + 1)) {
           return;
         }
       }
@@ -173,7 +173,7 @@ TEST_F(PillarChainTest, votes_count_changes) {
   const auto first_pillar_block_period = node_cfgs[0].genesis.state.hardforks.ficus_hf.firstPillarBlockPeriod();
   ASSERT_HAPPENS({20s, 250ms}, [&](auto& ctx) {
     for (const auto& node : nodes) {
-      WAIT_EXPECT_GE(ctx, node->getPbftChain()->getPbftChainSize(), first_pillar_block_period + 1)
+      WAIT_EXPECT_GE(ctx, node->getPbftProgress().finalized_period, first_pillar_block_period + 1)
     }
   });
 
@@ -715,7 +715,7 @@ TEST_F(PillarChainTest, finalize_root_in_pillar_block) {
       pillar_blocks_count * node_cfgs[0].genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
   ASSERT_HAPPENS({30s, 250ms}, [&](auto& ctx) {
     for (const auto& node : nodes) {
-      WAIT_EXPECT_GE(ctx, node->getPbftChain()->getPbftChainSize(), min_amount_of_pbft_blocks + 1)
+      WAIT_EXPECT_GE(ctx, node->getPbftProgress().finalized_period, min_amount_of_pbft_blocks + 1)
     }
   });
 

@@ -8,15 +8,15 @@
 namespace taraxa {
 
 /**
- * Shared C++ lifetime owner for the Rust consensus application.
+ * Shared C++ lifetime owner for the native Rust consensus application.
  *
- * One instance owns one `BridgeConsensusApplication` root. `App` shares this holder with retained manager, chain,
- * proposed-block, verified-vote, pillar-chain, and network facades so no shim borrows a nested Rust reference. Rust
- * owns runtime synchronization and lock-domain partitioning; this holder only provides RAII lifetime sharing.
+ * One instance owns one opaque application root. Consumers may invoke named
+ * task and client APIs but cannot retrieve, replace, or construct its private
+ * storage, FinalChain, DAG, transaction, vote, or PBFT services.
  */
 class ConsensusApplication final {
  public:
-  /** Takes exclusive ownership of a fully restored Rust consensus application root. */
+  /** Takes exclusive ownership of a fully restored native application root. */
   explicit ConsensusApplication(rust::Box<rustaxa::BridgeConsensusApplication> service)
       : service_(std::move(service)) {}
 
@@ -25,7 +25,7 @@ class ConsensusApplication final {
   ConsensusApplication& operator=(const ConsensusApplication&) = delete;
   ConsensusApplication& operator=(ConsensusApplication&&) = delete;
 
-  /** Returns the shared service receiver while this holder remains alive. */
+  /** Returns the opaque task receiver while this holder remains alive. */
   const rustaxa::BridgeConsensusApplication& service() const noexcept { return *service_; }
 
  private:

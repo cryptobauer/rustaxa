@@ -3,7 +3,6 @@ include(GoogleTest)
 add_executable(rust_consensus_tests
     test_final_chain.cpp
     test_network_api.cpp
-    test_pbft_chain.cpp
     test_pbft_sync.cpp
     test_pillar_vote_bundle.cpp
     test_proposed_blocks.cpp

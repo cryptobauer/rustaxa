@@ -13,9 +13,9 @@
 #include "common/event.hpp"
 #include "common/types.hpp"
 #include "config/config.hpp"
+#include "consensus/consensus_application.hpp"
 #include "final_chain/data.hpp"
 #include "final_chain/state_api.hpp"
-#include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
 
@@ -38,8 +38,8 @@ rust::Vec<rustaxa::GenesisAccount> makeGenesisAccounts(const state_api::Config& 
 /** Converts genesis validators into the native application bootstrap carrier. */
 rust::Vec<rustaxa::GenesisValidator> makeGenesisValidators(const state_api::Config& config);
 /** Converts DPoS policy into the native application bootstrap carrier. */
-rustaxa::GenesisDposConfig makeGenesisDposConfig(
-    const state_api::DPOSConfig& config, uint64_t dag_vdf_sortition_total_vote_count_until_period);
+rustaxa::GenesisDposConfig makeGenesisDposConfig(const state_api::DPOSConfig& config,
+                                                 uint64_t dag_vdf_sortition_total_vote_count_until_period);
 /** Converts rewards and hardfork policy into the native application bootstrap carrier. */
 rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const taraxa::FullNodeConfig& config);
 
@@ -223,7 +223,8 @@ class FinalChain {
   /** Read one 32-byte bridge-contract view at the latest applicable committed EVM snapshot; failures return zero. */
   h256 readBridgeContractHash(EthBlockNumber block_number, const bytes& method, const char* api_name) const;
 
-  /** Commit one Rust-native session and materialize the legacy completion DTO; validation or decoding failures throw. */
+  /** Commit one Rust-native session and materialize the legacy completion DTO; validation or decoding failures throw.
+   */
   std::shared_ptr<const FinalizationResult> commitNativeSession(
       rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, PeriodData&& period_data,
       std::vector<h256>&& finalized_dag_blk_hashes);

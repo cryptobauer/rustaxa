@@ -19,11 +19,11 @@
 
 #include "common/types.hpp"
 #include "config/config.hpp"
+#include "consensus/consensus_application.hpp"
 #include "final_chain/final_chain.hpp"
 #include "logger/logger.hpp"
 #include "network/network.hpp"
 #include "pbft/pbft_block_extra_data.hpp"
-#include "pbft/pbft_service.hpp"
 #include "pbft/period_data.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/dag_transaction_service.hpp"
@@ -46,7 +46,6 @@ class ThreadPool;
 class DagManager;
 class DbStorage;
 class FullNode;
-class PbftChain;
 class PbftBlock;
 class PbftVote;
 class PeriodData;
@@ -145,9 +144,9 @@ class PbftManager {
    * failures propagate.
    */
   PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
-              SharedConsensusApplication consensus_application, std::shared_ptr<PbftChain> pbft_chain,
-              std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
-              std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
+              SharedConsensusApplication consensus_application, std::shared_ptr<VoteManager> vote_mgr,
+              std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
+              std::shared_ptr<final_chain::FinalChain> final_chain,
               std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr);
   ~PbftManager();
   PbftManager(const PbftManager &) = delete;
@@ -354,6 +353,8 @@ class PbftManager {
   std::chrono::milliseconds getPbftDeadline() const;
 
  private:
+  /** Samples coherent finalized-chain facts through one application-root task. */
+  rustaxa::PbftManagerChainContext chainTaskView() const;
   /**
    * @brief Broadcast or rebroadcast 2t+1 soft/reward/previous round next votes + all own votes if needed
    */
@@ -629,7 +630,6 @@ class PbftManager {
   SharedConsensusApplication pbft_service_;
   // Application-owned composed DAG/transaction service used directly by Rust PBFT/sortition finalization operations.
   SharedConsensusApplication dag_transaction_service_;
-  std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<VoteManager> vote_mgr_;
   std::shared_ptr<DagManager> dag_mgr_;
   std::weak_ptr<Network> network_;

@@ -6,7 +6,6 @@
 #include "final_chain/data.hpp"
 #include "metrics/jsonrpc_metrics.hpp"
 #include "network/ws_session.hpp"
-#include "pbft/pbft_chain.hpp"
 #include "pillar_chain/pillar_block.hpp"
 #include "transaction/transaction.hpp"
 

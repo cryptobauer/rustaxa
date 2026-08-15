@@ -23,6 +23,7 @@
 #include "metrics/transaction_queue_metrics.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "network/consensus_network_api.hpp"
+#include "network/consensus_query.hpp"
 #endif
 #include "pbft/pbft_manager.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
@@ -120,6 +121,19 @@ App::App() {}
 
 App::~App() { close(); }
 
+PbftProgress App::getPbftProgress() const {
+#ifdef RUSTAXA_ENABLE
+  const auto query_api = net::createConsensusQueryApi(db_);
+  if (!query_api) {
+    throw std::runtime_error("Consensus query API is unavailable");
+  }
+  return net::consensusPbftProgress(query_api);
+#endif
+#ifndef RUSTAXA_ENABLE
+  return {pbft_chain_->getPbftChainSize(), pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks()};
+#endif
+}
+
 void App::addAvailablePlugin(std::shared_ptr<Plugin> plugin) { available_plugins_[plugin->name()] = plugin; }
 
 std::shared_ptr<Plugin> App::getPlugin(const std::string &name) const {
@@ -173,8 +187,7 @@ void App::init(const cli::Config &cli_conf) {
 #ifdef RUSTAXA_ENABLE
   if (conf_.db_config.rebuild_db || conf_.db_config.migrate_only || conf_.db_config.migrate_receipts_by_period ||
       conf_.db_config.db_revert_to_period != 0 || conf_.db_config.rebuild_db_period != 0) {
-    throw std::runtime_error(
-        "Rust consensus mode does not support rebuild, revert, or legacy migration startup modes");
+    throw std::runtime_error("Rust consensus mode does not support rebuild, revert, or legacy migration startup modes");
   }
   consensus_application_ = createConsensusApplication(conf_);
 #endif
@@ -219,9 +232,9 @@ void App::init(const cli::Config &cli_conf) {
     }
 #else
     db_ = std::make_shared<DbStorage>(consensus_application_, conf_.db_path,
-                                      conf_.db_config.db_snapshot_each_n_pbft_block,
-                                      conf_.db_config.db_max_open_files, conf_.db_config.db_max_snapshots,
-                                      conf_.db_config.db_revert_to_period, node_addr, false);
+                                      conf_.db_config.db_snapshot_each_n_pbft_block, conf_.db_config.db_max_open_files,
+                                      conf_.db_config.db_max_snapshots, conf_.db_config.db_revert_to_period, node_addr,
+                                      false);
 #endif
   }
   LOG(log_nf_) << "DB initialized ...";
@@ -265,18 +278,16 @@ void App::init(const cli::Config &cli_conf) {
 
 #ifdef RUSTAXA_ENABLE
   trx_mgr_ = std::make_shared<TransactionManager>(conf_, db_, final_chain_, node_addr, consensus_application_);
-  pbft_chain_ = std::make_shared<PbftChain>(node_addr, consensus_application_);
 #else
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, db_);
 #endif
 #ifdef RUSTAXA_ENABLE
-  dag_mgr_ =
-      std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, consensus_application_);
+  dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, final_chain_, db_, consensus_application_);
 #else
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
 #endif
 #ifdef RUSTAXA_ENABLE
-  vote_mgr_ = std::make_shared<VoteManager>(conf_, consensus_application_, pbft_chain_, final_chain_, trx_mgr_);
+  vote_mgr_ = std::make_shared<VoteManager>(conf_, consensus_application_, final_chain_, trx_mgr_);
 #else
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
   vote_mgr_ = std::make_shared<VoteManager>(conf_, db_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
@@ -289,8 +300,8 @@ void App::init(const cli::Config &cli_conf) {
                                                                          final_chain_, key_manager_, node_addr);
 #endif
 #ifdef RUSTAXA_ENABLE
-  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, consensus_application_, pbft_chain_, vote_mgr_, dag_mgr_,
-                                            trx_mgr_, final_chain_, pillar_chain_mgr_);
+  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, consensus_application_, vote_mgr_, dag_mgr_, trx_mgr_,
+                                            final_chain_, pillar_chain_mgr_);
 #else
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, final_chain_,
                                             pillar_chain_mgr_);
@@ -306,7 +317,13 @@ void App::init(const cli::Config &cli_conf) {
 #ifndef RUSTAXA_ENABLE
                                 db_,
 #endif
-                                pbft_mgr_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_,
+                                pbft_mgr_,
+#ifdef RUSTAXA_ENABLE
+                                net::createConsensusQueryApi(db_),
+#else
+                                pbft_chain_,
+#endif
+                                vote_mgr_, dag_mgr_, trx_mgr_,
 #ifndef RUSTAXA_ENABLE
                                 std::move(slashing_manager),
 #endif
@@ -558,7 +575,7 @@ void App::rebuildDb() {
     pbft_mgr_->waitForPeriodFinalization();
     period++;
     if (period % 100 == 0) {
-      while (period - pbft_chain_->getPbftChainSize() > 100) {
+      while (period - getPbftProgress().finalized_period > 100) {
         thisThreadSleepForMilliSeconds(1);
       }
     }

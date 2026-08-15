@@ -67,7 +67,28 @@ use crate::verified_votes::{
     slashing_submitter_identity_to_domain, slashing_transaction_effect_to_ffi,
 };
 use anyhow::anyhow;
+use ethereum_types::H256;
 use rustaxa_consensus::dag::DagBlockPeriodStorageLookup;
+
+/// Returns one coherent finalized-chain context for application-root manager tasks.
+pub fn pbft_manager_current_chain_context(
+    runtime: &BridgeApp,
+) -> crate::ffi::rustaxa_ffi::PbftManagerChainContext {
+    let head = runtime.0.pbft_chain_head();
+    crate::ffi::rustaxa_ffi::PbftManagerChainContext {
+        finalized_period: head.size,
+        last_pbft_block_hash: head.last_pbft_block_hash.into(),
+        last_non_null_anchor_hash: head.last_non_null_pbft_dag_anchor_hash.into(),
+    }
+}
+
+/// Returns finalized PBFT block membership for one application-root manager task.
+pub fn pbft_manager_chain_block_exists(
+    runtime: &BridgeApp,
+    block_hash: &[u8; 32],
+) -> anyhow::Result<bool> {
+    runtime.0.pbft_chain_block_exists(H256::from(*block_hash))
+}
 use rustaxa_consensus::pbft_finalize::{
     PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationPlan, PbftFinalizationPositionedHash,

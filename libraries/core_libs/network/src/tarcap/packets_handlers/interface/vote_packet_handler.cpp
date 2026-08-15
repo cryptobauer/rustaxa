@@ -6,7 +6,7 @@ namespace taraxa::network::tarcap {
 
 IVotePacketHandler::IVotePacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                        std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                                       std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
+                                       std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
                                        std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
                                        std::shared_ptr<SlashingManager> slashing_manager,
@@ -80,7 +80,7 @@ void IVotePacketHandler::sendPbftVote(const std::shared_ptr<TaraxaPeer> &peer, c
 
   std::optional<VotePacket::OptionalData> optional_packet_data;
   if (block) {
-    optional_packet_data = VotePacket::OptionalData{block, pbft_chain_->getPbftChainSize()};
+    optional_packet_data = VotePacket::OptionalData{block, net::consensusPbftProgress(pbft_chain_).finalized_period};
   }
 
   if (sealAndSend(peer->getId(), SubprotocolPacketType::kVotePacket,

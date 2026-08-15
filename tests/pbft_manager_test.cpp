@@ -72,7 +72,7 @@ struct PbftManagerTest : NodesTest {
 
     // If previous check passed, delegations txs must have been finalized in block -> take any node's chain size and
     // save it as approx. block number, in which delegation txs were included
-    size_t delegations_block = nodes[0]->getPbftChain()->getPbftChainSize();
+    size_t delegations_block = nodes[0]->getPbftProgress().finalized_period;
     ASSERT_GE(delegations_block, 0);
     // Block, in which delegations should be already applied (due to delegation delay)
     size_t delegations_applied_block = delegations_block + node_cfgs[0].genesis.state.dpos.delegation_delay;
@@ -96,10 +96,10 @@ struct PbftManagerTest : NodesTest {
     EXPECT_HAPPENS({80s, 8s}, [&](auto &ctx) {
       for (size_t i(0); i < nodes.size(); ++i) {
         if (nodes[i]->getDB()->getNumTransactionExecuted() != trxs_count ||
-            nodes[i]->getPbftChain()->getPbftChainSize() < delegations_applied_block) {
+            nodes[i]->getPbftProgress().finalized_period < delegations_applied_block) {
           std::cout << "node" << i << " executed " << nodes[i]->getDB()->getNumTransactionExecuted()
                     << " transactions, expected " << trxs_count << ", current chain size "
-                    << nodes[i]->getPbftChain()->getPbftChainSize() << ", expected at least "
+                    << nodes[i]->getPbftProgress().finalized_period << ", expected at least "
                     << delegations_applied_block << std::endl;
           auto dummy_trx = makeTransaction(0, nodes[0]->getAddress(), 0);
           node_1_expected_bal -= dummy_trx->getValue() + dummy_trx->getGasPrice() * dummy_trx->getGas();
@@ -128,7 +128,7 @@ struct PbftManagerTest : NodesTest {
     size_t committee, two_t_plus_one, expected_2tPlus1, expected_threshold;
     for (size_t i(0); i < nodes.size(); ++i) {
       auto pbft_mgr = nodes[i]->getPbftManager();
-      const auto chain_size = nodes[i]->getPbftChain()->getPbftChainSize();
+      const auto chain_size = nodes[i]->getPbftProgress().finalized_period;
       two_t_plus_one = nodes[i]->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote).value();
 
       committee = pbft_mgr->getPbftCommitteeSize();
@@ -184,7 +184,7 @@ struct PbftManagerTest : NodesTest {
 
     for (size_t i(0); i < nodes.size(); ++i) {
       auto pbft_mgr = nodes[i]->getPbftManager();
-      const auto chain_size = nodes[i]->getPbftChain()->getPbftChainSize();
+      const auto chain_size = nodes[i]->getPbftProgress().finalized_period;
       two_t_plus_one = nodes[i]->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote).value();
       committee = pbft_mgr->getPbftCommitteeSize();
       valid_voting_players = pbft_mgr->getCurrentDposTotalVotesCount().value();
@@ -318,7 +318,7 @@ TEST_F(PbftManagerTest, check_get_eligible_vote_count) {
   size_t committee, two_t_plus_one, expected_2tPlus1, expected_threshold;
   for (size_t i(0); i < nodes.size(); ++i) {
     auto pbft_mgr = nodes[i]->getPbftManager();
-    const auto chain_size = nodes[i]->getPbftChain()->getPbftChainSize();
+    const auto chain_size = nodes[i]->getPbftProgress().finalized_period;
     two_t_plus_one = nodes[i]->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote).value();
     committee = pbft_mgr->getPbftCommitteeSize();
     eligible_total_vote_count = pbft_mgr->getCurrentDposTotalVotesCount().value();
@@ -336,8 +336,7 @@ TEST_F(PbftManagerTest, pbft_produce_blocks_with_null_anchor) {
   EXPECT_EQ(own_balance(node), own_effective_genesis_bal(node_cfgs[0]));
 
   // Check PBFT produced blocks with no transactions
-  auto pbft_chain = node->getPbftChain();
-  EXPECT_HAPPENS({10s, 200ms}, [&](auto &ctx) { WAIT_EXPECT_GT(ctx, pbft_chain->getPbftChainSize(), 1) });
+  EXPECT_HAPPENS({10s, 200ms}, [&](auto &ctx) { WAIT_EXPECT_GT(ctx, node->getPbftProgress().finalized_period, 1) });
 }
 
 TEST_F(PbftManagerTest, pbft_manager_run_single_node) {
@@ -356,9 +355,8 @@ TEST_F(PbftManagerTest, pbft_manager_run_single_node) {
   node->getTransactionManager()->insertTransaction(trx_master_boot_node_to_receiver);
 
   // Check there is proposing DAG blocks
-  EXPECT_HAPPENS({1s, 200ms}, [&](auto &ctx) {
-    WAIT_EXPECT_EQ(ctx, node->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks(), 1)
-  });
+  EXPECT_HAPPENS({1s, 200ms},
+                 [&](auto &ctx) { WAIT_EXPECT_EQ(ctx, node->getPbftProgress().non_empty_finalized_periods, 1) });
 
   // Make sure the transaction get executed
   EXPECT_HAPPENS({1s, 200ms}, [&](auto &ctx) { WAIT_EXPECT_EQ(ctx, node->getDB()->getNumTransactionExecuted(), 1) });
@@ -384,9 +382,8 @@ TEST_F(PbftManagerTest, pbft_manager_run_multi_nodes) {
   nodes[0]->getTransactionManager()->insertTransaction(trx_master_boot_node_to_node2);
 
   // Only node1 be able to propose DAG block
-  EXPECT_HAPPENS({5s, 200ms}, [&](auto &ctx) {
-    WAIT_EXPECT_EQ(ctx, nodes[0]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks(), 1)
-  });
+  EXPECT_HAPPENS({5s, 200ms},
+                 [&](auto &ctx) { WAIT_EXPECT_EQ(ctx, nodes[0]->getPbftProgress().non_empty_finalized_periods, 1) });
 
   const expected_balances_map_t expected_balances1 = {
       {node1_addr, node1_genesis_bal - 100}, {node2_addr, node2_genesis_bal + 100}, {node3_addr, node3_genesis_bal}};
@@ -398,9 +395,8 @@ TEST_F(PbftManagerTest, pbft_manager_run_multi_nodes) {
   nodes[0]->getTransactionManager()->insertTransaction(trx_master_boot_node_to_node3);
 
   // Only node1 be able to propose DAG block
-  EXPECT_HAPPENS({5s, 200ms}, [&](auto &ctx) {
-    WAIT_EXPECT_EQ(ctx, nodes[0]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks(), 2)
-  });
+  EXPECT_HAPPENS({5s, 200ms},
+                 [&](auto &ctx) { WAIT_EXPECT_EQ(ctx, nodes[0]->getPbftProgress().non_empty_finalized_periods, 2) });
 
   std::cout << "Checking all nodes see transaction from node 1 to node 3..." << std::endl;
   const expected_balances_map_t expected_balances2 = {{node1_addr, node1_genesis_bal - 1100},
@@ -437,7 +433,10 @@ TEST_F(PbftManagerTest, propose_block_and_vote_broadcast) {
     WAIT_EXPECT_EQ(ctx, pbft_mgr2->pbftSyncingPeriod(), pbft_mgr3->pbftSyncingPeriod())
   });
 
-  blk_hash_t prev_block_hash = node1->getPbftChain()->getLastPbftBlockHash();
+  const auto previous_period = node1->getPbftProgress().finalized_period;
+  const auto previous_block = node1->getDB()->getPbftBlock(previous_period);
+  ASSERT_TRUE(previous_block.has_value());
+  const blk_hash_t prev_block_hash = previous_block->getBlockHash();
 
   // Node1 generate a PBFT block sample
   auto reward_votes = node1->getDB()->getRewardVotes();
@@ -459,9 +458,8 @@ TEST_F(PbftManagerTest, propose_block_and_vote_broadcast) {
 #ifdef RUSTAXA_ENABLE
   auto proposed_block_is_persisted = [&] {
     const auto persisted_blocks = node1->getDB()->getProposedPbftBlocks();
-    return std::any_of(persisted_blocks.begin(), persisted_blocks.end(), [&](const auto &block) {
-      return block->getBlockHash() == proposed_pbft_block->getBlockHash();
-    });
+    return std::any_of(persisted_blocks.begin(), persisted_blocks.end(),
+                       [&](const auto &block) { return block->getBlockHash() == proposed_pbft_block->getBlockHash(); });
   };
   ASSERT_TRUE(proposed_block_is_persisted());
   auto batch = node1->getDB()->createWriteBatch();
@@ -647,8 +645,9 @@ TEST_F(PbftManagerWithDagCreation, limit_pbft_block) {
   for (size_t i = starting_block_number; i < node->getFinalChain()->lastBlockNumber(); ++i) {
     const auto &blk_hash = node->getDB()->getPeriodBlockHash(i);
     ASSERT_TRUE(blk_hash != kNullBlockHash);
-    const auto &pbft_block = node->getPbftChain()->getPbftBlockInChain(blk_hash);
-    const auto &dag_blocks_order = node->getDagManager()->getDagBlockOrder(pbft_block.getPivotDagBlockHash(), i);
+    const auto pbft_block = node->getDB()->getPbftBlock(blk_hash);
+    ASSERT_TRUE(pbft_block.has_value());
+    const auto &dag_blocks_order = node->getDagManager()->getDagBlockOrder(pbft_block->getPivotDagBlockHash(), i);
 
     EXPECT_LE(dag_blocks_order.size(), max_pbft_block_capacity);
   }
@@ -695,9 +694,9 @@ TEST_F(PbftManagerWithDagCreation, produce_overweighted_block) {
   auto period_data = node->getDB()->getPeriodData(period);
   ASSERT_TRUE(period_data.has_value());
 #ifdef RUSTAXA_ENABLE
-  const auto total_weight = std::accumulate(
-      period_data->dag_blocks.begin(), period_data->dag_blocks.end(), u256(0),
-      [](u256 weight, const auto &dag_block) { return weight + dag_block->getGasEstimation(); });
+  const auto total_weight =
+      std::accumulate(period_data->dag_blocks.begin(), period_data->dag_blocks.end(), u256(0),
+                      [](u256 weight, const auto &dag_block) { return weight + dag_block->getGasEstimation(); });
   EXPECT_GT(total_weight, node_cfgs.front().genesis.pbft.gas_limit);
 #else
   EXPECT_FALSE(node->getPbftManager()->checkBlockWeight(period_data->dag_blocks, period));
@@ -749,10 +748,10 @@ TEST_F(PbftManagerWithDagCreation, state_root_hash) {
   deployContract();
   node->getDagBlockProposer()->stop();
   const auto lambda = node->getConfig().genesis.pbft.lambda_ms;
-  auto prev_pbft_chain_size = node->getPbftChain()->getPbftChainSize();
+  auto prev_pbft_chain_size = node->getPbftProgress().finalized_period;
   generateAndApplyInitialDag();
   EXPECT_HAPPENS({10s, 250ms}, [&](auto &ctx) {
-    WAIT_EXPECT_EQ(ctx, prev_pbft_chain_size + 1, node->getPbftChain()->getPbftChainSize());
+    WAIT_EXPECT_EQ(ctx, prev_pbft_chain_size + 1, node->getPbftProgress().finalized_period);
   });
   // generate dag blocks with delays to distribute them between pbft blocks
   for (uint8_t i = 0; i < 5; ++i) {
@@ -766,14 +765,14 @@ TEST_F(PbftManagerWithDagCreation, state_root_hash) {
     WAIT_EXPECT_EQ(ctx, node->getDB()->getNumTransactionExecuted(), nonce - 1);
   });
 
-  const auto &head_hash = node->getPbftChain()->getLastPbftBlockHash();
-  auto pbft_block = node->getPbftChain()->getPbftBlockInChain(head_hash);
+  auto period = node->getPbftProgress().finalized_period;
+  auto pbft_block = node->getDB()->getPbftBlock(period);
+  ASSERT_TRUE(pbft_block.has_value());
   // Check that all produced blocks have correct state_root_hashes
-  while (pbft_block.getPeriod() != 1) {
-    auto period = pbft_block.getPeriod();
-    EXPECT_EQ(pbft_block.getFinalChainHash(), node->getFinalChain()->finalChainHash(period));
-
-    pbft_block = node->getPbftChain()->getPbftBlockInChain(pbft_block.getPrevBlockHash());
+  while (period != 1) {
+    EXPECT_EQ(pbft_block->getFinalChainHash(), node->getFinalChain()->finalChainHash(period));
+    pbft_block = node->getDB()->getPbftBlock(--period);
+    ASSERT_TRUE(pbft_block.has_value());
   }
 }
 

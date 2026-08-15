@@ -22,6 +22,12 @@ class GasPricer;
 #endif
 class Plugin;
 
+/** Read-only live PBFT progress exposed without a consensus manager facade. */
+struct PbftProgress {
+  uint64_t finalized_period = 0;
+  uint64_t non_empty_finalized_periods = 0;
+};
+
 namespace final_chain {
 class FinalChain;
 }
@@ -47,7 +53,11 @@ class AppBase {
   virtual std::shared_ptr<DbStorage> getDB() const = 0;
   virtual std::shared_ptr<PbftManager> getPbftManager() const = 0;
   virtual std::shared_ptr<VoteManager> getVoteManager() const = 0;
+#ifndef RUSTAXA_ENABLE
   virtual std::shared_ptr<PbftChain> getPbftChain() const = 0;
+#endif
+  /** Returns one coherent live PBFT progress snapshot. */
+  virtual PbftProgress getPbftProgress() const = 0;
   virtual std::shared_ptr<final_chain::FinalChain> getFinalChain() const = 0;
   virtual std::shared_ptr<metrics::MetricsService> getMetrics() const = 0;
   // used only in tests

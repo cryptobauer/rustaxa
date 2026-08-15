@@ -14,8 +14,7 @@ use crate::network_api::{
     NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS,
 };
 use crate::pbft_chain::{
-    PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead, PbftChainService,
-    pbft_block_exists_in_storage,
+    PbftBlockValidation, PbftChainHead, PbftChainService, pbft_block_exists_in_storage,
 };
 use crate::pbft_finalize::{
     PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationIntentFact,
@@ -2469,15 +2468,6 @@ impl PbftService {
         })
     }
 
-    /// Reports whether restoration created the default PBFT chain head.
-    ///
-    /// The query acquires the chain sibling's read lock and returns its
-    /// restoration marker without consulting storage or mutating live state.
-    /// A poisoned sibling lock follows the chain service's fatal panic policy.
-    pub fn pbft_chain_initialized_default(&self) -> bool {
-        self.chain().initialized_default()
-    }
-
     /// Returns an owned snapshot of the current native PBFT chain head.
     ///
     /// The snapshot is coherent under the chain sibling's read lock and is
@@ -2505,15 +2495,6 @@ impl PbftService {
     /// not mutate its live head. Backend and index errors are propagated.
     pub fn pbft_chain_block_exists(&self, block_hash: H256) -> Result<bool> {
         self.chain().block_exists(block_hash)
-    }
-
-    /// Loads one canonical finalized PBFT block RLP payload from native storage.
-    ///
-    /// A missing hash is represented by `found = false` with empty bytes.
-    /// Backend, decoding, and hash-consistency failures are returned as errors;
-    /// the live chain head is not mutated.
-    pub fn pbft_chain_block_rlp(&self, block_hash: H256) -> Result<PbftBlockStorageLookup> {
-        self.chain().block_rlp(block_hash)
     }
 
     /// Validates whether a candidate period and previous hash extend the live head.
@@ -4904,7 +4885,7 @@ mod tests {
         NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE, NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA,
         NetworkGetPillarVotesBundleRequest, NetworkPbftNextVotesBundleRequest,
     };
-    use crate::pbft_chain::{PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead};
+    use crate::pbft_chain::{PbftBlockValidation, PbftChainHead};
     use crate::pbft_thresholds::PbftTwoTPlusOneThresholdStatus;
     use crate::pbft_vote_event::PbftVoteEventFactFlags;
     use crate::pbft_vote_generation::{
@@ -8308,7 +8289,6 @@ mod tests {
         let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_chain_task_wrapper");
         let service = PbftService::restore(storage, config(1)).unwrap();
 
-        assert!(service.pbft_chain_initialized_default());
         let initial = service.pbft_chain_head();
         assert_eq!(initial.size, 0);
         assert_eq!(initial.non_empty_size, 0);
@@ -8325,16 +8305,6 @@ mod tests {
                 .pbft_chain_block_exists(H256::from_low_u64_be(7))
                 .unwrap()
         );
-        assert_eq!(
-            service
-                .pbft_chain_block_rlp(H256::from_low_u64_be(7))
-                .unwrap(),
-            PbftBlockStorageLookup {
-                found: false,
-                block_rlp: Vec::new(),
-            }
-        );
-
         let chain_update = service
             .pbft_chain_update(H256::from_low_u64_be(11), H256::zero())
             .unwrap();

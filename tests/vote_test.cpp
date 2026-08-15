@@ -464,7 +464,7 @@ TEST_F(VoteTest, two_t_plus_one_votes) {
   // Clear unverfied/verified table/DB
   clearAllVotes({node});
 
-  const auto chain_size = node->getPbftChain()->getPbftChainSize();
+  const auto chain_size = node->getPbftProgress().finalized_period;
   auto pbft_2t_plus_1 = vote_mgr->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote).value();
   EXPECT_EQ(pbft_2t_plus_1, 1);
 

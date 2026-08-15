@@ -8,7 +8,7 @@ namespace taraxa::network::tarcap {
 GetNextVotesBundlePacketHandler::GetNextVotesBundlePacketHandler(
     const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftManager> pbft_mgr,
-    std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
+    net::ConsensusQueryClient pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
     std::shared_ptr<SlashingManager> slashing_manager, const addr_t &node_addr, const std::string &logs_prefix)
     : IVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_mgr),
                          std::move(pbft_chain), std::move(vote_mgr), std::move(slashing_manager), node_addr,

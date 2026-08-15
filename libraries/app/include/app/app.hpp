@@ -44,7 +44,10 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<DbStorage> getDB() const { return db_; }
   std::shared_ptr<PbftManager> getPbftManager() const { return pbft_mgr_; }
   std::shared_ptr<VoteManager> getVoteManager() const { return vote_mgr_; }
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<PbftChain> getPbftChain() const { return pbft_chain_; }
+#endif
+  PbftProgress getPbftProgress() const;
   std::shared_ptr<final_chain::FinalChain> getFinalChain() const { return final_chain_; }
   std::shared_ptr<metrics::MetricsService> getMetrics() const { return metrics_; }
   // used only in tests
@@ -116,7 +119,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<DagBlockProposer> dag_block_proposer_;
   std::shared_ptr<VoteManager> vote_mgr_;
   std::shared_ptr<PbftManager> pbft_mgr_;
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<PbftChain> pbft_chain_;
+#endif
   std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr_;
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<KeyManager> key_manager_;

@@ -193,6 +193,15 @@ pub struct ConsensusApplication {
 }
 
 impl ConsensusApplication {
+    /// Creates the read-only client API bound to this application's storage and live PBFT owner.
+    ///
+    /// The returned API extends the lifetime of existing root-owned services;
+    /// it cannot construct or mutate a competing consensus runtime.
+    #[doc(hidden)]
+    pub fn consensus_query_api_for_bridge(&self) -> crate::ConsensusQueryApi {
+        crate::ConsensusQueryApi::new_live(Arc::clone(&self.storage), Arc::clone(&self.pbft))
+    }
+
     fn restore_with_final_chain(
         storage: Arc<Storage>,
         final_chain: Arc<FinalChain>,
@@ -460,6 +469,26 @@ mod tests {
             final_chain.as_ref()
         ));
 
+        drop(root);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn root_bound_query_observes_live_pbft_progress() {
+        let path = temp_path("consensus_application_live_pbft_query");
+        let root = bootstrap(path.clone())
+            .bootstrap()
+            .expect("root bootstraps");
+        let query = root.consensus_query_api_for_bridge();
+
+        assert_eq!(query.pbft_progress().unwrap().finalized_period, 0);
+        root.pbft_chain_update(H256::repeat_byte(2), H256::repeat_byte(3))
+            .expect("PBFT head advances");
+        let progress = query.pbft_progress().expect("live progress is readable");
+        assert_eq!(progress.finalized_period, 1);
+        assert_eq!(progress.non_empty_finalized_periods, 1);
+
+        drop(query);
         drop(root);
         let _ = fs::remove_dir_all(path);
     }

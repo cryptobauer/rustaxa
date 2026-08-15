@@ -56,7 +56,7 @@ void Rpc::start() {
   if (app()->getMetrics()) jsonrpc_metrics = app()->getMetrics()->getMetrics<metrics::JsonRpcMetrics>();
   net::LiveStatusReader live_status_reader = [app = app()] {
     net::LiveStatusSnapshot snapshot;
-    const auto chain_size = app->getPbftChain()->getPbftChainSize();
+    const auto chain_size = app->getPbftProgress().finalized_period;
     const auto dpos_total_votes = app->getPbftManager()->getCurrentDposTotalVotesCount();
     const auto dpos_node_votes = app->getPbftManager()->getCurrentNodeVotesCount();
     const auto dpos_quorum = app->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote);

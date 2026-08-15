@@ -27,16 +27,13 @@
 namespace taraxa::core_tests {
 namespace {
 
+#ifndef RUSTAXA_ENABLE
 std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage> &db,
                                              const ConsensusStorageFixture &storage) {
-#ifdef RUSTAXA_ENABLE
-  (void)db;
-  return std::make_shared<PbftChain>(addr_t(), storage.application);
-#else
   (void)storage;
   return std::make_shared<PbftChain>(addr_t(), db);
-#endif
 }
+#endif
 
 }  // namespace
 
@@ -73,7 +70,7 @@ TEST_F(FullNodeTest, save_period_lambda_cacti_hf) {
   auto node_db = node->getDB();
 
   EXPECT_HAPPENS({10s, 100ms},
-                 [&](auto &ctx) { WAIT_EXPECT_GE(ctx, node->getPbftChain()->getPbftChainSize(), progress_blocks); });
+                 [&](auto &ctx) { WAIT_EXPECT_GE(ctx, node->getPbftProgress().finalized_period, progress_blocks); });
   node->getPbftManager()->stop();
 
   EXPECT_FALSE(node_db->getPeriodLambda(hardforks_cfg.cacti_hf.block_num - 1, false).has_value());
@@ -305,6 +302,7 @@ TEST_F(FullNodeTest, db_test) {
   }
 
   // pbft_blocks (head)
+#ifndef RUSTAXA_ENABLE
   auto pbft_chain = makeTestPbftChain(db_ptr, storage);
   db.savePbftHead(pbft_chain->getHeadHash(), pbft_chain->getJsonStr());
   EXPECT_EQ(db.getPbftHead(pbft_chain->getHeadHash()), pbft_chain->getJsonStr());
@@ -317,6 +315,7 @@ TEST_F(FullNodeTest, db_test) {
   db.addPbftHeadToBatch(pbft_chain->getHeadHash(), pbft_chain->getJsonStr(), batch);
   db.commitWriteBatch(batch);
   EXPECT_EQ(db.getPbftHead(pbft_chain->getHeadHash()), pbft_chain->getJsonStr());
+#endif
 
   // status
   db.saveStatusField(StatusDbField::TrxCount, 5);
@@ -790,7 +789,7 @@ TEST_F(FullNodeTest, sync_five_nodes) {
   const uint32_t min_blocks_to_prune = 30;
   // This ensures that we never prune blocks that are over proposal period
   ASSERT_HAPPENS({40s, 100ms}, [&](auto &ctx) {
-    WAIT_EXPECT_TRUE(ctx, (prune_node->getPbftChain()->getPbftChainSize() > min_blocks_to_prune + kMaxLevelsPerPeriod))
+    WAIT_EXPECT_TRUE(ctx, (prune_node->getPbftProgress().finalized_period > min_blocks_to_prune + kMaxLevelsPerPeriod))
   });
   prune_node->getFinalChain()->prune(min_blocks_to_prune);
   context.assert_balances_synced();
@@ -1408,7 +1407,7 @@ TEST_F(FullNodeTest, transaction_validation) {
 
 uint64_t count_non_empty_blocks(const std::shared_ptr<AppBase> &node) {
   uint64_t non_empty_counter = 0;
-  for (uint64_t i = 0; i < node->getPbftChain()->getPbftChainSize(); i++) {
+  for (uint64_t i = 0; i < node->getPbftProgress().finalized_period; i++) {
     const auto pbft_block = node->getDB()->getPbftBlock(i);
     if (pbft_block) {
       non_empty_counter++;
@@ -1433,7 +1432,7 @@ TEST_F(FullNodeTest, light_node) {
   // adjust history after the launch to avoid the light node history size check
   cfgs[1].config().light_node_history = history;
 
-  while (nodes[1]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks() < 20) {
+  while (nodes[1]->getPbftProgress().non_empty_finalized_periods < 20) {
     auto dummy_trx =
         std::make_shared<Transaction>(nonce++, 0, 2, 100000, bytes(), nodes[0]->getSecretKey(), nodes[0]->getAddress());
     // broadcast dummy transaction
@@ -1443,8 +1442,8 @@ TEST_F(FullNodeTest, light_node) {
 
   EXPECT_HAPPENS({10s, 1s}, [&](auto &ctx) {
     // Verify full node and light node sync without any issues
-    WAIT_EXPECT_EQ(ctx, nodes[0]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks(),
-                   nodes[1]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks())
+    WAIT_EXPECT_EQ(ctx, nodes[0]->getPbftProgress().non_empty_finalized_periods,
+                   nodes[1]->getPbftProgress().non_empty_finalized_periods)
   });
   for (auto &node : nodes) {
     node->getPbftManager()->stop();
@@ -1480,17 +1479,17 @@ TEST_F(FullNodeTest, clear_period_data) {
     // broadcast dummy transaction
     if (node1_chain_size == node2_chain_size) nodes[1]->getTransactionManager()->insertTransaction(dummy_trx);
     thisThreadSleepForMilliSeconds(500);
-    node1_chain_size = nodes[0]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks();
-    node2_chain_size = nodes[1]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks();
+    node1_chain_size = nodes[0]->getPbftProgress().non_empty_finalized_periods;
+    node2_chain_size = nodes[1]->getPbftProgress().non_empty_finalized_periods;
   }
   EXPECT_HAPPENS({10s, 1s}, [&](auto &ctx) {
     // Verify full node and light node sync without any issues
-    WAIT_EXPECT_EQ(ctx, nodes[0]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks(),
-                   nodes[1]->getPbftChain()->getPbftChainSizeExcludingEmptyPbftBlocks())
+    WAIT_EXPECT_EQ(ctx, nodes[0]->getPbftProgress().non_empty_finalized_periods,
+                   nodes[1]->getPbftProgress().non_empty_finalized_periods)
   });
   uint32_t non_empty_counter = 0;
   uint64_t last_anchor_level;
-  for (uint64_t i = 0; i < nodes[0]->getPbftChain()->getPbftChainSize(); i++) {
+  for (uint64_t i = 0; i < nodes[0]->getPbftProgress().finalized_period; i++) {
     const auto pbft_block = nodes[0]->getDB()->getPbftBlock(i);
     if (pbft_block && pbft_block->getPivotDagBlockHash() != kNullBlockHash) {
       non_empty_counter++;
@@ -1498,7 +1497,7 @@ TEST_F(FullNodeTest, clear_period_data) {
     }
   }
   uint32_t first_over_limit = 0;
-  for (uint64_t i = 0; i < nodes[1]->getPbftChain()->getPbftChainSize(); i++) {
+  for (uint64_t i = 0; i < nodes[1]->getPbftProgress().finalized_period; i++) {
     const auto pbft_block = nodes[1]->getDB()->getPbftBlock(i);
     if (pbft_block && pbft_block->getPivotDagBlockHash() != kNullBlockHash) {
       auto dag_block = nodes[1]->getDB()->getDagBlock(pbft_block->getPivotDagBlockHash());
@@ -1636,11 +1635,11 @@ TEST_F(FullNodeTest, SoleiroliaHardfork) {
                                               recipe->new_contract_address);
 
     ASSERT_HAPPENS({2s, 100ms}, [&](auto &ctx) {
-      WAIT_EXPECT_EQ(ctx, node0->getPbftChain()->getPbftChainSize(), node0->getFinalChain()->lastBlockNumber());
+      WAIT_EXPECT_EQ(ctx, node0->getPbftProgress().finalized_period, node0->getFinalChain()->lastBlockNumber());
     });
 
     EXPECT_GE(node0->getTransactionManager()
-                  ->estimateTransactionGas(trx2, node0->getPbftChain()->getPbftChainSize())
+                  ->estimateTransactionGas(trx2, node0->getPbftProgress().finalized_period)
                   .gas_used,
               0);
   }
@@ -1690,7 +1689,7 @@ TEST_F(FullNodeTest, graphql_test) {
   for (auto &trx : samples::createSignedTrxSamples(0, 100, g_secret)) {
     nodes[0]->getTransactionManager()->insertTransaction(std::move(trx));
     thisThreadSleepForMilliSeconds(100);
-    if (nodes[0]->getPbftChain()->getPbftChainSize() >= 5) {
+    if (nodes[0]->getPbftProgress().finalized_period >= 5) {
       break;
     }
   }
@@ -1730,7 +1729,7 @@ TEST_F(FullNodeTest, graphql_test) {
   auto data = service::ScalarArgument::require("data", result);
   auto block = service::ScalarArgument::require("block", data);
   auto number = service::IntArgument::require("number", block);
-  EXPECT_GE(nodes[0]->getPbftChain()->getPbftChainSize(), number);
+  EXPECT_GE(nodes[0]->getPbftProgress().finalized_period, number);
 
   // Get block hash by number
   query = R"({ block(number:3) { hash } })"_graphql;
@@ -1780,7 +1779,7 @@ TEST_F(FullNodeTest, multiple_wallets_support) {
 
   EXPECT_HAPPENS({5s, 200ms}, [&](auto &ctx) {
     // Check if new chain progress
-    WAIT_EXPECT_GT(ctx, node->getPbftChain()->getPbftChainSize(), 1);
+    WAIT_EXPECT_GT(ctx, node->getPbftProgress().finalized_period, 1);
   });
 }
 

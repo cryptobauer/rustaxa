@@ -6,7 +6,7 @@
 #include <utility>
 
 #ifdef RUSTAXA_ENABLE
-#include "pbft/pbft_service.hpp"
+#include "consensus/consensus_application.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa::network {
@@ -64,11 +64,9 @@ rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() noexcept { return
 
 const rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() const noexcept { return *impl_->api; }
 
-PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(const std::vector<uint8_t>& packet_rlp,
-                                                                uint64_t source_payload_id,
-                                                                const std::array<uint8_t, 64>& source_peer_id,
-                                                                const std::vector<PbftSyncSlashingSubmitterFact>& slashing_submitters,
-                                                                const PbftSyncIngressExecutor& executor) {
+PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
+    const std::vector<uint8_t>& packet_rlp, uint64_t source_payload_id, const std::array<uint8_t, 64>& source_peer_id,
+    const std::vector<PbftSyncSlashingSubmitterFact>& slashing_submitters, const PbftSyncIngressExecutor& executor) {
   rust::Vec<rustaxa::SlashingSubmitterIdentity> native_submitters;
   native_submitters.reserve(slashing_submitters.size());
   for (const auto& submitter : slashing_submitters) {
@@ -79,9 +77,8 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(const std::vecto
     native_submitters.push_back(std::move(native));
   }
   auto step = rustaxa::pbft_service_begin_pbft_sync_ingress(
-      impl_->consensus_application->service(),
-      rust::Slice<const uint8_t>(packet_rlp.data(), packet_rlp.size()), source_payload_id, source_peer_id,
-      std::move(native_submitters));
+      impl_->consensus_application->service(), rust::Slice<const uint8_t>(packet_rlp.data(), packet_rlp.size()),
+      source_payload_id, source_peer_id, std::move(native_submitters));
   while (step.action == kPbftSyncIngressAwaitingSlashing) {
     if (!step.has_slashing_transaction_effect || !executor.submit_slashing_transaction) {
       throw std::runtime_error("Native PBFT-sync ingress paused without an executable slashing boundary");
@@ -97,8 +94,7 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(const std::vecto
         std::vector<uint8_t>(native_effect.call_data.begin(), native_effect.call_data.end())};
     const auto transaction_inserted = executor.submit_slashing_transaction(transaction);
     step = rustaxa::pbft_service_report_pbft_sync_ingress_slashing(
-        impl_->consensus_application->service(),
-        step.slashing_transaction_effect.proof_hash, transaction_inserted);
+        impl_->consensus_application->service(), step.slashing_transaction_effect.proof_hash, transaction_inserted);
   }
 
   PbftSyncIngressAction action;
@@ -341,8 +337,8 @@ PbftBlocksBundleOutcome ConsensusNetworkApi::admitPbftBlocksBundle(const std::ve
   for (const auto byte : packet_rlp) {
     bridge_packet.push_back(byte);
   }
-  const auto decision = api().consensus_network_ingest_pbft_blocks_bundle(
-      impl_->consensus_application->service(), std::move(bridge_packet), source_payload_id);
+  const auto decision = api().consensus_network_ingest_pbft_blocks_bundle(impl_->consensus_application->service(),
+                                                                          std::move(bridge_packet), source_payload_id);
   return PbftBlocksBundleOutcome{decision.status, static_cast<std::string>(decision.error_code)};
 }
 

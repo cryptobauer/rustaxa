@@ -8,7 +8,7 @@ namespace taraxa::network::tarcap {
 
 VotePacketHandler::VotePacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                                     std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
+                                     std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
                                      std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
                                      std::shared_ptr<SlashingManager> slashing_manager,

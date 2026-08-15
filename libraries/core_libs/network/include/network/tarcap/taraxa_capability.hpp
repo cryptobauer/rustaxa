@@ -9,11 +9,11 @@
 
 #include "common/thread_pool.hpp"
 #include "config/config.hpp"
+#include "network/consensus_query.hpp"
 #include "network/tarcap/packets_handler.hpp"
 #include "network/tarcap/shared_states/peers_state.hpp"
 #include "network/tarcap/tarcap_version.hpp"
 #include "network/threadpool/tarcap_thread_pool.hpp"
-#include "pbft/pbft_chain.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "network/consensus_network_api.hpp"
 #endif
@@ -73,7 +73,7 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
 #ifndef RUSTAXA_ENABLE
       const std::shared_ptr<DbStorage> &db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
-      const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
+      const std::shared_ptr<PbftManager> &pbft_mgr, const net::ConsensusQueryClient &pbft_chain,
       const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
       const std::shared_ptr<TransactionManager> &trx_mgr,
 #ifndef RUSTAXA_ENABLE
@@ -97,7 +97,7 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
 #ifndef RUSTAXA_ENABLE
                    std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
-                   std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
+                   std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
                    std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
                    std::shared_ptr<TransactionManager> trx_mgr,
 #ifndef RUSTAXA_ENABLE

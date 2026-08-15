@@ -15,7 +15,6 @@
 
 #include "common/thread_pool.hpp"
 #include "dag/dag_block.hpp"
-#include "pbft/pbft_chain.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
 #include "transaction/transaction_manager.hpp"
@@ -56,8 +55,8 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
 
   /** Constructs the production DAG facade over the application-owned service. */
   DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
-             std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-             std::shared_ptr<DbStorage> db, SharedConsensusApplication consensus_application);
+             std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<DbStorage> db,
+             SharedConsensusApplication consensus_application);
   ~DagManager();
 
   DagManager(const DagManager &) = delete;
@@ -239,7 +238,6 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   std::pair<blk_hash_t, std::vector<blk_hash_t>> getRustFrontier() const;
 
   std::shared_ptr<TransactionManager> trx_mgr_;
-  std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::shared_ptr<DbStorage> db_;
   std::weak_ptr<Network> network_;

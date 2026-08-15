@@ -658,15 +658,13 @@ rustaxa::PbftDynamicLambdaFact makePbftDynamicLambdaFact(const HardforksConfig &
 }  // namespace
 
 PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
-                         SharedConsensusApplication consensus_application, std::shared_ptr<PbftChain> pbft_chain,
-                         std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
-                         std::shared_ptr<TransactionManager> trx_mgr,
+                         SharedConsensusApplication consensus_application, std::shared_ptr<VoteManager> vote_mgr,
+                         std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
                          std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr)
     : db_(std::move(db)),
       pbft_service_(consensus_application),
       dag_transaction_service_(std::move(consensus_application)),
-      pbft_chain_(std::move(pbft_chain)),
       vote_mgr_(std::move(vote_mgr)),
       dag_mgr_(std::move(dag_mgr)),
       trx_mgr_(std::move(trx_mgr)),
@@ -691,7 +689,7 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
 
   rustaxa::PbftManagerStartupReplayRangeFact startup_replay_fact;
   startup_replay_fact.final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
-  startup_replay_fact.pbft_chain_size = pbft_chain_->getPbftChainSize();
+  startup_replay_fact.pbft_chain_size = chainTaskView().finalized_period;
   startup_replay_fact.delegation_delay = final_chain_->delegationDelay();
   startup_replay_fact.recently_finalized_factor = kRecentlyFinalizedTransactionsFactor;
   const auto startup_replay_plan = rustaxa::plan_pbft_manager_startup_replay_ranges(startup_replay_fact);
@@ -774,10 +772,10 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
   initialState();
 
   // Update wallets eligibility, call after initialState (waitForPeriodFinalization)
-  eligible_wallets_.updateWalletsEligibility(pbft_chain_->getPbftChainSize(), pbft_service_, final_chain_);
+  eligible_wallets_.updateWalletsEligibility(chainTaskView().finalized_period, pbft_service_, final_chain_);
 
   // Note: processPillarBlock must be called after eligible_wallets_.updateWalletsEligibility
-  auto current_pbft_period = pbft_chain_->getPbftChainSize();
+  auto current_pbft_period = chainTaskView().finalized_period;
   if (kGenesisConfig.state.hardforks.ficus_hf.isPillarBlockPeriod(current_pbft_period)) {
     rustaxa::PillarCurrentAnchorDecisionRequest request{};
     request.operation = kPillarAnchorDecisionRestartPostProcessing;
@@ -1114,7 +1112,21 @@ std::pair<bool, PbftPeriod> PbftManager::getDagBlockPeriod(const blk_hash_t &has
   return {true, static_cast<PbftPeriod>(lookup.period)};
 }
 
-PbftPeriod PbftManager::getPbftPeriod() const { return pbft_chain_->getPbftChainSize() + 1; }
+rustaxa::PbftManagerChainContext PbftManager::chainTaskView() const {
+  return rustaxa::pbft_manager_current_chain_context(pbft_service_->service());
+}
+
+PbftPeriod PbftManager::getPbftPeriod() const {
+  if (!pbft_service_) {
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before reading PBFT period");
+  }
+  const auto snapshot = rustaxa::pbft_manager_runtime_snapshot(pbft_service_->service());
+  if (snapshot.status != kPbftManagerStartupRestoreStatusReady) {
+    throw std::runtime_error("PBFT manager Rust runtime snapshot is not ready: " +
+                             static_cast<std::string>(snapshot.error_code));
+  }
+  return snapshot.period;
+}
 
 PbftRound PbftManager::getPbftRound() const {
   if (!pbft_service_) {
@@ -1164,11 +1176,10 @@ void PbftManager::waitForPeriodFinalization() {
 
 std::optional<uint64_t> PbftManager::getCurrentDposTotalVotesCount() const {
   try {
-    const auto period = pbft_chain_->getPbftChainSize();
+    const auto period = chainTaskView().finalized_period;
     rustaxa::PbftFinalChainDposTotalVoteCountRequest request;
     request.period = period;
-    const auto facts =
-        pbft_service_->service().pbft_service_collect_dpos_total_vote_count(request);
+    const auto facts = pbft_service_->service().pbft_service_collect_dpos_total_vote_count(request);
     if (facts.status == kPbftSyncDposFactsReady && facts.has_total_vote_count) {
       return facts.total_vote_count;
     }
@@ -1176,7 +1187,7 @@ std::optional<uint64_t> PbftManager::getCurrentDposTotalVotesCount() const {
                  << ". Period is too far ahead of actual finalized pbft chain size (" << facts.last_block_number
                  << "). Err msg: " << static_cast<std::string>(facts.error_code);
   } catch (const std::exception &e) {
-    LOG(log_wr_) << "Unable to get CurrentDposTotalVotesCount for period: " << pbft_chain_->getPbftChainSize()
+    LOG(log_wr_) << "Unable to get CurrentDposTotalVotesCount for period: " << chainTaskView().finalized_period
                  << ". Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
                  << "). Err msg: " << e.what();
   }
@@ -1187,13 +1198,12 @@ std::optional<uint64_t> PbftManager::getCurrentDposTotalVotesCount() const {
 std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
   try {
     while (true) {
-      const auto period = pbft_chain_->getPbftChainSize();
+      const auto period = chainTaskView().finalized_period;
       rustaxa::PbftFinalChainDposWalletAggregateVoteCountRequest request;
       request.period = period;
       request.eligible_wallet_period = eligible_wallets_.getWalletsEligiblePeriod();
 
-      auto facts = pbft_service_->service().pbft_service_collect_dpos_wallet_aggregate_vote_count(
-          request);
+      auto facts = pbft_service_->service().pbft_service_collect_dpos_wallet_aggregate_vote_count(request);
       if (!facts.eligible_wallet_period_ready) {
         thisThreadSleepForMilliSeconds(10);
         continue;
@@ -1209,8 +1219,7 @@ std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
         }
       }
 
-      facts = pbft_service_->service().pbft_service_collect_dpos_wallet_aggregate_vote_count(
-          request);
+      facts = pbft_service_->service().pbft_service_collect_dpos_wallet_aggregate_vote_count(request);
       if (facts.status == kPbftSyncDposFactsReady && facts.has_aggregate_vote_count) {
         return facts.aggregate_vote_count;
       }
@@ -1221,8 +1230,9 @@ std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
     }
   } catch (const std::exception &e) {
     LOG(log_wr_) << "Rust FinalChain PBFT node-vote fact collection failed for period "
-                 << pbft_chain_->getPbftChainSize() << ". Period is too far ahead of actual finalized pbft chain size ("
-                 << final_chain_->lastBlockNumber() << "). Err msg: " << e.what();
+                 << chainTaskView().finalized_period
+                 << ". Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
+                 << "). Err msg: " << e.what();
   }
 
   return {};
@@ -1255,7 +1265,7 @@ bool PbftManager::tryPushCertVotesBlock() {
 }
 
 bool PbftManager::advancePeriod() {
-  const auto chain_size = pbft_chain_->getPbftChainSize();
+  const auto chain_size = chainTaskView().finalized_period;
   return applyRustPlannedAdvancePeriod_(chain_size);
 }
 
@@ -1730,9 +1740,8 @@ bool PbftManager::publishProposedBlock(const std::shared_ptr<PbftBlock> &propose
 
 std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(PbftPeriod period, const blk_hash_t &block_hash) {
   const auto result = rustaxa::pbft_service_admit_proposed_block(
-      pbft_service_->service(), dag_transaction_service_->service(), period,
-      toBridgeHash(block_hash), kGenesisConfig.getGasLimits(period).second,
-      kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(period),
+      pbft_service_->service(), dag_transaction_service_->service(), period, toBridgeHash(block_hash),
+      kGenesisConfig.getGasLimits(period).second, kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(period),
       kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(period));
   if (result.status == kPbftProposedBlockAdmissionAcceptedAlreadyValid ||
       result.status == kPbftProposedBlockAdmissionAcceptedNewlyValidated) {
@@ -2061,8 +2070,8 @@ void PbftManager::identifyBlock_() {
           const auto pillar_block_required =
               kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(period);
           const auto leader_selection = rustaxa::pbft_service_select_leader_composed(
-              pbft_service_->service(), dag_transaction_service_->service(), period,
-              round, pbft_gas_limit, extra_data_required, pillar_block_required);
+              pbft_service_->service(), dag_transaction_service_->service(), period, round, pbft_gas_limit,
+              extra_data_required, pillar_block_required);
 
           if (!leader_selection.selected) {
             const auto status = leader_selection.status;
@@ -2396,9 +2405,8 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
     }
 
     const auto selection = rustaxa::pbft_service_select_local_proposal_candidate(
-        pbft_service_->service(), dag_transaction_service_->service(),
-        std::move(candidates), propose_period, propose_round, pbft_gas_limit,
-        kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(propose_period),
+        pbft_service_->service(), dag_transaction_service_->service(), std::move(candidates), propose_period,
+        propose_round, pbft_gas_limit, kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(propose_period),
         kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(propose_period));
     if (!selection.selected) {
       LOG(log_er_) << "Rust PBFT local proposal candidate selection failed for period " << propose_period << ", round "
@@ -2467,8 +2475,9 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
   const auto wallets = eligible_wallets_.getWallets(current_pbft_period);
   auto proposal_wallets = vote_mgr_->proposalWalletFacts(current_pbft_period, current_pbft_round, wallets);
 
-  auto last_pbft_block_hash = pbft_chain_->getLastPbftBlockHash();
-  auto last_period_dag_anchor_block_hash = pbft_chain_->getLastNonNullPbftBlockAnchor();
+  const auto chain_context = chainTaskView();
+  auto last_pbft_block_hash = fromBridgeHash(chain_context.last_pbft_block_hash);
+  auto last_period_dag_anchor_block_hash = fromBridgeHash(chain_context.last_non_null_anchor_hash);
   if (last_period_dag_anchor_block_hash == kNullBlockHash) {
     last_period_dag_anchor_block_hash = dag_genesis_block_hash_;
   }
@@ -2604,8 +2613,8 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   fact.extra_data_present = extra_data.has_value();
   fact.extra_data_pillar_hash_present = pillar_hash.has_value();
   fact.pillar_block_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
-  const auto plan = rustaxa::plan_pbft_manager_block_validation(
-      pbft_service_->service(), dag_transaction_service_->service(), fact);
+  const auto plan =
+      rustaxa::plan_pbft_manager_block_validation(pbft_service_->service(), dag_transaction_service_->service(), fact);
 
   if (plan.action == kPbftManagerBlockValidationActionAccept) {
     return true;
@@ -2822,7 +2831,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     throw std::runtime_error("PBFT manager Rust runtime must be initialized before reading PBFT block existence");
   }
   const auto push_snapshot = rustaxa::pbft_manager_runtime_snapshot(pbft_service_->service());
-  const auto block_in_chain = pbft_service_->service().pbft_chain_block_exists(toBridgeHash(pbft_block_hash));
+  const auto block_in_chain =
+      rustaxa::pbft_manager_chain_block_exists(pbft_service_->service(), toBridgeHash(pbft_block_hash));
   if (block_in_chain && cert_votes.empty()) {
     LOG(log_nf_) << "PBFT block: " << pbft_block_hash << " in DB already.";
     LOG(log_dg_) << "Rust PBFT finalization resume classifier cannot inspect duplicate block " << pbft_block_hash
@@ -2973,7 +2983,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period);
   };
   auto process_pillar_block_for_finalization = [&]() -> std::optional<uint64_t> {
-    assert(block_pbft_period == pbft_chain_->getPbftChainSize());
+    assert(block_pbft_period == chainTaskView().finalized_period);
     const auto delegation_delay = final_chain_->delegationDelay();
     if (delegation_delay >= block_pbft_period) {
       return std::nullopt;
@@ -3333,9 +3343,11 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto pillar_votes_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
   LOG(log_dg_) << "Pop pbft block " << pbft_block_hash << " with period " << block_period << " from synced queue";
 
-  const auto last_pbft_block_hash = pbft_chain_->getLastPbftBlockHash();
-  const auto last_pbft_block_period = pbft_chain_->getPbftChainSize();
-  const auto block_in_chain = pbft_chain_->findPbftBlockInChain(pbft_block_hash);
+  const auto chain_context = chainTaskView();
+  const auto last_pbft_block_hash = fromBridgeHash(chain_context.last_pbft_block_hash);
+  const auto last_pbft_block_period = chain_context.finalized_period;
+  const auto block_in_chain =
+      rustaxa::pbft_manager_chain_block_exists(pbft_service_->service(), toBridgeHash(pbft_block_hash));
   auto net = network_.lock();
   assert(net);  // Should never happen
   auto apply_rust_admission_side_effects = [&](const rustaxa::PbftSyncAdmissionSessionStep &step) {
@@ -3405,8 +3417,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         cert_command.block_hash = toBridgeHash(pbft_block_hash);
         cert_command.cert_vote_rlps = std::move(cert_vote_rlps);
         cert_command.slashing_submitters = vote_mgr_->slashingSubmitterFacts();
-        auto cert_vote_step = rustaxa::pbft_service_pbft_sync_cert_bundle_session(
-            pbft_service_->service(), std::move(cert_command));
+        auto cert_vote_step =
+            rustaxa::pbft_service_pbft_sync_cert_bundle_session(pbft_service_->service(), std::move(cert_command));
         if (cert_vote_step.action == kPbftSyncCertBundleActionAwaitingSlashing) {
           active_sync_cert_session = cert_vote_step.session_id;
         }
@@ -3433,8 +3445,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
           report_command.effect_id = cert_vote_step.effect_id;
           report_command.proof_hash = proof_hash;
           report_command.transaction_inserted = transaction_inserted;
-          cert_vote_step = rustaxa::pbft_service_pbft_sync_cert_bundle_session(
-              pbft_service_->service(), std::move(report_command));
+          cert_vote_step =
+              rustaxa::pbft_service_pbft_sync_cert_bundle_session(pbft_service_->service(), std::move(report_command));
         }
         active_sync_cert_session.reset();
 
@@ -3571,8 +3583,7 @@ void PbftManager::EligibleWallets::updateWalletsEligibility(
     request.addresses.push_back(bridge_address);
   }
 
-  const auto facts = pbft_service->service().pbft_service_collect_dpos_wallet_eligibility_batch(
-      request);
+  const auto facts = pbft_service->service().pbft_service_collect_dpos_wallet_eligibility_batch(request);
   if (facts.status != kPbftSyncDposFactsReady) {
     throw std::runtime_error("Rust FinalChain PBFT wallet-eligibility batch fact collection failed: " +
                              static_cast<std::string>(facts.error_code));

@@ -24,6 +24,7 @@ use rustaxa_vdf::vdf_sortition::decode_vdf_sortition_payload;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
+use crate::pbft_service::PbftService;
 use crate::sortition::{SortitionParamsChange, THRESHOLD_UPPER_MIN_VALUE};
 
 const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
@@ -104,10 +105,21 @@ pub struct QueryPeriodLambda {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChainStatsView {
     pub pbft_period: u64,
+    pub non_empty_pbft_periods: u64,
     pub dag_blocks_count: u64,
     pub transactions_count: u64,
     pub dag_blocks_executed: u64,
     pub transactions_executed: u64,
+}
+
+/// Coherent live PBFT progress exposed to public and transport readers.
+///
+/// Both counters are sampled from one application-owned chain head. No hashes,
+/// mutation hooks, or storage handles cross the client boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PbftProgressView {
+    pub finalized_period: u64,
+    pub non_empty_finalized_periods: u64,
 }
 
 /// Storage-backed public consensus status view.
@@ -378,12 +390,51 @@ pub struct PillarBlockDataView {
 /// boundary.
 pub struct ConsensusQueryApi {
     storage: Arc<Storage>,
+    live_pbft: Option<Arc<PbftService>>,
 }
 
 impl ConsensusQueryApi {
     /// Creates a public query facade over a shared Rust storage owner.
     pub fn new(storage: Arc<Storage>) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            live_pbft: None,
+        }
+    }
+
+    /// Creates the application-root query client over durable storage and the
+    /// live PBFT owner.
+    ///
+    /// Only [`crate::ConsensusApplication`] constructs this form. Public
+    /// clients can observe the current in-memory chain head without receiving
+    /// a mutable PBFT service or a separately constructible chain facade.
+    pub(crate) fn new_live(storage: Arc<Storage>, pbft: Arc<PbftService>) -> Self {
+        Self {
+            storage,
+            live_pbft: Some(pbft),
+        }
+    }
+
+    /// Returns the current application-owned PBFT chain head.
+    ///
+    /// Storage-only query fixtures do not have a live PBFT owner and receive a
+    /// stable error. Production query clients are always constructed by the
+    /// application root and therefore observe the same head as consensus tasks.
+    pub fn pbft_progress(&self) -> Result<PbftProgressView> {
+        let head = self
+            .live_pbft
+            .as_ref()
+            .map(|pbft| pbft.pbft_chain_head())
+            .context("CONSENSUS_QUERY_LIVE_PBFT_UNAVAILABLE")?;
+        Ok(PbftProgressView {
+            finalized_period: head.size,
+            non_empty_finalized_periods: head.non_empty_size,
+        })
+    }
+
+    /// Returns whether a finalized PBFT block hash has a durable period index.
+    pub fn pbft_sync_block_exists(&self, block_hash: [u8; 32]) -> Result<bool> {
+        crate::pbft_chain::pbft_block_exists_in_storage(&self.storage, H256::from(block_hash))
     }
 
     /// Returns the canonical PBFT block hash for a finalized period.
@@ -566,15 +617,30 @@ impl ConsensusQueryApi {
         })
     }
 
-    /// Returns the storage-backed public chain statistics view.
+    /// Returns the public chain statistics view.
     ///
     /// This query keeps `taraxa_getChainStats` behind the public read facade
-    /// without injecting `FinalChain` or `DbStorage` into RPC code. The latest
-    /// finalized period comes from Rust FinalChain metadata, while executed DAG
-    /// block and transaction counters come from Rust status fields.
+    /// without injecting `FinalChain` or `DbStorage` into RPC code. Production
+    /// clients sample both PBFT counters from one live application
+    /// head. Storage-only fixtures retain the persisted finalized-period value.
+    /// Executed DAG block and transaction counters come from Rust status fields.
     pub fn chain_stats(&self) -> Result<ChainStatsView> {
+        let (pbft_period, non_empty_pbft_periods) = match &self.live_pbft {
+            Some(_) => {
+                let progress = self.pbft_progress()?;
+                (
+                    progress.finalized_period,
+                    progress.non_empty_finalized_periods,
+                )
+            }
+            None => {
+                let period = self.final_chain_last_block_number()?;
+                (period, period)
+            }
+        };
         Ok(ChainStatsView {
-            pbft_period: self.final_chain_last_block_number()?,
+            pbft_period,
+            non_empty_pbft_periods,
             dag_blocks_count: self
                 .storage
                 .metadata()
@@ -2080,6 +2146,7 @@ mod tests {
             api.chain_stats().unwrap(),
             ChainStatsView {
                 pbft_period: 9,
+                non_empty_pbft_periods: 9,
                 dag_blocks_count: 55,
                 transactions_count: 89,
                 dag_blocks_executed: 21,

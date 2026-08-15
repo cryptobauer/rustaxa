@@ -60,7 +60,7 @@ pub use consensus_pipeline::{
 pub use consensus_query_api::{
     ChainStatsView, ConsensusQueryApi, ConsensusStatusView, DagBlockView, FinalChainBlockView,
     PbftBlockExtraDataView, PbftCertVoteRlp, PbftNodeVersionView, PbftPeriodCertVotesView,
-    PbftScheduleBlockView, PillarBlockDataView, PillarBlockViewSignature,
+    PbftProgressView, PbftScheduleBlockView, PillarBlockDataView, PillarBlockViewSignature,
     PillarBlockViewVoteCountChange, QueryHashLookup, QueryNumberLookup, QueryPeriodLambda,
     SortitionParamsChangeView, TransactionReceiptView, TransactionView,
 };

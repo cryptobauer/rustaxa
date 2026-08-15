@@ -10,9 +10,8 @@
 
 #include "common/util.hpp"
 #include "common/vrf_wrapper.hpp"
+#include "consensus/consensus_application.hpp"
 #include "final_chain/final_chain.hpp"
-#include "pbft/pbft_chain.hpp"
-#include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pbft_vote.hpp"
 #include "vote_manager/verified_vote_view_types.hpp"
@@ -147,8 +146,7 @@ class VoteManager {
    * - Unported methods keep explicit shim-local forwarding TODOs.
    */
   VoteManager(const FullNodeConfig& config, SharedConsensusApplication pbft_service,
-              std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
-              std::shared_ptr<TransactionManager> trx_manager);
+              std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<TransactionManager> trx_manager);
   ~VoteManager() = default;
   VoteManager(const VoteManager&) = delete;
   VoteManager(VoteManager&&) = delete;
@@ -673,7 +671,6 @@ class VoteManager {
   bool executeSlashingTransactionEffect(const rustaxa::SlashingTransactionEffect& effect);
   const PbftConfig& kPbftConfig;
   const FullNodeConfig& kConfig;
-  std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<TransactionManager> trx_manager_;

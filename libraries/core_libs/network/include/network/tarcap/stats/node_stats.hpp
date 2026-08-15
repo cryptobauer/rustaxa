@@ -5,6 +5,7 @@
 #include "common/types.hpp"
 #include "config/config.hpp"
 #include "logger/logger.hpp"
+#include "network/consensus_query.hpp"
 #include "network/tarcap/tarcap_version.hpp"
 
 namespace taraxa {
@@ -27,7 +28,7 @@ class TimePeriodPacketsStats;
 
 class NodeStats {
  public:
-  NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, std::shared_ptr<PbftChain> pbft_chain,
+  NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
             std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
             std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<TransactionManager> trx_mgr,
             std::shared_ptr<TimePeriodPacketsStats> packets_stats,
@@ -41,7 +42,7 @@ class NodeStats {
 
  private:
   std::shared_ptr<PbftSyncingState> pbft_syncing_state_;
-  std::shared_ptr<PbftChain> pbft_chain_;
+  net::ConsensusQueryClient pbft_chain_;
   std::shared_ptr<PbftManager> pbft_mgr_;
   std::shared_ptr<DagManager> dag_mgr_;
   std::shared_ptr<VoteManager> vote_mgr_;

@@ -3,18 +3,18 @@
 #include "config/version.hpp"
 #include "dag/dag_manager.hpp"
 #include "libp2p/Common.h"
+#include "network/consensus_query.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "network/tarcap/stats/time_period_packets_stats.hpp"
 #include "network/tarcap/taraxa_peer.hpp"
 #include "network/threadpool/tarcap_thread_pool.hpp"
-#include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "transaction/transaction_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
 
 namespace taraxa::network::tarcap {
 
-NodeStats::NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, std::shared_ptr<PbftChain> pbft_chain,
+NodeStats::NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
                      std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
                      std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<TransactionManager> trx_mgr,
                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
@@ -81,8 +81,9 @@ void NodeStats::logNodeStats(const std::vector<std::shared_ptr<network::tarcap::
 
   // Local pbft info...
   const auto [local_pbft_round, local_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
-  const auto local_chain_size = pbft_chain_->getPbftChainSize();
-  const auto local_chain_size_without_empty_blocks = pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks();
+  const auto local_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
+  const auto local_chain_size_without_empty_blocks =
+      net::consensusPbftProgress(pbft_chain_).non_empty_finalized_periods;
 
   const auto local_dpos_total_votes_count = pbft_mgr_->getCurrentDposTotalVotesCount();
   uint64_t local_dpos_node_votes_count = 0;

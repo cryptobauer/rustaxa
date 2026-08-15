@@ -576,7 +576,8 @@ Start with surfaces whose audit already says they own no production state:
 4. ~~`sortition_params_manager_shim`~~ — retired after native `SortitionService` ownership landed
 5. ~~`gas_pricer_shim`~~ — retired after App, RPC/GraphQL, metrics, finalization, and slashing callers moved to
    `TransactionManager`
-6. `pbft_chain_shim`, after its named network/RPC readers use narrow APIs
+6. ~~`pbft_chain_shim`~~ — retired after internal callers moved to application-root tasks and network/RPC readers moved
+   to the client-oriented consensus query API
 
 For each facade:
 

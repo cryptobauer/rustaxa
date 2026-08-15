@@ -5,7 +5,7 @@
 #include <utility>
 
 #include "common/types.hpp"
-#include "pbft/pbft_service.hpp"
+#include "consensus/consensus_application.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa {
