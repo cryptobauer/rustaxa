@@ -74,8 +74,10 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
       const std::shared_ptr<DbStorage> &db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
       const std::shared_ptr<PbftManager> &pbft_mgr, const net::ConsensusQueryClient &pbft_chain,
-      const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
-      const std::shared_ptr<TransactionManager> &trx_mgr,
+#ifndef RUSTAXA_ENABLE
+      const std::shared_ptr<VoteManager> &vote_mgr,
+#endif
+      const std::shared_ptr<DagManager> &dag_mgr, const std::shared_ptr<TransactionManager> &trx_mgr,
 #ifndef RUSTAXA_ENABLE
       const std::shared_ptr<SlashingManager> &slashing_manager,
 #endif
@@ -98,8 +100,10 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
                    std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
                    std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
-                   std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
-                   std::shared_ptr<TransactionManager> trx_mgr,
+#ifndef RUSTAXA_ENABLE
+                   std::shared_ptr<VoteManager> vote_mgr,
+#endif
+                   std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
 #ifndef RUSTAXA_ENABLE
                    std::shared_ptr<SlashingManager> slashing_manager,
 #endif

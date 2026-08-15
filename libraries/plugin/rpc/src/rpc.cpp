@@ -14,7 +14,9 @@
 #include "network/rpc/jsonrpc_http_processor.hpp"
 #include "network/rpc/jsonrpc_ws_server.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
+#endif
 
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -59,7 +61,14 @@ void Rpc::start() {
     const auto chain_size = app->getPbftProgress().finalized_period;
     const auto dpos_total_votes = app->getPbftManager()->getCurrentDposTotalVotesCount();
     const auto dpos_node_votes = app->getPbftManager()->getCurrentNodeVotesCount();
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = net::createConsensusQueryApi(app->getDB());
+    const auto threshold =
+        (*query_api)->consensus_query_pbft_vote_threshold(chain_size, static_cast<uint8_t>(PbftVoteTypes::cert_vote));
+    const auto dpos_quorum = threshold.has_threshold ? std::optional<uint64_t>{threshold.threshold} : std::nullopt;
+#else
     const auto dpos_quorum = app->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote);
+#endif
 
     snapshot.pbft_syncing = app->getNetwork()->pbft_syncing();
     snapshot.syncing_seconds = app->getNetwork()->syncTimeSeconds();

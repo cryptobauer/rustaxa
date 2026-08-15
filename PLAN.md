@@ -918,9 +918,10 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
   effects for the transport executor to perform.
   The current Rust-enabled route uses one `Network`-owned consensus-network API shared by the latest and v5 capability
   handler families. Its effect queue is partitioned by transport lane and PBFT gossip effects own canonical vote/block
-  payloads. Verified-vote admission is an operation-specific application effect correlated by exact effect ID while the
-  packet worker retains the transport-lane lock; Rust consumes the typed `VoteManager` leaf result before releasing
-  proposed-block publication, peer-known, and gossip effects or returning the typed slashing outcome. Exact duplicate votes may still carry a
+  payloads. Verified-vote admission is an application-root task: the network service composes its private PBFT and
+  FinalChain siblings, admits canonical vote bytes directly, and returns a typed outcome before releasing proposed-block
+  publication, peer-known, and gossip effects. Only a typed slashing-transaction signing/insertion result crosses back
+  from the retained C++ executor leaf. Exact duplicate votes may still carry a
   previously unseen block without being regossiped. Bundle shape preflight completes before any member admission. The
   no-consumer generic shadow-ingress arena and its capacity configuration are deleted. Get-PBFT-sync response authority
   is also native for versions five and six: Rust validates canonical requests and history bounds, reads native period
@@ -1041,11 +1042,10 @@ The current Rust consensus footprint is broad but still incomplete:
   that composes canonical validation, event-fact derivation, verified-vote mutation, threshold planning, retained
   storage/slashing vote payload sidecars, and typed executor intents for peer-known marking, proposed-block sidecar
   routing, gossip, and PBFT progress. Latest-tarcap vote handlers request admission through the shared Rust network
-  effect root; C++ calls the Rust-mode `VoteManager` only as a typed application leaf and reports its outcome under the
-  same lane lock, so single-vote and bundle paths mark peers/votes known, report slashing, and gossip only after Rust
-  admission has accepted the vote. VoteManager's compatibility snapshot and
-  2t+1 materializers consume direct native-service payloads to build temporary `PbftVote` sidecars instead of skipping
-  missing live sidecars. Reward-vote validation and materialization now enter the same runtime:
+  root, which calls the application-owned PBFT task directly; single-vote and bundle paths mark peers/votes known,
+  report slashing, and gossip only after native admission accepts the vote. Public snapshots and 2t+1 reads use
+  `ConsensusQueryApi`, while PBFT executor leaves materialize temporary `PbftVote` sidecars only from canonical native
+  payloads. Reward-vote validation and materialization enter the same runtime:
   Rust builds preferred-round and reverse-period candidates from Rust-owned verified-vote metadata and returns selected
   retained weighted records in PBFT-block requested order. All compatibility materialization uses Rust-retained payloads;
   missing retained payloads for Rust-owned selected votes are invariant errors. The crate also contains a side-effect-free
@@ -1053,16 +1053,14 @@ The current Rust consensus footprint is broad but still incomplete:
   plus a Rust-owned PBFT vote pipeline session that stages
   verified-vote insertion reports into typed
   known/admit/slashing/gossip/progress intents, a side-effect-free PBFT vote ingress planner for deterministic
-  single-vote and bundle relevance/window/sync-hint/drop decisions reached only through the composed network ingress/effect API, and exposes operation-specific CXX bridge surfaces for Rust-mode
-  `VoteManager::addVerifiedVote` execution, Rust-owned PBFT vote validation
+  single-vote and bundle relevance/window/sync-hint/drop decisions reached only through the composed network ingress/effect API, and exposes operation-specific application-root tasks for Rust-owned PBFT vote validation
   planning with replay-cache storage and composed canonical PBFT vote validation, signed/unsigned vote hashing,
   signature recovery, VRF proof verification,
   Rust-composed received-vote enrichment through borrowed FinalChain state, address-keyed VRF-key fallback caching,
   Rust-computed received-vote weight and canonical weighted-payload construction, sortition-threshold calculation,
   Rust-owned PBFT `2t+1` threshold cache, local
-  proposer-sortition screening, Rust-owned local PBFT vote byte generation/signing for canonical signed and weighted
-  vote payloads with shim-side parity checks against temporary C++ live sidecars for the Rust-mode `VoteManager`
-  overlay, and Rust-owned optimized PBFT vote-bundle construction from retained weighted payload records for
+  proposer-sortition screening, Rust-owned local PBFT vote byte generation for canonical signed and weighted vote
+  payloads through the retained signing leaf, and Rust-owned optimized PBFT vote-bundle construction from retained weighted payload records for
   get-next-votes egress. The PBFT application root now owns the single native network service and its queue; direct
   next-vote and pillar-bundle response routes query native sibling services without holding the network lock, validate
   and chunk packet-ready payloads, and order successful-send known effects in Rust. Get-next-votes now uses a standalone

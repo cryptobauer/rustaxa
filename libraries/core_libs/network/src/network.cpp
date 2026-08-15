@@ -46,8 +46,10 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
                  std::shared_ptr<DbStorage> db,
 #endif
                  std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
-                 std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
-                 std::shared_ptr<TransactionManager> trx_mgr,
+#ifndef RUSTAXA_ENABLE
+                 std::shared_ptr<VoteManager> vote_mgr,
+#endif
+                 std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
 #ifndef RUSTAXA_ENABLE
                  std::shared_ptr<SlashingManager> slashing_manager,
 #endif
@@ -82,7 +84,10 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
       kConf.network.ddos_protection.packets_stats_time_period_ms, node_addr);
 
   node_stats_ = std::make_shared<network::tarcap::NodeStats>(pbft_syncing_state_, pbft_chain, pbft_mgr, dag_mgr,
-                                                             vote_mgr, trx_mgr, all_packets_stats_, packets_tp_, kConf);
+#ifndef RUSTAXA_ENABLE
+                                                             vote_mgr,
+#endif
+                                                             trx_mgr, all_packets_stats_, packets_tp_, kConf);
 
   // TODO make all these properties configurable
   dev::p2p::NetworkConfig net_conf;
@@ -117,7 +122,11 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
         db,
 #endif
-        pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr,
+        pbft_mgr, pbft_chain,
+#ifndef RUSTAXA_ENABLE
+        vote_mgr,
+#endif
+        dag_mgr, trx_mgr,
 #ifndef RUSTAXA_ENABLE
         slashing_manager,
 #endif
@@ -136,7 +145,11 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
         db,
 #endif
-        pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr,
+        pbft_mgr, pbft_chain,
+#ifndef RUSTAXA_ENABLE
+        vote_mgr,
+#endif
+        dag_mgr, trx_mgr,
 #ifndef RUSTAXA_ENABLE
         slashing_manager,
 #endif

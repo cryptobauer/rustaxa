@@ -199,7 +199,11 @@ impl ConsensusApplication {
     /// it cannot construct or mutate a competing consensus runtime.
     #[doc(hidden)]
     pub fn consensus_query_api_for_bridge(&self) -> crate::ConsensusQueryApi {
-        crate::ConsensusQueryApi::new_live(Arc::clone(&self.storage), Arc::clone(&self.pbft))
+        crate::ConsensusQueryApi::new_live(
+            Arc::clone(&self.storage),
+            Arc::clone(&self.pbft),
+            Arc::clone(&self.final_chain),
+        )
     }
 
     fn restore_with_final_chain(
@@ -259,6 +263,16 @@ impl ConsensusApplication {
     #[doc(hidden)]
     pub fn pbft_for_bridge(&self) -> &PbftService {
         self.pbft.as_ref()
+    }
+
+    /// Clones the private PBFT owner for a root-bound Rust adapter.
+    ///
+    /// The clone never crosses CXX and cannot construct a competing runtime;
+    /// it lets the network bridge compose packet ingress with the exact vote
+    /// service owned by this application root.
+    #[doc(hidden)]
+    pub fn pbft_arc_for_bridge(&self) -> Arc<PbftService> {
+        Arc::clone(&self.pbft)
     }
 
     /// Borrows DAG/transaction ownership for thin Rust bridge task dispatch.

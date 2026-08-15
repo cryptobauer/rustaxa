@@ -10,6 +10,7 @@
 #include "pbft/pbft_manager.hpp"
 #include "test_util/test_util.hpp"
 
+#ifndef RUSTAXA_ENABLE
 namespace taraxa::core_tests {
 using namespace vrf_wrapper;
 
@@ -548,6 +549,7 @@ TEST_F(VoteTest, vote_count_compare) {
 }
 
 }  // namespace taraxa::core_tests
+#endif
 
 using namespace taraxa;
 int main(int argc, char **argv) {

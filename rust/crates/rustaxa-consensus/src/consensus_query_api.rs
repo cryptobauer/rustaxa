@@ -2,9 +2,10 @@
 //!
 //! The facade is the narrow read-only API that RPC, GraphQL, plugins, debug
 //! tools, and CLI code should call instead of reaching into consensus managers,
-//! mutable sidecars, or generic storage iterators. It owns only a cloned Rust
-//! storage handle and mutates no state; callers receive stable DTOs plus
-//! canonical bytes when compatibility materializers still need legacy encodings.
+//! mutable sidecars, or generic storage iterators. It owns cloned references to
+//! the shared storage, PBFT, and FinalChain siblings and mutates no state;
+//! callers receive stable DTOs plus canonical bytes when compatibility
+//! materializers still need legacy encodings.
 
 use anyhow::{Context, Result};
 use ethereum_types::{H160, H256};
@@ -24,8 +25,10 @@ use rustaxa_vdf::vdf_sortition::decode_vdf_sortition_payload;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
+use crate::final_chain::FinalChain;
 use crate::pbft_service::PbftService;
 use crate::sortition::{SortitionParamsChange, THRESHOLD_UPPER_MIN_VALUE};
+use crate::verified_votes::PbftVoteType;
 
 const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 const DAG_BLOCKS_POS_IN_PERIOD_DATA: usize = 2;
@@ -391,6 +394,7 @@ pub struct PillarBlockDataView {
 pub struct ConsensusQueryApi {
     storage: Arc<Storage>,
     live_pbft: Option<Arc<PbftService>>,
+    live_final_chain: Option<Arc<FinalChain>>,
 }
 
 impl ConsensusQueryApi {
@@ -399,6 +403,7 @@ impl ConsensusQueryApi {
         Self {
             storage,
             live_pbft: None,
+            live_final_chain: None,
         }
     }
 
@@ -408,11 +413,50 @@ impl ConsensusQueryApi {
     /// Only [`crate::ConsensusApplication`] constructs this form. Public
     /// clients can observe the current in-memory chain head without receiving
     /// a mutable PBFT service or a separately constructible chain facade.
-    pub(crate) fn new_live(storage: Arc<Storage>, pbft: Arc<PbftService>) -> Self {
+    pub(crate) fn new_live(
+        storage: Arc<Storage>,
+        pbft: Arc<PbftService>,
+        final_chain: Arc<FinalChain>,
+    ) -> Self {
         Self {
             storage,
             live_pbft: Some(pbft),
+            live_final_chain: Some(final_chain),
         }
+    }
+
+    /// Returns the number of votes in the live application-owned verified-vote index.
+    ///
+    /// Storage-only fixtures have no live vote owner and return
+    /// `CONSENSUS_QUERY_LIVE_PBFT_UNAVAILABLE`. The count is sampled under the
+    /// native verified-vote lock and never exposes the mutable index.
+    pub fn verified_vote_count(&self) -> Result<u64> {
+        self.live_pbft
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_PBFT_UNAVAILABLE")?
+            .verified_votes_size()
+    }
+
+    /// Resolves the live PBFT quorum threshold for one period and vote kind.
+    ///
+    /// The query composes the application-owned PBFT and FinalChain siblings,
+    /// including the native threshold cache and exact DPoS lookup. Unsupported
+    /// vote kinds, future DPoS state, and infrastructure failures remain typed
+    /// planner statuses rather than being converted to a misleading quorum.
+    pub fn pbft_vote_threshold(
+        &self,
+        period: u64,
+        vote_type: PbftVoteType,
+    ) -> Result<crate::pbft_thresholds::PbftTwoTPlusOneThresholdPlan> {
+        let pbft = self
+            .live_pbft
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_PBFT_UNAVAILABLE")?;
+        let final_chain = self
+            .live_final_chain
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_FINAL_CHAIN_UNAVAILABLE")?;
+        pbft.public_vote_threshold(final_chain.as_ref(), period, vote_type)
     }
 
     /// Returns the current application-owned PBFT chain head.

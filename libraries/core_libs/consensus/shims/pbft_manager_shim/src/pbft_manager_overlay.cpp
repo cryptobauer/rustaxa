@@ -9,6 +9,7 @@
 #include <exception>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -24,7 +25,7 @@
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
 #include "transaction/transaction.hpp"
-#include "vote_manager/vote_manager.hpp"
+#include "vote/pbft_vote.hpp"
 
 namespace taraxa {
 using namespace std::chrono_literals;
@@ -137,7 +138,6 @@ constexpr uint8_t kPbftManagerTransitionStorageStatusApplied = 0;
 constexpr uint8_t kPbftFinalizationExecutorModeFresh = 0;
 constexpr uint8_t kPbftFinalizationExecutorModeResume = 1;
 constexpr uint8_t kPbftManagerAdvancePeriodActionApplyExecutedBlockReset = 1;
-constexpr uint8_t kPbftManagerAdvancePeriodActionSetVoteManagerPeriodRound = 2;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetCurrentRoundTimer = 3;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetRewardVoteCounters = 4;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetPeriodTimer = 5;
@@ -161,6 +161,12 @@ constexpr uint8_t kPbftProposedBlockAdmissionAcceptedNewlyValidated = 2;
 constexpr uint8_t kPbftProposedBlockAdmissionRejected = 3;
 constexpr uint8_t kPillarAnchorDecisionSelectPreviousPeriod = 1;
 constexpr uint8_t kPillarAnchorDecisionRestartPostProcessing = 2;
+constexpr uint8_t kPbftVoteGenerationStatusGenerated = 0;
+constexpr uint8_t kPbftVoteValidationStatusValid = 1;
+constexpr uint8_t kPbftVoteAdmissionPersistenceRejected = 2;
+constexpr uint8_t kPbftVotePersistenceStatusApplied = 0;
+constexpr uint8_t kPbftTwoTPlusOneThresholdStatusAvailable = 0;
+constexpr uint8_t kPbftProposerSortitionStatusFutureDposState = 4;
 
 // Returns the shared PBFT service after pillar bootstrap has completed.
 // Production decision paths fail explicitly instead of constructing or
@@ -294,8 +300,8 @@ void ensurePbftManagerRuntimeSnapshotReady(const rustaxa::PbftManagerRuntimeSnap
 }
 
 rustaxa::PbftManagerLifecycleTransitionRequest makePbftManagerLifecycleTransitionRequest(
-    uint8_t kind, PbftPeriod target_period, PbftRound target_round, const VoteManager &vote_mgr,
-    const rustaxa::PbftManagerRuntimeSnapshot &snapshot) {
+    uint8_t kind, PbftPeriod target_period, PbftRound target_round,
+    const rustaxa::BridgeConsensusApplication &application, const rustaxa::PbftManagerRuntimeSnapshot &snapshot) {
   rustaxa::PbftManagerLifecycleTransitionRequest request{};
   request.kind = kind;
   request.target_period = target_period;
@@ -308,17 +314,22 @@ rustaxa::PbftManagerLifecycleTransitionRequest makePbftManagerLifecycleTransitio
                  : static_cast<PbftStep>(snapshot.step + 1));
   if (next_step >= kMaxSteps && next_step % 2) {
     request.has_network_next_voting_step = true;
-    request.network_next_voting_step =
-        vote_mgr.getNetworkTplusOneNextVotingStep(target_period, static_cast<PbftRound>(snapshot.round));
+    const auto votes = application.pbft_service_verified_votes_state_snapshot();
+    for (const auto &marker : votes.round_markers) {
+      if (marker.period == target_period && marker.round == snapshot.round) {
+        request.network_next_voting_step = marker.network_t_plus_one_step;
+        break;
+      }
+    }
   }
   return request;
 }
 
 rustaxa::PbftManagerStateActionFact makePbftManagerStateActionFact(
     PbftStates state, PbftPeriod period, PbftRound round, PbftStep step, std::chrono::milliseconds elapsed,
-    std::chrono::milliseconds deadline, std::chrono::milliseconds current_round_lambda, const VoteManager &vote_mgr,
-    bool has_cert_voted_block, const blk_hash_t &cert_voted_block_hash, bool already_next_voted_value,
-    bool already_next_voted_null_block_hash) {
+    std::chrono::milliseconds deadline, std::chrono::milliseconds current_round_lambda,
+    const rustaxa::BridgeConsensusApplication &application, bool has_cert_voted_block,
+    const blk_hash_t &cert_voted_block_hash, bool already_next_voted_value, bool already_next_voted_null_block_hash) {
   rustaxa::PbftManagerStateActionFact fact{};
   fact.state = toPbftManagerRuntimeState(state);
   fact.period = period;
@@ -339,13 +350,25 @@ rustaxa::PbftManagerStateActionFact makePbftManagerStateActionFact(
   const auto needs_current_round_soft =
       state == finish_polling_state || (state == certify_state && certify_vote_window_started && !certify_will_finish);
 
-  const auto vote_facts = vote_mgr.stateActionVoteFacts(period, round, needs_previous_round_next_null,
-                                                        needs_previous_round_next_value, needs_current_round_soft);
-  fact.has_previous_round_next_null = vote_facts.has_previous_round_next_null;
-  fact.has_previous_round_next_value = vote_facts.has_previous_round_next_value;
-  fact.previous_round_next_value_hash = toBridgeHash(vote_facts.previous_round_next_value_hash);
-  fact.has_current_round_soft_value = vote_facts.has_current_round_soft_value;
-  fact.current_round_soft_value_hash = toBridgeHash(vote_facts.current_round_soft_value_hash);
+  if (round >= 2 && needs_previous_round_next_null) {
+    fact.has_previous_round_next_null =
+        application
+            .pbft_service_verified_votes_get_two_t_plus_one_voted_block(
+                period, round - 1, static_cast<uint8_t>(TwoTPlusOneVotedBlockType::NextVotedNullBlock))
+            .found;
+  }
+  if (round >= 2 && needs_previous_round_next_value) {
+    const auto lookup = application.pbft_service_verified_votes_get_two_t_plus_one_voted_block(
+        period, round - 1, static_cast<uint8_t>(TwoTPlusOneVotedBlockType::NextVotedBlock));
+    fact.has_previous_round_next_value = lookup.found;
+    fact.previous_round_next_value_hash = lookup.block_hash;
+  }
+  if (needs_current_round_soft) {
+    const auto lookup = application.pbft_service_verified_votes_get_two_t_plus_one_voted_block(
+        period, round, static_cast<uint8_t>(TwoTPlusOneVotedBlockType::SoftVotedBlock));
+    fact.has_current_round_soft_value = lookup.found;
+    fact.current_round_soft_value_hash = lookup.block_hash;
+  }
 
   if (has_cert_voted_block) {
     fact.has_cert_voted_block = true;
@@ -449,6 +472,259 @@ std::shared_ptr<PbftVote> materializeWeightedVoteFromStorageRecord(const rustaxa
     throw std::runtime_error("Rust PBFT leader result vote lacks positive weight");
   }
   return vote;
+}
+
+rust::Slice<const uint8_t> toBridgeByteSlice(const rust::Vec<uint8_t> &bytes) {
+  return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
+}
+
+std::array<uint8_t, 20> toBridgeAddress(const addr_t &address) { return address.asArray(); }
+
+std::array<uint8_t, 32> toBridgeU256(const u256 &value) {
+  std::array<uint8_t, 32> out{};
+  const auto bytes = dev::toBigEndian(value);
+  std::copy(bytes.begin(), bytes.end(), out.begin() + (out.size() - bytes.size()));
+  return out;
+}
+
+rust::Vec<rustaxa::SlashingSubmitterIdentity> makeSlashingSubmitterFacts(
+    const FullNodeConfig &config, const std::shared_ptr<final_chain::FinalChain> &final_chain) {
+  rust::Vec<rustaxa::SlashingSubmitterIdentity> submitters;
+  submitters.reserve(config.wallets.size());
+  for (size_t index = 0; index < config.wallets.size(); ++index) {
+    const auto &wallet = config.wallets[index];
+    const auto account = final_chain->getAccount(wallet.node_addr).value_or(state_api::ZeroAccount);
+    rustaxa::SlashingSubmitterIdentity fact{};
+    fact.wallet_index = index;
+    fact.nonce = toBridgeU256(account.nonce);
+    fact.balance = toBridgeU256(account.balance);
+    submitters.push_back(std::move(fact));
+    if (account.balance != 0) {
+      break;
+    }
+  }
+  return submitters;
+}
+
+rustaxa::PbftTwoTPlusOneThresholdPlan resolveVoteThreshold(const rustaxa::BridgeConsensusApplication &application,
+                                                           const PbftConfig &config, PbftPeriod period,
+                                                           PbftVoteTypes vote_type) {
+  rustaxa::PbftTwoTPlusOneThresholdFact fact{};
+  fact.pbft_period = period;
+  fact.vote_type = static_cast<uint8_t>(vote_type);
+  fact.committee_size = config.committee_size;
+  fact.number_of_proposers = config.number_of_proposers;
+  return application.pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(fact);
+}
+
+template <size_t N, typename FixedHash>
+std::array<uint8_t, N> toBridgeSecret(const FixedHash &value) {
+  std::array<uint8_t, N> out{};
+  std::copy(value.data(), value.data() + N, out.begin());
+  return out;
+}
+
+rustaxa::PbftVoteGenerationInput makeVoteGenerationInput(const blk_hash_t &block_hash, PbftVoteTypes vote_type,
+                                                         PbftPeriod period, PbftRound round, PbftStep step,
+                                                         const WalletConfig &wallet) {
+  rustaxa::PbftVoteGenerationInput input{};
+  input.block_hash = toBridgeHash(block_hash);
+  input.vote_type = static_cast<uint8_t>(vote_type);
+  input.period = period;
+  input.round = round;
+  input.step = step;
+  input.node_secret = toBridgeSecret<32>(wallet.node_secret);
+  input.vrf_secret = toBridgeSecret<64>(wallet.vrf_secret);
+  input.expected_voter = toBridgeAddress(wallet.node_addr);
+  input.expected_vrf_public_key = toBridgeSecret<32>(wallet.vrf_pk);
+  return input;
+}
+
+rustaxa::PbftProposerSortitionRequest makeProposerSortitionRequest(PbftPeriod period, PbftRound round,
+                                                                   const WalletConfig &wallet,
+                                                                   const PbftConfig &config) {
+  rustaxa::PbftProposerSortitionRequest request{};
+  request.pbft_period = period;
+  request.pbft_round = round;
+  request.number_of_proposers = config.number_of_proposers;
+  request.vrf_secret = toBridgeSecret<64>(wallet.vrf_secret);
+  request.expected_vrf_public_key = toBridgeSecret<32>(wallet.vrf_pk);
+  request.voter_public_key = toBridgeSecret<64>(wallet.node_pk);
+  request.expected_voter = toBridgeAddress(wallet.node_addr);
+  return request;
+}
+
+std::shared_ptr<PbftVote> materializeGeneratedVote(const rustaxa::PbftGeneratedVote &generated,
+                                                   const WalletConfig &wallet) {
+  if (!generated.accepted || generated.status != kPbftVoteGenerationStatusGenerated || !generated.has_weight ||
+      generated.vote_rlp.empty()) {
+    return nullptr;
+  }
+  auto vote = std::make_shared<PbftVote>(fromBridgeBytes(generated.vote_rlp));
+  if (!vote->verifyVrfSortition(wallet.vrf_pk, true) || !vote->getWeight().has_value() || *vote->getWeight() == 0 ||
+      vote->getHash() != fromBridgeHash(generated.vote_hash)) {
+    throw std::runtime_error("Rust local vote materialization mismatched generated vote facts");
+  }
+  return vote;
+}
+
+u256 fromBridgeU256(const std::array<uint8_t, 32> &value);
+addr_t fromBridgeAddress(const std::array<uint8_t, 20> &address);
+
+bool submitSlashingEffect(const rustaxa::BridgeConsensusApplication &application,
+                          const rustaxa::SlashingTransactionEffect &effect, const FullNodeConfig &config,
+                          const std::shared_ptr<TransactionManager> &transaction_manager) {
+  if (effect.status != 0 || effect.wallet_index >= config.wallets.size()) {
+    throw std::runtime_error("Rust local vote admission returned an invalid slashing effect");
+  }
+  const auto &wallet = config.wallets[effect.wallet_index];
+  bytes call_data(effect.call_data.begin(), effect.call_data.end());
+  auto transaction = std::make_shared<Transaction>(
+      fromBridgeU256(effect.nonce), fromBridgeU256(effect.value), transaction_manager->gasPriceBid(), effect.gas_limit,
+      std::move(call_data), wallet.node_secret, fromBridgeAddress(effect.contract_address), config.genesis.chain_id);
+  const auto inserted = transaction_manager->insertTransaction(transaction).first;
+  return application.pbft_service_verified_votes_report_slashing_transaction_submission(effect.proof_hash, inserted);
+}
+
+bool admitAndPersistOwnVote(const rustaxa::BridgeConsensusApplication &application, const PbftConfig &config,
+                            const FullNodeConfig &node_config,
+                            const std::shared_ptr<final_chain::FinalChain> &final_chain,
+                            const std::shared_ptr<TransactionManager> &transaction_manager,
+                            const std::shared_ptr<PbftVote> &vote, PbftPeriod current_period, PbftRound current_round) {
+  if (!vote || vote->getPeriod() == 0 || !vote->getWeight().has_value() || *vote->getWeight() == 0) {
+    return false;
+  }
+  const auto threshold = resolveVoteThreshold(application, config, vote->getPeriod() - 1, vote->getType());
+  rustaxa::PbftVoteAdmissionValidationRequest validation{};
+  validation.strict_vrf = true;
+  validation.committee_size = config.committee_size;
+  validation.number_of_proposers = config.number_of_proposers;
+  validation.has_preverified_weight = true;
+  validation.preverified_weight = *vote->getWeight();
+  rustaxa::PbftVoteEventFactFlags flags{};
+  flags.carries_proposed_block = true;
+  rustaxa::PbftVoteProgressContext context{};
+  context.current_period = current_period;
+  context.current_round = current_round;
+  context.max_future_period_delta = std::numeric_limits<uint64_t>::max();
+  context.has_two_t_plus_one_threshold =
+      threshold.status == kPbftTwoTPlusOneThresholdStatusAvailable && threshold.has_threshold;
+  context.two_t_plus_one_threshold = context.has_two_t_plus_one_threshold ? threshold.threshold : 0;
+  context.require_proposed_block_sidecar = false;
+  context.slashing_enabled = true;
+  const auto vote_rlp = toBridgeBytes(vote->rlp(true, false));
+  const auto result = application.pbft_service_verified_votes_admit_and_persist_with_final_chain(
+      toBridgeByteSlice(vote_rlp), std::move(validation), flags, context,
+      makeSlashingSubmitterFacts(node_config, final_chain));
+  if (result.persistence_status == kPbftVoteAdmissionPersistenceRejected) {
+    throw std::runtime_error("Rust local vote admission persistence failed: " +
+                             static_cast<std::string>(result.error_code));
+  }
+  if (result.report_slashing) {
+    if (result.has_slashing_transaction_effect) {
+      submitSlashingEffect(application, result.slashing_transaction_effect, node_config, transaction_manager);
+    }
+    return false;
+  }
+  if (!result.accepted || !result.has_validation || result.validation.status != kPbftVoteValidationStatusValid ||
+      !result.has_verified_vote_add || !result.verified_vote_add.inserted) {
+    return false;
+  }
+  const auto persistence =
+      application.pbft_service_verified_votes_save_own_verified_vote(toBridgeByteSlice(vote_rlp), *vote->getWeight());
+  if (persistence.status != kPbftVotePersistenceStatusApplied) {
+    throw std::runtime_error("Rust own-vote persistence failed: " + static_cast<std::string>(persistence.error_code));
+  }
+  return true;
+}
+
+std::vector<std::shared_ptr<PbftVote>> materializeVoteRecords(
+    const rust::Vec<rustaxa::PbftVoteStorageRecord> &records) {
+  std::vector<std::shared_ptr<PbftVote>> votes;
+  votes.reserve(records.size());
+  for (const auto &record : records) {
+    votes.push_back(materializeWeightedVoteFromStorageRecord(record));
+  }
+  return votes;
+}
+
+std::vector<std::shared_ptr<PbftVote>> twoTPlusOneVotePayloads(const rustaxa::BridgeConsensusApplication &application,
+                                                               PbftPeriod period, PbftRound round,
+                                                               TwoTPlusOneVotedBlockType kind) {
+  const auto lookup = application.pbft_service_verified_votes_get_two_t_plus_one_voted_block_payloads(
+      period, round, static_cast<uint8_t>(kind));
+  if (!lookup.found) {
+    return {};
+  }
+  return materializeVoteRecords(lookup.votes);
+}
+
+bool isUniqueLocalVote(const rustaxa::BridgeConsensusApplication &application,
+                       const std::shared_ptr<PbftVote> &candidate) {
+  const auto lookup = application.pbft_service_verified_votes_step_payloads(
+      candidate->getPeriod(), candidate->getRound(), candidate->getStep());
+  if (!lookup.found) {
+    return true;
+  }
+  for (const auto &entry : lookup.entries) {
+    for (const auto &record : entry.votes) {
+      const auto vote = materializeWeightedVoteFromStorageRecord(record);
+      if (vote->getVoterAddr() != candidate->getVoterAddr() || vote->getHash() == candidate->getHash()) {
+        continue;
+      }
+      if (candidate->getType() == PbftVoteTypes::next_vote && candidate->getStep() % 2 &&
+          (vote->getBlockHash() == kNullBlockHash) != (candidate->getBlockHash() == kNullBlockHash)) {
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<std::shared_ptr<PbftVote>> currentRewardVotes(const rustaxa::BridgeConsensusApplication &application) {
+  return materializeVoteRecords(application.pbft_service_verified_votes_current_reward_snapshot().records);
+}
+
+std::optional<std::vector<std::shared_ptr<PbftVote>>> collectRewardVotes(
+    const rustaxa::BridgeConsensusApplication &application, const std::shared_ptr<PbftBlock> &block) {
+  if (!block) {
+    return std::nullopt;
+  }
+  rust::Vec<rustaxa::PbftFinalizationHash> hashes;
+  hashes.reserve(block->getRewardVotes().size());
+  for (const auto &hash : block->getRewardVotes()) {
+    hashes.push_back(rustaxa::PbftFinalizationHash{toBridgeHash(hash)});
+  }
+  const auto selection =
+      application.pbft_service_verified_votes_select_reward_vote_payloads(block->getPeriod(), std::move(hashes));
+  if (!selection.accepted) {
+    return std::nullopt;
+  }
+  return materializeVoteRecords(selection.selected_records);
+}
+
+struct RoundBroadcastVotePayloads {
+  std::vector<std::shared_ptr<PbftVote>> reward_votes;
+  std::vector<std::shared_ptr<PbftVote>> own_votes;
+  std::vector<std::shared_ptr<PbftVote>> soft_votes;
+  std::vector<std::shared_ptr<PbftVote>> previous_round_next_votes;
+  std::vector<std::shared_ptr<PbftVote>> previous_round_next_null_votes;
+};
+
+RoundBroadcastVotePayloads roundBroadcastVotePayloads(const rustaxa::BridgeConsensusApplication &application,
+                                                      PbftPeriod period, PbftRound round) {
+  RoundBroadcastVotePayloads payloads;
+  payloads.reward_votes = currentRewardVotes(application);
+  payloads.own_votes = materializeVoteRecords(application.pbft_service_verified_votes_own_vote_records());
+  payloads.soft_votes = twoTPlusOneVotePayloads(application, period, round, TwoTPlusOneVotedBlockType::SoftVotedBlock);
+  if (round > 1) {
+    payloads.previous_round_next_votes =
+        twoTPlusOneVotePayloads(application, period, round - 1, TwoTPlusOneVotedBlockType::NextVotedBlock);
+    payloads.previous_round_next_null_votes =
+        twoTPlusOneVotePayloads(application, period, round - 1, TwoTPlusOneVotedBlockType::NextVotedNullBlock);
+  }
+  return payloads;
 }
 
 template <typename Hash>
@@ -658,14 +934,13 @@ rustaxa::PbftDynamicLambdaFact makePbftDynamicLambdaFact(const HardforksConfig &
 }  // namespace
 
 PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
-                         SharedConsensusApplication consensus_application, std::shared_ptr<VoteManager> vote_mgr,
-                         std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
+                         SharedConsensusApplication consensus_application, std::shared_ptr<DagManager> dag_mgr,
+                         std::shared_ptr<TransactionManager> trx_mgr,
                          std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr)
     : db_(std::move(db)),
       pbft_service_(consensus_application),
       dag_transaction_service_(std::move(consensus_application)),
-      vote_mgr_(std::move(vote_mgr)),
       dag_mgr_(std::move(dag_mgr)),
       trx_mgr_(std::move(trx_mgr)),
       final_chain_(std::move(final_chain)),
@@ -676,6 +951,7 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
       dynamic_lambda_(conf.genesis.state.hardforks.cacti_hf.lambda_max),
       dag_genesis_block_hash_(conf.genesis.dag_genesis_block.getHash()),
       kGenesisConfig(conf.genesis),
+      kConfig(conf),
       eligible_wallets_(conf.wallets) {
   if (!pbft_service_) {
     throw std::invalid_argument("PBFT manager requires a shared consensus application");
@@ -720,12 +996,21 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
       }
 
       // We need this section because votes need to be verified for reward distribution
-      const auto replay_vote_validation = vote_mgr_->validateStartupReplayVotes(period_data.previous_block_cert_votes);
-      if (!replay_vote_validation.accepted) {
-        LOG(log_er_) << "DB corrupted - Cannot validate startup replay cert vote "
-                     << replay_vote_validation.first_bad_vote_hash << " in period " << period
-                     << ". Err: " << replay_vote_validation.validation_error;
-        assert(false);
+      for (const auto &vote : period_data.previous_block_cert_votes) {
+        if (!vote) {
+          LOG(log_er_) << "DB corrupted - missing startup replay cert vote in period " << period;
+          assert(false);
+          continue;
+        }
+        const auto vote_rlp = toBridgeBytes(vote->rlp(true, false));
+        const auto validation = pbft_service_->service().pbft_service_verified_votes_validate_with_final_chain(
+            toBridgeByteSlice(vote_rlp), true, kGenesisConfig.pbft.committee_size,
+            kGenesisConfig.pbft.number_of_proposers);
+        if (!validation.validation.accepted) {
+          LOG(log_er_) << "DB corrupted - Cannot validate startup replay cert vote " << vote->getHash() << " in period "
+                       << period << ". Err: " << static_cast<std::string>(validation.validation.error_code);
+          assert(false);
+        }
       }
 
       uint32_t blocks_per_year{0};
@@ -935,8 +1220,8 @@ void PbftManager::run() {
     auto apply_delay_transition = [&](uint8_t kind) {
       const auto transition_snapshot = rustaxa::pbft_manager_runtime_snapshot(pbft_service_->service());
       const auto current_period = getPbftPeriod();
-      const auto request =
-          makePbftManagerLifecycleTransitionRequest(kind, current_period, 0, *vote_mgr_, transition_snapshot);
+      const auto request = makePbftManagerLifecycleTransitionRequest(kind, current_period, 0, pbft_service_->service(),
+                                                                     transition_snapshot);
       executePbftManagerLifecycleTransition(
           request, pbft_service_->service(), round_, step_, state_, current_round_lambda_, next_step_time_ms_,
           rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
@@ -990,8 +1275,9 @@ void PbftManager::run() {
           break;
         case kPbftManagerRuntimeActionTryAdvanceRound: {
           const auto [current_round, current_period] = getPbftRoundAndPeriod();
-          const auto round_advance = vote_mgr_->roundAdvanceDecision(current_period, current_round);
-          step = report_action(step, kPbftManagerRuntimeResultNoProgressContinue, true, "", round_advance.has_new_round,
+          const auto round_advance =
+              pbft_service_->service().pbft_service_verified_votes_determine_new_round(current_period, current_round);
+          step = report_action(step, kPbftManagerRuntimeResultNoProgressContinue, true, "", round_advance.found,
                                round_advance.new_round);
           break;
         }
@@ -1241,11 +1527,17 @@ std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
 bool PbftManager::tryPushCertVotesBlock() {
   const auto [current_pbft_round, current_pbft_period] = getPbftRoundAndPeriod();
 
-  auto cert_voted_block = vote_mgr_->certVotedBlockSelection(current_pbft_period, current_pbft_round);
+  const auto cert_voted_block = pbft_service_->service().pbft_service_verified_votes_get_two_t_plus_one_voted_block(
+      current_pbft_period, current_pbft_round, static_cast<uint8_t>(TwoTPlusOneVotedBlockType::CertVotedBlock));
   if (!cert_voted_block.found) {
     return false;
   }
-  const auto certified_block_hash = cert_voted_block.block_hash;
+  const auto certified_block_hash = fromBridgeHash(cert_voted_block.block_hash);
+  auto cert_votes = twoTPlusOneVotePayloads(pbft_service_->service(), current_pbft_period, current_pbft_round,
+                                            TwoTPlusOneVotedBlockType::CertVotedBlock);
+  if (cert_votes.empty()) {
+    return false;
+  }
 
   LOG(log_nf_) << "Found enough cert votes for PBFT block " << certified_block_hash << ", period "
                << current_pbft_period << ", round " << current_pbft_round;
@@ -1257,7 +1549,7 @@ bool PbftManager::tryPushCertVotesBlock() {
   }
 
   // Push pbft block into chain
-  if (!pushCertVotedPbftBlockIntoChain_(pbft_block, std::move(cert_voted_block.votes))) {
+  if (!pushCertVotedPbftBlockIntoChain_(pbft_block, std::move(cert_votes))) {
     return false;
   }
 
@@ -1288,6 +1580,7 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size
 
 bool PbftManager::applyRustPlannedAdvancePeriod_(
     PbftPeriod finalized_chain_size, const rustaxa::PbftManagerLifecycleTransitionResult &transition_result) {
+  (void)transition_result;
   const auto advance_plan =
       rustaxa::pbft_manager_runtime_plan_advance_period_after_reset(pbft_service_->service(), finalized_chain_size);
   if (!advance_plan.accepted) {
@@ -1313,9 +1606,6 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(
             broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_);
         break;
       }
-      case kPbftManagerAdvancePeriodActionSetVoteManagerPeriodRound:
-        vote_mgr_->applyRustPlannedPeriodRound(advance_plan.new_period, transition_result.snapshot.round);
-        break;
       case kPbftManagerAdvancePeriodActionResetCurrentRoundTimer:
         current_round_start_datetime_ = std::chrono::system_clock::now();
         break;
@@ -1407,9 +1697,6 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
         rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_, already_next_voted_value_,
         already_next_voted_null_block_hash_, broadcast_votes_counter_, rebroadcast_votes_counter_,
         broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_);
-  }
-  if (result.set_vote_manager_period_round) {
-    vote_mgr_->applyRustPlannedPeriodRound(period, result.snapshot.round);
   }
   if (result.reset_current_round_timer) {
     current_round_start_datetime_ = std::chrono::system_clock::now();
@@ -1514,15 +1801,15 @@ void PbftManager::initialState() {
 
   waitForPeriodFinalization();
 
-  const auto previous_round_next_vote_facts =
-      vote_mgr_->applyStartupPeriodRoundAndLogFacts(current_pbft_period, current_pbft_round);
+  const auto previous_next = pbft_service_->service().pbft_service_verified_votes_get_two_t_plus_one_voted_block(
+      current_pbft_period, current_pbft_round - 1, static_cast<uint8_t>(TwoTPlusOneVotedBlockType::NextVotedBlock));
+  const auto previous_null = pbft_service_->service().pbft_service_verified_votes_get_two_t_plus_one_voted_block(
+      current_pbft_period, current_pbft_round - 1, static_cast<uint8_t>(TwoTPlusOneVotedBlockType::NextVotedNullBlock));
 
   LOG(log_nf_) << "Node initialize at period " << current_pbft_period << ", round " << current_pbft_round << ", step "
                << current_pbft_step << ". Previous round 2t+1 next voted null block: " << std::boolalpha
-               << previous_round_next_vote_facts.next_voted_null_block << ", previous round 2t+1 next voted block "
-               << (previous_round_next_vote_facts.next_voted_block.has_value()
-                       ? previous_round_next_vote_facts.next_voted_block->abridged()
-                       : "no value");
+               << previous_null.found << ", previous round 2t+1 next voted block "
+               << (previous_next.found ? fromBridgeHash(previous_next.block_hash).abridged() : "no value");
 }
 
 rustaxa::PbftManagerLifecycleTransitionResult PbftManager::applyLifecycleTransition_(uint8_t kind,
@@ -1530,8 +1817,8 @@ rustaxa::PbftManagerLifecycleTransitionResult PbftManager::applyLifecycleTransit
                                                                                      PbftRound target_round,
                                                                                      bool apply_current_round_timer) {
   const auto transition_snapshot = rustaxa::pbft_manager_runtime_snapshot(pbft_service_->service());
-  auto request =
-      makePbftManagerLifecycleTransitionRequest(kind, target_period, target_round, *vote_mgr_, transition_snapshot);
+  auto request = makePbftManagerLifecycleTransitionRequest(kind, target_period, target_round, pbft_service_->service(),
+                                                           transition_snapshot);
   return executePbftManagerLifecycleTransition(
       std::move(request), pbft_service_->service(), round_, step_, state_, current_round_lambda_, next_step_time_ms_,
       rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
@@ -1576,36 +1863,36 @@ void PbftManager::broadcastVotes() {
   };
 
   // (Re)broadcast reward votes + all own pbft and pillar votes
-  auto stuckPeriodBroadcastVotes =
-      [this, &net, &gossipVotes](const VoteManager::StuckRoundVoteBroadcastPayloads &vote_payloads, bool rebroadcast) {
-        auto [round, period] = getPbftRoundAndPeriod();
+  auto stuckPeriodBroadcastVotes = [this, &net, &gossipVotes](const RoundBroadcastVotePayloads &vote_payloads,
+                                                              bool rebroadcast) {
+    auto [round, period] = getPbftRoundAndPeriod();
 
-        gossipVotes(vote_payloads.reward_votes, "Reward votes", rebroadcast);
+    gossipVotes(vote_payloads.reward_votes, "Reward votes", rebroadcast);
 
-        // Broadcast own pbft votes - send votes by one as they have different type, period, round, step
-        if (!vote_payloads.own_votes.empty()) {
-          for (const auto &vote : vote_payloads.own_votes) {
-            net->gossipVote(vote, getPbftProposedBlock(vote->getPeriod(), vote->getBlockHash()), rebroadcast);
-          }
+    // Broadcast own pbft votes - send votes by one as they have different type, period, round, step
+    if (!vote_payloads.own_votes.empty()) {
+      for (const auto &vote : vote_payloads.own_votes) {
+        net->gossipVote(vote, getPbftProposedBlock(vote->getPeriod(), vote->getBlockHash()), rebroadcast);
+      }
 
-          LOG(log_dg_) << "Broadcast own votes for period " << period << ", round " << round << ", rebroadcast "
-                       << rebroadcast;
-        }
+      LOG(log_dg_) << "Broadcast own votes for period " << period << ", round " << round << ", rebroadcast "
+                   << rebroadcast;
+    }
 
-        // Broadcast own pillar vote
-        const auto own_pillar_vote_rlp = rustaxa::pbft_manager_runtime_own_pillar_block_vote(pbft_service_->service());
-        if (!own_pillar_vote_rlp.empty()) {
-          const auto payload_bytes = dev::bytes(own_pillar_vote_rlp.begin(), own_pillar_vote_rlp.end());
-          const auto own_pillar_vote = std::make_shared<PillarVote>(dev::RLP(payload_bytes));
-          net->gossipPillarBlockVote(own_pillar_vote, rebroadcast);
-        }
-      };
+    // Broadcast own pillar vote
+    const auto own_pillar_vote_rlp = rustaxa::pbft_manager_runtime_own_pillar_block_vote(pbft_service_->service());
+    if (!own_pillar_vote_rlp.empty()) {
+      const auto payload_bytes = dev::bytes(own_pillar_vote_rlp.begin(), own_pillar_vote_rlp.end());
+      const auto own_pillar_vote = std::make_shared<PillarVote>(dev::RLP(payload_bytes));
+      net->gossipPillarBlockVote(own_pillar_vote, rebroadcast);
+    }
+  };
 
   // (Re)broadcast 2t+1 soft/reward/previous round next votes + all own votes
   auto stuckRoundBroadcastVotes = [this, &gossipVotes, &stuckPeriodBroadcastVotes](bool rebroadcast) {
     auto [round, period] = getPbftRoundAndPeriod();
 
-    auto vote_payloads = vote_mgr_->stuckRoundVoteBroadcastPayloads(period, round);
+    auto vote_payloads = roundBroadcastVotePayloads(pbft_service_->service(), period, round);
     stuckPeriodBroadcastVotes(vote_payloads, rebroadcast);
 
     // Broadcast 2t+1 soft votes
@@ -1660,7 +1947,7 @@ void PbftManager::broadcastVotes() {
       report.success = true;
     } else if (plan.action == kPbftManagerBroadcastActionPeriodVotes) {
       auto [round, period] = getPbftRoundAndPeriod();
-      auto vote_payloads = vote_mgr_->stuckRoundVoteBroadcastPayloads(period, round);
+      auto vote_payloads = roundBroadcastVotePayloads(pbft_service_->service(), period, round);
       stuckPeriodBroadcastVotes(vote_payloads, plan.rebroadcast);
       report.success = true;
     } else {
@@ -1825,13 +2112,17 @@ bool PbftManager::genAndPlaceVote(PbftVoteTypes vote_type, PbftPeriod period, Pb
       continue;
     }
 
-    auto local_vote_placement =
-        vote_mgr_->generateAndPlaceLocalVote(block_hash, vote_type, period, round, step, wallet.second);
-    if (!local_vote_placement.placed) {
-      LOG(log_er_) << local_vote_placement.error;
+    const auto generated = pbft_service_->service().pbft_service_generate_signed_vote_with_weight(
+        makeVoteGenerationInput(block_hash, vote_type, period, round, step, wallet.second),
+        kGenesisConfig.pbft.committee_size, kGenesisConfig.pbft.number_of_proposers);
+    auto vote = materializeGeneratedVote(generated, wallet.second);
+    if (!vote || !admitAndPersistOwnVote(pbft_service_->service(), kGenesisConfig.pbft, kConfig, final_chain_, trx_mgr_,
+                                         vote, period, round)) {
+      LOG(log_er_) << "Unable to generate and place local vote for block " << block_hash << ", period " << period
+                   << ", round " << round << ", step " << step << ", status " << static_cast<uint32_t>(generated.status)
+                   << ", error " << static_cast<std::string>(generated.error_code);
       continue;
     }
-    auto vote = std::move(local_vote_placement.vote);
 
     // Propose votes are sent as single packets so it is gossiped together with pbft block
     if (vote_type == PbftVoteTypes::propose_vote) {
@@ -1989,7 +2280,7 @@ void PbftManager::proposeBlock_() {
   LOG(log_dg_) << "PBFT value proposal state in period " << period << ", round " << round;
 
   const auto fact = makePbftManagerStateActionFact(
-      state, period, round, step, 0ms, getPbftDeadline(), current_round_lambda, *vote_mgr_,
+      state, period, round, step, 0ms, getPbftDeadline(), current_round_lambda, pbft_service_->service(),
       action_snapshot.has_cert_voted_block, fromBridgeHash(action_snapshot.cert_voted_block_hash),
       action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(
@@ -2028,7 +2319,7 @@ void PbftManager::proposeBlock_() {
             return kPbftManagerStateActionEffectResultSkippedMissingLiveObject;
           }
 
-          auto block_reward_votes = vote_mgr_->collectRewardVotesForBlock(next_voted_block);
+          auto block_reward_votes = collectRewardVotes(pbft_service_->service(), next_voted_block);
           if (!block_reward_votes.has_value()) {
             LOG(log_er_) << "Unable to re-propose previous round next voted block " << next_voted_block_hash
                          << ", period " << period << ", round " << round;
@@ -2058,7 +2349,7 @@ void PbftManager::identifyBlock_() {
   LOG(log_dg_) << "PBFT filtering state in period: " << period << ", round: " << round;
 
   const auto fact = makePbftManagerStateActionFact(
-      state, period, round, step, 0ms, getPbftDeadline(), current_round_lambda, *vote_mgr_,
+      state, period, round, step, 0ms, getPbftDeadline(), current_round_lambda, pbft_service_->service(),
       action_snapshot.has_cert_voted_block, fromBridgeHash(action_snapshot.cert_voted_block_hash),
       action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(
@@ -2161,16 +2452,25 @@ void PbftManager::certifyBlock_() {
 
   const auto elapsed_time_in_round = elapsedTimeInMs(current_round_start_datetime_);
   const auto fact = makePbftManagerStateActionFact(
-      state, period, round, step, elapsed_time_in_round, getPbftDeadline(), current_round_lambda, *vote_mgr_,
-      action_snapshot.has_cert_voted_block, fromBridgeHash(action_snapshot.cert_voted_block_hash),
-      action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
+      state, period, round, step, elapsed_time_in_round, getPbftDeadline(), current_round_lambda,
+      pbft_service_->service(), action_snapshot.has_cert_voted_block,
+      fromBridgeHash(action_snapshot.cert_voted_block_hash), action_snapshot.already_next_voted_value,
+      action_snapshot.already_next_voted_null);
   const auto session_step = executeStateActionEffectSession(
       pbft_service_->service(), fact,
       [&](const auto &effect) {
         if (effect.intent == kPbftManagerStateActionIntentGoFinish) {
           LOG(log_dg_) << "Step 3 expired, will go to step 4 in period " << period << ", round " << round;
 
-          LOG(log_dg_) << vote_mgr_->softVoteDebugMessage(period, round);
+          const auto soft_votes = pbft_service_->service().pbft_service_verified_votes_step_payloads(period, round, 2);
+          uint64_t soft_weight = 0;
+          for (const auto &entry : soft_votes.entries) {
+            soft_weight += entry.total_weight;
+          }
+          const auto threshold =
+              resolveVoteThreshold(pbft_service_->service(), kGenesisConfig.pbft, period - 1, PbftVoteTypes::soft_vote);
+          LOG(log_dg_) << "Soft-vote weight " << soft_weight << ", 2t+1 threshold "
+                       << (threshold.has_threshold ? std::to_string(threshold.threshold) : "unavailable");
 
           return kPbftManagerStateActionEffectResultApplied;
         }
@@ -2221,7 +2521,7 @@ void PbftManager::firstFinish_() {
   LOG(log_dg_) << "PBFT first finishing state in period " << period << ", round " << round << ", step " << step;
 
   const auto fact = makePbftManagerStateActionFact(
-      state, period, round, step, 0ms, getPbftDeadline(), current_round_lambda, *vote_mgr_,
+      state, period, round, step, 0ms, getPbftDeadline(), current_round_lambda, pbft_service_->service(),
       action_snapshot.has_cert_voted_block, fromBridgeHash(action_snapshot.cert_voted_block_hash),
       action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(
@@ -2324,7 +2624,7 @@ void PbftManager::secondFinish_() {
 
   const auto fact = makePbftManagerStateActionFact(
       state, period, round, step, elapsedTimeInMs(second_finish_step_start_datetime_), getPbftDeadline(),
-      current_round_lambda, *vote_mgr_, action_snapshot.has_cert_voted_block,
+      current_round_lambda, pbft_service_->service(), action_snapshot.has_cert_voted_block,
       fromBridgeHash(action_snapshot.cert_voted_block_hash), action_snapshot.already_next_voted_value,
       action_snapshot.already_next_voted_null);
   const auto session_step = executeStateActionEffectSession(
@@ -2365,10 +2665,14 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
     const std::optional<PbftBlockExtraData> &extra_data, const std::vector<WalletConfig> &eligible_wallets) {
   // Reward votes should only include those reward votes with the same round as the round last pbft block was pushed
   // into chain
-  auto reward_vote_payload = vote_mgr_->proposalRewardVotesForPeriod(propose_period);
-  if (!reward_vote_payload.valid) {
-    LOG(log_er_) << "Unable to collect proposal reward votes for period " << propose_period << ": "
-                 << reward_vote_payload.validation_error;
+  auto reward_votes = currentRewardVotes(pbft_service_->service());
+  std::vector<vote_hash_t> reward_vote_hashes;
+  reward_vote_hashes.reserve(reward_votes.size());
+  for (const auto &vote : reward_votes) {
+    reward_vote_hashes.push_back(vote->getHash());
+  }
+  if (propose_period > 1 && (reward_votes.empty() || reward_votes.front()->getPeriod() != propose_period - 1)) {
+    LOG(log_er_) << "Unable to collect proposal reward votes for period " << propose_period;
     assert(false);
     return {};
   }
@@ -2381,17 +2685,21 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
 
     for (const auto &wallet : eligible_wallets) {
       auto block = std::make_shared<PbftBlock>(prev_blk_hash, anchor_hash, order_hash, final_chain_hash, propose_period,
-                                               wallet.node_addr, wallet.node_secret,
-                                               reward_vote_payload.reward_vote_hashes, extra_data);
+                                               wallet.node_addr, wallet.node_secret, reward_vote_hashes, extra_data);
 
-      auto propose_vote_generation = vote_mgr_->generateUniqueProposalVoteForBlock(
-          block->getBlockHash(), propose_period, propose_round, propose_step, wallet);
-      if (!propose_vote_generation.generated) {
-        LOG(log_er_) << propose_vote_generation.error << " when generating pbft block";
+      const auto generated = pbft_service_->service().pbft_service_generate_signed_vote_with_weight(
+          makeVoteGenerationInput(block->getBlockHash(), PbftVoteTypes::propose_vote, propose_period, propose_round,
+                                  propose_step, wallet),
+          kGenesisConfig.pbft.committee_size, kGenesisConfig.pbft.number_of_proposers);
+      auto propose_vote = materializeGeneratedVote(generated, wallet);
+      if (!propose_vote || !isUniqueLocalVote(pbft_service_->service(), propose_vote)) {
+        LOG(log_er_) << "Unable to generate unique proposal vote for block " << block->getBlockHash() << ", status "
+                     << static_cast<uint32_t>(generated.status) << ", error "
+                     << static_cast<std::string>(generated.error_code);
         continue;
       }
 
-      local_candidates.emplace_back(std::move(block), std::move(propose_vote_generation.vote));
+      local_candidates.emplace_back(std::move(block), std::move(propose_vote));
     }
 
     // Select leader block
@@ -2422,7 +2730,8 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
     }
     auto leader_block_data = std::move(local_candidates[selected_index]);
 
-    if (!vote_mgr_->addLocallyGeneratedVote(leader_block_data.second)) {
+    if (!admitAndPersistOwnVote(pbft_service_->service(), kGenesisConfig.pbft, kConfig, final_chain_, trx_mgr_,
+                                leader_block_data.second, propose_period, propose_round)) {
       LOG(log_er_) << "Unable to save propose vote " << leader_block_data.second->getHash() << " for block "
                    << leader_block_data.second->getBlockHash() << ", period " << propose_period << ", round "
                    << leader_block_data.second->getRound() << ", step " << leader_block_data.second->getStep()
@@ -2432,8 +2741,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
 
     publishProposedBlock(leader_block_data.first);
 
-    return PbftManager::ProposedBlockData{std::move(leader_block_data.first),
-                                          std::move(reward_vote_payload.reward_votes),
+    return PbftManager::ProposedBlockData{std::move(leader_block_data.first), std::move(reward_votes),
                                           std::move(leader_block_data.second)};
   } catch (const std::exception &e) {
     LOG(log_er_) << "Block for period " << propose_period << " could not be proposed " << e.what();
@@ -2473,7 +2781,27 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
   const auto [current_pbft_round, current_pbft_period] = getPbftRoundAndPeriod();
 
   const auto wallets = eligible_wallets_.getWallets(current_pbft_period);
-  auto proposal_wallets = vote_mgr_->proposalWalletFacts(current_pbft_period, current_pbft_round, wallets);
+  std::vector<WalletConfig> proposal_local_wallets;
+  proposal_local_wallets.reserve(wallets.size());
+  rust::Vec<rustaxa::PbftManagerProposalWalletFact> proposal_wallet_facts;
+  proposal_wallet_facts.reserve(wallets.size());
+  for (size_t index = 0; index < wallets.size(); ++index) {
+    const auto &[dpos_eligible, wallet] = wallets[index];
+    proposal_local_wallets.push_back(wallet);
+    rustaxa::PbftManagerProposalWalletFact wallet_fact{};
+    wallet_fact.wallet_index = index;
+    wallet_fact.dpos_eligible = dpos_eligible;
+    if (dpos_eligible) {
+      const auto result = pbft_service_->service().pbft_service_generate_and_validate_proposer_sortition(
+          makeProposerSortitionRequest(current_pbft_period, current_pbft_round, wallet, kGenesisConfig.pbft));
+      wallet_fact.sortition_valid = result.accepted;
+      if (!result.accepted && result.status == kPbftProposerSortitionStatusFutureDposState) {
+        LOG(log_er_) << "Unable to generate proposer sortition for period " << current_pbft_period << ", round "
+                     << current_pbft_round << ": " << static_cast<std::string>(result.error_code);
+      }
+    }
+    proposal_wallet_facts.push_back(wallet_fact);
+  }
 
   const auto chain_context = chainTaskView();
   auto last_pbft_block_hash = fromBridgeHash(chain_context.last_pbft_block_hash);
@@ -2516,7 +2844,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
   fact.pbft_gas_limit = pbft_gas_limit;
   fact.extra_data_required = kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(current_pbft_period);
   fact.extra_data_available = !fact.extra_data_required || extra_data.has_value();
-  fact.wallets = std::move(proposal_wallets.wallet_facts);
+  fact.wallets = std::move(proposal_wallet_facts);
   fact.ghost_path = toBridgeHashes(ghost);
   fact.has_non_finalized_fallback = non_finalized_fallback_hash.has_value();
   fact.non_finalized_fallback_hash = toBridgeHash(non_finalized_fallback_hash.value_or(kNullBlockHash));
@@ -2529,13 +2857,13 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
     std::vector<WalletConfig> eligible_wallets;
     eligible_wallets.reserve(step.eligible_wallet_indices.size());
     for (const auto selected_wallet_index : step.eligible_wallet_indices) {
-      if (selected_wallet_index >= proposal_wallets.local_wallets.size()) {
+      if (selected_wallet_index >= proposal_local_wallets.size()) {
         LOG(log_er_) << "Rust PBFT proposal selected wallet index " << selected_wallet_index
-                     << " outside local wallet count " << proposal_wallets.local_wallets.size();
+                     << " outside local wallet count " << proposal_local_wallets.size();
         assert(false);
         return {};
       }
-      eligible_wallets.push_back(proposal_wallets.local_wallets[selected_wallet_index]);
+      eligible_wallets.push_back(proposal_local_wallets[selected_wallet_index]);
     }
 
     const auto dag_block_hash = fromBridgeHash(step.anchor_hash);
@@ -2641,7 +2969,7 @@ bool PbftManager::pushCertVotedPbftBlockIntoChain_(const std::shared_ptr<PbftBlo
     materializeCachedCandidateDag(payload, period_data);
   }
 
-  auto reward_votes = vote_mgr_->collectRewardVotesForBlock(period_data.pbft_blk);
+  auto reward_votes = collectRewardVotes(pbft_service_->service(), period_data.pbft_blk);
   if (!reward_votes.has_value()) {
     LOG(log_er_) << "Missing reward votes in cert voted block " << pbft_block->getBlockHash();
     return false;
@@ -3403,8 +3731,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         if (block_period > 1 && period_data.previous_block_cert_votes.empty()) {
           constexpr PbftRound kMaxRecoveredCertVoteRound = 100;
           for (PbftRound round = 1; round <= kMaxRecoveredCertVoteRound; ++round) {
-            auto recovered_votes = vote_mgr_->getTwoTPlusOneVotedBlockVotes(block_period - 1, round,
-                                                                            TwoTPlusOneVotedBlockType::CertVotedBlock);
+            auto recovered_votes = twoTPlusOneVotePayloads(pbft_service_->service(), block_period - 1, round,
+                                                           TwoTPlusOneVotedBlockType::CertVotedBlock);
             if (!recovered_votes.empty() && recovered_votes.front()->getBlockHash() == block_prev_hash) {
               period_data.previous_block_cert_votes = std::move(recovered_votes);
               break;
@@ -3416,7 +3744,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         cert_command.block_period = block_period;
         cert_command.block_hash = toBridgeHash(pbft_block_hash);
         cert_command.cert_vote_rlps = std::move(cert_vote_rlps);
-        cert_command.slashing_submitters = vote_mgr_->slashingSubmitterFacts();
+        cert_command.slashing_submitters = makeSlashingSubmitterFacts(kConfig, final_chain_);
         auto cert_vote_step =
             rustaxa::pbft_service_pbft_sync_cert_bundle_session(pbft_service_->service(), std::move(cert_command));
         if (cert_vote_step.action == kPbftSyncCertBundleActionAwaitingSlashing) {

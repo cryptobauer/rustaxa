@@ -173,8 +173,8 @@ pub use network_api::{
     NetworkEffectResult, NetworkGetPbftSyncRequest, NetworkGetPillarVotesBundleRequest,
     NetworkIngressDecision, NetworkInitialStatusFacts, NetworkInitialStatusPlan,
     NetworkPbftNextVotesBundleRequest, NetworkPbftSyncPeerCandidate, NetworkPbftSyncStartFacts,
-    NetworkPbftSyncStartPlan, NetworkPbftVoteIngressContext, NetworkPeerSelectionFacts,
-    NetworkPeerSelectionPlan, NetworkPendingDagBlocksRequestFacts,
+    NetworkPbftSyncStartPlan, NetworkPbftVoteAdmissionOutcome, NetworkPbftVoteIngressContext,
+    NetworkPeerSelectionFacts, NetworkPeerSelectionPlan, NetworkPendingDagBlocksRequestFacts,
     NetworkPendingDagBlocksRequestPlan, NetworkPillarVoteIngressContext, NetworkStatusEgressFacts,
     NetworkStatusEgressPlan, NetworkStatusSyncFacts, NetworkStatusSyncPlan,
 };

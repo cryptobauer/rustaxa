@@ -30,12 +30,13 @@ if(RUSTAXA_ENABLE)
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/final_chain/final_chain\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/rewards/rewards_stats\\.cpp$")
 
-    # The Rust-mode VoteManager overlay is fully standalone. Keep the untouched
-    # legacy implementation only in pure C++ builds.
+    # The application root owns Rust-mode PBFT vote generation, admission,
+    # progress, rewards, and persistence. Keep the untouched legacy VoteManager
+    # implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/vote_manager/vote_manager\\.cpp$")
 
-    # Native verified-vote ownership is consumed directly by the VoteManager
-    # overlay. Keep the untouched legacy implementation only in pure C++ builds.
+    # Native verified-vote ownership is consumed directly through application
+    # tasks. Keep the untouched legacy implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/vote_manager/verified_votes\\.cpp$")
 
     # Native PBFT service ownership replaces the Rust-mode C++ ProposedBlocks
@@ -181,11 +182,6 @@ if(RUSTAXA_ENABLE)
     # Inject the standalone Rust FinalChain facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/src/final_chain_shim.cpp)
-
-    # Inject the standalone Rust-compatible VoteManager shim facade for every consumer.
-    target_include_directories(core_libs BEFORE PUBLIC
-                             ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/vote_manager_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp)
 
     # Inject the standalone Rust PillarChainManager facade.
     target_include_directories(core_libs BEFORE PUBLIC

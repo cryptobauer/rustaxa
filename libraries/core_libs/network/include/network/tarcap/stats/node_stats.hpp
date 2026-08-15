@@ -11,7 +11,9 @@
 namespace taraxa {
 class PbftChain;
 class PbftManager;
+#ifndef RUSTAXA_ENABLE
 class VoteManager;
+#endif
 class DagManager;
 class TransactionManager;
 }  // namespace taraxa
@@ -30,8 +32,10 @@ class NodeStats {
  public:
   NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
             std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
-            std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<TransactionManager> trx_mgr,
-            std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
+            std::shared_ptr<VoteManager> vote_mgr,
+#endif
+            std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<TimePeriodPacketsStats> packets_stats,
             std::shared_ptr<const threadpool::PacketsThreadPool> thread_pool, const FullNodeConfig& config);
 
   void logNodeStats(const std::vector<std::shared_ptr<network::tarcap::TaraxaPeer>>& all_peers,
@@ -45,7 +49,9 @@ class NodeStats {
   net::ConsensusQueryClient pbft_chain_;
   std::shared_ptr<PbftManager> pbft_mgr_;
   std::shared_ptr<DagManager> dag_mgr_;
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<VoteManager> vote_mgr_;
+#endif
   std::shared_ptr<TransactionManager> trx_mgr_;
   std::shared_ptr<TimePeriodPacketsStats> packets_stats_;
   std::shared_ptr<const threadpool::PacketsThreadPool> thread_pool_;

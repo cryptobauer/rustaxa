@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::final_chain::FinalChain;
 use crate::pbft_chain::PbftChainService;
 use crate::pbft_vote_payload::build_optimized_pbft_vote_bundle;
+use crate::pbft_vote_progress::PbftVoteProgressIntent;
 use crate::pbft_vote_runtime::{PbftNextVotesBundleEgressPayloads, PbftVerifiedVotesService};
 use crate::period_data_queue::{DecodedPbftSyncPacketPrecheck, decode_pbft_sync_packet_precheck};
 use crate::pillar_chain_service::PillarChainService;
@@ -467,6 +468,20 @@ pub struct NetworkIngressDecision {
     pub application_effect_id: u64,
 }
 
+/// Composed native result for one PBFT vote arriving from tarcap.
+///
+/// Routing and authoritative vote admission complete before this value is
+/// returned. `admission` is absent for a routing rejection or for a bundle
+/// member cancelled after an earlier member produced a slashing conflict.
+/// Network transport follow-ups are queued by the same root operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftVoteAdmissionOutcome {
+    /// Packet-family routing decision.
+    pub decision: NetworkIngressDecision,
+    /// Native admission result when the vote reached the PBFT task.
+    pub admission: Option<crate::PbftVoteAdmissionWithSlashingResult>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingVoteAdmissionContext {
     /// Tarcap version/lane that must execute follow-up effects.
@@ -837,8 +852,13 @@ impl ConsensusNetworkService {
     }
 
     fn lock_api(&self) -> Result<MutexGuard<'_, ConsensusNetworkApi>> {
-        self.api
-            .lock()
+        Self::lock_shared_api(&self.api)
+    }
+
+    fn lock_shared_api(
+        api: &Arc<Mutex<ConsensusNetworkApi>>,
+    ) -> Result<MutexGuard<'_, ConsensusNetworkApi>> {
+        api.lock()
             .map_err(|_| anyhow!("CONSENSUS_NETWORK_SERVICE_LOCK_POISONED"))
     }
 
@@ -870,17 +890,6 @@ impl ConsensusNetworkService {
         results: Vec<NetworkEffectResult>,
     ) -> Result<NetworkEffectAck> {
         Ok(self.lock_api()?.report_effect_results(results))
-    }
-
-    /// Consumes proof that Rust deliberately removed one exact vote-admission effect.
-    ///
-    /// Returns `false` for arbitrary, already-consumed, or still-live effect ids.
-    /// Tarcap uses this only after an exact-id drain completes without finding
-    /// the requested bundle member, preserving hard failures for unexplained loss.
-    pub fn take_cancelled_vote_admission_effect(&self, effect_id: u64) -> Result<bool> {
-        Ok(self
-            .lock_api()?
-            .take_cancelled_vote_admission_effect(effect_id))
     }
 
     /// Plans status-triggered sync work from caller-owned scalar snapshots.
@@ -937,6 +946,43 @@ impl ConsensusNetworkService {
         Ok(self.lock_api()?.ingest_pbft_vote(fact, context))
     }
 
+    /// Routes and authoritatively admits one PBFT vote through root siblings.
+    ///
+    /// The network lock is released before PBFT validation, FinalChain reads,
+    /// or persistence. On return no vote-admission application effect remains:
+    /// Rust has converted the admission result directly into ordered transport
+    /// follow-ups. A typed slashing transaction remains in the admission value
+    /// for the external signing/insertion leaf.
+    pub fn ingest_and_admit_pbft_vote(
+        &self,
+        pbft: &crate::PbftService,
+        final_chain: &FinalChain,
+        fact: PbftVoteIngressFact,
+        context: NetworkPbftVoteIngressContext,
+        slashing_submitters: &[crate::SlashingSubmitterIdentity],
+    ) -> Result<NetworkPbftVoteAdmissionOutcome> {
+        let mut decision = self.lock_api()?.ingest_pbft_vote(fact, context);
+        let effect_id = decision.application_effect_id;
+        if effect_id == 0 {
+            return Ok(NetworkPbftVoteAdmissionOutcome {
+                decision,
+                admission: None,
+            });
+        }
+        let Some(pending) = self.lock_api()?.take_native_vote_admission(effect_id) else {
+            return Err(anyhow!("NETWORK_NATIVE_VOTE_ADMISSION_EFFECT_MISSING"));
+        };
+        let admission =
+            pbft.admit_network_verified_vote(final_chain, &pending.vote_rlp, slashing_submitters)?;
+        self.lock_api()?
+            .complete_native_vote_admission(pending, &admission);
+        decision.application_effect_id = 0;
+        Ok(NetworkPbftVoteAdmissionOutcome {
+            decision,
+            admission: Some(admission),
+        })
+    }
+
     /// Atomically preflights one PBFT vote bundle before queueing admissions.
     pub fn ingest_pbft_vote_bundle(
         &self,
@@ -947,6 +993,82 @@ impl ConsensusNetworkService {
         Ok(self
             .lock_api()?
             .ingest_pbft_vote_bundle(reference, votes, contexts))
+    }
+
+    /// Atomically preflights and sequentially admits one PBFT vote bundle.
+    ///
+    /// Bundle shape remains all-or-nothing. After preflight, each member is
+    /// admitted without holding the network lock. A slashing conflict cancels
+    /// remaining queued members; already published members are not rolled back.
+    pub fn ingest_and_admit_pbft_vote_bundle(
+        &self,
+        pbft: &crate::PbftService,
+        final_chain: &FinalChain,
+        reference: PbftVoteIngressFact,
+        votes: Vec<PbftVoteIngressFact>,
+        contexts: Vec<NetworkPbftVoteIngressContext>,
+        slashing_submitters: &[crate::SlashingSubmitterIdentity],
+    ) -> Result<Vec<NetworkPbftVoteAdmissionOutcome>> {
+        Self::ingest_and_admit_pbft_vote_bundle_with(
+            &self.api,
+            reference,
+            votes,
+            contexts,
+            |vote_rlp| pbft.admit_network_verified_vote(final_chain, vote_rlp, slashing_submitters),
+        )
+    }
+
+    /// Runs composed bundle routing with an injected authoritative admission task.
+    ///
+    /// The injection is internal testability for infrastructure failures. Any
+    /// admission error cancels every not-yet-admitted member before it escapes,
+    /// so no obsolete application effect can later be acknowledged as success.
+    fn ingest_and_admit_pbft_vote_bundle_with(
+        api: &Arc<Mutex<ConsensusNetworkApi>>,
+        reference: PbftVoteIngressFact,
+        votes: Vec<PbftVoteIngressFact>,
+        contexts: Vec<NetworkPbftVoteIngressContext>,
+        mut admit: impl FnMut(&[u8]) -> Result<crate::PbftVoteAdmissionWithSlashingResult>,
+    ) -> Result<Vec<NetworkPbftVoteAdmissionOutcome>> {
+        let decisions =
+            Self::lock_shared_api(api)?.ingest_pbft_vote_bundle(reference, votes, contexts);
+        let mut outcomes = Vec::with_capacity(decisions.len());
+        for mut decision in decisions {
+            let effect_id = decision.application_effect_id;
+            if effect_id == 0 {
+                outcomes.push(NetworkPbftVoteAdmissionOutcome {
+                    decision,
+                    admission: None,
+                });
+                continue;
+            }
+            let pending = Self::lock_shared_api(api)?.take_native_vote_admission(effect_id);
+            let Some(pending) = pending else {
+                decision.application_effect_id = 0;
+                outcomes.push(NetworkPbftVoteAdmissionOutcome {
+                    decision,
+                    admission: None,
+                });
+                continue;
+            };
+            let bundle_id = pending.bundle.as_ref().map(|member| member.bundle_id);
+            let admission = match admit(&pending.vote_rlp) {
+                Ok(admission) => admission,
+                Err(error) => {
+                    if let Some(bundle_id) = bundle_id {
+                        Self::lock_shared_api(api)?.cancel_vote_bundle(bundle_id);
+                    }
+                    return Err(error);
+                }
+            };
+            Self::lock_shared_api(api)?.complete_native_vote_admission(pending, &admission);
+            decision.application_effect_id = 0;
+            outcomes.push(NetworkPbftVoteAdmissionOutcome {
+                decision,
+                admission: Some(admission),
+            });
+        }
+        Ok(outcomes)
     }
 
     /// Atomically preflights one pillar-vote bundle before queueing admissions.
@@ -1528,7 +1650,6 @@ pub(crate) struct ConsensusNetworkApi {
     pending_effects: VecDeque<NetworkEffect>,
     pending_vote_admissions: HashMap<u64, PendingVoteAdmissionContext>,
     pending_vote_bundles: HashMap<u64, PendingVoteBundle>,
-    cancelled_vote_admission_effects: HashMap<u64, u32>,
     pending_pillar_vote_admissions: HashMap<u64, PendingPillarVoteAdmissionContext>,
     outstanding_effects: HashMap<u64, NetworkEffect>,
     completed_dependency_status: HashMap<u64, bool>,
@@ -1557,7 +1678,6 @@ impl ConsensusNetworkApi {
             pending_effects: VecDeque::new(),
             pending_vote_admissions: HashMap::new(),
             pending_vote_bundles: HashMap::new(),
-            cancelled_vote_admission_effects: HashMap::new(),
             pending_pillar_vote_admissions: HashMap::new(),
             outstanding_effects: HashMap::new(),
             completed_dependency_status: HashMap::new(),
@@ -1843,9 +1963,6 @@ impl ConsensusNetworkApi {
         }) {
             return Vec::new();
         }
-        let transport_lane = contexts[0].transport_lane;
-        self.cancelled_vote_admission_effects
-            .retain(|_, lane| *lane != transport_lane);
         for context in &mut contexts {
             context.enqueue_admission = true;
             context.allow_gossip = false;
@@ -2346,6 +2463,70 @@ impl ConsensusNetworkApi {
         vote_effect_id
     }
 
+    /// Removes one queued PBFT admission before native sibling execution.
+    ///
+    /// Only an undrained record-vote effect can be taken. The associated
+    /// context is returned to the root-bound service, so canonical bytes never
+    /// cross CXX merely to re-enter Rust admission.
+    fn take_native_vote_admission(
+        &mut self,
+        effect_id: u64,
+    ) -> Option<PendingVoteAdmissionContext> {
+        let position = self.pending_effects.iter().position(|effect| {
+            effect.effect_id == effect_id
+                && effect.kind == NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+                && effect.object_kind == NETWORK_OBJECT_KIND_PBFT_VOTE
+        })?;
+        self.pending_effects.remove(position)?;
+        self.pending_vote_admissions.remove(&effect_id)
+    }
+
+    /// Converts one root-owned PBFT admission into transport follow-ups.
+    ///
+    /// Persistence rejection is terminal and queues no dependent work. A
+    /// published duplicate is marked known; a published insertion may gossip.
+    /// Slashing conflicts cancel the remaining bundle members and expose their
+    /// transaction effect only through the operation return value.
+    fn complete_native_vote_admission(
+        &mut self,
+        context: PendingVoteAdmissionContext,
+        admission: &crate::PbftVoteAdmissionWithSlashingResult,
+    ) {
+        let add = admission.transaction.outcome.add_outcome.as_ref();
+        let intents = admission
+            .transaction
+            .outcome
+            .execution
+            .as_ref()
+            .map(|execution| execution.pipeline_step.progress_plan.intents.as_slice())
+            .unwrap_or_default();
+        let result = NetworkEffectResult {
+            effect_id: 0,
+            kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+            peer_id: context.peer_id,
+            packet_kind: 0,
+            object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+            object_hash: context.vote_hash,
+            status: NETWORK_EFFECT_RESULT_STATUS_OK,
+            diagnostic: String::new(),
+            admission_accepted: admission.transaction.transition_published
+                && admission.validation.accepted
+                && add.is_some_and(|outcome| outcome.inserted),
+            admission_already_present: admission.transaction.transition_published
+                && add.is_some_and(|outcome| outcome.duplicate_vote_hash),
+            admission_mark_vote_known: admission.transaction.transition_published
+                && intents
+                    .iter()
+                    .any(|intent| matches!(intent, PbftVoteProgressIntent::MarkKnown { .. })),
+            admission_gossip_vote: admission.transaction.transition_published
+                && intents
+                    .iter()
+                    .any(|intent| matches!(intent, PbftVoteProgressIntent::GossipVote { .. })),
+            admission_report_slashing: admission.slashing_transaction_effect.is_some(),
+        };
+        self.enqueue_vote_admission_follow_ups(context, &result);
+    }
+
     fn enqueue_vote_admission_follow_ups(
         &mut self,
         context: PendingVoteAdmissionContext,
@@ -2626,24 +2807,10 @@ impl ConsensusNetworkApi {
                     .map(|_| *effect_id)
             })
             .collect::<HashSet<_>>();
-        for effect_id in &cancelled_effect_ids {
-            if let Some(context) = self.pending_vote_admissions.get(effect_id) {
-                self.cancelled_vote_admission_effects
-                    .insert(*effect_id, context.transport_lane);
-            }
-        }
         self.pending_vote_admissions
             .retain(|effect_id, _| !cancelled_effect_ids.contains(effect_id));
         self.pending_effects
             .retain(|effect| !cancelled_effect_ids.contains(&effect.effect_id));
-    }
-
-    /// Consumes one exact cancellation tombstone created by `cancel_vote_bundle`.
-    #[must_use]
-    pub fn take_cancelled_vote_admission_effect(&mut self, effect_id: u64) -> bool {
-        self.cancelled_vote_admission_effects
-            .remove(&effect_id)
-            .is_some()
     }
 
     fn enqueue_next_votes_bundle_send_effects(
@@ -5455,10 +5622,36 @@ mod tests {
         slashing.admission_report_slashing = true;
         api.report_effect_results(vec![slashing]);
 
-        assert!(api.take_cancelled_vote_admission_effect(decisions[2].application_effect_id));
-        assert!(!api.take_cancelled_vote_admission_effect(decisions[2].application_effect_id));
-        assert!(!api.take_cancelled_vote_admission_effect(u64::MAX));
+        assert_ne!(decisions[2].application_effect_id, 0);
         assert!(api.drain_work(6, 10).effects.is_empty());
+    }
+
+    #[test]
+    fn composed_bundle_infrastructure_error_cancels_every_unadmitted_effect() {
+        let api = Arc::new(Mutex::new(ConsensusNetworkApi::new()));
+        let reference = vote_fact(10, 3, 2, PbftVoteType::Soft);
+        let votes = [
+            canonical_bundle_vote(0x45),
+            canonical_bundle_vote(0x46),
+            canonical_bundle_vote(0x47),
+        ];
+        let error = ConsensusNetworkService::ingest_and_admit_pbft_vote_bundle_with(
+            &api,
+            reference,
+            vec![reference; votes.len()],
+            votes.iter().map(bundle_context).collect(),
+            |_| Err(anyhow!("INJECTED_ADMISSION_FAILURE")),
+        )
+        .expect_err("injected application-root admission error");
+        assert_eq!(error.to_string(), "INJECTED_ADMISSION_FAILURE");
+
+        let mut api = api.lock().unwrap();
+        assert!(api.pending_vote_admissions.is_empty());
+        assert!(api.pending_vote_bundles.is_empty());
+        assert!(api.drain_work(6, 10).effects.iter().all(|effect| {
+            effect.kind != NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+                || effect.object_kind != NETWORK_OBJECT_KIND_PBFT_VOTE
+        }));
     }
 
     #[test]

@@ -5,10 +5,29 @@
 #include "common/init.hpp"
 #include "dag/dag_manager.hpp"
 #include "logger/logger.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "network/consensus_query.hpp"
+#endif
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
 #include "test_util/node_dag_creation_fixture.hpp"
 
 namespace taraxa::core_tests {
+
+namespace {
+uint64_t pbftVoteThreshold(const std::shared_ptr<AppBase> &node, PbftPeriod period) {
+#ifdef RUSTAXA_ENABLE
+  const auto query = net::createConsensusQueryApi(node->getDB());
+  const auto threshold =
+      (*query)->consensus_query_pbft_vote_threshold(period, static_cast<uint8_t>(PbftVoteTypes::cert_vote));
+  if (!threshold.has_threshold) {
+    throw std::runtime_error("TEST_PBFT_VOTE_THRESHOLD_UNAVAILABLE");
+  }
+  return threshold.threshold;
+#else
+  return node->getVoteManager()->getPbftTwoTPlusOne(period, PbftVoteTypes::cert_vote).value();
+#endif
+}
+}  // namespace
 
 struct PbftManagerTest : NodesTest {
   val_t gas_price = 1000000000;
@@ -129,7 +148,7 @@ struct PbftManagerTest : NodesTest {
     for (size_t i(0); i < nodes.size(); ++i) {
       auto pbft_mgr = nodes[i]->getPbftManager();
       const auto chain_size = nodes[i]->getPbftProgress().finalized_period;
-      two_t_plus_one = nodes[i]->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote).value();
+      two_t_plus_one = pbftVoteThreshold(nodes[i], chain_size);
 
       committee = pbft_mgr->getPbftCommitteeSize();
       valid_voting_players = pbft_mgr->getCurrentDposTotalVotesCount().value();
@@ -185,7 +204,7 @@ struct PbftManagerTest : NodesTest {
     for (size_t i(0); i < nodes.size(); ++i) {
       auto pbft_mgr = nodes[i]->getPbftManager();
       const auto chain_size = nodes[i]->getPbftProgress().finalized_period;
-      two_t_plus_one = nodes[i]->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote).value();
+      two_t_plus_one = pbftVoteThreshold(nodes[i], chain_size);
       committee = pbft_mgr->getPbftCommitteeSize();
       valid_voting_players = pbft_mgr->getCurrentDposTotalVotesCount().value();
       std::cout << "Node" << i << " committee " << committee << ", valid voting players " << valid_voting_players
@@ -319,7 +338,7 @@ TEST_F(PbftManagerTest, check_get_eligible_vote_count) {
   for (size_t i(0); i < nodes.size(); ++i) {
     auto pbft_mgr = nodes[i]->getPbftManager();
     const auto chain_size = nodes[i]->getPbftProgress().finalized_period;
-    two_t_plus_one = nodes[i]->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote).value();
+    two_t_plus_one = pbftVoteThreshold(nodes[i], chain_size);
     committee = pbft_mgr->getPbftCommitteeSize();
     eligible_total_vote_count = pbft_mgr->getCurrentDposTotalVotesCount().value();
     std::cout << "Node" << i << " committee " << committee << ", eligible total vote count "
@@ -446,9 +465,9 @@ TEST_F(PbftManagerTest, propose_block_and_vote_broadcast) {
   auto proposed_pbft_block = std::make_shared<PbftBlock>(
       prev_block_hash, kNullBlockHash, kNullBlockHash, kNullBlockHash, node1->getPbftManager()->getPbftPeriod(),
       node1->getAddress(), node1->getSecretKey(), reward_votes_hashes);
-  auto propose_vote = node1->getVoteManager()->generateVote(
-      proposed_pbft_block->getBlockHash(), PbftVoteTypes::propose_vote, proposed_pbft_block->getPeriod(),
-      node1->getPbftManager()->getPbftRound() + 1, value_proposal_state, node1->getConfig().getFirstWallet());
+  auto propose_vote = genDummyVote(PbftVoteTypes::propose_vote, proposed_pbft_block->getPeriod(),
+                                   node1->getPbftManager()->getPbftRound() + 1, value_proposal_state,
+                                   proposed_pbft_block->getBlockHash());
   pbft_mgr1->processProposedBlock(proposed_pbft_block);
 
   auto block1_from_node1 = pbft_mgr1->getPbftProposedBlock(propose_vote->getPeriod(), propose_vote->getBlockHash());

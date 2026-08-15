@@ -2,18 +2,27 @@
 
 #include <libdevcore/CommonJS.h>
 
+#include <algorithm>
 #include <boost/filesystem.hpp>
 #include <fstream>
+#include <limits>
 #include <vector>
 
 #include "common/encoding_rlp.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "slashing_manager/slashing_manager.hpp"
 #include "test_util/test_util.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
+#include "network/consensus_network_api.hpp"
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 #ifndef RUSTAXA_ENABLE
 #include "transaction/gas_pricer.hpp"
 #endif
+#ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
+#endif
 
 namespace taraxa::state_api {
 using boost::filesystem::create_directories;
@@ -229,22 +238,6 @@ TEST_F(StateAPITest, slashing) {
   auto node_cfg = node_cfgs.begin();
   ASSERT_EQ(true, node->getFinalChain()->dposIsEligible(node->getFinalChain()->lastBlockNumber(), node->getAddress()));
 
-#ifdef RUSTAXA_ENABLE
-  // Submit pre-activation evidence through the production vote-admission path.
-  // The conflicting vote is rejected from verified state and the service-owned
-  // slashing planner must not create a transaction before Magnolia.
-  const auto [preactivation_round, preactivation_period] = node->getPbftManager()->getPbftRoundAndPeriod();
-  ASSERT_LT(preactivation_period, node_cfg->genesis.state.hardforks.magnolia_hf.block_num);
-  auto preactivation_vote_a =
-      node->getVoteManager()->generateVote(blk_hash_t{3}, PbftVoteTypes::cert_vote, preactivation_period,
-                                           preactivation_round, 3, node_cfg->getFirstWallet());
-  auto preactivation_vote_b =
-      node->getVoteManager()->generateVote(blk_hash_t{4}, PbftVoteTypes::cert_vote, preactivation_period,
-                                           preactivation_round, 3, node_cfg->getFirstWallet());
-  ASSERT_TRUE(node->getVoteManager()->addVerifiedVote(preactivation_vote_a));
-  ASSERT_FALSE(node->getVoteManager()->addVerifiedVote(preactivation_vote_b));
-#endif
-
   ASSERT_HAPPENS({10s, 100ms}, [&](auto& ctx) {
     WAIT_EXPECT_GE(ctx, node->getFinalChain()->lastBlockNumber(),
                    node_cfg->genesis.state.hardforks.magnolia_hf.block_num)
@@ -261,17 +254,79 @@ TEST_F(StateAPITest, slashing) {
 #endif
 
 #ifdef RUSTAXA_ENABLE
-  // Submit post-activation evidence through the same production path. The
-  // canonical SlashingManager executes the service-owned plan when admission
-  // detects the conflict.
+  // Submit post-activation evidence through the native network/application
+  // root, then execute the retained C++ signing/insertion leaf and observe the
+  // concrete FinalChain jail result.
   const auto [active_round, active_period] = node->getPbftManager()->getPbftRoundAndPeriod();
   ASSERT_GE(active_period, node_cfg->genesis.state.hardforks.magnolia_hf.block_num);
-  auto vote_a = node->getVoteManager()->generateVote(blk_hash_t{1}, PbftVoteTypes::cert_vote, active_period,
-                                                     active_round, 3, node_cfg->getFirstWallet());
-  auto vote_b = node->getVoteManager()->generateVote(blk_hash_t{2}, PbftVoteTypes::cert_vote, active_period,
-                                                     active_round, 3, node_cfg->getFirstWallet());
-  ASSERT_TRUE(node->getVoteManager()->addVerifiedVote(vote_a));
-  ASSERT_FALSE(node->getVoteManager()->addVerifiedVote(vote_b));
+  const auto application = node->getConsensusApplication();
+  network::ConsensusNetworkApi network_api(application);
+  const auto& wallet = node_cfg->getFirstWallet();
+  auto generate_vote = [&](const blk_hash_t& block_hash) {
+    rustaxa::PbftVoteGenerationInput input{};
+    std::copy(block_hash.data(), block_hash.data() + input.block_hash.size(), input.block_hash.begin());
+    input.vote_type = static_cast<uint8_t>(PbftVoteTypes::cert_vote);
+    input.period = active_period;
+    input.round = active_round;
+    input.step = 3;
+    std::copy(wallet.node_secret.data(), wallet.node_secret.data() + input.node_secret.size(),
+              input.node_secret.begin());
+    std::copy(wallet.vrf_secret.data(), wallet.vrf_secret.data() + input.vrf_secret.size(), input.vrf_secret.begin());
+    std::copy(wallet.node_addr.data(), wallet.node_addr.data() + input.expected_voter.size(),
+              input.expected_voter.begin());
+    std::copy(wallet.vrf_pk.data(), wallet.vrf_pk.data() + input.expected_vrf_public_key.size(),
+              input.expected_vrf_public_key.begin());
+    return application->service().pbft_service_generate_signed_vote_with_weight(
+        input, node_cfg->genesis.pbft.committee_size, node_cfg->genesis.pbft.number_of_proposers);
+  };
+  auto admit_vote = [&](const rustaxa::PbftGeneratedVote& vote, uint64_t source_payload_id) {
+    rustaxa::PbftVoteIngressFact fact{};
+    fact.period = vote.period;
+    fact.round = vote.round;
+    fact.step = vote.step;
+    fact.vote_type = vote.vote_type;
+    rustaxa::NetworkPbftVoteIngressContext context{};
+    context.ingress.current_period = active_period;
+    context.ingress.current_round = active_round;
+    context.ingress.current_step = node->getPbftManager()->getPbftStep();
+    context.ingress.max_future_period_delta = std::numeric_limits<uint64_t>::max();
+    context.ingress.max_future_round_delta = std::numeric_limits<uint64_t>::max();
+    context.ingress.max_future_step_delta = std::numeric_limits<uint64_t>::max();
+    context.ingress.validate_max_round_step = false;
+    context.ingress.source_peer_is_voter = true;
+    context.ingress.can_request_pbft_sync = true;
+    context.ingress.can_request_next_votes_sync = true;
+    context.transport_lane = 6;
+    context.source_payload_id = source_payload_id;
+    context.enqueue_admission = true;
+    context.allow_gossip = false;
+    context.vote_hash = vote.vote_hash;
+    context.vote_rlp = vote.vote_rlp;
+    rust::Vec<rustaxa::SlashingSubmitterIdentity> submitters;
+    for (size_t wallet_index = 0; wallet_index < node_cfg->wallets.size(); ++wallet_index) {
+      rustaxa::SlashingSubmitterIdentity submitter{};
+      submitter.wallet_index = wallet_index;
+      submitter.address = node_cfg->wallets[wallet_index].node_addr.asArray();
+      submitters.push_back(std::move(submitter));
+    }
+    return network_api.api().consensus_network_admit_pbft_vote(fact, context, std::move(submitters));
+  };
+
+  const auto vote_a = generate_vote(blk_hash_t{1});
+  const auto vote_b = generate_vote(blk_hash_t{2});
+  ASSERT_TRUE(vote_a.accepted);
+  ASSERT_TRUE(vote_b.accepted);
+  const auto admission_a = admit_vote(vote_a, 1);
+  ASSERT_TRUE(admission_a.accepted);
+  const auto admission_b = admit_vote(vote_b, 2);
+  ASSERT_TRUE(admission_b.report_slashing);
+  ASSERT_TRUE(admission_b.has_slashing_transaction_effect);
+  const auto& effect = admission_b.slashing_transaction_effect;
+  ASSERT_TRUE(network_api.executePbftVoteSlashingTransaction(
+      network::PbftVoteSlashingTransaction{effect.status, effect.proof_hash, effect.wallet_index, effect.nonce,
+                                           effect.contract_address, effect.value, effect.gas_limit,
+                                           std::vector<uint8_t>(effect.call_data.begin(), effect.call_data.end())},
+      *node_cfg, *node->getTransactionManager()));
 #else
   auto vote_a = node->getVoteManager()->generateVote(blk_hash_t{1}, PbftVoteTypes::cert_vote, 6, 1, 3,
                                                      node_cfg->getFirstWallet());

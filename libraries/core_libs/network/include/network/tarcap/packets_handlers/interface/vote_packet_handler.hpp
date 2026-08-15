@@ -8,10 +8,11 @@ class IVotePacketHandler : public ExtVotesPacketHandler {
  public:
   IVotePacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                      std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftManager> pbft_mgr,
-                     net::ConsensusQueryClient pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
+                     net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
-                     std::shared_ptr<SlashingManager> slashing_manager,
+                     std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<SlashingManager> slashing_manager,
 #else
+                     std::shared_ptr<TransactionManager> trx_mgr,
                      network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
 #endif
                      const addr_t& node_addr, const std::string& logs_prefix);

@@ -418,8 +418,6 @@ pub struct PbftManagerLifecycleTransitionOutcome {
     pub remove_cert_voted_sidecar: bool,
     /// Clear live C++ broadcasted-vote sidecars.
     pub clear_broadcasted_vote_sidecars: bool,
-    /// Apply the committed period/round to the external VoteManager.
-    pub set_vote_manager_period_round: bool,
     /// Reset the external current-round timer.
     pub reset_current_round_timer: bool,
     /// Reset the external second-finish polling timer.
@@ -1159,7 +1157,7 @@ impl PbftService {
             let index = session.next_vote;
             let canonical = session.canonical_vote_rlps[index].clone();
             let validation = session.validations[index].clone();
-            let result = match self.admit_validated_vote_with_slashing_facts(
+            let result = match self.admit_validated_vote_with_slashing_resolver(
                 &canonical,
                 &validation,
                 PbftVoteEventFactFlags {
@@ -1175,7 +1173,7 @@ impl PbftService {
                     require_proposed_block_sidecar: false,
                     slashing_enabled: true,
                 },
-                &session.submitters,
+                || Ok(session.submitters.clone()),
             ) {
                 Ok(result) => result,
                 Err(error) => {
@@ -2142,7 +2140,6 @@ impl PbftService {
             snapshot,
             remove_cert_voted_sidecar: false,
             clear_broadcasted_vote_sidecars: false,
-            set_vote_manager_period_round: false,
             reset_current_round_timer: false,
             reset_second_finish_timer: false,
             print_cert_step_info: false,
@@ -2206,7 +2203,6 @@ impl PbftService {
             snapshot: manager.state.snapshot(),
             remove_cert_voted_sidecar: plan.remove_cert_voted_block,
             clear_broadcasted_vote_sidecars: plan.clear_broadcasted_votes,
-            set_vote_manager_period_round: plan.set_vote_manager_period_round,
             reset_current_round_timer: plan.reset_current_round_start,
             reset_second_finish_timer: plan.reset_second_finish_start,
             print_cert_step_info: plan.print_cert_step_info,
@@ -4279,13 +4275,12 @@ impl PbftService {
             request,
             false,
         )?;
-        let submitters = resolve_slashing_submitter_facts(final_chain, slashing_submitters)?;
-        self.admit_validated_vote_with_slashing_facts(
+        self.admit_validated_vote_with_slashing_resolver(
             canonical_vote_rlp,
             &validation,
             flags,
             context,
-            &submitters,
+            || resolve_slashing_submitter_facts(final_chain, slashing_submitters),
         )
     }
 
@@ -4311,30 +4306,39 @@ impl PbftService {
             request,
             false,
         )?;
-        let submitters = submitters
-            .iter()
-            .map(|identity| SlashingSubmitterFact {
-                wallet_index: identity.wallet_index,
-                nonce: identity.nonce,
-                balance: identity.balance,
-            })
-            .collect::<Vec<_>>();
-        self.admit_validated_vote_with_slashing_facts(
+        self.admit_validated_vote_with_slashing_resolver(
             canonical_vote_rlp,
             &validation,
             flags,
             context,
-            &submitters,
+            || {
+                Ok(submitters
+                    .iter()
+                    .map(|identity| SlashingSubmitterFact {
+                        wallet_index: identity.wallet_index,
+                        nonce: identity.nonce,
+                        balance: identity.balance,
+                    })
+                    .collect())
+            },
         )
     }
 
-    fn admit_validated_vote_with_slashing_facts(
+    /// Publishes one validated vote transition and resolves slashing accounts
+    /// only when that transition proves a double-vote conflict.
+    ///
+    /// Ordinary and duplicate-hash admissions never sample account state, so
+    /// transient FinalChain account-snapshot lag cannot reject a valid packet.
+    /// Conflict publication precedes resolution; an unavailable account view
+    /// therefore returns an infrastructure error without fabricating a proof
+    /// transaction or rolling back the deterministic conflict observation.
+    fn admit_validated_vote_with_slashing_resolver(
         &self,
         canonical_vote_rlp: &[u8],
         validation: &PbftCanonicalVoteValidation,
         flags: PbftVoteEventFactFlags,
         context: PbftVoteProgressContext,
-        submitters: &[SlashingSubmitterFact],
+        resolve_submitters: impl FnOnce() -> Result<Vec<SlashingSubmitterFact>>,
     ) -> Result<PbftVoteAdmissionWithSlashingResult> {
         let transaction = self
             .verified_votes()
@@ -4353,6 +4357,7 @@ impl PbftService {
                 .slashing_payloads
                 .as_ref()
                 .map(|payloads| {
+                    let submitters = resolve_submitters()?;
                     let progress_fact = transaction
                         .outcome
                         .precheck
@@ -4373,7 +4378,7 @@ impl PbftService {
                             vote_b_step: progress_fact.identity.step,
                             vote_a_rlp: payloads.incoming.vote_rlp.clone(),
                             vote_b_rlp: payloads.conflicting.vote_rlp.clone(),
-                            submitters: submitters.to_vec(),
+                            submitters,
                         })
                         .map(Into::into)
                 })
@@ -4444,6 +4449,85 @@ impl PbftService {
             votes.plan_two_t_plus_one_threshold(fact)
         };
         Ok(resolved)
+    }
+
+    /// Resolves a public-client PBFT quorum without exposing configuration or mutable vote state.
+    ///
+    /// The application query facade supplies only the semantic period and vote
+    /// kind. Committee policy, the live chain head, cached totals, and exact
+    /// FinalChain DPoS state are composed here. The returned planner preserves
+    /// typed future-state and infrastructure failure statuses.
+    pub fn public_vote_threshold(
+        &self,
+        final_chain: &FinalChain,
+        period: u64,
+        vote_type: PbftVoteType,
+    ) -> Result<PbftTwoTPlusOneThresholdPlan> {
+        self.verified_votes_two_t_plus_one_threshold_with_final_chain(
+            final_chain,
+            PbftTwoTPlusOneThresholdFact {
+                pbft_period: period,
+                vote_type,
+                current_pbft_chain_size: 0,
+                committee_size: self.committee_size,
+                number_of_proposers: self.number_of_proposers,
+                has_total_dpos_votes_count: false,
+                total_dpos_votes_count: 0,
+                future_dpos_state: false,
+                unknown_error: false,
+            },
+        )
+    }
+
+    /// Validates, persists, and publishes one network-ingress PBFT vote.
+    ///
+    /// Packet routing supplies only canonical vote bytes and ordered signing
+    /// identities. This root task derives the live manager cursor, committee
+    /// policy, quorum threshold, and slashing policy from the restored PBFT
+    /// service. FinalChain remains the authoritative DPoS/account boundary.
+    /// A published double-vote returns a typed transaction effect; signing and
+    /// transaction insertion remain external and must be reported separately.
+    pub fn admit_network_verified_vote(
+        &self,
+        final_chain: &FinalChain,
+        canonical_vote_rlp: &[u8],
+        slashing_submitters: &[SlashingSubmitterIdentity],
+    ) -> Result<PbftVoteAdmissionWithSlashingResult> {
+        let inspection = inspect_canonical_pbft_vote(canonical_vote_rlp)?;
+        let manager = self.manager_snapshot();
+        let threshold = inspection.period.checked_sub(1).and_then(|period| {
+            self.public_vote_threshold(final_chain, period, inspection.vote_type)
+                .ok()
+                .filter(|plan| {
+                    plan.status == PbftTwoTPlusOneThresholdStatus::Available && plan.has_threshold
+                })
+                .map(|plan| plan.threshold)
+        });
+        self.admit_and_persist_verified_vote_with_final_chain(
+            final_chain,
+            canonical_vote_rlp,
+            PbftVoteAdmissionValidationRequest {
+                strict_vrf: true,
+                committee_size: self.committee_size,
+                number_of_proposers: self.number_of_proposers,
+                has_preverified_weight: inspection.has_embedded_weight,
+                preverified_weight: inspection.embedded_weight,
+            },
+            PbftVoteEventFactFlags {
+                vote_already_known: false,
+                carries_proposed_block: true,
+                valid_stale_reward_vote: false,
+            },
+            PbftVoteProgressContext {
+                current_period: manager.period,
+                current_round: manager.round,
+                max_future_period_delta: u64::MAX,
+                two_t_plus_one_threshold: threshold,
+                require_proposed_block_sidecar: false,
+                slashing_enabled: self.slashing_enabled,
+            },
+            slashing_submitters,
+        )
     }
 
     fn validate_verified_vote_with_final_chain_internal(
@@ -6182,6 +6266,78 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_vote_admission_does_not_resolve_slashing_accounts() {
+        use std::cell::Cell;
+
+        let (_path, storage) = temp_storage("pbft_service_vote_admission_lazy_slashing");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+        let vote = generated_vote_at_period(H256::repeat_byte(0x75), 12);
+        let request = vote_validation_request(true, 40);
+        let (validation, _) = service
+            .validate_verified_vote_with_final_chain_internal(
+                &final_chain,
+                &vote.vote_rlp,
+                request,
+                false,
+            )
+            .unwrap();
+        let resolver_called = Cell::new(false);
+
+        let result = service
+            .admit_validated_vote_with_slashing_resolver(
+                &vote.vote_rlp,
+                &validation,
+                vote_event_flags(),
+                vote_progress_context(80),
+                || {
+                    resolver_called.set(true);
+                    anyhow::bail!("FINAL_CHAIN_ACCOUNT_SNAPSHOT_UNAVAILABLE")
+                },
+            )
+            .unwrap();
+
+        assert!(result.validation.accepted);
+        assert!(result.transaction.transition_published);
+        assert!(result.slashing_transaction_effect.is_none());
+        assert!(!resolver_called.get());
+    }
+
+    #[test]
+    fn network_root_admits_an_ordinary_vote_without_slashing_account_facts() {
+        let (_path, storage) = temp_storage("pbft_service_network_vote_admission");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+        let vote = generated_vote_at_period(H256::repeat_byte(0x76), 1);
+        let unavailable_submitter = SlashingSubmitterIdentity {
+            wallet_index: 0,
+            address: [0x99; 20],
+            nonce: U256::zero(),
+            balance: U256::zero(),
+        };
+
+        let result = service
+            .admit_network_verified_vote(&final_chain, &vote.vote_rlp, &[unavailable_submitter])
+            .unwrap();
+
+        assert!(result.validation.accepted);
+        assert!(result.transaction.transition_published);
+        assert!(result.slashing_transaction_effect.is_none());
+    }
+
+    #[test]
     fn composed_vote_admission_rejects_zero_stake() {
         let (_path, storage) = temp_storage("pbft_service_vote_admission_zero_stake");
         let service = PbftService::restore(storage.clone(), config(0)).unwrap();
@@ -7532,7 +7688,6 @@ mod tests {
                 .is_empty()
         );
         assert!(outcome.clear_broadcasted_vote_sidecars);
-        assert!(outcome.set_vote_manager_period_round);
         assert!(outcome.reset_current_round_timer);
 
         drop(service);

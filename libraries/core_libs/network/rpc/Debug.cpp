@@ -5,12 +5,15 @@
 
 #include "common/jsoncpp.hpp"
 #include "common/rpc_utils.hpp"
+#include "final_chain/final_chain.hpp"
 #include "final_chain/state_api_data.hpp"
 #include "network/rpc/eth/data.hpp"
 #include "transaction/system_transaction.hpp"
 #include "transaction/transaction.hpp"
 #include "vote/pbft_vote.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
+#endif
 
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -150,27 +153,26 @@ DebugPreviousBlockCertVotesReader makeDebugPreviousBlockCertVotesReader(std::wea
     }
 
     DebugPreviousBlockCertVotesView view;
-    auto vote_manager = node->getVoteManager();
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto cert_vote_view =
-          (*consensus_query_api)->consensus_query_pbft_previous_block_cert_votes_by_period(period);
-      if (!cert_vote_view.found) {
-        return view;
-      }
-
-      view.found = true;
-      view.total_votes_count = node->getFinalChain()->dposEligibleTotalVoteCount(cert_vote_view.certified_period - 1);
-      view.round = cert_vote_view.round;
-      view.votes.reserve(cert_vote_view.votes.size());
-      for (const auto& vote_view : cert_vote_view.votes) {
-        auto vote = std::make_shared<PbftVote>(bytes(vote_view.vote_rlp.begin(), vote_view.vote_rlp.end()));
-        vote_manager->validateVote(vote);
-        view.votes.emplace_back(std::move(vote));
-      }
+    if (!consensus_query_api) {
+      throw std::runtime_error("DEBUG_PREVIOUS_BLOCK_CERT_VOTES_QUERY_UNAVAILABLE");
+    }
+    const auto cert_vote_view =
+        (*consensus_query_api)->consensus_query_pbft_previous_block_cert_votes_by_period(period);
+    if (!cert_vote_view.found) {
       return view;
     }
-#endif
+
+    view.found = true;
+    view.total_votes_count = node->getFinalChain()->dposEligibleTotalVoteCount(cert_vote_view.certified_period - 1);
+    view.round = cert_vote_view.round;
+    view.votes.reserve(cert_vote_view.votes.size());
+    for (const auto& vote_view : cert_vote_view.votes) {
+      view.votes.emplace_back(std::make_shared<PbftVote>(bytes(vote_view.vote_rlp.begin(), vote_view.vote_rlp.end())));
+    }
+    return view;
+#else
+    auto vote_manager = node->getVoteManager();
     auto votes = node->getDB()->getPeriodCertVotes(period);
     if (votes.empty()) {
       return view;
@@ -186,6 +188,7 @@ DebugPreviousBlockCertVotesReader makeDebugPreviousBlockCertVotesReader(std::wea
       view.votes.emplace_back(std::move(vote));
     }
     return view;
+#endif
   };
   return reader;
 }

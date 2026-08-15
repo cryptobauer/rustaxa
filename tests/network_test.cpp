@@ -833,6 +833,7 @@ TEST_F(NetworkTest, node_pbft_sync_without_enough_votes) {
 #endif
 
 // Test PBFT next votes sycning when node is behind of PBFT round with peer
+#ifndef RUSTAXA_ENABLE
 TEST_F(NetworkTest, pbft_next_votes_sync_in_behind_round) {
   auto node_cfgs = make_node_cfgs(2, 1, 20);
 
@@ -933,6 +934,7 @@ TEST_F(NetworkTest, pbft_next_votes_sync_in_same_round) {
   EXPECT_EQ(node1_vote_mgr->getVerifiedVotesSize(), 2);
   EXPECT_HAPPENS({5s, 100ms}, [&](auto& ctx) { WAIT_EXPECT_EQ(ctx, node2_vote_mgr->getVerifiedVotesSize(), 3) });
 }
+#endif
 
 // Test creates a DAG on one node and verifies
 // that the second node syncs with it and that the resulting

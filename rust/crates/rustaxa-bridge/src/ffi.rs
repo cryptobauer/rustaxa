@@ -6,7 +6,6 @@ use crate::final_chain::*;
 use crate::network::*;
 use crate::pbft_manager::*;
 use crate::pbft_sync::*;
-use crate::pbft_vote_generation::*;
 use crate::query::*;
 use crate::storage::*;
 use crate::transaction::*;
@@ -107,7 +106,11 @@ pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
 /// Cloning the service shares the root's ordered effect queue and sibling
 /// protocol owners; this bridge owns no mutex, configuration, or standalone
 /// consensus runtime.
-pub struct BridgeConsensusNetworkApi(pub(crate) rustaxa_consensus::ConsensusNetworkService);
+pub struct BridgeConsensusNetworkApi {
+    pub(crate) network: rustaxa_consensus::ConsensusNetworkService,
+    pub(crate) pbft: Arc<rustaxa_consensus::PbftService>,
+    pub(crate) final_chain: Arc<rustaxa_consensus::FinalChain>,
+}
 
 /// Thin CXX adapter over the CXX-free native PBFT application root.
 ///
@@ -441,6 +444,24 @@ pub mod rustaxa_ffi {
         application_effect_id: u64,
     }
 
+    /// One PBFT vote packet after native routing and root-owned admission.
+    ///
+    /// `has_admission` is false for routing rejection and for a bundle member
+    /// cancelled by an earlier slashing conflict. Transport follow-ups are
+    /// already queued; the optional runtime result exposes only terminal
+    /// admission facts and the named slashing transaction leaf.
+    struct NetworkPbftVoteAdmissionOutcome {
+        decision: NetworkIngressDecision,
+        has_admission: bool,
+        accepted: bool,
+        already_present: bool,
+        mark_vote_known: bool,
+        gossip_vote: bool,
+        report_slashing: bool,
+        has_slashing_transaction_effect: bool,
+        slashing_transaction_effect: SlashingTransactionEffect,
+    }
+
     /// Compact facts for status-triggered network sync planning.
     struct NetworkStatusSyncFacts {
         local_pbft_syncing: bool,
@@ -727,23 +748,7 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
     }
 
-    /// Operation-level VoteManager persistence request for one accepted vote.
-    ///
-    /// C++ supplies identities only. Rust resolves the authoritative retained
-    /// weighted payloads and applies both optional writes through one storage
-    /// batch so replacing a 2t+1 bundle is delete-plus-put atomic.
-    struct PbftVoteProgressPersistenceWrite {
-        has_extra_reward_vote: bool,
-        extra_reward_vote_hash: [u8; 32],
-        has_two_t_plus_one_bundle: bool,
-        two_t_plus_one_kind: u8,
-        two_t_plus_one_period: u64,
-        two_t_plus_one_round: u64,
-        two_t_plus_one_step: u64,
-        two_t_plus_one_block_hash: [u8; 32],
-    }
-
-    /// Result for VoteManager PBFT vote persistence bridge operations.
+    /// Result for PBFT vote persistence bridge operations.
     ///
     /// `status` values are local to the bridge contract: 0 = applied,
     /// 1 = rejected. `applied_writes` counts logical vote-family writes
@@ -875,15 +880,6 @@ pub mod rustaxa_ffi {
     /// C++-originated fact bundle for deterministic PBFT finalization intent planning.
     struct PbftFinalizationHash {
         hash: [u8; 32],
-    }
-
-    /// Task-specific reward-vote reset storage request.
-    struct PbftRewardVotesResetRequest {
-        period: u64,
-        round: u64,
-        step: u64,
-        block_hash: [u8; 32],
-        sync: bool,
     }
 
     /// Hash plus finalized-position metadata for native-ready storage indexes.
@@ -1408,7 +1404,6 @@ pub mod rustaxa_ffi {
         snapshot: PbftManagerRuntimeSnapshot,
         remove_cert_voted_sidecar: bool,
         clear_broadcasted_vote_sidecars: bool,
-        set_vote_manager_period_round: bool,
         reset_current_round_timer: bool,
         reset_second_finish_timer: bool,
         print_cert_step_info: bool,
@@ -1438,19 +1433,6 @@ pub mod rustaxa_ffi {
         expired_dag_hashes: Vec<PbftFinalizationHash>,
         refresh_dag_counters: bool,
         snapshot: PbftManagerRuntimeSnapshot,
-        error_code: String,
-    }
-
-    /// Result from appending Rust-owned finalized-period storage writes to an existing batch.
-    struct PbftFinalizedPeriodApplyResult {
-        status: u8,
-        wrote_pbft_head: bool,
-        wrote_period_data: bool,
-        dag_index_writes: usize,
-        transaction_location_writes: usize,
-        block_period: u64,
-        pbft_block_hash: [u8; 32],
-        reward_votes_reset_generation: u64,
         error_code: String,
     }
 
@@ -1598,8 +1580,7 @@ pub mod rustaxa_ffi {
 
     /// Runtime-owned PBFT vote admission transition result.
     ///
-    /// This is the production-oriented `VoteManager::addVerifiedVote` bridge
-    /// result: Rust validates canonical bytes, applies a bounded in-memory
+    /// Rust validates canonical bytes, applies a bounded in-memory
     /// checkpoint, commits any required vote-progress batch, and publishes the
     /// transition only after persistence succeeds. External effects are valid
     /// only when `transition_published` is true.
@@ -1723,7 +1704,7 @@ pub mod rustaxa_ffi {
         vrf_output: [u8; 64],
     }
 
-    /// Rust PBFT vote generation input supplied by the C++ VoteManager shim.
+    /// Rust PBFT vote generation input supplied by the signing executor leaf.
     ///
     /// Secrets are ephemeral call inputs only; Rust does not store them in a
     /// runtime handle. Expected identity fields let Rust reject mismatched
@@ -3213,6 +3194,12 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             block_hash: &[u8; 32],
         ) -> Result<bool>;
+        pub fn consensus_query_verified_vote_count(self: &BridgeConsensusQueryApi) -> Result<u64>;
+        pub fn consensus_query_pbft_vote_threshold(
+            self: &BridgeConsensusQueryApi,
+            period: u64,
+            vote_type: u8,
+        ) -> Result<PbftTwoTPlusOneThresholdPlan>;
         pub fn consensus_query_final_chain_block_by_number(
             self: &BridgeConsensusQueryApi,
             number: u64,
@@ -3326,21 +3313,19 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             results: Vec<NetworkEffectResult>,
         ) -> Result<NetworkEffectAck>;
-        pub fn consensus_network_take_cancelled_vote_admission_effect(
-            self: &BridgeConsensusNetworkApi,
-            effect_id: u64,
-        ) -> Result<bool>;
-        pub fn consensus_network_ingest_pbft_vote(
+        pub fn consensus_network_admit_pbft_vote(
             self: &BridgeConsensusNetworkApi,
             fact: PbftVoteIngressFact,
             context: NetworkPbftVoteIngressContext,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_ingest_pbft_vote_bundle(
+            slashing_submitters: Vec<SlashingSubmitterIdentity>,
+        ) -> Result<NetworkPbftVoteAdmissionOutcome>;
+        pub fn consensus_network_admit_pbft_vote_bundle(
             self: &BridgeConsensusNetworkApi,
             reference: PbftVoteIngressFact,
             votes: Vec<PbftVoteIngressFact>,
             contexts: Vec<NetworkPbftVoteIngressContext>,
-        ) -> Result<Vec<NetworkIngressDecision>>;
+            slashing_submitters: Vec<SlashingSubmitterIdentity>,
+        ) -> Result<Vec<NetworkPbftVoteAdmissionOutcome>>;
         pub fn consensus_network_ingest_pillar_vote_bundle(
             self: &BridgeConsensusNetworkApi,
             context: NetworkPillarVoteIngressContext,
@@ -4130,11 +4115,6 @@ pub mod rustaxa_ffi {
         pub fn pbft_service_verified_votes_own_vote_records(
             self: &BridgeConsensusApplication,
         ) -> Result<Vec<PbftVoteStorageRecord>>;
-        pub fn pbft_service_verified_votes_size(self: &BridgeConsensusApplication) -> Result<u64>;
-        pub fn pbft_service_verified_votes_replay_contains(
-            self: &BridgeConsensusApplication,
-            vote_hash: &[u8; 32],
-        ) -> Result<bool>;
         pub fn pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
             self: &BridgeConsensusApplication,
             fact: PbftTwoTPlusOneThresholdFact,
@@ -4176,10 +4156,6 @@ pub mod rustaxa_ffi {
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotePayloadsLookup>;
-        pub fn pbft_service_verified_votes_cleanup_votes_by_period(
-            self: &BridgeConsensusApplication,
-            pbft_period: u64,
-        ) -> Result<()>;
         pub fn pbft_service_verified_votes_select_reward_vote_payloads(
             self: &BridgeConsensusApplication,
             block_period: u64,
@@ -4202,20 +4178,6 @@ pub mod rustaxa_ffi {
             canonical_vote_rlp: &[u8],
             weight: u64,
         ) -> Result<PbftVotePersistenceResult>;
-        pub fn pbft_service_verified_votes_clear_own_verified_votes(
-            self: &BridgeConsensusApplication,
-        ) -> Result<PbftVotePersistenceResult>;
-        pub fn pbft_service_verified_votes_persist_pbft_vote_progress(
-            self: &BridgeConsensusApplication,
-            write: PbftVoteProgressPersistenceWrite,
-        ) -> Result<PbftVotePersistenceResult>;
-        pub fn pbft_service_verified_votes_apply_reward_votes_reset(
-            self: &BridgeConsensusApplication,
-            request: PbftRewardVotesResetRequest,
-        ) -> Result<PbftFinalizedPeriodApplyResult>;
-        pub fn pbft_generate_signed_vote(
-            input: PbftVoteGenerationInput,
-        ) -> Result<PbftGeneratedVote>;
         pub fn pbft_service_generate_signed_vote_with_weight(
             self: &BridgeConsensusApplication,
             input: PbftVoteGenerationInput,

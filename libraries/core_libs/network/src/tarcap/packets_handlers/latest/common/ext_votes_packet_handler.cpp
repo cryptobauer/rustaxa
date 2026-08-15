@@ -8,7 +8,9 @@
 #include "pbft/pbft_manager.hpp"
 #include "vote/pbft_vote.hpp"
 #include "vote/votes_bundle_rlp.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
+#endif
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
@@ -43,6 +45,18 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &input) {
   return out;
 }
 
+rust::Vec<rustaxa::SlashingSubmitterIdentity> makeSlashingSubmitters(const FullNodeConfig &config) {
+  rust::Vec<rustaxa::SlashingSubmitterIdentity> submitters;
+  submitters.reserve(config.wallets.size());
+  for (size_t index = 0; index < config.wallets.size(); ++index) {
+    rustaxa::SlashingSubmitterIdentity submitter{};
+    submitter.wallet_index = index;
+    submitter.address = config.wallets[index].node_addr.asArray();
+    submitters.push_back(std::move(submitter));
+  }
+  return submitters;
+}
+
 }  // namespace
 #endif
 
@@ -50,10 +64,11 @@ ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::sh
                                              std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                              std::shared_ptr<PbftManager> pbft_mgr,
                                              net::ConsensusQueryClient pbft_chain,
-                                             std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
+                                             std::shared_ptr<VoteManager> vote_mgr,
                                              std::shared_ptr<SlashingManager> slashing_manager,
 #else
+                                             std::shared_ptr<TransactionManager> trx_mgr,
                                              network::ConsensusNetworkApiShared consensus_network_api,
                                              TarcapVersion transport_lane,
 #endif
@@ -62,14 +77,15 @@ ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::sh
       last_votes_sync_request_time_(std::chrono::system_clock::now()),
       last_pbft_block_sync_request_time_(std::chrono::system_clock::now()),
       pbft_mgr_(std::move(pbft_mgr)),
-      pbft_chain_(std::move(pbft_chain)),
-      vote_mgr_(std::move(vote_mgr))
+      pbft_chain_(std::move(pbft_chain))
 #ifndef RUSTAXA_ENABLE
       ,
+      vote_mgr_(std::move(vote_mgr)),
       slashing_manager_(std::move(slashing_manager))
 #else
       ,
       rust_consensus_network_api_(std::move(consensus_network_api)),
+      trx_mgr_(std::move(trx_mgr)),
       transport_lane_(transport_lane)
 #endif
 {
@@ -125,9 +141,10 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
     network_ingress_context.pbft_block_period = pbft_block->getPeriod();
   }
   auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(transport_lane_);
-  const auto ingress_decision = ingestPbftVote(ingress_fact, network_ingress_context);
+  const auto ingress = ingestPbftVote(ingress_fact, network_ingress_context);
+  const auto &ingress_decision = ingress.decision;
   if (ingress_decision.status != 0) {
-    (void)executeConsensusNetworkEffects(16, std::nullopt);
+    executeConsensusNetworkEffects(16);
   }
   if (!ingress_decision.routed || ingress_decision.status != 0) {
     LOG(this->log_wr_) << "Network API rejected vote " << vote->getHash()
@@ -137,7 +154,8 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
     return {};
   }
 
-  const auto result = executeConsensusNetworkEffects(16, ingress_decision.application_effect_id);
+  const auto result = consumePbftVoteAdmission(ingress);
+  executeConsensusNetworkEffects(16);
 
   if (!result.accepted && !result.already_present) {
     LOG(this->log_dg_) << "Vote " << vote->getHash() << " was not admitted by Rust vote transition";
@@ -185,6 +203,28 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   return {.accepted = true, .mark_vote_known = true, .gossip_vote = true};
 #endif
 }
+
+#ifdef RUSTAXA_ENABLE
+ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::consumePbftVoteAdmission(
+    const rustaxa::NetworkPbftVoteAdmissionOutcome &outcome) {
+  VoteProcessingResult result{.accepted = outcome.accepted,
+                              .already_present = outcome.already_present,
+                              .mark_vote_known = outcome.mark_vote_known,
+                              .gossip_vote = outcome.gossip_vote,
+                              .report_slashing = outcome.report_slashing,
+                              .cancelled = !outcome.has_admission};
+  if (!outcome.has_slashing_transaction_effect) {
+    return result;
+  }
+  const auto &effect = outcome.slashing_transaction_effect;
+  (void)rust_consensus_network_api_->executePbftVoteSlashingTransaction(
+      network::PbftVoteSlashingTransaction{effect.status, effect.proof_hash, effect.wallet_index, effect.nonce,
+                                           effect.contract_address, effect.value, effect.gas_limit,
+                                           std::vector<uint8_t>(effect.call_data.begin(), effect.call_data.end())},
+      kConf, *trx_mgr_);
+  return result;
+}
+#endif
 
 std::pair<bool, std::string> ExtVotesPacketHandler::validateVotePeriodRoundStep(const std::shared_ptr<PbftVote> &vote,
                                                                                 const std::shared_ptr<TaraxaPeer> &peer,
@@ -311,27 +351,23 @@ void ExtVotesPacketHandler::requestPbftNextVotesAtPeriodRound(const dev::p2p::No
 }
 
 #ifdef RUSTAXA_ENABLE
-rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVote(
+rustaxa::NetworkPbftVoteAdmissionOutcome ExtVotesPacketHandler::ingestPbftVote(
     const rustaxa::PbftVoteIngressFact &fact, const rustaxa::NetworkPbftVoteIngressContext &context) {
   assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api().consensus_network_ingest_pbft_vote(fact, context);
+  return rust_consensus_network_api_->api().consensus_network_admit_pbft_vote(fact, context,
+                                                                              makeSlashingSubmitters(kConf));
 }
 
-rust::Vec<rustaxa::NetworkIngressDecision> ExtVotesPacketHandler::ingestPbftVoteBundle(
+rust::Vec<rustaxa::NetworkPbftVoteAdmissionOutcome> ExtVotesPacketHandler::ingestPbftVoteBundle(
     const rustaxa::PbftVoteIngressFact &reference, rust::Vec<rustaxa::PbftVoteIngressFact> votes,
     rust::Vec<rustaxa::NetworkPbftVoteIngressContext> contexts) {
   assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api().consensus_network_ingest_pbft_vote_bundle(reference, std::move(votes),
-                                                                                      std::move(contexts));
+  return rust_consensus_network_api_->api().consensus_network_admit_pbft_vote_bundle(
+      reference, std::move(votes), std::move(contexts), makeSlashingSubmitters(kConf));
 }
 
-ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsensusNetworkEffects(
-    size_t budget, std::optional<uint64_t> application_effect_id, bool stop_after_correlated_application,
-    bool allow_cancelled_application, std::optional<uint64_t> source_payload_id) {
+void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget, std::optional<uint64_t> source_payload_id) {
   assert(rust_consensus_network_api_);
-  VoteProcessingResult admission_result{};
-  bool application_effect_completed = false;
-  std::optional<std::string> application_failure;
   while (true) {
     const auto batch = rust_consensus_network_api_->api().consensus_network_drain_work(
         static_cast<uint32_t>(transport_lane_), source_payload_id.value_or(0), source_payload_id.has_value(),
@@ -341,8 +377,6 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
     }
     rust::Vec<rustaxa::NetworkEffectResult> results;
     results.reserve(batch.effects.size());
-    std::optional<VoteProcessingResult> reported_admission;
-
     for (const auto &effect : batch.effects) {
       rustaxa::NetworkEffectResult result{};
       result.effect_id = effect.effect_id;
@@ -352,31 +386,9 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
       result.object_kind = effect.object_kind;
       result.object_hash = effect.object_hash;
       result.status = kNetworkEffectResultStatusOk;
-      const bool is_requested_application = application_effect_id && *application_effect_id == effect.effect_id;
-
       try {
         const dev::p2p::NodeID peer_id(effect.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
-        if (effect.kind == kNetworkEffectKindRecordConsensusObject &&
-            effect.object_kind == kNetworkObjectKindPbftVote) {
-          auto admitted_vote =
-              std::make_shared<PbftVote>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
-          if (admitted_vote->getHash().asArray() != effect.object_hash) {
-            throw std::runtime_error("Network API PBFT vote admission effect has mismatched vote payload");
-          }
-          const auto report = vote_mgr_->addVerifiedVoteWithReport(admitted_vote);
-          result.admission_accepted = report.accepted;
-          result.admission_already_present = report.already_present;
-          result.admission_mark_vote_known = report.mark_vote_known;
-          result.admission_gossip_vote = report.gossip_vote;
-          result.admission_report_slashing = report.report_slashing;
-          if (is_requested_application) {
-            reported_admission = VoteProcessingResult{.accepted = report.accepted,
-                                                      .already_present = report.already_present,
-                                                      .mark_vote_known = report.mark_vote_known,
-                                                      .gossip_vote = report.gossip_vote,
-                                                      .report_slashing = report.report_slashing};
-          }
-        } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftChain) {
+        if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftChain) {
           sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
                       encodePacketRlp(GetPbftSyncPacket{effect.sync_start}));
           last_pbft_block_sync_request_time_ = std::chrono::system_clock::now();
@@ -504,9 +516,6 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
       } catch (const std::exception &e) {
         result.status = kNetworkEffectResultStatusFailed;
         result.diagnostic = e.what();
-        if (application_effect_id && effect.effect_id == *application_effect_id) {
-          application_failure = e.what();
-        }
       }
 
       results.push_back(std::move(result));
@@ -518,31 +527,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::executeConsen
       throw std::runtime_error("Network API rejected an executor result batch: " +
                                static_cast<std::string>(acknowledgement.error_code));
     }
-    if (application_failure) {
-      throw std::runtime_error("Network API correlated application executor failed: " + *application_failure);
-    }
-    if (reported_admission) {
-      admission_result = *reported_admission;
-    }
-    application_effect_completed = application_effect_completed ||
-                                   std::any_of(batch.effects.begin(), batch.effects.end(), [&](const auto &effect) {
-                                     return application_effect_id && *application_effect_id == effect.effect_id;
-                                   });
-    if (application_effect_completed && stop_after_correlated_application) {
-      break;
-    }
   }
-  if (application_effect_id && !application_effect_completed) {
-    if (allow_cancelled_application &&
-        rust_consensus_network_api_->api().consensus_network_take_cancelled_vote_admission_effect(
-            *application_effect_id)) {
-      admission_result.cancelled = true;
-      return admission_result;
-    }
-    throw std::runtime_error("Network API did not execute correlated application effect " +
-                             std::to_string(*application_effect_id));
-  }
-  return admission_result;
 }
 
 #endif

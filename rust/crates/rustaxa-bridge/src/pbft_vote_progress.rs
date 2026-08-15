@@ -1,9 +1,8 @@
 //! Rust-only adapters for deterministic PBFT vote-progress planning.
 //!
-//! The verified-votes facade keeps the Rust consensus planner side-effect-free
-//! while flattening operation-specific execution facts for the C++
-//! `VoteManager` shim. C++ remains the executor for effects that touch peers,
-//! networking, storage handles, or live sidecars.
+//! The application-root PBFT service keeps the consensus planner
+//! side-effect-free while this module flattens the remaining operation-specific
+//! executor facts. C++ retains only named transport and materialization leaves.
 
 use crate::ffi::rustaxa_ffi::PbftVoteProgressContext as FfiPbftVoteProgressContext;
 use rustaxa_consensus::pbft_vote_progress::{

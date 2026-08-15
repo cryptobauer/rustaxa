@@ -701,9 +701,11 @@ leader-selection callers that have not yet moved behind operation-shaped native 
 - Delete manager-shaped methods after their last internal caller migrates.
 - Continue and complete `CRW-N01` wherever transport-coupled ingress/egress blocks manager deletion.
 
-Completion condition: `pbft_manager_shim` and `vote_manager_shim` are leaf executor adapters rather than alternate
-application runtimes, then are deleted after their last named clients use separate transport, execution, signing,
-timer/process, or public adapters. Completing `CRW-N01` removes transport as a reason to retain either manager facade.
+Current state: `vote_manager_shim` is deleted. PBFT vote generation, admission, progress, certificate/reward selection,
+cleanup, and persistence are application-root tasks; public reads use `ConsensusQueryApi`, network routing uses
+`ConsensusNetworkApi`, and only signing, tarcap transport, and finalization byte-materialization remain named leaves.
+Completion condition: `pbft_manager_shim` becomes only a leaf executor adapter, then is deleted after its last named
+clients use separate transport, execution, signing, timer/process, or public adapters.
 
 Current network-root progress: native `PbftService` constructs and owns the single `ConsensusNetworkService`; App gives
 `Network` only a thin CXX adapter cloned from that root and injects it through both tarcap capabilities into the vote,
@@ -716,10 +718,10 @@ state, wrapping, send, disconnect, and scheduling leaves; a shared per-lane lock
 acknowledgement across packet workers. Rust now orders post-admission proposed-block publication, peer-known updates,
 and gossip through dependency-checked effects; an exact verified-vote duplicate can therefore deliver a previously
 missing block without regossiping the vote. Failed block publication cancels dependent block-known and gossip effects.
-Verified-vote admission itself is now a typed application effect: the caller retains the lane lock across ingress and
-execution, correlates the synchronous result by the exact effect ID, and reports the `VoteManager` leaf outcome before
-Rust releases dependent work. Bundle handlers preflight every member under that same lane lock before admitting any
-member, preserving all-or-nothing shape validation and the malicious-peer slashing report path.
+Verified-vote admission is now a direct application-root task over canonical bytes and private PBFT/FinalChain siblings.
+It returns the accepted/duplicate/progress/slashing outcome before Rust releases dependent work; C++ executes and reports
+only the typed slashing transaction leaf. Bundle handlers preflight every member before native sequential admission,
+preserving all-or-nothing shape validation and cancelling every unadmitted member after slashing or infrastructure failure.
 The unused generic packet shadow-ingress export, retained byte arena, payload-id allocator, and two partial capacity
 settings are deleted; packet families cross only through authoritative operation-specific routes. Complete PBFT vote
 bundles now preflight through one operation call, retain exact member admission identities in a unique Rust session,

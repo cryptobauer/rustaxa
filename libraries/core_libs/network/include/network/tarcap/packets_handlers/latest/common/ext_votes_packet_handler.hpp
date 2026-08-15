@@ -11,11 +11,17 @@
 #include "pbft/pbft_manager.hpp"
 #include "vote/pbft_vote.hpp"
 #include "vote/votes_bundle_rlp.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
+#endif
 #ifdef RUSTAXA_ENABLE
 #include "network/consensus_network_api.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
+
+namespace taraxa {
+class TransactionManager;
+}
 
 namespace taraxa::network::tarcap {
 
@@ -28,13 +34,12 @@ class ExtVotesPacketHandler : public PacketHandler {
   /**
    * Outcome returned by the PBFT vote application-effect executor.
    *
-   * Rust-enabled builds populate these fields from the exact-ID-correlated
-   * VoteManager application effect. `accepted` and `already_present` are
-   * mutually exclusive; the remaining flags describe dependent work that
-   * Rust may release after the application result is acknowledged. Legacy
-   * builds use only `accepted` and retain their existing mark/gossip path.
-   * `cancelled` is set only for a bundle member whose exact admission effect
-   * Rust removed after an earlier member terminated the bundle session.
+   * Rust-enabled builds populate these fields from the application-root
+   * admission task. `accepted` and `already_present` are mutually exclusive;
+   * the remaining flags describe the retained transport and slashing leaves.
+   * Legacy builds use only `accepted` and retain their existing mark/gossip
+   * path. `cancelled` identifies a bundle member removed after an earlier
+   * member terminated the native bundle session.
    */
   struct VoteProcessingResult {
     bool accepted = false;
@@ -47,10 +52,11 @@ class ExtVotesPacketHandler : public PacketHandler {
 
   ExtVotesPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                         std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftManager> pbft_mgr,
-                        net::ConsensusQueryClient pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
+                        net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
-                        std::shared_ptr<SlashingManager> slashing_manager,
+                        std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<SlashingManager> slashing_manager,
 #else
+                        std::shared_ptr<TransactionManager> trx_mgr,
                         network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
 #endif
                         const addr_t& node_addr, const std::string& log_channel_name);
@@ -69,7 +75,7 @@ class ExtVotesPacketHandler : public PacketHandler {
    * @param peer
    * @param validate_max_round_step
    * @param allow_gossip whether an accepted vote may be regossiped
-   * @return result reported by the VoteManager application leaf
+   * @return result reported by the application-root admission task
    */
   VoteProcessingResult processVote(const std::shared_ptr<PbftVote>& vote, const std::shared_ptr<PbftBlock>& pbft_block,
                                    const std::shared_ptr<TaraxaPeer>& peer, bool validate_max_round_step,
@@ -85,21 +91,19 @@ class ExtVotesPacketHandler : public PacketHandler {
   void requestPbftNextVotesAtPeriodRound(const dev::p2p::NodeID& peerID, PbftPeriod pbft_period, PbftRound pbft_round);
 
 #ifdef RUSTAXA_ENABLE
-  rustaxa::NetworkIngressDecision ingestPbftVote(const rustaxa::PbftVoteIngressFact& fact,
-                                                 const rustaxa::NetworkPbftVoteIngressContext& context);
-  rust::Vec<rustaxa::NetworkIngressDecision> ingestPbftVoteBundle(
+  rustaxa::NetworkPbftVoteAdmissionOutcome ingestPbftVote(const rustaxa::PbftVoteIngressFact& fact,
+                                                          const rustaxa::NetworkPbftVoteIngressContext& context);
+  rust::Vec<rustaxa::NetworkPbftVoteAdmissionOutcome> ingestPbftVoteBundle(
       const rustaxa::PbftVoteIngressFact& reference, rust::Vec<rustaxa::PbftVoteIngressFact> votes,
       rust::Vec<rustaxa::NetworkPbftVoteIngressContext> contexts);
+  VoteProcessingResult consumePbftVoteAdmission(const rustaxa::NetworkPbftVoteAdmissionOutcome& outcome);
   /**
    * Executes Rust-owned effects and returns the matching vote-admission leaf result, if any.
    * The caller must retain this handler's transport-lane lock from ingress through completion.
    * A matching executor failure is acknowledged to Rust so dependent work is cancelled, then
    * surfaced as an exception; callers must not request later admission IDs from that operation.
    */
-  VoteProcessingResult executeConsensusNetworkEffects(size_t budget, std::optional<uint64_t> application_effect_id,
-                                                      bool stop_after_correlated_application = false,
-                                                      bool allow_cancelled_application = false,
-                                                      std::optional<uint64_t> source_payload_id = std::nullopt);
+  void executeConsensusNetworkEffects(size_t budget, std::optional<uint64_t> source_payload_id = std::nullopt);
 #endif
 
  private:
@@ -133,13 +137,14 @@ class ExtVotesPacketHandler : public PacketHandler {
 
   std::shared_ptr<PbftManager> pbft_mgr_;
   net::ConsensusQueryClient pbft_chain_;
-  std::shared_ptr<VoteManager> vote_mgr_;
 #ifndef RUSTAXA_ENABLE
+  std::shared_ptr<VoteManager> vote_mgr_;
   std::shared_ptr<SlashingManager> slashing_manager_;
 #endif
 
 #ifdef RUSTAXA_ENABLE
   network::ConsensusNetworkApiShared rust_consensus_network_api_;
+  std::shared_ptr<TransactionManager> trx_mgr_;
   const TarcapVersion transport_lane_;
 #endif
 };

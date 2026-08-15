@@ -50,7 +50,6 @@ class PbftBlock;
 class PbftVote;
 class PeriodData;
 class TransactionManager;
-class VoteManager;
 enum PbftMgrStatus : uint8_t;
 
 /**
@@ -144,9 +143,8 @@ class PbftManager {
    * failures propagate.
    */
   PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
-              SharedConsensusApplication consensus_application, std::shared_ptr<VoteManager> vote_mgr,
-              std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
-              std::shared_ptr<final_chain::FinalChain> final_chain,
+              SharedConsensusApplication consensus_application, std::shared_ptr<DagManager> dag_mgr,
+              std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
               std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr);
   ~PbftManager();
   PbftManager(const PbftManager &) = delete;
@@ -630,7 +628,6 @@ class PbftManager {
   SharedConsensusApplication pbft_service_;
   // Application-owned composed DAG/transaction service used directly by Rust PBFT/sortition finalization operations.
   SharedConsensusApplication dag_transaction_service_;
-  std::shared_ptr<VoteManager> vote_mgr_;
   std::shared_ptr<DagManager> dag_mgr_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<TransactionManager> trx_mgr_;
@@ -690,6 +687,8 @@ class PbftManager {
   const blk_hash_t dag_genesis_block_hash_;
 
   const GenesisConfig &kGenesisConfig;
+  // Retained only for the named local signing and slashing-transaction executor leaves.
+  const FullNodeConfig &kConfig;
 
   std::condition_variable stop_cv_;
   std::mutex stop_mtx_;

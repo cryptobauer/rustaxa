@@ -7,7 +7,9 @@
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
 #include "vote/votes_bundle_rlp.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
+#endif
 
 namespace taraxa::network::tarcap {
 
@@ -43,20 +45,21 @@ VotesBundlePacketHandler::VotesBundlePacketHandler(const FullNodeConfig &conf, s
                                                    std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                                    std::shared_ptr<PbftManager> pbft_mgr,
                                                    net::ConsensusQueryClient pbft_chain,
-                                                   std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
+                                                   std::shared_ptr<VoteManager> vote_mgr,
                                                    std::shared_ptr<SlashingManager> slashing_manager,
 #else
+                                                   std::shared_ptr<TransactionManager> trx_mgr,
                                                    network::ConsensusNetworkApiShared consensus_network_api,
                                                    TarcapVersion transport_lane,
 #endif
                                                    const addr_t &node_addr, const std::string &logs_prefix)
     : IVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_mgr),
-                         std::move(pbft_chain), std::move(vote_mgr),
+                         std::move(pbft_chain),
 #ifndef RUSTAXA_ENABLE
-                         std::move(slashing_manager),
+                         std::move(vote_mgr), std::move(slashing_manager),
 #else
-                         std::move(consensus_network_api), transport_lane,
+                         std::move(trx_mgr), std::move(consensus_network_api), transport_lane,
 #endif
                          node_addr, logs_prefix + "VOTES_BUNDLE_PH") {
 }
@@ -118,15 +121,14 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
       ingestPbftVoteBundle(makeVoteIngressFact(reference_vote), std::move(bundle_facts), std::move(bundle_contexts));
   const bool bundle_preflight_accepted =
       bundle_decisions.size() == packet.votes_bundle.votes.size() &&
-      std::all_of(bundle_decisions.begin(), bundle_decisions.end(), [](const auto &decision) {
-        return decision.status == kPbftVoteIngressStatusAccepted && decision.application_effect_id != 0;
-      });
+      std::all_of(bundle_decisions.begin(), bundle_decisions.end(),
+                  [](const auto &outcome) { return outcome.decision.status == kPbftVoteIngressStatusAccepted; });
   if (!bundle_preflight_accepted) {
     if (bundle_decisions.empty()) {
       throw std::runtime_error("Rust network API rejected malformed PBFT bundle admission inputs");
     }
-    const auto &ingress_decision = bundle_decisions.front();
-    (void)executeConsensusNetworkEffects(16, std::nullopt, false, false, packet_data.id_);
+    const auto &ingress_decision = bundle_decisions.front().decision;
+    executeConsensusNetworkEffects(16, packet_data.id_);
     if (ingress_decision.status == kPbftVoteIngressStatusUnsupportedBundleProposeVote) {
       LOG(log_er_) << "Dropping votes bundle packet due to received \"propose\" votes from " << peer->getId()
                    << ". The peer may be a malicious player, will be disconnected";
@@ -196,8 +198,7 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
                  << " as part of votes bundle";
 
 #ifdef RUSTAXA_ENABLE
-    const auto process_result = executeConsensusNetworkEffects(
-        1, bundle_decisions[bundle_member_index].application_effect_id, true, true, packet_data.id_);
+    const auto process_result = consumePbftVoteAdmission(bundle_decisions[bundle_member_index]);
     ++bundle_member_index;
     if (process_result.cancelled) {
       LOG(log_dg_) << "Rust network API cancelled the remaining PBFT vote-bundle admissions";
@@ -223,7 +224,7 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
 #ifndef RUSTAXA_ENABLE
   onNewPbftVotesBundle(packet.votes_bundle.votes, false, peer->getId());
 #else
-  (void)executeConsensusNetworkEffects(16, std::nullopt, false, false, packet_data.id_);
+  executeConsensusNetworkEffects(16, packet_data.id_);
 #endif
 }
 

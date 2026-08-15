@@ -54,7 +54,6 @@ constexpr uint8_t kPbftFinalizationStorageStageDynamic = 1;
 constexpr uint8_t kPbftManagerStartupStatusReady = 0;
 constexpr uint8_t kPbftManagerStartupStatusInvalidFact = 1;
 constexpr uint8_t kPbftManagerRuntimeStateFinish = 3;
-constexpr uint8_t kPbftManagerAdvanceActionSetVoteManagerPeriodRound = 2;
 constexpr uint8_t kPbftManagerAdvanceActionResetCurrentRoundTimer = 3;
 constexpr uint8_t kPbftManagerAdvanceActionResetRewardVoteCounters = 4;
 constexpr uint8_t kPbftManagerAdvanceActionResetPeriodTimer = 5;
@@ -333,9 +332,8 @@ TEST(RustPbftSyncTest, ManagerAdvancePeriodRecordsEffectTranscript) {
   EXPECT_EQ(plan.new_period, 13);
   EXPECT_EQ(actions,
             (std::vector<uint8_t>{
-                kPbftManagerAdvanceActionSetVoteManagerPeriodRound, kPbftManagerAdvanceActionResetCurrentRoundTimer,
-                kPbftManagerAdvanceActionResetRewardVoteCounters, kPbftManagerAdvanceActionResetPeriodTimer,
-                kPbftManagerAdvanceActionUpdateWalletEligibility}));
+                kPbftManagerAdvanceActionResetCurrentRoundTimer, kPbftManagerAdvanceActionResetRewardVoteCounters,
+                kPbftManagerAdvanceActionResetPeriodTimer, kPbftManagerAdvanceActionUpdateWalletEligibility}));
 
   const auto committed = pbft_manager_runtime_apply_period_advance(*runtime, plan.new_period);
   EXPECT_EQ(committed.status, kPbftManagerStartupStatusReady);

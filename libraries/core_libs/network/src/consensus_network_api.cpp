@@ -8,6 +8,8 @@
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_application.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "transaction/transaction.hpp"
+#include "transaction/transaction_manager.hpp"
 
 namespace taraxa::network {
 
@@ -130,6 +132,29 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
                                 step.max_dag_level,
                                 step.last_block,
                                 step.current_cert_present};
+}
+
+bool ConsensusNetworkApi::reportPbftVoteSlashingSubmission(const std::array<uint8_t, 32>& proof_hash,
+                                                           bool transaction_inserted) {
+  return impl_->consensus_application->service().pbft_service_verified_votes_report_slashing_transaction_submission(
+      proof_hash, transaction_inserted);
+}
+
+bool ConsensusNetworkApi::executePbftVoteSlashingTransaction(const PbftVoteSlashingTransaction& effect,
+                                                             const FullNodeConfig& config,
+                                                             TransactionManager& transaction_manager) {
+  if (effect.status != 0 || effect.wallet_index >= config.wallets.size()) {
+    throw std::runtime_error("Native network vote admission returned an invalid slashing transaction effect");
+  }
+  const auto& wallet = config.wallets[effect.wallet_index];
+  const auto nonce = dev::fromBigEndian<u256>(dev::bytes(effect.nonce.begin(), effect.nonce.end()));
+  const auto value = dev::fromBigEndian<u256>(dev::bytes(effect.value.begin(), effect.value.end()));
+  const addr_t contract(effect.contract_address.data(), addr_t::ConstructFromPointer);
+  auto transaction =
+      std::make_shared<Transaction>(nonce, value, transaction_manager.gasPriceBid(), effect.gas_limit, effect.call_data,
+                                    wallet.node_secret, contract, config.genesis.chain_id);
+  const auto inserted = transaction_manager.insertTransaction(transaction).first;
+  return reportPbftVoteSlashingSubmission(effect.proof_hash, inserted);
 }
 
 std::unique_lock<std::mutex> ConsensusNetworkApi::lockTransportLane(uint32_t transport_lane) {

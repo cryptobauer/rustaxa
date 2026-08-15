@@ -42,8 +42,10 @@ class Network {
           std::shared_ptr<DbStorage> db,
 #endif
           std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
-          std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
-          std::shared_ptr<TransactionManager> trx_mgr,
+#ifndef RUSTAXA_ENABLE
+          std::shared_ptr<VoteManager> vote_mgr,
+#endif
+          std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
 #ifndef RUSTAXA_ENABLE
           std::shared_ptr<SlashingManager> slashing_manager,
 #endif

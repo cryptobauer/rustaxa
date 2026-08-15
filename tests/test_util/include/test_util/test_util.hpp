@@ -183,9 +183,11 @@ addr_t make_addr(uint8_t i);
 void wait_for_balances(const std::vector<std::shared_ptr<AppBase>>& nodes, const expected_balances_map_t& balances,
                        wait_opts to_wait = {10s, 500ms});
 
+#ifndef RUSTAXA_ENABLE
 std::shared_ptr<PbftVote> genDummyVote(PbftVoteTypes type, PbftPeriod period, PbftRound round, PbftStep step,
                                        blk_hash_t block_hash, const std::shared_ptr<VoteManager> vote_mgr,
                                        const WalletConfig& wallet);
+#endif
 
 std::shared_ptr<PbftVote> genDummyVote(PbftVoteTypes type, PbftPeriod period, PbftRound round, PbftStep step,
                                        blk_hash_t block_hash = blk_hash_t(1));

@@ -4,7 +4,12 @@
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeApp;
 use crate::ffi::BridgeConsensusNetworkApi;
+use crate::verified_votes::{
+    empty_slashing_transaction_effect, slashing_submitter_identity_to_domain,
+    slashing_transaction_effect_to_ffi,
+};
 use rustaxa_consensus::pbft_vote_ingress::{PbftVoteIngressContext, PbftVoteIngressFact};
+use rustaxa_consensus::pbft_vote_progress::PbftVoteProgressIntent;
 use rustaxa_consensus::verified_votes::PbftVoteType;
 
 fn vote_ingress_fact_to_domain(
@@ -43,7 +48,11 @@ const fn vote_ingress_context_to_domain(
 pub fn create_consensus_network_api(
     service: &crate::ffi::BridgeApp,
 ) -> Box<BridgeConsensusNetworkApi> {
-    Box::new(BridgeConsensusNetworkApi(service.0.network_service()))
+    Box::new(BridgeConsensusNetworkApi {
+        network: service.0.network_service(),
+        pbft: service.0.pbft_arc_for_bridge(),
+        final_chain: service.0.final_chain_arc_for_bridge(),
+    })
 }
 
 impl BridgeConsensusNetworkApi {
@@ -56,10 +65,10 @@ impl BridgeConsensusNetworkApi {
         budget: u32,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEffectBatch> {
         let batch = if source_scoped {
-            self.0
+            self.network
                 .drain_work_for_source(transport_lane, source_payload_id, budget)?
         } else {
-            self.0.drain_work(transport_lane, budget)?
+            self.network.drain_work(transport_lane, budget)?
         };
         Ok(rustaxa_ffi::NetworkEffectBatch {
             status: batch.status,
@@ -81,7 +90,7 @@ impl BridgeConsensusNetworkApi {
         results: Vec<rustaxa_ffi::NetworkEffectResult>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEffectAck> {
         let ack = self
-            .0
+            .network
             .report_effect_results(results.into_iter().map(from_bridge_effect_result).collect())?;
         Ok(rustaxa_ffi::NetworkEffectAck {
             status: ack.status,
@@ -91,21 +100,13 @@ impl BridgeConsensusNetworkApi {
         })
     }
 
-    /// Consumes native proof that one exact bundled vote admission was cancelled.
-    pub fn consensus_network_take_cancelled_vote_admission_effect(
-        &self,
-        effect_id: u64,
-    ) -> anyhow::Result<bool> {
-        self.0.take_cancelled_vote_admission_effect(effect_id)
-    }
-
     /// Plans deterministic sync follow-up for an accepted status packet.
     pub fn consensus_network_plan_status_sync(
         &self,
         facts: rustaxa_ffi::NetworkStatusSyncFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkStatusSyncPlan> {
         Ok(to_bridge_network_status_sync_plan(
-            self.0
+            self.network
                 .plan_status_sync(to_domain_network_status_sync_facts(facts))?,
         ))
     }
@@ -116,7 +117,7 @@ impl BridgeConsensusNetworkApi {
         facts: rustaxa_ffi::NetworkStatusEgressFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkStatusEgressPlan> {
         Ok(to_bridge_network_status_egress_plan(
-            self.0
+            self.network
                 .plan_status_egress(to_domain_network_status_egress_facts(facts))?,
         ))
     }
@@ -127,7 +128,7 @@ impl BridgeConsensusNetworkApi {
         facts: rustaxa_ffi::NetworkInitialStatusFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkInitialStatusPlan> {
         Ok(to_bridge_network_initial_status_plan(
-            self.0
+            self.network
                 .plan_initial_status(to_domain_network_initial_status_facts(facts))?,
         ))
     }
@@ -138,7 +139,7 @@ impl BridgeConsensusNetworkApi {
         facts: rustaxa_ffi::NetworkPbftSyncStartFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPbftSyncStartPlan> {
         Ok(to_bridge_network_pbft_sync_start_plan(
-            self.0
+            self.network
                 .plan_pbft_sync_start(to_domain_network_pbft_sync_start_facts(facts))?,
         ))
     }
@@ -149,7 +150,7 @@ impl BridgeConsensusNetworkApi {
         facts: rustaxa_ffi::NetworkPeerSelectionFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPeerSelectionPlan> {
         Ok(to_bridge_network_peer_selection_plan(
-            self.0
+            self.network
                 .plan_max_chain_peer_selection(to_domain_network_peer_selection_facts(facts))?,
         ))
     }
@@ -160,7 +161,7 @@ impl BridgeConsensusNetworkApi {
         facts: rustaxa_ffi::NetworkPendingDagBlocksRequestFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPendingDagBlocksRequestPlan> {
         Ok(to_bridge_network_pending_dag_blocks_request_plan(
-            self.0.plan_pending_dag_blocks_request(
+            self.network.plan_pending_dag_blocks_request(
                 to_domain_network_pending_dag_blocks_request_facts(facts),
             )?,
         ))
@@ -172,42 +173,55 @@ impl BridgeConsensusNetworkApi {
     /// updates the network facade's effect queue so C++ can execute sync,
     /// report, and disconnect requests through `drain_work` /
     /// `report_effect_results`.
-    pub fn consensus_network_ingest_pbft_vote(
+    pub fn consensus_network_admit_pbft_vote(
         &self,
         fact: rustaxa_ffi::PbftVoteIngressFact,
         context: rustaxa_ffi::NetworkPbftVoteIngressContext,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        Ok(to_bridge_network_ingress_decision(
-            self.0.ingest_pbft_vote(
-                vote_ingress_fact_to_domain(fact)?,
-                to_domain_pbft_vote_ingress_context(context),
-            )?,
-        ))
+        slashing_submitters: Vec<rustaxa_ffi::SlashingSubmitterIdentity>,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkPbftVoteAdmissionOutcome> {
+        let outcome = self.network.ingest_and_admit_pbft_vote(
+            self.pbft.as_ref(),
+            self.final_chain.as_ref(),
+            vote_ingress_fact_to_domain(fact)?,
+            to_domain_pbft_vote_ingress_context(context),
+            &slashing_submitters
+                .into_iter()
+                .map(slashing_submitter_identity_to_domain)
+                .collect::<Vec<_>>(),
+        )?;
+        Ok(to_bridge_pbft_vote_admission_outcome(outcome))
     }
 
     /// Preflights one complete vote bundle and queues its grouped admission effects.
-    pub fn consensus_network_ingest_pbft_vote_bundle(
+    pub fn consensus_network_admit_pbft_vote_bundle(
         &self,
         reference: rustaxa_ffi::PbftVoteIngressFact,
         votes: Vec<rustaxa_ffi::PbftVoteIngressFact>,
         contexts: Vec<rustaxa_ffi::NetworkPbftVoteIngressContext>,
-    ) -> anyhow::Result<Vec<rustaxa_ffi::NetworkIngressDecision>> {
+        slashing_submitters: Vec<rustaxa_ffi::SlashingSubmitterIdentity>,
+    ) -> anyhow::Result<Vec<rustaxa_ffi::NetworkPbftVoteAdmissionOutcome>> {
         let votes = votes
             .into_iter()
             .map(vote_ingress_fact_to_domain)
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(self
-            .0
-            .ingest_pbft_vote_bundle(
+            .network
+            .ingest_and_admit_pbft_vote_bundle(
+                self.pbft.as_ref(),
+                self.final_chain.as_ref(),
                 vote_ingress_fact_to_domain(reference)?,
                 votes,
                 contexts
                     .into_iter()
                     .map(to_domain_pbft_vote_ingress_context)
                     .collect(),
+                &slashing_submitters
+                    .into_iter()
+                    .map(slashing_submitter_identity_to_domain)
+                    .collect::<Vec<_>>(),
             )?
             .into_iter()
-            .map(to_bridge_network_ingress_decision)
+            .map(to_bridge_pbft_vote_admission_outcome)
             .collect())
     }
 
@@ -219,7 +233,7 @@ impl BridgeConsensusNetworkApi {
         votes: Vec<rustaxa_ffi::PillarVoteRlpPayload>,
     ) -> anyhow::Result<Vec<rustaxa_ffi::NetworkIngressDecision>> {
         Ok(self
-            .0
+            .network
             .ingest_pillar_vote_bundle(
                 to_domain_pillar_vote_ingress_context(context),
                 votes.into_iter().map(|value| value.vote_rlp).collect(),
@@ -243,7 +257,7 @@ impl BridgeConsensusNetworkApi {
         source_payload_id: u64,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.0.ingest_pbft_next_votes_bundle_request(
+            self.network.ingest_pbft_next_votes_bundle_request(
                 rustaxa_consensus::NetworkPbftNextVotesBundleRequest {
                     transport_lane,
                     peer_id,
@@ -265,7 +279,7 @@ impl BridgeConsensusNetworkApi {
         source_payload_id: u64,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.0.ingest_get_pillar_votes_bundle_request(
+            self.network.ingest_get_pillar_votes_bundle_request(
                 rustaxa_consensus::NetworkGetPillarVotesBundleRequest {
                     transport_lane,
                     peer_id,
@@ -284,13 +298,14 @@ impl BridgeConsensusNetworkApi {
         request: rustaxa_ffi::NetworkGetPbftSyncRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.0
-                .ingest_get_pbft_sync_request(rustaxa_consensus::NetworkGetPbftSyncRequest {
+            self.network.ingest_get_pbft_sync_request(
+                rustaxa_consensus::NetworkGetPbftSyncRequest {
                     tarcap_version: request.tarcap_version,
                     peer_id: request.peer_id,
                     request_rlp: request.request_rlp,
                     source_payload_id: request.source_payload_id,
-                })?,
+                },
+            )?,
         ))
     }
 
@@ -306,7 +321,7 @@ impl BridgeConsensusNetworkApi {
         source_payload_id: u64,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.0.ingest_pbft_blocks_bundle(
+            self.network.ingest_pbft_blocks_bundle(
                 runtime.0.final_chain_for_bridge(),
                 &packet_rlp,
                 source_payload_id,
@@ -578,6 +593,57 @@ fn to_bridge_network_ingress_decision(
         error_code: decision.error_code,
         queued_effect_count: decision.queued_effect_count,
         application_effect_id: decision.application_effect_id,
+    }
+}
+
+fn to_bridge_pbft_vote_admission_outcome(
+    value: rustaxa_consensus::NetworkPbftVoteAdmissionOutcome,
+) -> rustaxa_ffi::NetworkPbftVoteAdmissionOutcome {
+    let decision = to_bridge_network_ingress_decision(value.decision);
+    let Some(admission) = value.admission else {
+        return rustaxa_ffi::NetworkPbftVoteAdmissionOutcome {
+            decision,
+            has_admission: false,
+            accepted: false,
+            already_present: false,
+            mark_vote_known: false,
+            gossip_vote: false,
+            report_slashing: false,
+            has_slashing_transaction_effect: false,
+            slashing_transaction_effect: empty_slashing_transaction_effect(),
+        };
+    };
+    let transition_published = admission.transaction.transition_published;
+    let add = admission.transaction.outcome.add_outcome.as_ref();
+    let intents = admission
+        .transaction
+        .outcome
+        .execution
+        .as_ref()
+        .map(|execution| execution.pipeline_step.progress_plan.intents.as_slice())
+        .unwrap_or_default();
+    let slashing_transaction_effect = admission.slashing_transaction_effect;
+    rustaxa_ffi::NetworkPbftVoteAdmissionOutcome {
+        decision,
+        has_admission: true,
+        accepted: transition_published
+            && admission.validation.accepted
+            && add.is_some_and(|outcome| outcome.inserted),
+        already_present: transition_published
+            && add.is_some_and(|outcome| outcome.duplicate_vote_hash),
+        mark_vote_known: transition_published
+            && intents
+                .iter()
+                .any(|intent| matches!(intent, PbftVoteProgressIntent::MarkKnown { .. })),
+        gossip_vote: transition_published
+            && intents
+                .iter()
+                .any(|intent| matches!(intent, PbftVoteProgressIntent::GossipVote { .. })),
+        report_slashing: slashing_transaction_effect.is_some(),
+        has_slashing_transaction_effect: slashing_transaction_effect.is_some(),
+        slashing_transaction_effect: slashing_transaction_effect
+            .map(slashing_transaction_effect_to_ffi)
+            .unwrap_or_else(empty_slashing_transaction_effect),
     }
 }
 

@@ -5310,7 +5310,7 @@ pub struct PbftManagerTransitionPlan {
     pub reset_next_voted_statuses: bool,
     /// Remove the saved cert-voted block if present.
     pub remove_cert_voted_block: bool,
-    /// Clear local own-vote records through the VoteManager executor.
+    /// Clear local own-vote records through the native PBFT service.
     pub clear_own_votes: bool,
     /// Clear current-round broadcast bookkeeping.
     pub clear_broadcasted_votes: bool,
@@ -5318,8 +5318,6 @@ pub struct PbftManagerTransitionPlan {
     pub reset_broadcast_counters: bool,
     /// Reset the executed-block manager status after period finalization.
     pub reset_executed_block_status: bool,
-    /// Update the VoteManager period/round executor boundary.
-    pub set_vote_manager_period_round: bool,
     /// Reset current round start time in C++.
     pub reset_current_round_start: bool,
     /// Reset second-finish polling start time in C++.
@@ -5698,7 +5696,6 @@ struct PbftManagerLifecyclePolicy {
 struct PbftManagerCommittedReset {
     target_period: u64,
     reset_executed_block_follow_up: bool,
-    set_vote_manager_period_round: bool,
     reset_current_round_timer: bool,
 }
 
@@ -5784,8 +5781,6 @@ pub struct PbftManagerStartupReplayRangePlan {
 pub enum PbftManagerAdvancePeriodAction {
     /// Apply the delayed executed-block reset after waiting for finalization.
     ApplyExecutedBlockReset,
-    /// Update VoteManager period/round after the reset transition.
-    SetVoteManagerPeriodRound,
     /// Reset current-round timer in the compatibility shell.
     ResetCurrentRoundTimer,
     /// Reset reward-vote broadcast counters.
@@ -5801,7 +5796,6 @@ impl PbftManagerAdvancePeriodAction {
     pub const fn as_u8(self) -> u8 {
         match self {
             Self::ApplyExecutedBlockReset => 1,
-            Self::SetVoteManagerPeriodRound => 2,
             Self::ResetCurrentRoundTimer => 3,
             Self::ResetRewardVoteCounters => 4,
             Self::ResetPeriodTimer => 5,
@@ -5813,7 +5807,6 @@ impl PbftManagerAdvancePeriodAction {
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             1 => Some(Self::ApplyExecutedBlockReset),
-            2 => Some(Self::SetVoteManagerPeriodRound),
             3 => Some(Self::ResetCurrentRoundTimer),
             4 => Some(Self::ResetRewardVoteCounters),
             5 => Some(Self::ResetPeriodTimer),
@@ -6086,7 +6079,6 @@ impl PbftManagerRuntime {
             .then_some(PbftManagerCommittedReset {
                 target_period,
                 reset_executed_block_follow_up: plan.reset_executed_block_status,
-                set_vote_manager_period_round: plan.set_vote_manager_period_round,
                 reset_current_round_timer: plan.reset_current_round_start,
             });
     }
@@ -6110,7 +6102,6 @@ impl PbftManagerRuntime {
         plan_pbft_manager_advance_period_after_reset(
             finalized_chain_size,
             reset.reset_executed_block_follow_up,
-            reset.set_vote_manager_period_round,
             reset.reset_current_round_timer,
         )
     }
@@ -6759,7 +6750,6 @@ pub fn plan_pbft_manager_startup_replay_ranges(
 pub fn plan_pbft_manager_advance_period_after_reset(
     pbft_chain_size: u64,
     reset_executed_block_follow_up: bool,
-    set_vote_manager_period_round: bool,
     reset_current_round_timer: bool,
 ) -> PbftManagerAdvancePeriodPlan {
     if pbft_chain_size == 0 {
@@ -6774,9 +6764,6 @@ pub fn plan_pbft_manager_advance_period_after_reset(
     let mut actions = Vec::new();
     if reset_executed_block_follow_up {
         actions.push(PbftManagerAdvancePeriodAction::ApplyExecutedBlockReset);
-    }
-    if set_vote_manager_period_round {
-        actions.push(PbftManagerAdvancePeriodAction::SetVoteManagerPeriodRound);
     }
     if reset_current_round_timer {
         actions.push(PbftManagerAdvancePeriodAction::ResetCurrentRoundTimer);
@@ -7186,7 +7173,6 @@ fn reject_transition_plan(
         clear_broadcasted_votes: false,
         reset_broadcast_counters: false,
         reset_executed_block_status: false,
-        set_vote_manager_period_round: false,
         reset_current_round_start: false,
         reset_second_finish_start: false,
         print_cert_step_info: false,
@@ -7219,7 +7205,6 @@ fn transition_base_plan(
         clear_broadcasted_votes: false,
         reset_broadcast_counters: false,
         reset_executed_block_status: false,
-        set_vote_manager_period_round: false,
         reset_current_round_start: false,
         reset_second_finish_start: false,
         print_cert_step_info: false,
@@ -7316,7 +7301,6 @@ pub fn plan_pbft_manager_transition(fact: PbftManagerTransitionFact) -> PbftMana
             plan.clear_broadcasted_votes = true;
             plan.reset_broadcast_counters = true;
             plan.reset_executed_block_status = fact.executed_pbft_block;
-            plan.set_vote_manager_period_round = true;
             plan.reset_current_round_start = true;
             plan
         }
@@ -12085,7 +12069,7 @@ mod tests {
 
     #[test]
     fn advance_period_planner_orders_executor_effects_and_runtime_period_commit() {
-        let plan = plan_pbft_manager_advance_period_after_reset(12, true, true, true);
+        let plan = plan_pbft_manager_advance_period_after_reset(12, true, true);
 
         assert!(plan.accepted);
         assert_eq!(plan.finalized_chain_size, 12);
@@ -12094,7 +12078,6 @@ mod tests {
             plan.actions,
             vec![
                 PbftManagerAdvancePeriodAction::ApplyExecutedBlockReset,
-                PbftManagerAdvancePeriodAction::SetVoteManagerPeriodRound,
                 PbftManagerAdvancePeriodAction::ResetCurrentRoundTimer,
                 PbftManagerAdvancePeriodAction::ResetRewardVoteCounters,
                 PbftManagerAdvancePeriodAction::ResetPeriodTimer,
@@ -12140,7 +12123,7 @@ mod tests {
 
     #[test]
     fn advance_period_action_reports_validate_against_rust_script() {
-        let plan = plan_pbft_manager_advance_period_after_reset(12, true, true, true);
+        let plan = plan_pbft_manager_advance_period_after_reset(12, true, true);
 
         for (action_index, action) in plan.actions.iter().enumerate() {
             let result = validate_pbft_manager_advance_period_action_report(
@@ -12163,7 +12146,7 @@ mod tests {
             &plan,
             PbftManagerAdvancePeriodActionReport {
                 action_index: 1,
-                action: PbftManagerAdvancePeriodAction::ResetCurrentRoundTimer.as_u8(),
+                action: PbftManagerAdvancePeriodAction::ResetRewardVoteCounters.as_u8(),
                 succeeded: true,
             },
         );
@@ -12956,7 +12939,6 @@ mod tests {
         assert!(reset.clear_broadcasted_votes);
         assert!(reset.reset_broadcast_counters);
         assert!(reset.reset_executed_block_status);
-        assert!(reset.set_vote_manager_period_round);
         assert!(reset.reset_current_round_start);
     }
 

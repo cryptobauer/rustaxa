@@ -65,7 +65,7 @@ pub struct PbftTwoTPlusOneThresholdFact {
     pub unknown_error: bool,
 }
 
-/// Rust threshold plan returned to the C++ VoteManager shim.
+/// Rust threshold plan consumed by application-root PBFT tasks.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PbftTwoTPlusOneThresholdPlan {
     /// Planning status.

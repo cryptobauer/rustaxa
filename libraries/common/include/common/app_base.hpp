@@ -14,7 +14,12 @@ class TransactionManager;
 class DagManager;
 class DbStorage;
 class PbftManager;
+#ifdef RUSTAXA_ENABLE
+class ConsensusApplication;
+#endif
+#ifndef RUSTAXA_ENABLE
 class VoteManager;
+#endif
 class PbftChain;
 class DagBlockProposer;
 #ifndef RUSTAXA_ENABLE
@@ -52,8 +57,12 @@ class AppBase {
   virtual std::shared_ptr<DagManager> getDagManager() const = 0;
   virtual std::shared_ptr<DbStorage> getDB() const = 0;
   virtual std::shared_ptr<PbftManager> getPbftManager() const = 0;
-  virtual std::shared_ptr<VoteManager> getVoteManager() const = 0;
+#ifdef RUSTAXA_ENABLE
+  /** Returns the native application root for Rust-mode fixtures and named executors. */
+  virtual std::shared_ptr<ConsensusApplication> getConsensusApplication() const = 0;
+#endif
 #ifndef RUSTAXA_ENABLE
+  virtual std::shared_ptr<VoteManager> getVoteManager() const = 0;
   virtual std::shared_ptr<PbftChain> getPbftChain() const = 0;
 #endif
   /** Returns one coherent live PBFT progress snapshot. */

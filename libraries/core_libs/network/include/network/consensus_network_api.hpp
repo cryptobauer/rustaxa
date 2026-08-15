@@ -17,6 +17,8 @@ class BridgeConsensusApplication;
 
 namespace taraxa {
 class ConsensusApplication;
+struct FullNodeConfig;
+class TransactionManager;
 using SharedConsensusApplication = std::shared_ptr<ConsensusApplication>;
 }  // namespace taraxa
 
@@ -111,6 +113,18 @@ struct PbftSyncIngressOutcome {
 /** Narrow C++ transaction facts for one native double-voting slashing effect. */
 struct PbftSyncSlashingTransaction {
   uint8_t status = 0;
+  size_t wallet_index = 0;
+  std::array<uint8_t, 32> nonce{};
+  std::array<uint8_t, 20> contract_address{};
+  std::array<uint8_t, 32> value{};
+  uint64_t gas_limit = 0;
+  std::vector<uint8_t> call_data;
+};
+
+/** Canonical fields for the retained PBFT-vote slashing transaction leaf. */
+struct PbftVoteSlashingTransaction {
+  uint8_t status = 0;
+  std::array<uint8_t, 32> proof_hash{};
   size_t wallet_index = 0;
   std::array<uint8_t, 32> nonce{};
   std::array<uint8_t, 20> contract_address{};
@@ -224,6 +238,20 @@ class ConsensusNetworkApi final {
                                              const std::array<uint8_t, 64>& source_peer_id,
                                              const std::vector<PbftSyncSlashingSubmitterFact>& slashing_submitters,
                                              const PbftSyncIngressExecutor& executor);
+
+  /** Reports the concrete transaction-insertion result for one native vote slashing effect. */
+  bool reportPbftVoteSlashingSubmission(const std::array<uint8_t, 32>& proof_hash, bool transaction_inserted);
+
+  /**
+   * Signs, inserts, and reports one native PBFT-vote slashing transaction.
+   *
+   * The native effect selects the configured wallet and supplies canonical
+   * nonce/value/calldata. C++ retains secret custody and concrete transaction
+   * insertion. Invalid effects throw before signing; the returned value is the
+   * native acknowledgement of the actual insertion result.
+   */
+  bool executePbftVoteSlashingTransaction(const PbftVoteSlashingTransaction& effect, const FullNodeConfig& config,
+                                          TransactionManager& transaction_manager);
 
   /**
    * Selects a serviceable max-chain peer from network-owned facts.

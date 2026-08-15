@@ -1048,7 +1048,6 @@ fn lifecycle_transition_result_from_domain(
         snapshot: outcome.snapshot.into(),
         remove_cert_voted_sidecar: outcome.remove_cert_voted_sidecar,
         clear_broadcasted_vote_sidecars: outcome.clear_broadcasted_vote_sidecars,
-        set_vote_manager_period_round: outcome.set_vote_manager_period_round,
         reset_current_round_timer: outcome.reset_current_round_timer,
         reset_second_finish_timer: outcome.reset_second_finish_timer,
         print_cert_step_info: outcome.print_cert_step_info,
@@ -1085,7 +1084,6 @@ pub fn pbft_manager_runtime_apply_executed_block_reset(
         snapshot: outcome.snapshot.into(),
         remove_cert_voted_sidecar: false,
         clear_broadcasted_vote_sidecars: false,
-        set_vote_manager_period_round: false,
         reset_current_round_timer: false,
         reset_second_finish_timer: false,
         print_cert_step_info: false,
@@ -2205,7 +2203,6 @@ mod tests {
 
     const TRANSITION_FILTER: u8 = 1;
     const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
-    const ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND: u8 = 2;
     const ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER: u8 = 3;
     const ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS: u8 = 4;
     const ADVANCE_ACTION_RESET_PERIOD_TIMER: u8 = 5;
@@ -2249,18 +2246,17 @@ mod tests {
         }
     }
 
-    fn applied_transition_result(effects: [bool; 8]) -> FfiPbftManagerLifecycleTransitionResult {
+    fn applied_transition_result(effects: [bool; 7]) -> FfiPbftManagerLifecycleTransitionResult {
         lifecycle_transition_result_from_domain(PbftManagerLifecycleTransitionOutcome {
             status: rustaxa_consensus::pbft_manager::PbftManagerTransitionStorageStatus::Applied,
             snapshot: runtime_snapshot(),
             remove_cert_voted_sidecar: effects[0],
             clear_broadcasted_vote_sidecars: effects[1],
-            set_vote_manager_period_round: effects[2],
-            reset_current_round_timer: effects[3],
-            reset_second_finish_timer: effects[4],
-            print_cert_step_info: effects[5],
-            print_second_finish_step_info: effects[6],
-            reset_executed_block_follow_up: effects[7],
+            reset_current_round_timer: effects[2],
+            reset_second_finish_timer: effects[3],
+            print_cert_step_info: effects[4],
+            print_second_finish_step_info: effects[5],
+            reset_executed_block_follow_up: effects[6],
             error_code: String::new(),
         })
     }
@@ -2474,7 +2470,6 @@ mod tests {
             finalized_chain_size: 12,
             new_period: 13,
             actions: vec![
-                ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
                 ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER,
                 ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS,
                 ADVANCE_ACTION_RESET_PERIOD_TIMER,
@@ -2486,7 +2481,7 @@ mod tests {
             &plan_from_fixtures,
             FfiPbftManagerAdvancePeriodActionReport {
                 action_index: 0,
-                action: ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
+                action: ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER,
                 succeeded: true,
             },
         );
@@ -2498,7 +2493,7 @@ mod tests {
             &plan_from_fixtures,
             FfiPbftManagerAdvancePeriodActionReport {
                 action_index: 1,
-                action: ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
+                action: ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER,
                 succeeded: true,
             },
         );
@@ -2513,7 +2508,7 @@ mod tests {
             &plan_from_fixtures,
             FfiPbftManagerAdvancePeriodActionReport {
                 action_index: 0,
-                action: ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
+                action: ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER,
                 succeeded: false,
             },
         );
@@ -2537,7 +2532,6 @@ mod tests {
                 snapshot: before.clone(),
                 remove_cert_voted_sidecar: false,
                 clear_broadcasted_vote_sidecars: false,
-                set_vote_manager_period_round: false,
                 reset_current_round_timer: false,
                 reset_second_finish_timer: false,
                 print_cert_step_info: false,
@@ -2553,7 +2547,6 @@ mod tests {
         assert_eq!(unknown.snapshot.state, before.state.as_u8());
         assert!(!unknown.remove_cert_voted_sidecar);
         assert!(!unknown.clear_broadcasted_vote_sidecars);
-        assert!(!unknown.set_vote_manager_period_round);
         assert!(!unknown.reset_current_round_timer);
         assert!(!unknown.reset_second_finish_timer);
         assert!(!unknown.print_cert_step_info);
@@ -2569,11 +2562,11 @@ mod tests {
         assert_eq!(request.network_next_voting_step, 7);
         for expected in [
             // Reachable reset with cert-voted and executed-block facts present.
-            [true, true, true, true, false, false, false, true],
+            [true, true, true, false, false, false, true],
             // Reachable transition to certify.
-            [false, false, false, false, false, true, false, false],
+            [false, false, false, false, true, false, false],
             // Reachable transition to finish polling.
-            [false, false, false, false, true, false, true, false],
+            [false, false, false, true, false, true, false],
         ] {
             let applied = applied_transition_result(expected);
             assert_eq!(
@@ -2586,7 +2579,6 @@ mod tests {
                 [
                     applied.remove_cert_voted_sidecar,
                     applied.clear_broadcasted_vote_sidecars,
-                    applied.set_vote_manager_period_round,
                     applied.reset_current_round_timer,
                     applied.reset_second_finish_timer,
                     applied.print_cert_step_info,

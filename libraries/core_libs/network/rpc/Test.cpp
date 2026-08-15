@@ -11,7 +11,9 @@
 #include "network/network.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "transaction/transaction_manager.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
+#endif
 
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -26,12 +28,24 @@ using namespace taraxa;
 namespace taraxa::net {
 
 namespace {
-LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBase> &node) {
+LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBase> &node
+#ifdef RUSTAXA_ENABLE
+                                             ,
+                                             const ConsensusQueryApiPtr &consensus_query_api
+#endif
+) {
   LiveStatusSnapshot snapshot;
   const auto chain_size = node->getPbftProgress().finalized_period;
   const auto dpos_total_votes = node->getPbftManager()->getCurrentDposTotalVotesCount();
   const auto dpos_node_votes = node->getPbftManager()->getCurrentNodeVotesCount();
+#ifdef RUSTAXA_ENABLE
+  const auto query = consensus_query_api ? consensus_query_api : createConsensusQueryApi(node->getDB());
+  const auto threshold =
+      (*query)->consensus_query_pbft_vote_threshold(chain_size, static_cast<uint8_t>(PbftVoteTypes::cert_vote));
+  const auto dpos_quorum = threshold.has_threshold ? std::optional<uint64_t>{threshold.threshold} : std::nullopt;
+#else
   const auto dpos_quorum = node->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote);
+#endif
 
   snapshot.pbft_syncing = node->getNetwork()->pbft_syncing();
   snapshot.syncing_seconds = node->getNetwork()->syncTimeSeconds();
@@ -379,8 +393,14 @@ Json::Value Test::get_node_status() {
   Json::Value res;
   auto node = app_.lock();
   if (node || live_status_ || node_status_reader_.status) {
-    const auto live_status =
-        live_status_ ? live_status_() : (node ? collectLiveStatusSnapshot(node) : LiveStatusSnapshot{});
+    const auto live_status = live_status_ ? live_status_()
+                                          : (node ? collectLiveStatusSnapshot(node
+#ifdef RUSTAXA_ENABLE
+                                                                              ,
+                                                                              consensus_query_api_
+#endif
+                                                                              )
+                                                  : LiveStatusSnapshot{});
     TestNodeStatusView node_status;
 
 #ifdef RUSTAXA_ENABLE

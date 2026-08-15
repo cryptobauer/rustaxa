@@ -10,20 +10,26 @@
 #include "network/threadpool/tarcap_thread_pool.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "transaction/transaction_manager.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
+#endif
 
 namespace taraxa::network::tarcap {
 
 NodeStats::NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
                      std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
-                     std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<TransactionManager> trx_mgr,
-                     std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
+                     std::shared_ptr<VoteManager> vote_mgr,
+#endif
+                     std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                      std::shared_ptr<const threadpool::PacketsThreadPool> thread_pool, const FullNodeConfig &config)
     : pbft_syncing_state_(std::move(pbft_syncing_state)),
       pbft_chain_(std::move(pbft_chain)),
       pbft_mgr_(std::move(pbft_mgr)),
       dag_mgr_(std::move(dag_mgr)),
+#ifndef RUSTAXA_ENABLE
       vote_mgr_(std::move(vote_mgr)),
+#endif
       trx_mgr_(std::move(trx_mgr)),
       packets_stats_(std::move(packets_stats)),
       thread_pool_(std::move(thread_pool)),
@@ -90,7 +96,14 @@ void NodeStats::logNodeStats(const std::vector<std::shared_ptr<network::tarcap::
   if (const auto votes_count = pbft_mgr_->getCurrentNodeVotesCount()) {
     local_dpos_node_votes_count = *votes_count;
   }
+#ifdef RUSTAXA_ENABLE
+  const auto threshold =
+      (*pbft_chain_)
+          ->consensus_query_pbft_vote_threshold(local_pbft_period - 1, static_cast<uint8_t>(PbftVoteTypes::cert_vote));
+  const auto local_twotplusone = threshold.has_threshold ? std::optional<uint64_t>{threshold.threshold} : std::nullopt;
+#else
   const auto local_twotplusone = vote_mgr_->getPbftTwoTPlusOne(local_pbft_period - 1, PbftVoteTypes::cert_vote);
+#endif
 
   // Syncing period...
   const auto local_pbft_sync_period = pbft_mgr_->pbftSyncingPeriod();
@@ -176,7 +189,11 @@ void NodeStats::logNodeStats(const std::vector<std::shared_ptr<network::tarcap::
   LOG(log_nf_) << "Node eligible vote count:        " << std::to_string(local_dpos_node_votes_count);
 
   LOG(log_dg_) << "****** Memory structures sizes ******";
+#ifdef RUSTAXA_ENABLE
+  LOG(log_dg_) << "Verified votes size:             " << (*pbft_chain_)->consensus_query_verified_vote_count();
+#else
   LOG(log_dg_) << "Verified votes size:             " << vote_mgr_->getVerifiedVotesSize();
+#endif
   LOG(log_dg_) << "Non finalized txs size:          " << trx_mgr_->getNonfinalizedTrxSize();
   LOG(log_dg_) << "Txs pool size:                   " << trx_mgr_->getTransactionPoolSize();
 

@@ -34,7 +34,9 @@
 #include "transaction/gas_pricer.hpp"
 #endif
 #include "transaction/transaction_manager.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
+#endif
 
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -286,9 +288,7 @@ void App::init(const cli::Config &cli_conf) {
 #else
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
 #endif
-#ifdef RUSTAXA_ENABLE
-  vote_mgr_ = std::make_shared<VoteManager>(conf_, consensus_application_, final_chain_, trx_mgr_);
-#else
+#ifndef RUSTAXA_ENABLE
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
   vote_mgr_ = std::make_shared<VoteManager>(conf_, db_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
 #endif
@@ -300,8 +300,8 @@ void App::init(const cli::Config &cli_conf) {
                                                                          final_chain_, key_manager_, node_addr);
 #endif
 #ifdef RUSTAXA_ENABLE
-  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, consensus_application_, vote_mgr_, dag_mgr_, trx_mgr_,
-                                            final_chain_, pillar_chain_mgr_);
+  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, consensus_application_, dag_mgr_, trx_mgr_, final_chain_,
+                                            pillar_chain_mgr_);
 #else
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, final_chain_,
                                             pillar_chain_mgr_);
@@ -323,7 +323,10 @@ void App::init(const cli::Config &cli_conf) {
 #else
                                 pbft_chain_,
 #endif
-                                vote_mgr_, dag_mgr_, trx_mgr_,
+#ifndef RUSTAXA_ENABLE
+                                vote_mgr_,
+#endif
+                                dag_mgr_, trx_mgr_,
 #ifndef RUSTAXA_ENABLE
                                 std::move(slashing_manager),
 #endif
@@ -375,7 +378,9 @@ void App::start() {
         subscription_pool_);
   }
 
+#ifndef RUSTAXA_ENABLE
   vote_mgr_->setNetwork(network_);
+#endif
   pbft_mgr_->setNetwork(network_);
   dag_mgr_->setNetwork(network_);
   pillar_chain_mgr_->setNetwork(network_);

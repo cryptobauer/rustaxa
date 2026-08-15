@@ -85,8 +85,8 @@ struct DebugPreviousBlockCertVotesView {
 
 // DebugPreviousBlockCertVotesReader is the debug RPC boundary for
 // storage-backed previous-block cert-vote lookup and validation. The default
-// adapter owns the temporary DbStorage/VoteManager/FinalChain compatibility
-// reads while Rust-enabled nodes prefer ConsensusQueryApi inside that adapter.
+// adapter owns the temporary DbStorage/FinalChain compatibility reads while
+// Rust-enabled nodes use ConsensusQueryApi inside that adapter.
 struct DebugPreviousBlockCertVotesReader {
   std::function<DebugPreviousBlockCertVotesView(uint64_t)> cert_votes_by_period;
 };

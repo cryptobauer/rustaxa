@@ -281,6 +281,33 @@ pub fn create_consensus_query_api(runtime: &BridgeApp) -> Box<BridgeConsensusQue
 }
 
 impl BridgeConsensusQueryApi {
+    /// Returns the live application-owned verified-vote count for public clients.
+    pub fn consensus_query_verified_vote_count(&self) -> Result<u64, anyhow::Error> {
+        self.0.verified_vote_count()
+    }
+
+    /// Resolves one public PBFT quorum through the application-owned PBFT and FinalChain siblings.
+    ///
+    /// `vote_type` uses the canonical legacy numeric vote-kind values. Invalid
+    /// values fail at the boundary; valid requests retain the native planner's
+    /// typed status and optional threshold fields.
+    pub fn consensus_query_pbft_vote_threshold(
+        &self,
+        period: u64,
+        vote_type: u8,
+    ) -> Result<rustaxa_ffi::PbftTwoTPlusOneThresholdPlan, anyhow::Error> {
+        let plan = self.0.pbft_vote_threshold(
+            period,
+            rustaxa_consensus::verified_votes::PbftVoteType::try_from(vote_type)?,
+        )?;
+        Ok(rustaxa_ffi::PbftTwoTPlusOneThresholdPlan {
+            status: plan.status.as_u8(),
+            error_code: plan.error_code.to_owned(),
+            has_threshold: plan.has_threshold,
+            threshold: plan.threshold,
+        })
+    }
+
     /// Returns durable finalized PBFT membership for transport readers.
     pub fn consensus_query_pbft_sync_block_exists(
         &self,
@@ -892,6 +919,8 @@ mod tests {
         let progress = api.consensus_query_chain_stats().unwrap();
         assert_eq!(progress.pbft_period, 1);
         assert_eq!(progress.non_empty_pbft_periods, 1);
+        assert_eq!(api.consensus_query_verified_vote_count().unwrap(), 0);
+        assert!(api.consensus_query_pbft_vote_threshold(1, u8::MAX).is_err());
         assert!(api
             .consensus_query_pbft_sync_block_exists(&block_hash.0)
             .unwrap());

@@ -6,10 +6,15 @@
 #include "app/app.hpp"
 #include "common/app_base.hpp"
 #include "common/encoding_solidity.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
+#endif
 #include "pbft/pbft_manager.hpp"
 #include "plugin/light.hpp"
 #include "plugin/rpc.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
+#endif
 
 namespace taraxa {
 
@@ -181,6 +186,7 @@ void wait_for_balances(const std::vector<std::shared_ptr<AppBase>>& nodes, const
   });
 }
 
+#ifndef RUSTAXA_ENABLE
 std::shared_ptr<PbftVote> genDummyVote(PbftVoteTypes type, PbftPeriod period, PbftRound round, PbftStep step,
                                        blk_hash_t block_hash, const std::shared_ptr<VoteManager> vote_mgr,
                                        const WalletConfig& wallet) {
@@ -188,6 +194,7 @@ std::shared_ptr<PbftVote> genDummyVote(PbftVoteTypes type, PbftPeriod period, Pb
   vote->calculateWeight(1, 1, 1);
   return vote;
 }
+#endif
 
 std::shared_ptr<PbftVote> genDummyVote(PbftVoteTypes type, PbftPeriod period, PbftRound round, PbftStep step,
                                        blk_hash_t block_hash) {
@@ -216,9 +223,11 @@ std::pair<PbftPeriod, PbftRound> clearAllVotes(const std::vector<std::shared_ptr
   }
 
   // Clean up votes from memory for each node
+#ifndef RUSTAXA_ENABLE
   for (const auto& node : nodes) {
     node->getVoteManager()->cleanupVotesByPeriod(max_period + 1);
   }
+#endif
 
   return {max_period, max_round};
 }
