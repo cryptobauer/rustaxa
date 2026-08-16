@@ -6,6 +6,9 @@
 #include "common/util.hpp"
 #include "graphqlservice/GraphQLService.h"
 #include "graphqlservice/JSONResponse.h"
+#ifdef RUSTAXA_ENABLE
+#include "network/consensus_query.hpp"
+#endif
 
 namespace taraxa::net {
 
@@ -44,7 +47,9 @@ GraphQlHttpProcessor::GraphQlHttpProcessor(GraphQlOperations operations)
 
 GraphQlHttpProcessor::GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                                            std::shared_ptr<::taraxa::DagManager> dag_manager,
+#ifndef RUSTAXA_ENABLE
                                            std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+#endif
                                            std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                                            std::shared_ptr<::taraxa::DbStorage> db,
 #ifdef RUSTAXA_ENABLE
@@ -56,13 +61,21 @@ GraphQlHttpProcessor::GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain
                                            ::taraxa::net::LiveStatusReader live_status)
     : GraphQlHttpProcessor(GraphQlOperations{
           std::make_shared<graphql::taraxa::Query>(std::move(final_chain), std::move(dag_manager),
-                                                   std::move(pbft_manager), transaction_manager, std::move(db),
+#ifndef RUSTAXA_ENABLE
+                                                   std::move(pbft_manager),
+#endif
+                                                   transaction_manager, db,
 #ifdef RUSTAXA_ENABLE
                                                    std::move(gas_price_reader),
 #else
                                                    std::move(gas_pricer),
 #endif
-                                                   std::move(network), chain_id, std::move(live_status)),
+                                                   std::move(network), chain_id, std::move(live_status)
+#ifdef RUSTAXA_ENABLE
+                                                                                     ,
+                                                   net::createConsensusQueryApi(db)
+#endif
+                                                       ),
           std::make_shared<graphql::taraxa::Mutation>(std::move(transaction_manager)),
           std::make_shared<graphql::taraxa::Subscription>()}) {
 }

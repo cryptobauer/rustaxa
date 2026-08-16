@@ -9,7 +9,9 @@
 #include <vector>
 
 #include "common/encoding_rlp.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#endif
 #include "slashing_manager/slashing_manager.hpp"
 #include "test_util/test_util.hpp"
 #ifdef RUSTAXA_ENABLE
@@ -234,7 +236,7 @@ TEST_F(StateAPITest, slashing) {
   }
 
   auto nodes = launch_nodes(node_cfgs);
-  auto node = nodes.begin()->get();
+  auto node = *nodes.begin();
   auto node_cfg = node_cfgs.begin();
   ASSERT_EQ(true, node->getFinalChain()->dposIsEligible(node->getFinalChain()->lastBlockNumber(), node->getAddress()));
 
@@ -257,7 +259,7 @@ TEST_F(StateAPITest, slashing) {
   // Submit post-activation evidence through the native network/application
   // root, then execute the retained C++ signing/insertion leaf and observe the
   // concrete FinalChain jail result.
-  const auto [active_round, active_period] = node->getPbftManager()->getPbftRoundAndPeriod();
+  const auto [active_period, active_round] = consensusPeriodAndRound(node);
   ASSERT_GE(active_period, node_cfg->genesis.state.hardforks.magnolia_hf.block_num);
   const auto application = node->getConsensusApplication();
   network::ConsensusNetworkApi network_api(application);
@@ -288,7 +290,7 @@ TEST_F(StateAPITest, slashing) {
     rustaxa::NetworkPbftVoteIngressContext context{};
     context.ingress.current_period = active_period;
     context.ingress.current_round = active_round;
-    context.ingress.current_step = node->getPbftManager()->getPbftStep();
+    context.ingress.current_step = consensusStep(node);
     context.ingress.max_future_period_delta = std::numeric_limits<uint64_t>::max();
     context.ingress.max_future_round_delta = std::numeric_limits<uint64_t>::max();
     context.ingress.max_future_step_delta = std::numeric_limits<uint64_t>::max();

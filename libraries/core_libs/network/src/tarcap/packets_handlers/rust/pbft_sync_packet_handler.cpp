@@ -6,7 +6,6 @@
 #include "final_chain/final_chain.hpp"
 #include "network/consensus_query.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
-#include "pbft/pbft_manager.hpp"
 #include "transaction/transaction.hpp"
 
 namespace taraxa::network::tarcap {
@@ -47,11 +46,12 @@ std::vector<network::PbftSyncSlashingSubmitterFact> makeSlashingSubmitterFacts(
 RustPbftSyncPacketHandler::RustPbftSyncPacketHandler(
     const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-    net::ConsensusQueryClient pbft_chain, std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
-    std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
-    network::ConsensusNetworkApiShared consensus_network_api, const addr_t& node_addr, const std::string& logs_prefix)
+    net::ConsensusQueryClient pbft_chain, network::ConsensusLiveStatusProvider consensus_status,
+    std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
+    std::shared_ptr<final_chain::FinalChain> final_chain, network::ConsensusNetworkApiShared consensus_network_api,
+    const addr_t& node_addr, const std::string& logs_prefix)
     : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
-                         std::move(pbft_chain), std::move(pbft_mgr), std::move(dag_mgr), consensus_network_api,
+                         std::move(pbft_chain), std::move(consensus_status), std::move(dag_mgr), consensus_network_api,
                          node_addr, logs_prefix + "PBFT_SYNC_PH"),
       trx_mgr_(std::move(trx_mgr)),
       final_chain_(std::move(final_chain)),
@@ -113,7 +113,7 @@ void RustPbftSyncPacketHandler::process(const threadpool::PacketData& packet_dat
     LOG(log_er_) << "Native PBFT-sync queue rejected period " << ingress.block_period << ": " << ingress.error_code;
   }
 
-  const auto pbft_sync_period = pbft_mgr_->pbftSyncingPeriod();
+  const auto pbft_sync_period = consensus_status_().syncing_period;
   pbft_syncing_state_->setLastSyncPacketTime();
   if (ingress.current_cert_present) {
     pbftSyncComplete();
@@ -153,7 +153,7 @@ bool RustPbftSyncPacketHandler::executeSlashingTransaction(const network::PbftSy
 }
 
 void RustPbftSyncPacketHandler::pbftSyncComplete() {
-  if (pbft_mgr_->periodDataQueueSize()) {
+  if (consensus_status_().sync_queue_size != 0) {
     periodic_events_tp_.post(kDelayedPbftSyncDelayMs, [this] { pbftSyncComplete(); });
     return;
   }
@@ -166,7 +166,7 @@ void RustPbftSyncPacketHandler::pbftSyncComplete() {
 
 void RustPbftSyncPacketHandler::delayedPbftSync(uint32_t counter) {
   const uint32_t max_delayed_pbft_sync_count = 60000 / kDelayedPbftSyncDelayMs;
-  const auto pbft_sync_period = pbft_mgr_->pbftSyncingPeriod();
+  const auto pbft_sync_period = consensus_status_().syncing_period;
   if (counter > max_delayed_pbft_sync_count) {
     LOG(log_er_) << "Pbft blocks stuck in queue, no new block processed in 60 seconds " << pbft_sync_period << " "
                  << net::consensusPbftProgress(pbft_chain_).finalized_period;

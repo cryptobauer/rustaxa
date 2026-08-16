@@ -2,6 +2,12 @@ add_subdirectory(network/rpc)
 
 file(GLOB_RECURSE CONSENSUS_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.hpp)
 file(GLOB_RECURSE CONSENSUS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.cpp)
+if(RUSTAXA_ENABLE)
+  # Keep the main-only finalization execution leaf explicit for configured Rust builds.
+  list(APPEND CONSENSUS_SOURCES
+       ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/application/finalization_transaction_order.cpp)
+  list(REMOVE_DUPLICATES CONSENSUS_SOURCES)
+endif()
 list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
 list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/shims/")
 if(RUSTAXA_ENABLE)
@@ -52,8 +58,8 @@ if(RUSTAXA_ENABLE)
     # state. Keep the untouched legacy implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/pbft_chain\\.cpp$")
 
-    # The Rust-mode PbftManager overlay is a standalone facade. Keep the
-    # untouched legacy implementation only in pure C++ builds.
+    # Native PBFT orchestration is hosted privately by ConsensusApplication.
+    # Keep the untouched legacy PbftManager implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/pbft_manager\\.cpp$")
 endif()
 
@@ -189,11 +195,6 @@ if(RUSTAXA_ENABLE)
     target_sources(core_libs PRIVATE
                   ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_chain_manager_shim/src/pillar_chain_manager_shim.cpp)
 
-    # Inject the standalone Rust PbftManager facade owned by the shim.
-    target_include_directories(core_libs BEFORE PUBLIC
-                             ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_manager_shim/include)
-    target_sources(core_libs PRIVATE
-                  ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp)
 endif()
 
 install(TARGETS core_libs

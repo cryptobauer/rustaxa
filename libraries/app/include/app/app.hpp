@@ -42,12 +42,12 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<TransactionManager> getTransactionManager() const { return trx_mgr_; }
   std::shared_ptr<DagManager> getDagManager() const { return dag_mgr_; }
   std::shared_ptr<DbStorage> getDB() const { return db_; }
-  std::shared_ptr<PbftManager> getPbftManager() const { return pbft_mgr_; }
 #ifdef RUSTAXA_ENABLE
   /** Returns the application-owned native consensus task root for Rust-mode fixtures and named executors. */
   std::shared_ptr<ConsensusApplication> getConsensusApplication() const { return consensus_application_; }
 #endif
 #ifndef RUSTAXA_ENABLE
+  std::shared_ptr<PbftManager> getPbftManager() const { return pbft_mgr_; }
   std::shared_ptr<VoteManager> getVoteManager() const { return vote_mgr_; }
   std::shared_ptr<PbftChain> getPbftChain() const { return pbft_chain_; }
 #endif
@@ -124,8 +124,8 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<VoteManager> vote_mgr_;
 #endif
-  std::shared_ptr<PbftManager> pbft_mgr_;
 #ifndef RUSTAXA_ENABLE
+  std::shared_ptr<PbftManager> pbft_mgr_;
   std::shared_ptr<PbftChain> pbft_chain_;
 #endif
   std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr_;

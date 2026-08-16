@@ -5,9 +5,10 @@
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
-#include "pbft/pbft_manager.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
+#else
+#include "pbft/pbft_manager.hpp"
 #endif
 
 namespace taraxa::network::tarcap {
@@ -40,19 +41,25 @@ ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std
                                                  std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                                  std::shared_ptr<PbftSyncingState> pbft_syncing_state,
                                                  net::ConsensusQueryClient pbft_chain,
+#ifndef RUSTAXA_ENABLE
                                                  std::shared_ptr<PbftManager> pbft_mgr,
                                                  std::shared_ptr<DagManager> dag_mgr,
-#ifndef RUSTAXA_ENABLE
                                                  std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
                                                                                  // legacy sync handler.
 #else
+                                                 network::ConsensusLiveStatusProvider consensus_status,
+                                                 std::shared_ptr<DagManager> dag_mgr,
                                                  network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                                  const addr_t &node_addr, const std::string &log_channel_name)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel_name),
       pbft_syncing_state_(std::move(pbft_syncing_state)),
       pbft_chain_(std::move(pbft_chain)),
+#ifndef RUSTAXA_ENABLE
       pbft_mgr_(std::move(pbft_mgr)),
+#else
+      consensus_status_(std::move(consensus_status)),
+#endif
       dag_mgr_(std::move(dag_mgr))
 #ifndef RUSTAXA_ENABLE
       ,
@@ -69,7 +76,7 @@ ExtSyncingPacketHandler::~ExtSyncingPacketHandler() = default;
 void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer> peer) {
 #ifdef RUSTAXA_ENABLE
   rustaxa::NetworkPendingDagBlocksRequestFacts facts{};
-  facts.local_pbft_syncing_period = pbft_mgr_->pbftSyncingPeriod();
+  facts.local_pbft_syncing_period = consensus_status_().syncing_period;
   if (peer) {
     facts.has_explicit_peer = true;
     facts.explicit_peer = toNetworkSyncPeerCandidate(peer);

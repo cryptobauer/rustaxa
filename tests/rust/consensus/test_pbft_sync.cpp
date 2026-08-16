@@ -229,7 +229,7 @@ void seedRewardCertVote(BridgeConsensusApplication& service) {
   context.has_two_t_plus_one_threshold = true;
   context.two_t_plus_one_threshold = 1;
   context.slashing_enabled = true;
-  const auto result = service.pbft_service_verified_votes_admit_and_persist_with_final_chain(
+  const auto result = service.pbft_service_admit_and_persist_local_generated_vote(
       rust::Slice<const uint8_t>(vote_rlp.data(), vote_rlp.size()), validation, flags, context,
       rust::Vec<SlashingSubmitterIdentity>{});
   ASSERT_TRUE(result.transition_published);

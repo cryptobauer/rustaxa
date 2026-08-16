@@ -29,7 +29,9 @@
 #include "network/tarcap/packets_handlers/latest/transaction_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/votes_bundle_packet_handler.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#endif
 #include "pbft/period_data.hpp"
 #include "test_util/samples.hpp"
 #include "test_util/test_util.hpp"
@@ -88,8 +90,8 @@ TEST_F(NetworkTest, transfer_lot_of_blocks) {
   const auto& node2 = nodes[1];
 
   // Stop PBFT manager
-  node1->getPbftManager()->stop();
-  node2->getPbftManager()->stop();
+  stopConsensus(node1);
+  stopConsensus(node2);
 
   const auto db1 = node1->getDB();
   const auto dag_mgr1 = node1->getDagManager();
@@ -169,7 +171,7 @@ TEST_F(NetworkTest, propagate_block) {
 
   // Stop PBFT manager
   for (auto& node : nodes) {
-    node->getPbftManager()->stop();
+    stopConsensus(node);
   }
 
   const auto db1 = node1->getDB();
@@ -219,7 +221,7 @@ TEST_F(NetworkTest, DISABLED_update_peer_chainsize) {
   auto node_cfgs = make_node_cfgs(2, 1, 5);
   auto nodes = launch_nodes(node_cfgs);
 
-  nodes[0]->getPbftManager()->stop();
+  stopConsensus(nodes[0]);
   nodes[1]->getPbftManager()->stop();
 
   wait_connect(nodes);
@@ -315,7 +317,7 @@ TEST_F(NetworkTest, sync_large_pbft_block) {
   auto signed_trxs = samples::createSignedTrxSamples(0, 500, nodes[0]->getSecretKey(), dummy_100k_data);
 
   // node1 own all coins, could produce blocks by itself
-  nodes[0]->getPbftManager()->stop();
+  stopConsensus(nodes[0]);
 
   auto nw1 = nodes[0]->getNetwork();
 
@@ -330,10 +332,10 @@ TEST_F(NetworkTest, sync_large_pbft_block) {
     nodes[0]->getTransactionManager()->insertTransaction(signed_trxs[i]);
   }
 
-  nodes[0]->getPbftManager()->start();
+  startConsensus(nodes[0]);
   EXPECT_HAPPENS({30s, 100ms},
                  [&](auto& ctx) { WAIT_EXPECT_GT(ctx, nodes[0]->getPbftProgress().non_empty_finalized_periods, 0) });
-  nodes[0]->getPbftManager()->stop();
+  stopConsensus(nodes[0]);
 
   // Verify that a block over MAX_PACKET_SIZE is created
   auto total_size = 0;
@@ -385,8 +387,8 @@ TEST_F(NetworkTest, transfer_transaction) {
   const auto& node2 = nodes[1];
 
   // Stop PBFT manager
-  node1->getPbftManager()->stop();
-  node2->getPbftManager()->stop();
+  stopConsensus(node1);
+  stopConsensus(node2);
 
   const auto nw1 = node1->getNetwork();
   const auto nw2 = node2->getNetwork();
@@ -440,7 +442,7 @@ TEST_F(NetworkTest, node_sync) {
   auto node_cfgs = make_node_cfgs(2, 1, 5);
   auto node1 = create_nodes({node_cfgs[0]}, true /*start*/).front();
   // Stop PBFT manager
-  node1->getPbftManager()->stop();
+  stopConsensus(node1);
 
   // Allow node to start up
   taraxa::thisThreadSleepForMilliSeconds(1000);
@@ -537,13 +539,23 @@ TEST_F(NetworkTest, node_sync) {
 // that the second node syncs with it and that the resulting
 // chain on the other end is the same
 #ifdef RUSTAXA_ENABLE
-TEST_F(NetworkTest, rust_mode_pbft_sync_via_query_client) {
+TEST_F(NetworkTest, rust_mode_consensus_lifecycle_and_pbft_sync_via_query_client) {
   auto node_cfgs = make_node_cfgs(2, 1, 20);
   auto node1 = create_nodes({node_cfgs[0]}, true /*start*/).front();
 
   EXPECT_HAPPENS({30s, 100ms},
                  [&](auto& ctx) { WAIT_EXPECT_GE(ctx, node1->getPbftProgress().finalized_period, PbftPeriod{2}) });
-  node1->getPbftManager()->stop();
+  const auto application = node1->getConsensusApplication();
+  ASSERT_TRUE(application);
+  application->stopConsensus();
+  const auto stopped_period = application->runtimeStatus().period;
+  std::this_thread::sleep_for(200ms);
+  EXPECT_EQ(application->runtimeStatus().period, stopped_period);
+
+  application->startConsensus();
+  EXPECT_HAPPENS({10s, 100ms},
+                 [&](auto& ctx) { WAIT_EXPECT_GT(ctx, application->runtimeStatus().period, stopped_period) });
+  application->stopConsensus();
   const auto expected_period = node1->getPbftProgress().finalized_period;
   const auto node1_query = net::createConsensusQueryApi(node1->getDB());
   ASSERT_TRUE(node1_query);
@@ -560,6 +572,33 @@ TEST_F(NetworkTest, rust_mode_pbft_sync_via_query_client) {
   ASSERT_TRUE(synced_block.found);
   EXPECT_EQ(synced_block.hash, expected_block.hash);
 }
+
+TEST_F(NetworkTest, rust_mode_app_teardown_breaks_consensus_host_cycle) {
+  const auto node_cfg = make_node_cfgs(1, 1, 20).front();
+  auto node = create_node(node_cfg, false /*start*/);
+  auto application = node->getConsensusApplication();
+  std::weak_ptr<ConsensusApplication> weak_application = application;
+
+  std::atomic<bool> keep_reading{true};
+  std::thread status_reader([&] {
+    while (keep_reading.load()) {
+      try {
+        static_cast<void>(application->runtimeStatus());
+      } catch (const std::logic_error& error) {
+        EXPECT_STREQ(error.what(), "CONSENSUS_APPLICATION_HOST_SHUTDOWN");
+        return;
+      }
+    }
+  });
+
+  node.reset();
+  EXPECT_THROW(application->runtimeStatus(), std::logic_error);
+  keep_reading.store(false);
+  status_reader.join();
+
+  application.reset();
+  EXPECT_TRUE(weak_application.expired());
+}
 #endif
 
 #ifndef RUSTAXA_ENABLE
@@ -568,7 +607,7 @@ TEST_F(NetworkTest, node_pbft_sync) {
   auto node1 = create_nodes({node_cfgs[0]}, true /*start*/).front();
 
   // Stop PBFT manager and executor for syncing test
-  node1->getPbftManager()->stop();
+  stopConsensus(node1);
 
   auto db1 = node1->getDB();
   auto pbft_chain1 = node1->getPbftChain();
@@ -714,7 +753,7 @@ TEST_F(NetworkTest, node_pbft_sync_without_enough_votes) {
   auto node1 = create_nodes({node_cfgs[0]}, true /*start*/).front();
 
   // Stop PBFT manager and executor for syncing test
-  node1->getPbftManager()->stop();
+  stopConsensus(node1);
 
   auto db1 = node1->getDB();
   auto pbft_chain1 = node1->getPbftChain();

@@ -16,11 +16,13 @@ class DagBlockPacketHandler : public IDagBlockPacketHandler {
   DagBlockPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                         std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                         std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
+#ifndef RUSTAXA_ENABLE
                         std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
                         std::shared_ptr<TransactionManager> trx_mgr,
-#ifndef RUSTAXA_ENABLE
                         std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy DAG handler.
 #else
+                        network::ConsensusLiveStatusProvider consensus_status, std::shared_ptr<DagManager> dag_mgr,
+                        std::shared_ptr<TransactionManager> trx_mgr,
                         network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                         const addr_t &node_addr, const std::string &logs_prefix = "");

@@ -9,8 +9,10 @@
 #include "network/tarcap/taraxa_peer.hpp"
 
 namespace taraxa {
+#ifndef RUSTAXA_ENABLE
 class PbftManager;
-}
+#endif
+}  // namespace taraxa
 
 namespace taraxa::network::tarcap {
 
@@ -67,9 +69,11 @@ class PeersState {
    * @param filter_func
    * @return TaraxaPeer shared_ptr with max chain size
    */
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<TaraxaPeer> getMaxChainPeer(
       const std::shared_ptr<PbftManager> pbft_mgr, std::function<bool(const std::shared_ptr<TaraxaPeer>&)> filter_func =
                                                        [](const std::shared_ptr<TaraxaPeer>&) { return true; });
+#endif
 
  private:
   /**

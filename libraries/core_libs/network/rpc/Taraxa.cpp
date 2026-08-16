@@ -10,7 +10,9 @@
 
 #include "config/version.hpp"
 #include "dag/dag_manager.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#endif
 #include "pillar_chain/pillar_block.hpp"
 #include "transaction/transaction_manager.hpp"
 
@@ -148,16 +150,32 @@ TaraxaDagBlockReader makeTaraxaDagBlockReader(std::weak_ptr<taraxa::AppBase> app
 #endif
     return node->getDB()->getDagBlocksAtLevel(level, 1);
   };
-  reader.period_by_hash = [app](const blk_hash_t& hash) -> std::optional<uint64_t> {
+  reader.period_by_hash = [app
+#ifdef RUSTAXA_ENABLE
+                           ,
+                           consensus_query_api
+#endif
+  ](const blk_hash_t& hash) -> std::optional<uint64_t> {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_DAG_BLOCK_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      return std::nullopt;
+    }
+    const auto view = (*consensus_query_api)->consensus_query_dag_block_by_hash(hash.asArray());
+    if (!view.found || !view.finalized_period_found) {
+      return std::nullopt;
+    }
+    return view.finalized_period;
+#else
     const auto period = node->getPbftManager()->getDagBlockPeriod(hash);
     if (!period.first) {
       return std::nullopt;
     }
     return period.second;
+#endif
   };
   reader.transaction_by_hash = [app](const trx_hash_t& hash) {
     auto node = app.lock();

@@ -65,7 +65,7 @@ TEST_F(VoteTest, verified_votes) {
   auto node = create_nodes(1, true /*start*/).front();
 
   // stop PBFT manager, that will place vote
-  node->getPbftManager()->stop();
+  stopConsensus(node);
 
   auto [period, round] = clearAllVotes({node});
   std::cout << "[TODO REMOVE] Clear all votes returned period " << period << ", round " << round << std::endl;
@@ -160,7 +160,7 @@ TEST_F(VoteTest, reconstruct_votes) {
 
 TEST_F(VoteTest, rust_generated_own_vote_materializes_persists_and_reloads) {
   auto node = create_nodes(1, true /*start*/).front();
-  node->getPbftManager()->stop();
+  stopConsensus(node);
   clearAllVotes({node});
 
   auto vote = node->getVoteManager()->generateVoteWithWeight(blk_hash_t(9), PbftVoteTypes::propose_vote, 1, 1, 1,
@@ -187,7 +187,7 @@ TEST_F(VoteTest, rust_generated_own_vote_materializes_persists_and_reloads) {
 
 TEST_F(VoteTest, rust_reward_vote_check_accepts_reverse_round_fallback) {
   auto node = create_nodes(1, true /*start*/).front();
-  node->getPbftManager()->stop();
+  stopConsensus(node);
   clearAllVotes({node});
 
   constexpr PbftPeriod reward_period = 1;
@@ -390,8 +390,8 @@ TEST_F(VoteTest, transfer_vote) {
   std::shared_ptr<Network> nw2 = node2->getNetwork();
 
   // stop PBFT manager, that will place vote
-  node1->getPbftManager()->stop();
-  node2->getPbftManager()->stop();
+  stopConsensus(node1);
+  stopConsensus(node2);
 
   clearAllVotes({node1, node2});
 
@@ -458,7 +458,7 @@ TEST_F(VoteTest, two_t_plus_one_votes) {
   auto &node = nodes[0];
 
   // stop PBFT manager, that will place vote
-  node->getPbftManager()->stop();
+  stopConsensus(node);
 
   auto vote_mgr = node->getVoteManager();
 

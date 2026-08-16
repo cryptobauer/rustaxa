@@ -4,9 +4,9 @@
 #include "network/consensus_query.hpp"
 #include "network/tarcap/packets/latest/status_packet.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
-#include "pbft/pbft_manager.hpp"
 #ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
+#include "pbft/pbft_manager.hpp"
 #endif
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -28,21 +28,22 @@ constexpr uint8_t kNetworkStatusPlanStatusLightNodeHistoryUnavailable = 8;
 StatusPacketHandler::StatusPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                          std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                          std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-                                         net::ConsensusQueryClient pbft_chain, std::shared_ptr<PbftManager> pbft_mgr,
-                                         std::shared_ptr<DagManager> dag_mgr,
+                                         net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
+                                         std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
                                          std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
                                                                          // legacy status handler.
 #else
+                                         network::ConsensusLiveStatusProvider consensus_status,
+                                         std::shared_ptr<DagManager> dag_mgr,
                                          network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                          h256 genesis_hash, const addr_t& node_addr, const std::string& logs_prefix)
     : ISyncPacketHandler(conf, peers_state, packets_stats, std::move(pbft_syncing_state), std::move(pbft_chain),
-                         std::move(pbft_mgr), std::move(dag_mgr),
 #ifndef RUSTAXA_ENABLE
-                         std::move(db),
+                         std::move(pbft_mgr), std::move(dag_mgr), std::move(db),
 #else
-                         std::move(consensus_network_api),
+                         std::move(consensus_status), std::move(dag_mgr), std::move(consensus_network_api),
 #endif
                          node_addr, logs_prefix + "STATUS_PH"),
       kGenesisHash(genesis_hash) {
@@ -54,7 +55,16 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
 
   // Important !!! Use only "selected_peer" and not "peer" in this function as "peer" might be nullptr
   auto selected_peer = peer;
-  const auto pbft_synced_period = pbft_mgr_->pbftSyncingPeriod();
+#ifdef RUSTAXA_ENABLE
+  // Keep every decision made for this packet on one application-root epoch.
+  const auto consensus_status = consensus_status_();
+#endif
+  const auto pbft_synced_period =
+#ifdef RUSTAXA_ENABLE
+      consensus_status.syncing_period;
+#else
+      pbft_mgr_->pbftSyncingPeriod();
+#endif
 
   // Initial status packet
   if (packet.initial_data.has_value()) {
@@ -178,9 +188,8 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
     rustaxa::NetworkStatusSyncFacts sync_facts{};
     sync_facts.local_pbft_syncing = pbft_syncing_state_->isPbftSyncing();
     sync_facts.local_pbft_synced_period = pbft_synced_period;
-    const auto [pbft_current_round, pbft_current_period] = pbft_mgr_->getPbftRoundAndPeriod();
-    sync_facts.local_pbft_period = pbft_current_period;
-    sync_facts.local_pbft_round = pbft_current_round;
+    sync_facts.local_pbft_period = consensus_status.period;
+    sync_facts.local_pbft_round = consensus_status.round;
     sync_facts.peer_pbft_chain_size = selected_peer->pbft_chain_size_.load();
     sync_facts.peer_pbft_period = selected_peer->pbft_period_;
     sync_facts.peer_pbft_round = selected_peer->pbft_round_;

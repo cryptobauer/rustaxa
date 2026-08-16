@@ -3,6 +3,20 @@ use crate::ffi::BridgeApp;
 use ethereum_types::H256;
 
 impl BridgeApp {
+    /// Publishes one proposed block effect from canonical signed block bytes.
+    ///
+    /// The native application root derives every identity field and preserves
+    /// durable-before-live publication. The result is true only for a newly
+    /// published proposal; malformed bytes and storage failures cross as bridge
+    /// errors, while an existing proposal returns false after durable repair.
+    pub fn pbft_service_publish_proposed_block_effect(
+        &self,
+        canonical_signed_block_rlp: Vec<u8>,
+    ) -> Result<bool, anyhow::Error> {
+        self.0
+            .publish_proposed_block_effect(canonical_signed_block_rlp)
+    }
+
     /// Publishes a proposed PBFT block through the native PBFT service.
     ///
     /// Storage is committed before live index mutation so failed writes or

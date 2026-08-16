@@ -3,19 +3,16 @@
 #include <libp2p/Common.h>
 
 #include <map>
+#include <functional>
 
 #include "network/tarcap/packet_types.hpp"
 #include "network/threadpool/packet_data.hpp"
-
-namespace taraxa {
-class PbftManager;
-}
 
 namespace taraxa::network::threadpool {
 
 class PacketsBlockingMask {
  public:
-  PacketsBlockingMask(const std::shared_ptr<PbftManager>& pbft_mgr);
+  explicit PacketsBlockingMask(std::function<bool()> sync_queue_empty);
   ~PacketsBlockingMask() = default;
 
   PacketsBlockingMask(const PacketsBlockingMask&) = default;
@@ -79,7 +76,7 @@ class PacketsBlockingMask {
   //  This map contains dag blocks that are currently processed with the associated packet id
   std::map<taraxa::sig_t, PacketData::PacketId> processing_dag_blocks_;
 
-  std::shared_ptr<PbftManager> pbft_mgr_;
+  std::function<bool()> sync_queue_empty_;
 
   static constexpr size_t kRequiredDagPacketSizeV3 = 2;
   static constexpr size_t kDagBlockPosV3 = 1;

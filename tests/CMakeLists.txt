@@ -70,9 +70,13 @@ if(RUSTAXA_ENABLE)
     add_test(transaction_manager_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/transaction_manager_shim_test)
 endif()
 
-add_executable(pbft_manager_test pbft_manager_test.cpp)
-target_link_libraries(pbft_manager_test test_util)
-add_test(pbft_manager_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_manager_test)
+if(NOT RUSTAXA_ENABLE)
+    # Preserve the untouched pure-C++ manager suite. Rust-mode behavior lives
+    # with rustaxa-consensus and focused application/network integration tests.
+    add_executable(pbft_manager_test pbft_manager_test.cpp)
+    target_link_libraries(pbft_manager_test test_util)
+    add_test(pbft_manager_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_manager_test)
+endif()
 
 if(NOT RUSTAXA_ENABLE)
     add_executable(sortition_test sortition_test.cpp)
@@ -88,9 +92,13 @@ add_executable(transaction_test transaction_test.cpp)
 target_link_libraries(transaction_test test_util)
 add_test(transaction_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/transaction_test)
 
-add_executable(vote_test vote_test.cpp)
-target_link_libraries(vote_test test_util)
-add_test(vote_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/vote_test)
+if(NOT RUSTAXA_ENABLE)
+    # The manager-shaped fixture is retained only for untouched pure-C++ mode;
+    # native vote behavior is covered in rustaxa-consensus and boundary tests.
+    add_executable(vote_test vote_test.cpp)
+    target_link_libraries(vote_test test_util)
+    add_test(vote_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/vote_test)
+endif()
 
 if(NOT RUSTAXA_ENABLE)
     # Preserve the untouched pure-C++ reference implementation and its tests.

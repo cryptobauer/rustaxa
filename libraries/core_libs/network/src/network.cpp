@@ -18,7 +18,9 @@
 #include "network/tarcap/stats/node_stats.hpp"
 #include "network/tarcap/stats/time_period_packets_stats.hpp"
 #include "network/tarcap/taraxa_capability.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#endif
 
 namespace taraxa {
 
@@ -45,7 +47,13 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
                  std::shared_ptr<DbStorage> db,
 #endif
-                 std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
+#ifdef RUSTAXA_ENABLE
+                 network::ConsensusLiveStatusProvider consensus_status,
+                 network::ConsensusVoteStatusProvider consensus_vote_status,
+#else
+                 std::shared_ptr<PbftManager> pbft_mgr,
+#endif
+                 net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
                  std::shared_ptr<VoteManager> vote_mgr,
 #endif
@@ -64,10 +72,21 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
       all_packets_stats_(nullptr),
       node_stats_(nullptr),
       pbft_syncing_state_(std::make_shared<network::tarcap::PbftSyncingState>(config.network.deep_syncing_threshold)),
+#ifdef RUSTAXA_ENABLE
+      consensus_status_(std::move(consensus_status)),
+      consensus_vote_status_(std::move(consensus_vote_status)),
+#else
       pbft_mgr_(pbft_mgr),
+#endif
       tp_(config.network.num_threads, false),
-      packets_tp_(std::make_shared<network::threadpool::PacketsThreadPool>(config.network.packets_processing_threads,
-                                                                           pbft_mgr, kConf.getFirstWallet().node_addr)),
+      packets_tp_(std::make_shared<network::threadpool::PacketsThreadPool>(
+          config.network.packets_processing_threads,
+#ifdef RUSTAXA_ENABLE
+          [status = consensus_status_]() { return status().sync_queue_empty; },
+#else
+          [pbft_mgr]() { return pbft_mgr->periodDataQueueEmpty(); },
+#endif
+          kConf.getFirstWallet().node_addr)),
       periodic_events_tp_(kPeriodicEventsThreadCount, false) {
   auto const &node_addr = kConf.getFirstWallet().node_addr;
   LOG_OBJECTS_CREATE("NETWORK");
@@ -83,10 +102,16 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
   all_packets_stats_ = std::make_shared<network::tarcap::TimePeriodPacketsStats>(
       kConf.network.ddos_protection.packets_stats_time_period_ms, node_addr);
 
-  node_stats_ = std::make_shared<network::tarcap::NodeStats>(pbft_syncing_state_, pbft_chain, pbft_mgr, dag_mgr,
+  node_stats_ = std::make_shared<network::tarcap::NodeStats>(pbft_syncing_state_, pbft_chain,
+#ifdef RUSTAXA_ENABLE
+                                                             consensus_status_, consensus_vote_status_,
+#else
+                                                             pbft_mgr,
+#endif
 #ifndef RUSTAXA_ENABLE
                                                              vote_mgr,
 #endif
+                                                             dag_mgr,
                                                              trx_mgr, all_packets_stats_, packets_tp_, kConf);
 
   // TODO make all these properties configurable
@@ -122,7 +147,12 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
         db,
 #endif
-        pbft_mgr, pbft_chain,
+#ifdef RUSTAXA_ENABLE
+        consensus_status_,
+#else
+        pbft_mgr,
+#endif
+        pbft_chain,
 #ifndef RUSTAXA_ENABLE
         vote_mgr,
 #endif
@@ -145,7 +175,12 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
         db,
 #endif
-        pbft_mgr, pbft_chain,
+#ifdef RUSTAXA_ENABLE
+        consensus_status_,
+#else
+        pbft_mgr,
+#endif
+        pbft_chain,
 #ifndef RUSTAXA_ENABLE
         vote_mgr,
 #endif
@@ -411,7 +446,7 @@ std::shared_ptr<network::tarcap::TaraxaPeer> Network::getMaxChainPeer() const {
   }
 
   const auto selected_peer =
-      rust_consensus_network_api_->selectMaxChainPeer(pbft_mgr_->pbftSyncingPeriod(), candidates);
+      rust_consensus_network_api_->selectMaxChainPeer(consensus_status_().syncing_period, candidates);
   if (!selected_peer) {
     return nullptr;
   }
@@ -425,6 +460,7 @@ std::shared_ptr<network::tarcap::TaraxaPeer> Network::getMaxChainPeer() const {
   return nullptr;
 #endif
 
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<network::tarcap::TaraxaPeer> max_chain_peer{nullptr};
 
   for (const auto &tarcap : tarcaps_) {
@@ -441,6 +477,7 @@ std::shared_ptr<network::tarcap::TaraxaPeer> Network::getMaxChainPeer() const {
   }
 
   return max_chain_peer;
+#endif
 }
 
 void Network::requestPillarBlockVotesBundle(taraxa::PbftPeriod period, const taraxa::blk_hash_t &pillar_block_hash) {
@@ -466,6 +503,7 @@ void Network::requestPillarBlockVotesBundle(taraxa::PbftPeriod period, const tar
   return;
 #endif
 
+#ifndef RUSTAXA_ENABLE
   for (const auto &tarcap : tarcaps_) {
     // Try to get most up-to-date peer
     const auto peer = tarcap.second->getPeersState()->getMaxChainPeer(pbft_mgr_);
@@ -482,6 +520,7 @@ void Network::requestPillarBlockVotesBundle(taraxa::PbftPeriod period, const tar
             network::SubprotocolPacketType::kGetPillarVotesBundlePacket);
     get_pillar_votes_bundle_packet_handler->requestPillarVotesBundle(period, pillar_block_hash, peer);
   }
+#endif
 }
 
 // METHODS USED IN TESTS ONLY

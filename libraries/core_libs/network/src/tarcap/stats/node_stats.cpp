@@ -8,7 +8,9 @@
 #include "network/tarcap/stats/time_period_packets_stats.hpp"
 #include "network/tarcap/taraxa_peer.hpp"
 #include "network/threadpool/tarcap_thread_pool.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#endif
 #include "transaction/transaction_manager.hpp"
 #ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
@@ -17,15 +19,23 @@
 namespace taraxa::network::tarcap {
 
 NodeStats::NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
-                     std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
-#ifndef RUSTAXA_ENABLE
-                     std::shared_ptr<VoteManager> vote_mgr,
+#ifdef RUSTAXA_ENABLE
+                     network::ConsensusLiveStatusProvider consensus_status,
+                     network::ConsensusVoteStatusProvider consensus_vote_status,
+#else
+                     std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<VoteManager> vote_mgr,
 #endif
-                     std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+                     std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
+                     std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                      std::shared_ptr<const threadpool::PacketsThreadPool> thread_pool, const FullNodeConfig &config)
     : pbft_syncing_state_(std::move(pbft_syncing_state)),
       pbft_chain_(std::move(pbft_chain)),
+#ifdef RUSTAXA_ENABLE
+      consensus_status_(std::move(consensus_status)),
+      consensus_vote_status_(std::move(consensus_vote_status)),
+#else
       pbft_mgr_(std::move(pbft_mgr)),
+#endif
       dag_mgr_(std::move(dag_mgr)),
 #ifndef RUSTAXA_ENABLE
       vote_mgr_(std::move(vote_mgr)),
@@ -86,14 +96,32 @@ void NodeStats::logNodeStats(const std::vector<std::shared_ptr<network::tarcap::
   const auto local_max_level_in_dag = dag_mgr_->getMaxLevel();
 
   // Local pbft info...
+#ifdef RUSTAXA_ENABLE
+  const auto live_status = consensus_status_();
+  const auto local_pbft_round = live_status.round;
+  const auto local_pbft_period = live_status.period;
+#else
   const auto [local_pbft_round, local_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
+#endif
   const auto local_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
   const auto local_chain_size_without_empty_blocks =
       net::consensusPbftProgress(pbft_chain_).non_empty_finalized_periods;
 
-  const auto local_dpos_total_votes_count = pbft_mgr_->getCurrentDposTotalVotesCount();
+#ifdef RUSTAXA_ENABLE
+  const auto vote_status = consensus_vote_status_();
+#endif
+  const auto local_dpos_total_votes_count =
+#ifdef RUSTAXA_ENABLE
+      vote_status.total_dpos_votes;
+#else
+      pbft_mgr_->getCurrentDposTotalVotesCount();
+#endif
   uint64_t local_dpos_node_votes_count = 0;
+#ifdef RUSTAXA_ENABLE
+  if (const auto votes_count = vote_status.node_dpos_votes) {
+#else
   if (const auto votes_count = pbft_mgr_->getCurrentNodeVotesCount()) {
+#endif
     local_dpos_node_votes_count = *votes_count;
   }
 #ifdef RUSTAXA_ENABLE
@@ -106,7 +134,12 @@ void NodeStats::logNodeStats(const std::vector<std::shared_ptr<network::tarcap::
 #endif
 
   // Syncing period...
-  const auto local_pbft_sync_period = pbft_mgr_->pbftSyncingPeriod();
+  const auto local_pbft_sync_period =
+#ifdef RUSTAXA_ENABLE
+      live_status.syncing_period;
+#else
+      pbft_mgr_->pbftSyncingPeriod();
+#endif
 
   // Decide if making progress...
   const auto pbft_consensus_rounds_advanced =

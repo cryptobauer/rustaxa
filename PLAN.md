@@ -869,10 +869,10 @@ Rules:
 
 - Do not delegate Rust shim behavior back to legacy FinalChain or other old implementation methods.
 - Temporary Rust-mode gaps must be explicit shim-local defaults, no-ops, or tracked unimplemented paths.
-- Temporary guarded touches to upstream-owned C++ files should be removed once a complete shim can own Rust-mode routing.
-  The PBFT manager pillar-vote sync hook has moved into the full `pbft_manager_shim` overlay; original
-  `pbft_manager.cpp` should stay clean versus `upstream-main`, with remaining debt tracked as overlay drift until Rust
-  owns the manager runtime.
+- Temporary guarded touches to upstream-owned C++ files should be removed once a complete native route can own
+  Rust-mode behavior. The PBFT application runtime now owns the former manager pillar-vote sync hook; original
+  `pbft_manager.cpp` stays clean versus `upstream-main`, and remaining private executor debt is tracked under
+  `CRW-15`/`CRW-16`.
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep only physical network and OS-thread mechanics in C++; consensus callbacks, queues, routing, and orchestration move
   to the Rust application service.
@@ -957,6 +957,18 @@ dynamic-lambda decisions, and bounded restart/duplicate classification. Remainin
 is executor or compatibility work under the boundaries above, not authoritative PBFT manager decision state. Detailed
 status is tracked in `doc/consensus_rewrite_tracker.md`.
 
+Rust-enabled composition no longer includes a `PbftManager` object or shim. `App` constructs one
+`ConsensusApplication` and drives lifecycle through it; network, query, execution, signing, timer, and lifecycle callers
+use operation-shaped root adapters. Local generated-vote admission and own-vote persistence commit atomically, and
+canonical proposal publication derives its identity natively. The untouched original manager remains selected only in
+all-Rust-disabled reference builds. The application root's private C++ runtime is transitional: it still materializes
+some legacy objects and consumes manager-shaped CXX task/effect carriers while executing named timer, signing,
+transport, lifecycle, and concrete FinalChain/EVM leaves. Eliminating that executor/carrier family remains active
+`CRW-15`/`CRW-16` work.
+Terminal `App` teardown permanently releases this private runtime, breaking its temporary ownership cycle with injected
+services before host configuration is destroyed; restartable stop/start remains a separate lifecycle operation.
+Status-packet and sync-start planning each reuse one coherent application-root status snapshot.
+
 Sync and ordinary PBFT block FinalChain-hash admission now compose the native PBFT and FinalChain roots. Rust captures
 the exact sync request identity, performs delayed-hash lookup outside the manager lock, exact-reports the result, and
 continues reward admission without a C++ hash-decision branch or standalone validation bridge API.
@@ -1003,8 +1015,8 @@ The completed PBFT manager closeout folded the dedicated slice tracker into this
    consensus reads/writes.
 10. Overlay shrink and upstream-sync cleanup: `PbftManagerOld` production forwarding and stale overlay TODOs were
     removed or replaced with explicit public API, lifecycle, network, EVM, and executor-boundary classifications. The
-    remaining dead legacy compile scaffold is also gone: feature-on builds import and compile only the standalone shim
-    facade and implementation, while pure-C++ builds retain the untouched original manager.
+    standalone Rust-mode facade and shim are now deleted; feature-on builds compile the private application runtime,
+    while pure-C++ builds retain the untouched original manager.
 11. Runtime mirror and protocol sidecar closeout: remaining direct scalar-mirror reads were removed from Rust-mode
     production helpers or classified as compatibility caches, satisfying the PBFT manager closeout definition.
 

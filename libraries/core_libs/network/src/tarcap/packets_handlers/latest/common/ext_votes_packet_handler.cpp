@@ -5,10 +5,10 @@
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
 #include "network/tarcap/packets/latest/vote_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/common/exceptions.hpp"
-#include "pbft/pbft_manager.hpp"
 #include "vote/pbft_vote.hpp"
 #include "vote/votes_bundle_rlp.hpp"
 #ifndef RUSTAXA_ENABLE
+#include "pbft/pbft_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
 #endif
 #ifdef RUSTAXA_ENABLE
@@ -62,12 +62,14 @@ rust::Vec<rustaxa::SlashingSubmitterIdentity> makeSlashingSubmitters(const FullN
 
 ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                              std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
                                              std::shared_ptr<PbftManager> pbft_mgr,
                                              net::ConsensusQueryClient pbft_chain,
-#ifndef RUSTAXA_ENABLE
                                              std::shared_ptr<VoteManager> vote_mgr,
                                              std::shared_ptr<SlashingManager> slashing_manager,
 #else
+                                             network::ConsensusLiveStatusProvider consensus_status,
+                                             net::ConsensusQueryClient pbft_chain,
                                              std::shared_ptr<TransactionManager> trx_mgr,
                                              network::ConsensusNetworkApiShared consensus_network_api,
                                              TarcapVersion transport_lane,
@@ -76,14 +78,15 @@ ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::sh
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel_name),
       last_votes_sync_request_time_(std::chrono::system_clock::now()),
       last_pbft_block_sync_request_time_(std::chrono::system_clock::now()),
-      pbft_mgr_(std::move(pbft_mgr)),
       pbft_chain_(std::move(pbft_chain))
 #ifndef RUSTAXA_ENABLE
       ,
+      pbft_mgr_(std::move(pbft_mgr)),
       vote_mgr_(std::move(vote_mgr)),
       slashing_manager_(std::move(slashing_manager))
 #else
       ,
+      consensus_status_(std::move(consensus_status)),
       rust_consensus_network_api_(std::move(consensus_network_api)),
       trx_mgr_(std::move(trx_mgr)),
       transport_lane_(transport_lane)
@@ -104,7 +107,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   // Rust owns ingress, application-leaf ordering, and every dependent routing
   // decision. Tarcap supplies the decoded canonical payload and executes the
   // typed VoteManager/transport effects returned by the shared network root.
-  const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
+  const auto consensus_status = consensus_status_();
   rustaxa::PbftVoteIngressFact ingress_fact{};
   ingress_fact.period = vote->getPeriod();
   ingress_fact.round = vote->getRound();
@@ -112,9 +115,9 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   ingress_fact.vote_type = static_cast<uint8_t>(vote->getType());
 
   rustaxa::PbftVoteIngressContext ingress_context{};
-  ingress_context.current_period = current_pbft_period;
-  ingress_context.current_round = current_pbft_round;
-  ingress_context.current_step = pbft_mgr_->getPbftStep();
+  ingress_context.current_period = consensus_status.period;
+  ingress_context.current_round = consensus_status.round;
+  ingress_context.current_step = consensus_status.step;
   ingress_context.max_future_period_delta = this->kConf.network.ddos_protection.vote_accepting_periods;
   ingress_context.max_future_round_delta = this->kConf.network.ddos_protection.vote_accepting_rounds;
   ingress_context.max_future_step_delta = this->kConf.network.ddos_protection.vote_accepting_steps;
@@ -229,10 +232,18 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::consumePbftVo
 std::pair<bool, std::string> ExtVotesPacketHandler::validateVotePeriodRoundStep(const std::shared_ptr<PbftVote> &vote,
                                                                                 const std::shared_ptr<TaraxaPeer> &peer,
                                                                                 bool validate_max_round_step) {
+#ifdef RUSTAXA_ENABLE
+  const auto consensus_status = consensus_status_();
+  const auto current_pbft_round = consensus_status.round;
+  const auto current_pbft_period = consensus_status.period;
+  const auto current_pbft_step = consensus_status.step;
+#else
   const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
+  const auto current_pbft_step = pbft_mgr_->getPbftStep();
+#endif
 
   auto genErrMsg = [period = current_pbft_period, round = current_pbft_round,
-                    step = pbft_mgr_->getPbftStep()](const std::shared_ptr<PbftVote> &vote) -> std::string {
+                    step = current_pbft_step](const std::shared_ptr<PbftVote> &vote) -> std::string {
     std::stringstream err;
     err << "Vote " << vote->getHash() << " (period, round, step) = (" << vote->getPeriod() << ", " << vote->getRound()
         << ", " << vote->getStep() << "). Current PBFT (period, round, step) = (" << period << ", " << round << ", "
@@ -292,7 +303,7 @@ std::pair<bool, std::string> ExtVotesPacketHandler::validateVotePeriodRoundStep(
   }
 
   // Step validation
-  auto checking_step = pbft_mgr_->getPbftStep();
+  auto checking_step = current_pbft_step;
   // If period or round is not the same we assume current step is equal to 1
   // So we won't accept votes for future rounds with step bigger than kConf.network.vote_accepting_steps
   if (current_pbft_period != vote->getPeriod() || current_pbft_round != vote->getRound()) {
@@ -326,7 +337,13 @@ bool ExtVotesPacketHandler::validateVoteAndBlock(const std::shared_ptr<PbftVote>
 }
 
 bool ExtVotesPacketHandler::isPbftRelevantVote(const std::shared_ptr<PbftVote> &vote) const {
+#ifdef RUSTAXA_ENABLE
+  const auto consensus_status = consensus_status_();
+  const auto current_pbft_round = consensus_status.round;
+  const auto current_pbft_period = consensus_status.period;
+#else
   const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
+#endif
 
   if (vote->getPeriod() >= current_pbft_period && vote->getRound() >= current_pbft_round) {
     // Standard current or future vote
@@ -486,13 +503,8 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget, std::o
           }
         } else if (effect.kind == kNetworkEffectKindRecordConsensusObject &&
                    effect.object_kind == kNetworkObjectKindPbftBlock) {
-          auto proposed_block =
-              std::make_shared<PbftBlock>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
-          if (proposed_block->getPeriod() != effect.period ||
-              proposed_block->getBlockHash().asArray() != effect.object_hash) {
-            throw std::runtime_error("Network API proposed PBFT block sidecar effect has mismatched block payload");
-          }
-          pbft_mgr_->processProposedBlock(proposed_block);
+          rust_consensus_network_api_->publishProposedBlockEffect(
+              std::vector<uint8_t>(effect.payload_bytes.begin(), effect.payload_bytes.end()));
         } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftNextVotes) {
           requestPbftNextVotesAtPeriodRound(peer_id, effect.period, effect.round);
           last_votes_sync_request_time_ = std::chrono::system_clock::now();

@@ -1,8 +1,8 @@
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
 
 #include "network/tarcap/packets/latest/vote_packet.hpp"
-#include "pbft/pbft_manager.hpp"
 #ifndef RUSTAXA_ENABLE
+#include "pbft/pbft_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
 #endif
 
@@ -10,22 +10,23 @@ namespace taraxa::network::tarcap {
 
 VotePacketHandler::VotePacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                                     std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
+                                     std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
                                      std::shared_ptr<VoteManager> vote_mgr,
                                      std::shared_ptr<SlashingManager> slashing_manager,
 #else
-                                     std::shared_ptr<TransactionManager> trx_mgr,
+                                     network::ConsensusLiveStatusProvider consensus_status,
+                                     net::ConsensusQueryClient pbft_chain, std::shared_ptr<TransactionManager> trx_mgr,
                                      network::ConsensusNetworkApiShared consensus_network_api,
                                      TarcapVersion transport_lane,
 #endif
                                      const addr_t &node_addr, const std::string &logs_prefix)
-    : IVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_mgr),
-                         std::move(pbft_chain),
+    : IVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats),
 #ifndef RUSTAXA_ENABLE
-                         std::move(vote_mgr), std::move(slashing_manager),
+                         std::move(pbft_mgr), std::move(pbft_chain), std::move(vote_mgr), std::move(slashing_manager),
 #else
-                         std::move(trx_mgr), std::move(consensus_network_api), transport_lane,
+                         std::move(consensus_status), std::move(pbft_chain), std::move(trx_mgr),
+                         std::move(consensus_network_api), transport_lane,
 #endif
                          node_addr, logs_prefix + "PBFT_VOTE_PH") {
 }

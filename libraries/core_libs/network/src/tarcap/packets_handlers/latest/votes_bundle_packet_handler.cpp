@@ -2,9 +2,10 @@
 
 #include <algorithm>
 
-#include "pbft/pbft_manager.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
+#else
+#include "pbft/pbft_manager.hpp"
 #endif
 #include "vote/votes_bundle_rlp.hpp"
 #ifndef RUSTAXA_ENABLE
@@ -43,23 +44,25 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &input) {
 
 VotesBundlePacketHandler::VotesBundlePacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                                    std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
                                                    std::shared_ptr<PbftManager> pbft_mgr,
                                                    net::ConsensusQueryClient pbft_chain,
-#ifndef RUSTAXA_ENABLE
                                                    std::shared_ptr<VoteManager> vote_mgr,
                                                    std::shared_ptr<SlashingManager> slashing_manager,
 #else
+                                                   network::ConsensusLiveStatusProvider consensus_status,
+                                                   net::ConsensusQueryClient pbft_chain,
                                                    std::shared_ptr<TransactionManager> trx_mgr,
                                                    network::ConsensusNetworkApiShared consensus_network_api,
                                                    TarcapVersion transport_lane,
 #endif
                                                    const addr_t &node_addr, const std::string &logs_prefix)
-    : IVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_mgr),
-                         std::move(pbft_chain),
+    : IVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats),
 #ifndef RUSTAXA_ENABLE
-                         std::move(vote_mgr), std::move(slashing_manager),
+                         std::move(pbft_mgr), std::move(pbft_chain), std::move(vote_mgr), std::move(slashing_manager),
 #else
-                         std::move(trx_mgr), std::move(consensus_network_api), transport_lane,
+                         std::move(consensus_status), std::move(pbft_chain), std::move(trx_mgr),
+                         std::move(consensus_network_api), transport_lane,
 #endif
                          node_addr, logs_prefix + "VOTES_BUNDLE_PH") {
 }
@@ -73,7 +76,13 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
     throw InvalidRlpItemsCountException("VotesBundlePacket", packet.votes_bundle.votes.size(), kMaxVotesInBundleRlp);
   }
 
+#ifdef RUSTAXA_ENABLE
+  const auto consensus_status = consensus_status_();
+  const auto current_pbft_round = consensus_status.round;
+  const auto current_pbft_period = consensus_status.period;
+#else
   const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
+#endif
 
   const auto &reference_vote = packet.votes_bundle.votes.front();
   const auto votes_bundle_votes_type = reference_vote->getType();
@@ -82,7 +91,7 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
   rustaxa::PbftVoteIngressContext ingress_context{};
   ingress_context.current_period = current_pbft_period;
   ingress_context.current_round = current_pbft_round;
-  ingress_context.current_step = pbft_mgr_->getPbftStep();
+  ingress_context.current_step = consensus_status.step;
   ingress_context.max_future_period_delta = this->kConf.network.ddos_protection.vote_accepting_periods;
   ingress_context.max_future_round_delta = this->kConf.network.ddos_protection.vote_accepting_rounds;
   ingress_context.max_future_step_delta = this->kConf.network.ddos_protection.vote_accepting_steps;
@@ -141,7 +150,7 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
     LOG(log_wr_) << "Drop votes sync bundle as Rust ingress plan rejected it. Votes (period, round, step) = ("
                  << reference_vote->getPeriod() << ", " << reference_vote->getRound() << ", "
                  << reference_vote->getStep() << "). Current PBFT (period, round, step) = (" << current_pbft_period
-                 << ", " << current_pbft_round << ", " << pbft_mgr_->getPbftStep()
+                 << ", " << current_pbft_round << ", " << consensus_status.step
                  << "), status: " << static_cast<uint32_t>(ingress_decision.status)
                  << ", error: " << static_cast<std::string>(ingress_decision.error_code);
     return;

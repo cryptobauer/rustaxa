@@ -85,7 +85,8 @@ use crate::pbft_vote_runtime::{
     VerifiedVotesTwoTPlusOneVotedBlock,
 };
 use crate::pbft_vote_storage::{
-    PbftVotePersistenceResult, PbftVoteStorageRecord, persist_pbft_vote_progress,
+    PbftVotePersistenceResult, PbftVoteStorageRecord, persist_local_vote_admission,
+    persist_pbft_vote_progress,
 };
 use crate::pbft_vote_validation::{
     PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation, PbftProposerSortitionRequest,
@@ -446,6 +447,28 @@ pub struct PbftManagerRuntimeStorageApplyOutcome {
     pub snapshot: PbftManagerRuntimeSnapshot,
     /// Stable rejection detail; empty after success.
     pub error_code: String,
+}
+
+/// Lock-coherent application status used by network and query gating.
+///
+/// The manager cursor, PBFT-chain head, sync queue, and derived syncing period are
+/// sampled under one native serialization guard. The snapshot intentionally
+/// excludes DPoS and other external facts so consumers cannot treat it as a
+/// service locator or a complete consensus-state projection.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftApplicationStatusSnapshot {
+    /// Current native PBFT period.
+    pub period: u64,
+    /// Current native PBFT round.
+    pub round: u64,
+    /// Current native PBFT step.
+    pub step: u64,
+    /// Number of finalized PBFT periods in the native chain.
+    pub finalized_chain_size: u64,
+    /// Maximum of the queued sync period and native PBFT-chain size.
+    pub syncing_period: u64,
+    /// Number of period-data entries retained by the native sync queue.
+    pub sync_queue_size: u64,
 }
 
 /// Complete native result of validation-backed PBFT vote admission.
@@ -1173,6 +1196,7 @@ impl PbftService {
                     require_proposed_block_sidecar: false,
                     slashing_enabled: true,
                 },
+                None,
                 || Ok(session.submitters.clone()),
             ) {
                 Ok(result) => result,
@@ -1618,6 +1642,35 @@ impl PbftService {
     /// remains valid after the serialization domain is released.
     pub fn manager_snapshot(&self) -> PbftManagerRuntimeSnapshot {
         self.manager_state().state.snapshot()
+    }
+
+    /// Returns one coherent PBFT application status snapshot.
+    ///
+    /// All fields are sampled while the manager serialization guard owns
+    /// both the scalar runtime and its PBFT-chain/period-queue siblings. The
+    /// queue size is widened losslessly for the stable CXX boundary.
+    pub fn application_status_snapshot(&self) -> Result<PbftApplicationStatusSnapshot> {
+        self.manager_and_application_status_snapshot()
+            .map(|(_, status)| status)
+    }
+
+    /// Returns the manager runtime and its client-facing live status under one guard.
+    pub fn manager_and_application_status_snapshot(
+        &self,
+    ) -> Result<(PbftManagerRuntimeSnapshot, PbftApplicationStatusSnapshot)> {
+        let manager = self.manager_state();
+        let runtime = manager.state.snapshot();
+        let chain_size = manager.chain.head().size;
+        let status = PbftApplicationStatusSnapshot {
+            period: runtime.period,
+            round: runtime.round,
+            step: runtime.step,
+            finalized_chain_size: chain_size,
+            syncing_period: manager.period_data_queue.syncing_period(chain_size),
+            sync_queue_size: u64::try_from(manager.period_data_queue.size())
+                .context("PBFT_APPLICATION_STATUS_QUEUE_SIZE_OVERFLOW")?,
+        };
+        Ok((runtime, status))
     }
 
     /// Plans the ordered post-reset period-advance effects under the manager lock.
@@ -2881,6 +2934,28 @@ impl PbftService {
     ) -> Result<bool> {
         self.proposed_blocks()
             .push_with_storage(period, block_hash, pivot_hash, block_rlp)
+    }
+
+    /// Publishes one canonical signed proposed block from its native bytes.
+    ///
+    /// Rust decodes period, canonical signed-block hash, and pivot DAG hash
+    /// before entering the existing durable-first proposal publication path.
+    /// Malformed bytes return an error without storage or live-state mutation.
+    /// `true` means a new live proposal was published; `false` means the
+    /// durable row was repaired for an already-present proposal.
+    pub fn publish_proposed_block_effect(
+        &self,
+        canonical_signed_block_rlp: Vec<u8>,
+    ) -> Result<bool> {
+        let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(
+            canonical_signed_block_rlp.as_slice(),
+        ))?;
+        self.publish_proposed_block(
+            link.period,
+            link.block_hash,
+            link.pivot_dag_block_hash,
+            canonical_signed_block_rlp,
+        )
     }
 
     /// Marks one proposed PBFT block as valid in process-local state.
@@ -4280,6 +4355,7 @@ impl PbftService {
             &validation,
             flags,
             context,
+            None,
             || resolve_slashing_submitter_facts(final_chain, slashing_submitters),
         )
     }
@@ -4311,6 +4387,60 @@ impl PbftService {
             &validation,
             flags,
             context,
+            None,
+            || {
+                Ok(submitters
+                    .iter()
+                    .map(|identity| SlashingSubmitterFact {
+                        wallet_index: identity.wallet_index,
+                        nonce: identity.nonce,
+                        balance: identity.balance,
+                    })
+                    .collect())
+            },
+        )
+    }
+
+    /// Admits one locally generated vote and persists its own-vote row atomically.
+    ///
+    /// FinalChain-backed validation derives the authoritative weight. For a new
+    /// accepted vote, the canonical weighted own-vote row and every progress
+    /// write share one native batch while the verified-vote checkpoint remains
+    /// reversible. Any append, lock, or commit failure rejects the publication
+    /// and restores replay, admission, and retained weighted-payload state.
+    /// Validation rejection and duplicate admission preserve their ordinary
+    /// typed outcomes and do not write an own-vote row.
+    pub fn admit_and_persist_local_generated_vote(
+        &self,
+        final_chain: &FinalChain,
+        canonical_vote_rlp: &[u8],
+        request: PbftVoteAdmissionValidationRequest,
+        flags: PbftVoteEventFactFlags,
+        context: PbftVoteProgressContext,
+        submitters: &[SlashingSubmitterIdentity],
+    ) -> Result<PbftVoteAdmissionWithSlashingResult> {
+        let (validation, _) = self.validate_verified_vote_with_final_chain_internal(
+            final_chain,
+            canonical_vote_rlp,
+            request,
+            false,
+        )?;
+        let own_vote = if validation.accepted && validation.weight_calculated {
+            let payload =
+                build_weighted_pbft_vote_payload(canonical_vote_rlp, validation.calculated_weight)?;
+            Some(PbftVoteStorageRecord {
+                hash: payload.hash,
+                vote_rlp: payload.vote_rlp,
+            })
+        } else {
+            None
+        };
+        self.admit_validated_vote_with_slashing_resolver(
+            canonical_vote_rlp,
+            &validation,
+            flags,
+            context,
+            own_vote,
             || {
                 Ok(submitters
                     .iter()
@@ -4338,18 +4468,31 @@ impl PbftService {
         validation: &PbftCanonicalVoteValidation,
         flags: PbftVoteEventFactFlags,
         context: PbftVoteProgressContext,
+        own_vote: Option<PbftVoteStorageRecord>,
         resolve_submitters: impl FnOnce() -> Result<Vec<SlashingSubmitterFact>>,
     ) -> Result<PbftVoteAdmissionWithSlashingResult> {
-        let transaction = self
-            .verified_votes()
-            .lock()?
-            .admit_validated_vote_transactional(
-                canonical_vote_rlp,
-                validation,
-                flags,
-                context,
-                |write| persist_pbft_vote_progress(self.verified_votes().storage(), write),
-            )?;
+        let transaction = if let Some(own_vote) = own_vote {
+            self.verified_votes()
+                .lock()?
+                .admit_validated_local_vote_transactional(
+                    canonical_vote_rlp,
+                    validation,
+                    flags,
+                    context,
+                    own_vote,
+                    |write| persist_local_vote_admission(self.verified_votes().storage(), write),
+                )?
+        } else {
+            self.verified_votes()
+                .lock()?
+                .admit_validated_vote_transactional(
+                    canonical_vote_rlp,
+                    validation,
+                    flags,
+                    context,
+                    |write| persist_pbft_vote_progress(self.verified_votes().storage(), write),
+                )?
+        };
 
         let slashing_transaction_effect = if transaction.transition_published {
             transaction
@@ -5133,6 +5276,58 @@ mod tests {
         assert!(result.weighted_vote_rlps.is_empty());
         assert!(result.slashing_transaction_effect.is_none());
         assert_eq!(service.verified_votes_size().unwrap(), 0);
+
+        drop(final_chain);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn local_generated_vote_task_publishes_admission_and_own_vote_together() {
+        let (path, storage) = temp_storage("pbft_local_generated_vote_atomic");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let final_chain = final_chain_with_vote_validator(
+            storage.clone(),
+            voter_from_secret(&NODE_SECRET),
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+        let vote = generated_vote_at_period(H256::repeat_byte(0x80), 1);
+
+        let result = service
+            .admit_and_persist_local_generated_vote(
+                &final_chain,
+                &vote.vote_rlp,
+                vote_validation_request(false, 0),
+                PbftVoteEventFactFlags {
+                    vote_already_known: false,
+                    carries_proposed_block: true,
+                    valid_stale_reward_vote: false,
+                },
+                PbftVoteProgressContext {
+                    current_period: 1,
+                    current_round: 2,
+                    max_future_period_delta: u64::MAX,
+                    two_t_plus_one_threshold: None,
+                    require_proposed_block_sidecar: false,
+                    slashing_enabled: true,
+                },
+                &[],
+            )
+            .unwrap();
+
+        assert!(result.validation.accepted);
+        assert!(result.transaction.transition_published);
+        assert_eq!(result.transaction.persistence_applied_writes, 1);
+        assert_eq!(service.verified_votes_size().unwrap(), 1);
+        let own_votes = storage.pbft().own_verified_votes_rlp().unwrap();
+        assert_eq!(own_votes.len(), 1);
+        assert_eq!(
+            own_votes[0],
+            build_weighted_pbft_vote_payload(&vote.vote_rlp, result.validation.calculated_weight,)
+                .unwrap()
+                .vote_rlp
+        );
 
         drop(final_chain);
         drop(service);
@@ -6296,6 +6491,7 @@ mod tests {
                 &validation,
                 vote_event_flags(),
                 vote_progress_context(80),
+                None,
                 || {
                     resolver_called.set(true);
                     anyhow::bail!("FINAL_CHAIN_ACCOUNT_SNAPSHOT_UNAVAILABLE")
@@ -7278,6 +7474,42 @@ mod tests {
     }
 
     #[test]
+    fn proposed_block_effect_derives_identity_and_preserves_duplicate_semantics() {
+        let (path, storage) = temp_storage("rustaxa_pbft_proposed_effect");
+        let service = PbftService::restore(storage.clone(), config(10)).unwrap();
+        let (block_rlp, link) = pbft_block_rlp(2, 7);
+
+        assert!(
+            service
+                .publish_proposed_block_effect(block_rlp.clone())
+                .unwrap()
+        );
+        let published = service
+            .proposed_block(link.period, link.block_hash)
+            .expect("derived proposal identity is indexed");
+        assert_eq!(published.pivot_hash, link.pivot_dag_block_hash);
+        assert_eq!(published.block_rlp, block_rlp);
+        assert!(
+            !service
+                .publish_proposed_block_effect(published.block_rlp.clone())
+                .unwrap()
+        );
+        assert!(service.publish_proposed_block_effect(vec![0x01]).is_err());
+        assert_eq!(service.proposed_blocks().snapshot_entries().len(), 1);
+
+        let restored = PbftService::restore(storage, config(10)).unwrap();
+        assert!(
+            restored
+                .proposed_block(link.period, link.block_hash)
+                .is_some()
+        );
+
+        drop(restored);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn proposed_block_admission_returns_typed_missing_result() {
         let (path, storage) = temp_storage("rustaxa_pbft_proposed_admission_missing");
         let service = PbftService::restore(storage.clone(), config(10)).unwrap();
@@ -7559,6 +7791,18 @@ mod tests {
                 last_block_hash_or_chain: entry.block_hash,
                 size: 1,
                 empty: false,
+            }
+        );
+        let manager = service.manager_snapshot();
+        assert_eq!(
+            service.application_status_snapshot().unwrap(),
+            PbftApplicationStatusSnapshot {
+                period: manager.period,
+                round: manager.round,
+                step: manager.step,
+                finalized_chain_size: 0,
+                syncing_period: 1,
+                sync_queue_size: 1,
             }
         );
         let advanced_hash = H256::repeat_byte(0xaa);

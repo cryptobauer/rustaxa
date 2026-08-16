@@ -41,9 +41,9 @@ use crate::pbft_vote_payload::{
 use crate::pbft_vote_progress::PbftVoteProgressContext;
 use crate::pbft_vote_progress::PbftVoteProgressIntent;
 use crate::pbft_vote_storage::{
-    PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,
-    PbftVoteProgressPersistenceWrite, PbftVoteStorageRecord, clear_own_verified_votes,
-    persist_pbft_vote_progress, save_own_verified_vote,
+    PbftLocalVotePersistenceWrite, PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult,
+    PbftVotePersistenceStatus, PbftVoteProgressPersistenceWrite, PbftVoteStorageRecord,
+    clear_own_verified_votes, persist_pbft_vote_progress, save_own_verified_vote,
 };
 use crate::pbft_vote_validation::{
     PbftCanonicalVoteInspection, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,
@@ -2382,6 +2382,71 @@ impl PbftVoteAdmissionRuntime {
     where
         F: FnOnce(PbftVoteProgressPersistenceWrite) -> Result<PbftVotePersistenceResult>,
     {
+        self.admit_validated_vote_transactional_inner(
+            canonical_vote_rlp,
+            validation,
+            flags,
+            context,
+            None,
+            |progress, own_vote| {
+                debug_assert!(own_vote.is_none());
+                persist(progress)
+            },
+        )
+    }
+
+    /// Admits a locally generated vote and durably publishes its own-vote row.
+    ///
+    /// The weighted own-vote record is staged only when admission inserts the
+    /// vote. It shares one persistence callback and commit with any progress
+    /// rows. Rejection restores replay, verified-vote, and retained-payload
+    /// state before returning a non-published transaction result.
+    pub fn admit_validated_local_vote_transactional<F>(
+        &mut self,
+        canonical_vote_rlp: &[u8],
+        validation: &PbftCanonicalVoteValidation,
+        flags: PbftVoteEventFactFlags,
+        context: PbftVoteProgressContext,
+        own_vote: PbftVoteStorageRecord,
+        persist: F,
+    ) -> Result<PbftVoteAdmissionTransactionResult>
+    where
+        F: FnOnce(PbftLocalVotePersistenceWrite) -> Result<PbftVotePersistenceResult>,
+    {
+        self.admit_validated_vote_transactional_inner(
+            canonical_vote_rlp,
+            validation,
+            flags,
+            context,
+            Some(own_vote),
+            |progress, own_vote| {
+                let Some(own_vote) = own_vote else {
+                    return Ok(PbftVotePersistenceResult {
+                        status: PbftVotePersistenceStatus::Rejected,
+                        applied_writes: 0,
+                        error_code: "PBFT_LOCAL_VOTE_ADMISSION_OWN_VOTE_NOT_INSERTED".to_owned(),
+                    });
+                };
+                persist(PbftLocalVotePersistenceWrite { own_vote, progress })
+            },
+        )
+    }
+
+    fn admit_validated_vote_transactional_inner<F>(
+        &mut self,
+        canonical_vote_rlp: &[u8],
+        validation: &PbftCanonicalVoteValidation,
+        flags: PbftVoteEventFactFlags,
+        context: PbftVoteProgressContext,
+        own_vote: Option<PbftVoteStorageRecord>,
+        persist: F,
+    ) -> Result<PbftVoteAdmissionTransactionResult>
+    where
+        F: FnOnce(
+            PbftVoteProgressPersistenceWrite,
+            Option<PbftVoteStorageRecord>,
+        ) -> Result<PbftVotePersistenceResult>,
+    {
         let checkpoint = self.admission_checkpoint(validation);
         let outcome =
             match self.admit_validated_vote(canonical_vote_rlp, validation, flags, context) {
@@ -2406,7 +2471,9 @@ impl PbftVoteAdmissionRuntime {
                 });
             }
         };
-        let Some(write) = write else {
+        let own_vote =
+            own_vote.filter(|_| outcome.add_outcome.as_ref().is_some_and(|add| add.inserted));
+        if write.is_none() && own_vote.is_none() {
             return Ok(PbftVoteAdmissionTransactionResult {
                 outcome,
                 persistence_required: false,
@@ -2415,8 +2482,8 @@ impl PbftVoteAdmissionRuntime {
                 transition_published: true,
                 persistence_error_code: String::new(),
             });
-        };
-        match persist(write) {
+        }
+        match persist(write.unwrap_or_default(), own_vote) {
             Ok(result) if result.status == PbftVotePersistenceStatus::Applied => {
                 Ok(PbftVoteAdmissionTransactionResult {
                     outcome,
@@ -2967,6 +3034,91 @@ mod tests {
         assert_eq!(transaction.persistence_applied_writes, 0);
         assert!(runtime.replay_contains(validation.vote_hash));
         assert!(runtime.weighted_payload(validation.vote_hash).is_some());
+    }
+
+    #[test]
+    fn local_vote_transaction_always_persists_own_row_before_publication() {
+        let rlp = vote_rlp([0x34; 32], 3);
+        let validation = validation(&rlp);
+        let own_vote = PbftVoteStorageRecord {
+            hash: validation.vote_hash,
+            vote_rlp: build_weighted_pbft_vote_payload(&rlp, validation.calculated_weight)
+                .unwrap()
+                .vote_rlp,
+        };
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+
+        let transaction = runtime
+            .admit_validated_local_vote_transactional(
+                &rlp,
+                &validation,
+                flags(),
+                context(Some(50)),
+                own_vote.clone(),
+                |write| {
+                    assert_eq!(write.own_vote, own_vote);
+                    assert_eq!(write.progress, PbftVoteProgressPersistenceWrite::default());
+                    Ok(PbftVotePersistenceResult {
+                        status: PbftVotePersistenceStatus::Applied,
+                        applied_writes: 1,
+                        error_code: String::new(),
+                    })
+                },
+            )
+            .unwrap();
+
+        assert!(transaction.persistence_required);
+        assert_eq!(
+            transaction.persistence_status,
+            PbftVoteAdmissionPersistenceStatus::Applied
+        );
+        assert_eq!(transaction.persistence_applied_writes, 1);
+        assert!(transaction.transition_published);
+        assert!(runtime.replay_contains(validation.vote_hash));
+        assert!(runtime.weighted_payload(validation.vote_hash).is_some());
+    }
+
+    #[test]
+    fn local_vote_persistence_failure_restores_admission_and_retained_payload() {
+        let rlp = vote_rlp([0x35; 32], 3);
+        let validation = validation(&rlp);
+        let own_vote = PbftVoteStorageRecord {
+            hash: validation.vote_hash,
+            vote_rlp: build_weighted_pbft_vote_payload(&rlp, validation.calculated_weight)
+                .unwrap()
+                .vote_rlp,
+        };
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+
+        let transaction = runtime
+            .admit_validated_local_vote_transactional(
+                &rlp,
+                &validation,
+                flags(),
+                context(Some(50)),
+                own_vote,
+                |_| {
+                    Ok(PbftVotePersistenceResult {
+                        status: PbftVotePersistenceStatus::Rejected,
+                        applied_writes: 0,
+                        error_code: "TEST_LOCAL_VOTE_BATCH_REJECTED".to_owned(),
+                    })
+                },
+            )
+            .unwrap();
+
+        assert!(!transaction.transition_published);
+        assert_eq!(
+            transaction.persistence_status,
+            PbftVoteAdmissionPersistenceStatus::Rejected
+        );
+        assert_eq!(
+            transaction.persistence_error_code,
+            "TEST_LOCAL_VOTE_BATCH_REJECTED"
+        );
+        assert!(!runtime.replay_contains(validation.vote_hash));
+        assert!(runtime.weighted_payload(validation.vote_hash).is_none());
+        assert_eq!(runtime.verified_votes().size(), 0);
     }
 
     #[test]

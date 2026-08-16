@@ -4,7 +4,10 @@
 #include "common/init.hpp"
 #include "final_chain/final_chain.hpp"
 #include "logger/logger.hpp"
+#include "network/network.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#endif
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_application.hpp"
 #endif
@@ -91,7 +94,7 @@ TEST_F(PillarChainTest, pillar_blocks_create) {
   });
 
   for (auto& node : nodes) {
-    node->getPbftManager()->stop();
+    stopConsensus(node);
 
     // Check if right amount of pillar blocks were created
     const auto latest_pillar_block = node->getDB()->getLatestPillarBlock();
@@ -244,7 +247,7 @@ TEST_F(PillarChainTest, pillar_chain_syncing) {
     WAIT_EXPECT_EQ(ctx, node1->getFinalChain()->lastBlockNumber(),
                    pillar_blocks_count * node_cfgs[0].genesis.state.hardforks.ficus_hf.pillar_blocks_interval)
   });
-  node1->getPbftManager()->stop();
+  stopConsensus(node1);
 
   // Start second node
   auto node2 = launch_nodes({node_cfgs[1]})[0];
@@ -252,7 +255,7 @@ TEST_F(PillarChainTest, pillar_chain_syncing) {
   ASSERT_HAPPENS({20s, 200ms}, [&](auto& ctx) {
     WAIT_EXPECT_EQ(ctx, node2->getFinalChain()->lastBlockNumber(), node1->getFinalChain()->lastBlockNumber())
   });
-  node2->getPbftManager()->stop();
+  stopConsensus(node2);
 
   // Node 2 should not have yet finalized pillar block with period pillar_blocks_count * pillar_blocks_interval
   const auto node2_latest_finalized_pillar_block = node2->getDB()->getLatestPillarBlock();

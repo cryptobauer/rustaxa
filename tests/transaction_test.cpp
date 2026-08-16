@@ -11,7 +11,11 @@
 #include "config/genesis.hpp"
 #include "final_chain/final_chain.hpp"
 #include "logger/logger.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#else
+#include "consensus/finalization_transaction_order.hpp"
+#endif
 #include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/samples.hpp"
 #include "transaction/transaction_manager.hpp"
@@ -571,7 +575,11 @@ TEST_F(TransactionTest, finalization_ordering) {
     auto trxs = generateRandomOrderTransactions(max_queue_size);
 
     EXPECT_EQ(trxs.size(), max_queue_size);
+#ifdef RUSTAXA_ENABLE
+    consensus::reorderTransactionsForExecution(trxs);
+#else
     PbftManager::reorderTransactions(trxs);
+#endif
     EXPECT_EQ(trxs.size(), max_queue_size);
 
     std::unordered_map<addr_t, val_t> account_nonces;

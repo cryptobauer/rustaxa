@@ -10,15 +10,11 @@
 #include "network/threadpool/packets_blocking_mask.hpp"
 #include "packets_queue.hpp"
 
-namespace taraxa {
-class PbftManager;
-}
-
 namespace taraxa::network::threadpool {
 
 class PriorityQueue {
  public:
-  PriorityQueue(size_t tp_workers_count, const std::shared_ptr<PbftManager>& pbft_mgr = nullptr,
+  PriorityQueue(size_t tp_workers_count, std::function<bool()> sync_queue_empty,
                 const addr_t& node_addr = {});
   ~PriorityQueue() = default;
 

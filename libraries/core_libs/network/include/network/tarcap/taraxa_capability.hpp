@@ -24,8 +24,8 @@
 namespace taraxa {
 #ifndef RUSTAXA_ENABLE
 class DbStorage;
-#endif
 class PbftManager;
+#endif
 class PbftChain;
 class VoteManager;
 class DagManager;
@@ -69,11 +69,13 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
       const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats,
 #ifdef RUSTAXA_ENABLE
       const network::ConsensusNetworkApiShared &consensus_network_api,
+      const network::ConsensusLiveStatusProvider &consensus_status,
 #endif
 #ifndef RUSTAXA_ENABLE
       const std::shared_ptr<DbStorage> &db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
+      const std::shared_ptr<PbftManager> &pbft_mgr,
 #endif
-      const std::shared_ptr<PbftManager> &pbft_mgr, const net::ConsensusQueryClient &pbft_chain,
+      const net::ConsensusQueryClient &pbft_chain,
 #ifndef RUSTAXA_ENABLE
       const std::shared_ptr<VoteManager> &vote_mgr,
 #endif
@@ -98,8 +100,11 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
                    std::shared_ptr<PbftSyncingState> syncing_state,
 #ifndef RUSTAXA_ENABLE
                    std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
+                   std::shared_ptr<PbftManager> pbft_mgr,
+#else
+                   network::ConsensusLiveStatusProvider consensus_status,
 #endif
-                   std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
+                   net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
                    std::shared_ptr<VoteManager> vote_mgr,
 #endif

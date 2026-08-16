@@ -28,6 +28,26 @@ class FinalChain;
 
 namespace taraxa::network {
 
+/** Read-only live consensus facts supplied by App without exposing its native root or private executor. */
+struct ConsensusLiveStatus {
+  uint64_t period = 0;
+  uint64_t round = 0;
+  uint64_t step = 0;
+  uint64_t syncing_period = 0;
+  size_t sync_queue_size = 0;
+  bool sync_queue_empty = true;
+};
+
+using ConsensusLiveStatusProvider = std::function<ConsensusLiveStatus()>;
+
+/** Potentially expensive DPoS vote diagnostics, sampled only by periodic node statistics. */
+struct ConsensusVoteStatus {
+  std::optional<uint64_t> total_dpos_votes;
+  std::optional<uint64_t> node_dpos_votes;
+};
+
+using ConsensusVoteStatusProvider = std::function<ConsensusVoteStatus()>;
+
 /** Plain network-owned facts for one max-chain peer candidate. */
 struct ConsensusPeerCandidate {
   std::array<uint8_t, 64> peer_id{};
@@ -223,6 +243,16 @@ class ConsensusNetworkApi final {
    * peer-level error handling.
    */
   PbftBlocksBundleOutcome admitPbftBlocksBundle(const std::vector<uint8_t>& packet_rlp, uint64_t source_payload_id);
+
+  /**
+   * Publishes one canonical signed proposed block selected by a native network effect.
+   *
+   * Rust decodes and verifies the block identity, pivot, and period before the
+   * application root performs its storage-first publication. The return value
+   * is false only when the same live proposal was already present; malformed
+   * bytes and persistence failures propagate without C++ block materialization.
+   */
+  bool publishProposedBlockEffect(const std::vector<uint8_t>& canonical_signed_block_rlp);
 
   /**
    * Admits one original PBFT-sync packet through the native application root.

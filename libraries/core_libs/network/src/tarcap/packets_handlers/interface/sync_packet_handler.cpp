@@ -18,21 +18,23 @@ constexpr uint8_t kNetworkStatusPlanStatusSyncNotNeeded = 3;
 ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                        std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                        std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-                                       net::ConsensusQueryClient pbft_chain, std::shared_ptr<PbftManager> pbft_mgr,
-                                       std::shared_ptr<DagManager> dag_mgr,
+                                       net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
+                                       std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
                                        std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
                                                                        // legacy sync handler.
 #else
+                                       network::ConsensusLiveStatusProvider consensus_status,
+                                       std::shared_ptr<DagManager> dag_mgr,
                                        network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                        const addr_t& node_addr, const std::string& logs_prefix)
     : ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
-                              std::move(pbft_chain), std::move(pbft_mgr), std::move(dag_mgr),
+                              std::move(pbft_chain),
 #ifndef RUSTAXA_ENABLE
-                              std::move(db),
+                              std::move(pbft_mgr), std::move(dag_mgr), std::move(db),
 #else
-                              std::move(consensus_network_api),
+                              std::move(consensus_status), std::move(dag_mgr), std::move(consensus_network_api),
 #endif
                               node_addr, logs_prefix),
       kGenesisHash(kConf.genesis.genesisHash()) {
@@ -45,9 +47,12 @@ void ISyncPacketHandler::startSyncingPbft() {
   }
 
 #ifdef RUSTAXA_ENABLE
+  // The selected request period and the syncing-state transition must use the
+  // same coherent application-root snapshot.
+  const auto consensus_status = consensus_status_();
   rustaxa::NetworkPbftSyncStartFacts facts{};
   facts.local_pbft_syncing = false;
-  facts.local_pbft_synced_period = pbft_mgr_->pbftSyncingPeriod();
+  facts.local_pbft_synced_period = consensus_status.syncing_period;
   facts.local_pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
   for (const auto& peer_entry : peers_state_->getAllPeers()) {
     rustaxa::NetworkPbftSyncPeerCandidate candidate{};
@@ -61,9 +66,6 @@ void ISyncPacketHandler::startSyncingPbft() {
 
   const auto sync_start_plan = rust_consensus_network_api_->api().consensus_network_plan_pbft_sync_start(facts);
   if (!sync_start_plan.start_sync) {
-    if (sync_start_plan.enable_snapshot_creation) {
-      pbft_mgr_->setPbftSyncSnapshotCreationEnabled(true);
-    }
     if (sync_start_plan.status == kNetworkStatusPlanStatusNoEligiblePeer) {
       LOG(this->log_nf_) << "Restarting syncing PBFT not possible since no connected peers";
     } else if (sync_start_plan.status == kNetworkStatusPlanStatusSyncNotNeeded) {
@@ -85,7 +87,7 @@ void ISyncPacketHandler::startSyncingPbft() {
     return;
   }
 
-  const auto synced_period = pbft_mgr_->pbftSyncingPeriod();
+  const auto synced_period = consensus_status.syncing_period;
   if (!pbft_syncing_state_->setPbftSyncing(true, synced_period, selected_peer)) {
     LOG(this->log_dg_) << "startSyncingPbft called but syncing_ already true";
     return;
@@ -107,10 +109,6 @@ void ISyncPacketHandler::startSyncingPbft() {
     pbft_syncing_state_->setPbftSyncing(false);
     return;
   }
-  if (pbft_syncing_state_->isDeepPbftSyncing()) {
-    pbft_mgr_->setPbftSyncSnapshotCreationEnabled(false);
-  }
-
   return;
 #else
 
@@ -196,7 +194,12 @@ bool ISyncPacketHandler::sendStatus(const dev::p2p::NodeID& node_id, bool initia
 
   auto dag_max_level = dag_mgr_->getMaxLevel();
   auto pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
-  const auto pbft_round = pbft_mgr_->getPbftRound();
+  const auto pbft_round =
+#ifdef RUSTAXA_ENABLE
+      consensus_status_().round;
+#else
+      pbft_mgr_->getPbftRound();
+#endif
 
 #ifdef RUSTAXA_ENABLE
   rustaxa::NetworkStatusEgressFacts facts{};

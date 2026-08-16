@@ -552,9 +552,19 @@ fn startup_replay_period_into_ffi(
     }
 }
 
-/// Returns the current Rust-owned PBFT manager runtime snapshot.
-pub fn pbft_manager_runtime_snapshot(runtime: &BridgeApp) -> FfiPbftManagerRuntimeSnapshot {
-    runtime.0.manager_snapshot().into()
+/// Returns one lock-coherent runtime and application-status snapshot.
+pub fn pbft_manager_runtime_snapshot(
+    runtime: &BridgeApp,
+) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
+    let (manager, status) = runtime.0.manager_and_application_status_snapshot()?;
+    let mut snapshot: FfiPbftManagerRuntimeSnapshot = manager.into();
+    snapshot.period = status.period;
+    snapshot.round = status.round;
+    snapshot.step = status.step;
+    snapshot.finalized_chain_size = status.finalized_chain_size;
+    snapshot.syncing_period = status.syncing_period;
+    snapshot.sync_queue_size = status.sync_queue_size;
+    Ok(snapshot)
 }
 
 /// Returns the Rust-owned PBFT sync period-data queue snapshot.
@@ -1958,6 +1968,9 @@ impl From<PbftManagerRuntimeSnapshot> for FfiPbftManagerRuntimeSnapshot {
             period: value.period,
             round: value.round,
             step: value.step,
+            finalized_chain_size: 0,
+            syncing_period: 0,
+            sync_queue_size: 0,
             current_round_lambda_ms: value.current_round_lambda_ms,
             next_step_time_ms: value.next_step_time_ms,
             rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,

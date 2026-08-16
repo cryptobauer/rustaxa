@@ -3,15 +3,17 @@
 #include <memory>
 #include <optional>
 
+#include "network/consensus_query.hpp"
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 #include "network/tarcap/packets/latest/votes_bundle_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/common/exceptions.hpp"
 #include "network/tarcap/tarcap_version.hpp"
 #include "packet_handler.hpp"
-#include "pbft/pbft_manager.hpp"
+#include "pbft/pbft_block.hpp"
 #include "vote/pbft_vote.hpp"
 #include "vote/votes_bundle_rlp.hpp"
 #ifndef RUSTAXA_ENABLE
+#include "pbft/pbft_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
 #endif
 #ifdef RUSTAXA_ENABLE
@@ -51,11 +53,12 @@ class ExtVotesPacketHandler : public PacketHandler {
   };
 
   ExtVotesPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
-                        std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftManager> pbft_mgr,
-                        net::ConsensusQueryClient pbft_chain,
+                        std::shared_ptr<TimePeriodPacketsStats> packets_stats,
 #ifndef RUSTAXA_ENABLE
+                        std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
                         std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<SlashingManager> slashing_manager,
 #else
+                        network::ConsensusLiveStatusProvider consensus_status, net::ConsensusQueryClient pbft_chain,
                         std::shared_ptr<TransactionManager> trx_mgr,
                         network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
 #endif
@@ -135,14 +138,15 @@ class ExtVotesPacketHandler : public PacketHandler {
   mutable std::chrono::system_clock::time_point last_votes_sync_request_time_;
   mutable std::chrono::system_clock::time_point last_pbft_block_sync_request_time_;
 
-  std::shared_ptr<PbftManager> pbft_mgr_;
   net::ConsensusQueryClient pbft_chain_;
 #ifndef RUSTAXA_ENABLE
+  std::shared_ptr<PbftManager> pbft_mgr_;
   std::shared_ptr<VoteManager> vote_mgr_;
   std::shared_ptr<SlashingManager> slashing_manager_;
 #endif
 
 #ifdef RUSTAXA_ENABLE
+  network::ConsensusLiveStatusProvider consensus_status_;
   network::ConsensusNetworkApiShared rust_consensus_network_api_;
   std::shared_ptr<TransactionManager> trx_mgr_;
   const TarcapVersion transport_lane_;

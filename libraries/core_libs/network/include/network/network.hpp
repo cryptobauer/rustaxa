@@ -41,7 +41,13 @@ class Network {
 #ifndef RUSTAXA_ENABLE
           std::shared_ptr<DbStorage> db,
 #endif
-          std::shared_ptr<PbftManager> pbft_mgr, net::ConsensusQueryClient pbft_chain,
+#ifdef RUSTAXA_ENABLE
+          network::ConsensusLiveStatusProvider consensus_status,
+          network::ConsensusVoteStatusProvider consensus_vote_status,
+#else
+          std::shared_ptr<PbftManager> pbft_mgr,
+#endif
+          net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
           std::shared_ptr<VoteManager> vote_mgr,
 #endif
@@ -136,8 +142,15 @@ class Network {
   // Syncing state
   std::shared_ptr<network::tarcap::PbftSyncingState> pbft_syncing_state_;
 
-  // Pbft manager
+#ifdef RUSTAXA_ENABLE
+  // Narrow read-only live status callback; App retains the sole root/executor ownership.
+  network::ConsensusLiveStatusProvider consensus_status_;
+  // Expensive vote diagnostics sampled only by NodeStats.
+  network::ConsensusVoteStatusProvider consensus_vote_status_;
+#else
+  // Untouched pure-C++ PBFT manager.
   std::shared_ptr<PbftManager> pbft_mgr_;
+#endif
 
   util::ThreadPool tp_;
   std::shared_ptr<dev::p2p::Host> host_;

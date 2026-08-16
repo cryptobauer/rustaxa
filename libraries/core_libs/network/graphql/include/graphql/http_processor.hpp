@@ -24,7 +24,9 @@ class GraphQlHttpProcessor final : public HttpProcessor {
   explicit GraphQlHttpProcessor(GraphQlOperations operations);
   GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                        std::shared_ptr<::taraxa::DagManager> dag_manager,
+#ifndef RUSTAXA_ENABLE
                        std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+#endif
                        std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                        std::shared_ptr<::taraxa::DbStorage> db,
 #ifdef RUSTAXA_ENABLE

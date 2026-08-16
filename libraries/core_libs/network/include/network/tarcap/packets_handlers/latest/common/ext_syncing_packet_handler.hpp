@@ -4,10 +4,11 @@
 #include "network/consensus_query.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "packet_handler.hpp"
-#include "pbft/pbft_manager.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "network/consensus_network_api.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#else
+#include "pbft/pbft_manager.hpp"
 #endif
 
 namespace taraxa {
@@ -28,10 +29,11 @@ class ExtSyncingPacketHandler : public PacketHandler {
   ExtSyncingPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                           std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                           std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
-                          std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE
+                          std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
                           std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler.
 #else
+                          network::ConsensusLiveStatusProvider consensus_status, std::shared_ptr<DagManager> dag_mgr,
                           network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                           const addr_t &node_addr, const std::string &log_channel_name);
@@ -52,7 +54,11 @@ class ExtSyncingPacketHandler : public PacketHandler {
   std::shared_ptr<PbftSyncingState> pbft_syncing_state_{nullptr};
 
   net::ConsensusQueryClient pbft_chain_{nullptr};
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<PbftManager> pbft_mgr_{nullptr};
+#else
+  network::ConsensusLiveStatusProvider consensus_status_;
+#endif
   std::shared_ptr<DagManager> dag_mgr_{nullptr};
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<DbStorage> db_{nullptr};  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler storage.

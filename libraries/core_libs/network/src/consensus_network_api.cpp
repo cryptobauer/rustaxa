@@ -367,6 +367,15 @@ PbftBlocksBundleOutcome ConsensusNetworkApi::admitPbftBlocksBundle(const std::ve
   return PbftBlocksBundleOutcome{decision.status, static_cast<std::string>(decision.error_code)};
 }
 
+bool ConsensusNetworkApi::publishProposedBlockEffect(const std::vector<uint8_t>& canonical_signed_block_rlp) {
+  rust::Vec<uint8_t> bridge_block;
+  bridge_block.reserve(canonical_signed_block_rlp.size());
+  for (const auto byte : canonical_signed_block_rlp) {
+    bridge_block.push_back(byte);
+  }
+  return impl_->consensus_application->service().pbft_service_publish_proposed_block_effect(std::move(bridge_block));
+}
+
 std::optional<std::array<uint8_t, 64>> ConsensusNetworkApi::selectMaxChainPeer(
     uint64_t local_pbft_syncing_period, const std::vector<ConsensusPeerCandidate>& candidates) const {
   rustaxa::NetworkPeerSelectionFacts facts{};

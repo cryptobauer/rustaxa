@@ -1,11 +1,10 @@
 #include "network/threadpool/packets_blocking_mask.hpp"
 
 #include "dag/dag_block.hpp"
-#include "pbft/pbft_manager.hpp"
-
 namespace taraxa::network::threadpool {
 
-PacketsBlockingMask::PacketsBlockingMask(const std::shared_ptr<PbftManager>& pbft_mgr) : pbft_mgr_(pbft_mgr) {}
+PacketsBlockingMask::PacketsBlockingMask(std::function<bool()> sync_queue_empty)
+    : sync_queue_empty_(std::move(sync_queue_empty)) {}
 
 void PacketsBlockingMask::markPacketAsHardBlocked(const PacketData& blocking_packet,
                                                   SubprotocolPacketType packet_type_to_block) {
@@ -218,7 +217,7 @@ bool PacketsBlockingMask::isPacketBlocked(const PacketData& packet_data) const {
     // kPbftBlocksBundlePacket contains latest proposed blocks that are sent after the last sync packet. It should be
     // processed only is sync queue is empty -> all data from sync packets have been processed, otherwise proposed
     // blocks fail validation
-    if (!pbft_mgr_->periodDataQueueEmpty()) {
+    if (!sync_queue_empty_()) {
       return true;
     }
   }

@@ -7,7 +7,9 @@
 #include "DagBlockObject.h"
 #include "final_chain/final_chain.hpp"
 #include "graphql/account.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#endif
 #include "transaction/transaction_manager.hpp"
 
 #ifdef RUSTAXA_ENABLE
@@ -32,6 +34,7 @@ struct DagBlockPeriodReader {
 
 class DagBlock {
  public:
+#ifndef RUSTAXA_ENABLE
   explicit DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
                     std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                     std::shared_ptr<::taraxa::PbftManager> pbft_manager,
@@ -45,6 +48,7 @@ class DagBlock {
                     std::shared_ptr<::taraxa::DagBlock> dag_block, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                     std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
+#endif
   explicit DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
                     DagBlockPeriodReader period_reader, std::shared_ptr<::taraxa::DagBlock> dag_block,
                     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;

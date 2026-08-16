@@ -9,7 +9,11 @@
 #include "common/types.hpp"
 #include "dag/dag_manager.hpp"
 #include "network/network.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
+#else
 #include "pbft/pbft_manager.hpp"
+#endif
 #include "transaction/transaction_manager.hpp"
 #ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
@@ -35,9 +39,17 @@ LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBa
 #endif
 ) {
   LiveStatusSnapshot snapshot;
+#ifdef RUSTAXA_ENABLE
+  const auto consensus_application = node->getConsensusApplication();
+  const auto runtime_status = consensus_application->runtimeStatus();
+  const auto chain_size = runtime_status.finalized_chain_size;
+  const auto dpos_total_votes = consensus_application->currentDposTotalVotesCount();
+  const auto dpos_node_votes = consensus_application->currentNodeVotesCount();
+#else
   const auto chain_size = node->getPbftProgress().finalized_period;
   const auto dpos_total_votes = node->getPbftManager()->getCurrentDposTotalVotesCount();
   const auto dpos_node_votes = node->getPbftManager()->getCurrentNodeVotesCount();
+#endif
 #ifdef RUSTAXA_ENABLE
   const auto query = consensus_query_api ? consensus_query_api : createConsensusQueryApi(node->getDB());
   const auto threshold =
@@ -52,12 +64,21 @@ LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBa
   snapshot.peer_count = node->getNetwork()->getPeerCount();
   snapshot.node_count = node->getNetwork()->getNodeCount();
   snapshot.pbft_chain_size = chain_size;
+#ifdef RUSTAXA_ENABLE
+  snapshot.pbft_sync_period = runtime_status.syncing_period;
+  snapshot.pbft_round = runtime_status.round;
+#else
   snapshot.pbft_sync_period = node->getPbftManager()->pbftSyncingPeriod();
   snapshot.pbft_round = node->getPbftManager()->getPbftRound();
+#endif
   snapshot.dpos_total_votes = dpos_total_votes.value_or(0);
   snapshot.dpos_node_votes = dpos_node_votes.value_or(0);
   snapshot.dpos_quorum = dpos_quorum.value_or(0);
+#ifdef RUSTAXA_ENABLE
+  snapshot.pbft_sync_queue_size = runtime_status.sync_queue_size;
+#else
   snapshot.pbft_sync_queue_size = node->getPbftManager()->periodDataQueueSize();
+#endif
   snapshot.transaction_pool_size = node->getTransactionManager()->getTransactionPoolSize();
   snapshot.nonfinalized_transaction_size = node->getTransactionManager()->getNonfinalizedTrxSize();
   if (const auto peer = node->getNetwork()->getMaxChainPeer()) {

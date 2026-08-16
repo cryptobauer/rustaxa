@@ -12,8 +12,8 @@
 #include "network/consensus_query.hpp"
 #include "network/live_status.hpp"
 #include "network/network.hpp"
-#include "pbft/pbft_manager.hpp"
 #ifndef RUSTAXA_ENABLE
+#include "pbft/pbft_manager.hpp"
 #include "transaction/gas_pricer.hpp"
 #endif
 #include "transaction/transaction_manager.hpp"
@@ -108,7 +108,10 @@ class Query {
  public:
   explicit Query(QueryReaders readers, uint64_t chain_id = 0) noexcept;
   explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-                 std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+                 std::shared_ptr<::taraxa::DagManager> dag_manager,
+#ifndef RUSTAXA_ENABLE
+                 std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+#endif
                  std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                  std::shared_ptr<::taraxa::DbStorage> db,
 #ifdef RUSTAXA_ENABLE

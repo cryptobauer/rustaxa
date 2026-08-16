@@ -11,6 +11,7 @@
 namespace graphql::taraxa {
 
 namespace {
+#ifndef RUSTAXA_ENABLE
 DagBlockTransactionReader makeDagBlockTransactionReader(
     const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
   DagBlockTransactionReader reader;
@@ -34,6 +35,7 @@ DagBlockPeriodReader makeDagBlockPeriodReader(const std::shared_ptr<::taraxa::Pb
   };
   return reader;
 }
+#endif
 }  // namespace
 
 #ifdef RUSTAXA_ENABLE
@@ -76,6 +78,7 @@ std::shared_ptr<::taraxa::Transaction> materializeTransactionView(const rustaxa:
 }  // namespace
 #endif
 
+#ifndef RUSTAXA_ENABLE
 DagBlock::DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
                    std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                    std::shared_ptr<::taraxa::PbftManager> pbft_manager,
@@ -104,6 +107,7 @@ DagBlock::DagBlock(AccountStateReader account_reader, DagBlockTransactionReader 
                std::move(dag_block), std::move(get_block_by_num)) {
   (void)transaction_manager;
 }
+#endif
 
 DagBlock::DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
                    DagBlockPeriodReader period_reader, std::shared_ptr<::taraxa::DagBlock> dag_block,

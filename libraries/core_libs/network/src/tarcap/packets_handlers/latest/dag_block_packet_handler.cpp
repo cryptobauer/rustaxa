@@ -15,21 +15,24 @@ DagBlockPacketHandler::DagBlockPacketHandler(const FullNodeConfig &conf, std::sh
                                              std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                              std::shared_ptr<PbftSyncingState> pbft_syncing_state,
                                              net::ConsensusQueryClient pbft_chain,
+#ifndef RUSTAXA_ENABLE
                                              std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
                                              std::shared_ptr<TransactionManager> trx_mgr,
-#ifndef RUSTAXA_ENABLE
                                              std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
                                                                              // legacy DAG handler.
 #else
+                                             network::ConsensusLiveStatusProvider consensus_status,
+                                             std::shared_ptr<DagManager> dag_mgr,
+                                             std::shared_ptr<TransactionManager> trx_mgr,
                                              network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                              const addr_t &node_addr, const std::string &logs_prefix)
     : IDagBlockPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
-                             std::move(pbft_chain), std::move(pbft_mgr), std::move(dag_mgr),
+                             std::move(pbft_chain),
 #ifndef RUSTAXA_ENABLE
-                             std::move(db),
+                             std::move(pbft_mgr), std::move(dag_mgr), std::move(db),
 #else
-                             std::move(consensus_network_api),
+                             std::move(consensus_status), std::move(dag_mgr), std::move(consensus_network_api),
 #endif
                              node_addr, logs_prefix + "DAG_BLOCK_PH"),
       trx_mgr_(std::move(trx_mgr)) {

@@ -231,8 +231,9 @@ pub use pbft_reward_votes::{
     PbftRewardVotesStatus, plan_pbft_reward_votes,
 };
 pub use pbft_service::{
-    PbftService, PbftServiceConfig, PbftSyncCertBundleAction, PbftSyncCertBundleStep,
-    PbftSyncIngressAction, PbftSyncIngressStep, PbftVoteAdmissionWithSlashingResult,
+    PbftApplicationStatusSnapshot, PbftService, PbftServiceConfig, PbftSyncCertBundleAction,
+    PbftSyncCertBundleStep, PbftSyncIngressAction, PbftSyncIngressStep,
+    PbftVoteAdmissionWithSlashingResult,
 };
 pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,
@@ -296,9 +297,10 @@ pub use pbft_vote_runtime::{
     VerifiedVotesTwoTPlusOneVotePayloads, VerifiedVotesTwoTPlusOneVotedBlock,
 };
 pub use pbft_vote_storage::{
-    PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,
-    PbftVoteProgressPersistenceWrite, PbftVoteStorageRecord, clear_own_verified_votes,
-    persist_pbft_vote_progress, remove_extra_reward_votes, save_own_verified_vote,
+    PbftLocalVotePersistenceWrite, PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult,
+    PbftVotePersistenceStatus, PbftVoteProgressPersistenceWrite, PbftVoteStorageRecord,
+    clear_own_verified_votes, persist_local_vote_admission, persist_pbft_vote_progress,
+    remove_extra_reward_votes, save_own_verified_vote,
 };
 pub use pbft_vote_validation::{
     PbftCanonicalVoteInspection, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,

@@ -53,11 +53,12 @@ class TransactionManager;
 enum PbftMgrStatus : uint8_t;
 
 /**
- * PBFT protocol phases exposed by the legacy-compatible manager API.
+ * PBFT protocol phases used by the private application-root host executor.
  *
- * Values are the stable PBFT step ordinals consumed by vote and manager compatibility callers. The sequence begins at
- * one and remains contiguous through finish polling; unknown numeric values are rejected by the Rust runtime adapters
- * rather than represented by this enum.
+ * Values are the stable PBFT step ordinals consumed by native task reports and
+ * retained transport/finalization leaves. The sequence begins at one and
+ * remains contiguous through finish polling; unknown values are rejected at
+ * the native boundary.
  */
 enum PbftStates { value_proposal_state = 1, filter_state, certify_state, finish_state, finish_polling_state };
 
@@ -68,11 +69,13 @@ static_assert(finish_state == 4);
 static_assert(finish_polling_state == 5);
 
 /**
- * @brief PbftManager class is a daemon that is used to finalize a bench of directed acyclic graph (DAG) blocks by using
- * Practical Byzantine Fault Tolerance (PBFT) protocol
+ * Private host executor for the single native ConsensusApplication.
  *
- * According to paper "ALGORAND AGREEMENT Super Fast and Partition Resilient Byzantine Agreement
- * (https://eprint.iacr.org/2018/377.pdf)", implement PBFT manager for finalizing DAG blocks.
+ * Rust owns protocol decisions and durable consensus state. This executor
+ * schedules application-root tasks and performs only named signing, tarcap
+ * transport, and concrete FinalChain/EVM materialization effects. Construction
+ * borrows the enclosing application and process services; startup requires
+ * host initialization, and stop is idempotent and joins the worker thread.
  *
  * There are 5 states in one PBFT round: proposal state, filter state, certify state, finish state, and finish polling
  * state.
@@ -96,12 +99,12 @@ static_assert(finish_polling_state == 5);
  * - Finish polling state: Start after first finish state. If node receives enough next voting votes within 2 lambda
  * duration, PBFT will go to next round. Otherwise that will go back to Finish state.
  */
-class PbftManager {
+class ConsensusApplication::Runtime {
  public:
   class EligibleWallets {
    public:
     EligibleWallets(const std::vector<WalletConfig> &wallets);
-    void updateWalletsEligibility(PbftPeriod period, const SharedConsensusApplication &pbft_service,
+    void updateWalletsEligibility(PbftPeriod period, const ConsensusApplication &application,
                                   const std::shared_ptr<final_chain::FinalChain> &final_chain);
     const std::vector<std::pair<bool, WalletConfig>> &getWallets(PbftPeriod current_pbft_period) const;
 
@@ -142,15 +145,15 @@ class PbftManager {
    * dependencies provide external execution and compatibility materialization boundaries. Startup replay and storage
    * failures propagate.
    */
-  PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
-              SharedConsensusApplication consensus_application, std::shared_ptr<DagManager> dag_mgr,
-              std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
-              std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr);
-  ~PbftManager();
-  PbftManager(const PbftManager &) = delete;
-  PbftManager(PbftManager &&) = delete;
-  PbftManager &operator=(const PbftManager &) = delete;
-  PbftManager &operator=(PbftManager &&) = delete;
+  Runtime(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
+          ConsensusApplication &consensus_application, std::shared_ptr<DagManager> dag_mgr,
+          std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
+          std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr);
+  ~Runtime();
+  Runtime(const Runtime &) = delete;
+  Runtime(Runtime &&) = delete;
+  Runtime &operator=(const Runtime &) = delete;
+  Runtime &operator=(Runtime &&) = delete;
 
   /**
    * @brief Set network as a weak pointer
@@ -296,7 +299,6 @@ class PbftManager {
    * order. Reordering is deterministic so that same order is produced on any node on any platform
    * @param transactions transactions to reorder
    */
-  static void reorderTransactions(SharedTransactions &transactions);
 
   /**
    * @brief Publish a proposed block through the native PBFT service.
@@ -317,7 +319,6 @@ class PbftManager {
    * @brief Get PBFT committee size
    * @return PBFT committee size
    */
-  size_t getPbftCommitteeSize() const { return kGenesisConfig.pbft.committee_size; }
 
   /**
    * @brief Test/enforce broadcastVotes() to actually send votes
@@ -623,11 +624,8 @@ class PbftManager {
   // Compatibility edge kept only for network/EVM/public materialization and lifecycle wiring while the shim owns those
   // boundaries.
   std::shared_ptr<DbStorage> db_;
-  // Application-owned Rust PBFT service shared with the chain facade. Remaining C++ fields below are compatibility
-  // mirrors or executor/public API materialization caches; they must not be used as Rust-mode protocol authority.
-  SharedConsensusApplication pbft_service_;
-  // Application-owned composed DAG/transaction service used directly by Rust PBFT/sortition finalization operations.
-  SharedConsensusApplication dag_transaction_service_;
+  // Non-owning reference to the enclosing application. The application destroys this executor before its native root.
+  ConsensusApplication &application_;
   std::shared_ptr<DagManager> dag_mgr_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<TransactionManager> trx_mgr_;

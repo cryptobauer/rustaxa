@@ -65,6 +65,19 @@ pub struct PbftVoteProgressPersistenceWrite {
     pub two_t_plus_one_bundle: Option<PbftTwoTPlusOneVoteBundle>,
 }
 
+/// Atomic persistence request for one locally generated PBFT vote admission.
+///
+/// The own-vote row and any progress rows derived from the same admission are
+/// committed in one native storage batch. The request is constructed only
+/// after native validation and never crosses CXX.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftLocalVotePersistenceWrite {
+    /// Weighted latest-round own-vote row for the admitted local vote.
+    pub own_vote: PbftVoteStorageRecord,
+    /// Optional extra-reward and `2t+1` rows produced by vote progress.
+    pub progress: PbftVoteProgressPersistenceWrite,
+}
+
 /// Result returned after one Rust-owned PBFT vote persistence operation.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftVotePersistenceResult {
@@ -149,6 +162,82 @@ pub fn persist_pbft_vote_progress(
     }
 
     if let Some(bundle) = write.two_t_plus_one_bundle {
+        if !validate_two_t_plus_one_kind(bundle.kind) {
+            return Ok(rejected("PBFT_VOTE_PERSIST_INVALID_TWO_T_PLUS_ONE_KIND"));
+        }
+        if !validate_votes_bundle_rlp(&bundle.votes_bundle_rlp) {
+            return Ok(rejected(
+                "PBFT_VOTE_PERSIST_MALFORMED_TWO_T_PLUS_ONE_BUNDLE",
+            ));
+        }
+        if storage
+            .pbft()
+            .replace_two_t_plus_one_votes_in_batch(
+                &mut batch,
+                bundle.kind,
+                &bundle.votes_bundle_rlp,
+            )
+            .is_err()
+        {
+            return Ok(rejected("PBFT_VOTE_PERSIST_STORAGE_FAILURE"));
+        }
+        applied_writes += 1;
+    }
+
+    if storage.commit_write_batch_with_sync(batch, false).is_err() {
+        return Ok(rejected("PBFT_VOTE_PERSIST_STORAGE_FAILURE"));
+    }
+
+    Ok(applied(applied_writes))
+}
+
+/// Persists one accepted local vote and all admission progress atomically.
+///
+/// Inputs are canonical weighted records already validated by the native vote
+/// runtime. The operation locks both durable vote families in a stable order,
+/// appends every write to one Rust batch, and commits once. Any validation,
+/// append, or commit failure rejects the complete operation, so neither the
+/// own-vote row nor a progress row can become visible independently.
+pub fn persist_local_vote_admission(
+    storage: &Storage,
+    write: PbftLocalVotePersistenceWrite,
+) -> Result<PbftVotePersistenceResult> {
+    let _own_vote_guard = storage.lock_own_verified_votes()?;
+    let needs_extra_reward_guard = write.progress.extra_reward_vote.is_some()
+        || write
+            .progress
+            .two_t_plus_one_bundle
+            .as_ref()
+            .is_some_and(|bundle| bundle.kind == 1);
+    let _extra_reward_guard = if needs_extra_reward_guard {
+        Some(storage.lock_extra_reward_votes()?)
+    } else {
+        None
+    };
+    let mut batch = storage.create_write_batch();
+    let mut applied_writes = 0;
+
+    if storage
+        .pbft()
+        .write_own_verified_vote_in_batch(&mut batch, write.own_vote.hash, &write.own_vote.vote_rlp)
+        .is_err()
+    {
+        return Ok(rejected("PBFT_VOTE_PERSIST_STORAGE_FAILURE"));
+    }
+    applied_writes += 1;
+
+    if let Some(vote) = write.progress.extra_reward_vote {
+        if storage
+            .pbft()
+            .write_extra_reward_vote_in_batch(&mut batch, vote.hash, &vote.vote_rlp)
+            .is_err()
+        {
+            return Ok(rejected("PBFT_VOTE_PERSIST_STORAGE_FAILURE"));
+        }
+        applied_writes += 1;
+    }
+
+    if let Some(bundle) = write.progress.two_t_plus_one_bundle {
         if !validate_two_t_plus_one_kind(bundle.kind) {
             return Ok(rejected("PBFT_VOTE_PERSIST_INVALID_TWO_T_PLUS_ONE_KIND"));
         }
@@ -360,6 +449,82 @@ mod tests {
             result.error_code,
             "PBFT_VOTE_PERSIST_INVALID_TWO_T_PLUS_ONE_KIND"
         );
+        assert!(
+            storage
+                .pbft()
+                .all_two_t_plus_one_votes_rlp()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn local_vote_admission_commits_own_and_progress_rows_together() {
+        let storage = temp_storage("rustaxa_consensus_pbft_local_vote_atomic");
+        let own_hash = H256::from([0x61; 32]);
+        let reward_hash = H256::from([0x62; 32]);
+        let result = persist_local_vote_admission(
+            &storage,
+            PbftLocalVotePersistenceWrite {
+                own_vote: PbftVoteStorageRecord {
+                    hash: own_hash,
+                    vote_rlp: vec![0x71],
+                },
+                progress: PbftVoteProgressPersistenceWrite {
+                    extra_reward_vote: Some(PbftVoteStorageRecord {
+                        hash: reward_hash,
+                        vote_rlp: vec![0x72],
+                    }),
+                    two_t_plus_one_bundle: None,
+                },
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.status, PbftVotePersistenceStatus::Applied);
+        assert_eq!(result.applied_writes, 2);
+        assert_eq!(
+            storage.pbft().own_verified_votes_rlp().unwrap(),
+            vec![vec![0x71]]
+        );
+        assert_eq!(
+            storage
+                .get_raw(Column::ExtraRewardVotes, reward_hash.as_bytes())
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            &[0x72]
+        );
+    }
+
+    #[test]
+    fn local_vote_admission_rejection_publishes_neither_family() {
+        let storage = temp_storage("rustaxa_consensus_pbft_local_vote_reject");
+        let own_hash = H256::from([0x63; 32]);
+        let result = persist_local_vote_admission(
+            &storage,
+            PbftLocalVotePersistenceWrite {
+                own_vote: PbftVoteStorageRecord {
+                    hash: own_hash,
+                    vote_rlp: vec![0x73],
+                },
+                progress: PbftVoteProgressPersistenceWrite {
+                    extra_reward_vote: None,
+                    two_t_plus_one_bundle: Some(PbftTwoTPlusOneVoteBundle {
+                        kind: 99,
+                        period: 0,
+                        round: 0,
+                        step: 0,
+                        block_hash: H256::zero(),
+                        votes_bundle_rlp: vec![0xC1, 0x01],
+                    }),
+                },
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.status, PbftVotePersistenceStatus::Rejected);
+        assert!(storage.pbft().own_verified_votes_rlp().unwrap().is_empty());
         assert!(
             storage
                 .pbft()

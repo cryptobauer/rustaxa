@@ -14,7 +14,9 @@
 #include "network/rpc/jsonrpc_http_processor.hpp"
 #include "network/rpc/jsonrpc_ws_server.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
-#ifndef RUSTAXA_ENABLE
+#ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
+#else
 #include "vote_manager/vote_manager.hpp"
 #endif
 
@@ -58,9 +60,17 @@ void Rpc::start() {
   if (app()->getMetrics()) jsonrpc_metrics = app()->getMetrics()->getMetrics<metrics::JsonRpcMetrics>();
   net::LiveStatusReader live_status_reader = [app = app()] {
     net::LiveStatusSnapshot snapshot;
+#ifdef RUSTAXA_ENABLE
+    const auto consensus_application = app->getConsensusApplication();
+    const auto runtime_status = consensus_application->runtimeStatus();
+    const auto chain_size = runtime_status.finalized_chain_size;
+    const auto dpos_total_votes = consensus_application->currentDposTotalVotesCount();
+    const auto dpos_node_votes = consensus_application->currentNodeVotesCount();
+#else
     const auto chain_size = app->getPbftProgress().finalized_period;
     const auto dpos_total_votes = app->getPbftManager()->getCurrentDposTotalVotesCount();
     const auto dpos_node_votes = app->getPbftManager()->getCurrentNodeVotesCount();
+#endif
 #ifdef RUSTAXA_ENABLE
     const auto query_api = net::createConsensusQueryApi(app->getDB());
     const auto threshold =
@@ -75,12 +85,21 @@ void Rpc::start() {
     snapshot.peer_count = app->getNetwork()->getPeerCount();
     snapshot.node_count = app->getNetwork()->getNodeCount();
     snapshot.pbft_chain_size = chain_size;
+#ifdef RUSTAXA_ENABLE
+    snapshot.pbft_sync_period = runtime_status.syncing_period;
+    snapshot.pbft_round = runtime_status.round;
+#else
     snapshot.pbft_sync_period = app->getPbftManager()->pbftSyncingPeriod();
     snapshot.pbft_round = app->getPbftManager()->getPbftRound();
+#endif
     snapshot.dpos_total_votes = dpos_total_votes.value_or(0);
     snapshot.dpos_node_votes = dpos_node_votes.value_or(0);
     snapshot.dpos_quorum = dpos_quorum.value_or(0);
+#ifdef RUSTAXA_ENABLE
+    snapshot.pbft_sync_queue_size = runtime_status.sync_queue_size;
+#else
     snapshot.pbft_sync_queue_size = app->getPbftManager()->periodDataQueueSize();
+#endif
     snapshot.transaction_pool_size = app->getTransactionManager()->getTransactionPoolSize();
     snapshot.nonfinalized_transaction_size = app->getTransactionManager()->getNonfinalizedTrxSize();
     if (const auto peer = app->getNetwork()->getMaxChainPeer()) {
@@ -296,19 +315,14 @@ void Rpc::start() {
 #ifndef RUSTAXA_ENABLE
       auto graphql_query = std::make_shared<graphql::taraxa::Query>(
           app()->getFinalChain(), app()->getDagManager(), app()->getPbftManager(), app()->getTransactionManager(),
-          app()->getDB(), app()->getGasPricer(), as_weak(app()->getNetwork()), conf.genesis.chain_id, live_status_reader
-#ifdef RUSTAXA_ENABLE
-          ,
-          consensus_query_api
-#endif
-      );
+          app()->getDB(), app()->getGasPricer(), as_weak(app()->getNetwork()), conf.genesis.chain_id,
+          live_status_reader);
 #else
       auto gas_price_reader = graphql::taraxa::QueryGasPriceReader{
           [trx_mgr = app()->getTransactionManager()]() { return trx_mgr ? trx_mgr->gasPriceBid() : dev::u256(0); }};
       auto graphql_query = std::make_shared<graphql::taraxa::Query>(
-          app()->getFinalChain(), app()->getDagManager(), app()->getPbftManager(), app()->getTransactionManager(),
-          app()->getDB(), std::move(gas_price_reader), as_weak(app()->getNetwork()), conf.genesis.chain_id,
-          live_status_reader
+          app()->getFinalChain(), app()->getDagManager(), app()->getTransactionManager(), app()->getDB(),
+          std::move(gas_price_reader), as_weak(app()->getNetwork()), conf.genesis.chain_id, live_status_reader
 #ifdef RUSTAXA_ENABLE
           ,
           consensus_query_api

@@ -1606,8 +1606,16 @@ TEST_F(RPCTest, graphql_dag_block_author_uses_account_reader) {
   reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
   reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
 
+#ifdef RUSTAXA_ENABLE
+  rustaxa::DagBlockPublicView dag_block_view;
+  dag_block_view.found = true;
+  dag_block_view.sender = author.asArray();
+  graphql::taraxa::DagBlock graphql_dag_block(std::move(dag_block_view), std::move(reader),
+                                              [](EthBlockNumber) { return nullptr; }, {}, {});
+#else
   graphql::taraxa::DagBlock graphql_dag_block(std::move(reader), std::move(dag_block), nullptr, nullptr,
                                               [](EthBlockNumber) { return nullptr; });
+#endif
 
   ASSERT_NE(nullptr, graphql_dag_block.getAuthor());
   ASSERT_TRUE(*account_called);

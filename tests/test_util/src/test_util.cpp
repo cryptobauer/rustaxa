@@ -9,7 +9,10 @@
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_application.hpp"
 #endif
+#include "network/network.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#endif
 #include "plugin/light.hpp"
 #include "plugin/rpc.hpp"
 #ifndef RUSTAXA_ENABLE
@@ -213,7 +216,7 @@ std::pair<PbftPeriod, PbftRound> clearAllVotes(const std::vector<std::shared_ptr
   PbftPeriod max_period = 0;
   PbftRound max_round = 1;
   for (const auto& node : nodes) {
-    auto [node_round, node_period] = node->getPbftManager()->getPbftRoundAndPeriod();
+    const auto [node_period, node_round] = consensusPeriodAndRound(node);
     if (node_period > max_period) {
       max_period = node_period;
     }
@@ -230,6 +233,40 @@ std::pair<PbftPeriod, PbftRound> clearAllVotes(const std::vector<std::shared_ptr
 #endif
 
   return {max_period, max_round};
+}
+
+void stopConsensus(const std::shared_ptr<AppBase>& node) {
+#ifdef RUSTAXA_ENABLE
+  node->getConsensusApplication()->stopConsensus();
+#else
+  node->getPbftManager()->stop();
+#endif
+}
+
+void startConsensus(const std::shared_ptr<AppBase>& node) {
+#ifdef RUSTAXA_ENABLE
+  node->getConsensusApplication()->startConsensus();
+#else
+  node->getPbftManager()->start();
+#endif
+}
+
+std::pair<PbftPeriod, PbftRound> consensusPeriodAndRound(const std::shared_ptr<AppBase>& node) {
+#ifdef RUSTAXA_ENABLE
+  const auto status = node->getConsensusApplication()->runtimeStatus();
+  return {status.period, status.round};
+#else
+  const auto [round, period] = node->getPbftManager()->getPbftRoundAndPeriod();
+  return {period, round};
+#endif
+}
+
+PbftStep consensusStep(const std::shared_ptr<AppBase>& node) {
+#ifdef RUSTAXA_ENABLE
+  return node->getConsensusApplication()->runtimeStatus().step;
+#else
+  return node->getPbftManager()->getPbftStep();
+#endif
 }
 
 NodesTest::NodesTest() {

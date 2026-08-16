@@ -1,6 +1,8 @@
 #include "network/tarcap/shared_states/peers_state.hpp"
 
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#endif
 
 namespace taraxa::network::tarcap {
 
@@ -150,6 +152,7 @@ void PeersState::disconnectPeer(const dev::p2p::NodeID& id) {
   }
 }
 
+#ifndef RUSTAXA_ENABLE
 std::shared_ptr<TaraxaPeer> PeersState::getMaxChainPeer(
     const std::shared_ptr<PbftManager> pbft_mgr, std::function<bool(const std::shared_ptr<TaraxaPeer>&)> filter_func) {
   std::shared_ptr<TaraxaPeer> max_pbft_chain_peer;
@@ -185,5 +188,6 @@ std::shared_ptr<TaraxaPeer> PeersState::getMaxChainPeer(
 
   return max_pbft_chain_peer;
 }
+#endif
 
 }  // namespace taraxa::network::tarcap

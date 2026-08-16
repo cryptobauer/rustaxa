@@ -194,6 +194,18 @@ std::shared_ptr<PbftVote> genDummyVote(PbftVoteTypes type, PbftPeriod period, Pb
 
 std::pair<PbftPeriod, PbftRound> clearAllVotes(const std::vector<std::shared_ptr<AppBase>>& nodes);
 
+/** Stops the active consensus runtime without exposing its implementation-specific manager. */
+void stopConsensus(const std::shared_ptr<AppBase>& node);
+
+/** Starts the active consensus runtime after a fixture-controlled stop. */
+void startConsensus(const std::shared_ptr<AppBase>& node);
+
+/** Returns the coherent live PBFT period and round used by cross-mode fixtures. */
+std::pair<PbftPeriod, PbftRound> consensusPeriodAndRound(const std::shared_ptr<AppBase>& node);
+
+/** Returns the coherent live PBFT step used by cross-mode ingress fixtures. */
+PbftStep consensusStep(const std::shared_ptr<AppBase>& node);
+
 class TestConfig : public cli::Config {
  public:
   TestConfig(const FullNodeConfig& cfg) : cli::Config() {

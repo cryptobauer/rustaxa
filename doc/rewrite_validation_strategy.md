@@ -67,14 +67,15 @@ make rewrite-validate-consensus
 ```
 
 This runs the fast Rust gate and the current `REWRITE_CONSENSUS_TESTS` inventory from the Makefile:
-`rust_consensus_tests`, `dag_test`, `dag_block_test`, `pbft_manager_test`, `vote_test`, and `pillar_chain_test`.
+`rust_consensus_tests`, `dag_test`, `dag_block_test`, and `pillar_chain_test`.
 `pbft_chain_test` remains a pure-C++ reference target; the Rust-mode facade/shim test is retired. Proposed-block behavior is covered by the native Rust
-service tests, `rust_consensus_tests`, and relevant `pbft_manager_test` cases; there is no Rust-mode facade test. The legacy
+service tests and `rust_consensus_tests`; there is no Rust-mode manager facade test. `pbft_manager_test` and `vote_test`
+remain pure-C++ reference targets. The legacy
 `rewards_stats_test` remains available only in all-Rust-disabled pure-C++ reference builds; native FinalChain rewards
 behavior is covered by Rust consensus and FinalChain tests.
 
-The gate also runs `NetworkTest.rust_mode_pbft_sync_via_query_client` as the focused application-root/query-client PBFT
-sync integration case. Insufficient certificate weight is covered by the native
+The gate also runs `NetworkTest.rust_mode_consensus_lifecycle_and_pbft_sync_via_query_client` as the focused
+application-root lifecycle/query-client PBFT sync integration case. Insufficient certificate weight is covered by the native
 `pbft_sync::tests::cert_vote_bundle_rejects_bad_shape_and_threshold` test, replacing the legacy fixture that mutated the
 C++ chain facade directly.
 

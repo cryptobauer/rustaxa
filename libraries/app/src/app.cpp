@@ -6,6 +6,7 @@
 #include <boost/algorithm/string/split.hpp>
 #include <boost/filesystem.hpp>
 #include <memory>
+#include <stdexcept>
 
 #include "common/config_exception.hpp"
 #include "config/config_utils.hpp"
@@ -21,11 +22,14 @@
 #include "metrics/network_metrics.hpp"
 #include "metrics/pbft_metrics.hpp"
 #include "metrics/transaction_queue_metrics.hpp"
+#include "network/network.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "network/consensus_network_api.hpp"
 #include "network/consensus_query.hpp"
 #endif
+#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
+#endif
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "storage/migration/block_stats.hpp"
 #include "storage/migration/migration_manager.hpp"
@@ -38,86 +42,7 @@
 #include "vote_manager/vote_manager.hpp"
 #endif
 
-#ifdef RUSTAXA_ENABLE
-#include "rustaxa-bridge/ffi.rs.h"
-#endif
-
 namespace taraxa {
-
-#ifdef RUSTAXA_ENABLE
-namespace {
-
-/**
- * Stops and joins the database-rebuild queue worker on every exit path.
- *
- * The guard borrows the stop flag and future created by `App::rebuildDb`.
- * `stop` is idempotent; destruction performs the same cleanup during exception
- * unwinding so an encoding or native queue-admission failure can propagate
- * without the async future waiting forever on a worker that was never stopped.
- */
-class RebuildQueueWorkerGuard final {
- public:
-  RebuildQueueWorkerGuard(std::atomic_bool &stop_requested, std::future<void> &worker)
-      : stop_requested_(stop_requested), worker_(worker) {}
-  ~RebuildQueueWorkerGuard() { stop(); }
-
-  void stop() noexcept {
-    if (stopped_) {
-      return;
-    }
-    stop_requested_ = true;
-    if (worker_.valid()) {
-      worker_.wait();
-    }
-    stopped_ = true;
-  }
-
- private:
-  std::atomic_bool &stop_requested_;
-  std::future<void> &worker_;
-  bool stopped_ = false;
-};
-
-/**
- * Copies canonical database bytes into the stable CXX vector carrier.
- *
- * The input remains available to the rebuild loop for materialized logging and
- * sender prewarming. Allocation failure propagates to abort rebuild without a
- * partial queue push.
- */
-rust::Vec<uint8_t> toRustBytes(const dev::bytes &input) {
-  rust::Vec<uint8_t> output;
-  output.reserve(input.size());
-  for (const auto byte : input) {
-    output.push_back(static_cast<uint8_t>(byte));
-  }
-  return output;
-}
-
-/**
- * Encodes one certificate-vote set for Rust queue ownership.
- *
- * Each non-null vote is encoded with its signature and optional weight exactly
- * as the PBFT manager adapter encoded it. A null vote is rejected before the
- * Rust queue mutates, and encoding or allocation errors propagate to abort the
- * rebuild.
- */
-rust::Vec<rustaxa::PbftCertVoteRlp> toRustCertVotePayloads(const std::vector<std::shared_ptr<PbftVote>> &votes) {
-  rust::Vec<rustaxa::PbftCertVoteRlp> payloads;
-  payloads.reserve(votes.size());
-  for (const auto &vote : votes) {
-    if (!vote) {
-      throw std::runtime_error("PBFT manager period-data queue: cannot push period data with a null PBFT cert vote");
-    }
-    rustaxa::PbftCertVoteRlp payload;
-    payload.vote_rlp = toRustBytes(vote->rlp(true, vote->getWeight().has_value()));
-    payloads.push_back(std::move(payload));
-  }
-  return payloads;
-}
-
-}  // namespace
-#endif
 
 App::App() {}
 
@@ -300,8 +225,7 @@ void App::init(const cli::Config &cli_conf) {
                                                                          final_chain_, key_manager_, node_addr);
 #endif
 #ifdef RUSTAXA_ENABLE
-  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, consensus_application_, dag_mgr_, trx_mgr_, final_chain_,
-                                            pillar_chain_mgr_);
+  consensus_application_->initializeHost(conf_, db_, dag_mgr_, trx_mgr_, final_chain_, pillar_chain_mgr_);
 #else
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, final_chain_,
                                             pillar_chain_mgr_);
@@ -317,7 +241,33 @@ void App::init(const cli::Config &cli_conf) {
 #ifndef RUSTAXA_ENABLE
                                 db_,
 #endif
+#ifndef RUSTAXA_ENABLE
                                 pbft_mgr_,
+#else
+                                [application = std::weak_ptr<ConsensusApplication>(consensus_application_)] {
+                                  const auto root = application.lock();
+                                  if (!root) {
+                                    throw std::runtime_error("CONSENSUS_APPLICATION_EXPIRED");
+                                  }
+                                  const auto runtime = root->runtimeStatus();
+                                  return network::ConsensusLiveStatus{
+                                      runtime.period,
+                                      runtime.round,
+                                      runtime.step,
+                                      runtime.syncing_period,
+                                      runtime.sync_queue_size,
+                                      runtime.syncQueueEmpty(),
+                                  };
+                                },
+                                [application = std::weak_ptr<ConsensusApplication>(consensus_application_)] {
+                                  const auto root = application.lock();
+                                  if (!root) {
+                                    throw std::runtime_error("CONSENSUS_APPLICATION_EXPIRED");
+                                  }
+                                  return network::ConsensusVoteStatus{root->currentDposTotalVotesCount(),
+                                                                      root->currentNodeVotesCount()};
+                                },
+#endif
 #ifdef RUSTAXA_ENABLE
                                 net::createConsensusQueryApi(db_),
 #else
@@ -381,7 +331,11 @@ void App::start() {
 #ifndef RUSTAXA_ENABLE
   vote_mgr_->setNetwork(network_);
 #endif
+#ifdef RUSTAXA_ENABLE
+  consensus_application_->attachNetwork(network_);
+#else
   pbft_mgr_->setNetwork(network_);
+#endif
   dag_mgr_->setNetwork(network_);
   pillar_chain_mgr_->setNetwork(network_);
 
@@ -405,7 +359,11 @@ void App::start() {
   dag_block_proposer_->setNetwork(network_);
   dag_block_proposer_->start();
 
+#ifdef RUSTAXA_ENABLE
+  consensus_application_->startConsensus();
+#else
   pbft_mgr_->start();
+#endif
 
   if (metrics_) {
     setupMetricsUpdaters();
@@ -465,11 +423,21 @@ void App::setupMetricsUpdaters() {
 #endif
 
   auto pbft_metrics = metrics_->getMetrics<metrics::PbftMetrics>();
+#ifdef RUSTAXA_ENABLE
+  pbft_metrics->setPeriodUpdater(
+      [application = consensus_application_]() { return application->runtimeStatus().period; });
+  pbft_metrics->setRoundUpdater(
+      [application = consensus_application_]() { return application->runtimeStatus().round; });
+  pbft_metrics->setStepUpdater([application = consensus_application_]() { return application->runtimeStatus().step; });
+  pbft_metrics->setVotesCountUpdater(
+      [application = consensus_application_]() { return application->currentNodeVotesCount().value_or(0); });
+#else
   pbft_metrics->setPeriodUpdater([pbft_mgr = pbft_mgr_]() { return pbft_mgr->getPbftPeriod(); });
   pbft_metrics->setRoundUpdater([pbft_mgr = pbft_mgr_]() { return pbft_mgr->getPbftRound(); });
   pbft_metrics->setStepUpdater([pbft_mgr = pbft_mgr_]() { return pbft_mgr->getPbftStep(); });
   pbft_metrics->setVotesCountUpdater(
       [pbft_mgr = pbft_mgr_]() { return pbft_mgr->getCurrentNodeVotesCount().value_or(0); });
+#endif
   final_chain_->block_finalized_.subscribe(
       [pbft_metrics](const std::shared_ptr<final_chain::FinalizationResult> &res) {
         pbft_metrics->setBlockNumber(res->final_chain_blk->number);
@@ -480,16 +448,33 @@ void App::setupMetricsUpdaters() {
 }
 
 void App::close() {
-  if (bool b = false; !stopped_.compare_exchange_strong(b, !b)) {
+  bool was_running = false;
+  const bool first_close = stopped_.compare_exchange_strong(was_running, true);
+
+  if (first_close && dag_block_proposer_) {
+    dag_block_proposer_->stop();
+  }
+#ifdef RUSTAXA_ENABLE
+  // This one-way teardown must run even if startup never completed or close()
+  // was previously entered, because Runtime owns services that own the root.
+  if (consensus_application_) {
+    consensus_application_->shutdownHost();
+  }
+#else
+  if (first_close && pbft_mgr_) {
+    pbft_mgr_->stop();
+  }
+#endif
+  if (!first_close) {
     return;
   }
-
-  dag_block_proposer_->stop();
-  pbft_mgr_->stop();
   LOG(log_nf_) << "Node stopped ... ";
 }
 
 void App::rebuildDb() {
+#ifdef RUSTAXA_ENABLE
+  throw std::runtime_error("RUSTAXA_REBUILD_DB_UNSUPPORTED");
+#else
   pbft_mgr_->initialState();
 
   // Read pbft blocks one by one
@@ -512,7 +497,7 @@ void App::rebuildDb() {
 #endif
 
   while (true) {
-    std::vector<std::shared_ptr<PbftVote>> cert_votes;
+    std::vector<std::shared_ptr<PbftVote> > cert_votes;
     if (next_period_data != nullptr) {
       period_data = next_period_data;
 #ifdef RUSTAXA_ENABLE
@@ -602,6 +587,7 @@ void App::rebuildDb() {
   // Handles the race case if some blocks are still in the queue
   pbft_mgr_->pushSyncedPbftBlocksIntoChain();
   LOG(log_si_) << "Rebuild completed";
+#endif
 }
 
 }  // namespace taraxa

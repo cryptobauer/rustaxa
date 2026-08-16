@@ -33,9 +33,7 @@ use rustaxa_consensus::verified_votes::{
 };
 use rustaxa_consensus::{
     build_weighted_pbft_vote_payload, PbftRewardVotePayloadSelection,
-    PbftVoteAdmissionTransactionResult,
-    PbftVotePersistenceResult as DomainPbftVotePersistenceResult,
-    PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
+    PbftVoteAdmissionTransactionResult, PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
     RewardVotePayloadSnapshot as DomainRewardVotePayloadSnapshot,
     SlashingSubmitterIdentity as DomainSlashingSubmitterIdentity,
     SlashingTransactionEffect as DomainSlashingTransactionEffect,
@@ -103,16 +101,6 @@ fn threshold_fact_from_request(
         future_dpos_state: false,
         unknown_error: false,
     })
-}
-
-fn pbft_vote_persistence_to_ffi(
-    value: DomainPbftVotePersistenceResult,
-) -> crate::ffi::rustaxa_ffi::PbftVotePersistenceResult {
-    crate::ffi::rustaxa_ffi::PbftVotePersistenceResult {
-        status: value.status.as_u8(),
-        applied_writes: value.applied_writes,
-        error_code: value.error_code,
-    }
 }
 
 fn vote_storage_record_to_ffi(value: DomainPbftVoteStorageRecord) -> PbftVoteStorageRecord {
@@ -220,12 +208,14 @@ impl BridgeApp {
         self.publish_vote_validation(validation, replay, weighted_vote_rlp.unwrap_or_default())
     }
 
-    /// Validates and persists one canonical PBFT vote against FinalChain state.
+    /// Executes the complete local generated-vote admission task.
     ///
-    /// The call preserves admission replay and checkpoint semantics used by
-    /// existing shim wiring: validation runs before write planning and all
-    /// persistence writes are wrapped in one transactional Rust admission session.
-    pub fn pbft_service_verified_votes_admit_and_persist_with_final_chain(
+    /// Rust validates against the application-owned FinalChain, derives the
+    /// authoritative weighted payload, and commits the own-vote row together
+    /// with all admission progress writes before publishing retained live
+    /// state. A rejected batch exposes the existing non-published admission
+    /// result, allowing C++ to avoid any compatibility-sidecar mutation.
+    pub fn pbft_service_admit_and_persist_local_generated_vote(
         &self,
         canonical_vote_rlp: &[u8],
         validation_request: PbftVoteAdmissionValidationRequest,
@@ -233,21 +223,18 @@ impl BridgeApp {
         context: FfiPbftVoteProgressContext,
         slashing_submitters: Vec<FfiSlashingSubmitterIdentity>,
     ) -> Result<PbftVoteAdmissionRuntimeResult, anyhow::Error> {
-        let request = admission_validation_request_to_domain(validation_request);
         let slashing_submitters = slashing_submitters
             .into_iter()
             .map(slashing_submitter_identity_to_domain)
             .collect::<Vec<_>>();
-        let result = self
-            .0
-            .admit_and_persist_verified_vote_with_external_slashing_facts(
-                self.0.final_chain_for_bridge(),
-                canonical_vote_rlp,
-                request,
-                flags_to_domain(flags),
-                context_to_domain(&context),
-                &slashing_submitters,
-            )?;
+        let result = self.0.admit_and_persist_local_generated_vote(
+            self.0.final_chain_for_bridge(),
+            canonical_vote_rlp,
+            admission_validation_request_to_domain(validation_request),
+            flags_to_domain(flags),
+            context_to_domain(&context),
+            &slashing_submitters,
+        )?;
         let weighted_vote_rlp = if result.validation.accepted && result.validation.weight_calculated
         {
             build_weighted_pbft_vote_payload(
@@ -312,162 +299,6 @@ impl BridgeApp {
                 request,
             )?;
         Ok(threshold_plan_to_ffi(plan))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn leader_and_reward_results_keep_stable_boundary_statuses() {
-        for (status, expected) in [
-            (rustaxa_consensus::PbftLeaderSelectionStatus::Selected, 0),
-            (
-                rustaxa_consensus::PbftLeaderSelectionStatus::NoCandidates,
-                1,
-            ),
-            (rustaxa_consensus::PbftLeaderSelectionStatus::NoEligible, 2),
-            (
-                rustaxa_consensus::PbftLeaderSelectionStatus::StaleSnapshot,
-                3,
-            ),
-            (
-                rustaxa_consensus::PbftLeaderSelectionStatus::InvalidValidationReport,
-                4,
-            ),
-        ] {
-            let result = leader_selection_result_to_ffi(DomainPbftLeaderSelectionResult {
-                status,
-                error_code: "status".to_owned(),
-                selected: status == rustaxa_consensus::PbftLeaderSelectionStatus::Selected,
-                selected_vote: DomainPbftVoteStorageRecord {
-                    hash: H256::from([0x51; 32]),
-                    vote_rlp: vec![0x52],
-                },
-                selected_block_rlp: vec![0x53],
-            });
-            assert_eq!(result.status, expected);
-            assert_eq!(result.selected_vote.hash, [0x51; 32]);
-            assert_eq!(result.selected_block_rlp, vec![0x53]);
-        }
-    }
-
-    #[test]
-    fn runtime_result_flattens_executor_intents() {
-        use ethereum_types::H160;
-        use rustaxa_consensus::{
-            PbftVoteAdmissionExecution, PbftVoteAdmissionPersistenceStatus,
-            PbftVoteAdmissionPrecheck, PbftVoteAdmissionStatus, PbftVoteEventFactStatus,
-            PbftVoteIdentity, PbftVotePipelineStatus, PbftVotePipelineStep, PbftVoteProgressFact,
-            PbftVoteProgressIntent, PbftVoteProgressPlan, PbftVoteProgressStatus,
-            PbftVoteRuntimeAdmissionOutcome, PbftVoteValidationStatus,
-        };
-
-        let vote_hash = H256::from([0x71; 32]);
-        let block_hash = H256::from([0x72; 32]);
-        let voter = H160::from([0x73; 20]);
-        let validation = PbftCanonicalVoteValidation {
-            status: PbftVoteValidationStatus::Valid,
-            error_code: "",
-            accepted: true,
-            rejected: false,
-            mark_validated_replay: true,
-            vote_hash,
-            signing_hash: H256::from([0x74; 32]),
-            block_hash,
-            period: 3,
-            round: 2,
-            step: 4,
-            vote_type: PbftVoteType::Next,
-            recovered_voter: voter,
-            recovered_public_key: [0; 64],
-            signature_valid: true,
-            vrf_valid: true,
-            has_sortition_threshold: true,
-            sortition_threshold: 5,
-            weight_calculated: true,
-            calculated_weight: 5,
-            vrf_output: [0; 64],
-        };
-        let progress_fact = PbftVoteProgressFact {
-            identity: PbftVoteIdentity {
-                vote_hash,
-                block_hash,
-                period: 3,
-                round: 2,
-                step: 4,
-                voter,
-            },
-            vote_type: PbftVoteType::Next,
-            weight: 5,
-            vote_already_known: false,
-            carries_proposed_block: true,
-            valid_stale_reward_vote: false,
-        };
-        let progress_plan = PbftVoteProgressPlan {
-            status: PbftVoteProgressStatus::Accepted,
-            intents: vec![
-                PbftVoteProgressIntent::MarkKnown { vote_hash },
-                PbftVoteProgressIntent::GossipVote { vote_hash },
-                PbftVoteProgressIntent::DrivePbftProgress {
-                    period: 3,
-                    round: 2,
-                },
-            ],
-            add_vote_outcome: None,
-            threshold_decision: None,
-            conflicting_vote_hash: None,
-        };
-        let outcome = PbftVoteRuntimeAdmissionOutcome {
-            precheck: PbftVoteAdmissionPrecheck {
-                admission_status: PbftVoteAdmissionStatus::AwaitingVerifiedVoteInsert,
-                validation: Some(validation.clone()),
-                event_status: PbftVoteEventFactStatus::Ready,
-                error_code: "",
-                progress_fact: Some(progress_fact),
-                pipeline_step: None,
-                complete: false,
-            },
-            replay: rustaxa_consensus::pbft_vote_runtime::PbftVoteRuntimeReplayOutcome {
-                should_mark: true,
-                inserted: true,
-                already_present: false,
-            },
-            execution: Some(PbftVoteAdmissionExecution {
-                admission_status: PbftVoteAdmissionStatus::Complete,
-                pipeline_step: PbftVotePipelineStep {
-                    pipeline_status: PbftVotePipelineStatus::Complete,
-                    progress_plan,
-                    complete: true,
-                },
-                complete: true,
-            }),
-            add_outcome: None,
-            storage_vote: None,
-            two_t_plus_one_bundle: None,
-            slashing_payloads: None,
-        };
-        let result = runtime_outcome_to_ffi(
-            validation,
-            PbftVoteAdmissionTransactionResult {
-                outcome,
-                persistence_required: false,
-                persistence_status: PbftVoteAdmissionPersistenceStatus::NotRequired,
-                persistence_applied_writes: 0,
-                transition_published: true,
-                persistence_error_code: String::new(),
-            },
-            None,
-            Vec::new(),
-        );
-        assert!(result.accepted);
-        assert!(result.mark_vote_known);
-        assert_eq!(result.mark_vote_known_hash, [0x71; 32]);
-        assert!(result.gossip_vote);
-        assert_eq!(result.gossip_vote_hash, [0x71; 32]);
-        assert!(result.drive_pbft_progress);
-        assert_eq!((result.progress_period, result.progress_round), (3, 2));
     }
 }
 
@@ -974,22 +805,6 @@ impl BridgeApp {
             .into_iter()
             .map(vote_storage_record_to_ffi)
             .collect())
-    }
-
-    /// Persists one latest-round own verified vote from canonical signed bytes
-    /// and an authoritative nonzero weight.
-    ///
-    /// Rust builds and validates the weighted storage record. Codec and storage
-    /// failures cross CXX as bridge errors; durable write rejection remains a
-    /// typed persistence result.
-    pub fn pbft_service_verified_votes_save_own_verified_vote(
-        &self,
-        canonical_vote_rlp: &[u8],
-        weight: u64,
-    ) -> Result<crate::ffi::rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
-        self.0
-            .verified_votes_save_own_verified_vote(canonical_vote_rlp, weight)
-            .map(pbft_vote_persistence_to_ffi)
     }
 
     /// Returns one coherent verified-vote snapshot.

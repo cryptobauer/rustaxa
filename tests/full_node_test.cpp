@@ -45,6 +45,7 @@ auto g_trx_signed_samples = Lazy([] { return samples::createSignedTrxSamples(0, 
 
 struct FullNodeTest : NodesTest {};
 
+#ifndef RUSTAXA_ENABLE
 TEST_F(FullNodeTest, save_period_lambda_cacti_hf) {
   auto node_cfgs = make_node_cfgs(1, 1, 5);
   auto &genesis_cfg = node_cfgs.front().genesis;
@@ -71,7 +72,7 @@ TEST_F(FullNodeTest, save_period_lambda_cacti_hf) {
 
   EXPECT_HAPPENS({10s, 100ms},
                  [&](auto &ctx) { WAIT_EXPECT_GE(ctx, node->getPbftProgress().finalized_period, progress_blocks); });
-  node->getPbftManager()->stop();
+  stopConsensus(node);
 
   EXPECT_FALSE(node_db->getPeriodLambda(hardforks_cfg.cacti_hf.block_num - 1, false).has_value());
 
@@ -102,7 +103,7 @@ TEST_F(FullNodeTest, save_period_lambda_cacti_hf) {
   // Simulate network getting stalled and finalizing some block in round >= 2 by (previously) stopping pbft manager
   std::this_thread::sleep_for(node->getPbftManager()->getPbftDeadline());
   const auto stalled_period = node->getPbftManager()->getPbftPeriod();
-  node->getPbftManager()->start();
+  startConsensus(node);
   EXPECT_HAPPENS({5s, 100ms},
                  [&](auto &ctx) { WAIT_EXPECT_GE(ctx, node->getPbftManager()->getPbftPeriod(), stalled_period + 1); });
   const auto stalled_period_lambda = node->getDB()->getPeriodLambda(stalled_period, false);
@@ -110,6 +111,7 @@ TEST_F(FullNodeTest, save_period_lambda_cacti_hf) {
   EXPECT_TRUE(stalled_period_lambda.has_value());
   EXPECT_EQ(*stalled_period_lambda, hardforks_cfg.cacti_hf.lambda_default);
 }
+#endif
 
 TEST_F(FullNodeTest, db_test) {
   auto storage = makeConsensusStorageFixture(FullNodeConfig{}, data_dir);
@@ -953,7 +955,7 @@ TEST_F(FullNodeTest, reconstruct_dag) {
     fs::remove_all(node_cfgs[0].db_path);
     auto node = create_nodes(node_cfgs, true /*start*/).front();
     // TODO: pbft does not support node stop yet, to be fixed ...
-    node->getPbftManager()->stop();
+    stopConsensus(node);
     for (size_t i = 0; i < num_blks; i++) {
       EXPECT_EQ(true, node->getDagManager()->addDagBlock(mock_dags[i]).first);
     }
@@ -1446,7 +1448,7 @@ TEST_F(FullNodeTest, light_node) {
                    nodes[1]->getPbftProgress().non_empty_finalized_periods)
   });
   for (auto &node : nodes) {
-    node->getPbftManager()->stop();
+    stopConsensus(node);
   }
   auto plug = nodes[1]->getPlugin("light");
   std::dynamic_pointer_cast<plugin::Light>(plug)->clearLightNodeHistory();
@@ -1699,7 +1701,7 @@ TEST_F(FullNodeTest, graphql_test) {
   auto gas_price_reader = graphql::taraxa::QueryGasPriceReader{
       [trx_mgr = nodes[0]->getTransactionManager()]() { return trx_mgr ? trx_mgr->gasPriceBid() : dev::u256(0); }};
   auto q = std::make_shared<graphql::taraxa::Query>(nodes[0]->getFinalChain(), nodes[0]->getDagManager(),
-                                                    nodes[0]->getPbftManager(), nodes[0]->getTransactionManager(),
+                                                    nodes[0]->getTransactionManager(),
                                                     nodes[0]->getDB(), std::move(gas_price_reader),
                                                     nodes[0]->getNetwork(), nodes[0]->getConfig().genesis.chain_id);
 #else

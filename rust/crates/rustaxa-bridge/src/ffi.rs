@@ -748,17 +748,6 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
     }
 
-    /// Result for PBFT vote persistence bridge operations.
-    ///
-    /// `status` values are local to the bridge contract: 0 = applied,
-    /// 1 = rejected. `applied_writes` counts logical vote-family writes
-    /// accepted into the Rust-owned batch or direct operation.
-    struct PbftVotePersistenceResult {
-        status: u8,
-        applied_writes: u64,
-        error_code: String,
-    }
-
     /// Coherent finalized-chain context for application-root PBFT manager tasks.
     struct PbftManagerChainContext {
         finalized_period: u64,
@@ -1128,6 +1117,9 @@ pub mod rustaxa_ffi {
         period: u64,
         round: u64,
         step: u64,
+        finalized_chain_size: u64,
+        syncing_period: u64,
+        sync_queue_size: u64,
         current_round_lambda_ms: u64,
         next_step_time_ms: u64,
         rounds_count_dynamic_lambda: u32,
@@ -3752,7 +3744,7 @@ pub mod rustaxa_ffi {
         ) -> Result<PbftManagerStartupReplayPeriod>;
         pub fn pbft_manager_runtime_snapshot(
             runtime: &BridgeConsensusApplication,
-        ) -> PbftManagerRuntimeSnapshot;
+        ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_period_data_queue_snapshot(
             runtime: &BridgeConsensusApplication,
         ) -> Result<PeriodDataQueueSnapshot>;
@@ -3929,6 +3921,10 @@ pub mod rustaxa_ffi {
             block_hash: &[u8; 32],
             pivot_hash: &[u8; 32],
             block_rlp: Vec<u8>,
+        ) -> Result<bool>;
+        pub fn pbft_service_publish_proposed_block_effect(
+            self: &BridgeConsensusApplication,
+            canonical_signed_block_rlp: Vec<u8>,
         ) -> Result<bool>;
         pub fn pbft_service_admit_proposed_block(
             runtime: &BridgeConsensusApplication,
@@ -4126,7 +4122,8 @@ pub mod rustaxa_ffi {
             committee_size: u64,
             number_of_proposers: u64,
         ) -> Result<PbftVoteRuntimeValidationResult>;
-        pub fn pbft_service_verified_votes_admit_and_persist_with_final_chain(
+        /// Atomically admits one locally generated vote and persists its own-vote row.
+        pub fn pbft_service_admit_and_persist_local_generated_vote(
             self: &BridgeConsensusApplication,
             canonical_vote_rlp: &[u8],
             validation_request: PbftVoteAdmissionValidationRequest,
@@ -4173,11 +4170,6 @@ pub mod rustaxa_ffi {
         pub fn pbft_service_verified_votes_current_reward_snapshot(
             self: &BridgeConsensusApplication,
         ) -> Result<RewardVotePayloadSnapshot>;
-        pub fn pbft_service_verified_votes_save_own_verified_vote(
-            self: &BridgeConsensusApplication,
-            canonical_vote_rlp: &[u8],
-            weight: u64,
-        ) -> Result<PbftVotePersistenceResult>;
         pub fn pbft_service_generate_signed_vote_with_weight(
             self: &BridgeConsensusApplication,
             input: PbftVoteGenerationInput,

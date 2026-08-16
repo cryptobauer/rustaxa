@@ -704,8 +704,15 @@ leader-selection callers that have not yet moved behind operation-shaped native 
 Current state: `vote_manager_shim` is deleted. PBFT vote generation, admission, progress, certificate/reward selection,
 cleanup, and persistence are application-root tasks; public reads use `ConsensusQueryApi`, network routing uses
 `ConsensusNetworkApi`, and only signing, tarcap transport, and finalization byte-materialization remain named leaves.
-Completion condition: `pbft_manager_shim` becomes only a leaf executor adapter, then is deleted after its last named
-clients use separate transport, execution, signing, timer/process, or public adapters.
+The Rust-mode `PbftManager` facade and `pbft_manager_shim` are now deleted as well. `App` owns lifecycle through the
+single application root; daemon, proposal/certificate, period/sync, finalization, and local-vote flows enter root tasks;
+and local vote admission persists the own-vote row atomically. A private `ConsensusApplication::Runtime` still executes
+timer, signing, tarcap, lifecycle, and concrete FinalChain/EVM leaves through manager-shaped task/effect carriers.
+`App::close` permanently releases that runtime even on partial or repeated teardown, breaking the temporary
+host-service ownership cycle before configuration and process services are destroyed; ordinary `stopConsensus`
+remains restartable. Network status and sync planning each consume one coherent root snapshot.
+Completion condition: replace that compatibility executor and its remaining materializers with exact named leaf ports,
+then delete the corresponding bridge exports/carriers rather than treating the private runtime as a final boundary.
 
 Current network-root progress: native `PbftService` constructs and owns the single `ConsensusNetworkService`; App gives
 `Network` only a thin CXX adapter cloned from that root and injects it through both tarcap capabilities into the vote,
