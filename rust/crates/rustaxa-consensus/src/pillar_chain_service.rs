@@ -496,6 +496,18 @@ impl PillarChainService {
             .clone())
     }
 
+    /// Returns canonical current pillar-block bytes for compatibility
+    /// materialization without consulting a C++ sidecar.
+    pub fn current_block_rlp(&self) -> Result<Vec<u8>> {
+        let state = self.lock(true)?;
+        Ok(state
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
+            .current_block_rlp
+            .clone())
+    }
+
     /// Borrows the outer serialized state for native pillar task composition.
     ///
     /// Callers must drop the returned guard before FinalChain or C++ calls.
@@ -695,7 +707,7 @@ mod tests {
             state_root: H256::from_low_u64_be(1),
             previous_pillar_block_hash,
             bridge_root: H256::from_low_u64_be(2),
-            epoch: 3,
+            epoch: 3.into(),
             validator_vote_count_changes: Vec::new(),
         }
     }
@@ -972,7 +984,7 @@ mod tests {
                 state_root: H256::from_low_u64_be(1),
                 previous_pillar_block_hash: H256::zero(),
                 bridge_root: H256::from_low_u64_be(2),
-                epoch: 3,
+                epoch: 3.into(),
                 validator_vote_count_changes: Vec::new(),
             },
             vote_counts: Vec::new(),

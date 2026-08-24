@@ -328,9 +328,9 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
 
   EXPECT_EQ(final_chain->get_dpos_eligible_total_vote_count(0), 10u);
   EXPECT_EQ(final_chain->get_dpos_eligible_vote_count(0, validator_address), 10u);
-  EXPECT_TRUE(final_chain->get_dpos_is_eligible(0, validator_address));
+  EXPECT_GT(final_chain->get_dpos_eligible_vote_count(0, validator_address), 0);
   EXPECT_EQ(final_chain->get_dpos_eligible_vote_count(0, unknown_address), 0u);
-  EXPECT_FALSE(final_chain->get_dpos_is_eligible(0, unknown_address));
+  EXPECT_EQ(final_chain->get_dpos_eligible_vote_count(0, unknown_address), 0);
 
   const auto stakes = final_chain->get_dpos_validators_total_stakes(0);
   ASSERT_EQ(stakes.size(), 1u);
@@ -365,7 +365,7 @@ TEST_F(RustFinalChainTest, DposQueriesRejectMissingNonGenesisSnapshot) {
 
   EXPECT_THROW(final_chain->get_dpos_eligible_total_vote_count(1), std::exception);
   EXPECT_THROW(final_chain->get_dpos_eligible_vote_count(1, validator_address), std::exception);
-  EXPECT_THROW(final_chain->get_dpos_is_eligible(1, validator_address), std::exception);
+  EXPECT_THROW(final_chain->get_dpos_eligible_vote_count(1, validator_address), std::exception);
   EXPECT_THROW(final_chain->get_dpos_validators_total_stakes(1), std::exception);
 }
 

@@ -93,53 +93,6 @@ rust::Box<rustaxa::BridgeConsensusApplication> createReadyPillarService(const st
 
 }  // namespace
 
-TEST(PillarVoteBundleBridgeTest, currentAnchorDecisionsAndThresholdUseRuntimeState) {
-  const taraxa::PbftPeriod current_period{130};
-  const auto current_anchor = makeCurrentPillarAnchor(current_period);
-  const auto test_dir = tempStoragePath("rustaxa_pillar_current_anchor_decisions");
-  auto pillar_service = createReadyPillarService(test_dir);
-
-  rustaxa::PillarCurrentAnchorDecisionRequest request{};
-  request.operation = 0;
-  request.has_candidate_hash = true;
-  request.candidate_hash = current_anchor.hash.asArray();
-  auto decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
-  EXPECT_EQ(decision.status, 1);
-  EXPECT_FALSE(decision.selected);
-  EXPECT_FALSE(decision.has_current_anchor);
-
-  pillar_service->pbft_service_pillar_apply_planned_current_block_data(makeBytes(current_anchor.current_data_rlp), 0);
-  decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
-  EXPECT_EQ(decision.status, 0);
-  EXPECT_TRUE(decision.selected);
-  EXPECT_TRUE(decision.has_current_anchor);
-  EXPECT_EQ(decision.current_period, current_period);
-  EXPECT_EQ(decision.current_hash, current_anchor.hash.asArray());
-  EXPECT_NE(decision.anchor_generation, 0);
-
-  request = {};
-  request.operation = 1;
-  request.pbft_period = current_period + 1;
-  decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
-  EXPECT_EQ(decision.status, 0);
-  EXPECT_TRUE(decision.selected);
-
-  request.pbft_period = 0;
-  decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
-  EXPECT_EQ(decision.status, 4);
-  EXPECT_FALSE(decision.selected);
-
-  request = {};
-  request.operation = 2;
-  request.pbft_period = current_period + 10;
-  request.pillar_blocks_interval = 10;
-  decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
-  EXPECT_EQ(decision.status, 0);
-  EXPECT_TRUE(decision.selected);
-
-  std::filesystem::remove_all(test_dir);
-}
-
 TEST(PillarVoteBundleBridgeTest, preparePillarFinalizationReturnsMissingCurrentBlock) {
   const auto test_dir = tempStoragePath("rustaxa_pillar_finalize_prepare_missing_current");
   auto pillar_service = createReadyPillarService(test_dir);

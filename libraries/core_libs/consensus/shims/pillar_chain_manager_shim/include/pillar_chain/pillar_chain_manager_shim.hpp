@@ -133,7 +133,9 @@ struct PillarVoteValidationPlan {
  *   uniqueness results computed from C++ sidecar voter recovery.
  *
  * Inputs/outputs:
- * - `pillar_votes` supplies duplicate and Rust identity uniqueness checks.
+ * - `service` supplies duplicate and Rust identity uniqueness checks.
+ * - `final_chain` supplies the exact native DPoS vote-count fact after Rust
+ *   preparation identifies the voter and period.
  * - Returned `period`, `vote_hash`, and `recovered_voter` are populated from
  *   Rust inspection when the vote reaches identity checks.
  *
@@ -146,7 +148,8 @@ struct PillarVoteValidationPlan {
  */
 PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarVote>& vote,
-                                                    const rustaxa::BridgeConsensusApplication& service);
+                                                    const rustaxa::BridgeConsensusApplication& service,
+                                                    const final_chain::FinalChain& final_chain);
 
 /**
  * Stable logging helper for explicit validation reason reporting.
@@ -259,16 +262,21 @@ class PillarChainManager {
    *
    * `vote` supplies canonical RLP. The result distinguishes new acceptance,
    * exact duplicate, same-validator/period conflict, and accepted DPoS weight.
-   * - Native consensus owns relevance, signature recovery, uniqueness, DPoS
-   *   lookup, stale-anchor revalidation, and live publication as one task.
+   * - Native consensus owns relevance, signature recovery, uniqueness,
+   *   stale-anchor revalidation, and live publication; C++ supplies exact
+   *   native FinalChain DPoS facts between preparation and apply.
    * - No C++ validation receipt or trusted network follow-up insertion path exists.
-   * - Deterministic rejection returns an all-false report; infrastructure
-   *   failures propagate. Duplicates are identified before DPoS lookup.
+   * - Deterministic rejection returns an all-false report. A DPoS snapshot
+   *   that is not finalized yet returns `deferred` without consuming the
+   *   preparation, so later bundle or rebroadcast delivery may retry.
+   *   Other infrastructure failures propagate. Duplicates are identified
+   *   before DPoS lookup.
    */
   struct PillarVoteAdmissionReport {
     bool accepted = false;
     bool already_present = false;
     bool conflict = false;
+    bool deferred = false;
     uint64_t validator_vote_count = 0;
   };
   PillarVoteAdmissionReport admitPillarVote(const std::shared_ptr<PillarVote>& vote);
@@ -381,11 +389,6 @@ class PillarChainManager {
                                                                   bool above_threshold = false) const;
 
   /**
-   * Checks whether a proposed pillar block properly links to the finalized pillar chain.
-   */
-  bool isValidPillarBlock(const std::shared_ptr<PillarBlock>& pillar_block) const;
-
-  /**
    * Calculates the pillar consensus threshold for a DPoS period in Rust.
    *
    * Returns:
@@ -398,13 +401,6 @@ class PillarChainManager {
   /** Native apply; trusted mode is private and used only for storage-authenticated startup replay. */
   PillarVoteAdmissionReport admitPillarVoteImpl(const std::shared_ptr<PillarVote>& vote, bool trusted_local_or_restore);
 
-  /**
-   * Persists and installs a new current pillar block snapshot.
-   */
-  void saveNewPillarBlock(const std::shared_ptr<PillarBlock>& pillar_block,
-                          std::vector<state_api::ValidatorVoteCount>&& new_vote_counts,
-                          uint64_t expected_anchor_generation);
-
  private:
   const FicusHardforkConfig& kFicusHfConfig;
 
@@ -413,8 +409,6 @@ class PillarChainManager {
   std::shared_ptr<final_chain::FinalChain> final_chain_;
 
   const addr_t node_addr_;
-
-  std::shared_ptr<PillarBlock> current_pillar_block_;
 
   mutable std::shared_mutex mutex_;
 

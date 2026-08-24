@@ -23,6 +23,7 @@ class GasPricer;
 #endif
 #ifdef RUSTAXA_ENABLE
 class ConsensusApplication;
+class ConsensusProcess;
 #endif
 
 class App : public std::enable_shared_from_this<App>, public AppBase {
@@ -45,6 +46,10 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
 #ifdef RUSTAXA_ENABLE
   /** Returns the application-owned native consensus task root for Rust-mode fixtures and named executors. */
   std::shared_ptr<ConsensusApplication> getConsensusApplication() const { return consensus_application_; }
+  /** Starts only the App-owned native consensus process. */
+  void startConsensus();
+  /** Stops only the App-owned native consensus process and joins its worker. */
+  void stopConsensus();
 #endif
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<PbftManager> getPbftManager() const { return pbft_mgr_; }
@@ -113,6 +118,7 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<DbStorage> old_db_;
 #ifdef RUSTAXA_ENABLE
   std::shared_ptr<ConsensusApplication> consensus_application_;
+  std::unique_ptr<ConsensusProcess> consensus_process_;
 #endif
   std::shared_ptr<DagManager> dag_mgr_;
   std::shared_ptr<TransactionManager> trx_mgr_;

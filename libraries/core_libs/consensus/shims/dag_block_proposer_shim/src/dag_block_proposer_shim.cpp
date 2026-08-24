@@ -250,6 +250,9 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   proof_report.vdf_rlp = to_rust_vec(vdf.rlp());
   step = dag_mgr_->reportProposerVdfProof(proposer_session_id, std::move(proof_report));
   fail_on_invalid_report(step);
+  if (auto done = finish_if_complete(step)) {
+    return *done;
+  }
 
   if (step.action == kDagProposerSessionActionStaleProofSleep) {
     thisThreadSleepForMilliSeconds(step.stale_proof_sleep_ms);

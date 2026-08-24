@@ -1,33 +1,51 @@
 //! Thin CXX conversions for native pillar-vote application tasks.
 //!
 //! Rust consensus owns vote admission, relevance, weighted bundles, durable
-//! lookups, network chunking, and pillar finalization. This module only unwraps
-//! the borrowed native FinalChain handle and converts stable FFI carriers.
+//! lookups, network chunking, and pillar finalization. This module converts the
+//! stable FFI carriers used while C++ supplies exact external-EVM DPoS facts.
 
 use crate::ffi::rustaxa_ffi::{
     PillarBlockFinalizationAcknowledgeRequest, PillarBlockFinalizationAcknowledgeResult,
     PillarBlockFinalizationPrepareResult, PillarBlockFinalizationRequest,
     PillarConsensusThresholdLookup, PillarVoteRecord,
-    PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteSingleAdmissionContext,
+    PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan,
+    PillarVoteSingleAdmissionApplyInput as FfiPillarVoteSingleAdmissionApplyInput,
+    PillarVoteSingleAdmissionApplyPlan as FfiPillarVoteSingleAdmissionApplyPlan,
+    PillarVoteSingleAdmissionContext,
     PillarVoteSingleAdmissionPreparePlan as FfiPillarVoteSingleAdmissionPreparePlan,
-    PillarVoteSingleAdmissionWithFinalChainPlan, PillarVotesPayloadLookup,
+    PillarVoteSingleAdmissionValidationPlan as FfiPillarVoteSingleAdmissionValidationPlan,
+    PillarVotesPayloadLookup,
 };
 use crate::ffi::BridgeApp;
 use anyhow::Result;
 
 #[allow(dead_code)]
 impl BridgeApp {
-    pub fn pbft_service_pillar_validate_single_vote_with_final_chain(
+    pub fn pbft_service_pillar_prepare_single_vote_external_facts(
         &self,
         vote_rlp: Vec<u8>,
         context: PillarVoteSingleAdmissionContext,
+        trusted_local_or_restore: bool,
     ) -> Result<FfiPillarVoteSingleAdmissionPreparePlan> {
-        let result = self.0.validate_single_pillar_vote_with_final_chain(
-            self.0.final_chain_for_bridge(),
-            vote_rlp,
-            native_single_context(context),
+        self.0
+            .prepare_single_pillar_vote_external_facts(
+                vote_rlp,
+                native_single_context(context),
+                trusted_local_or_restore,
+            )
+            .map(native_prepare_to_ffi)
+    }
+
+    pub fn pbft_service_pillar_validate_prepared_single_vote_external_facts(
+        &self,
+        prepared: FfiPillarVoteSingleAdmissionPreparePlan,
+        validator_vote_count: u64,
+    ) -> Result<FfiPillarVoteSingleAdmissionValidationPlan> {
+        let result = self.0.validate_prepared_single_pillar_vote_external_facts(
+            ffi_prepare_to_native(prepared),
+            validator_vote_count,
         )?;
-        Ok(FfiPillarVoteSingleAdmissionPreparePlan {
+        Ok(FfiPillarVoteSingleAdmissionValidationPlan {
             status: result.status,
             period: result.period,
             vote_hash: result.vote_hash,
@@ -35,29 +53,25 @@ impl BridgeApp {
         })
     }
 
-    pub fn pbft_service_pillar_apply_single_vote_with_final_chain(
+    pub fn pbft_service_pillar_apply_prepared_single_vote_external_facts(
         &self,
-        vote_rlp: Vec<u8>,
-        context: PillarVoteSingleAdmissionContext,
-        trusted_local_or_restore: bool,
-    ) -> Result<PillarVoteSingleAdmissionWithFinalChainPlan> {
-        let result = self.0.apply_single_pillar_vote_with_final_chain(
-            self.0.final_chain_for_bridge(),
-            vote_rlp,
-            native_single_context(context),
-            trusted_local_or_restore,
+        input: FfiPillarVoteSingleAdmissionApplyInput,
+    ) -> Result<FfiPillarVoteSingleAdmissionApplyPlan> {
+        let result = self.0.apply_prepared_single_pillar_vote_external_facts(
+            rustaxa_consensus::pillar_vote_service::PillarVoteSingleAdmissionApplyInput {
+                vote_hash: input.vote_hash,
+                validator_vote_count: input.validator_vote_count,
+                has_total_eligible_vote_count: input.has_total_eligible_vote_count,
+                total_eligible_vote_count: input.total_eligible_vote_count,
+            },
         )?;
-        Ok(PillarVoteSingleAdmissionWithFinalChainPlan {
+        Ok(FfiPillarVoteSingleAdmissionApplyPlan {
             status: result.status,
             accepted: result.accepted,
             duplicate: result.duplicate,
             conflict_found: result.conflict_found,
             conflicting_vote_hash: result.conflicting_vote_hash,
             block_weight: result.block_weight,
-            validator_vote_count: result.validator_vote_count,
-            period: result.period,
-            vote_hash: result.vote_hash,
-            voter: result.voter,
         })
     }
 
@@ -154,6 +168,42 @@ impl BridgeApp {
             latest_finalized_period: result.latest_finalized_period,
             latest_finalized_hash: result.latest_finalized_hash,
         })
+    }
+}
+
+fn native_prepare_to_ffi(
+    value: rustaxa_consensus::pillar_vote_service::PillarVoteSingleAdmissionPreparePlan,
+) -> FfiPillarVoteSingleAdmissionPreparePlan {
+    FfiPillarVoteSingleAdmissionPreparePlan {
+        status: value.status,
+        can_query_dpos: value.can_query_dpos,
+        needs_threshold: value.needs_threshold,
+        period: value.period,
+        block_hash: value.block_hash,
+        vote_hash: value.vote_hash,
+        voter: value.voter,
+        anchor_generation: value.anchor_generation,
+        has_current_anchor: value.has_current_anchor,
+        current_period: value.current_period,
+        current_hash: value.current_hash,
+    }
+}
+
+fn ffi_prepare_to_native(
+    value: FfiPillarVoteSingleAdmissionPreparePlan,
+) -> rustaxa_consensus::pillar_vote_service::PillarVoteSingleAdmissionPreparePlan {
+    rustaxa_consensus::pillar_vote_service::PillarVoteSingleAdmissionPreparePlan {
+        status: value.status,
+        can_query_dpos: value.can_query_dpos,
+        needs_threshold: value.needs_threshold,
+        period: value.period,
+        block_hash: value.block_hash,
+        vote_hash: value.vote_hash,
+        voter: value.voter,
+        anchor_generation: value.anchor_generation,
+        has_current_anchor: value.has_current_anchor,
+        current_period: value.current_period,
+        current_hash: value.current_hash,
     }
 }
 

@@ -24,6 +24,7 @@
 #include "metrics/transaction_queue_metrics.hpp"
 #include "network/network.hpp"
 #ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_host_ports.hpp"
 #include "network/consensus_network_api.hpp"
 #include "network/consensus_query.hpp"
 #endif
@@ -178,6 +179,7 @@ void App::init(const cli::Config &cli_conf) {
 
 #ifdef RUSTAXA_ENABLE
   final_chain_ = std::make_shared<final_chain::FinalChain>(db_, conf_, node_addr, consensus_application_);
+  consensus_process_ = std::make_unique<ConsensusProcess>(consensus_application_, conf_, final_chain_);
 #else
   final_chain_ = std::make_shared<final_chain::FinalChain>(db_, conf_, node_addr);
 #endif
@@ -224,9 +226,7 @@ void App::init(const cli::Config &cli_conf) {
   pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(conf_.genesis.state.hardforks.ficus_hf, db_,
                                                                          final_chain_, key_manager_, node_addr);
 #endif
-#ifdef RUSTAXA_ENABLE
-  consensus_application_->initializeHost(conf_, db_, dag_mgr_, trx_mgr_, final_chain_, pillar_chain_mgr_);
-#else
+#ifndef RUSTAXA_ENABLE
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, final_chain_,
                                             pillar_chain_mgr_);
 #endif
@@ -332,7 +332,7 @@ void App::start() {
   vote_mgr_->setNetwork(network_);
 #endif
 #ifdef RUSTAXA_ENABLE
-  consensus_application_->attachNetwork(network_);
+  consensus_process_->attachNetwork(network_);
 #else
   pbft_mgr_->setNetwork(network_);
 #endif
@@ -360,7 +360,7 @@ void App::start() {
   dag_block_proposer_->start();
 
 #ifdef RUSTAXA_ENABLE
-  consensus_application_->startConsensus();
+  startConsensus();
 #else
   pbft_mgr_->start();
 #endif
@@ -455,10 +455,8 @@ void App::close() {
     dag_block_proposer_->stop();
   }
 #ifdef RUSTAXA_ENABLE
-  // This one-way teardown must run even if startup never completed or close()
-  // was previously entered, because Runtime owns services that own the root.
-  if (consensus_application_) {
-    consensus_application_->shutdownHost();
+  if (consensus_process_) {
+    stopConsensus();
   }
 #else
   if (first_close && pbft_mgr_) {
@@ -480,9 +478,6 @@ void App::rebuildDb() {
   // Read pbft blocks one by one
   PbftPeriod period = 1;
   std::shared_ptr<PeriodData> period_data, next_period_data;
-#ifdef RUSTAXA_ENABLE
-  dev::bytes period_data_raw, next_period_data_raw;
-#endif
   std::atomic_bool stop_async = false;
 
   std::future<void> fut = std::async(std::launch::async, [this, &stop_async]() {
@@ -492,45 +487,25 @@ void App::rebuildDb() {
       thisThreadSleepForMilliSeconds(1);
     }
   });
-#ifdef RUSTAXA_ENABLE
-  RebuildQueueWorkerGuard worker_guard(stop_async, fut);
-#endif
-
   while (true) {
     std::vector<std::shared_ptr<PbftVote> > cert_votes;
     if (next_period_data != nullptr) {
       period_data = next_period_data;
-#ifdef RUSTAXA_ENABLE
-      period_data_raw = std::move(next_period_data_raw);
-#endif
     } else {
       auto data = old_db_->getPeriodDataRaw(period);
       if (data.size() == 0) break;
-#ifdef RUSTAXA_ENABLE
-      period_data = std::make_shared<PeriodData>(data);
-      period_data_raw = std::move(data);
-#else
       period_data = std::make_shared<PeriodData>(std::move(data));
-#endif
     }
     auto data = old_db_->getPeriodDataRaw(period + 1);
     if (data.size() == 0) {
       next_period_data = nullptr;
-#ifdef RUSTAXA_ENABLE
-      next_period_data_raw.clear();
-#endif
       // Latest finalized block cert votes are saved in db as 2t+1 cert votes
       auto votes = old_db_->getAllTwoTPlusOneVotes();
       for (auto v : votes) {
         if (v->getType() == PbftVoteTypes::cert_vote) cert_votes.push_back(v);
       }
     } else {
-#ifdef RUSTAXA_ENABLE
-      next_period_data = std::make_shared<PeriodData>(data);
-      next_period_data_raw = std::move(data);
-#else
       next_period_data = std::make_shared<PeriodData>(std::move(data));
-#endif
       // More efficient to get sender(which is expensive) on this thread which is not as busy as the thread that
       // pushes blocks to chain
       for (auto &t : next_period_data->transactions) t->getSender();
@@ -541,27 +516,7 @@ void App::rebuildDb() {
                  << " from old DB into syncing queue for processing, final chain size: "
                  << final_chain_->lastBlockNumber();
 
-#ifdef RUSTAXA_ENABLE
-    auto previous_cert_vote_payloads = toRustCertVotePayloads(period_data->previous_block_cert_votes);
-    auto current_cert_vote_payloads = toRustCertVotePayloads(cert_votes);
-    rustaxa::PeriodDataQueuePushOutcome outcome;
-    try {
-      outcome = rustaxa::pbft_manager_runtime_period_data_queue_push(
-          consensus_application_->service(), toRustBytes(period_data_raw), dev::p2p::NodeID().asArray(),
-          std::move(previous_cert_vote_payloads), std::move(current_cert_vote_payloads));
-    } catch (const std::exception &e) {
-      throw std::runtime_error("PBFT manager period-data queue: " + std::string(e.what()));
-    } catch (...) {
-      throw std::runtime_error("PBFT manager period-data queue: Rust push failed");
-    }
-    if (!outcome.accepted) {
-      LOG(log_er_) << "Rejected synced period data push for period " << period << ": expected "
-                   << outcome.expected_next_period << ", got " << outcome.actual_period << " (current period "
-                   << outcome.current_period << ", effective queue size " << outcome.effective_size << ")";
-    }
-#else
     pbft_mgr_->periodDataQueuePush(std::move(*period_data), dev::p2p::NodeID(), std::move(cert_votes));
-#endif
     pbft_mgr_->waitForPeriodFinalization();
     period++;
     if (period % 100 == 0) {
@@ -578,16 +533,27 @@ void App::rebuildDb() {
       LOG(log_si_) << "Rebuilding period: " << period;
     }
   }
-#ifdef RUSTAXA_ENABLE
-  worker_guard.stop();
-#else
   stop_async = true;
   fut.wait();
-#endif
   // Handles the race case if some blocks are still in the queue
   pbft_mgr_->pushSyncedPbftBlocksIntoChain();
   LOG(log_si_) << "Rebuild completed";
 #endif
 }
+
+#ifdef RUSTAXA_ENABLE
+void App::startConsensus() {
+  if (!consensus_process_) {
+    throw std::logic_error("CONSENSUS_PROCESS_UNINITIALIZED");
+  }
+  consensus_process_->start();
+}
+
+void App::stopConsensus() {
+  if (consensus_process_) {
+    consensus_process_->stop();
+  }
+}
+#endif
 
 }  // namespace taraxa

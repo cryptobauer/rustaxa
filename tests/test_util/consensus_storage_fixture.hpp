@@ -7,7 +7,7 @@
 #include "config/config.hpp"
 #include "storage/storage.hpp"
 #ifdef RUSTAXA_ENABLE
-#include "transaction/dag_transaction_service.hpp"
+#include "consensus/consensus_application.hpp"
 #endif
 
 namespace taraxa::core_tests {

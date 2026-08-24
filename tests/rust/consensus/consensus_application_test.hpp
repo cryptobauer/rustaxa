@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <utility>
 
 #include "rustaxa-bridge/ffi.rs.h"
@@ -54,6 +55,24 @@ inline rust::Box<BridgeConsensusApplication> createConsensusApplication(
     uint16_t changing_interval = 10, rust::Vec<GenesisAccount> genesis_accounts = {},
     rust::Vec<GenesisValidator> genesis_validators = {}, GenesisDposConfig dpos_config = genesisDposConfig(),
     FinalChainRewardsConfig rewards_config = finalChainRewardsConfig()) {
+  // Tests written before the native process policy lived in the application
+  // root leave these fields zero-initialized. Supply production-shaped values
+  // while preserving any test-specific nonzero override.
+  if (pbft_config.lambda_min_ms == 0) pbft_config.lambda_min_ms = 100;
+  if (pbft_config.lambda_change_interval == 0) pbft_config.lambda_change_interval = 10;
+  if (pbft_config.lambda_change_ms == 0) pbft_config.lambda_change_ms = 10;
+  if (pbft_config.consensus_delay_ms == 0) pbft_config.consensus_delay_ms = 400;
+  if (pbft_config.dpos_blocks_per_year == 0) pbft_config.dpos_blocks_per_year = 1'000;
+  if (pbft_config.recently_finalized_factor == 0) pbft_config.recently_finalized_factor = 2;
+  if (pbft_config.chain_id == 0) pbft_config.chain_id = 1;
+  if (pbft_config.default_pbft_gas_limit == 0) pbft_config.default_pbft_gas_limit = 1'000'000;
+  if (pbft_config.cornus_activation_period == 0) {
+    pbft_config.cornus_activation_period = std::numeric_limits<uint64_t>::max();
+  }
+  if (pbft_config.cornus_pbft_gas_limit == 0) {
+    pbft_config.cornus_pbft_gas_limit = pbft_config.default_pbft_gas_limit;
+  }
+
   SortitionRuntimeConfig sortition{};
   sortition.threshold_upper = 0x100;
   sortition.difficulty_min = 1;
@@ -74,7 +93,7 @@ inline rust::Box<BridgeConsensusApplication> createConsensusApplication(
   dag_genesis[31] = 2;
   return create_consensus_application(storage_path.string(), 1, 0, storage_genesis, dag_genesis, dag_expiry_limit, 100,
                                       sortition, TransactionQueueConfig{16}, gas_pricer, 1'000'000,
-                                      std::move(pbft_config), 1'000'000, 0, std::move(genesis_accounts),
+                                      std::move(pbft_config), {}, 1'000'000, 0, std::move(genesis_accounts),
                                       std::move(genesis_validators), std::move(dpos_config), std::move(rewards_config));
 }
 

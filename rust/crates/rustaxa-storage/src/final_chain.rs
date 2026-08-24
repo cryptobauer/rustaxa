@@ -309,6 +309,38 @@ impl<D: DbReader> FinalChainRepository<D> {
 }
 
 impl<D: DbReader + DbWriter> FinalChainRepository<D> {
+    /// Atomically removes block lookup rows below `first_to_keep`.
+    ///
+    /// Missing rows terminate the backwards walk, block zero is retained, and
+    /// unrelated receipts, snapshots, and head metadata remain unchanged. The
+    /// returned count is the number of removed index triples.
+    pub fn prune_block_indexes_before(&self, first_to_keep: u64) -> Result<u64> {
+        let mut batch = self.db.create_batch();
+        let mut removed = 0u64;
+        let mut number = first_to_keep.saturating_sub(1);
+        while number > 0 {
+            let Some(hash) = self.block_hash_by_number(number)? else {
+                break;
+            };
+            self.db.batch_delete(
+                &mut batch,
+                Column::FinalChainBlkByNumber,
+                &number.to_le_bytes(),
+            )?;
+            self.db.batch_delete(
+                &mut batch,
+                Column::FinalChainBlkHashByNumber,
+                &number.to_le_bytes(),
+            )?;
+            self.db
+                .batch_delete(&mut batch, Column::FinalChainBlkNumberByHash, &hash)?;
+            removed += 1;
+            number -= 1;
+        }
+        self.db.commit_batch(batch)?;
+        Ok(removed)
+    }
+
     /// Persists a finalized block header and its lookup indexes atomically.
     ///
     /// C++ mapping: the final-chain portions of `FinalChain::appendBlock`.
@@ -1003,6 +1035,41 @@ mod tests {
 
         let result = repo.block_hash_by_number(9).unwrap();
         assert_eq!(result, Some(hash));
+    }
+
+    #[test]
+    fn prune_block_indexes_removes_only_history_below_retained_block() {
+        let db = Arc::new(MockFinalChainStore::new());
+        let repo = FinalChainRepository::new(db.clone());
+        for number in 0u64..=3 {
+            let hash = H256::from_low_u64_be(number + 10);
+            db.put(
+                Column::FinalChainBlkByNumber,
+                &number.to_le_bytes(),
+                &[number as u8],
+            );
+            db.put(
+                Column::FinalChainBlkHashByNumber,
+                &number.to_le_bytes(),
+                hash.as_bytes(),
+            );
+            db.put(
+                Column::FinalChainBlkNumberByHash,
+                hash.as_bytes(),
+                &number.to_le_bytes(),
+            );
+        }
+
+        assert_eq!(repo.prune_block_indexes_before(3).unwrap(), 2);
+        assert!(repo.block_header_raw(1).unwrap().is_none());
+        assert!(repo.block_header_raw(2).unwrap().is_none());
+        assert!(repo.block_header_raw(0).unwrap().is_some());
+        assert!(repo.block_header_raw(3).unwrap().is_some());
+        assert!(
+            repo.block_number_by_hash(H256::from_low_u64_be(11))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

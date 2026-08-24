@@ -673,8 +673,8 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
 std::shared_ptr<const FinalizationResult> FinalChain::commitNativeSession(
     rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, PeriodData&& period_data,
     std::vector<h256>&& finalized_dag_blk_hashes) {
-  auto report = rust_execution_api_.value()->consensus_execution_commit_session(
-      consensus_application_->service(), std::move(session));
+  auto report = rust_execution_api_.value()->consensus_execution_commit_session(consensus_application_->service(),
+                                                                                std::move(session));
   if (report.status != kFinalChainExecutionStatusComplete || !report.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust execution runtime failed native commit: " +
                       std::string(report.error_code));
@@ -687,10 +687,12 @@ std::shared_ptr<const FinalizationResult> FinalChain::commitNativeSession(
     auto receipt_data = into_string(receipt.data);
     receipts.push_back(util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_data)));
   }
-  auto result = std::make_shared<FinalizationResult>(FinalizationResult{
-      {period_data.pbft_blk->getBeneficiary(), period_data.pbft_blk->getTimestamp(),
-       std::move(finalized_dag_blk_hashes), period_data.pbft_blk->getBlockHash()},
-      std::move(header), std::move(period_data.transactions), std::move(receipts)});
+  auto result = std::make_shared<FinalizationResult>(
+      FinalizationResult{{period_data.pbft_blk->getBeneficiary(), period_data.pbft_blk->getTimestamp(),
+                          std::move(finalized_dag_blk_hashes), period_data.pbft_blk->getBlockHash()},
+                         std::move(header),
+                         std::move(period_data.transactions),
+                         std::move(receipts)});
   block_finalized_emitter_.emit(result);
   return result;
 }
@@ -700,10 +702,9 @@ std::vector<SharedTransaction> FinalChain::makeSystemTransactions(
   const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
   const auto is_pillar_block_period =
       config_.genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(request.period + delegationDelay());
-  auto system_facts = external_evm_state_api_.collectSystemTransactionFacts(
-      request, is_pillar_block_period, block_gas_limit_, bridge_contract_address);
-  auto plan = rust_execution_api_.value()->consensus_execution_plan_system_transactions(
-      system_facts);
+  auto system_facts = external_evm_state_api_.collectSystemTransactionFacts(request, is_pillar_block_period,
+                                                                            block_gas_limit_, bridge_contract_address);
+  auto plan = rust_execution_api_.value()->consensus_execution_plan_system_transactions(system_facts);
   if (plan.request_id != request.request_id || plan.period != request.period) {
     throw DbException("FinalChain::makeSystemTransactions Rust plan identity mismatch");
   }
@@ -945,9 +946,7 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
 
   rustaxa::AccountLookup rust_account;
   try {
-    rust_account = blk_n.has_value()
-                       ? consensus_application_->service().get_account_at_block(*blk_n, into_address_array(addr))
-                       : consensus_application_->service().get_account(into_address_array(addr));
+    rust_account = consensus_application_->service().get_account_at_block(requested_block, into_address_array(addr));
   } catch (const std::exception& error) {
     // External-EVM publications deliberately omit native account snapshots. When the requested native height is ahead
     // of the retained EVM state, use its latest committed snapshot for the concrete-EVM account boundary.
@@ -1074,11 +1073,20 @@ uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const&
   return consensus_application_->service().get_dpos_eligible_vote_count(blk_num, into_address_array(addr));
 }
 
-bool FinalChain::dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) const {
-  return consensus_application_->service().get_dpos_is_eligible(blk_num, into_address_array(addr));
+std::vector<state_api::ValidatorVoteCount> FinalChain::dposValidatorsEligibleVoteCounts(EthBlockNumber blk_num) const {
+  auto rust_vote_counts = consensus_application_->service().get_dpos_validators_eligible_vote_counts(blk_num);
+  std::vector<state_api::ValidatorVoteCount> vote_counts;
+  vote_counts.reserve(rust_vote_counts.size());
+  for (const auto& rust_vote_count : rust_vote_counts) {
+    vote_counts.push_back(
+        state_api::ValidatorVoteCount{into_address(rust_vote_count.address), rust_vote_count.vote_count});
+  }
+  return vote_counts;
 }
 
-void FinalChain::prune(EthBlockNumber) { throw_unimplemented_final_chain_api("prune"); }
+bool FinalChain::dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) const {
+  return dposEligibleVoteCount(blk_num, addr) > 0;
+}
 
 void FinalChain::waitForFinalized() { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
 
@@ -1119,8 +1127,7 @@ h256 FinalChain::getBridgeEpoch(EthBlockNumber blk_num) const {
   return readBridgeContractHash(blk_num, get_bridge_epoch_method, "getBridgeEpoch");
 }
 
-h256 FinalChain::readBridgeContractHash(EthBlockNumber block_number, const bytes& method,
-                                        const char* api_name) const {
+h256 FinalChain::readBridgeContractHash(EthBlockNumber block_number, const bytes& method, const char* api_name) const {
   const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
   const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
   // Native-only finalizations advance the canonical block height without changing EVM state. Query the latest committed

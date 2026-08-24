@@ -59,6 +59,10 @@ class AppBase {
 #ifdef RUSTAXA_ENABLE
   /** Returns the native application root for Rust-mode fixtures and named executors. */
   virtual std::shared_ptr<ConsensusApplication> getConsensusApplication() const = 0;
+  /** Starts only the App-owned native consensus process. */
+  virtual void startConsensus() = 0;
+  /** Stops only the App-owned native consensus process and joins its worker. */
+  virtual void stopConsensus() = 0;
 #endif
 #ifndef RUSTAXA_ENABLE
   virtual std::shared_ptr<PbftManager> getPbftManager() const = 0;

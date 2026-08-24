@@ -12,6 +12,10 @@
 #include "common/encoding_solidity.hpp"
 #include "common/vrf_wrapper.hpp"
 #include "config/config.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_host_ports.hpp"
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 #include "final_chain/trie_common.hpp"
 #include "libdevcore/CommonJS.h"
 #include "network/rpc/eth/Eth.h"
@@ -71,9 +75,14 @@ struct FinalChainTest : WithDataDir {
   }
 
   void init() {
-    resetSut();
-    const auto& effective_balances = effective_initial_balances(cfg.genesis.state);
+#ifdef RUSTAXA_ENABLE
     cfg.genesis.state.dpos.yield_percentage = 0;
+    resetSut();
+#else
+    resetSut();
+    cfg.genesis.state.dpos.yield_percentage = 0;
+#endif
+    const auto& effective_balances = effective_initial_balances(cfg.genesis.state);
     for (const auto& [addr, _] : cfg.genesis.state.initial_balances) {
       auto acc_actual = SUT->getAccount(addr);
       ASSERT_TRUE(acc_actual);
@@ -230,6 +239,37 @@ TEST_F(FinalChainTest, initial_balances) {
   init();
 }
 
+TEST_F(FinalChainTest, rustModeExternalEvmAccountFactsPreserveOrderAndMissingRows) {
+#ifdef RUSTAXA_ENABLE
+  const auto present = addr_t::random();
+  const auto missing = addr_t::random();
+  cfg.genesis.state.initial_balances = {{present, 123}};
+  init();
+
+  ExternalEvmPort port(SUT);
+  rustaxa::HostFinalChainAccountFactsRequest request{};
+  request.effect_id = {.generation = 7, .sequence = 9};
+  request.addresses.push_back({.bytes = present.asArray()});
+  request.addresses.push_back({.bytes = missing.asArray()});
+  const auto report = port.consensusLoadFinalChainAccountFacts(request);
+
+  EXPECT_TRUE(report.succeeded);
+  EXPECT_EQ(report.effect_id.generation, 7);
+  EXPECT_EQ(report.effect_id.sequence, 9);
+  EXPECT_EQ(report.observed_block, SUT->lastBlockNumber());
+  ASSERT_EQ(report.accounts.size(), 2);
+  const std::array<uint8_t, 32> zero_word{};
+  EXPECT_EQ(report.accounts[0].address, present.asArray());
+  EXPECT_TRUE(report.accounts[0].found);
+  EXPECT_EQ(report.accounts[0].nonce, zero_word);
+  EXPECT_EQ(report.accounts[0].balance[31], 123);
+  EXPECT_EQ(report.accounts[1].address, missing.asArray());
+  EXPECT_FALSE(report.accounts[1].found);
+#else
+  GTEST_SKIP() << "FinalChain shim is disabled";
+#endif
+}
+
 TEST_F(FinalChainTest, contract) {
   auto sender_keys = dev::KeyPair::create();
   const auto& addr = sender_keys.address();
@@ -343,6 +383,14 @@ TEST_F(FinalChainTest, initial_validators) {
     const auto address_votes = SUT->dposEligibleVoteCount(SUT->lastBlockNumber(), vk.address());
     EXPECT_EQ(votes_per_address, address_votes);
     EXPECT_EQ(validator_keys.size() * votes_per_address, total_votes);
+  }
+  const auto validator_vote_counts = SUT->dposValidatorsEligibleVoteCounts(SUT->lastBlockNumber());
+  ASSERT_EQ(validator_vote_counts.size(), validator_keys.size());
+  for (const auto& vk : validator_keys) {
+    const auto found = std::find_if(validator_vote_counts.begin(), validator_vote_counts.end(),
+                                    [&](const auto& fact) { return fact.addr == vk.address(); });
+    ASSERT_NE(found, validator_vote_counts.end());
+    EXPECT_EQ(found->vote_count, votes_per_address);
   }
 }
 

@@ -92,10 +92,10 @@ fn dag_hashes_to_ffi(hashes: Vec<[u8; 32]>) -> Vec<rustaxa_ffi::DagHash> {
         .collect()
 }
 
-fn pbft_hashes_to_ffi(hashes: Vec<[u8; 32]>) -> Vec<rustaxa_ffi::PbftFinalizationHash> {
+fn pbft_hashes_to_ffi(hashes: Vec<[u8; 32]>) -> Vec<rustaxa_ffi::DagHash> {
     hashes
         .into_iter()
-        .map(|hash| rustaxa_ffi::PbftFinalizationHash { hash })
+        .map(|hash| rustaxa_ffi::DagHash { hash })
         .collect()
 }
 
@@ -1279,7 +1279,7 @@ mod tests {
             state_root: H256::from_low_u64_be(0x10),
             previous_pillar_block_hash: H256::from_low_u64_be(0x11),
             bridge_root: H256::from_low_u64_be(0x12),
-            epoch: 13,
+            epoch: 13.into(),
             validator_vote_count_changes: vec![ValidatorVoteCountChange {
                 address: H160::from([0x14; 20]),
                 vote_count_change: -7,
@@ -1308,7 +1308,7 @@ mod tests {
             H256::from_low_u64_be(0x11).0
         );
         assert_eq!(view.bridge_root, H256::from_low_u64_be(0x12).0);
-        assert_eq!(view.epoch, 13);
+        assert_eq!(view.epoch, U256::from(13).to_big_endian());
         assert_eq!(view.block_hash, <[u8; 32]>::from(block.hash()));
         assert_eq!(view.validator_vote_count_changes.len(), 1);
         assert_eq!(

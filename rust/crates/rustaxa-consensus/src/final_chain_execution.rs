@@ -25,10 +25,9 @@ use triehash::ordered_trie_root;
 /// Native-only execution mode used by the current C++ `FinalChain::finalize`
 /// shim while arbitrary EVM execution remains outside Rust FinalChain.
 pub const FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY: u8 = 0;
-/// Mode reserved for the future C++/Rust EVM executor port. Phase 1 can build
-/// and validate full ordered EVM requests and reports, but successful
-/// EVM-backed commit is still rejected until system transactions, state roots,
-/// rewards, and receipt publication have parity coverage.
+/// Mode that permits external-EVM execution when arbitrary or system
+/// transactions require it, while retaining the native commit fast path for an
+/// otherwise empty period.
 pub const FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED: u8 = 1;
 
 /// Session is ready to expose the next execution step.

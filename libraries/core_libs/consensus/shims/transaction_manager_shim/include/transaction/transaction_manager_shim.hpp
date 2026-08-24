@@ -18,7 +18,6 @@
 #include "logger/logger.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
-#include "transaction/dag_transaction_service.hpp"
 #include "transaction/transaction.hpp"
 
 namespace taraxa {

@@ -2,7 +2,6 @@ use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeApp;
 use crate::ffi::BridgeConsensusExecutionApi;
 use crate::ffi::BridgeFinalChainExecutionSession;
-use crate::pbft_manager::pbft_manager_runtime_begin_proposal_session_with_hash;
 use rustaxa_consensus::Account;
 use rustaxa_consensus::ConsensusFinalChainConfig;
 use rustaxa_types::FinalChainNonce;
@@ -746,6 +745,17 @@ impl BridgeConsensusExecutionApi {
 }
 
 impl BridgeApp {
+    /// Prunes native FinalChain lookup indexes below the retained block number.
+    /// This exact storage leaf exposes neither a batch nor a repository handle.
+    pub fn prune_final_chain_before(
+        self: &BridgeApp,
+        first_to_keep: u64,
+    ) -> Result<u64, anyhow::Error> {
+        self.0
+            .final_chain_for_bridge()
+            .prune_block_indexes_before(first_to_keep)
+    }
+
     pub fn get_last_block_number(self: &BridgeApp) -> Result<u64, anyhow::Error> {
         let final_chain = self.0.final_chain_for_bridge();
         final_chain.last_block_number()
@@ -830,14 +840,6 @@ impl BridgeApp {
         ))
     }
 
-    pub fn get_account(
-        self: &BridgeApp,
-        address: &[u8; 20],
-    ) -> Result<rustaxa_ffi::AccountLookup, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        Ok(account_to_lookup(final_chain.account(*address)?))
-    }
-
     pub fn get_account_at_block(
         self: &BridgeApp,
         block_number: u64,
@@ -866,13 +868,27 @@ impl BridgeApp {
         final_chain.dpos_eligible_total_vote_count(block_number.into())
     }
 
-    pub fn get_dpos_is_eligible(
+    /// Returns every validator with nonzero eligible votes from the exact
+    /// finalized native DPoS snapshot, in canonical address order.
+    ///
+    /// Missing or corrupt snapshots remain bridge errors; the adapter does not
+    /// fall back to the external EVM head or substitute a neighboring period.
+    pub fn get_dpos_validators_eligible_vote_counts(
         self: &BridgeApp,
         block_number: u64,
-        address: &[u8; 20],
-    ) -> Result<bool, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        final_chain.dpos_is_eligible(block_number.into(), *address)
+    ) -> Result<Vec<rustaxa_ffi::HostValidatorVoteCount>, anyhow::Error> {
+        self.0
+            .final_chain_for_bridge()
+            .dpos_validators_eligible_vote_counts(block_number.into())
+            .map(|counts| {
+                counts
+                    .into_iter()
+                    .map(|count| rustaxa_ffi::HostValidatorVoteCount {
+                        address: count.address,
+                        vote_count: count.vote_count,
+                    })
+                    .collect()
+            })
     }
 
     pub fn get_dpos_validators_total_stakes(
@@ -965,36 +981,15 @@ impl BridgeApp {
     }
 }
 
-impl BridgeApp {
-    /// Starts PBFT proposal planning with the authoritative FinalChain hash for the proposal period.
-    ///
-    /// C++ supplies only proposal observations and executor-owned DAG/wallet facts. This method
-    /// reads the delayed Rust FinalChain view before publishing the runtime cursor; a missing hash
-    /// is retained as a typed `MissingFinalChainHash` proposal outcome, while storage failures
-    /// return an error and leave the previous cursor unchanged.
-    pub fn pbft_service_begin_proposal_session_with_final_chain(
-        &self,
-        fact: rustaxa_ffi::PbftManagerProposalInitialFact,
-    ) -> Result<(), anyhow::Error> {
-        let final_chain_hash = self
-            .0
-            .final_chain_for_bridge()
-            .pbft_final_chain_hash(fact.period)?;
-        pbft_manager_runtime_begin_proposal_session_with_hash(self, fact, final_chain_hash);
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dag_transaction_service::create_test_consensus_application;
-    use crate::ffi::BridgeDagStorageQueries;
+    use crate::ffi::BridgeStorageQueries;
     use crate::storage::create_dag_storage_queries;
     use ethereum_types::{H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
-    use rustaxa_consensus::pbft_manager::{PbftManagerProposalAction, PbftManagerProposalStatus};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1120,30 +1115,7 @@ mod tests {
         std::env::temp_dir().join(format!("{prefix}_{process_id}_{now_ns}"))
     }
 
-    fn proposal_fact(period: u64) -> rustaxa_ffi::PbftManagerProposalInitialFact {
-        rustaxa_ffi::PbftManagerProposalInitialFact {
-            period,
-            round: 1,
-            previous_pbft_block_hash: [0x11; 32],
-            last_period_dag_anchor_hash: [0x22; 32],
-            dag_genesis_hash: [0x22; 32],
-            dag_blocks_size: 10,
-            ghost_path_move_back: 0,
-            pbft_gas_limit: 1_000,
-            extra_data_required: false,
-            extra_data_available: true,
-            wallets: vec![rustaxa_ffi::PbftManagerProposalWalletFact {
-                wallet_index: 0,
-                dpos_eligible: true,
-                sortition_valid: true,
-            }],
-            ghost_path: Vec::new(),
-            has_non_finalized_fallback: false,
-            non_finalized_fallback_hash: [0; 32],
-        }
-    }
-
-    fn dag_queries(runtime: &BridgeApp) -> Box<BridgeDagStorageQueries> {
+    fn dag_queries(runtime: &BridgeApp) -> Box<BridgeStorageQueries> {
         create_dag_storage_queries(runtime)
     }
 
@@ -2144,45 +2116,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_block_validation_returns_wait_when_final_chain_hash_is_missing() {
-        let validator = [0xB3u8; 20];
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_final_chain_missing_wait");
-        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
-        let consensus_application =
-            make_final_chain(storage_path, vec![genesis_validator(validator, 10_000)]);
-
-        let plan = crate::pbft_manager::plan_pbft_manager_block_validation(
-            &consensus_application,
-            &consensus_application,
-            &rustaxa_ffi::PbftManagerBlockValidationFact {
-                block_hash: [0x11; 32],
-                period: 1,
-                previous_pbft_block_hash: [0; 32],
-                candidate_final_chain_hash: [0; 32],
-                expected_order_hash: [0x21; 32],
-                pbft_gas_limit: 42_000,
-                reward_vote_hashes: Vec::new(),
-                has_pillar_block_hash: false,
-                pillar_block_hash: [0; 32],
-                pivot_hash: [0x22; 32],
-                extra_data_required: false,
-                extra_data_present: false,
-                extra_data_pillar_hash_present: false,
-                pillar_block_required: false,
-            },
-        )
-        .expect("missing FinalChain hash should remain a typed wait plan");
-        assert_eq!((plan.action, plan.status), (3, 3));
-        assert_eq!(
-            plan.error_code,
-            "PBFT_MANAGER_BLOCK_VALIDATION_FINAL_CHAIN_HASH_MISSING"
-        );
-
-        drop(consensus_application);
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
     fn bridge_validates_pbft_final_chain_hash_at_delegation_delay_boundary() {
         let validator = [0xB2u8; 20];
         let temp_dir =
@@ -2201,41 +2134,12 @@ mod tests {
             .expect("delegation-delay boundary period should be ready");
         assert_eq!(ready, Some([0; 32]));
 
-        crate::pbft_manager::pbft_service_complete_bootstrap(&pbft_service)
-            .expect("PBFT service should accept proposal commands");
-        pbft_service
-            .pbft_service_begin_proposal_session_with_final_chain(proposal_fact(5))
-            .expect("ready proposal hash should start a session");
-        let proposal = crate::pbft_manager::pbft_manager_proposal_session_next(&pbft_service);
-        assert_eq!(
-            proposal.action,
-            PbftManagerProposalAction::BuildProposal.as_u8()
-        );
-        assert_eq!(
-            proposal.status,
-            PbftManagerProposalStatus::BuildReady.as_u8()
-        );
-        assert_eq!(proposal.final_chain_hash, [0; 32]);
-
         let future = pbft_service
             .0
             .final_chain_for_bridge()
             .pbft_final_chain_hash(6)
             .expect("future PBFT hash lookup should return");
         assert_eq!(future, None);
-
-        pbft_service
-            .pbft_service_begin_proposal_session_with_final_chain(proposal_fact(6))
-            .expect("missing proposal hash should remain a typed session outcome");
-        let proposal = crate::pbft_manager::pbft_manager_proposal_session_next(&pbft_service);
-        assert_eq!(
-            proposal.action,
-            PbftManagerProposalAction::SkipProposal.as_u8()
-        );
-        assert_eq!(
-            proposal.status,
-            PbftManagerProposalStatus::MissingFinalChainHash.as_u8()
-        );
 
         drop(pbft_service);
         let _ = fs::remove_dir_all(temp_dir);
@@ -2984,211 +2888,6 @@ mod tests {
         );
 
         drop(final_chain);
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_publishes_external_evm_publication_and_reloads_indexes() {
-        let (temp_dir, final_chain, mut session, plan, publication) =
-            external_evm_publication_fixture("rustaxa_bridge_final_chain_external_evm_publish", 1);
-        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
-        let request_id = publication.request_id;
-        let old_plan_id = publication.plan_id;
-        let block_hash = publication.block_hash;
-        let first_hash = publication.transaction_publications[0].transaction_hash;
-        let first_receipt = publication.transaction_publications[0].receipt_rlp.clone();
-        let topic_bloom = bloom_for_value(&[0x55; 32]);
-        let publication = execution_session_attach_external_evm_proposal_period_dag_level(
-            &mut session,
-            rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate {
-                has_update: true,
-                level: 42,
-            },
-        )
-        .expect("proposal-period mapping should attach");
-        assert_ne!(publication.plan_id, old_plan_id);
-        assert!(publication.proposal_period_dag_level_update.has_update);
-        assert_eq!(publication.proposal_period_dag_level_update.level, 42);
-        let plan_id = publication.plan_id;
-
-        let decision =
-            ready_external_evm_commit_decision(&final_chain, &mut session, &plan, &publication);
-        let report = execution_session_publish_external_evm_publication(&final_chain, &mut session)
-            .expect("external EVM publication should convert");
-
-        assert_eq!(
-            report.status,
-            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
-        );
-        assert_eq!(report.request_id, request_id);
-        assert_eq!(report.plan_id, plan_id);
-        assert_eq!(report.block_hash, block_hash);
-        assert!(report.error_code.is_empty());
-        assert_eq!(final_chain.get_last_block_number().unwrap(), 1);
-        let execution_status = final_chain.get_execution_status().unwrap();
-        assert_eq!(execution_status.executed_dag_block_count, 0);
-        assert_eq!(execution_status.executed_transaction_count, 2);
-        assert_eq!(
-            report.executed_dag_block_count,
-            execution_status.executed_dag_block_count
-        );
-        assert_eq!(
-            report.executed_transaction_count,
-            execution_status.executed_transaction_count
-        );
-        assert_eq!(
-            report.dpos_snapshot_status,
-            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE
-        );
-        assert_eq!(
-            report.account_snapshot_status,
-            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
-        );
-        let complete_step = execution_session_next(&mut session)
-            .expect("completed publication step should convert");
-        assert_eq!(
-            complete_step.action,
-            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_COMPLETE
-        );
-        assert_eq!(final_chain.get_block_hash(1).unwrap(), block_hash.to_vec());
-        let block_number = final_chain.get_block_number(&block_hash).unwrap();
-        assert!(block_number.found);
-        assert_eq!(block_number.value, 1);
-        assert_eq!(
-            final_chain.get_transaction_receipt(1, 0).unwrap(),
-            first_receipt
-        );
-        assert!(!final_chain
-            .get_transaction_location(&first_hash)
-            .unwrap()
-            .is_empty());
-        assert_eq!(
-            final_chain
-                .get_blocks_with_bloom(&topic_bloom, 1, 1)
-                .unwrap(),
-            vec![1]
-        );
-        assert_external_evm_publication_audit_matches(&final_chain, &publication);
-        let mut mutated_publication = publication.clone();
-        mutated_publication.receipts_rlp.push(0xff);
-        let mutated_audit = final_chain
-            .0
-            .final_chain_for_bridge()
-            .audit_external_evm_publication(mutated_publication)
-            .expect("mutated publication audit should run");
-        assert_eq!(
-            mutated_audit.status,
-            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MISMATCH
-        );
-        assert_eq!(
-            mutated_audit.error_code,
-            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PLAN_ID_MISMATCH"
-        );
-
-        drop(session);
-        drop(final_chain);
-        let reloaded = make_final_chain(storage_path, vec![]);
-        let proposal_period = dag_queries(&reloaded)
-            .get_proposal_period_for_dag_level(42)
-            .unwrap();
-        assert!(proposal_period.found);
-        assert_eq!(proposal_period.period, 1);
-        assert_eq!(reloaded.get_last_block_number().unwrap(), 1);
-        assert_eq!(reloaded.get_block_hash(1).unwrap(), block_hash.to_vec());
-        assert_eq!(
-            reloaded.get_transaction_receipt(1, 0).unwrap(),
-            first_receipt
-        );
-        assert!(!reloaded
-            .get_transaction_location(&first_hash)
-            .unwrap()
-            .is_empty());
-        assert_eq!(
-            reloaded.get_blocks_with_bloom(&topic_bloom, 1, 1).unwrap(),
-            vec![1]
-        );
-        assert_external_evm_publication_audit_matches(&reloaded, &publication);
-        let already_applied_report =
-            publish_external_evm_publication_via_rust(&reloaded, publication, decision)
-                .expect("already-applied publication should convert");
-        assert_eq!(
-            already_applied_report.status,
-            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
-        );
-        assert_eq!(
-            already_applied_report.executed_dag_block_count,
-            execution_status.executed_dag_block_count
-        );
-        assert_eq!(
-            already_applied_report.executed_transaction_count,
-            execution_status.executed_transaction_count
-        );
-        assert_eq!(
-            already_applied_report.dpos_snapshot_status,
-            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE
-        );
-        assert_eq!(
-            already_applied_report.account_snapshot_status,
-            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
-        );
-
-        drop(reloaded);
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_publishes_external_evm_rewards_stats_with_publication_batch() {
-        let (temp_dir, final_chain, mut session, plan, publication) =
-            external_evm_publication_fixture(
-                "rustaxa_bridge_final_chain_external_evm_publish_rewards_stats",
-                1,
-            );
-        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
-        let old_plan_id = publication.plan_id;
-        let rewards_stats_rlp = vec![0xc3, 0x01, 0x02, 0x03];
-
-        let publication = execution_session_attach_external_evm_rewards_stats(
-            &mut session,
-            rustaxa_consensus::FinalChainExternalEvmRewardsStatsUpdate {
-                current_period: publication.period,
-                cache_current_period: true,
-                clear_cached_stats: false,
-                current_block_stats_rlp: rewards_stats_rlp.clone(),
-            },
-        )
-        .expect("rewards stats update should attach");
-
-        assert_ne!(publication.plan_id, old_plan_id);
-        assert_eq!(publication.rewards_stats_update.current_period, 1.into());
-        assert!(publication.rewards_stats_update.cache_current_period);
-        assert_eq!(
-            publication.rewards_stats_update.current_block_stats_rlp,
-            rewards_stats_rlp
-        );
-
-        let _decision =
-            ready_external_evm_commit_decision(&final_chain, &mut session, &plan, &publication);
-        let report = execution_session_publish_external_evm_publication(&final_chain, &mut session)
-            .expect("external EVM publication should convert");
-
-        assert_eq!(
-            report.status,
-            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
-        );
-
-        drop(session);
-        drop(final_chain);
-        let reloaded = make_final_chain(storage_path, vec![]);
-        let persisted_stats = reloaded.get_blocks_rewards_stats().unwrap();
-        assert_eq!(persisted_stats.len(), 1);
-        assert_eq!(persisted_stats[0].period, 1);
-        assert_eq!(persisted_stats[0].data, rewards_stats_rlp);
-        assert_eq!(reloaded.get_last_block_number().unwrap(), 1);
-        let persisted_stats = reloaded.get_blocks_rewards_stats().unwrap();
-        assert_eq!(persisted_stats.len(), 1);
-        assert_eq!(persisted_stats[0].period, 1);
-        assert_eq!(persisted_stats[0].data, vec![0xc3, 0x01, 0x02, 0x03]);
-        drop(reloaded);
         let _ = fs::remove_dir_all(temp_dir);
     }
 

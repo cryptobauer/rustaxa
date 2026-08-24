@@ -66,10 +66,16 @@ void IDagBlockPacketHandler::onNewBlockVerified(const std::shared_ptr<DagBlock> 
     for (const auto &trx : trxs) {
       assert(trx != nullptr);
       const auto trx_hash = trx->getHash();
+#ifndef RUSTAXA_ENABLE
       if (peer->isTransactionKnown(trx_hash)) {
         continue;
       }
+#endif
 
+      // Rust storage publication, transaction-packet processing, and this
+      // retained tarcap leaf run independently. In Rust mode the peer-known
+      // hint can therefore precede durable admission; keep DAG packets
+      // self-contained so block verification never depends on that race.
       transactions_to_send.push_back(trx);
       peer_and_transactions_to_log += trx_hash.abridged();
     }

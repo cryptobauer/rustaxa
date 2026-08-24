@@ -503,6 +503,77 @@ pub struct PbftProposerSortitionRequest {
     pub expected_voter: H160,
 }
 
+/// Public-identity proposer eligibility input for a host-held VRF key.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftPublicProposerSortitionInput {
+    pub wallet_index: u64,
+    pub pbft_period: u64,
+    pub pbft_round: u64,
+    pub vrf_public_key: [u8; VRF_PUBLIC_KEY_BYTES],
+    pub voter_public_key: [u8; RECOVERED_PUBLIC_KEY_BYTES],
+    pub voter: H160,
+}
+
+/// Exact host VRF request for proposer eligibility.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftPublicProposerVrfRequest {
+    pub input: PbftPublicProposerSortitionInput,
+    pub message: Vec<u8>,
+}
+
+/// Prepares proposer VRF input without accepting secret material.
+pub fn prepare_public_proposer_vrf(
+    input: PbftPublicProposerSortitionInput,
+) -> Result<PbftPublicProposerVrfRequest> {
+    let key = verify_and_canonicalize_uncompressed_public_key(&input.voter_public_key)?;
+    anyhow::ensure!(
+        address_from_recovered_public_key(&key) == input.voter,
+        "PBFT_PROPOSER_SORTITION_INVALID_VOTER_IDENTITY"
+    );
+    Ok(PbftPublicProposerVrfRequest {
+        message: legacy_vrf_message_rlp(input.pbft_period, input.pbft_round, 1),
+        input,
+    })
+}
+
+/// Verifies a host proof and screens public proposer eligibility.
+pub fn complete_public_proposer_sortition(
+    request: PbftPublicProposerVrfRequest,
+    proof: [u8; VRF_PROOF_BYTES],
+    voter_dpos_vote_count: u64,
+    total_dpos_vote_count: u64,
+    number_of_proposers: u64,
+) -> Result<PbftProposerSortitionResult> {
+    anyhow::ensure!(
+        number_of_proposers > 0,
+        "PBFT_PROPOSER_SORTITION_ZERO_PROPOSER_COUNT"
+    );
+    if voter_dpos_vote_count == 0 {
+        return Ok(PbftProposerSortitionResult::rejected(
+            PbftProposerSortitionStatus::ZeroStake,
+        ));
+    }
+    if total_dpos_vote_count == 0 {
+        return Ok(PbftProposerSortitionResult::rejected(
+            PbftProposerSortitionStatus::ZeroTotalDpos,
+        ));
+    }
+    let output = vrf::verify_output(&request.input.vrf_public_key, &proof, &request.message)?
+        .ok_or_else(|| anyhow!("PBFT_PROPOSER_SORTITION_INVALID_VRF_OUTPUT"))?;
+    let weight = calculate_pbft_vote_weight(
+        voter_dpos_vote_count,
+        total_dpos_vote_count,
+        number_of_proposers.min(total_dpos_vote_count),
+        &output,
+        &request.input.voter_public_key,
+    )?;
+    Ok(if weight == 0 {
+        PbftProposerSortitionResult::rejected(PbftProposerSortitionStatus::ZeroWeight)
+    } else {
+        PbftProposerSortitionResult::accepted()
+    })
+}
+
 /// Caller request with validated proposer identity and canonical public key.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftProposerSortitionValidatedRequest {
@@ -1536,6 +1607,24 @@ mod tests {
         assert_eq!(second.status, first.status);
         assert_eq!(second.accepted, first.accepted);
         assert_eq!(second.error_code, first.error_code);
+    }
+
+    #[test]
+    fn staged_public_proposer_sortition_matches_secret_path() {
+        let legacy = proposer_sortition_request();
+        let request = prepare_public_proposer_vrf(PbftPublicProposerSortitionInput {
+            wallet_index: 3,
+            pbft_period: legacy.pbft_period,
+            pbft_round: legacy.pbft_round,
+            vrf_public_key: legacy.expected_vrf_public_key,
+            voter_public_key: legacy.voter_public_key,
+            voter: legacy.expected_voter,
+        })
+        .unwrap();
+        let proof = vrf::prove(&VRF_SECRET_KEY, &request.message).unwrap();
+        let result = complete_public_proposer_sortition(request, proof, 10, 10, 20).unwrap();
+        assert_eq!(result.status, PbftProposerSortitionStatus::Valid);
+        assert!(result.accepted);
     }
 
     #[test]

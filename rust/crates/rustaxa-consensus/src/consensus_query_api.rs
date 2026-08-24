@@ -378,7 +378,7 @@ pub struct PillarBlockDataView {
     pub state_root: [u8; 32],
     pub previous_pillar_block_hash: [u8; 32],
     pub bridge_root: [u8; 32],
-    pub epoch: u64,
+    pub epoch: [u8; 32],
     pub validator_vote_count_changes: Vec<PillarBlockViewVoteCountChange>,
     pub block_hash: [u8; 32],
     pub signatures: Vec<PillarBlockViewSignature>,
@@ -1553,6 +1553,35 @@ fn pbft_period_cert_votes_view_from_bundle(
     })
 }
 
+/// Decodes previous-block certificate votes from canonical `PeriodData` bytes.
+///
+/// Startup recovery uses this crate-private projection to feed strict native
+/// vote validation before FinalChain replay. Empty bundles return an empty
+/// vector; malformed shapes fail before any replay effect is dispatched.
+pub(crate) fn pbft_cert_votes_from_period_data_bytes(
+    requested_period: u64,
+    period_data_rlp: &[u8],
+) -> Result<Vec<Vec<u8>>> {
+    let period_data = Rlp::new(period_data_rlp);
+    let bundle = period_data
+        .at(CERT_VOTES_POS_IN_PERIOD_DATA)
+        .context("CONSENSUS_STARTUP_PERIOD_CERT_VOTES")?;
+    if bundle
+        .item_count()
+        .context("CONSENSUS_STARTUP_PERIOD_CERT_VOTES_SHAPE")?
+        == 0
+    {
+        return Ok(Vec::new());
+    }
+    Ok(
+        pbft_period_cert_votes_view_from_bundle(requested_period, &bundle)?
+            .votes
+            .into_iter()
+            .map(|vote| vote.vote_rlp)
+            .collect(),
+    )
+}
+
 fn decode_pbft_extra_data(bytes: &[u8]) -> Result<PbftBlockExtraDataView> {
     anyhow::ensure!(
         bytes.len() <= PBFT_EXTRA_DATA_MAX_SIZE,
@@ -1713,7 +1742,7 @@ fn pillar_block_data_view(block_data: PillarBlockData) -> PillarBlockDataView {
         state_root: block_data.pillar_block.state_root.into(),
         previous_pillar_block_hash: block_data.pillar_block.previous_pillar_block_hash.into(),
         bridge_root: block_data.pillar_block.bridge_root.into(),
-        epoch: block_data.pillar_block.epoch,
+        epoch: block_data.pillar_block.epoch.to_big_endian(),
         validator_vote_count_changes: block_data
             .pillar_block
             .validator_vote_count_changes
@@ -2337,7 +2366,7 @@ mod tests {
             state_root: H256::from_low_u64_be(0x10),
             previous_pillar_block_hash: H256::from_low_u64_be(0x11),
             bridge_root: H256::from_low_u64_be(0x12),
-            epoch: 13,
+            epoch: 13.into(),
             validator_vote_count_changes: vec![ValidatorVoteCountChange {
                 address: H160::from([0x14; 20]),
                 vote_count_change: -7,
@@ -2366,7 +2395,7 @@ mod tests {
             H256::from_low_u64_be(0x11).0
         );
         assert_eq!(view.bridge_root, H256::from_low_u64_be(0x12).0);
-        assert_eq!(view.epoch, 13);
+        assert_eq!(view.epoch, U256::from(13).to_big_endian());
         assert_eq!(view.block_hash, <[u8; 32]>::from(block.hash()));
         assert_eq!(view.validator_vote_count_changes.len(), 1);
         assert_eq!(
@@ -2733,19 +2762,14 @@ mod tests {
         let signature = vec![0x11; 65];
         let optimized_vote = optimized_vote_rlp(&proof, &signature);
         let vote_rlp = canonical_pbft_vote_rlp(12, 3, 3, block_hash, &proof, &signature);
-        storage
-            .period()
-            .write(
-                13,
-                &period_data_with_cert_votes_rlp(
-                    block_hash,
-                    12,
-                    3,
-                    3,
-                    std::slice::from_ref(&optimized_vote),
-                ),
-            )
-            .unwrap();
+        let period_data = period_data_with_cert_votes_rlp(
+            block_hash,
+            12,
+            3,
+            3,
+            std::slice::from_ref(&optimized_vote),
+        );
+        storage.period().write(13, &period_data).unwrap();
 
         let view = api.pbft_previous_block_cert_votes_by_period(13).unwrap();
         assert!(view.found);
@@ -2756,6 +2780,15 @@ mod tests {
         assert_eq!(view.step, 3);
         assert_eq!(view.votes.len(), 1);
         assert_eq!(view.votes[0].vote_rlp, vote_rlp);
+        assert_eq!(
+            pbft_cert_votes_from_period_data_bytes(13, &period_data).unwrap(),
+            vec![vote_rlp]
+        );
+        assert!(
+            pbft_cert_votes_from_period_data_bytes(1, &period_data_rlp_with_dag_bundle(&[0xc0]))
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             !api.pbft_previous_block_cert_votes_by_period(14)
                 .unwrap()

@@ -44,38 +44,27 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 20394 |
-| `shim_lines` | 7713 |
-| `cxx_functions` | 347 |
-| `cxx_carriers` | 288 |
-| `cxx_handles` | 15 |
+| `bridge_lines` | 14340 |
+| `shim_lines` | 7628 |
+| `cxx_functions` | 277 |
+| `cxx_carriers` | 217 |
+| `cxx_handles` | 14 |
 | `shim_directories` | 6 |
 | `granular_flags` | 0 |
 | `partial_service_factories` | 0 |
 | `compatibility_constructor_calls` | 0 |
-| `non_test_cpp_consumers` | 35 |
+| `non_test_cpp_consumers` | 33 |
 
-The Rust-mode `PbftManager` facade and its shim directory are deleted. `App` owns one `ConsensusApplication`, whose
-private C++ runtime executes the retained timer, signing, tarcap, lifecycle, and concrete FinalChain/EVM leaves. Public
-network, RPC, GraphQL, debug, and stats clients use operation-shaped network/query/status APIs and cannot obtain a
-manager. Local generated-vote admission now commits its own-vote row in the same native batch, and proposal publication
-derives identity from canonical signed bytes. The private runtime still consumes manager-shaped task/effect CXX
-adapters; those adapters and its temporary object materialization are explicit `CRW-15`/`CRW-16` contraction debt, not
-supported public compatibility surface.
-
-PBFT finalization resume may dispatch `CommitRewardVotesResetRuntime` without
-the fresh DAG/transaction lock pair only when the native manager retained a
-nonzero reset generation matching the shared storage owner. The verified-vote
-service still owns durable cursor/bundle validation and live publication; no
-C++ reward mutation or report carrier is reintroduced. Other protected resume
-actions remain fail-closed.
-
-The PBFT finalization adapter now advances all seven retained external actions
-through one cursor/action-gated CXX function. Rust dispatches to the typed
-native leaf and consumes only the matching leaf payload; C++ retains concrete
-FinalChain/pillar/period execution facts, transaction nonce facts, and DAG
-compatibility effects. Six per-action exports and their duplicated bridge/shim
-wrappers are deleted.
+The Rust-mode manager facades and their PBFT bridge/shim modules are deleted. `App` owns one
+`ConsensusApplication` and a process-only shell containing one worker thread and the exact timer, signing, tarcap,
+FinalChain account-fact, pillar-anchor-state, and concrete EVM ports. Daemon scheduling, state progression, sync
+continuation, startup recovery, and finalization sequencing live in the native application root. The remaining pillar
+facade queries canonical current-pillar bytes from that root. Public network, RPC, GraphQL, debug, and stats clients use
+operation-shaped network/query/status APIs and cannot obtain a manager. Canonical bytes cross CXX only at named physical
+transport, signing, fact-source, and execution leaves; no PBFT manager task/action carrier remains supported. The master
+`RUSTAXA_ENABLE` source selection preserves the untouched manager/runtime path for pure-C++ reference builds.
+Scheduled transport rejection is retryable without advancing native broadcast counters, FinalChain account facts are
+resolved lazily only for a published slashing conflict, and complete App process start/stop transitions are serialized.
 
 ## CXX Box Factory Inventory
 
@@ -124,25 +113,23 @@ fails. An export used only from tests also fails unless it appears exactly once 
 
 | Module | Surface | Named consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
+| `rust/crates/rustaxa-bridge/src/application_host_ffi.rs` | Application-only CXX declarations and carriers for process, signing, transport, FinalChain facts, and concrete EVM leaves | App-owned consensus process | External boundary | Keep isolated from the aggregate leaf bridge; delete each callback when its concrete host executor or fact source moves native. |
+| `rust/crates/rustaxa-bridge/src/consensus_bootstrap.rs` | Immutable CXX configuration conversion for the sole application root | App and Rust-mode bootstrap fixtures | Bootstrap adapter | Delete when configuration is loaded natively rather than supplied by the C++ node shell. |
+| `rust/crates/rustaxa-bridge/src/consensus_host_ports.rs` | Exact process, signing, tarcap, FinalChain account-fact, pillar-anchor-state, and concrete EVM leaf conversion | App-owned consensus process | External boundary | Keep only physical host/execution leaves; delete each adapter when that executor or fact source moves native. |
 | `rust/crates/rustaxa-bridge/src/dag.rs` | Proposer worker-command and legacy VDF-message CXX conversions | DAG manager/proposer shims | Executor conversion leaf | Delete when the C++ worker loop and VDF executor consume native commands and bytes without a standalone bridge module. |
 | `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | Application-root bootstrap conversion and retained external leaf adapters over native `DagTransactionService` | App, DAG, transaction, gas, sortition shims | Bootstrap adapter | Retain only root bootstrap conversion, focused external-leaf/ABI tests, and EVM, signing, VDF-generation, and transport leaf execution; delete task relays as native application APIs absorb them. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | Root-bound FinalChain conversion and external-EVM execution APIs | FinalChain shim, execution adapters | External boundary | Native construction is complete; retain only public-query conversion and the narrow external-EVM executor API. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | Root-bound network adapter with native PBFT vote admission, transport-lane/source-partitioned effects, PBFT-sync response construction, and proposed-block publication | latest/v5 tarcap handler families | External boundary | Retain only tarcap transport execution and the typed slashing-transaction leaf while remaining DAG/status/transaction effects migrate. |
-| `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | PBFT DTO/effect adapters over `BridgeConsensusApplication` | Private application runtime | Bootstrap task adapter | Retain pure FFI/error mapping only while exact timer, signing, transport, lifecycle, and execution ports replace the private compatibility executor. |
-| `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | CXX conversion over native synced-period and cert-vote admission | Private application runtime | Internal bridge route | Native `PbftService` owns admission and persistence; delete carrier/status conversion when the exact sync task no longer pauses in the C++ executor. |
-| `rust/crates/rustaxa-bridge/src/pbft_vote_generation.rs` | DTO adapters over application-root PBFT generation and FinalChain-composed tasks | Private application signing leaf | Internal bridge route | Replace secret-bearing generation DTOs with an operation-specific signing request/result port. |
-| `rust/crates/rustaxa-bridge/src/pbft_vote_progress.rs` | progress adapter | Private application runtime | Internal bridge route | Fold the remaining executor conversion into native PBFT tasks. |
-| `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | CXX conversion over native PBFT-root pillar tasks | pillar shim | Internal bridge route | Native `PbftService` owns current-anchor mutation/decisions, startup bootstrap, FinalChain-composed block planning, linkage, latest-finalized lookup, readiness, and access to private pillar state; retain only CXX conversion plus focused tag/status and FinalChain-handle sentinels. |
+| `rust/crates/rustaxa-bridge/src/network_slashing.rs` | Exact signing and transaction-ingress conversion for network-detected slashing effects | tarcap ingress | External boundary | Delete when the signing and transaction-ingress executors move native; never expand into consensus routing. |
+| `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | CXX conversion over native PBFT-root pillar tasks, including the canonical current-pillar-block query | pillar shim | Internal bridge route | Native `PbftService` owns current-anchor mutation/decisions, startup bootstrap, block planning, linkage, latest-finalized lookup, readiness, and private pillar state; retain the current-block query only while the C++ pillar facade must materialize its public object. |
 | `rust/crates/rustaxa-bridge/src/pillar_votes.rs` | CXX conversion and FinalChain-handle unwrapping over native PBFT-root pillar-vote tasks | pillar/PBFT shims | Internal bridge route | Native `PbftService` owns admission, FinalChain composition, relevance, weighted bundles, direct PBFT-sync reporting, payload/network lookup, finalization prepare/ack, and behavioral tests; the standalone sync-bundle export/carrier are deleted, and remaining CXX conversion exists only for named C++ pillar clients. |
-| `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | PBFT operation adapters over root `PbftService` proposal tasks | Private application transport/runtime leaves | Internal bridge route | Native state, storage, restoration, lock ownership, snapshotting, and standalone behavior live in `rustaxa-consensus`; retain canonical proposal publication only until transport consumes a native effect port. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, including live vote count and quorum reads | RPC, GraphQL, debug/Test RPC, stats, light plugin | External boundary | Keep a client-oriented read API; remove remaining manager/storage construction elsewhere. |
 | `rust/crates/rustaxa-bridge/src/sortition.rs` | CXX configuration conversion for native `SortitionService` construction | DAG application bootstrap | Bootstrap adapter | Delete or inline the conversion when native application construction no longer accepts the legacy CXX configuration carrier. |
 | `rust/crates/rustaxa-bridge/src/storage.rs` | Root-bound typed compatibility queries and batch operations plus one named conformance seed hook | storage shim and storage conformance | Compatibility facade | Retire query families with their C++ materializers and the conformance seed with the differential CXX runner. |
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | legacy transaction inspection | PBFT/transaction materializers | Internal bridge route | Use native codec internally; retain only if a named C++ client remains. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | DTO and report conversion over native transaction ownership; DAG-save, finalized-status, admission, read, packing, finalized filtering/verification, recovery, cache, sidecar-removal, and queue-finalization tasks call lock-owning native services directly | transaction/DAG/PBFT shims | Internal bridge route | Retain only submission/materialization conversion, the focused status-mapping ABI test, and unlocked EVM leaf adapters. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF operations/cancellation | VDF and proposer C++ | External boundary | Keep until VDF execution is a native or dedicated external API. |
-| `rust/crates/rustaxa-bridge/src/verified_votes.rs` | DTO/effect adapters over application-root vote tasks | PBFT signing, finalization, and slashing executor leaves | Internal bridge route | Fold remaining low-level generation/admission/own-vote calls into atomic application tasks, then retain only named leaf conversion. |
 
 ## Exported CXX Bridge Handles
 
@@ -150,13 +137,8 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | --- | --- | --- | --- | --- |
 | `BridgeConsensusQueryApi` | `query.rs` | RPC, GraphQL, light plugin | External boundary | Keep only client-oriented public reads. |
 | `BridgeConsensusNetworkApi` | `network.rs` | One `Network` owner shared by latest/v5 tarcap handler families | External boundary | `CRW-N01` leaves a transport-only API after remaining handler-local routing decisions move native. |
-| `BridgeConsensusApplication` | `dag_transaction_service.rs` | App bootstrap and temporary PBFT/DAG manager task adapters | Bootstrap boundary | Keep as the sole opaque application root; narrow its task surface as manager facades move to named external adapters. |
-| `BridgeDagStorageQueries` | `storage.rs` | storage shim/tests | Compatibility facade | Native DAG/query fixtures replace it. |
-| `BridgePbftStorageQueries` | `storage.rs` | storage shim/tests | Compatibility facade | Native PBFT/query fixtures replace it. |
-| `BridgePbftVoteStorageQueries` | `storage.rs` | storage shim/tests | Compatibility facade | Native vote/query fixtures replace it. |
-| `BridgeTransactionStorageQueries` | `storage.rs` | storage shim/tests | Compatibility facade | Native transaction/query fixtures replace it. |
-| `BridgeFinalChainStorageQueries` | `storage.rs` | storage shim/query/tests | Compatibility facade | FinalChain/query APIs replace it. |
-| `BridgePeriodStorageQueries` | `storage.rs` | storage shim/query/tests | Compatibility facade | PBFT/query APIs replace it. |
+| `BridgeConsensusApplication` | `dag_transaction_service.rs` | App bootstrap, query/network adapters, and remaining DAG/transaction/pillar compatibility clients | Bootstrap boundary | Keep as the sole opaque application root; narrow its task surface as the remaining compatibility facades move to named external adapters. |
+| `BridgeStorageQueries` | `storage.rs` | storage shim/query/conformance tests | Compatibility facade | Native domain/query fixtures replace the remaining legacy storage materializers. |
 | `BridgeStorageBatch` | `storage.rs` | storage shim and tests | Compatibility facade | No named client requires legacy `DbStorage::Batch`. |
 | `BridgeFinalChainExecutionSession` | `final_chain.rs` | FinalChain shim | External boundary | Replace with narrow external executor session or complete `CRW-E01`. |
 | `BridgeConsensusExecutionApi` | `final_chain.rs` | FinalChain/PBFT execution adapters | External boundary | Keep only typed EVM/StateAPI leaf effects. |

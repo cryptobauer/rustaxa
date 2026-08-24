@@ -5,6 +5,10 @@
 //! may invoke task-family operations through this root, but CXX never receives
 //! a separately constructible service or a service accessor.
 
+use crate::consensus_application_runtime::{
+    ConsensusApplicationRuntime, ConsensusExecutionPort, ConsensusProcessPort, ConsensusRunExit,
+    ConsensusSigningPort, ConsensusTransportPort, SigningIdentity,
+};
 use crate::dag_service::DagServiceConfig;
 use crate::dag_transaction_service::{DagTransactionService, DagTransactionServiceConfig};
 use crate::final_chain::FinalChain;
@@ -32,6 +36,10 @@ pub struct ConsensusApplicationConfig {
     pub dag_transaction: DagTransactionServiceConfig,
     /// Configuration for PBFT, vote, pillar, slashing, and network ownership.
     pub pbft: PbftServiceConfig,
+    /// Public identities for host-held signing keys, in stable wallet-index order.
+    pub signing_identities: Vec<SigningIdentity>,
+    /// Interruptible daemon polling interval used when no wallet is eligible.
+    pub polling_interval_ms: u64,
 }
 
 /// Immutable native FinalChain construction input owned by application bootstrap.
@@ -190,9 +198,62 @@ pub struct ConsensusApplication {
     final_chain: Arc<FinalChain>,
     pbft: Arc<PbftService>,
     dag_transaction: Arc<DagTransactionService>,
+    runtime: ConsensusApplicationRuntime,
+}
+
+/// Coherent hot PBFT status returned without exposing manager state or guards.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConsensusLiveStatus {
+    pub period: u64,
+    pub round: u64,
+    pub step: u64,
+    pub finalized_chain_size: u64,
+    pub syncing_period: u64,
+    pub sync_queue_size: u64,
+}
+
+/// Cold diagnostic DPoS vote totals for configured public signing identities.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConsensusVoteStatus {
+    pub current_node_votes: Option<u64>,
+    pub total_eligible_votes: Option<u64>,
 }
 
 impl ConsensusApplication {
+    /// Returns one coherent application-root PBFT/queue status snapshot.
+    pub fn consensus_live_status(&self) -> Result<ConsensusLiveStatus> {
+        let status = self.pbft.application_status_snapshot()?;
+        Ok(ConsensusLiveStatus {
+            period: status.period,
+            round: status.round,
+            step: status.step,
+            finalized_chain_size: status.finalized_chain_size,
+            syncing_period: status.syncing_period,
+            sync_queue_size: status.sync_queue_size,
+        })
+    }
+
+    /// Computes local and total eligible vote diagnostics at the finalized head.
+    pub fn consensus_vote_status(&self) -> Result<ConsensusVoteStatus> {
+        let period = self.pbft.pbft_chain_head().size;
+        let addresses: Vec<_> = self
+            .runtime
+            .signing_identities()
+            .iter()
+            .map(|identity| identity.address)
+            .collect();
+        let total_eligible_votes = self
+            .final_chain
+            .pbft_dpos_eligible_total_vote_count(period)?;
+        let current_node_votes = self
+            .final_chain
+            .pbft_dpos_eligible_wallet_vote_counts(period, &addresses)?
+            .map(|votes| votes.into_iter().map(|vote| vote.vote_count).sum());
+        Ok(ConsensusVoteStatus {
+            current_node_votes,
+            total_eligible_votes,
+        })
+    }
     /// Creates the read-only client API bound to this application's storage and live PBFT owner.
     ///
     /// The returned API extends the lifetime of existing root-owned services;
@@ -218,12 +279,42 @@ impl ConsensusApplication {
             )?;
         let pbft = PbftService::restore(storage.clone(), config.pbft)?;
         dag_transaction.complete_restore_mapping(max_levels_per_period)?;
+        let runtime = ConsensusApplicationRuntime::new(
+            config.signing_identities,
+            config.polling_interval_ms,
+        )?;
         Ok(Self {
             storage,
             final_chain,
             pbft: Arc::new(pbft),
             dag_transaction: Arc::new(dag_transaction),
+            runtime,
         })
+    }
+
+    /// Runs the restartable native consensus daemon on the calling thread.
+    pub fn run_consensus<P, S, T, E>(
+        &self,
+        process: &P,
+        signer: &S,
+        transport: &T,
+        evm: &E,
+    ) -> Result<ConsensusRunExit>
+    where
+        P: ConsensusProcessPort,
+        S: ConsensusSigningPort,
+        T: ConsensusTransportPort,
+        E: ConsensusExecutionPort,
+    {
+        self.runtime.run(
+            self.pbft.as_ref(),
+            self.dag_transaction.as_ref(),
+            self.final_chain.as_ref(),
+            process,
+            signer,
+            transport,
+            evm,
+        )
     }
 
     /// Borrows the application-owned storage handle for thin Rust bridge dispatch.
@@ -353,6 +444,8 @@ pub fn consensus_application_test_bootstrap(
 
 fn deterministic_test_config() -> ConsensusApplicationConfig {
     ConsensusApplicationConfig {
+        signing_identities: Vec::new(),
+        polling_interval_ms: 100,
         dag_transaction: DagTransactionServiceConfig {
             transaction: TransactionServiceConfig {
                 queue_max_size: 16,
@@ -406,6 +499,22 @@ fn deterministic_test_config() -> ConsensusApplicationConfig {
             light_node_history: 0,
             committee_size: 1,
             number_of_proposers: 1,
+            dag_blocks_size: 50,
+            ghost_path_move_back: 0,
+            node_version: (0, 0, 0, 0),
+            node_version_suffix: b"T".to_vec(),
+            default_pbft_gas_limit: 1_000_000,
+            cornus_activation_period: u64::MAX,
+            cornus_pbft_gas_limit: 1_000_000,
+            process_synced_policy: crate::pbft_service::PbftProcessSyncedPolicy {
+                chain_id: 2999,
+                lambda_min_ms: 100,
+                lambda_change_interval: 10,
+                lambda_change_ms: 10,
+                consensus_delay_ms: 400,
+                dpos_blocks_per_year: 500,
+                recently_finalized_factor: 3,
+            },
         },
     }
 }

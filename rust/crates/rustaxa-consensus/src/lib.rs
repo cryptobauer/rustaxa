@@ -1,13 +1,19 @@
 pub mod consensus_application;
+pub mod consensus_application_runtime;
+pub mod consensus_application_startup;
 pub mod consensus_execution_api;
 pub mod consensus_pipeline;
 pub mod consensus_query_api;
+pub mod consensus_state_actions;
+pub mod consensus_value_proposal;
 pub mod dag;
 pub mod dag_service;
 pub mod dag_transaction_service;
 pub(crate) mod dpos_reward_graph;
 pub mod gas_pricer;
+pub mod maybe_broadcast_votes;
 pub mod network_api;
+pub mod pbft_application_finalization;
 pub mod pbft_chain;
 pub mod pbft_finalize;
 pub mod pbft_leader_selection;
@@ -49,7 +55,17 @@ pub mod final_chain_execution;
 
 pub use consensus_application::{
     ConsensusApplication, ConsensusApplicationBootstrap, ConsensusApplicationConfig,
-    ConsensusFinalChainConfig, consensus_application_test_bootstrap,
+    ConsensusFinalChainConfig, ConsensusLiveStatus, ConsensusVoteStatus,
+    consensus_application_test_bootstrap,
+};
+pub use consensus_application_runtime::{
+    ConsensusApplicationRuntime, ConsensusEffectId, ConsensusExecutionPort, ConsensusProcessPort,
+    ConsensusRunExit, ConsensusRunReason, ConsensusSignReport, ConsensusSignRequest,
+    ConsensusSigningPort, ConsensusTransportPort, ConsensusTransportReport,
+    ConsensusTransportStatus, ConsensusVrfReport, ConsensusVrfRequest, ConsensusWaitOutcome,
+    ConsensusWaitReport, ConsensusWaitRequest, EvmFinalizationReport, EvmFinalizationRequest,
+    GossipPillarVoteRequest, GossipVoteBundleRequest, GossipVoteRequest, PillarAnchorStateReport,
+    PillarAnchorStateRequest, ReportMaliciousPeerRequest, SetSyncPeriodRequest, SigningIdentity,
 };
 pub use consensus_execution_api::ConsensusExecutionApi;
 pub use consensus_pipeline::{
@@ -63,6 +79,14 @@ pub use consensus_query_api::{
     PbftProgressView, PbftScheduleBlockView, PillarBlockDataView, PillarBlockViewSignature,
     PillarBlockViewVoteCountChange, QueryHashLookup, QueryNumberLookup, QueryPeriodLambda,
     SortitionParamsChangeView, TransactionReceiptView, TransactionView,
+};
+pub use consensus_state_actions::{
+    ConsensusStateActionBatch, ConsensusStateActionRequest, ConsensusStateVoteCommit,
+    ConsensusStateVoteTask, compose_consensus_state_action,
+};
+pub use consensus_value_proposal::{
+    ConsensusUnsignedValueProposal, ConsensusValueProposalAction, ConsensusValueProposalInput,
+    complete_value_proposal_signing, compose_value_proposal, prepare_value_proposal_signing,
 };
 pub use final_chain::FinalChain;
 pub use final_chain_execution::{
@@ -132,6 +156,12 @@ pub use final_chain_execution::{
     plan_external_evm_system_transactions,
 };
 pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
+pub use maybe_broadcast_votes::{
+    ConsensusVoteTransportRequest, MaybeBroadcastVotesActionId, MaybeBroadcastVotesBatch,
+    MaybeBroadcastVotesCommit, MaybeBroadcastVotesInput, VoteBroadcastAcknowledgement,
+    VoteBroadcastCounters, VoteBroadcastFamily, VoteBroadcastRequestId,
+    select_maybe_broadcast_votes, validate_maybe_broadcast_votes_acknowledgements,
+};
 pub use network_api::{
     ConsensusNetworkService, NETWORK_EFFECT_ACK_STATUS_ACCEPTED,
     NETWORK_EFFECT_ACK_STATUS_DUPLICATE_EFFECT_RESULT,
@@ -263,8 +293,10 @@ pub use pbft_vote_generation::{
     PbftFinalChainDposWalletAggregateVoteCountRequest,
     PbftFinalChainDposWalletEligibilityBatchFacts, PbftFinalChainDposWalletEligibilityBatchRequest,
     PbftFinalChainDposWalletEligibilityFacts, PbftFinalChainDposWalletEligibilityRequest,
-    PbftFinalChainFact, PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteGenerationStatus,
-    PbftVoteWeightFacts, generate_pbft_vote, generate_pbft_vote_with_weight,
+    PbftFinalChainFact, PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteGenerationPublicInput,
+    PbftVoteGenerationStatus, PbftVoteSigningRequest, PbftVoteVrfRequest, PbftVoteWeightFacts,
+    complete_pbft_vote_signing, generate_pbft_vote, generate_pbft_vote_with_weight,
+    prepare_pbft_vote_signing, prepare_pbft_vote_vrf,
 };
 pub use pbft_vote_ingress::{
     PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,
@@ -305,12 +337,15 @@ pub use pbft_vote_storage::{
 pub use pbft_vote_validation::{
     PbftCanonicalVoteInspection, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,
     PbftProposerSortitionRequest, PbftProposerSortitionResult, PbftProposerSortitionStatus,
-    PbftProposerSortitionValidatedRequest, PbftVoteAdmissionValidationRequest, PbftVoteReplayCache,
+    PbftProposerSortitionValidatedRequest, PbftPublicProposerSortitionInput,
+    PbftPublicProposerVrfRequest, PbftVoteAdmissionValidationRequest, PbftVoteReplayCache,
     PbftVoteValidationExternalFacts, PbftVoteValidationFact, PbftVoteValidationPlan,
-    PbftVoteValidationStatus, generate_and_validate_proposer_sortition,
+    PbftVoteValidationStatus, complete_public_proposer_sortition,
+    generate_and_validate_proposer_sortition,
     generate_and_validate_proposer_sortition_with_prepared_request, inspect_canonical_pbft_vote,
     pbft_vote_sortition_threshold, plan_pbft_vote_validation,
-    prepare_and_validate_pbft_proposer_sortition_request, validate_canonical_pbft_vote,
+    prepare_and_validate_pbft_proposer_sortition_request, prepare_public_proposer_vrf,
+    validate_canonical_pbft_vote,
 };
 pub use period_data_queue::PeriodDataQueue;
 pub use pillar_chain::{

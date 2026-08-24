@@ -3,10 +3,12 @@
 #include <gtest/gtest.h>
 #include <libdevcore/CommonData.h>
 
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <mutex>
 #include <shared_mutex>
+#include <thread>
 #include <vector>
 
 #include "common/constants.hpp"
@@ -44,6 +46,41 @@ auto g_secret = dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a
 auto g_trx_signed_samples = Lazy([] { return samples::createSignedTrxSamples(0, NUM_TRX, g_secret); });
 
 struct FullNodeTest : NodesTest {};
+
+#ifdef RUSTAXA_ENABLE
+TEST_F(FullNodeTest, consensusProcessSerializesConcurrentLifecycleCalls) {
+  auto node = launch_nodes(make_node_cfgs(1, 1, 5)).front();
+
+  const auto run_concurrently = [](auto &&first, auto &&second) {
+    std::atomic_uint ready{0};
+    std::atomic_bool go{false};
+    auto invoke = [&](auto &&operation) {
+      ready.fetch_add(1, std::memory_order_release);
+      while (!go.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      operation();
+    };
+    std::thread first_thread(invoke, std::forward<decltype(first)>(first));
+    std::thread second_thread(invoke, std::forward<decltype(second)>(second));
+    while (ready.load(std::memory_order_acquire) != 2) {
+      std::this_thread::yield();
+    }
+    go.store(true, std::memory_order_release);
+    first_thread.join();
+    second_thread.join();
+  };
+
+  for (size_t iteration = 0; iteration < 16; ++iteration) {
+    stopConsensus(node);
+    run_concurrently([&] { startConsensus(node); }, [&] { startConsensus(node); });
+    stopConsensus(node);
+
+    run_concurrently([&] { startConsensus(node); }, [&] { stopConsensus(node); });
+    stopConsensus(node);
+  }
+}
+#endif
 
 #ifndef RUSTAXA_ENABLE
 TEST_F(FullNodeTest, save_period_lambda_cacti_hf) {

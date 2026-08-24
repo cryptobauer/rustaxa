@@ -458,7 +458,9 @@ check_budget_history() {
 check_surface_budgets() {
   repo_root="$1"
   audit_file="$2"
-  ffi_file="$repo_root/rust/crates/rustaxa-bridge/src/ffi.rs"
+  ffi_file="$(mktemp)"
+  cat "$repo_root/rust/crates/rustaxa-bridge/src/ffi.rs" \
+    "$repo_root/rust/crates/rustaxa-bridge/src/application_host_ffi.rs" >"$ffi_file"
   bridge_root="$repo_root/rust/crates/rustaxa-bridge/src"
   shim_root="$repo_root/libraries/core_libs/consensus/shims"
 
@@ -478,7 +480,8 @@ check_surface_budgets() {
   )"
   non_test_cpp_consumers="$(
     {
-      rg -l '#include [<"]rustaxa-bridge/ffi.rs.h[>"]' "$repo_root/libraries" "$repo_root/programs" \
+      rg -l '#include [<"]rustaxa-bridge/(ffi|application_host_ffi)\.rs\.h[>"]' \
+        "$repo_root/libraries" "$repo_root/programs" \
         --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' || true
     } | wc -l
   )"
@@ -493,6 +496,7 @@ check_surface_budgets() {
   check_surface_metric partial_service_factories "$partial_service_factories" "$audit_file"
   check_surface_metric compatibility_constructor_calls "$compatibility_constructor_calls" "$audit_file"
   check_surface_metric non_test_cpp_consumers "$non_test_cpp_consumers" "$audit_file"
+  rm -f "$ffi_file"
 }
 
 check_inventory() {
@@ -920,10 +924,13 @@ fi
 
 missing_file="$(mktemp)"
 stale_file="$(mktemp)"
-trap 'rm -f "$missing_file" "$stale_file"' EXIT
+ffi_inventory_file="$(mktemp)"
+cat rust/crates/rustaxa-bridge/src/ffi.rs \
+  rust/crates/rustaxa-bridge/src/application_host_ffi.rs >"$ffi_inventory_file"
+trap 'rm -f "$missing_file" "$stale_file" "$ffi_inventory_file"' EXIT
 
 check_inventory \
-  rust/crates/rustaxa-bridge/src/ffi.rs \
+  "$ffi_inventory_file" \
   doc/consensus_bridge_shim_audit.md \
   "$missing_file" \
   "$stale_file"
@@ -950,7 +957,7 @@ EOF
 fi
 
 inventory_temp_dir="$(mktemp -d)"
-trap 'rm -f "$missing_file" "$stale_file"; rm -rf "$inventory_temp_dir"' EXIT
+trap 'rm -f "$missing_file" "$stale_file" "$ffi_inventory_file"; rm -rf "$inventory_temp_dir"' EXIT
 
 check_documented_inventory \
   module rust/crates/rustaxa-bridge/src/lib.rs doc/consensus_bridge_shim_audit.md \
@@ -959,14 +966,14 @@ check_documented_inventory \
   shim libraries/core_libs/consensus/shims doc/consensus_bridge_shim_audit.md \
   extract_shim_directories extract_audited_shim_directories "$inventory_temp_dir"
 check_documented_inventory \
-  box_factory rust/crates/rustaxa-bridge/src/ffi.rs doc/consensus_bridge_shim_audit.md \
+  box_factory "$ffi_inventory_file" doc/consensus_bridge_shim_audit.md \
   extract_cxx_box_factories extract_audited_cxx_box_factories "$inventory_temp_dir"
 check_factory_inventory_rows doc/consensus_bridge_shim_audit.md
 check_partial_factory_sites \
-  rust/crates/rustaxa-bridge/src/ffi.rs doc/consensus_bridge_shim_audit.md \
+  "$ffi_inventory_file" doc/consensus_bridge_shim_audit.md \
   libraries programs "$inventory_temp_dir"
 check_cxx_export_callers \
-  rust/crates/rustaxa-bridge/src/ffi.rs doc/consensus_bridge_shim_audit.md \
+  "$ffi_inventory_file" doc/consensus_bridge_shim_audit.md \
   libraries programs tests "$inventory_temp_dir"
 check_surface_budgets "$repo_root" "$repo_root/doc/consensus_bridge_shim_audit.md"
 

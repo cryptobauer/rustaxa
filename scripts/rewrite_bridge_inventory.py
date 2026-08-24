@@ -123,28 +123,36 @@ def strip_comments_and_literals(source: str) -> str:
 
 
 def cxx_module(source: str) -> str:
-    """Return the stripped body of the first CXX bridge module.
+    """Return the stripped bodies of all CXX bridge modules.
 
-    The module boundary is brace-matched after comments and literals are
-    removed. Missing markers or unbalanced braces fail closed.
+    Module boundaries are brace-matched after comments and literals are
+    removed. Missing markers or unbalanced braces fail closed. Joining the
+    bodies lets one inventory source concatenate independently generated CXX
+    translation units without hiding later declarations.
     """
 
     stripped = strip_comments_and_literals(source)
-    marker = stripped.find("#[cxx::bridge")
-    if marker < 0:
+    bodies: list[str] = []
+    cursor = 0
+    while (marker := stripped.find("#[cxx::bridge", cursor)) >= 0:
+        opening = stripped.find("{", marker)
+        if opening < 0:
+            raise ValueError("CXX bridge module opening brace is missing")
+        depth = 0
+        for index in range(opening, len(stripped)):
+            if stripped[index] == "{":
+                depth += 1
+            elif stripped[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    bodies.append(stripped[opening + 1 : index])
+                    cursor = index + 1
+                    break
+        else:
+            raise ValueError("CXX bridge module braces are unbalanced")
+    if not bodies:
         raise ValueError("CXX bridge marker is missing")
-    opening = stripped.find("{", marker)
-    if opening < 0:
-        raise ValueError("CXX bridge module opening brace is missing")
-    depth = 0
-    for index in range(opening, len(stripped)):
-        if stripped[index] == "{":
-            depth += 1
-        elif stripped[index] == "}":
-            depth -= 1
-            if depth == 0:
-                return stripped[opening + 1 : index]
-    raise ValueError("CXX bridge module braces are unbalanced")
+    return "\n".join(bodies)
 
 
 def ffi_functions(module: str) -> list[tuple[str, str]]:

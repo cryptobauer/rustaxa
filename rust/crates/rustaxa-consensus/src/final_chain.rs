@@ -689,6 +689,15 @@ impl FinalChain {
     pub(crate) const DB_META_LAST_NUMBER: u32 = 1;
     const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 
+    /// Prunes native block lookup indexes below the retained block number.
+    /// Missing history is a no-op and storage errors propagate without
+    /// changing in-memory FinalChain state.
+    pub fn prune_block_indexes_before(&self, first_to_keep: u64) -> Result<u64> {
+        self.storage
+            .final_chain()
+            .prune_block_indexes_before(first_to_keep)
+    }
+
     pub fn new(
         storage: Arc<Storage>,
         block_gas_limit: FinalChainGas,

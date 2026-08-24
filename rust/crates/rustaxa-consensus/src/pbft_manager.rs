@@ -5909,6 +5909,14 @@ impl PbftManagerRuntime {
         self.snapshot.clone()
     }
 
+    /// Returns the native deadline policy used by state-action composition.
+    ///
+    /// The values stay crate-private because callers should request a composed
+    /// application task instead of rebuilding manager facts themselves.
+    pub(crate) const fn state_action_timing_policy(&self) -> (u64, u64) {
+        (self.policy.deadline_ms, self.policy.polling_interval_ms)
+    }
+
     #[cfg(test)]
     /// Sets the scalar period for cross-module application-boundary fixtures.
     pub(crate) fn set_period_for_test(&mut self, period: u64) {
@@ -8190,8 +8198,12 @@ fn valid_action_result(
         | PbftManagerRuntimeAction::SleepUntilNextStep => {
             result == PbftManagerRuntimeActionResultCode::SleepApplied
         }
-        PbftManagerRuntimeAction::ProcessSyncedPbftBlocks
-        | PbftManagerRuntimeAction::MaybeBroadcastVotes
+        PbftManagerRuntimeAction::ProcessSyncedPbftBlocks => matches!(
+            result,
+            PbftManagerRuntimeActionResultCode::StateActionDone
+                | PbftManagerRuntimeActionResultCode::ProgressRestartLoop
+        ),
+        PbftManagerRuntimeAction::MaybeBroadcastVotes
         | PbftManagerRuntimeAction::RunValueProposal
         | PbftManagerRuntimeAction::RunFilter
         | PbftManagerRuntimeAction::RunCertify
@@ -8257,7 +8269,8 @@ pub fn report_pbft_manager_runtime_action(
     }
 
     match expected_action {
-        PbftManagerRuntimeAction::TryPushCertVotesBlock => {
+        PbftManagerRuntimeAction::TryPushCertVotesBlock
+        | PbftManagerRuntimeAction::ProcessSyncedPbftBlocks => {
             if report.result == PbftManagerRuntimeActionResultCode::ProgressRestartLoop {
                 session.status = PbftManagerRuntimeStatus::Complete;
                 session.pending.clear();
@@ -11447,6 +11460,27 @@ mod tests {
         );
         let mut action_report =
             report(step.cursor, PbftManagerRuntimeAction::TryPushCertVotesBlock);
+        action_report.result = PbftManagerRuntimeActionResultCode::ProgressRestartLoop;
+        session = report_pbft_manager_runtime_action(session, action_report);
+
+        let final_step = next_pbft_manager_runtime_action(&session);
+        assert!(final_step.complete);
+        assert!(final_step.restart_loop);
+    }
+
+    #[test]
+    fn synced_finalization_progress_completes_with_restart_loop() {
+        let mut session =
+            create_pbft_manager_runtime_session(fact(PbftManagerRuntimeStateCode::Filter));
+        let step = next_pbft_manager_runtime_action(&session);
+        assert_eq!(
+            step.action,
+            Some(PbftManagerRuntimeAction::ProcessSyncedPbftBlocks)
+        );
+        let mut action_report = report(
+            step.cursor,
+            PbftManagerRuntimeAction::ProcessSyncedPbftBlocks,
+        );
         action_report.result = PbftManagerRuntimeActionResultCode::ProgressRestartLoop;
         session = report_pbft_manager_runtime_action(session, action_report);
 

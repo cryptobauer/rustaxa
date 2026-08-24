@@ -1,12 +1,7 @@
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeConsensusApplication;
-use crate::ffi::BridgeDagStorageQueries;
-use crate::ffi::BridgeFinalChainStorageQueries;
-use crate::ffi::BridgePbftStorageQueries;
-use crate::ffi::BridgePbftVoteStorageQueries;
-use crate::ffi::BridgePeriodStorageQueries;
 use crate::ffi::BridgeStorageBatch;
-use crate::ffi::BridgeTransactionStorageQueries;
+use crate::ffi::BridgeStorageQueries;
 #[cfg(test)]
 use anyhow::Context;
 use anyhow::Result;
@@ -43,8 +38,8 @@ fn runtime_storage(runtime: &BridgeConsensusApplication) -> Arc<Storage> {
 /// - the handle does not mutate storage or decode votes.
 pub fn create_pbft_vote_storage_queries(
     runtime: &BridgeConsensusApplication,
-) -> Box<BridgePbftVoteStorageQueries> {
-    Box::new(BridgePbftVoteStorageQueries {
+) -> Box<BridgeStorageQueries> {
+    Box::new(BridgeStorageQueries {
         storage: runtime_storage(runtime),
     })
 }
@@ -64,8 +59,8 @@ pub fn create_pbft_vote_storage_queries(
 /// - the handle does not mutate storage or decode PBFT block objects.
 pub fn create_pbft_storage_queries(
     runtime: &BridgeConsensusApplication,
-) -> Box<BridgePbftStorageQueries> {
-    Box::new(BridgePbftStorageQueries {
+) -> Box<BridgeStorageQueries> {
+    Box::new(BridgeStorageQueries {
         storage: runtime_storage(runtime),
     })
 }
@@ -85,8 +80,8 @@ pub fn create_pbft_storage_queries(
 /// - the handle does not mutate storage or decode DAG block payloads.
 pub fn create_dag_storage_queries(
     runtime: &BridgeConsensusApplication,
-) -> Box<BridgeDagStorageQueries> {
-    Box::new(BridgeDagStorageQueries {
+) -> Box<BridgeStorageQueries> {
+    Box::new(BridgeStorageQueries {
         storage: runtime_storage(runtime),
     })
 }
@@ -106,8 +101,8 @@ pub fn create_dag_storage_queries(
 /// - the handle does not mutate storage or decode transaction payloads.
 pub fn create_transaction_storage_queries(
     runtime: &BridgeConsensusApplication,
-) -> Box<BridgeTransactionStorageQueries> {
-    Box::new(BridgeTransactionStorageQueries {
+) -> Box<BridgeStorageQueries> {
+    Box::new(BridgeStorageQueries {
         storage: runtime_storage(runtime),
     })
 }
@@ -129,8 +124,8 @@ pub fn create_transaction_storage_queries(
 /// - the handle does not mutate storage.
 pub fn create_final_chain_storage_queries(
     runtime: &BridgeConsensusApplication,
-) -> Box<BridgeFinalChainStorageQueries> {
-    Box::new(BridgeFinalChainStorageQueries {
+) -> Box<BridgeStorageQueries> {
+    Box::new(BridgeStorageQueries {
         storage: runtime_storage(runtime),
     })
 }
@@ -151,8 +146,8 @@ pub fn create_final_chain_storage_queries(
 /// - the handle does not mutate storage.
 pub fn create_period_storage_queries(
     runtime: &BridgeConsensusApplication,
-) -> Box<BridgePeriodStorageQueries> {
-    Box::new(BridgePeriodStorageQueries {
+) -> Box<BridgeStorageQueries> {
+    Box::new(BridgeStorageQueries {
         storage: runtime_storage(runtime),
     })
 }
@@ -192,7 +187,7 @@ impl BridgeConsensusApplication {
     pub fn get_last_sortition_params(
         &self,
         count: u64,
-    ) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
+    ) -> Result<Vec<rustaxa_ffi::CanonicalBytes>, anyhow::Error> {
         let count = usize::try_from(count).unwrap_or(usize::MAX);
         let changes = self
             .0
@@ -201,7 +196,7 @@ impl BridgeConsensusApplication {
             .last_sortition_params_changes_rlp(count)?;
         Ok(changes
             .into_iter()
-            .map(|data| rustaxa_ffi::BlockRlp { data })
+            .map(|data| rustaxa_ffi::CanonicalBytes { data })
             .collect())
     }
 
@@ -337,20 +332,22 @@ fn storage_shim_batch_mut(
         .ok_or_else(|| anyhow::anyhow!("storage shim batch already committed"))
 }
 
-fn vote_rlps_to_bridge(votes: Vec<Vec<u8>>) -> Vec<rustaxa_ffi::VoteRlp> {
+fn vote_rlps_to_bridge(votes: Vec<Vec<u8>>) -> Vec<rustaxa_ffi::CanonicalBytes> {
     votes
         .into_iter()
-        .map(|data| rustaxa_ffi::VoteRlp { data })
+        .map(|data| rustaxa_ffi::CanonicalBytes { data })
         .collect()
 }
 
-impl BridgePbftVoteStorageQueries {
+impl BridgeStorageQueries {
     /// Returns locally stored verified vote RLPs from Rust PBFT storage.
     ///
     /// Inputs: none beyond the storage handle cloned into this typed query object.
     /// Outputs: canonical vote RLP bytes for C++ compatibility materialization.
     /// Edge behavior: missing storage rows return an empty vector.
-    pub fn get_own_verified_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
+    pub fn get_own_verified_votes(
+        &self,
+    ) -> Result<Vec<rustaxa_ffi::CanonicalBytes>, anyhow::Error> {
         Ok(vote_rlps_to_bridge(
             self.storage.pbft().own_verified_votes_rlp()?,
         ))
@@ -361,7 +358,9 @@ impl BridgePbftVoteStorageQueries {
     /// Inputs: none beyond the cloned storage handle. Outputs are flattened
     /// vote RLPs, preserving the Rust repository's deterministic vote-type
     /// iteration order. Malformed stored bundle RLP returns an error.
-    pub fn get_all_two_t_plus_one_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
+    pub fn get_all_two_t_plus_one_votes(
+        &self,
+    ) -> Result<Vec<rustaxa_ffi::CanonicalBytes>, anyhow::Error> {
         Ok(vote_rlps_to_bridge(
             self.storage.pbft().all_two_t_plus_one_votes_rlp()?,
         ))
@@ -372,12 +371,12 @@ impl BridgePbftVoteStorageQueries {
     /// Inputs: none beyond the cloned storage handle. Outputs are canonical
     /// vote RLP bytes for C++ compatibility materialization. Missing rows
     /// return an empty vector.
-    pub fn get_reward_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
+    pub fn get_reward_votes(&self) -> Result<Vec<rustaxa_ffi::CanonicalBytes>, anyhow::Error> {
         Ok(vote_rlps_to_bridge(self.storage.pbft().reward_votes_rlp()?))
     }
 }
 
-impl BridgePbftStorageQueries {
+impl BridgeStorageQueries {
     /// Returns whether a PBFT block hash resolves to a persisted finalized period.
     ///
     /// Inputs: canonical PBFT block hash bytes. Output is `true` only when the
@@ -458,17 +457,19 @@ impl BridgePbftStorageQueries {
     /// payloads. Decode, key-identity, iterator, and storage failures are
     /// returned to C++; live proposal validation flags are intentionally not
     /// materialized by this compatibility query.
-    pub fn get_proposed_pbft_blocks(&self) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
+    pub fn get_proposed_pbft_blocks(
+        &self,
+    ) -> Result<Vec<rustaxa_ffi::CanonicalBytes>, anyhow::Error> {
         Ok(restore_proposed_blocks_from_storage(self.storage.as_ref())?
             .into_iter()
-            .map(|entry| rustaxa_ffi::BlockRlp {
+            .map(|entry| rustaxa_ffi::CanonicalBytes {
                 data: entry.block_rlp,
             })
             .collect())
     }
 }
 
-impl BridgeDagStorageQueries {
+impl BridgeStorageQueries {
     pub fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
         self.storage
             .dag()
@@ -532,7 +533,7 @@ impl BridgeDagStorageQueries {
         &self,
         level: u64,
         number_of_levels: u32,
-    ) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
+    ) -> Result<Vec<rustaxa_ffi::CanonicalBytes>, anyhow::Error> {
         let rlps = self
             .storage
             .dag()
@@ -540,7 +541,7 @@ impl BridgeDagStorageQueries {
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(rlps
             .into_iter()
-            .map(|data| rustaxa_ffi::BlockRlp { data })
+            .map(|data| rustaxa_ffi::CanonicalBytes { data })
             .collect())
     }
 
@@ -558,7 +559,7 @@ impl BridgeDagStorageQueries {
                 level,
                 blocks: blocks
                     .into_iter()
-                    .map(|data| rustaxa_ffi::BlockRlp { data })
+                    .map(|data| rustaxa_ffi::CanonicalBytes { data })
                     .collect(),
             })
             .collect())
@@ -586,7 +587,7 @@ impl BridgeDagStorageQueries {
     }
 }
 
-impl BridgeTransactionStorageQueries {
+impl BridgeStorageQueries {
     /// Returns whether a transaction hash exists in pending or finalized storage.
     ///
     /// Inputs: canonical transaction hash bytes. Output follows
@@ -710,7 +711,7 @@ impl BridgeTransactionStorageQueries {
     }
 }
 
-impl BridgePeriodStorageQueries {
+impl BridgeStorageQueries {
     /// Returns raw `PeriodData` bytes for a finalized period.
     pub fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
         self.storage
@@ -751,7 +752,7 @@ impl BridgePeriodStorageQueries {
     }
 }
 
-impl BridgeFinalChainStorageQueries {
+impl BridgeStorageQueries {
     pub fn get_final_chain_meta_value(&self, key: u32) -> Result<Vec<u8>, anyhow::Error> {
         Ok(self
             .storage
@@ -1435,9 +1436,7 @@ mod tests {
         (application, storage)
     }
 
-    fn transaction_queries(
-        application: &BridgeConsensusApplication,
-    ) -> Box<BridgeTransactionStorageQueries> {
+    fn transaction_queries(application: &BridgeConsensusApplication) -> Box<BridgeStorageQueries> {
         create_transaction_storage_queries(application)
     }
 

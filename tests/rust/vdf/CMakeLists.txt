@@ -8,6 +8,7 @@ add_executable(rust_vdf_tests
 target_link_libraries(rust_vdf_tests
     PRIVATE
     Rustaxa::bridge
+    core_libs
     GTest::gtest_main
 )
 

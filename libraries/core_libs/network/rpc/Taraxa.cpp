@@ -505,6 +505,10 @@ dev::Address addressFromBridge(const std::array<uint8_t, 20>& address) {
   return dev::Address(address.data(), dev::Address::ConstructFromPointer);
 }
 
+dev::u256 u256FromBridge(const std::array<uint8_t, 32>& value) {
+  return dev::fromBigEndian<dev::u256>(dev::bytes(value.begin(), value.end()));
+}
+
 dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
 
 std::shared_ptr<Transaction> materializeTransactionView(const rustaxa::TransactionPublicView& view) {
@@ -613,7 +617,7 @@ Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, 
   pillar_block["state_root"] = dev::toJS(hashFromBridge(view.state_root));
   pillar_block["previous_pillar_block_hash"] = dev::toJS(hashFromBridge(view.previous_pillar_block_hash));
   pillar_block["bridge_root"] = dev::toJS(hashFromBridge(view.bridge_root));
-  pillar_block["epoch"] = dev::toJS(view.epoch);
+  pillar_block["epoch"] = dev::toJS(u256FromBridge(view.epoch));
   pillar_block["validators_vote_counts_changes"] = Json::Value(Json::arrayValue);
   for (const auto& change : view.validator_vote_count_changes) {
     Json::Value vote_count_change_json;

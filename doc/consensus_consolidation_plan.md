@@ -706,13 +706,14 @@ cleanup, and persistence are application-root tasks; public reads use `Consensus
 `ConsensusNetworkApi`, and only signing, tarcap transport, and finalization byte-materialization remain named leaves.
 The Rust-mode `PbftManager` facade and `pbft_manager_shim` are now deleted as well. `App` owns lifecycle through the
 single application root; daemon, proposal/certificate, period/sync, finalization, and local-vote flows enter root tasks;
-and local vote admission persists the own-vote row atomically. A private `ConsensusApplication::Runtime` still executes
-timer, signing, tarcap, lifecycle, and concrete FinalChain/EVM leaves through manager-shaped task/effect carriers.
-`App::close` permanently releases that runtime even on partial or repeated teardown, breaking the temporary
-host-service ownership cycle before configuration and process services are destroyed; ordinary `stopConsensus`
-remains restartable. Network status and sync planning each consume one coherent root snapshot.
-Completion condition: replace that compatibility executor and its remaining materializers with exact named leaf ports,
-then delete the corresponding bridge exports/carriers rather than treating the private runtime as a final boundary.
+and local vote admission persists the own-vote row atomically. The private C++ runtime and manager-shaped task/effect
+carriers are now deleted. Native application tasks own scheduling, startup recovery, lifecycle/state progression, sync
+continuation, proposals, votes, and finalization; the App-owned process shell supplies only exact monotonic/Unix-time,
+signing/VRF, tarcap, FinalChain account facts, pillar-anchor-state facts, and concrete EVM execution leaves. The pillar
+compatibility facade queries canonical current-pillar bytes from the native owner. `App::close` stops and joins that
+shell before configuration and process services are destroyed; ordinary `stopConsensus` remains restartable. Network
+status and sync planning each consume one coherent root snapshot. Remaining work in `CRW-12`/`CRW-15`/`CRW-16` concerns other subsystem families,
+not PBFT application-runtime compatibility.
 
 Current network-root progress: native `PbftService` constructs and owns the single `ConsensusNetworkService`; App gives
 `Network` only a thin CXX adapter cloned from that root and injects it through both tarcap capabilities into the vote,

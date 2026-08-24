@@ -200,8 +200,10 @@ pub struct PillarVoteWeightedRlpPayload {
 pub struct PillarVoteSingleAdmissionApplyInput {
     pub vote_hash: [u8; 32],
     pub validator_vote_count: u64,
-    pub has_threshold: bool,
-    pub threshold: u64,
+    /// Whether the external FinalChain snapshot supplied its canonical total.
+    pub has_total_eligible_vote_count: bool,
+    /// Total eligible DPoS votes; Rust derives the strict-majority threshold.
+    pub total_eligible_vote_count: u64,
 }
 
 /// Rust-private result of applying one retained single-vote preparation.
@@ -857,6 +859,33 @@ impl PillarChainState {
 
 #[allow(dead_code)]
 impl PillarChainService {
+    /// Completes non-mutating pillar-vote validation with one exact external
+    /// validator-weight fact.
+    ///
+    /// Positive weight preserves the retained preparation for the immediately
+    /// following admission call, matching the legacy validate-then-admit flow.
+    /// Zero weight consumes only the matching preparation and returns the
+    /// deterministic not-eligible status.
+    pub fn pbft_service_pillar_validate_prepared_single_vote_external_facts(
+        &self,
+        mut prepared: PillarVoteSingleAdmissionPreparePlan,
+        validator_vote_count: u64,
+    ) -> Result<PillarVoteSingleAdmissionValidationPlan> {
+        if !prepared.can_query_dpos || prepared.period == 0 {
+            return Ok(single_validation_result(&prepared));
+        }
+        if validator_vote_count > 0 {
+            return Ok(single_validation_result(&prepared));
+        }
+        self.lock(true)?.discard_single_vote_preparation(
+            H256::from(prepared.vote_hash),
+            prepared.anchor_generation,
+        )?;
+        prepared.status = PILLAR_VOTE_STATUS_NOT_ELIGIBLE;
+        prepared.can_query_dpos = false;
+        Ok(single_validation_result(&prepared))
+    }
+
     /// Validates one external pillar vote with Rust-owned FinalChain composition.
     ///
     /// `vote_rlp` and `context` enter the checked network-admission path. The
@@ -962,9 +991,9 @@ impl PillarChainService {
                     return Err(error);
                 }
             };
-        let threshold = if prepared.needs_threshold {
+        let total_eligible_vote_count = if prepared.needs_threshold {
             match final_chain.pbft_dpos_eligible_total_vote_count(dpos_period) {
-                Ok(Some(total)) => Some(crate::plan_pillar_consensus_threshold(total)),
+                Ok(Some(total)) => Some(total),
                 Ok(None) => {
                     self.lock(false)?
                         .discard_single_vote_preparation(vote_hash, prepared.anchor_generation)?;
@@ -988,8 +1017,8 @@ impl PillarChainService {
                 PillarVoteSingleAdmissionApplyInput {
                     vote_hash: prepared.vote_hash,
                     validator_vote_count,
-                    has_threshold: threshold.is_some(),
-                    threshold: threshold.unwrap_or_default(),
+                    has_total_eligible_vote_count: total_eligible_vote_count.is_some(),
+                    total_eligible_vote_count: total_eligible_vote_count.unwrap_or_default(),
                 },
             )?;
         Ok(PillarVoteSingleAdmissionWithFinalChainPlan {
@@ -1718,10 +1747,13 @@ fn apply_prepared_single_vote_admission(
     };
 
     if !pillar_votes.period_data_initialized(period) {
-        if !input.has_threshold {
+        if !input.has_total_eligible_vote_count {
             return Ok(single_admission_apply_plan(PILLAR_VOTE_STATUS_UNKNOWN));
         }
-        pillar_votes.initialize_period_data(period, input.threshold);
+        pillar_votes.initialize_period_data(
+            period,
+            crate::plan_pillar_consensus_threshold(input.total_eligible_vote_count),
+        );
     }
 
     let outcome = pillar_votes.add_verified_vote(vote)?;
@@ -1914,7 +1946,7 @@ mod tests {
             state_root: H256::from_low_u64_be(1),
             previous_pillar_block_hash: H256::from_low_u64_be(2),
             bridge_root: H256::from_low_u64_be(3),
-            epoch: 4,
+            epoch: 4.into(),
             validator_vote_count_changes: Vec::new(),
         }
     }
@@ -1945,6 +1977,33 @@ mod tests {
                 is_relevant: false,
             }
         );
+    }
+
+    #[test]
+    fn positive_external_validator_fact_completes_validation_without_final_chain() {
+        let service = PillarChainService::restore(temp_storage("pillar_vote_external_fact"))
+            .expect("restore service");
+        let validation = service
+            .pbft_service_pillar_validate_prepared_single_vote_external_facts(
+                PillarVoteSingleAdmissionPreparePlan {
+                    status: PILLAR_VOTE_STATUS_VALID,
+                    can_query_dpos: true,
+                    needs_threshold: true,
+                    period: 42,
+                    block_hash: [2; 32],
+                    vote_hash: [3; 32],
+                    voter: [4; 20],
+                    anchor_generation: 7,
+                    has_current_anchor: true,
+                    current_period: 41,
+                    current_hash: [2; 32],
+                },
+                9,
+            )
+            .expect("positive fact validates without native FinalChain");
+        assert_eq!(validation.status, PILLAR_VOTE_STATUS_VALID);
+        assert_eq!(validation.period, 42);
+        assert_eq!(validation.voter, [4; 20]);
     }
 
     #[test]
@@ -2425,7 +2484,7 @@ mod protocol_tests {
             state_root: H256::from_low_u64_be(1),
             previous_pillar_block_hash: H256::from_low_u64_be(2),
             bridge_root: H256::from_low_u64_be(3),
-            epoch: 4,
+            epoch: 4.into(),
             validator_vote_count_changes: Vec::new(),
         };
         let bytes = CurrentPillarBlockDataDb {
@@ -2497,7 +2556,7 @@ mod protocol_tests {
     }
 
     #[test]
-    fn single_vote_admission_prepare_and_apply_insert_vote() {
+    fn single_vote_admission_derives_threshold_from_total_eligible_votes() {
         let mut votes = create_pillar_votes_index();
         let (vote, voter) = signed_vote(0x21, 42, 77);
 
@@ -2520,8 +2579,8 @@ mod protocol_tests {
                 PillarVoteSingleAdmissionApplyInput {
                     vote_hash: vote.hash(true).into(),
                     validator_vote_count: 6,
-                    has_threshold: true,
-                    threshold: 5,
+                    has_total_eligible_vote_count: true,
+                    total_eligible_vote_count: 8,
                 },
             )
             .unwrap();
@@ -2530,6 +2589,13 @@ mod protocol_tests {
         assert!(applied.accepted);
         assert!(!applied.duplicate);
         assert_eq!(applied.block_weight, 6);
+        let thresholded = votes.pillar_votes_get_verified_vote_payloads(
+            42,
+            vote.block_hash.as_fixed_bytes(),
+            true,
+        );
+        assert!(thresholded.threshold_met);
+        assert_eq!(thresholded.selected_weight, 6);
 
         let duplicate_prepare = votes
             .pillar_votes_prepare_single_vote_admission(
@@ -2567,8 +2633,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
-                        has_threshold: true,
-                        threshold: 5,
+                        has_total_eligible_vote_count: true,
+                        total_eligible_vote_count: 8,
                     },
                 )
                 .expect("vote should apply");
@@ -2656,8 +2722,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
-                        has_threshold: true,
-                        threshold: 5,
+                        has_total_eligible_vote_count: true,
+                        total_eligible_vote_count: 8,
                     },
                 )
                 .unwrap();
@@ -2713,8 +2779,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
-                        has_threshold: true,
-                        threshold: 5,
+                        has_total_eligible_vote_count: true,
+                        total_eligible_vote_count: 8,
                     },
                 )
                 .unwrap();
@@ -2752,7 +2818,7 @@ mod protocol_tests {
                 state_root: H256::from_low_u64_be(999),
                 previous_pillar_block_hash: H256::from_low_u64_be(2),
                 bridge_root: H256::from_low_u64_be(3),
-                epoch: 4,
+                epoch: 4.into(),
                 validator_vote_count_changes: Vec::new(),
             };
             runtime
@@ -2789,8 +2855,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
-                        has_threshold: true,
-                        threshold: 5,
+                        has_total_eligible_vote_count: true,
+                        total_eligible_vote_count: 8,
                     },
                 )
                 .unwrap();
@@ -2848,8 +2914,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
-                        has_threshold: false,
-                        threshold: 0,
+                        has_total_eligible_vote_count: false,
+                        total_eligible_vote_count: 0,
                     },
                 )
                 .unwrap();
@@ -2907,8 +2973,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
-                        has_threshold: false,
-                        threshold: 0,
+                        has_total_eligible_vote_count: false,
+                        total_eligible_vote_count: 0,
                     },
                 )
                 .unwrap();
@@ -2956,8 +3022,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: H256::zero().into(),
                         validator_vote_count: 1,
-                        has_threshold: true,
-                        threshold: 1,
+                        has_total_eligible_vote_count: true,
+                        total_eligible_vote_count: 0,
                     },
                 )
                 .unwrap();
@@ -3072,8 +3138,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
-                        has_threshold: true,
-                        threshold: 5,
+                        has_total_eligible_vote_count: true,
+                        total_eligible_vote_count: 8,
                     },
                 )
                 .unwrap();
@@ -3133,8 +3199,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
-                        has_threshold: true,
-                        threshold: 5,
+                        has_total_eligible_vote_count: true,
+                        total_eligible_vote_count: 8,
                     },
                 )
                 .unwrap();
@@ -3193,8 +3259,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
-                        has_threshold: true,
-                        threshold: 5,
+                        has_total_eligible_vote_count: true,
+                        total_eligible_vote_count: 8,
                     },
                 )
                 .unwrap();
@@ -3229,7 +3295,7 @@ mod protocol_tests {
                 state_root: H256::from_low_u64_be(99),
                 previous_pillar_block_hash: block.previous_pillar_block_hash,
                 bridge_root: block.bridge_root,
-                epoch: 4,
+                epoch: 4.into(),
                 validator_vote_count_changes: Vec::new(),
             }
             .encode_rlp();
@@ -3291,8 +3357,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
-                        has_threshold: true,
-                        threshold: 5,
+                        has_total_eligible_vote_count: true,
+                        total_eligible_vote_count: 8,
                     },
                 )
                 .unwrap();
@@ -3351,8 +3417,8 @@ mod protocol_tests {
                 .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
-                        has_threshold: true,
-                        threshold: 5,
+                        has_total_eligible_vote_count: true,
+                        total_eligible_vote_count: 8,
                         validator_vote_count: 6,
                     },
                 )
@@ -3403,8 +3469,8 @@ mod protocol_tests {
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 4,
-                        has_threshold: prepared.needs_threshold,
-                        threshold: 5,
+                        has_total_eligible_vote_count: prepared.needs_threshold,
+                        total_eligible_vote_count: 8,
                     },
                 )
                 .unwrap();

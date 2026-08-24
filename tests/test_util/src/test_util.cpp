@@ -237,7 +237,7 @@ std::pair<PbftPeriod, PbftRound> clearAllVotes(const std::vector<std::shared_ptr
 
 void stopConsensus(const std::shared_ptr<AppBase>& node) {
 #ifdef RUSTAXA_ENABLE
-  node->getConsensusApplication()->stopConsensus();
+  node->stopConsensus();
 #else
   node->getPbftManager()->stop();
 #endif
@@ -245,7 +245,7 @@ void stopConsensus(const std::shared_ptr<AppBase>& node) {
 
 void startConsensus(const std::shared_ptr<AppBase>& node) {
 #ifdef RUSTAXA_ENABLE
-  node->getConsensusApplication()->startConsensus();
+  node->startConsensus();
 #else
   node->getPbftManager()->start();
 #endif

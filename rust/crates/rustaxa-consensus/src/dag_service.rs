@@ -2204,6 +2204,7 @@ fn verify_block_authorization_snapshot_matches(
 /// Native owner of DAG construction, restoration, sessions, and locking.
 pub(crate) struct DagService {
     state: Mutex<DagServiceState>,
+    config: DagServiceConfig,
 }
 
 impl DagService {
@@ -2232,7 +2233,12 @@ impl DagService {
     ) -> Result<Self> {
         Ok(Self {
             state: Mutex::new(DagServiceState::restore(storage, config, persist_mapping)?),
+            config,
         })
+    }
+
+    pub(crate) const fn genesis_hash(&self) -> H256 {
+        self.config.genesis_hash
     }
 
     /// Validates DAG pivot/tip references for one block through live graph + storage.

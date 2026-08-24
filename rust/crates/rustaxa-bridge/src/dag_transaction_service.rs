@@ -1,5 +1,5 @@
+use crate::consensus_bootstrap::consensus_config_from_ffi;
 use crate::ffi::rustaxa_ffi::*;
-use crate::pbft_manager::pbft_service_config_from_ffi;
 use crate::transaction_manager::{
     bridge_to_service_account_nonce_facts, bridge_to_service_final_chain_admission_fact,
     bridge_to_service_gas_estimation_request, bridge_to_service_queue_entry,
@@ -32,9 +32,6 @@ use rustaxa_consensus::dag_transaction_service::{
     DagVerifyBlockTransactionCompletionReport as NativeDagVerifyBlockTransactionCompletionReport,
     DagVerifyBlockVdfRequest as NativeDagVerifyBlockVdfRequest,
 };
-use rustaxa_consensus::pbft_manager::{
-    PbftFinalizationExecutorBoundary, PbftFinalizationExecutorStartRequest,
-};
 use rustaxa_consensus::transaction_packing_service::{
     TransactionPackingEstimate, TransactionPackingSelection,
 };
@@ -62,12 +59,6 @@ pub struct BridgeConsensusApplication(
 );
 
 pub(crate) type BridgeApp = BridgeConsensusApplication;
-
-impl BridgeConsensusApplication {
-    pub(crate) fn complete_bootstrap(&self) {
-        self.0.complete_bootstrap();
-    }
-}
 
 /// Converts one native non-finalized DAG snapshot into its stable CXX payload.
 /// The lock-consistent input owns its period, ordered canonical blocks, and
@@ -100,155 +91,6 @@ pub(crate) fn dag_non_finalized_sync_payload_to_ffi(
     }
 }
 
-/// Returns cached candidate blocks plus finalization-time sidecar transactions.
-///
-/// Unknown anchors and native lookup failures propagate without publishing a
-/// partial carrier. The existing sync payload preserves canonical order and
-/// owned bytes across CXX.
-pub fn pbft_manager_runtime_cached_candidate_dag_payload(
-    runtime: &BridgeApp,
-    dag_transaction_service: &BridgeApp,
-    anchor_hash: &[u8; 32],
-) -> Result<DagManagerNonFinalizedSyncPayload> {
-    let payload = runtime
-        .0
-        .cached_candidate_dag_payload(&dag_transaction_service.1, H256::from(*anchor_hash))?;
-    Ok(dag_non_finalized_sync_payload_to_ffi(payload))
-}
-
-/// Drains every proposal DAG-order request inside the composed native roots.
-///
-/// The PBFT service releases its manager lock before the DAG root loads and
-/// decodes canonical blocks, then validates the exact pending cursor before
-/// reporting facts. The returned owned step is terminal or ready for the
-/// retained C++ signing/materialization boundary. Missing sessions and native
-/// storage failures remain explicit contract/error results.
-pub fn pbft_manager_proposal_session_next_with_dag(
-    runtime: &BridgeApp,
-    dag_transaction_service: &BridgeApp,
-) -> Result<PbftManagerProposalSessionStep> {
-    Ok(runtime
-        .0
-        .proposal_session_next_with_dag(&dag_transaction_service.1)?
-        .map(Into::into)
-        .unwrap_or_else(crate::pbft_manager::proposal_session_not_started_step))
-}
-
-impl BridgeApp {
-    /// Composes ordinary validation across the opaque PBFT and DAG roots.
-    /// Immutable candidate facts produce one terminal plan; storage and lock
-    /// failures propagate without exposing either root or publishing partial state.
-    pub(crate) fn validate_pbft_block(
-        &self,
-        runtime: &BridgeApp,
-        candidate: rustaxa_consensus::pbft_service::PbftBlockValidationCandidate,
-    ) -> Result<rustaxa_consensus::pbft_manager::PbftManagerBlockValidationPlan> {
-        let final_chain = runtime.0.final_chain_for_bridge();
-        runtime
-            .0
-            .validate_pbft_block_composed(&final_chain, &self.1, candidate)
-    }
-
-    /// Runs complete proposed-block admission without exposing either native root.
-    pub(crate) fn admit_proposed_block(
-        &self,
-        runtime: &BridgeApp,
-        request: rustaxa_consensus::pbft_service::PbftProposedBlockAdmissionRequest,
-    ) -> Result<rustaxa_consensus::pbft_service::PbftProposedBlockAdmissionResult> {
-        let final_chain = runtime.0.final_chain_for_bridge();
-        runtime
-            .0
-            .admit_proposed_block(&final_chain, &self.1, request)
-    }
-
-    /// Runs complete local proposal validation and ranking without exposing
-    /// either native root or materializing a consensus object in the bridge.
-    pub(crate) fn select_local_proposal_candidate(
-        &self,
-        runtime: &BridgeApp,
-        request: rustaxa_consensus::pbft_service::PbftLocalProposalSelectionRequest,
-    ) -> Result<rustaxa_consensus::pbft_service::PbftLocalProposalSelectionResult> {
-        let final_chain = runtime.0.final_chain_for_bridge();
-        runtime
-            .0
-            .select_local_proposal_candidate(&final_chain, &self.1, request)
-    }
-
-    /// Runs authoritative proposal-vote leader selection entirely inside the
-    /// native PBFT/FinalChain/DAG roots, returning only the selected payloads.
-    pub(crate) fn select_leader_composed(
-        &self,
-        runtime: &BridgeApp,
-        request: rustaxa_consensus::pbft_leader_selection::PbftComposedLeaderSelectionRequest,
-    ) -> Result<rustaxa_consensus::pbft_leader_selection::PbftLeaderSelectionResult> {
-        let final_chain = runtime.0.final_chain_for_bridge();
-        runtime
-            .0
-            .select_leader_composed(&final_chain, &self.1, request)
-    }
-
-    /// Composes exact PBFT sync transaction admission with the private native
-    /// DAG/transaction root and the external FinalChain account boundary.
-    ///
-    /// The PBFT service captures and later revalidates its generation-bound
-    /// transaction request. This adapter exposes neither root nor a native
-    /// guard; storage/account errors become an exact native terminal step.
-    pub(crate) fn validate_pbft_sync_admission_transactions(
-        &self,
-        runtime: &BridgeApp,
-        identities: Vec<rustaxa_consensus::period_data_queue::PeriodDataQueueTransactionIdentity>,
-    ) -> Option<rustaxa_consensus::pbft_sync::PbftSyncAdmissionSessionStep> {
-        let final_chain = runtime.0.final_chain_for_bridge();
-        runtime
-            .0
-            .validate_pbft_sync_admission_transactions(&self.1, &final_chain, identities)
-    }
-
-    /// Starts or resumes PBFT finalization against the privately owned DAG root.
-    ///
-    /// The PBFT service owns executor serialization and the supplied request;
-    /// this adapter only composes it with the DAG/transaction sibling without
-    /// exposing that sibling to another bridge module. Native locks and guards
-    /// remain inside the two application services, and errors propagate without
-    /// publishing a partial executor boundary.
-    pub(crate) fn start_finalization_executor(
-        &self,
-        runtime: &BridgeApp,
-        request: PbftFinalizationExecutorStartRequest,
-    ) -> anyhow::Result<PbftFinalizationExecutorBoundary> {
-        runtime.0.start_finalization_executor(&self.1, request)
-    }
-
-    /// Advances one cursor-bound PBFT finalization action against private state.
-    ///
-    /// The supplied action and leaf facts are interpreted by the native PBFT
-    /// service. DAG, sortition, or transaction mutation is reached only through
-    /// this task adapter; the native root, its locks, and its guards cannot
-    /// escape into the PBFT bridge. Cursor, action, storage, and leaf failures
-    /// are returned unchanged in the native executor result.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn advance_finalization_action(
-        &self,
-        runtime: &BridgeApp,
-        cursor: u32,
-        action: u8,
-        last_block: u64,
-        request_period: u64,
-        retention_window: u64,
-        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
-    ) -> anyhow::Result<PbftFinalizationExecutorBoundary> {
-        runtime.0.advance_finalization_action(
-            &self.1,
-            cursor,
-            action,
-            last_block,
-            request_period,
-            retention_window,
-            account_nonce_facts,
-        )
-    }
-}
-
 /// Converts complete CXX bootstrap configuration and restores one native root.
 /// Errors publish no handle; all sibling services share `storage`.
 pub fn create_consensus_application(
@@ -264,6 +106,7 @@ pub fn create_consensus_application(
     gas_pricer_config: GasPricerConfig,
     proposal_dag_gas_limit: u64,
     pbft_config: PbftServiceConfig,
+    signing_identities: Vec<SigningIdentity>,
     final_chain_block_gas_limit: u64,
     final_chain_genesis_timestamp: u64,
     final_chain_genesis_accounts: Vec<GenesisAccount>,
@@ -271,6 +114,16 @@ pub fn create_consensus_application(
     final_chain_genesis_dpos_config: GenesisDposConfig,
     final_chain_rewards_config: FinalChainRewardsConfig,
 ) -> Result<Box<BridgeApp>> {
+    let polling_interval_ms = pbft_config.polling_interval_ms;
+    let signing_identities = signing_identities
+        .into_iter()
+        .map(|identity| rustaxa_consensus::SigningIdentity {
+            wallet_index: identity.wallet_index,
+            address: identity.address,
+            node_public_key: identity.node_public_key,
+            vrf_public_key: identity.vrf_public_key,
+        })
+        .collect();
     let root = ConsensusApplicationBootstrap {
         storage_path: storage_path.into(),
         schema_major,
@@ -298,7 +151,9 @@ pub fn create_consensus_application(
                 },
                 sortition: sortition_config.into(),
             },
-            pbft: pbft_service_config_from_ffi(pbft_config)?,
+            pbft: consensus_config_from_ffi(pbft_config)?,
+            signing_identities,
+            polling_interval_ms,
         },
     }
     .bootstrap()?;
@@ -475,12 +330,12 @@ impl BridgeApp {
     pub fn transaction_manager_runtime_queue_block_finalized(
         &self,
         block_number: u64,
-    ) -> Vec<TransactionQueueHash> {
+    ) -> Vec<DagHash> {
         self.1
             .transaction_queue_block_finalized(block_number)
             .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED")
             .into_iter()
-            .map(|hash| TransactionQueueHash { hash: hash.0 })
+            .map(|hash| DagHash { hash: hash.0 })
             .collect()
     }
 
@@ -929,7 +784,7 @@ impl BridgeApp {
             queue_erased: report
                 .queue_erased
                 .into_iter()
-                .map(|hash| TransactionQueueHash { hash: hash.0 })
+                .map(|hash| DagHash { hash: hash.0 })
                 .collect(),
             counters: DagPersistenceCounters {
                 dag_blocks: report.counters.dag_blocks,
@@ -1262,7 +1117,7 @@ fn service_pack_prepared_to_bridge(
         demoted_hashes: prepared
             .demoted_hashes
             .into_iter()
-            .map(|hash| TransactionQueueHash { hash: hash.0 })
+            .map(|hash| DagHash { hash: hash.0 })
             .collect(),
         stopped: prepared.stopped,
     }
@@ -1282,7 +1137,7 @@ fn service_pack_finalized_to_bridge(
         demoted_hashes: finalized
             .demoted_hashes
             .into_iter()
-            .map(|hash| TransactionQueueHash { hash: hash.0 })
+            .map(|hash| DagHash { hash: hash.0 })
             .collect(),
         stopped: finalized.stopped,
     }

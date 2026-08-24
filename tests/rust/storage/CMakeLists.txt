@@ -7,6 +7,7 @@ add_executable(rust_storage_tests
 target_link_libraries(rust_storage_tests
     PRIVATE
     Rustaxa::bridge
+    core_libs
     GTest::gtest_main
     gmp::gmp
     mpfr::mpfr

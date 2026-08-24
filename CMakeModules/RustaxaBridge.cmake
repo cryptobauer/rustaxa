@@ -38,6 +38,8 @@ else()
 endif()
 
 set(RUST_LIB "${RUST_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}rustaxa_bridge${CMAKE_STATIC_LIBRARY_SUFFIX}")
+set(RUST_APPLICATION_HOST_LIB
+    "${RUST_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}rustaxa_application_host_bridge${CMAKE_STATIC_LIBRARY_SUFFIX}")
 
 set(BRIDGE_LOCALIZE_SYMBOLS "")
 
@@ -46,6 +48,7 @@ set(BRIDGE_LOCALIZE_SYMBOLS "")
 # We generate this file at configure time, to be run at build time.
 set(SYNC_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/sync_bridge_headers.cmake")
 file(WRITE "${SYNC_SCRIPT}" "
+    file(MAKE_DIRECTORY \"${BRIDGE_INCLUDE_DIR}/rustaxa-bridge/src\")
     file(GLOB_RECURSE HEADERS
         \"\${TARGET_DIR}/cxxbridge/rustaxa-bridge/src/*.rs.h\"
         \"\${TARGET_DIR}/*/out/cxxbridge/include/rustaxa-bridge/src/*.rs.h\"
@@ -54,6 +57,7 @@ file(WRITE "${SYNC_SCRIPT}" "
         get_filename_component(FNAME \"\${HEADER}\" NAME)
         # Using configure_file with COPYONLY updates timestamps only on change, preventing rebuilds
         configure_file(\"\${HEADER}\" \"${BRIDGE_INCLUDE_DIR}/rustaxa-bridge/\${FNAME}\" COPYONLY)
+        configure_file(\"\${HEADER}\" \"${BRIDGE_INCLUDE_DIR}/rustaxa-bridge/src/\${FNAME}\" COPYONLY)
     endforeach()
 
     # Copy rust/cxx.h
@@ -96,6 +100,7 @@ add_custom_target(rust-workspace-build ALL
         "ROCKSDB_LIB_DIR=${RUSTAXA_ROCKSDB_LIB_DIRS}"
         "ROCKSDB_STATIC=1"
         "TARAXA_VRF_LIB_DIR=${PROJECT_BINARY_DIR}/deps/taraxa-vrf/lib"
+        "RUSTAXA_APPLICATION_HOST_BRIDGE_OUT=${RUST_APPLICATION_HOST_LIB}"
         "${CARGO_EXE}" build ${CARGO_MODE_ARGS} --target-dir "${RUST_TARGET_DIR}" -p rustaxa-bridge
 
     COMMAND ${CMAKE_COMMAND} -P "${FILTER_SCRIPT}"
@@ -106,7 +111,7 @@ add_custom_target(rust-workspace-build ALL
         -P "${SYNC_SCRIPT}"
 
     WORKING_DIRECTORY "${RUST_ROOT}"
-    BYPRODUCTS "${RUST_LIB}"
+    BYPRODUCTS "${RUST_LIB}" "${RUST_APPLICATION_HOST_LIB}"
     VERBATIM
 )
 
@@ -118,6 +123,9 @@ endif()
 
 add_library(rustaxa-bridge STATIC IMPORTED GLOBAL)
 add_dependencies(rustaxa-bridge rust-workspace-build)
+
+add_library(rustaxa-application-host-bridge STATIC IMPORTED GLOBAL)
+add_dependencies(rustaxa-application-host-bridge rust-workspace-build)
 
 set(RUSTAXA_BRIDGE_LINK_LIBRARIES
     gmp::gmp
@@ -132,8 +140,24 @@ endif()
 
 set_target_properties(rustaxa-bridge PROPERTIES
     IMPORTED_LOCATION "${RUST_LIB}"
-    INTERFACE_INCLUDE_DIRECTORIES "${BRIDGE_INCLUDE_DIR}"
+    INTERFACE_INCLUDE_DIRECTORIES
+        "${BRIDGE_INCLUDE_DIR};${PROJECT_SOURCE_DIR}/libraries/core_libs/consensus/include"
     INTERFACE_LINK_LIBRARIES "${RUSTAXA_BRIDGE_LINK_LIBRARIES}"
 )
 
+set_target_properties(rustaxa-application-host-bridge PROPERTIES
+    IMPORTED_LOCATION "${RUST_APPLICATION_HOST_LIB}"
+    INTERFACE_INCLUDE_DIRECTORIES "${BRIDGE_INCLUDE_DIR}"
+    INTERFACE_LINK_LIBRARIES "rustaxa-bridge"
+)
+
+# The CXX callbacks live in the application-host archive, but Rust codegen can
+# still place unused host-adapter functions in a base-staticlib CGU selected by
+# a leaf bridge call. Discard those unreferenced function sections so Unix leaf
+# consumers do not acquire application-host symbol requirements.
+if(UNIX AND NOT APPLE)
+    set_property(TARGET rustaxa-bridge APPEND PROPERTY INTERFACE_LINK_OPTIONS "-Wl,--gc-sections")
+endif()
+
 add_library(Rustaxa::bridge ALIAS rustaxa-bridge)
+add_library(Rustaxa::application-host-bridge ALIAS rustaxa-application-host-bridge)

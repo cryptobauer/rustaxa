@@ -183,49 +183,6 @@ pub enum PbftFinalizationRuntimeAction {
     ProcessPillarBlock,
 }
 
-impl PbftFinalizationRuntimeAction {
-    /// Stable bridge code for C++.
-    pub const fn as_u8(self) -> u8 {
-        match self {
-            Self::ApplyPrimaryStorage => 0,
-            Self::CommitRewardVotesResetRuntime => 3,
-            Self::SetDagBlockOrder => 4,
-            Self::UpdateFinalizedTransactions => 5,
-            Self::UpdatePbftChain => 6,
-            Self::ClearAnchorDagCache => 7,
-            Self::ApplyDynamicLambda => 8,
-            Self::FinalizeFinalChain => 9,
-            Self::PersistExecutedStatus => 10,
-            Self::SetExecutedFlag => 11,
-            Self::AdvancePeriod => 12,
-            Self::Complete => 13,
-            Self::CommitSortitionRuntime => 14,
-            Self::ProcessPillarBlock => 15,
-        }
-    }
-
-    /// Decodes a stable bridge action code from C++.
-    pub const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::ApplyPrimaryStorage),
-            3 => Some(Self::CommitRewardVotesResetRuntime),
-            4 => Some(Self::SetDagBlockOrder),
-            5 => Some(Self::UpdateFinalizedTransactions),
-            6 => Some(Self::UpdatePbftChain),
-            7 => Some(Self::ClearAnchorDagCache),
-            8 => Some(Self::ApplyDynamicLambda),
-            9 => Some(Self::FinalizeFinalChain),
-            10 => Some(Self::PersistExecutedStatus),
-            11 => Some(Self::SetExecutedFlag),
-            12 => Some(Self::AdvancePeriod),
-            13 => Some(Self::Complete),
-            14 => Some(Self::CommitSortitionRuntime),
-            15 => Some(Self::ProcessPillarBlock),
-            _ => None,
-        }
-    }
-}
-
 /// Pre-intent action requested by Rust before finalization storage bytes are built.
 ///
 /// Pillar finalization mutates `PeriodData` by attaching the above-threshold
@@ -3399,7 +3356,7 @@ mod tests {
             state_root: H256::from_low_u64_be(period.saturating_add(1)),
             previous_pillar_block_hash: H256::from_low_u64_be(period.saturating_sub(1)),
             bridge_root: H256::from_low_u64_be(period.saturating_add(2)),
-            epoch: period,
+            epoch: period.into(),
             validator_vote_count_changes: Vec::new(),
         }
         .encode_rlp()
@@ -3720,7 +3677,7 @@ mod tests {
                 state_root: H256::from_low_u64_be(0xfeed),
                 previous_pillar_block_hash: H256::from_low_u64_be(pillar_period.saturating_sub(1)),
                 bridge_root: H256::from_low_u64_be(pillar_period.saturating_add(2)),
-                epoch: pillar_period,
+                epoch: pillar_period.into(),
                 validator_vote_count_changes: Vec::new(),
             }
             .encode_rlp();
@@ -3792,7 +3749,7 @@ mod tests {
                 state_root: H256::from_low_u64_be(5),
                 previous_pillar_block_hash: H256::from_low_u64_be(4),
                 bridge_root: H256::from_low_u64_be(6),
-                epoch: 7,
+                epoch: 7.into(),
                 validator_vote_count_changes: Vec::new(),
             }
             .encode_rlp();
@@ -5348,8 +5305,6 @@ mod tests {
         let runtime = plan_pbft_finalization_runtime(&plan);
 
         assert!(runtime.finalize_block);
-        assert_eq!(PbftFinalizationRuntimeAction::from_u8(1), None);
-        assert_eq!(PbftFinalizationRuntimeAction::from_u8(2), None);
         assert!(
             !runtime
                 .actions

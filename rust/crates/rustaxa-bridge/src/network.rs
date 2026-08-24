@@ -4,7 +4,7 @@
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeApp;
 use crate::ffi::BridgeConsensusNetworkApi;
-use crate::verified_votes::{
+use crate::network_slashing::{
     empty_slashing_transaction_effect, slashing_submitter_identity_to_domain,
     slashing_transaction_effect_to_ffi,
 };

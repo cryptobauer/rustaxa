@@ -11,10 +11,10 @@
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_application.hpp"
 #endif
+#include "consensus/consensus_application.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/test_util.hpp"
-#include "transaction/dag_transaction_service.hpp"
 
 namespace taraxa::core_tests {
 
@@ -551,6 +551,45 @@ TEST_F(PillarChainTest, validatePillarVote_usesRustRecoveredIdentityForUniquenes
   EXPECT_FALSE(pillar_chain_manager.validatePillarVote(conflicting_vote));
 #else
   GTEST_SKIP() << "Pillar vote Rust inspection is disabled";
+#endif
+}
+
+TEST_F(PillarChainTest, unavailableNativeDposSnapshotDefersAdmissionWithoutThrowing) {
+#ifdef RUSTAXA_ENABLE
+  auto cfg = make_node_cfgs(1, 1, 10).front();
+  cfg.genesis.state.dpos.delegation_delay = 1;
+  cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
+  cfg.genesis.state.hardforks.ficus_hf.pillar_blocks_interval = 4;
+
+  auto storage = makeConsensusStorageFixture(cfg, data_dir);
+  auto db = storage.db;
+  const auto current_pillar_block = std::make_shared<pillar_chain::PillarBlock>(
+      4, h256{}, blk_hash_t{}, h256{}, 0, std::vector<pillar_chain::PillarBlock::ValidatorVoteCountChange>{});
+  db->saveCurrentPillarBlockData({current_pillar_block, {}});
+  db.reset();
+  reopenConsensusStorageFixture(storage, cfg, data_dir);
+  db = storage.db;
+  auto final_chain =
+      std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr, storage.application);
+  auto pillar_chain_manager = pillar_chain::PillarChainManager(
+      cfg.genesis.state.hardforks.ficus_hf, db, storage.application, final_chain, cfg.getFirstWallet().node_addr);
+  const auto vote =
+      std::make_shared<PillarVote>(cfg.getFirstWallet().node_secret, PbftPeriod{5}, current_pillar_block->getHash());
+
+  EXPECT_FALSE(pillar_chain_manager.validatePillarVote(vote));
+  const auto first = pillar_chain_manager.admitPillarVote(vote);
+  EXPECT_FALSE(first.accepted);
+  EXPECT_FALSE(first.already_present);
+  EXPECT_FALSE(first.conflict);
+  EXPECT_TRUE(first.deferred);
+
+  const auto retry = pillar_chain_manager.admitPillarVote(vote);
+  EXPECT_FALSE(retry.accepted);
+  EXPECT_FALSE(retry.already_present);
+  EXPECT_FALSE(retry.conflict);
+  EXPECT_TRUE(retry.deferred);
+#else
+  GTEST_SKIP() << "Pillar vote native DPoS deferral is disabled";
 #endif
 }
 

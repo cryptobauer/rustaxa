@@ -1,11 +1,11 @@
+use crate::consensus_host_ports::*;
 use crate::dag::*;
 pub(crate) use crate::dag_transaction_service::BridgeApp;
 pub use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::dag_transaction_service::*;
 use crate::final_chain::*;
 use crate::network::*;
-use crate::pbft_manager::*;
-use crate::pbft_sync::*;
+use crate::network_slashing::*;
 use crate::query::*;
 use crate::storage::*;
 use crate::transaction::*;
@@ -17,54 +17,11 @@ use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
 use std::sync::Arc;
 
-/// Typed PBFT vote-list query handle for C++ compatibility materializers.
+/// Read-only storage compatibility handle for legacy C++ materializers.
 ///
-/// This wrapper keeps durable vote-list reads grouped under the PBFT storage
-/// boundary instead of exposing them as generic `BridgeStorage` methods.
-pub struct BridgePbftVoteStorageQueries {
-    pub storage: Arc<Storage>,
-}
-
-/// Typed PBFT scalar/head query handle for C++ compatibility materializers.
-///
-/// This wrapper keeps PBFT manager scalar reads, PBFT block existence checks,
-/// and PBFT head payload reads grouped under the PBFT storage boundary instead
-/// of exposing them as generic `BridgeStorage` methods.
-pub struct BridgePbftStorageQueries {
-    pub storage: Arc<Storage>,
-}
-
-/// Typed DAG query handle for C++ compatibility materializers.
-///
-/// This wrapper keeps DAG block, index, period, and proposal-period reads
-/// grouped under the DAG storage boundary instead of exposing them as generic
-/// `BridgeStorage` methods.
-pub struct BridgeDagStorageQueries {
-    pub storage: Arc<Storage>,
-}
-
-/// Typed transaction query handle for C++ compatibility materializers.
-///
-/// This wrapper keeps transaction public-read compatibility grouped under the
-/// transaction storage boundary instead of exposing those reads as generic
-/// `BridgeStorage` methods.
-pub struct BridgeTransactionStorageQueries {
-    pub storage: Arc<Storage>,
-}
-
-/// Typed FinalChain lookup query handle for C++ compatibility materializers.
-///
-/// This wrapper keeps FinalChain read queries grouped under the FinalChain storage
-/// boundary instead of exposing those reads as generic `BridgeStorage` methods.
-pub struct BridgeFinalChainStorageQueries {
-    pub storage: Arc<Storage>,
-}
-
-/// Typed period query handle for C++ compatibility materializers.
-///
-/// This wrapper keeps period rows grouped under period storage instead of
-/// exposing those reads as generic `BridgeStorage` methods.
-pub struct BridgePeriodStorageQueries {
+/// Operation-shaped methods remain grouped by name while the storage shim is
+/// retired; separate per-domain opaque handles are no longer part of the ABI.
+pub struct BridgeStorageQueries {
     pub storage: Arc<Storage>,
 }
 
@@ -125,7 +82,8 @@ pub mod rustaxa_ffi {
         position: u32,
     }
 
-    struct BlockRlp {
+    /// Canonical encoded bytes shared by storage and host-port list payloads.
+    struct CanonicalBytes {
         data: Vec<u8>,
     }
 
@@ -143,7 +101,7 @@ pub mod rustaxa_ffi {
 
     struct LevelBlocks {
         level: u64,
-        blocks: Vec<BlockRlp>,
+        blocks: Vec<CanonicalBytes>,
     }
 
     struct PeriodLookup {
@@ -175,10 +133,10 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
         signature: Vec<u8>,
         beneficiary: [u8; 20],
-        reward_votes: Vec<PbftFinalizationHash>,
+        reward_votes: Vec<DagHash>,
         has_extra_data: bool,
         extra_data: PbftBlockExtraDataView,
-        dag_blocks_order: Vec<PbftFinalizationHash>,
+        dag_blocks_order: Vec<DagHash>,
     }
 
     /// PBFT block author/version facts for `taraxa_getNodeVersions`.
@@ -297,11 +255,6 @@ pub mod rustaxa_ffi {
     /// TransactionQueue construction limits.
     struct TransactionQueueConfig {
         max_size: usize,
-    }
-
-    /// Transaction identity returned by Rust queue decisions and effect reports.
-    struct TransactionQueueHash {
-        hash: [u8; 32],
     }
 
     /// C++-originated transaction queue metadata for one insert attempt.
@@ -661,7 +614,7 @@ pub mod rustaxa_ffi {
         request_estimate: bool,
         candidate: TransactionPackSessionCandidate,
         selected_transactions: Vec<TransactionPackSelectedTransaction>,
-        demoted_hashes: Vec<TransactionQueueHash>,
+        demoted_hashes: Vec<DagHash>,
         stopped: bool,
     }
 
@@ -673,7 +626,7 @@ pub mod rustaxa_ffi {
     struct TransactionPackPreparedPlan {
         request_estimates: Vec<TransactionPackSessionCandidate>,
         selected_transactions: Vec<TransactionPackSelectedTransaction>,
-        demoted_hashes: Vec<TransactionQueueHash>,
+        demoted_hashes: Vec<DagHash>,
         stopped: bool,
     }
 
@@ -726,296 +679,6 @@ pub mod rustaxa_ffi {
         period: u64,
     }
 
-    struct VoteRlp {
-        data: Vec<u8>,
-    }
-
-    /// PBFT vote payload crossing the CXX bridge for storage persistence.
-    ///
-    /// `hash` is the RocksDB key and `vote_rlp` is the weighted
-    /// `PbftVote::rlp(true, true)` payload. Rust storage treats the bytes as
-    /// canonical storage bytes and does not materialize C++ vote objects.
-    struct PbftVoteStorageRecord {
-        hash: [u8; 32],
-        vote_rlp: Vec<u8>,
-    }
-
-    struct RewardVoteCursorSnapshot {
-        found: bool,
-        period: u64,
-        round: u64,
-        step: u64,
-        block_hash: [u8; 32],
-    }
-
-    /// Coherent finalized-chain context for application-root PBFT manager tasks.
-    struct PbftManagerChainContext {
-        finalized_period: u64,
-        last_pbft_block_hash: [u8; 32],
-        last_non_null_anchor_hash: [u8; 32],
-    }
-
-    /// Warning carried from side-effect-free PBFT sync admission planning.
-    struct PbftSyncTransactionWarning {
-        hash: [u8; 32],
-        kind: u8,
-    }
-
-    /// One resumable step from native current-certificate admission flow.
-    struct PbftSyncCertBundleStep {
-        action: u8,
-        session_id: u64,
-        effect_id: u64,
-        status: u8,
-        total_weight: u64,
-        two_t_plus_one: u64,
-        first_bad_vote_hash: [u8; 32],
-        error_code: String,
-        weighted_vote_rlps: Vec<PbftCertVoteRlp>,
-        has_slashing_effect: bool,
-        slashing_transaction_effect: SlashingTransactionEffect,
-    }
-
-    /// Session command: 0 = begin, 1 = report slashing, 2 = exact abort.
-    struct PbftSyncCertBundleCommand {
-        action: u8,
-        block_period: u64,
-        block_hash: [u8; 32],
-        cert_vote_rlps: Vec<PbftCertVoteRlp>,
-        slashing_submitters: Vec<SlashingSubmitterIdentity>,
-        session_id: u64,
-        effect_id: u64,
-        proof_hash: [u8; 32],
-        transaction_inserted: bool,
-    }
-
-    /// Transaction hash wrapper for CXX bridge vectors.
-    struct PbftSyncTransactionHash {
-        hash: [u8; 32],
-    }
-
-    /// Staged PBFT sync runtime action for C++ `processPeriodData` execution.
-    struct PbftSyncProcessPeriodDataRuntimePlan {
-        runtime_action: u8,
-        status: u8,
-        next_check: u8,
-        clear_sync_queue: bool,
-        report_malicious_peer: bool,
-        wait_for_finalization: bool,
-        accept_period_data: bool,
-        retry_same_candidate: bool,
-        replace_previous_block_cert_votes: bool,
-        warnings: Vec<PbftSyncTransactionWarning>,
-        contains_finalized_transaction_warning: bool,
-    }
-
-    /// Immutable synced-candidate facts captured once at admission start.
-    struct PbftSyncAdmissionInitialFact {
-        block_period: u64,
-        block_prev_hash: [u8; 32],
-        chain_last_hash: [u8; 32],
-        chain_last_period: u64,
-        block_in_chain: bool,
-        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        reward_vote_hashes: Vec<PbftFinalizationHash>,
-        candidate_final_chain_hash: [u8; 32],
-        extra_data_required: bool,
-        extra_data_present: bool,
-        extra_data_pillar_block_hash_present: bool,
-        pillar_votes_required: bool,
-        pillar_votes_present: bool,
-        previous_cert_votes_present: bool,
-        previous_cert_first_vote_has_weight: bool,
-    }
-
-    /// Current check or terminal decision from the manager-owned admission cursor.
-    struct PbftSyncAdmissionSessionStep {
-        status: u8,
-        cursor: u32,
-        has_check: bool,
-        next_check: u8,
-        plan: PbftSyncProcessPeriodDataRuntimePlan,
-        complete: bool,
-        can_continue: bool,
-        error_code: String,
-        /// Weighted reward-vote payloads returned only by the composed reward task.
-        reward_vote_rlps: Vec<PbftCertVoteRlp>,
-    }
-
-    /// Rust-owned outer drain step for C++ `pushSyncedPbftBlocksIntoChain`.
-    struct PbftSyncQueueDrainStep {
-        action: u8,
-        status: u8,
-        clean_before_period: u64,
-        can_continue: bool,
-        error_code: String,
-    }
-
-    /// C++ executor report for one PBFT sync queue-drain step.
-    struct PbftSyncQueueDrainReport {
-        action: u8,
-        success: bool,
-        accepted_period_data: bool,
-    }
-
-    /// Rust validation result for one queue-drain executor report.
-    struct PbftSyncQueueDrainReportResult {
-        status: u8,
-        can_continue: bool,
-        error_code: String,
-    }
-
-    /// C++-originated fact bundle for deterministic PBFT finalization intent planning.
-    struct PbftFinalizationHash {
-        hash: [u8; 32],
-    }
-
-    /// Hash plus finalized-position metadata for native-ready storage indexes.
-    struct PbftFinalizationPositionedHash {
-        hash: [u8; 32],
-        position: u32,
-    }
-
-    /// C++-originated fact bundle for deterministic PBFT finalization intent planning.
-    struct PbftFinalizationIntentFact {
-        block_hash: [u8; 32],
-        block_period: u64,
-        block_prev_hash: [u8; 32],
-        pivot_dag_anchor_hash: [u8; 32],
-        has_pillar_block: bool,
-        pillar_block_finalized: bool,
-        request_dynamic_lambda_update: bool,
-        cert_vote_count: u64,
-        sample_cert_vote_block_hash: [u8; 32],
-        sample_cert_vote_period: u64,
-        sample_cert_vote_round: u64,
-        sample_cert_vote_step: u64,
-        block_lambda: u32,
-        last_saved_period_lambda_found: bool,
-        last_saved_period_lambda: u32,
-        dynamic_blocks_per_year: u32,
-        rounds_count_dynamic_lambda: u32,
-        dynamic_lambda: u32,
-        dpos_blocks_per_year: u32,
-        period_data_rlp: Vec<u8>,
-        ordered_dag_block_hashes: Vec<PbftFinalizationHash>,
-        ordered_transaction_hashes: Vec<PbftFinalizationHash>,
-        process_pillar_block_after_advance: bool,
-    }
-
-    /// Rust-planned cleanup flags for the PBFT finalization side-effect sequence.
-    struct PbftFinalizationCleanupPlan {
-        persist_pbft_block_metadata: bool,
-        reset_reward_votes: bool,
-        set_dag_block_order: bool,
-        update_sortition_params: bool,
-        update_finalized_transactions_status: bool,
-        update_pbft_chain: bool,
-        clear_anchor_dag_cache: bool,
-        finalize_final_chain: bool,
-        maybe_update_dynamic_lambda: bool,
-        advance_period: bool,
-        process_pillar_block: bool,
-    }
-
-    /// Rust-planned storage-write flags for PBFT finalization persistence planning.
-    struct PbftFinalizationStorageWritePlan {
-        persist_pbft_head: bool,
-        persist_period_data: bool,
-        reset_reward_votes: bool,
-        update_sortition_params: bool,
-        apply_dynamic_lambda_update: bool,
-        persist_period_lambda: bool,
-        persist_executed_pbft_status: bool,
-        process_pillar_block: bool,
-        pbft_block_hash: [u8; 32],
-        pbft_head_hash: [u8; 32],
-        block_period: u64,
-        null_anchor: bool,
-        anchor_hash: [u8; 32],
-        reward_vote_period: u64,
-        reward_vote_round: u64,
-        reward_vote_step: u64,
-        reward_vote_block_hash: [u8; 32],
-        period_lambda: u32,
-        blocks_per_year: u32,
-        rounds_count_dynamic_lambda: u32,
-        dynamic_lambda: u32,
-        executed_pbft_status: bool,
-        pbft_head_payload: Vec<u8>,
-        period_data_rlp: Vec<u8>,
-        dag_block_period_writes: Vec<PbftFinalizationPositionedHash>,
-        transaction_location_writes: Vec<PbftFinalizationPositionedHash>,
-    }
-
-    struct PbftFinalizationStorageWriteStage {
-        stage: u8,
-        rounds_count_dynamic_lambda: u32,
-        dynamic_lambda: u32,
-        has_sortition_params_change: bool,
-        sortition_params_change_period: u64,
-        sortition_params_change_interval_efficiency: u16,
-        sortition_params_change_threshold_upper: u16,
-        has_prepared_pillar_block: bool,
-        prepared_pillar_block_period: u64,
-        prepared_pillar_block_rlp: Vec<u8>,
-    }
-
-    /// Cacti dynamic-lambda configuration for Rust PBFT finalization planning.
-    struct PbftDynamicLambdaConfig {
-        cacti_block_num: u64,
-        lambda_min: u32,
-        lambda_max: u32,
-        lambda_default: u32,
-        lambda_change_interval: u32,
-        lambda_change: u32,
-        consensus_delay: u32,
-        dpos_blocks_per_year: u32,
-    }
-
-    /// Dynamic-lambda fact bundle for one PBFT finalization.
-    struct PbftDynamicLambdaFact {
-        dynamic_lambda_active: bool,
-        finalized_period: u64,
-        finalized_round: u64,
-        pre_adjust_rounds_count_dynamic_lambda: u32,
-        pre_adjust_dynamic_lambda: u32,
-        config: PbftDynamicLambdaConfig,
-    }
-
-    /// PBFT-manager-owned dynamic-lambda planning output for finalization.
-    ///
-    /// This extends the pure dynamic-lambda plan with the previous persisted
-    /// period-lambda lookup required by finalization intent planning, so C++
-    /// does not issue a separate storage query through the bridge.
-    struct PbftManagerFinalizationDynamicLambdaPlan {
-        apply_dynamic_lambda_update: bool,
-        period_lambda: u32,
-        blocks_per_year: u32,
-        rounds_count_dynamic_lambda: u32,
-        dynamic_lambda: u32,
-        decreased_dynamic_lambda: bool,
-        increased_dynamic_lambda: bool,
-        status: u8,
-        error_code: String,
-        last_saved_period_lambda_found: bool,
-        last_saved_period_lambda: u32,
-    }
-
-    /// C++-originated facts for one Rust-owned PBFT manager daemon tick.
-    struct PbftManagerRuntimeTickFact {
-        tick_id: u64,
-        state: u8,
-        period: u64,
-        round: u64,
-        step: u64,
-        network_available: bool,
-        network_pbft_syncing: bool,
-        has_eligible_wallet: bool,
-        polling_interval_ms: u64,
-    }
-
     /// Immutable application configuration for coherent PBFT service restore.
     ///
     /// The restored chain head supplies the current period and determines
@@ -1041,6 +704,23 @@ pub mod rustaxa_ffi {
         light_node_history: u64,
         committee_size: u64,
         number_of_proposers: u64,
+        dag_blocks_size: u64,
+        ghost_path_move_back: u64,
+        node_version_major: u16,
+        node_version_minor: u16,
+        node_version_patch: u16,
+        node_version_network: u16,
+        node_version_suffix: Vec<u8>,
+        default_pbft_gas_limit: u64,
+        cornus_activation_period: u64,
+        cornus_pbft_gas_limit: u64,
+        lambda_min_ms: u64,
+        lambda_change_interval: u64,
+        lambda_change_ms: u64,
+        consensus_delay_ms: u64,
+        dpos_blocks_per_year: u64,
+        recently_finalized_factor: u64,
+        chain_id: u64,
     }
 
     /// One terminal or slashing-resumable native PBFT-sync ingress step.
@@ -1055,472 +735,6 @@ pub mod rustaxa_ffi {
         current_cert_present: bool,
         has_slashing_transaction_effect: bool,
         slashing_transaction_effect: SlashingTransactionEffect,
-    }
-
-    /// Rust-owned storage facts for replaying one finalized period during PBFT
-    /// manager startup.
-    struct PbftManagerStartupReplayPeriod {
-        found: bool,
-        period_data_rlp: Vec<u8>,
-        finalized_dag_hashes: Vec<PbftFinalizationHash>,
-        has_period_lambda: bool,
-        period_lambda: u32,
-    }
-
-    /// Live facts for Rust-owned PBFT manager startup replay range planning.
-    struct PbftManagerStartupReplayRangeFact {
-        final_chain_last_block: u64,
-        pbft_chain_size: u64,
-        delegation_delay: u64,
-        recently_finalized_factor: u64,
-    }
-
-    /// Rust-owned startup replay range plan for C++ executor loops.
-    struct PbftManagerStartupReplayRangePlan {
-        accepted: bool,
-        has_finalization_range: bool,
-        finalization_from_period: u64,
-        finalization_to_period: u64,
-        recent_from_period: u64,
-        recent_to_period: u64,
-        error_code: String,
-    }
-
-    /// Rust-owned PBFT manager period-advance effect plan.
-    struct PbftManagerAdvancePeriodPlan {
-        accepted: bool,
-        finalized_chain_size: u64,
-        new_period: u64,
-        actions: Vec<u8>,
-        error_code: String,
-    }
-
-    /// C++ executor report for one Rust-planned PBFT manager period-advance action.
-    struct PbftManagerAdvancePeriodActionReport {
-        action_index: u64,
-        action: u8,
-        succeeded: bool,
-    }
-
-    /// Validation result for one PBFT manager period-advance action report.
-    struct PbftManagerAdvancePeriodActionReportResult {
-        accepted: bool,
-        status: u8,
-        error_code: String,
-    }
-
-    /// Rust-owned PBFT manager cursor snapshot used by the transitional C++
-    /// shim to mirror state after startup or transition commits.
-    struct PbftManagerRuntimeSnapshot {
-        status: u8,
-        state: u8,
-        period: u64,
-        round: u64,
-        step: u64,
-        finalized_chain_size: u64,
-        syncing_period: u64,
-        sync_queue_size: u64,
-        current_round_lambda_ms: u64,
-        next_step_time_ms: u64,
-        rounds_count_dynamic_lambda: u32,
-        dynamic_lambda_ms: u32,
-        executed_pbft_block: bool,
-        already_next_voted_value: bool,
-        already_next_voted_null: bool,
-        broadcast_votes_counter: u32,
-        rebroadcast_votes_counter: u32,
-        broadcast_reward_votes_counter: u32,
-        rebroadcast_reward_votes_counter: u32,
-        has_cert_voted_block: bool,
-        cert_voted_block_period: u64,
-        cert_voted_block_round: u64,
-        cert_voted_block_hash: [u8; 32],
-        persist_normalized_step: bool,
-        reset_second_finish_start: bool,
-        error_code: String,
-    }
-
-    /// One Rust-owned PBFT manager runtime-session step.
-    struct PbftManagerRuntimeSessionStep {
-        status: u8,
-        cursor: u32,
-        action: u8,
-        has_action: bool,
-        complete: bool,
-        restart_loop: bool,
-        can_continue: bool,
-        has_target_round: bool,
-        target_round: u64,
-        sleep_ms: u64,
-        tick_id: u64,
-        error_code: String,
-    }
-
-    /// Structured PBFT manager action report from C++.
-    struct PbftManagerRuntimeActionReport {
-        cursor: u32,
-        action: u8,
-        success: bool,
-        result: u8,
-        go_finish_state: bool,
-        loop_back_finish_state: bool,
-        has_eligible_wallet: bool,
-        has_new_round: bool,
-        new_round: u64,
-        error_code: String,
-    }
-
-    /// Rust-owned PBFT manager sleep plan for the C++ condition-variable executor.
-    struct PbftManagerSleepPlan {
-        accepted: bool,
-        should_sleep: bool,
-        sleep_ms: u64,
-        step: u64,
-        error_code: String,
-    }
-
-    /// C++-originated deterministic facts for one PBFT manager state action.
-    struct PbftManagerStateActionFact {
-        state: u8,
-        period: u64,
-        round: u64,
-        step: u64,
-        elapsed_round_ms: u64,
-        deadline_ms: u64,
-        current_round_lambda_ms: u64,
-        polling_interval_ms: u64,
-        has_previous_round_next_null: bool,
-        has_previous_round_next_value: bool,
-        previous_round_next_value_hash: [u8; 32],
-        has_current_round_soft_value: bool,
-        current_round_soft_value_hash: [u8; 32],
-        has_cert_voted_block: bool,
-        cert_voted_block_hash: [u8; 32],
-        already_next_voted_value: bool,
-        already_next_voted_null: bool,
-    }
-
-    /// One ordered PBFT manager state-action effect for C++ execution.
-    struct PbftManagerStateActionEffect {
-        intent: u8,
-        hash: [u8; 32],
-        request_proposed_block_sidecar: bool,
-        proposed_block_sidecar_hash: [u8; 32],
-        proposed_block_sidecar_period: u64,
-    }
-
-    /// Report for one C++-executed PBFT manager state-action effect.
-    struct PbftManagerStateActionEffectReport {
-        cursor: u32,
-        intent: u8,
-        result: u8,
-        error_code: String,
-    }
-
-    /// One cursor step from a Rust-owned state-action effect session.
-    struct PbftManagerStateActionSessionStep {
-        status: u8,
-        cursor: u32,
-        has_effect: bool,
-        effect: PbftManagerStateActionEffect,
-        go_finish_state: bool,
-        loop_back_finish_state: bool,
-        complete: bool,
-        can_continue: bool,
-        error_code: String,
-    }
-
-    /// One local proposer-wallet fact for Rust-owned proposal construction.
-    struct PbftManagerProposalWalletFact {
-        wallet_index: u64,
-        dpos_eligible: bool,
-        sortition_valid: bool,
-    }
-
-    /// Initial fact bundle for Rust-owned PBFT proposal construction.
-    struct PbftManagerProposalInitialFact {
-        period: u64,
-        round: u64,
-        previous_pbft_block_hash: [u8; 32],
-        last_period_dag_anchor_hash: [u8; 32],
-        dag_genesis_hash: [u8; 32],
-        dag_blocks_size: u64,
-        ghost_path_move_back: u64,
-        pbft_gas_limit: u64,
-        extra_data_required: bool,
-        extra_data_available: bool,
-        wallets: Vec<PbftManagerProposalWalletFact>,
-        ghost_path: Vec<PbftFinalizationHash>,
-        has_non_finalized_fallback: bool,
-        non_finalized_fallback_hash: [u8; 32],
-    }
-
-    /// One action or terminal command from a Rust-owned proposal session.
-    struct PbftManagerProposalSessionStep {
-        action: u8,
-        status: u8,
-        requested_anchor_hash: [u8; 32],
-        previous_pbft_block_hash: [u8; 32],
-        anchor_hash: [u8; 32],
-        order_hash: [u8; 32],
-        final_chain_hash: [u8; 32],
-        eligible_wallet_indices: Vec<u64>,
-        dag_blocks_included: u64,
-        selected_null_anchor: bool,
-        error_code: String,
-    }
-
-    /// Compact timing and counter facts for Rust-owned broadcast planning.
-    struct PbftManagerBroadcastFact {
-        round_elapsed_ms: u64,
-        period_elapsed_ms: u64,
-        current_round_lambda_ms: u64,
-        broadcast_lambda_threshold: u32,
-        rebroadcast_lambda_threshold: u32,
-        broadcast_votes_counter: u32,
-        rebroadcast_votes_counter: u32,
-        broadcast_reward_votes_counter: u32,
-        rebroadcast_reward_votes_counter: u32,
-    }
-
-    /// Rust-owned broadcast plan for C++ network execution.
-    struct PbftManagerBroadcastPlan {
-        status: u8,
-        action: u8,
-        rebroadcast: bool,
-        next_broadcast_votes_counter: u32,
-        next_rebroadcast_votes_counter: u32,
-        next_broadcast_reward_votes_counter: u32,
-        next_rebroadcast_reward_votes_counter: u32,
-        error_code: String,
-    }
-
-    /// C++ report for one Rust-planned broadcast action.
-    struct PbftManagerBroadcastReport {
-        action: u8,
-        rebroadcast: bool,
-        success: bool,
-        error_code: String,
-    }
-
-    /// Rust validation result for one broadcast report.
-    struct PbftManagerBroadcastReportResult {
-        status: u8,
-        apply_counters: bool,
-        broadcast_votes_counter: u32,
-        rebroadcast_votes_counter: u32,
-        broadcast_reward_votes_counter: u32,
-        rebroadcast_reward_votes_counter: u32,
-        error_code: String,
-    }
-
-    /// C++ live fact bundle for Rust-owned PBFT block-validation orchestration.
-    struct PbftManagerBlockValidationFact {
-        block_hash: [u8; 32],
-        period: u64,
-        previous_pbft_block_hash: [u8; 32],
-        candidate_final_chain_hash: [u8; 32],
-        expected_order_hash: [u8; 32],
-        pbft_gas_limit: u64,
-        reward_vote_hashes: Vec<PbftFinalizationHash>,
-        has_pillar_block_hash: bool,
-        pillar_block_hash: [u8; 32],
-        pivot_hash: [u8; 32],
-        extra_data_required: bool,
-        extra_data_present: bool,
-        extra_data_pillar_hash_present: bool,
-        pillar_block_required: bool,
-    }
-
-    /// Next PBFT block-validation action requested by Rust.
-    struct PbftManagerBlockValidationPlan {
-        action: u8,
-        status: u8,
-        error_code: String,
-    }
-
-    /// Terminal result of native proposed-block lookup and validation.
-    struct PbftProposedBlockAdmissionResult {
-        status: u8,
-        block_rlp: Vec<u8>,
-        error_code: String,
-    }
-
-    /// One already-signed local PBFT proposal candidate.
-    ///
-    /// Rust decodes and validates both canonical payloads before using the
-    /// candidate for leader ranking. C++ retains the corresponding live
-    /// objects and moves only the selected pair across its signing boundary.
-    struct PbftLocalProposalCandidate {
-        block_rlp: Vec<u8>,
-        vote_rlp: Vec<u8>,
-    }
-
-    /// Terminal native selection result for local proposal generation.
-    ///
-    /// `selected_index` identifies the unchanged input carrier only when
-    /// `selected` is true. Empty or ineligible input returns `selected = false`
-    /// with a stable diagnostic rather than materializing consensus objects.
-    struct PbftLocalProposalSelectionResult {
-        selected: bool,
-        selected_index: u64,
-        error_code: String,
-    }
-
-    /// Final owned leader selection result after snapshot revalidation and planner execution.
-    ///
-    /// A selected result owns both weighted vote bytes and proposed-block RLP.
-    /// Non-selected, stale, and invalid-report outcomes return empty payloads;
-    /// only planner-emitted validation commands may mark proposed blocks valid.
-    struct PbftLeaderSelectionResult {
-        status: u8,
-        error_code: String,
-        selected: bool,
-        selected_vote: PbftVoteStorageRecord,
-        selected_block_rlp: Vec<u8>,
-    }
-
-    /// External/configuration inputs for one runtime-owned lifecycle transition.
-    struct PbftManagerLifecycleTransitionRequest {
-        kind: u8,
-        target_period: u64,
-        target_round: u64,
-        has_network_next_voting_step: bool,
-        network_next_voting_step: u64,
-    }
-
-    /// Committed runtime snapshot plus temporary C++ sidecar commands; storage
-    /// follow-ups reuse it with every command boolean set to `false`.
-    struct PbftManagerLifecycleTransitionResult {
-        status: u8,
-        snapshot: PbftManagerRuntimeSnapshot,
-        remove_cert_voted_sidecar: bool,
-        clear_broadcasted_vote_sidecars: bool,
-        reset_current_round_timer: bool,
-        reset_second_finish_timer: bool,
-        print_cert_step_info: bool,
-        print_second_finish_step_info: bool,
-        reset_executed_block_follow_up: bool,
-        error_code: String,
-    }
-
-    /// Request that starts the manager-owned PBFT finalization executor.
-    struct PbftFinalizationExecutorStartRequest {
-        mode: u8,
-        plan: PbftFinalizationIntentPlan,
-        primary_stages: Vec<PbftFinalizationStorageWriteStage>,
-        sync: bool,
-        final_chain_last_block: u64,
-    }
-
-    /// Manager-owned PBFT finalization executor state returned to C++.
-    struct PbftManagerFinalizationExecutorState {
-        status: u8,
-        cursor: u32,
-        action: u8,
-        has_action: bool,
-        complete: bool,
-        can_continue: bool,
-        has_snapshot: bool,
-        expired_dag_hashes: Vec<PbftFinalizationHash>,
-        refresh_dag_counters: bool,
-        snapshot: PbftManagerRuntimeSnapshot,
-        error_code: String,
-    }
-
-    /// Bridge-safe PBFT finalization intent returned to the C++ shim.
-    struct PbftFinalizationIntentPlan {
-        finalize_block: bool,
-        anchor: u8,
-        executed_pbft_block: bool,
-        status: u8,
-        cleanup: PbftFinalizationCleanupPlan,
-        storage_write_intent: PbftFinalizationStorageWritePlan,
-    }
-
-    struct ProposedBlockLookup {
-        found: bool,
-        is_valid: bool,
-        pivot_hash: [u8; 32],
-        block_rlp: Vec<u8>,
-    }
-
-    /// Compact transaction identity retained by the Rust period-data queue for
-    /// sync finalized-status checks.
-    struct PeriodDataQueueTransactionIdentity {
-        input_index: u64,
-        hash: [u8; 32],
-        transaction_nonce: [u8; 32],
-        sender: [u8; 20],
-    }
-
-    /// Canonical transaction payload retained by the Rust period-data queue
-    /// for finalization materialization without reopening the live C++
-    /// `PeriodData` transaction list.
-    struct PeriodDataQueueTransactionPayload {
-        transaction_rlp: Vec<u8>,
-    }
-
-    /// Runtime-owned PBFT sync period-data queue snapshot for C++ shell reads.
-    ///
-    /// C++ supplies the current PBFT-chain size and last chain hash facts that
-    /// are still owned by the PBFT-chain compatibility facade. Rust returns
-    /// the queue-derived view in one call instead of exposing individual queue
-    /// metadata getters.
-    struct PeriodDataQueueSnapshot {
-        period: u64,
-        syncing_period: u64,
-        last_block_hash_or_chain: [u8; 32],
-        size: usize,
-        empty: bool,
-    }
-
-    struct PeriodDataQueuePushOutcome {
-        accepted: bool,
-        expected_next_period: u64,
-        actual_period: u64,
-        current_period: u64,
-        effective_size: usize,
-    }
-
-    struct PeriodDataQueuePopPlan {
-        period_data_rlp: Vec<u8>,
-        source_peer_id: [u8; 64],
-        entry_period: u64,
-        block_hash: [u8; 32],
-        prev_block_hash: [u8; 32],
-        pivot_hash: [u8; 32],
-        final_chain_hash: [u8; 32],
-        reward_vote_hashes: Vec<PbftSyncTransactionHash>,
-        pillar_vote_rlps: Vec<PillarVoteRlpPayload>,
-        transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
-        cert_vote_rlps: Vec<PbftCertVoteRlp>,
-        previous_cert_vote_rlps: Vec<PbftCertVoteRlp>,
-        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
-        previous_cert_votes_present: bool,
-        previous_cert_first_vote_has_weight: bool,
-        pillar_votes_present: bool,
-        extra_data_present: bool,
-        extra_data_pillar_block_hash_present: bool,
-    }
-
-    struct VerifiedVotePayload {
-        vote_hash: [u8; 32],
-        block_hash: [u8; 32],
-        voter: [u8; 20],
-        period: u64,
-        round: u64,
-        step: u64,
-        vote_type: u8,
-        weight: u64,
-    }
-
-    /// Caller-supplied flags for deriving PBFT vote event facts from canonical bytes.
-    struct PbftVoteEventFactFlags {
-        vote_already_known: bool,
-        carries_proposed_block: bool,
     }
 
     /// Compact PBFT vote facts used by Rust-planned ingress gates.
@@ -1554,208 +768,12 @@ pub mod rustaxa_ffi {
         can_request_next_votes_sync: bool,
     }
 
-    /// Scalar context for one PBFT vote-progress planning pass.
-    ///
-    /// `has_two_t_plus_one_threshold` gates whether the threshold value should
-    /// be passed to the verified-vote executor. `max_future_period_delta`
-    /// remains caller-controlled so production routes can preserve legacy
-    /// prevalidated-vote behavior while future ingress stages can tighten it.
-    struct PbftVoteProgressContext {
-        current_period: u64,
-        current_round: u64,
-        max_future_period_delta: u64,
-        has_two_t_plus_one_threshold: bool,
-        two_t_plus_one_threshold: u64,
-        require_proposed_block_sidecar: bool,
-        slashing_enabled: bool,
-    }
-
-    /// Runtime-owned PBFT vote admission transition result.
-    ///
-    /// Rust validates canonical bytes, applies a bounded in-memory
-    /// checkpoint, commits any required vote-progress batch, and publishes the
-    /// transition only after persistence succeeds. External effects are valid
-    /// only when `transition_published` is true.
-    struct PbftVoteAdmissionRuntimeResult {
-        status: u8,
-        error_code: String,
-        accepted: bool,
-        rejected: bool,
-        has_validation: bool,
-        validation: PbftCanonicalVoteValidation,
-        replay_should_mark: bool,
-        replay_inserted: bool,
-        replay_already_present: bool,
-        has_vote: bool,
-        vote: VerifiedVotePayload,
-        has_verified_vote_add: bool,
-        verified_vote_add: VerifiedVoteAddOutcome,
-        persistence_required: bool,
-        persistence_status: u8,
-        persistence_applied_writes: u64,
-        transition_published: bool,
-        mark_vote_known: bool,
-        mark_vote_known_hash: [u8; 32],
-        request_proposed_block_sidecar: bool,
-        proposed_block_sidecar_hash: [u8; 32],
-        proposed_block_sidecar_period: u64,
-        gossip_vote: bool,
-        gossip_vote_hash: [u8; 32],
-        report_slashing: bool,
-        has_slashing_transaction_effect: bool,
-        slashing_transaction_effect: SlashingTransactionEffect,
-        network_t_plus_one_step_updated: bool,
-        drive_pbft_progress: bool,
-        progress_period: u64,
-        progress_round: u64,
-        /// Canonical weighted vote bytes retained by native admission.
-        weighted_vote_rlp: Vec<u8>,
-    }
-
-    /// Runtime-owned validation result for callers that validate without
-    /// admitting a vote into verified-vote state.
-    struct PbftVoteRuntimeValidationResult {
-        status: u8,
-        error_code: String,
-        accepted: bool,
-        rejected: bool,
-        validation: PbftCanonicalVoteValidation,
-        replay_should_mark: bool,
-        replay_inserted: bool,
-        replay_already_present: bool,
-        /// True when composed validation returned an authoritative weighted vote payload.
-        has_weighted_vote: bool,
-        /// Canonical legacy `PbftVote::rlp(true, true)` bytes on successful composed validation.
-        weighted_vote_rlp: Vec<u8>,
-    }
-
-    /// Rust-owned PBFT reward-vote materialization output.
-    ///
-    /// This keeps reward-vote selection under the PBFT service's vote runtime
-    /// runtime that owns verified-vote metadata and retained weighted payloads.
-    /// When `accepted` is true, `selected_records` is ordered exactly like
-    /// `selected_vote_hashes`.
-    struct PbftRewardVotePayloadSelection {
-        accepted: bool,
-        status: u8,
-        error_code: String,
-        selected_period: u64,
-        selected_round: u64,
-        selected_block_hash: [u8; 32],
-        selected_vote_hashes: Vec<PbftFinalizationHash>,
-        selected_records: Vec<PbftVoteStorageRecord>,
-        missing_vote_hash: [u8; 32],
-    }
-
-    /// Caller configuration for one Rust-composed PBFT `2t+1` threshold lookup.
-    struct PbftTwoTPlusOneThresholdFact {
-        pbft_period: u64,
-        vote_type: u8,
-        committee_size: u64,
-        number_of_proposers: u64,
-    }
-
-    /// Rust PBFT `2t+1` threshold lookup result.
+    /// Public/query PBFT `2t+1` threshold lookup result.
     struct PbftTwoTPlusOneThresholdPlan {
         status: u8,
         error_code: String,
         has_threshold: bool,
         threshold: u64,
-    }
-
-    /// External request facts used for FinalChain-backed PBFT admission.
-    struct PbftVoteAdmissionValidationRequest {
-        strict_vrf: bool,
-        committee_size: u64,
-        number_of_proposers: u64,
-        has_preverified_weight: bool,
-        preverified_weight: u64,
-    }
-
-    /// Complete Rust result for validating one canonical legacy PBFT vote.
-    struct PbftCanonicalVoteValidation {
-        status: u8,
-        error_code: String,
-        accepted: bool,
-        rejected: bool,
-        mark_validated_replay: bool,
-        vote_hash: [u8; 32],
-        block_hash: [u8; 32],
-        period: u64,
-        round: u64,
-        step: u64,
-        vote_type: u8,
-        recovered_voter: [u8; 20],
-        recovered_public_key: [u8; 64],
-        signature_valid: bool,
-        vrf_valid: bool,
-        has_sortition_threshold: bool,
-        sortition_threshold: u64,
-        weight_calculated: bool,
-        calculated_weight: u64,
-        vrf_output: [u8; 64],
-    }
-
-    /// Rust PBFT vote generation input supplied by the signing executor leaf.
-    ///
-    /// Secrets are ephemeral call inputs only; Rust does not store them in a
-    /// runtime handle. Expected identity fields let Rust reject mismatched
-    /// wallet material before returning canonical vote bytes.
-    struct PbftVoteGenerationInput {
-        block_hash: [u8; 32],
-        vote_type: u8,
-        period: u64,
-        round: u64,
-        step: u64,
-        node_secret: [u8; 32],
-        vrf_secret: [u8; 64],
-        expected_voter: [u8; 20],
-        expected_vrf_public_key: [u8; 32],
-    }
-
-    /// Rust-generated canonical PBFT vote payload.
-    ///
-    /// `vote_rlp` is a signed 3-field legacy vote for unweighted generation and
-    /// a signed 4-field weighted vote when `has_weight` is true. `vote_hash`
-    /// remains the unweighted signed vote hash used as the consensus identity.
-    struct PbftGeneratedVote {
-        status: u8,
-        error_code: String,
-        accepted: bool,
-        vote_hash: [u8; 32],
-        block_hash: [u8; 32],
-        voter: [u8; 20],
-        voter_public_key: [u8; 64],
-        vrf_public_key: [u8; 32],
-        vrf_proof: [u8; 80],
-        vrf_output: [u8; 64],
-        period: u64,
-        round: u64,
-        step: u64,
-        vote_type: u8,
-        has_weight: bool,
-        weight: u64,
-        vote_rlp: Vec<u8>,
-    }
-
-    /// Request for local proposer-sortition generation and validation.
-    #[derive(Debug)]
-    struct PbftProposerSortitionRequest {
-        pbft_period: u64,
-        pbft_round: u64,
-        number_of_proposers: u64,
-        vrf_secret: [u8; 64],
-        expected_vrf_public_key: [u8; 32],
-        voter_public_key: [u8; 64],
-        expected_voter: [u8; 20],
-    }
-
-    /// Result of local proposer-sortition generation and validation.
-    #[derive(Debug)]
-    struct PbftProposerSortitionResult {
-        status: u8,
-        error_code: String,
-        accepted: bool,
     }
 
     /// Canonical pillar-vote bytes shared by batch inspection and period-data pop boundaries.
@@ -1778,31 +796,47 @@ pub mod rustaxa_ffi {
     ///
     /// Status values match `PillarVoteValidationPlanStatus` in the C++ shim:
     /// `0` is valid and non-zero values identify deterministic rejection. Rust
-    /// owns the generation-bound preparation and FinalChain DPoS lookup; C++
-    /// receives only fields used to populate its compatibility result.
+    /// owns generation-bound preparation and deterministic validation; C++
+    /// supplies exact external-EVM DPoS facts and receives only compatibility
+    /// result fields.
     struct PillarVoteSingleAdmissionPreparePlan {
+        status: u8,
+        can_query_dpos: bool,
+        needs_threshold: bool,
+        period: u64,
+        block_hash: [u8; 32],
+        vote_hash: [u8; 32],
+        voter: [u8; 20],
+        anchor_generation: u64,
+        has_current_anchor: bool,
+        current_period: u64,
+        current_hash: [u8; 32],
+    }
+
+    /// Non-mutating validation result for one exact retained preparation.
+    struct PillarVoteSingleAdmissionValidationPlan {
         status: u8,
         period: u64,
         vote_hash: [u8; 32],
         voter: [u8; 20],
     }
 
-    /// Complete result of preparing, weighting, and applying one pillar vote.
-    ///
-    /// Rust owns the unlocked FinalChain query between the generation-bound
-    /// prepare and apply stages. Identity fields remain available solely for
-    /// compatibility logging and receipt bookkeeping in the C++ facade.
-    struct PillarVoteSingleAdmissionWithFinalChainPlan {
+    /// External DPoS facts used to consume one retained pillar-vote preparation.
+    struct PillarVoteSingleAdmissionApplyInput {
+        vote_hash: [u8; 32],
+        validator_vote_count: u64,
+        has_total_eligible_vote_count: bool,
+        total_eligible_vote_count: u64,
+    }
+
+    /// Mutation result for one exact retained pillar-vote preparation.
+    struct PillarVoteSingleAdmissionApplyPlan {
         status: u8,
         accepted: bool,
         duplicate: bool,
         conflict_found: bool,
         conflicting_vote_hash: [u8; 32],
         block_weight: u64,
-        validator_vote_count: u64,
-        period: u64,
-        vote_hash: [u8; 32],
-        voter: [u8; 20],
     }
 
     /// Pillar vote payload selected for C++ edge materialization.
@@ -1868,7 +902,7 @@ pub mod rustaxa_ffi {
         state_root: [u8; 32],
         previous_pillar_block_hash: [u8; 32],
         bridge_root: [u8; 32],
-        epoch: u64,
+        epoch: [u8; 32],
         validator_vote_count_changes: Vec<PillarValidatorVoteCountChange>,
         block_hash: [u8; 32],
         signatures: Vec<PillarBlockViewSignature>,
@@ -1883,34 +917,6 @@ pub mod rustaxa_ffi {
         own_vote_rlp: Vec<u8>,
         current_block_data_rlp: Vec<u8>,
         latest_pillar_votes_period_data_rlp: Vec<u8>,
-    }
-
-    /// Operation-tagged current-pillar decision request.
-    ///
-    /// Operation values are stable: `0` validate candidate, `1` select the
-    /// previous-period anchor, and `2` select restart post-processing due.
-    /// Fields unrelated to the selected operation are ignored. Unknown
-    /// operation values are rejected as bridge errors.
-    struct PillarCurrentAnchorDecisionRequest {
-        operation: u8,
-        has_candidate_hash: bool,
-        candidate_hash: [u8; 32],
-        pbft_period: u64,
-        pillar_blocks_interval: u64,
-    }
-
-    /// Current-pillar decision plus the snapshot facts used to make it.
-    ///
-    /// Status codes are defined by native `PillarCurrentAnchorDecisionStatus`.
-    /// `selected` has operation-specific meaning; the anchor/generation fields
-    /// are always returned for diagnostics and stale-work binding.
-    struct PillarCurrentAnchorDecisionResult {
-        status: u8,
-        selected: bool,
-        has_current_anchor: bool,
-        current_period: u64,
-        current_hash: [u8; 32],
-        anchor_generation: u64,
     }
 
     /// Public FinalChain block view returned by `ConsensusQueryApi`.
@@ -1935,29 +941,6 @@ pub mod rustaxa_ffi {
         pbft_block_hash: [u8; 32],
     }
 
-    /// Candidate facts for runtime-owned pillar-block parent-linkage planning.
-    struct PillarBlockLinkageRequest {
-        pillar_block_period: u64,
-        pillar_block_previous_hash: [u8; 32],
-        first_pillar_block_period: u64,
-        pillar_blocks_interval: u64,
-    }
-
-    /// Result of deterministic pillar-block parent-linkage planning.
-    ///
-    /// Status values:
-    /// - `0` - valid non-first block
-    /// - `1` - valid first pillar block
-    /// - `2` - missing last finalized pillar block
-    /// - `3` - period mismatch
-    /// - `4` - previous hash mismatch
-    /// - `5` - interval overflow
-    struct PillarBlockLinkagePlan {
-        status: u8,
-        valid: bool,
-        expected_previous_period: u64,
-    }
-
     /// External facts for runtime-owned pillar-block shell planning.
     struct PillarBlockCreationRequest {
         pillar_block_period: u64,
@@ -1971,7 +954,7 @@ pub mod rustaxa_ffi {
     /// Rust-planned shell fields and validator deltas for temporary C++
     /// `PillarBlock` materialization.
     ///
-    /// Status values match `PillarBlockLinkagePlan`.
+    /// Status values match native pillar-block linkage planning.
     struct PillarBlockCreationWithVoteCountsPlan {
         status: u8,
         valid: bool,
@@ -2045,96 +1028,6 @@ pub mod rustaxa_ffi {
         latest_finalized_hash: [u8; 32],
     }
 
-    struct VerifiedVoteAddOutcome {
-        vote: VerifiedVotePayload,
-        inserted: bool,
-        total_weight: u64,
-        votes_count: usize,
-        conflict_found: bool,
-        conflicting_vote_hash: [u8; 32],
-        conflicting_vote_found: bool,
-        conflicting_vote: PbftVoteStorageRecord,
-        bucket_found: bool,
-        bucket: VerifiedStepVotePayloadEntry,
-        used_secondary_slot: bool,
-        duplicate_vote_hash: bool,
-        threshold_applied: bool,
-        t_plus_one_reached: bool,
-        network_t_plus_one_step_updated: bool,
-        two_t_plus_one_reached: bool,
-        two_t_plus_one_kind_found: bool,
-        two_t_plus_one_kind: u8,
-        two_t_plus_one_round_found: bool,
-        two_t_plus_one_inserted: bool,
-    }
-
-    struct DetermineNewRoundOutcome {
-        found: bool,
-        new_round: u64,
-        source_round: u64,
-        source_kind: u8,
-        block_hash: [u8; 32],
-        step: u64,
-    }
-
-    struct TwoTPlusOneVotedBlockLookup {
-        found: bool,
-        block_hash: [u8; 32],
-        step: u64,
-    }
-
-    struct TwoTPlusOneVotePayloadsLookup {
-        found: bool,
-        block_hash: [u8; 32],
-        step: u64,
-        votes: Vec<PbftVoteStorageRecord>,
-    }
-
-    struct TwoTPlusOneSnapshotEntry {
-        period: u64,
-        round: u64,
-        kind: u8,
-        block_hash: [u8; 32],
-        step: u64,
-    }
-
-    struct RoundMarkerSnapshot {
-        period: u64,
-        round: u64,
-        network_t_plus_one_step: u64,
-    }
-
-    /// One metadata vote paired with its authoritative retained weighted payload.
-    struct VerifiedVoteStateSnapshotEntry {
-        vote: VerifiedVotePayload,
-        weighted_vote: PbftVoteStorageRecord,
-    }
-
-    /// Coherent owned snapshot of every verified-vote state family materialized by C++.
-    struct VerifiedVotesStateSnapshot {
-        votes: Vec<VerifiedVoteStateSnapshotEntry>,
-        round_markers: Vec<RoundMarkerSnapshot>,
-        two_t_plus_one: Vec<TwoTPlusOneSnapshotEntry>,
-    }
-
-    /// One voted-value bucket with owned payload records in canonical vote-hash order.
-    struct VerifiedStepVotePayloadEntry {
-        block_hash: [u8; 32],
-        total_weight: u64,
-        votes: Vec<PbftVoteStorageRecord>,
-    }
-
-    struct VerifiedStepVotePayloadsLookup {
-        found: bool,
-        entries: Vec<VerifiedStepVotePayloadEntry>,
-    }
-
-    /// Coherent reward cursor and the retained weighted payloads selected by that cursor.
-    struct RewardVotePayloadSnapshot {
-        cursor: RewardVoteCursorSnapshot,
-        records: Vec<PbftVoteStorageRecord>,
-    }
-
     struct FinalChainBlockNumberLookup {
         found: bool,
         value: u64,
@@ -2143,65 +1036,6 @@ pub mod rustaxa_ffi {
     struct FinalChainExecutionStatus {
         executed_dag_block_count: u64,
         executed_transaction_count: u64,
-    }
-
-    /// One address whose PBFT-facing FinalChain DPoS facts should be collected.
-    struct PbftFinalChainDposAddress {
-        address: [u8; 20],
-    }
-
-    /// PBFT-facing FinalChain DPoS total-vote count request.
-    struct PbftFinalChainDposTotalVoteCountRequest {
-        period: u64,
-    }
-
-    /// PBFT-facing FinalChain DPoS total-vote response.
-    struct PbftFinalChainDposTotalVoteCountFacts {
-        status: u8,
-        last_block_number: u64,
-        has_total_vote_count: bool,
-        total_vote_count: u64,
-        error_code: String,
-    }
-
-    /// Per-wallet PBFT-facing DPoS query fact for batch eligibility checks.
-    struct PbftFinalChainDposAddressVoteFact {
-        address: [u8; 20],
-        status: u8,
-        eligible: bool,
-        vote_count: u64,
-        error_code: String,
-    }
-
-    /// PBFT-facing DPoS aggregate-vote request for a supplied wallet subset.
-    struct PbftFinalChainDposWalletAggregateVoteCountRequest {
-        period: u64,
-        eligible_wallet_period: u64,
-        addresses: Vec<PbftFinalChainDposAddress>,
-    }
-
-    /// PBFT-facing DPoS aggregate-vote response for a supplied wallet subset.
-    struct PbftFinalChainDposWalletAggregateVoteCountFacts {
-        status: u8,
-        last_block_number: u64,
-        has_aggregate_vote_count: bool,
-        aggregate_vote_count: u64,
-        eligible_wallet_period_ready: bool,
-        error_code: String,
-    }
-
-    /// PBFT-facing DPoS batch wallet-eligibility request.
-    struct PbftFinalChainDposWalletEligibilityBatchRequest {
-        period: u64,
-        addresses: Vec<PbftFinalChainDposAddress>,
-    }
-
-    /// PBFT-facing DPoS batch wallet-eligibility response.
-    struct PbftFinalChainDposWalletEligibilityBatchFacts {
-        status: u8,
-        last_block_number: u64,
-        address_facts: Vec<PbftFinalChainDposAddressVoteFact>,
-        error_code: String,
     }
 
     /// Genesis account carried across the CXX bootstrap boundary.
@@ -2744,7 +1578,7 @@ pub mod rustaxa_ffi {
     /// transactions, and updated the authoritative runtime count. C++ consumes
     /// this report only for logging.
     struct TransactionManagerDagSaveCommandReport {
-        queue_erased: Vec<TransactionQueueHash>,
+        queue_erased: Vec<DagHash>,
     }
 
     /// Typed admission result attached to admission command reports.
@@ -3092,7 +1926,7 @@ pub mod rustaxa_ffi {
         emit_verified: bool,
         gossip: bool,
         proposed: bool,
-        queue_erased: Vec<TransactionQueueHash>,
+        queue_erased: Vec<DagHash>,
         counters: DagPersistenceCounters,
     }
 
@@ -3170,6 +2004,37 @@ pub mod rustaxa_ffi {
         difficulty: u16,
         vdf_proof: Vec<u8>,
         vdf_output: Vec<u8>,
+    }
+
+    /// Public identity of one configured signing wallet.
+    ///
+    /// The stable index selects host-held key material for later effects;
+    /// only public address and verification keys enter native configuration.
+    struct SigningIdentity {
+        wallet_index: u64,
+        address: [u8; 20],
+        node_public_key: [u8; 64],
+        vrf_public_key: [u8; 32],
+    }
+
+    /// Hot application-root PBFT status used by App scheduling and networking.
+    struct HostConsensusLiveStatus {
+        period: u64,
+        round: u64,
+        step: u64,
+        finalized_chain_size: u64,
+        syncing_period: u64,
+        sync_queue_size: u64,
+        has_current_node_votes: bool,
+        current_node_votes: u64,
+        has_total_eligible_votes: bool,
+        total_eligible_votes: u64,
+    }
+
+    /// One validator's eligible DPoS vote count returned by FinalChain queries.
+    struct HostValidatorVoteCount {
+        address: [u8; 20],
+        vote_count: u64,
     }
 
     extern "Rust" {
@@ -3442,6 +2307,7 @@ pub mod rustaxa_ffi {
             gas_pricer_config: GasPricerConfig,
             proposal_dag_gas_limit: u64,
             pbft_config: PbftServiceConfig,
+            signing_identities: Vec<SigningIdentity>,
             final_chain_block_gas_limit: u64,
             final_chain_genesis_timestamp: u64,
             final_chain_genesis_accounts: Vec<GenesisAccount>,
@@ -3449,6 +2315,16 @@ pub mod rustaxa_ffi {
             final_chain_genesis_dpos_config: GenesisDposConfig,
             final_chain_rewards_config: FinalChainRewardsConfig,
         ) -> Result<Box<BridgeConsensusApplication>>;
+        /// Returns one lock-coherent hot status snapshot without exposing the
+        /// native PBFT manager or its internal executor cursor.
+        pub fn consensus_application_live_status(
+            application: &BridgeConsensusApplication,
+        ) -> Result<HostConsensusLiveStatus>;
+        /// Prunes native FinalChain lookup indexes below the retained block.
+        pub fn prune_final_chain_before(
+            self: &BridgeConsensusApplication,
+            first_to_keep: u64,
+        ) -> Result<u64>;
         /// Prepares one canonical add-block transition without mutation.
         pub fn dag_transaction_service_prepare_add_block(
             self: &BridgeConsensusApplication,
@@ -3688,43 +2564,7 @@ pub mod rustaxa_ffi {
         ) -> DagProposerWorkerCommand;
         pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
 
-        // Application-root PBFT manager tasks
-
-        pub fn pbft_manager_current_chain_context(
-            runtime: &BridgeConsensusApplication,
-        ) -> PbftManagerChainContext;
-        pub fn pbft_manager_chain_block_exists(
-            runtime: &BridgeConsensusApplication,
-            block_hash: &[u8; 32],
-        ) -> Result<bool>;
-        pub fn pbft_manager_runtime_begin_pbft_sync_admission(
-            runtime: &BridgeConsensusApplication,
-            fact: PbftSyncAdmissionInitialFact,
-        ) -> PbftSyncAdmissionSessionStep;
-        pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
-            runtime: &BridgeConsensusApplication,
-            cursor: u32,
-            check_code: u8,
-            status: u8,
-        ) -> Result<PbftSyncAdmissionSessionStep>;
-        pub fn pbft_manager_runtime_pbft_sync_admission_validate_pillar_votes(
-            runtime: &BridgeConsensusApplication,
-            vote_rlps: Vec<PillarVoteRlpPayload>,
-        ) -> PbftSyncAdmissionSessionStep;
-        pub fn pbft_manager_runtime_pbft_sync_admission_validate_transactions(
-            runtime: &BridgeConsensusApplication,
-            dag_transaction_service: &BridgeConsensusApplication,
-            identities: Vec<PeriodDataQueueTransactionIdentity>,
-        ) -> PbftSyncAdmissionSessionStep;
-        pub fn abort_pbft_manager_runtime_pbft_sync_admission(
-            runtime: &BridgeConsensusApplication,
-        ) -> PbftSyncAdmissionSessionStep;
-        pub fn pbft_service_pbft_sync_cert_bundle_session(
-            service: &BridgeConsensusApplication,
-            command: PbftSyncCertBundleCommand,
-        ) -> Result<PbftSyncCertBundleStep>;
-
-        pub fn pbft_service_complete_bootstrap(service: &BridgeConsensusApplication) -> Result<()>;
+        // Network-owned PBFT ingress leaves retained for tarcap clients.
         pub fn pbft_service_begin_pbft_sync_ingress(
             service: &BridgeConsensusApplication,
             packet_rlp: &[u8],
@@ -3737,228 +2577,12 @@ pub mod rustaxa_ffi {
             proof_hash: [u8; 32],
             transaction_inserted: bool,
         ) -> Result<PbftSyncIngressStep>;
-        pub fn pbft_manager_runtime_load_startup_replay_period(
-            runtime: &BridgeConsensusApplication,
-            period: u64,
-            load_period_lambda: bool,
-        ) -> Result<PbftManagerStartupReplayPeriod>;
-        pub fn pbft_manager_runtime_snapshot(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<PbftManagerRuntimeSnapshot>;
-        pub fn pbft_manager_runtime_period_data_queue_snapshot(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<PeriodDataQueueSnapshot>;
-        pub fn pbft_manager_runtime_period_data_queue_push(
-            runtime: &BridgeConsensusApplication,
-            period_data_rlp: Vec<u8>,
-            source_peer_id: [u8; 64],
-            previous_cert_vote_rlps: Vec<PbftCertVoteRlp>,
-            current_block_cert_vote_rlps: Vec<PbftCertVoteRlp>,
-        ) -> Result<PeriodDataQueuePushOutcome>;
-        pub fn pbft_manager_runtime_period_data_queue_pop(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<PeriodDataQueuePopPlan>;
-        pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(
-            runtime: &BridgeConsensusApplication,
-        );
-        pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
-            runtime: &BridgeConsensusApplication,
-        ) -> PbftSyncQueueDrainStep;
-        pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
-            runtime: &BridgeConsensusApplication,
-            report: PbftSyncQueueDrainReport,
-        ) -> PbftSyncQueueDrainReportResult;
-        pub fn plan_pbft_manager_startup_replay_ranges(
-            fact: PbftManagerStartupReplayRangeFact,
-        ) -> PbftManagerStartupReplayRangePlan;
-        pub fn pbft_manager_runtime_plan_advance_period_after_reset(
-            runtime: &BridgeConsensusApplication,
-            pbft_chain_size: u64,
-        ) -> PbftManagerAdvancePeriodPlan;
-        pub fn validate_pbft_manager_advance_period_action_report(
-            plan: &PbftManagerAdvancePeriodPlan,
-            report: PbftManagerAdvancePeriodActionReport,
-        ) -> PbftManagerAdvancePeriodActionReportResult;
-        pub fn pbft_manager_runtime_apply_period_advance(
-            runtime: &BridgeConsensusApplication,
-            new_period: u64,
-        ) -> Result<PbftManagerRuntimeSnapshot>;
-        pub fn pbft_manager_runtime_apply_broadcast_counters(
-            runtime: &BridgeConsensusApplication,
-            broadcast_votes_counter: u32,
-            rebroadcast_votes_counter: u32,
-            broadcast_reward_votes_counter: u32,
-            rebroadcast_reward_votes_counter: u32,
-        ) -> PbftManagerRuntimeSnapshot;
-        pub fn pbft_manager_runtime_cert_voted_block_in_round(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<Vec<u8>>;
-        pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
-            runtime: &BridgeConsensusApplication,
-            period: u64,
-            round: u32,
-            block_hash: [u8; 32],
-            block_rlp: Vec<u8>,
-        ) -> Result<PbftManagerRuntimeSnapshot>;
-        pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
-            runtime: &BridgeConsensusApplication,
-            period: u64,
-            round: u32,
-            block_hash: [u8; 32],
-        ) -> PbftManagerRuntimeSnapshot;
-        pub fn pbft_manager_runtime_cached_candidate_dag_payload(
-            runtime: &BridgeConsensusApplication,
-            dag_transaction_service: &BridgeConsensusApplication,
-            anchor_hash: &[u8; 32],
-        ) -> Result<DagManagerNonFinalizedSyncPayload>;
-        pub fn pbft_manager_runtime_own_pillar_block_vote(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<Vec<u8>>;
-        pub fn pbft_manager_runtime_execute_lifecycle_transition(
-            runtime: &BridgeConsensusApplication,
-            request: PbftManagerLifecycleTransitionRequest,
-        ) -> Result<PbftManagerLifecycleTransitionResult>;
-        pub fn pbft_manager_runtime_apply_executed_block_reset(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<PbftManagerLifecycleTransitionResult>;
-        pub fn pbft_manager_runtime_apply_next_voted_status(
-            runtime: &BridgeConsensusApplication,
-            status: u8,
-        ) -> Result<PbftManagerRuntimeSnapshot>;
-        pub fn pbft_manager_runtime_apply_cursor_field(
-            runtime: &BridgeConsensusApplication,
-            field: u8,
-            value: u32,
-        ) -> Result<PbftManagerRuntimeSnapshot>;
-        pub fn pbft_manager_runtime_dag_block_period(
-            runtime: &BridgeConsensusApplication,
-            hash: &[u8; 32],
-        ) -> Result<BlockPeriodLookup>;
-        pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
-            runtime: &BridgeConsensusApplication,
-            fact: PbftDynamicLambdaFact,
-        ) -> Result<PbftManagerFinalizationDynamicLambdaPlan>;
-        pub fn pbft_manager_runtime_plan_finalization_intent(
-            runtime: &BridgeConsensusApplication,
-            fact: PbftFinalizationIntentFact,
-        ) -> Result<PbftFinalizationIntentPlan>;
-        pub fn pbft_manager_runtime_start_finalization_executor(
-            runtime: &BridgeConsensusApplication,
-            dag_transaction_service: &BridgeConsensusApplication,
-            request: PbftFinalizationExecutorStartRequest,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_fail_finalization_external_effect(
-            runtime: &BridgeConsensusApplication,
-            cursor: u32,
-            status: u8,
-            error_code: String,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_action(
-            runtime: &BridgeConsensusApplication,
-            dag_transaction_service: &BridgeConsensusApplication,
-            cursor: u32,
-            action: u8,
-            last_block: u64,
-            request_period: u64,
-            retention_window: u64,
-            account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_begin_session(
-            runtime: &BridgeConsensusApplication,
-            fact: PbftManagerRuntimeTickFact,
-        );
-        pub fn plan_pbft_manager_runtime_sleep_until_next_step(
-            runtime: &BridgeConsensusApplication,
-            round_elapsed_ms: i64,
-        ) -> PbftManagerSleepPlan;
-        pub fn pbft_service_finalization_ready(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<bool>;
-        pub fn pbft_manager_runtime_begin_state_action_effect_session(
-            runtime: &BridgeConsensusApplication,
-            fact: PbftManagerStateActionFact,
-        );
-        pub fn pbft_manager_runtime_state_action_effect_session_next(
-            runtime: &BridgeConsensusApplication,
-        ) -> PbftManagerStateActionSessionStep;
-        pub fn pbft_manager_runtime_state_action_effect_session_report(
-            runtime: &BridgeConsensusApplication,
-            report: PbftManagerStateActionEffectReport,
-        ) -> PbftManagerStateActionSessionStep;
-        pub fn pbft_service_begin_proposal_session_with_final_chain(
-            self: &BridgeConsensusApplication,
-            fact: PbftManagerProposalInitialFact,
-        ) -> Result<()>;
-        pub fn pbft_manager_proposal_session_next_with_dag(
-            runtime: &BridgeConsensusApplication,
-            dag_transaction_service: &BridgeConsensusApplication,
-        ) -> Result<PbftManagerProposalSessionStep>;
-        pub fn plan_pbft_manager_broadcast(
-            fact: PbftManagerBroadcastFact,
-        ) -> PbftManagerBroadcastPlan;
-        pub fn report_pbft_manager_broadcast(
-            plan: PbftManagerBroadcastPlan,
-            report: PbftManagerBroadcastReport,
-        ) -> PbftManagerBroadcastReportResult;
-        pub fn plan_pbft_manager_block_validation(
-            runtime: &BridgeConsensusApplication,
-            dag_transaction_service: &BridgeConsensusApplication,
-            fact: &PbftManagerBlockValidationFact,
-        ) -> Result<PbftManagerBlockValidationPlan>;
-        pub fn pbft_manager_runtime_session_next(
-            runtime: &BridgeConsensusApplication,
-        ) -> PbftManagerRuntimeSessionStep;
-        pub fn pbft_manager_runtime_session_report(
-            runtime: &BridgeConsensusApplication,
-            report: PbftManagerRuntimeActionReport,
-        ) -> PbftManagerRuntimeSessionStep;
-        pub fn abort_pbft_manager_runtime_session(runtime: &BridgeConsensusApplication);
-        // Consensus proposed PBFT blocks
 
-        pub fn pbft_service_publish_proposed_block(
-            self: &BridgeConsensusApplication,
-            period: u64,
-            block_hash: &[u8; 32],
-            pivot_hash: &[u8; 32],
-            block_rlp: Vec<u8>,
-        ) -> Result<bool>;
+        // Network-owned proposed-block publication leaf.
         pub fn pbft_service_publish_proposed_block_effect(
             self: &BridgeConsensusApplication,
             canonical_signed_block_rlp: Vec<u8>,
         ) -> Result<bool>;
-        pub fn pbft_service_admit_proposed_block(
-            runtime: &BridgeConsensusApplication,
-            dag_transaction_service: &BridgeConsensusApplication,
-            period: u64,
-            block_hash: &[u8; 32],
-            pbft_gas_limit: u64,
-            extra_data_required: bool,
-            pillar_block_required: bool,
-        ) -> Result<PbftProposedBlockAdmissionResult>;
-        pub fn pbft_service_select_local_proposal_candidate(
-            runtime: &BridgeConsensusApplication,
-            dag_transaction_service: &BridgeConsensusApplication,
-            candidates: Vec<PbftLocalProposalCandidate>,
-            period: u64,
-            round: u64,
-            pbft_gas_limit: u64,
-            extra_data_required: bool,
-            pillar_block_required: bool,
-        ) -> Result<PbftLocalProposalSelectionResult>;
-        pub fn pbft_service_select_leader_composed(
-            runtime: &BridgeConsensusApplication,
-            dag_transaction_service: &BridgeConsensusApplication,
-            period: u64,
-            round: u64,
-            pbft_gas_limit: u64,
-            extra_data_required: bool,
-            pillar_block_required: bool,
-        ) -> Result<PbftLeaderSelectionResult>;
-        pub fn pbft_service_proposed_blocks_get(
-            self: &BridgeConsensusApplication,
-            period: u64,
-            block_hash: &[u8; 32],
-        ) -> ProposedBlockLookup;
         // Consensus transaction manager planning
 
         pub fn transaction_manager_runtime_gas_price_bid(
@@ -4043,7 +2667,7 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_runtime_queue_block_finalized(
             self: &BridgeConsensusApplication,
             block_number: u64,
-        ) -> Vec<TransactionQueueHash>;
+        ) -> Vec<DagHash>;
         pub fn transaction_manager_runtime_queue_transactions_dropped(
             self: &BridgeConsensusApplication,
         ) -> bool;
@@ -4106,91 +2730,22 @@ pub mod rustaxa_ffi {
             runtime: &BridgeConsensusApplication,
         ) -> Result<()>;
 
-        // Consensus verified votes
-
-        pub fn pbft_service_verified_votes_own_vote_records(
-            self: &BridgeConsensusApplication,
-        ) -> Result<Vec<PbftVoteStorageRecord>>;
-        pub fn pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
-            self: &BridgeConsensusApplication,
-            fact: PbftTwoTPlusOneThresholdFact,
-        ) -> Result<PbftTwoTPlusOneThresholdPlan>;
-        pub fn pbft_service_verified_votes_validate_with_final_chain(
-            self: &BridgeConsensusApplication,
-            canonical_vote_rlp: &[u8],
-            strict_vrf: bool,
-            committee_size: u64,
-            number_of_proposers: u64,
-        ) -> Result<PbftVoteRuntimeValidationResult>;
-        /// Atomically admits one locally generated vote and persists its own-vote row.
-        pub fn pbft_service_admit_and_persist_local_generated_vote(
-            self: &BridgeConsensusApplication,
-            canonical_vote_rlp: &[u8],
-            validation_request: PbftVoteAdmissionValidationRequest,
-            flags: PbftVoteEventFactFlags,
-            context: PbftVoteProgressContext,
-            slashing_submitters: Vec<SlashingSubmitterIdentity>,
-        ) -> Result<PbftVoteAdmissionRuntimeResult>;
+        // Network-owned verified-vote slashing acknowledgement leaf.
         pub fn pbft_service_verified_votes_report_slashing_transaction_submission(
             self: &BridgeConsensusApplication,
             proof_hash: &[u8; 32],
             transaction_inserted: bool,
         ) -> Result<bool>;
-        pub fn pbft_service_verified_votes_determine_new_round(
-            self: &BridgeConsensusApplication,
-            period: u64,
-            current_round: u64,
-        ) -> Result<DetermineNewRoundOutcome>;
-        pub fn pbft_service_verified_votes_get_two_t_plus_one_voted_block(
-            self: &BridgeConsensusApplication,
-            period: u64,
-            round: u64,
-            kind: u8,
-        ) -> Result<TwoTPlusOneVotedBlockLookup>;
-        pub fn pbft_service_verified_votes_get_two_t_plus_one_voted_block_payloads(
-            self: &BridgeConsensusApplication,
-            period: u64,
-            round: u64,
-            kind: u8,
-        ) -> Result<TwoTPlusOneVotePayloadsLookup>;
-        pub fn pbft_service_verified_votes_select_reward_vote_payloads(
-            self: &BridgeConsensusApplication,
-            block_period: u64,
-            requested_vote_hashes: Vec<PbftFinalizationHash>,
-        ) -> Result<PbftRewardVotePayloadSelection>;
-        pub fn pbft_service_verified_votes_state_snapshot(
-            self: &BridgeConsensusApplication,
-        ) -> Result<VerifiedVotesStateSnapshot>;
-        pub fn pbft_service_verified_votes_step_payloads(
-            self: &BridgeConsensusApplication,
-            period: u64,
-            round: u64,
-            step: u64,
-        ) -> Result<VerifiedStepVotePayloadsLookup>;
-        pub fn pbft_service_verified_votes_current_reward_snapshot(
-            self: &BridgeConsensusApplication,
-        ) -> Result<RewardVotePayloadSnapshot>;
-        pub fn pbft_service_generate_signed_vote_with_weight(
-            self: &BridgeConsensusApplication,
-            input: PbftVoteGenerationInput,
-            committee_size: u64,
-            number_of_proposers: u64,
-        ) -> Result<PbftGeneratedVote>;
-        pub fn pbft_service_generate_and_validate_proposer_sortition(
-            self: &BridgeConsensusApplication,
-            request: PbftProposerSortitionRequest,
-        ) -> Result<PbftProposerSortitionResult>;
         // Consensus pillar votes
 
         pub fn pbft_service_pillar_plan_block_creation_with_final_chain(
             self: &BridgeConsensusApplication,
             request: PillarBlockCreationRequest,
         ) -> Result<PillarBlockCreationWithVoteCountsPlan>;
-        pub fn pbft_service_pillar_plan_block_linkage(
-            self: &BridgeConsensusApplication,
-            request: PillarBlockLinkageRequest,
-        ) -> Result<PillarBlockLinkagePlan>;
         pub fn pbft_service_pillar_latest_finalized_block_rlp(
+            self: &BridgeConsensusApplication,
+        ) -> Result<Vec<u8>>;
+        pub fn pbft_service_pillar_current_block_rlp(
             self: &BridgeConsensusApplication,
         ) -> Result<Vec<u8>>;
 
@@ -4228,7 +2783,7 @@ pub mod rustaxa_ffi {
         pub fn get_last_sortition_params(
             self: &BridgeConsensusApplication,
             count: u64,
-        ) -> Result<Vec<BlockRlp>>;
+        ) -> Result<Vec<CanonicalBytes>>;
         pub fn get_params_change_for_period(
             self: &BridgeConsensusApplication,
             period: u64,
@@ -4255,25 +2810,25 @@ pub mod rustaxa_ffi {
         pub fn pbft_service_pillar_load_startup_bootstrap(
             self: &BridgeConsensusApplication,
         ) -> Result<PillarChainStartupBootstrap>;
-        pub fn pbft_service_pillar_plan_current_anchor_decision(
-            self: &BridgeConsensusApplication,
-            request: PillarCurrentAnchorDecisionRequest,
-        ) -> Result<PillarCurrentAnchorDecisionResult>;
         pub fn pbft_service_pillar_consensus_threshold_with_final_chain(
             self: &BridgeConsensusApplication,
             period: u64,
         ) -> Result<PillarConsensusThresholdLookup>;
-        pub fn pbft_service_pillar_validate_single_vote_with_final_chain(
-            self: &BridgeConsensusApplication,
-            vote_rlp: Vec<u8>,
-            context: PillarVoteSingleAdmissionContext,
-        ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
-        pub fn pbft_service_pillar_apply_single_vote_with_final_chain(
+        pub fn pbft_service_pillar_prepare_single_vote_external_facts(
             self: &BridgeConsensusApplication,
             vote_rlp: Vec<u8>,
             context: PillarVoteSingleAdmissionContext,
             trusted_local_or_restore: bool,
-        ) -> Result<PillarVoteSingleAdmissionWithFinalChainPlan>;
+        ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
+        pub fn pbft_service_pillar_validate_prepared_single_vote_external_facts(
+            self: &BridgeConsensusApplication,
+            prepared: PillarVoteSingleAdmissionPreparePlan,
+            validator_vote_count: u64,
+        ) -> Result<PillarVoteSingleAdmissionValidationPlan>;
+        pub fn pbft_service_pillar_apply_prepared_single_vote_external_facts(
+            self: &BridgeConsensusApplication,
+            input: PillarVoteSingleAdmissionApplyInput,
+        ) -> Result<PillarVoteSingleAdmissionApplyPlan>;
         pub fn pbft_service_pillar_plan_vote_relevance(
             self: &BridgeConsensusApplication,
             vote_rlp: Vec<u8>,
@@ -4296,32 +2851,27 @@ pub mod rustaxa_ffi {
 
         // Storage
 
-        type BridgeDagStorageQueries;
-        type BridgePbftStorageQueries;
-        type BridgePbftVoteStorageQueries;
-        type BridgeTransactionStorageQueries;
-        type BridgeFinalChainStorageQueries;
-        type BridgePeriodStorageQueries;
+        type BridgeStorageQueries;
         type BridgeStorageBatch;
 
         pub fn create_pbft_storage_queries(
             runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgePbftStorageQueries>;
+        ) -> Box<BridgeStorageQueries>;
         pub fn create_dag_storage_queries(
             runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgeDagStorageQueries>;
+        ) -> Box<BridgeStorageQueries>;
         pub fn create_pbft_vote_storage_queries(
             runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgePbftVoteStorageQueries>;
+        ) -> Box<BridgeStorageQueries>;
         pub fn create_transaction_storage_queries(
             runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgeTransactionStorageQueries>;
+        ) -> Box<BridgeStorageQueries>;
         pub fn create_final_chain_storage_queries(
             runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgeFinalChainStorageQueries>;
+        ) -> Box<BridgeStorageQueries>;
         pub fn create_period_storage_queries(
             runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgePeriodStorageQueries>;
+        ) -> Box<BridgeStorageQueries>;
         pub fn create_storage_shim_batch(
             runtime: &BridgeConsensusApplication,
         ) -> Box<BridgeStorageBatch>;
@@ -4488,119 +3038,98 @@ pub mod rustaxa_ffi {
         ) -> Result<()>;
         pub fn storage_shim_commit_batch(batch: Box<BridgeStorageBatch>, sync: bool) -> Result<()>;
 
-        pub fn dag_block_in_db(self: &BridgeDagStorageQueries, hash: &[u8; 32]) -> Result<bool>;
-        pub fn get_dag_block(self: &BridgeDagStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        pub fn dag_block_in_db(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<bool>;
+        pub fn get_dag_block(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
         pub fn get_dag_block_period_lookup(
-            self: &BridgeDagStorageQueries,
+            self: &BridgeStorageQueries,
             hash: &[u8; 32],
         ) -> Result<BlockPeriodLookup>;
-        pub fn get_last_blocks_level(self: &BridgeDagStorageQueries) -> Result<u64>;
-        pub fn get_blocks_by_level(self: &BridgeDagStorageQueries, level: u64) -> Result<Vec<u8>>;
+        pub fn get_last_blocks_level(self: &BridgeStorageQueries) -> Result<u64>;
+        pub fn get_blocks_by_level(self: &BridgeStorageQueries, level: u64) -> Result<Vec<u8>>;
         pub fn get_dag_blocks_at_level(
-            self: &BridgeDagStorageQueries,
+            self: &BridgeStorageQueries,
             level: u64,
             number_of_levels: u32,
-        ) -> Result<Vec<BlockRlp>>;
-        pub fn get_nonfinalized_dag_blocks(
-            self: &BridgeDagStorageQueries,
-        ) -> Result<Vec<LevelBlocks>>;
+        ) -> Result<Vec<CanonicalBytes>>;
+        pub fn get_nonfinalized_dag_blocks(self: &BridgeStorageQueries)
+            -> Result<Vec<LevelBlocks>>;
         pub fn get_proposal_period_for_dag_level(
-            self: &BridgeDagStorageQueries,
+            self: &BridgeStorageQueries,
             level: u64,
         ) -> Result<PeriodLookup>;
 
         /// Typed period reads (preferred for typed query surfaces).
-        pub fn get_period_data_raw(
-            self: &BridgePeriodStorageQueries,
-            period: u64,
-        ) -> Result<Vec<u8>>;
+        pub fn get_period_data_raw(self: &BridgeStorageQueries, period: u64) -> Result<Vec<u8>>;
         /// Typed period-by-PBFT-block hash lookup.
         pub fn get_period_from_pbft_hash(
-            self: &BridgePeriodStorageQueries,
+            self: &BridgeStorageQueries,
             hash: &[u8; 32],
         ) -> Result<PeriodLookup>;
         /// Typed by-period receipts lookup.
-        pub fn get_block_receipt(self: &BridgePeriodStorageQueries, period: u64)
-            -> Result<Vec<u8>>;
-        pub fn pbft_block_in_db(self: &BridgePbftStorageQueries, hash: &[u8; 32]) -> Result<bool>;
-        pub fn get_pbft_mgr_field(self: &BridgePbftStorageQueries, field: u8) -> Result<u32>;
-        pub fn get_pbft_mgr_status(self: &BridgePbftStorageQueries, field: u8) -> Result<bool>;
-        pub fn get_pbft_head(self: &BridgePbftStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
-        pub fn get_cert_voted_block_in_round(self: &BridgePbftStorageQueries) -> Result<Vec<u8>>;
+        pub fn get_block_receipt(self: &BridgeStorageQueries, period: u64) -> Result<Vec<u8>>;
+        pub fn pbft_block_in_db(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<bool>;
+        pub fn get_pbft_mgr_field(self: &BridgeStorageQueries, field: u8) -> Result<u32>;
+        pub fn get_pbft_mgr_status(self: &BridgeStorageQueries, field: u8) -> Result<bool>;
+        pub fn get_pbft_head(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        pub fn get_cert_voted_block_in_round(self: &BridgeStorageQueries) -> Result<Vec<u8>>;
         pub fn save_proposed_pbft_block(
-            self: &BridgePbftStorageQueries,
+            self: &BridgeStorageQueries,
             expected_period: u64,
             expected_hash: &[u8; 32],
             expected_pivot_hash: &[u8; 32],
             block_rlp: Vec<u8>,
         ) -> Result<bool>;
-        pub fn get_proposed_pbft_blocks(self: &BridgePbftStorageQueries) -> Result<Vec<BlockRlp>>;
-        pub fn get_own_verified_votes(self: &BridgePbftVoteStorageQueries) -> Result<Vec<VoteRlp>>;
+        pub fn get_proposed_pbft_blocks(self: &BridgeStorageQueries)
+            -> Result<Vec<CanonicalBytes>>;
+        pub fn get_own_verified_votes(self: &BridgeStorageQueries) -> Result<Vec<CanonicalBytes>>;
         pub fn get_all_two_t_plus_one_votes(
-            self: &BridgePbftVoteStorageQueries,
-        ) -> Result<Vec<VoteRlp>>;
-        pub fn get_reward_votes(self: &BridgePbftVoteStorageQueries) -> Result<Vec<VoteRlp>>;
-        pub fn transaction_in_db(
-            self: &BridgeTransactionStorageQueries,
-            hash: &[u8; 32],
-        ) -> Result<bool>;
-        pub fn transaction_finalized(
-            self: &BridgeTransactionStorageQueries,
-            hash: &[u8; 32],
-        ) -> Result<bool>;
+            self: &BridgeStorageQueries,
+        ) -> Result<Vec<CanonicalBytes>>;
+        pub fn get_reward_votes(self: &BridgeStorageQueries) -> Result<Vec<CanonicalBytes>>;
+        pub fn transaction_in_db(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<bool>;
+        pub fn transaction_finalized(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<bool>;
         pub fn get_transaction_location(
-            self: &BridgeTransactionStorageQueries,
+            self: &BridgeStorageQueries,
             hash: &[u8; 32],
         ) -> Result<Vec<u8>>;
-        pub fn get_transaction(
-            self: &BridgeTransactionStorageQueries,
-            hash: &[u8; 32],
-        ) -> Result<Vec<u8>>;
+        pub fn get_transaction(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
         pub fn get_transaction_by_period_position(
-            self: &BridgeTransactionStorageQueries,
+            self: &BridgeStorageQueries,
             period: u64,
             position: u32,
         ) -> Result<Vec<u8>>;
-        pub fn get_transaction_count(
-            self: &BridgeTransactionStorageQueries,
-            period: u64,
-        ) -> Result<u64>;
+        pub fn get_transaction_count(self: &BridgeStorageQueries, period: u64) -> Result<u64>;
         pub fn get_system_transaction(
-            self: &BridgeTransactionStorageQueries,
+            self: &BridgeStorageQueries,
             hash: &[u8; 32],
         ) -> Result<Vec<u8>>;
-        pub fn get_all_nonfinalized_transactions(
-            self: &BridgeTransactionStorageQueries,
-        ) -> Result<Vec<TxRlp>>;
-        pub fn get_all_transaction_period(
-            self: &BridgeTransactionStorageQueries,
-        ) -> Result<Vec<HashPeriod>>;
+        pub fn get_all_nonfinalized_transactions(self: &BridgeStorageQueries)
+            -> Result<Vec<TxRlp>>;
+        pub fn get_all_transaction_period(self: &BridgeStorageQueries) -> Result<Vec<HashPeriod>>;
         pub fn get_period_system_transactions_hashes(
-            self: &BridgeTransactionStorageQueries,
+            self: &BridgeStorageQueries,
             period: u64,
         ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_meta_value(
-            self: &BridgeFinalChainStorageQueries,
-            key: u32,
-        ) -> Result<Vec<u8>>;
+        pub fn get_final_chain_meta_value(self: &BridgeStorageQueries, key: u32)
+            -> Result<Vec<u8>>;
         pub fn get_final_chain_block_header(
-            self: &BridgeFinalChainStorageQueries,
+            self: &BridgeStorageQueries,
             block_number: u64,
         ) -> Result<Vec<u8>>;
         pub fn get_final_chain_block_hash_by_number(
-            self: &BridgeFinalChainStorageQueries,
+            self: &BridgeStorageQueries,
             block_number: u64,
         ) -> Result<Vec<u8>>;
         pub fn get_final_chain_block_number_by_hash(
-            self: &BridgeFinalChainStorageQueries,
+            self: &BridgeStorageQueries,
             hash: &[u8; 32],
         ) -> Result<Vec<u8>>;
         pub fn get_final_chain_log_blooms_chunk(
-            self: &BridgeFinalChainStorageQueries,
+            self: &BridgeStorageQueries,
             chunk_id: &[u8; 32],
         ) -> Result<Vec<u8>>;
         pub fn get_final_chain_receipt_by_trx_hash(
-            self: &BridgeFinalChainStorageQueries,
+            self: &BridgeStorageQueries,
             trx_hash: &[u8; 32],
         ) -> Result<Vec<u8>>;
 
@@ -4635,10 +3164,6 @@ pub mod rustaxa_ffi {
             from: u64,
             to: u64,
         ) -> Result<Vec<u64>>;
-        pub fn get_account(
-            self: &BridgeConsensusApplication,
-            address: &[u8; 20],
-        ) -> Result<AccountLookup>;
         pub fn get_account_at_block(
             self: &BridgeConsensusApplication,
             block_number: u64,
@@ -4653,11 +3178,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusApplication,
             block_number: u64,
         ) -> Result<u64>;
-        pub fn get_dpos_is_eligible(
+        pub fn get_dpos_validators_eligible_vote_counts(
             self: &BridgeConsensusApplication,
             block_number: u64,
-            address: &[u8; 20],
-        ) -> Result<bool>;
+        ) -> Result<Vec<HostValidatorVoteCount>>;
         pub fn get_dpos_validators_total_stakes(
             self: &BridgeConsensusApplication,
             block_number: u64,
@@ -4741,17 +3265,5 @@ pub mod rustaxa_ffi {
             period: u64,
             position: u64,
         ) -> Result<Vec<u8>>;
-        pub fn pbft_service_collect_dpos_total_vote_count(
-            self: &BridgeConsensusApplication,
-            request: PbftFinalChainDposTotalVoteCountRequest,
-        ) -> Result<PbftFinalChainDposTotalVoteCountFacts>;
-        pub fn pbft_service_collect_dpos_wallet_aggregate_vote_count(
-            self: &BridgeConsensusApplication,
-            request: PbftFinalChainDposWalletAggregateVoteCountRequest,
-        ) -> Result<PbftFinalChainDposWalletAggregateVoteCountFacts>;
-        pub fn pbft_service_collect_dpos_wallet_eligibility_batch(
-            self: &BridgeConsensusApplication,
-            request: PbftFinalChainDposWalletEligibilityBatchRequest,
-        ) -> Result<PbftFinalChainDposWalletEligibilityBatchFacts>;
     }
 }

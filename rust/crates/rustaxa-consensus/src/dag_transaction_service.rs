@@ -458,6 +458,11 @@ impl DagTransactionService {
         self.transaction.gas_price_bid()
     }
 
+    /// Returns the proposal gas-weight limit owned by the native transaction service.
+    pub fn transaction_proposal_dag_gas_limit(&self) -> Result<u64> {
+        Ok(self.transaction.lock()?.proposal_dag_gas_limit)
+    }
+
     /// Returns the native declared, cached, or external-EVM gas-estimation decision.
     pub fn transaction_plan_gas_estimation(
         &self,
@@ -743,6 +748,21 @@ impl DagTransactionService {
         self.dag.runtime_compute_order(anchor)
     }
 
+    /// Loads one canonical DAG block for an exact FinalChain execution leaf.
+    ///
+    /// Startup replay uses this task only for the PBFT pivot anchor. Missing
+    /// rows stay explicit; no DAG guard or storage handle crosses the caller.
+    pub(crate) fn canonical_dag_block_rlp(&self, hash: H256) -> Result<Option<Vec<u8>>> {
+        let storage = {
+            let dag = self.lock_dag()?;
+            Arc::clone(&dag.storage)
+        };
+        storage
+            .dag()
+            .by_hash_rlp_optional(hash)
+            .context("CONSENSUS_STARTUP_ANCHOR_DAG_BLOCK_LOAD")
+    }
+
     fn pbft_candidate_order_and_storage(
         &self,
         period: u64,
@@ -905,6 +925,10 @@ impl DagTransactionService {
             DagGhostPathRoot::Block(source) => self.dag.runtime_ghost_path(source),
             DagGhostPathRoot::CurrentAnchor => self.dag.runtime_anchor_ghost_path(),
         }
+    }
+
+    pub(crate) const fn dag_genesis_hash(&self) -> H256 {
+        self.dag.genesis_hash()
     }
 
     /// Renders one deterministic diagnostic graph projection.

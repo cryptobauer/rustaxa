@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <future>
 #include <iostream>
 #include <thread>
@@ -17,9 +18,11 @@
 #include "logger/logger.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_application.hpp"
+#include "consensus/consensus_host_ports.hpp"
 #include "network/consensus_network_api.hpp"
 #endif
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
+#include "network/tarcap/packets_handlers/interface/pillar_vote_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/dag_block_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/get_dag_sync_packet_handler.hpp"
 #ifndef RUSTAXA_ENABLE
@@ -35,6 +38,7 @@
 #include "pbft/period_data.hpp"
 #include "test_util/samples.hpp"
 #include "test_util/test_util.hpp"
+#include "vote/pillar_vote.hpp"
 
 namespace taraxa::core_tests {
 
@@ -49,6 +53,62 @@ auto g_secret = Lazy([] {
 auto g_signed_trx_samples = Lazy([] { return samples::createSignedTrxSamples(0, NUM_TRX, g_secret); });
 
 struct NetworkTest : public NodesTest {};
+
+#ifdef RUSTAXA_ENABLE
+TEST(ConsensusHostPortsTest, processClocksExposeMonotonicAndUnixDomains) {
+  ConsensusProcessPort process;
+  const auto unix_before = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto monotonic_before = process.consensusNowMillis();
+  const auto unix_observed = process.consensusUnixTimeSeconds();
+  const auto monotonic_after = process.consensusNowMillis();
+  const auto unix_after = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+
+  EXPECT_LE(unix_before, unix_observed);
+  EXPECT_LE(unix_observed, unix_after);
+  EXPECT_LE(monotonic_before, monotonic_after);
+}
+#endif
+
+TEST_F(NetworkTest, pillar_vote_rebroadcast_resends_vote_known_to_peer) {
+  class TestPillarVotePacketHandler final : public network::tarcap::IPillarVotePacketHandler {
+   public:
+    explicit TestPillarVotePacketHandler(std::shared_ptr<network::tarcap::PeersState> peers_state)
+        : IPillarVotePacketHandler({}, std::move(peers_state), {}, {},
+#ifdef RUSTAXA_ENABLE
+                                   {}, 0,
+#endif
+                                   {}, "") {
+    }
+
+    void sendPillarVote(const std::shared_ptr<network::tarcap::TaraxaPeer>& peer,
+                        const std::shared_ptr<PillarVote>&) override {
+      sent_to.push_back(peer->getId());
+    }
+    void process(const network::threadpool::PacketData&, const std::shared_ptr<network::tarcap::TaraxaPeer>&) override {
+    }
+
+    std::vector<dev::p2p::NodeID> sent_to;
+  };
+
+  const auto peer_key = dev::KeyPair::create();
+  const dev::p2p::NodeID peer_id(peer_key.pub());
+  auto peers_state = std::make_shared<network::tarcap::PeersState>(std::weak_ptr<dev::p2p::Host>(), FullNodeConfig{});
+  auto peer = peers_state->addPendingPeer(peer_id, {});
+  peers_state->setPeerAsReadyToSendMessages(peer_id, peer);
+
+  const auto vote = std::make_shared<PillarVote>(secret_t::random(), PbftPeriod{1}, blk_hash_t{123});
+  ASSERT_TRUE(peer->markPillarVoteAsKnown(vote->getHash()));
+  TestPillarVotePacketHandler handler(std::move(peers_state));
+
+  handler.onNewPillarVote(vote, false);
+  EXPECT_TRUE(handler.sent_to.empty());
+
+  handler.onNewPillarVote(vote, true);
+  ASSERT_EQ(handler.sent_to.size(), 1);
+  EXPECT_EQ(handler.sent_to.front(), peer_id);
+}
 
 // Test verifies saving network to a file and restoring it from a file
 // is successful. Once restored from the file it is able to reestablish
@@ -547,15 +607,15 @@ TEST_F(NetworkTest, rust_mode_consensus_lifecycle_and_pbft_sync_via_query_client
                  [&](auto& ctx) { WAIT_EXPECT_GE(ctx, node1->getPbftProgress().finalized_period, PbftPeriod{2}) });
   const auto application = node1->getConsensusApplication();
   ASSERT_TRUE(application);
-  application->stopConsensus();
+  node1->stopConsensus();
   const auto stopped_period = application->runtimeStatus().period;
   std::this_thread::sleep_for(200ms);
   EXPECT_EQ(application->runtimeStatus().period, stopped_period);
 
-  application->startConsensus();
+  node1->startConsensus();
   EXPECT_HAPPENS({10s, 100ms},
                  [&](auto& ctx) { WAIT_EXPECT_GT(ctx, application->runtimeStatus().period, stopped_period) });
-  application->stopConsensus();
+  node1->stopConsensus();
   const auto expected_period = node1->getPbftProgress().finalized_period;
   const auto node1_query = net::createConsensusQueryApi(node1->getDB());
   ASSERT_TRUE(node1_query);
@@ -573,28 +633,18 @@ TEST_F(NetworkTest, rust_mode_consensus_lifecycle_and_pbft_sync_via_query_client
   EXPECT_EQ(synced_block.hash, expected_block.hash);
 }
 
-TEST_F(NetworkTest, rust_mode_app_teardown_breaks_consensus_host_cycle) {
+TEST_F(NetworkTest, rust_mode_app_teardown_preserves_escaped_consensus_root_queries) {
   const auto node_cfg = make_node_cfgs(1, 1, 20).front();
   auto node = create_node(node_cfg, false /*start*/);
   auto application = node->getConsensusApplication();
   std::weak_ptr<ConsensusApplication> weak_application = application;
-
-  std::atomic<bool> keep_reading{true};
-  std::thread status_reader([&] {
-    while (keep_reading.load()) {
-      try {
-        static_cast<void>(application->runtimeStatus());
-      } catch (const std::logic_error& error) {
-        EXPECT_STREQ(error.what(), "CONSENSUS_APPLICATION_HOST_SHUTDOWN");
-        return;
-      }
-    }
-  });
+  const auto status_before_teardown = application->runtimeStatus();
 
   node.reset();
-  EXPECT_THROW(application->runtimeStatus(), std::logic_error);
-  keep_reading.store(false);
-  status_reader.join();
+  const auto status_after_teardown = application->runtimeStatus();
+  EXPECT_EQ(status_after_teardown.period, status_before_teardown.period);
+  EXPECT_EQ(status_after_teardown.round, status_before_teardown.round);
+  EXPECT_EQ(status_after_teardown.step, status_before_teardown.step);
 
   application.reset();
   EXPECT_TRUE(weak_application.expired());

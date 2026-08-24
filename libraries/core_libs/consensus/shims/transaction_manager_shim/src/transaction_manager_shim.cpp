@@ -90,22 +90,6 @@ constexpr uint8_t kTMQueueStatusOverflow = 3;
 constexpr uint8_t kTMAdmissionShellIntentLogInserted = 1;
 constexpr uint8_t kTMAdmissionShellIntentEmitTransactionAdded = 2;
 
-rustaxa::SortitionRuntimeConfig sortitionRuntimeConfigFromNodeConfig(const FullNodeConfig& config) {
-  const auto& sortition = config.genesis.sortition;
-  rustaxa::SortitionRuntimeConfig bridge_config;
-  bridge_config.threshold_upper = sortition.vrf.threshold_upper;
-  bridge_config.difficulty_min = sortition.vdf.difficulty_min;
-  bridge_config.difficulty_max = sortition.vdf.difficulty_max;
-  bridge_config.difficulty_stale = sortition.vdf.difficulty_stale;
-  bridge_config.lambda_bound = sortition.vdf.lambda_bound;
-  bridge_config.changes_count_for_average = sortition.changes_count_for_average;
-  bridge_config.dag_efficiency_target_low = sortition.dag_efficiency_targets.first;
-  bridge_config.dag_efficiency_target_high = sortition.dag_efficiency_targets.second;
-  bridge_config.changing_interval = sortition.changing_interval;
-  bridge_config.computation_interval = sortition.computation_interval;
-  return bridge_config;
-}
-
 constexpr uint8_t kTMTransactionViewSourceMissing = 0;
 constexpr uint8_t kTMTransactionViewSourceQueue = 1;
 constexpr uint8_t kTMTransactionViewSourceNonFinalizedSidecar = 2;
@@ -200,16 +184,6 @@ std::array<uint8_t, 32> toBridgeU256(const Value& value) {
 
 val_t fromBridgeU256(const std::array<uint8_t, 32>& value) {
   return dev::fromBigEndian<val_t>(dev::bytes(value.begin(), value.end()));
-}
-
-rustaxa::GasPricerConfig gasPricerConfigFromNodeConfig(const FullNodeConfig& config) {
-  rustaxa::GasPricerConfig bridge_config;
-  bridge_config.percentile = config.genesis.gas_price.percentile;
-  bridge_config.minimum_price = toBridgeU256(val_t(config.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
-  bridge_config.history_blocks = config.genesis.gas_price.blocks;
-  bridge_config.is_light_node = config.is_light_node;
-  bridge_config.blocks_gas_pricer = config.blocks_gas_pricer;
-  return bridge_config;
 }
 
 rust::Vec<rustaxa::GasPricerGasPrice> gasPricesFromTransactions(const SharedTransactions& trxs) {
@@ -317,38 +291,6 @@ TransactionStatus transactionStatusFromBridge(uint8_t status) {
 }
 
 }  // namespace
-
-SharedConsensusApplication createConsensusApplication(const FullNodeConfig& config) {
-  rustaxa::PbftServiceConfig pbft_config{};
-  pbft_config.genesis_lambda_ms = config.genesis.pbft.lambda_ms;
-  pbft_config.cacti_lambda_max_ms = config.genesis.state.hardforks.cacti_hf.lambda_max;
-  pbft_config.cacti_lambda_default_ms = config.genesis.state.hardforks.cacti_hf.lambda_default;
-  pbft_config.cacti_block = config.genesis.state.hardforks.cacti_hf.block_num;
-  pbft_config.max_exponential_lambda_ms = 60000;
-  pbft_config.max_steps = 13;
-  pbft_config.deadline_ms = 4 * static_cast<uint64_t>(config.genesis.pbft.lambda_ms);
-  pbft_config.polling_interval_ms = 100;
-  pbft_config.report_malicious_behaviour = config.report_malicious_behaviour;
-  pbft_config.magnolia_activation_period = config.genesis.state.hardforks.magnolia_hf.block_num;
-  pbft_config.ficus_activation_period = config.genesis.state.hardforks.ficus_hf.block_num;
-  pbft_config.pillar_blocks_interval = config.genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
-  pbft_config.sync_level_size = config.network.sync_level_size;
-  pbft_config.is_light_node = config.is_light_node;
-  pbft_config.light_node_history = config.light_node_history;
-  pbft_config.committee_size = config.genesis.pbft.committee_size;
-  pbft_config.number_of_proposers = config.genesis.pbft.number_of_proposers;
-  return std::make_shared<ConsensusApplication>(rustaxa::create_consensus_application(
-      config.db_path.string(), TARAXA_DB_MAJOR_VERSION, TARAXA_DB_MINOR_VERSION,
-      config.genesis.genesisHash().asArray(), config.genesis.dag_genesis_block.getHash().asArray(),
-      config.dag_expiry_limit, config.max_levels_per_period,
-      sortitionRuntimeConfigFromNodeConfig(config), rustaxa::TransactionQueueConfig{config.transactions_pool_size},
-      gasPricerConfigFromNodeConfig(config), config.propose_dag_gas_limit, std::move(pbft_config),
-      config.genesis.pbft.gas_limit, config.genesis.dag_genesis_block.getTimestamp(),
-      final_chain::makeGenesisAccounts(config.genesis.state), final_chain::makeGenesisValidators(config.genesis.state),
-      final_chain::makeGenesisDposConfig(config.genesis.state.dpos,
-                                        config.genesis.state.hardforks.magnolia_hf.block_num),
-      final_chain::makeFinalChainRewardsConfig(config)));
-}
 
 TransactionManager::TransactionManager(const FullNodeConfig& conf, std::shared_ptr<DbStorage> db,
                                        std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr,

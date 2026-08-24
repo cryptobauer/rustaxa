@@ -69,7 +69,7 @@ pub struct PillarBlock {
     /// Bridge root recorded for the bridge epoch.
     pub bridge_root: H256,
     /// Bridge epoch number.
-    pub epoch: u64,
+    pub epoch: U256,
     /// Ordered validator vote-count deltas.
     pub validator_vote_count_changes: Vec<ValidatorVoteCountChange>,
 }
@@ -140,7 +140,7 @@ impl PillarBlock {
         out.extend_from_slice(self.state_root.as_bytes());
         out.extend_from_slice(self.previous_pillar_block_hash.as_bytes());
         out.extend_from_slice(self.bridge_root.as_bytes());
-        out.extend_from_slice(&u256_word(U256::from(self.epoch)));
+        out.extend_from_slice(&u256_word(self.epoch));
 
         let changes_offset = (1 + PILLAR_BLOCK_STATIC_FIELDS) * WORD_SIZE;
         out.extend_from_slice(&u256_word(U256::from(changes_offset)));
@@ -217,7 +217,7 @@ impl PillarBlock {
             state_root: H256::from_slice(&bytes[2 * WORD_SIZE..3 * WORD_SIZE]),
             previous_pillar_block_hash: H256::from_slice(&bytes[3 * WORD_SIZE..4 * WORD_SIZE]),
             bridge_root: H256::from_slice(&bytes[4 * WORD_SIZE..5 * WORD_SIZE]),
-            epoch: u64_word(&bytes[5 * WORD_SIZE..6 * WORD_SIZE])?,
+            epoch: U256::from_big_endian(&bytes[5 * WORD_SIZE..6 * WORD_SIZE]),
             validator_vote_count_changes,
         })
     }
@@ -824,7 +824,7 @@ mod tests {
             state_root: H256::from_low_u64_be(22),
             previous_pillar_block_hash: H256::from_low_u64_be(33),
             bridge_root: H256::from_low_u64_be(44),
-            epoch: 55,
+            epoch: 55.into(),
             validator_vote_count_changes: vec![
                 ValidatorVoteCountChange {
                     address: H160::from_low_u64_be(1),
@@ -874,6 +874,19 @@ mod tests {
         ));
 
         assert_eq!(pillar_fixture().encode_solidity(), expected);
+    }
+
+    #[test]
+    fn pillar_block_preserves_full_u256_epoch_across_canonical_codecs() {
+        let mut block = pillar_fixture();
+        block.epoch = U256::from_big_endian(&[0xab; 32]);
+
+        let rlp = block.encode_rlp();
+        assert_eq!(PillarBlock::decode_rlp(&rlp).unwrap(), block);
+
+        let solidity = block.encode_solidity();
+        assert_eq!(&solidity[5 * WORD_SIZE..6 * WORD_SIZE], &[0xab; 32]);
+        assert_eq!(PillarBlock::decode_solidity(&solidity).unwrap(), block);
     }
 
     #[test]
@@ -1162,7 +1175,7 @@ mod tests {
             state_root: H256::from_low_u64_be(456),
             previous_pillar_block_hash: H256::from_low_u64_be(789),
             bridge_root: H256::from_low_u64_be(789),
-            epoch: 0,
+            epoch: 0.into(),
             validator_vote_count_changes: Vec::new(),
         };
 

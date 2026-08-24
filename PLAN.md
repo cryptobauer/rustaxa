@@ -938,8 +938,9 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
 - Named leaf/public compatibility: temporary `PbftBlock`, `PbftVote`, `PeriodData`, `DagBlock`, `Transaction`, and
   pillar materialization may remain only for a named public client or unavoidable executor leaf. An internal manager,
   test, log, or convenient remaining caller is not a retention reason.
-- Node lifecycle and scheduling: daemon threads, sleeps, timers, startup/shutdown wiring, event emission mechanics, and
-  key-manager signing may stay as effect execution until the surrounding application pipeline owns them.
+- Node process mechanics: the App-owned shell may retain one worker thread, interruptible waits, clock reads,
+  startup/shutdown wiring, event emission mechanics, and key custody. Native `ConsensusApplicationRuntime` owns daemon
+  scheduling, lifecycle state, retries, and ordered protocol effects; the shell retains no protocol cursor or manager.
 
 Everything else inside `PbftManager` is in scope for Rust ownership: period/round/step state, daemon-tick control flow,
 proposal/certify/finish-polling transitions, sync-period admission, proposed-block selection and cleanup planning, vote
@@ -961,12 +962,14 @@ Rust-enabled composition no longer includes a `PbftManager` object or shim. `App
 `ConsensusApplication` and drives lifecycle through it; network, query, execution, signing, timer, and lifecycle callers
 use operation-shaped root adapters. Local generated-vote admission and own-vote persistence commit atomically, and
 canonical proposal publication derives its identity natively. The untouched original manager remains selected only in
-all-Rust-disabled reference builds. The application root's private C++ runtime is transitional: it still materializes
-some legacy objects and consumes manager-shaped CXX task/effect carriers while executing named timer, signing,
-transport, lifecycle, and concrete FinalChain/EVM leaves. Eliminating that executor/carrier family remains active
-`CRW-15`/`CRW-16` work.
-Terminal `App` teardown permanently releases this private runtime, breaking its temporary ownership cycle with injected
-services before host configuration is destroyed; restartable stop/start remains a separate lifecycle operation.
+all-Rust-disabled reference builds. The private C++ runtime and manager-shaped CXX task/effect family are deleted.
+Native application code owns scheduling, startup recovery, lifecycle, state actions, sync continuation, proposal and
+vote work, and finalization orchestration. An App-owned process shell supplies only exact monotonic/Unix-time, signing
+and VRF custody, tarcap transport, FinalChain account facts, pillar-anchor-state facts, and concrete EVM execution leaves
+with canonical requests and typed reports; it retains no protocol state. The remaining C++ pillar facade queries
+canonical current-pillar bytes from the native owner rather than maintaining a PBFT runtime mirror.
+Terminal `App` teardown stops and joins that process before host configuration is destroyed; restartable stop/start
+remains a separate lifecycle operation.
 Status-packet and sync-start planning each reuse one coherent application-root status snapshot.
 
 Sync and ordinary PBFT block FinalChain-hash admission now compose the native PBFT and FinalChain roots. Rust captures

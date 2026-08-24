@@ -67,8 +67,9 @@ use crate::pbft_vote_generation::{
     PbftFinalChainDposWalletAggregateVoteCountRequest,
     PbftFinalChainDposWalletEligibilityBatchFacts, PbftFinalChainDposWalletEligibilityBatchRequest,
     PbftFinalChainDposWalletEligibilityFacts, PbftFinalChainDposWalletEligibilityRequest,
-    PbftFinalChainFact, PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteWeightFacts,
-    generate_pbft_vote_with_weight,
+    PbftFinalChainFact, PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteSigningRequest,
+    PbftVoteVrfRequest, PbftVoteWeightFacts, generate_pbft_vote_with_weight,
+    prepare_pbft_vote_signing,
 };
 use crate::pbft_vote_payload::{
     build_slashing_pbft_vote_payload, build_weighted_pbft_vote_payload,
@@ -112,21 +113,28 @@ use crate::pillar_vote_service::{
     PillarBlockFinalizationAcknowledgeRequest, PillarBlockFinalizationAcknowledgeResult,
     PillarBlockFinalizationPrepareResult, PillarBlockFinalizationRequest,
     PillarConsensusThresholdLookup, PillarVoteBundleWithFinalChainPlan, PillarVoteRelevancePlan,
-    PillarVoteRlpPayload, PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionContext,
-    PillarVoteSingleAdmissionValidationPlan, PillarVoteSingleAdmissionWithFinalChainPlan,
-    PillarVotesPayloadLookup,
+    PillarVoteRlpPayload, PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionApplyInput,
+    PillarVoteSingleAdmissionApplyPlan, PillarVoteSingleAdmissionContext,
+    PillarVoteSingleAdmissionPreparePlan, PillarVoteSingleAdmissionValidationPlan,
+    PillarVoteSingleAdmissionWithFinalChainPlan, PillarVotesPayloadLookup,
 };
 use crate::proposed_blocks::{ProposedBlockEntry, ProposedBlocksService};
 use crate::slashing::{
     DoubleVotingProofInput, DoubleVotingProofSubmissionPlan, SlashingProofService,
     SlashingSubmitterFact, SlashingSubmitterIdentity, SlashingTransactionEffect,
 };
+use crate::transaction_manager::TransactionManagerInsertTransactionStatus;
+use crate::transaction_queue::TransactionQueueEntry;
+use crate::transaction_service::{
+    TransactionServiceFinalChainAdmissionFact, TransactionServiceValidatedAdmissionFact,
+};
 use crate::verified_votes::{DetermineNewRoundOutcome, PbftVoteType, TwoTPlusOneVotedBlockType};
-use anyhow::{Context, Result, anyhow, ensure};
-use ethereum_types::{H256, U256};
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use ethereum_types::{H160, H256, U256};
 use rand::Rng;
 use rlp::{Rlp, RlpStream};
 use rustaxa_storage::{Storage, StorageWriteBatch};
+use rustaxa_types::LegacyTransactionEnvelope;
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::pbft::{PbftBlockLink, PbftBlockMetadata};
 use std::sync::{Arc, Mutex};
@@ -134,6 +142,20 @@ use tiny_keccak::{Hasher, Keccak};
 
 const SLASHING_PROOF_CACHE_MAX_SIZE: usize = 1000;
 const SLASHING_PROOF_CACHE_DELETE_STEP: usize = 100;
+
+fn legacy_slashing_signature_v(chain_id: u64, recovery_id: u8) -> Result<u64> {
+    ensure!(
+        recovery_id <= 3,
+        "PBFT_PROCESS_SYNCED_SLASHING_SIGNATURE_INVALID"
+    );
+    if chain_id == 0 {
+        return Ok(27 + u64::from(recovery_id));
+    }
+    chain_id
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(35 + u64::from(recovery_id)))
+        .context("PBFT_PROCESS_SYNCED_SLASHING_CHAIN_ID_OVERFLOW")
+}
 
 fn pbft_candidate_dag_order_hash(
     payload: &crate::dag_service::DagRuntimeNonFinalizedSyncPayload,
@@ -333,6 +355,28 @@ pub struct PbftServiceConfig {
     pub committee_size: u64,
     /// Proposal committee size used by strict sync-certificate validation.
     pub number_of_proposers: u64,
+    pub dag_blocks_size: u64,
+    pub ghost_path_move_back: u64,
+    pub node_version: (u16, u16, u16, u16),
+    pub node_version_suffix: Vec<u8>,
+    pub default_pbft_gas_limit: u64,
+    pub cornus_activation_period: u64,
+    pub cornus_pbft_gas_limit: u64,
+    /// Immutable policy used by synced-block admission and finalization.
+    pub process_synced_policy: PbftProcessSyncedPolicy,
+}
+
+/// Native policy facts required to finalize accepted synced PBFT blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PbftProcessSyncedPolicy {
+    /// Immutable EIP-155 chain identifier used by native slashing transactions.
+    pub chain_id: u64,
+    pub lambda_min_ms: u32,
+    pub lambda_change_interval: u32,
+    pub lambda_change_ms: u32,
+    pub consensus_delay_ms: u32,
+    pub dpos_blocks_per_year: u32,
+    pub recently_finalized_factor: u64,
 }
 
 /// Native dynamic-lambda decision composed with its durable prior-lambda fact.
@@ -431,6 +475,110 @@ pub struct PbftManagerLifecycleTransitionOutcome {
     pub reset_executed_block_follow_up: bool,
     /// Stable rejection detail; empty after an applied transition.
     pub error_code: String,
+}
+
+/// Native lifecycle command completed by the application-owned PBFT service.
+///
+/// Each variant names one deterministic cursor transition. The enum is a
+/// native application contract rather than a manager-session or CXX carrier;
+/// callers select the command through the corresponding task-oriented
+/// [`PbftService`] method and cannot supply transition facts directly.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftLifecycleAction {
+    /// Reset period/round consensus state to a selected higher round.
+    ResetConsensus,
+    /// Advance value proposal to filtering.
+    TransitionToFilter,
+    /// Advance filtering to certification.
+    TransitionToCertify,
+    /// Advance certification to first finish.
+    TransitionToFinish,
+    /// Advance first finish to finish polling.
+    TransitionToFinishPolling,
+    /// Loop finish polling back to first finish.
+    LoopBackFinish,
+    /// Extend the certification polling deadline without moving the cursor.
+    DelayCertifyPoll,
+    /// Extend the finish polling deadline without moving the cursor.
+    DelayFinishPoll,
+}
+
+/// Durable publication status of one application-owned lifecycle action.
+///
+/// Rejection is deterministic and preserves the complete pre-action native
+/// cursor. Operational storage failures are returned as [`anyhow::Error`]
+/// instead of being collapsed into this status.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftLifecycleActionStatus {
+    /// Storage commit and native cursor publication both completed.
+    Applied,
+    /// Deterministic validation rejected the action without mutation.
+    Rejected,
+}
+
+/// Typed result of one application-owned PBFT lifecycle action.
+///
+/// The cursor fields are sampled from the same manager serialization epoch as
+/// durable commit and runtime publication. This result intentionally excludes
+/// legacy sidecar, timer, logging, transport, signing, and EVM effects: the
+/// native daemon may use only the status and authoritative cursor to advance
+/// its own action session.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftLifecycleActionOutcome {
+    /// Application lifecycle action that produced this result.
+    pub action: PbftLifecycleAction,
+    /// Durable publication result.
+    pub status: PbftLifecycleActionStatus,
+    /// Authoritative native period after application or rejection.
+    pub period: u64,
+    /// Authoritative native round after application or rejection.
+    pub round: u64,
+    /// Authoritative native step after application or rejection.
+    pub step: u64,
+    /// Stable rejection detail; empty after successful application.
+    pub error_code: String,
+}
+
+/// Native result of deriving a higher PBFT round from verified votes.
+///
+/// `NoAdvance` is ordinary protocol no-progress. `AdvanceTo` preserves the
+/// exact native 2t+1 marker provenance so tests and future runtime policy can
+/// inspect the decision without materializing votes or consulting a host.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftRoundAdvanceActionOutcome {
+    /// No qualifying verified-vote 2t+1 marker exists.
+    NoAdvance,
+    /// Advance to the round and retain the source-marker provenance.
+    AdvanceTo(DetermineNewRoundOutcome),
+}
+
+/// Exact external leaves used by native synced-block processing.
+///
+/// Implementations may perform only the named process, transport, signing /
+/// transaction-submission, and FinalChain execution operations. All admission,
+/// ordering, persistence, and finalization decisions remain in Rust.
+pub trait PbftProcessSyncedLeaves {
+    fn wait_for_finalization(&self) -> Result<()>;
+    fn report_malicious_peer(&self, peer_id: [u8; 64]) -> Result<()>;
+    /// Signs one exact native transaction digest while retaining private-key custody.
+    fn sign_digest(&self, wallet_index: usize, digest: [u8; 32]) -> Result<Vec<u8>>;
+    fn set_sync_period(&self, period: u64) -> Result<()>;
+}
+
+/// Terminal result of one complete native sync-queue drain.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PbftProcessSyncedBlocksOutcome {
+    pub processed_entries: u64,
+    pub finalized_entries: u64,
+    pub rejected_entries: u64,
+    pub syncing_period: u64,
+}
+
+/// Fully admitted queue entry passed directly to native finalization.
+#[derive(Clone, Debug)]
+pub(crate) struct PbftAcceptedSyncedPeriod {
+    pub period_data_rlp: Vec<u8>,
+    pub current_cert_vote_rlps: Vec<Vec<u8>>,
 }
 
 /// Native result of a manager storage write that reports rejection as data.
@@ -613,7 +761,6 @@ struct PbftSyncCertBundleSession {
     threshold: Option<u64>,
     manager_period: u64,
     manager_round: u64,
-    submitters: Vec<SlashingSubmitterFact>,
     next_vote: usize,
     next_effect_id: u64,
     pending_slashing: Option<(u64, SlashingTransactionEffect)>,
@@ -793,10 +940,109 @@ pub struct PbftService {
     sync_cert_bundle: Mutex<PbftSyncCertBundleRuntime>,
     committee_size: u64,
     number_of_proposers: u64,
+    dag_blocks_size: u64,
+    ghost_path_move_back: u64,
+    node_version: (u16, u16, u16, u16),
+    node_version_suffix: Vec<u8>,
     slashing_enabled: bool,
+    process_synced_policy: PbftProcessSyncedPolicy,
+    cacti_block: u64,
+    cacti_lambda_max_ms: u32,
+    cacti_lambda_default_ms: u32,
+    ficus_activation_period: u64,
+    pillar_blocks_interval: u64,
+    default_pbft_gas_limit: u64,
+    cornus_activation_period: u64,
+    cornus_pbft_gas_limit: u64,
 }
 
 impl PbftService {
+    /// Returns immutable consensus policy to native application siblings.
+    pub(crate) const fn process_synced_policy(&self) -> PbftProcessSyncedPolicy {
+        self.process_synced_policy
+    }
+
+    /// Returns the native Cacti activation period used by replay/finalization.
+    pub(crate) const fn cacti_block(&self) -> u64 {
+        self.cacti_block
+    }
+
+    pub(crate) const fn cacti_lambda_policy(&self) -> (u32, u32) {
+        (self.cacti_lambda_max_ms, self.cacti_lambda_default_ms)
+    }
+
+    /// Returns the immutable native pillar activation schedule.
+    pub(crate) const fn pillar_schedule(&self) -> (u64, u64) {
+        (self.ficus_activation_period, self.pillar_blocks_interval)
+    }
+
+    pub(crate) const fn pbft_gas_limit_for_period(&self, period: u64) -> u64 {
+        if period >= self.cornus_activation_period {
+            self.cornus_pbft_gas_limit
+        } else {
+            self.default_pbft_gas_limit
+        }
+    }
+
+    pub(crate) fn value_proposal_policy(&self, period: u64) -> Result<(u64, u64, Option<Vec<u8>>)> {
+        let extra =
+            if self.ficus_activation_period != u64::MAX && period >= self.ficus_activation_period {
+                let pillar_required = self.pillar_votes_required_for_period(period);
+                let pillar = if pillar_required {
+                    let decision = self.plan_pillar_current_anchor_decision(
+                    crate::pillar_chain::PillarCurrentAnchorDecisionRequest::SelectPreviousPeriod {
+                        pbft_period: period,
+                    },
+                )?;
+                    anyhow::ensure!(
+                        decision.plan.selected,
+                        "CONSENSUS_VALUE_PROPOSAL_PILLAR_MISSING"
+                    );
+                    decision.current_anchor.map(|anchor| anchor.hash)
+                } else {
+                    None
+                };
+                let (major, minor, patch, network) = self.node_version;
+                let mut stream = RlpStream::new_list(6);
+                stream
+                    .append(&major)
+                    .append(&minor)
+                    .append(&patch)
+                    .append(&network);
+                stream.append(&self.node_version_suffix);
+                if let Some(hash) = pillar {
+                    stream.append(&hash);
+                } else {
+                    stream.append_empty_data();
+                }
+                Some(stream.out().to_vec())
+            } else {
+                None
+            };
+        Ok((self.dag_blocks_size, self.ghost_path_move_back, extra))
+    }
+
+    /// Derives the complete native admission policy for a retained proposal.
+    ///
+    /// The application root uses this when a later PBFT round re-proposes the
+    /// previous round's certified next value. The caller supplies only the
+    /// canonical proposal identity; hardfork, gas, and pillar policy remain
+    /// owned by the native service configuration.
+    pub(crate) fn value_proposal_admission_request(
+        &self,
+        period: u64,
+        block_hash: H256,
+    ) -> PbftProposedBlockAdmissionRequest {
+        PbftProposedBlockAdmissionRequest {
+            period,
+            block_hash,
+            pbft_gas_limit: self.pbft_gas_limit_for_period(period),
+            extra_data_required: self.ficus_activation_period != u64::MAX
+                && period >= self.ficus_activation_period,
+            pillar_block_required: self.pillar_votes_required_for_period(period),
+        }
+    }
+
     const fn empty_replay_outcome() -> PbftVoteRuntimeReplayOutcome {
         PbftVoteRuntimeReplayOutcome {
             should_mark: false,
@@ -823,18 +1069,22 @@ impl PbftService {
     /// Begins native current-certificate admission and advances until either an
     /// external slashing effect or a terminal validation result is reached.
     ///
-    /// The complete bundle, threshold lookup, and ordered slashing submitter
-    /// account facts are resolved before any vote state is mutated. Only one
+    /// The complete bundle and threshold lookup are resolved before any vote
+    /// state is mutated. Ordered slashing submitter account facts are requested
+    /// lazily only after admission identifies a double-vote conflict. Only one
     /// session may be active; callers must report every `AwaitingSlashing` step
     /// before Rust admits the next vote.
-    pub fn begin_pbft_sync_cert_bundle(
+    pub fn begin_pbft_sync_cert_bundle<S>(
         &self,
         final_chain: &FinalChain,
         block_period: u64,
         block_hash: H256,
         canonical_vote_rlps: Vec<Vec<u8>>,
-        slashing_submitters: Vec<SlashingSubmitterIdentity>,
-    ) -> Result<PbftSyncCertBundleStep> {
+        mut resolve_slashing_submitters: S,
+    ) -> Result<PbftSyncCertBundleStep>
+    where
+        S: FnMut() -> Result<Vec<SlashingSubmitterIdentity>>,
+    {
         let mut inspections = Vec::with_capacity(canonical_vote_rlps.len());
         let mut shape_votes = Vec::with_capacity(canonical_vote_rlps.len());
         for vote_rlp in &canonical_vote_rlps {
@@ -940,18 +1190,6 @@ impl PbftService {
             validations.push(validation);
             prepared_weighted_vote_rlps.push(prepared_weighted);
         }
-        let submitters = if self.slashing_enabled {
-            slashing_submitters
-                .into_iter()
-                .map(|identity| SlashingSubmitterFact {
-                    wallet_index: identity.wallet_index,
-                    nonce: identity.nonce,
-                    balance: identity.balance,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
         let manager = self.manager_snapshot();
 
         let session_id = {
@@ -976,7 +1214,6 @@ impl PbftService {
                 threshold,
                 manager_period: manager.period,
                 manager_round: manager.round,
-                submitters,
                 next_vote: 0,
                 next_effect_id: 1,
                 pending_slashing: None,
@@ -986,7 +1223,7 @@ impl PbftService {
             });
             session_id
         };
-        let step = match self.advance_pbft_sync_cert_bundle() {
+        let step = match self.advance_pbft_sync_cert_bundle(&mut resolve_slashing_submitters) {
             Ok(step) => step,
             Err(error) => {
                 self.abort_pbft_sync_cert_bundle(session_id)?;
@@ -1001,13 +1238,17 @@ impl PbftService {
     /// session and resumes admission. Duplicate identical reports return the
     /// cached next step; stale or mismatched reports leave the pending effect
     /// unchanged.
-    pub fn report_pbft_sync_cert_bundle_slashing(
+    pub fn report_pbft_sync_cert_bundle_slashing<S>(
         &self,
         session_id: u64,
         effect_id: u64,
         proof_hash: H256,
         transaction_inserted: bool,
-    ) -> Result<PbftSyncCertBundleStep> {
+        mut resolve_slashing_submitters: S,
+    ) -> Result<PbftSyncCertBundleStep>
+    where
+        S: FnMut() -> Result<Vec<SlashingSubmitterIdentity>>,
+    {
         let mut runtime = self
             .sync_cert_bundle
             .lock()
@@ -1027,6 +1268,7 @@ impl PbftService {
                 effect_id,
                 proof_hash,
                 transaction_inserted,
+                &mut resolve_slashing_submitters,
             );
         }
         let mut session = runtime
@@ -1065,6 +1307,7 @@ impl PbftService {
             effect_id,
             proof_hash,
             transaction_inserted,
+            &mut resolve_slashing_submitters,
         )
     }
 
@@ -1095,14 +1338,18 @@ impl PbftService {
         Ok(matches)
     }
 
-    fn advance_and_cache_pbft_sync_cert_bundle_report(
+    fn advance_and_cache_pbft_sync_cert_bundle_report<S>(
         &self,
         session_id: u64,
         effect_id: u64,
         proof_hash: H256,
         transaction_inserted: bool,
-    ) -> Result<PbftSyncCertBundleStep> {
-        let step = self.advance_pbft_sync_cert_bundle()?;
+        resolve_slashing_submitters: &mut S,
+    ) -> Result<PbftSyncCertBundleStep>
+    where
+        S: FnMut() -> Result<Vec<SlashingSubmitterIdentity>>,
+    {
+        let step = self.advance_pbft_sync_cert_bundle(resolve_slashing_submitters)?;
         let mut runtime = self
             .sync_cert_bundle
             .lock()
@@ -1150,7 +1397,13 @@ impl PbftService {
         }
     }
 
-    fn advance_pbft_sync_cert_bundle(&self) -> Result<PbftSyncCertBundleStep> {
+    fn advance_pbft_sync_cert_bundle<S>(
+        &self,
+        resolve_slashing_submitters: &mut S,
+    ) -> Result<PbftSyncCertBundleStep>
+    where
+        S: FnMut() -> Result<Vec<SlashingSubmitterIdentity>>,
+    {
         let mut runtime = self
             .sync_cert_bundle
             .lock()
@@ -1197,7 +1450,18 @@ impl PbftService {
                     slashing_enabled: true,
                 },
                 None,
-                || Ok(session.submitters.clone()),
+                || {
+                    resolve_slashing_submitters().map(|identities| {
+                        identities
+                            .into_iter()
+                            .map(|identity| SlashingSubmitterFact {
+                                wallet_index: identity.wallet_index,
+                                nonce: identity.nonce,
+                                balance: identity.balance,
+                            })
+                            .collect()
+                    })
+                },
             ) {
                 Ok(result) => result,
                 Err(error) => {
@@ -1707,6 +1971,33 @@ impl PbftService {
             )
     }
 
+    /// Publishes broadcast counters only for the epoch that selected them.
+    ///
+    /// A round/period transition while transport is in flight returns `false`
+    /// and preserves the new epoch's reset counters.
+    pub fn apply_broadcast_counters_if_epoch(
+        &self,
+        expected_period: u64,
+        expected_round: u64,
+        broadcast_votes_counter: u32,
+        rebroadcast_votes_counter: u32,
+        broadcast_reward_votes_counter: u32,
+        rebroadcast_reward_votes_counter: u32,
+    ) -> bool {
+        let mut manager = self.manager_state();
+        let snapshot = manager.state.snapshot();
+        if snapshot.period != expected_period || snapshot.round != expected_round {
+            return false;
+        }
+        manager.state.apply_committed_broadcast_counters(
+            broadcast_votes_counter,
+            rebroadcast_votes_counter,
+            broadcast_reward_votes_counter,
+            rebroadcast_reward_votes_counter,
+        );
+        true
+    }
+
     /// Loads the persisted cert-voted recovery payload through manager-owned storage.
     ///
     /// Missing data is represented by an empty byte vector. Storage failures
@@ -1916,6 +2207,373 @@ impl PbftService {
             &mut manager.pbft_sync_queue_drain_session,
             report,
         ))
+    }
+
+    fn pillar_votes_required_for_period(&self, period: u64) -> bool {
+        let first = if self.ficus_activation_period == 0 {
+            self.pillar_blocks_interval
+        } else {
+            self.ficus_activation_period
+        };
+        self.ficus_activation_period != u64::MAX
+            && period >= first
+            && period % self.pillar_blocks_interval == 1
+    }
+
+    pub(crate) fn submit_synced_slashing_transaction<L: PbftProcessSyncedLeaves>(
+        &self,
+        effect: &SlashingTransactionEffect,
+        dag_transaction: &DagTransactionService,
+        final_chain: &FinalChain,
+        signing_identities: &[SlashingSubmitterIdentity],
+        leaves: &L,
+    ) -> Result<bool> {
+        let identity = signing_identities
+            .iter()
+            .find(|identity| identity.wallet_index == effect.wallet_index)
+            .context("PBFT_PROCESS_SYNCED_SLASHING_SIGNER_MISSING")?;
+        let account_nonce = identity.nonce;
+        ensure!(
+            account_nonce == effect.nonce,
+            "PBFT_PROCESS_SYNCED_SLASHING_NONCE_CHANGED"
+        );
+
+        let gas_price = U256::from_big_endian(&dag_transaction.transaction_gas_price_bid()?);
+        let chain_id = self.process_synced_policy.chain_id;
+        let mut unsigned = RlpStream::new_list(if chain_id == 0 { 6 } else { 9 });
+        unsigned.append(&effect.nonce);
+        unsigned.append(&gas_price);
+        unsigned.append(&effect.gas_limit);
+        unsigned.append(&H160::from(effect.contract_address));
+        unsigned.append(&effect.value);
+        unsigned.append(&effect.call_data);
+        if chain_id != 0 {
+            unsigned.append(&U256::from(chain_id));
+            unsigned.append(&U256::zero());
+            unsigned.append(&U256::zero());
+        }
+        let mut digest = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&unsigned.out());
+        hasher.finalize(&mut digest);
+
+        let signature = leaves.sign_digest(effect.wallet_index, digest)?;
+        ensure!(
+            signature.len() == 65 && signature[64] <= 3,
+            "PBFT_PROCESS_SYNCED_SLASHING_SIGNATURE_INVALID"
+        );
+        let mut signed = RlpStream::new_list(9);
+        signed.append(&effect.nonce);
+        signed.append(&gas_price);
+        signed.append(&effect.gas_limit);
+        signed.append(&H160::from(effect.contract_address));
+        signed.append(&effect.value);
+        signed.append(&effect.call_data);
+        let v = legacy_slashing_signature_v(chain_id, signature[64])?;
+        signed.append(&U256::from(v));
+        signed.append(&U256::from_big_endian(&signature[..32]));
+        signed.append(&U256::from_big_endian(&signature[32..64]));
+        let transaction_rlp = signed.out().to_vec();
+        let envelope = LegacyTransactionEnvelope::decode(&transaction_rlp).map_err(|error| {
+            anyhow!("PBFT_PROCESS_SYNCED_SLASHING_TRANSACTION_DECODE: {error:#}")
+        })?;
+        ensure!(
+            envelope.signature_valid && envelope.sender == Some(H160::from(identity.address)),
+            "PBFT_PROCESS_SYNCED_SLASHING_SIGNER_MISMATCH"
+        );
+
+        let finalized_period = final_chain
+            .transaction_location(envelope.hash.0)?
+            .map(|location| {
+                Rlp::new(&location)
+                    .val_at::<u64>(0)
+                    .context("PBFT_PROCESS_SYNCED_SLASHING_FINALIZED_PERIOD")
+            })
+            .transpose()?;
+        let report = dag_transaction.transaction_execute_admission(
+            TransactionServiceValidatedAdmissionFact {
+                tx_hash: envelope.hash,
+                transaction_nonce: envelope.nonce,
+                transaction_cost: envelope.cost()?,
+                gas_limit: envelope.gas,
+                proposal_dag_gas_limit: dag_transaction.transaction_proposal_dag_gas_limit()?,
+                insert_non_proposable: false,
+            },
+            TransactionServiceFinalChainAdmissionFact {
+                account_found: true,
+                account_nonce,
+                account_balance: identity.balance,
+                finalized_period,
+            },
+            TransactionQueueEntry {
+                hash: envelope.hash,
+                sender: envelope
+                    .sender
+                    .context("PBFT_PROCESS_SYNCED_SLASHING_SENDER")?,
+                nonce: envelope.nonce,
+                gas_price: envelope.gas_price,
+                gas: envelope.gas,
+                data_size: envelope.data.len() as u64,
+                rlp: transaction_rlp,
+                last_block_number: final_chain.last_block_number()?,
+            },
+        )?;
+        Ok(report.insert_status == TransactionManagerInsertTransactionStatus::Accepted)
+    }
+
+    fn admit_popped_synced_period<L, S>(
+        &self,
+        popped: PeriodDataQueuePopPlan,
+        dag_transaction: &DagTransactionService,
+        final_chain: &FinalChain,
+        resolve_slashing_submitters: &mut S,
+        leaves: &L,
+    ) -> Result<Option<PbftAcceptedSyncedPeriod>>
+    where
+        L: PbftProcessSyncedLeaves,
+        S: FnMut() -> Result<Vec<SlashingSubmitterIdentity>>,
+    {
+        let chain = self.chain.head();
+        let block_in_chain = self.chain.block_exists(popped.block_hash)?;
+        let pillar_votes_required = self.pillar_votes_required_for_period(popped.entry_period);
+        let extra_data_required = self.ficus_activation_period != u64::MAX
+            && popped.entry_period >= self.ficus_activation_period;
+        ensure!(
+            self.begin_pbft_sync_admission(crate::pbft_sync::PbftSyncAdmissionInitialFact {
+                block_period: popped.entry_period,
+                block_prev_hash: popped.prev_block_hash,
+                chain_last_hash: chain.last_pbft_block_hash,
+                chain_last_period: chain.size,
+                block_in_chain,
+                candidate_final_chain_hash: popped.final_chain_hash,
+                reward_vote_hashes: popped.reward_vote_hashes.clone(),
+                dag_transaction_hashes: popped.dag_transaction_hashes.clone(),
+                period_data_transaction_hashes: popped.period_data_transaction_hashes.clone(),
+                extra_data_required,
+                extra_data_present: popped.extra_data_present,
+                extra_data_pillar_block_hash_present: popped.extra_data_pillar_block_hash_present,
+                pillar_votes_required,
+                pillar_votes_present: popped.pillar_votes_present,
+                previous_cert_votes_present: popped.previous_cert_votes_present,
+                previous_cert_first_vote_has_weight: popped.previous_cert_first_vote_has_weight,
+            }),
+            "PBFT_PROCESS_SYNCED_ADMISSION_NOT_READY"
+        );
+
+        let mut step = self
+            .pbft_sync_admission_next()
+            .context("PBFT_PROCESS_SYNCED_ADMISSION_MISSING")?;
+        let mut current_cert_vote_rlps = Vec::new();
+        while step.has_check {
+            step = match step.next_check {
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash => {
+                    let (next, _reward_votes, _validation) = self
+                        .validate_pbft_sync_admission_final_chain_hash(final_chain)
+                        .context("PBFT_PROCESS_SYNCED_FINAL_CHAIN_REPORT_STALE")?;
+                    next
+                }
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidateCertVotes => {
+                    let resolved_submitters = std::cell::RefCell::new(None);
+                    let mut cached_submitters = || {
+                        let mut cached = resolved_submitters.borrow_mut();
+                        if cached.is_none() {
+                            *cached = Some(resolve_slashing_submitters()?);
+                        }
+                        Ok(cached
+                            .as_ref()
+                            .expect("resolved submitters must be cached")
+                            .clone())
+                    };
+                    let mut cert = self.begin_pbft_sync_cert_bundle(
+                        final_chain,
+                        popped.entry_period,
+                        popped.block_hash,
+                        popped.cert_vote_rlps.clone(),
+                        &mut cached_submitters,
+                    )?;
+                    while cert.action == PbftSyncCertBundleAction::AwaitingSlashing {
+                        let effect = cert
+                            .slashing_transaction_effect
+                            .as_ref()
+                            .context("PBFT_PROCESS_SYNCED_SLASHING_EFFECT_MISSING")?;
+                        let inserted = {
+                            let cached = resolved_submitters.borrow();
+                            self.submit_synced_slashing_transaction(
+                                effect,
+                                dag_transaction,
+                                final_chain,
+                                cached
+                                    .as_deref()
+                                    .context("PBFT_PROCESS_SYNCED_SLASHING_SUBMITTERS_MISSING")?,
+                                leaves,
+                            )?
+                        };
+                        cert = self.report_pbft_sync_cert_bundle_slashing(
+                            cert.session_id,
+                            cert.effect_id,
+                            effect.proof_hash,
+                            inserted,
+                            &mut cached_submitters,
+                        )?;
+                    }
+                    let accepted = cert.action == PbftSyncCertBundleAction::Accepted;
+                    if accepted {
+                        current_cert_vote_rlps = cert.weighted_vote_rlps;
+                    }
+                    self.report_pbft_sync_admission_status(
+                        step.cursor,
+                        step.next_check,
+                        crate::pbft_sync::PbftSyncRuntimeFinalChainHashStatus::NotChecked,
+                        if accepted {
+                            crate::pbft_sync::PbftSyncFactStatus::Valid
+                        } else {
+                            crate::pbft_sync::PbftSyncFactStatus::Invalid
+                        },
+                    )
+                    .context("PBFT_PROCESS_SYNCED_CERT_REPORT_STALE")?
+                }
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckTransactions => self
+                    .validate_pbft_sync_admission_transactions(
+                        dag_transaction,
+                        final_chain,
+                        popped.period_data_transaction_identities.clone(),
+                    )
+                    .context("PBFT_PROCESS_SYNCED_TRANSACTION_REPORT_STALE")?,
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::ValidatePillarVotes => self
+                    .validate_pbft_sync_admission_pillar_votes(
+                        final_chain,
+                        popped
+                            .pillar_vote_rlps
+                            .iter()
+                            .cloned()
+                            .map(|vote_rlp| PillarVoteRlpPayload { vote_rlp })
+                            .collect(),
+                    )
+                    .context("PBFT_PROCESS_SYNCED_PILLAR_REPORT_STALE")?,
+                crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
+                | crate::pbft_sync::PbftSyncProcessRuntimeNextCheck::None => {
+                    self.abort_pbft_sync_admission();
+                    bail!("PBFT_PROCESS_SYNCED_UNEXPECTED_ADMISSION_CHECK")
+                }
+            };
+        }
+
+        if step.plan.wait_for_finalization {
+            leaves.wait_for_finalization()?;
+        }
+        if step.plan.clear_sync_queue {
+            self.clear_period_data_queue();
+        }
+        if step.plan.report_malicious_peer {
+            leaves.report_malicious_peer(popped.source_peer_id)?;
+        }
+        if !step.can_continue {
+            bail!(
+                "PBFT_PROCESS_SYNCED_ADMISSION_CONTRACT: {}",
+                step.error_code
+            );
+        }
+        Ok(step
+            .plan
+            .accept_period_data
+            .then_some(PbftAcceptedSyncedPeriod {
+                period_data_rlp: popped.period_data_rlp,
+                current_cert_vote_rlps,
+            }))
+    }
+
+    /// Drains all currently processable synced periods through native
+    /// admission and an in-crate application-finalization task.
+    pub(crate) fn process_synced_pbft_blocks<L, S, F>(
+        &self,
+        dag_transaction: &DagTransactionService,
+        final_chain: &FinalChain,
+        mut resolve_slashing_submitters: S,
+        leaves: &L,
+        mut finalize: F,
+    ) -> Result<PbftProcessSyncedBlocksOutcome>
+    where
+        L: PbftProcessSyncedLeaves,
+        S: FnMut() -> Result<Vec<SlashingSubmitterIdentity>>,
+        F: FnMut(PbftAcceptedSyncedPeriod) -> Result<bool>,
+    {
+        self.begin_pbft_sync_queue_drain();
+        let mut accepted = None;
+        let mut processed_entries = 0_u64;
+        let mut finalized_entries = 0_u64;
+        let mut rejected_entries = 0_u64;
+        loop {
+            let step = self
+                .pbft_sync_queue_drain_next()
+                .context("PBFT_PROCESS_SYNCED_QUEUE_DRAIN_NOT_READY")?;
+            match step.action {
+                crate::pbft_sync::PbftSyncQueueDrainAction::Stop => break,
+                crate::pbft_sync::PbftSyncQueueDrainAction::PopAndProcess => {
+                    let popped = self.pop_period_data_queue()?;
+                    processed_entries = processed_entries.saturating_add(1);
+                    accepted = self.admit_popped_synced_period(
+                        popped,
+                        dag_transaction,
+                        final_chain,
+                        &mut resolve_slashing_submitters,
+                        leaves,
+                    )?;
+                    rejected_entries =
+                        rejected_entries.saturating_add(u64::from(accepted.is_none()));
+                    let report = self
+                        .report_pbft_sync_queue_drain(PbftSyncQueueDrainReport {
+                            action: step.action,
+                            success: true,
+                            accepted_period_data: accepted.is_some(),
+                        })
+                        .context("PBFT_PROCESS_SYNCED_QUEUE_POP_REPORT_MISSING")?;
+                    ensure!(report.can_continue, "{}", report.error_code);
+                }
+                crate::pbft_sync::PbftSyncQueueDrainAction::PushAccepted => {
+                    let period = accepted
+                        .take()
+                        .context("PBFT_PROCESS_SYNCED_ACCEPTED_PERIOD_MISSING")?;
+                    let pushed = finalize(period)?;
+                    finalized_entries = finalized_entries.saturating_add(u64::from(pushed));
+                    rejected_entries = rejected_entries.saturating_add(u64::from(!pushed));
+                    let report = self
+                        .report_pbft_sync_queue_drain(PbftSyncQueueDrainReport {
+                            action: step.action,
+                            success: pushed,
+                            accepted_period_data: false,
+                        })
+                        .context("PBFT_PROCESS_SYNCED_QUEUE_PUSH_REPORT_MISSING")?;
+                    if !report.can_continue {
+                        break;
+                    }
+                }
+                crate::pbft_sync::PbftSyncQueueDrainAction::UpdateSyncState => {
+                    let snapshot = self.period_data_queue_snapshot()?;
+                    leaves.set_sync_period(snapshot.syncing_period)?;
+                    let report = self
+                        .report_pbft_sync_queue_drain(PbftSyncQueueDrainReport {
+                            action: step.action,
+                            success: true,
+                            accepted_period_data: false,
+                        })
+                        .context("PBFT_PROCESS_SYNCED_QUEUE_SYNC_REPORT_MISSING")?;
+                    ensure!(report.can_continue, "{}", report.error_code);
+                }
+                crate::pbft_sync::PbftSyncQueueDrainAction::CleanOldData => {
+                    unreachable!("native queue drain consumes cleanup internally")
+                }
+                crate::pbft_sync::PbftSyncQueueDrainAction::ContractError => {
+                    bail!("PBFT_PROCESS_SYNCED_QUEUE_CONTRACT: {}", step.error_code)
+                }
+            }
+        }
+        let syncing_period = self.period_data_queue_snapshot()?.syncing_period;
+        Ok(PbftProcessSyncedBlocksOutcome {
+            processed_entries,
+            finalized_entries,
+            rejected_entries,
+            syncing_period,
+        })
     }
 
     /// Starts or replaces the native daemon-tick executor cursor when bootstrap is complete.
@@ -2202,19 +2860,10 @@ impl PbftService {
         }
     }
 
-    /// Plans, persists, and publishes one PBFT lifecycle transition.
-    ///
-    /// Invalid transition facts return a rejected outcome without storage or
-    /// runtime mutation. Ready transitions lock the own-vote family when
-    /// required, commit all manager/status/vote writes, then publish the native
-    /// cursor and reset provenance. Operational storage errors propagate before
-    /// publication. Returned effect flags are the only remaining C++ executor
-    /// work and are populated only after a successful native commit.
-    pub fn execute_lifecycle_transition(
-        &self,
+    fn execute_lifecycle_transition_locked(
+        manager: &mut PbftManagerGuard<'_>,
         request: PbftManagerLifecycleTransitionRequest,
     ) -> Result<PbftManagerLifecycleTransitionOutcome> {
-        let mut manager = self.manager_state();
         let plan = manager.state.plan_lifecycle_transition(request);
         if plan.status != PbftManagerTransitionStatus::Ready {
             return Ok(Self::rejected_lifecycle_transition(
@@ -2263,6 +2912,204 @@ impl PbftService {
             reset_executed_block_follow_up: plan.reset_executed_block_status,
             error_code: String::new(),
         })
+    }
+
+    /// Plans, persists, and publishes one PBFT lifecycle transition.
+    ///
+    /// Invalid transition facts return a rejected outcome without storage or
+    /// runtime mutation. Ready transitions lock the own-vote family when
+    /// required, commit all manager/status/vote writes, then publish the native
+    /// cursor and reset provenance. Operational storage errors propagate before
+    /// publication. Returned effect flags are the only remaining C++ executor
+    /// work and are populated only after a successful native commit.
+    pub fn execute_lifecycle_transition(
+        &self,
+        request: PbftManagerLifecycleTransitionRequest,
+    ) -> Result<PbftManagerLifecycleTransitionOutcome> {
+        let mut manager = self.manager_state();
+        Self::execute_lifecycle_transition_locked(&mut manager, request)
+    }
+
+    /// Derives a higher round solely from the native verified-vote index.
+    ///
+    /// The manager cursor is sampled first and is never mutated by this query.
+    /// Missing qualifying 2t+1 next-vote markers return `NoAdvance`; lock
+    /// failures propagate without producing a partial decision.
+    pub fn try_advance_round(&self) -> Result<PbftRoundAdvanceActionOutcome> {
+        let snapshot = self.manager_snapshot();
+        Ok(self
+            .verified_votes()
+            .verified_votes_determine_new_round(snapshot.period, snapshot.round)?
+            .map(PbftRoundAdvanceActionOutcome::AdvanceTo)
+            .unwrap_or(PbftRoundAdvanceActionOutcome::NoAdvance))
+    }
+
+    fn execute_native_lifecycle_action(
+        &self,
+        action: PbftLifecycleAction,
+        kind: crate::pbft_manager::PbftManagerTransitionKind,
+        target_round: Option<u64>,
+    ) -> Result<PbftLifecycleActionOutcome> {
+        // Verified-vote state is locked before manager state, matching the
+        // sibling lock order used by period cleanup and finalization. Holding
+        // both guards makes network-step derivation, durable commit, and cursor
+        // publication one coherent native application operation.
+        let verified_votes = self.verified_votes().lock()?;
+        let mut manager = self.manager_state();
+        let snapshot = manager.state.snapshot();
+        let target_round = target_round.unwrap_or(snapshot.round);
+
+        let base_request = PbftManagerLifecycleTransitionRequest {
+            kind,
+            target_period: snapshot.period,
+            target_round,
+            has_network_next_voting_step: false,
+            network_next_voting_step: 0,
+        };
+        let probe = manager.state.plan_lifecycle_transition(base_request);
+        let request =
+            if probe.error_code == "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH" {
+                PbftManagerLifecycleTransitionRequest {
+                    has_network_next_voting_step: true,
+                    network_next_voting_step: verified_votes
+                        .verified_votes()
+                        .network_t_plus_one_step(snapshot.period, snapshot.round)
+                        .unwrap_or_default(),
+                    ..base_request
+                }
+            } else {
+                base_request
+            };
+
+        let outcome = Self::execute_lifecycle_transition_locked(&mut manager, request)?;
+        Ok(PbftLifecycleActionOutcome {
+            action,
+            status: if outcome.status == PbftManagerTransitionStorageStatus::Applied {
+                PbftLifecycleActionStatus::Applied
+            } else {
+                PbftLifecycleActionStatus::Rejected
+            },
+            period: outcome.snapshot.period,
+            round: outcome.snapshot.round,
+            step: outcome.snapshot.step,
+            error_code: outcome.error_code,
+        })
+    }
+
+    /// Resets consensus to `target_round` using only native cursor, policy,
+    /// verified-vote, and storage state.
+    pub fn reset_consensus(&self, target_round: u64) -> Result<PbftLifecycleActionOutcome> {
+        self.execute_native_lifecycle_action(
+            PbftLifecycleAction::ResetConsensus,
+            crate::pbft_manager::PbftManagerTransitionKind::ResetConsensus,
+            Some(target_round),
+        )
+    }
+
+    fn reset_consensus_for_period(
+        &self,
+        target_period: u64,
+        target_round: u64,
+    ) -> Result<PbftLifecycleActionOutcome> {
+        let verified_votes = self.verified_votes().lock()?;
+        let mut manager = self.manager_state();
+        let base_request = PbftManagerLifecycleTransitionRequest {
+            kind: crate::pbft_manager::PbftManagerTransitionKind::ResetConsensus,
+            target_period,
+            target_round,
+            has_network_next_voting_step: false,
+            network_next_voting_step: 0,
+        };
+        let probe = manager.state.plan_lifecycle_transition(base_request);
+        let request =
+            if probe.error_code == "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH" {
+                PbftManagerLifecycleTransitionRequest {
+                    has_network_next_voting_step: true,
+                    network_next_voting_step: verified_votes
+                        .verified_votes()
+                        .network_t_plus_one_step(target_period, target_round)
+                        .unwrap_or_default(),
+                    ..base_request
+                }
+            } else {
+                base_request
+            };
+        let outcome = Self::execute_lifecycle_transition_locked(&mut manager, request)?;
+        Ok(PbftLifecycleActionOutcome {
+            action: PbftLifecycleAction::ResetConsensus,
+            status: if outcome.status == PbftManagerTransitionStorageStatus::Applied {
+                PbftLifecycleActionStatus::Applied
+            } else {
+                PbftLifecycleActionStatus::Rejected
+            },
+            period: outcome.snapshot.period,
+            round: outcome.snapshot.round,
+            step: outcome.snapshot.step,
+            error_code: outcome.error_code,
+        })
+    }
+
+    /// Commits the value-proposal to filter cursor transition.
+    pub fn transition_to_filter(&self) -> Result<PbftLifecycleActionOutcome> {
+        self.execute_native_lifecycle_action(
+            PbftLifecycleAction::TransitionToFilter,
+            crate::pbft_manager::PbftManagerTransitionKind::ToFilter,
+            None,
+        )
+    }
+
+    /// Commits the filter to certify cursor transition.
+    pub fn transition_to_certify(&self) -> Result<PbftLifecycleActionOutcome> {
+        self.execute_native_lifecycle_action(
+            PbftLifecycleAction::TransitionToCertify,
+            crate::pbft_manager::PbftManagerTransitionKind::ToCertify,
+            None,
+        )
+    }
+
+    /// Commits the certify to first-finish cursor transition.
+    pub fn transition_to_finish(&self) -> Result<PbftLifecycleActionOutcome> {
+        self.execute_native_lifecycle_action(
+            PbftLifecycleAction::TransitionToFinish,
+            crate::pbft_manager::PbftManagerTransitionKind::ToFinish,
+            None,
+        )
+    }
+
+    /// Commits the first-finish to finish-polling cursor transition.
+    pub fn transition_to_finish_polling(&self) -> Result<PbftLifecycleActionOutcome> {
+        self.execute_native_lifecycle_action(
+            PbftLifecycleAction::TransitionToFinishPolling,
+            crate::pbft_manager::PbftManagerTransitionKind::ToFinishPolling,
+            None,
+        )
+    }
+
+    /// Commits the finish-polling loop-back to first finish.
+    pub fn loop_back_finish(&self) -> Result<PbftLifecycleActionOutcome> {
+        self.execute_native_lifecycle_action(
+            PbftLifecycleAction::LoopBackFinish,
+            crate::pbft_manager::PbftManagerTransitionKind::LoopBackFinish,
+            None,
+        )
+    }
+
+    /// Advances the certify polling deadline without changing phase or step.
+    pub fn delay_certify_poll(&self) -> Result<PbftLifecycleActionOutcome> {
+        self.execute_native_lifecycle_action(
+            PbftLifecycleAction::DelayCertifyPoll,
+            crate::pbft_manager::PbftManagerTransitionKind::DelayCertifyPoll,
+            None,
+        )
+    }
+
+    /// Advances the finish-polling deadline without changing phase or step.
+    pub fn delay_finish_poll(&self) -> Result<PbftLifecycleActionOutcome> {
+        self.execute_native_lifecycle_action(
+            PbftLifecycleAction::DelayFinishPoll,
+            crate::pbft_manager::PbftManagerTransitionKind::DelayFinishPoll,
+            None,
+        )
     }
 
     /// Returns a coherent snapshot of manager-owned period-data queue state.
@@ -2339,6 +3186,27 @@ impl PbftService {
             snapshot: manager.state.snapshot(),
             error_code: drain.error_code,
         })
+    }
+
+    pub(crate) fn ensure_finalization_action(
+        &self,
+        cursor: u32,
+        expected_action: PbftFinalizationRuntimeAction,
+    ) -> Result<()> {
+        let manager = self.manager_state();
+        let session = manager
+            .finalization_runtime_session
+            .as_ref()
+            .context("PBFT_APPLICATION_FINALIZATION_SESSION_MISSING")?;
+        let step = crate::pbft_finalize::next_pbft_finalization_runtime_action(session);
+        ensure!(
+            step.runtime_status == crate::pbft_finalize::PbftFinalizationRuntimeStatus::Active
+                && step.has_action
+                && step.action_index == cursor
+                && step.action == Some(expected_action),
+            "PBFT_APPLICATION_FINALIZATION_STALE_EFFECT"
+        );
+        Ok(())
     }
 
     /// Plans one finalization dynamic-lambda update with native storage facts.
@@ -2444,6 +3312,54 @@ impl PbftService {
         Ok(plan_pbft_finalization_intent(domain_fact))
     }
 
+    /// Reconstructs the accepted write intent for an already-persisted block so
+    /// the finalization executor can resume its idempotent live/EVM tail.
+    pub(crate) fn plan_finalization_resume_intent(
+        &self,
+        fact: PbftFinalizationIntent,
+    ) -> Result<PbftFinalizationPlan> {
+        ensure!(
+            self.chain().block_exists(fact.block_hash)?,
+            "PBFT_APPLICATION_FINALIZATION_RESUME_BLOCK_MISSING"
+        );
+        let pbft_head_payload = self
+            .manager_state()
+            .storage
+            .pbft()
+            .head(fact.block_prev_hash)?
+            .context("PBFT_APPLICATION_FINALIZATION_RESUME_HEAD_MISSING")?;
+        Ok(plan_pbft_finalization_intent(PbftFinalizationIntentFact {
+            block_hash: fact.block_hash,
+            pbft_head_hash: fact.block_prev_hash,
+            block_period: fact.block_period,
+            block_prev_hash: fact.block_prev_hash,
+            chain_last_hash: fact.block_prev_hash,
+            chain_last_period: fact.block_period.saturating_sub(1),
+            block_in_chain: false,
+            pivot_dag_anchor_hash: fact.pivot_dag_anchor_hash,
+            has_pillar_block: fact.has_pillar_block,
+            pillar_block_finalized: true,
+            request_dynamic_lambda_update: fact.request_dynamic_lambda_update,
+            cert_vote_count: fact.cert_vote_count,
+            sample_cert_vote_block_hash: fact.sample_cert_vote_block_hash,
+            sample_cert_vote_period: fact.sample_cert_vote_period,
+            sample_cert_vote_round: fact.sample_cert_vote_round,
+            sample_cert_vote_step: fact.sample_cert_vote_step,
+            block_lambda: fact.block_lambda,
+            last_saved_period_lambda_found: fact.last_saved_period_lambda_found,
+            last_saved_period_lambda: fact.last_saved_period_lambda,
+            dynamic_blocks_per_year: fact.dynamic_blocks_per_year,
+            rounds_count_dynamic_lambda: fact.rounds_count_dynamic_lambda,
+            dynamic_lambda: fact.dynamic_lambda,
+            dpos_blocks_per_year: fact.dpos_blocks_per_year,
+            pbft_head_payload,
+            period_data_rlp: fact.period_data_rlp,
+            ordered_dag_block_hashes: fact.ordered_dag_block_hashes,
+            ordered_transaction_hashes: fact.ordered_transaction_hashes,
+            process_pillar_block_after_advance: fact.process_pillar_block_after_advance,
+        }))
+    }
+
     /// Restores the coherent native PBFT service graph from shared storage.
     ///
     /// Errors preserve construction order: pillar schedule and slashing
@@ -2513,7 +3429,20 @@ impl PbftService {
             }),
             committee_size: config.committee_size,
             number_of_proposers: config.number_of_proposers,
+            dag_blocks_size: config.dag_blocks_size,
+            ghost_path_move_back: config.ghost_path_move_back,
+            node_version: config.node_version,
+            node_version_suffix: config.node_version_suffix,
             slashing_enabled: config.report_malicious_behaviour,
+            process_synced_policy: config.process_synced_policy,
+            cacti_block: config.cacti_block,
+            cacti_lambda_max_ms: config.cacti_lambda_max_ms,
+            cacti_lambda_default_ms: config.cacti_lambda_default_ms,
+            ficus_activation_period: config.ficus_activation_period,
+            pillar_blocks_interval: config.pillar_blocks_interval,
+            default_pbft_gas_limit: config.default_pbft_gas_limit,
+            cornus_activation_period: config.cornus_activation_period,
+            cornus_pbft_gas_limit: config.cornus_pbft_gas_limit,
         })
     }
 
@@ -3149,54 +4078,6 @@ impl PbftService {
         })
     }
 
-    /// Advances a specific external finalization action reported by the boundary.
-    ///
-    /// The action is decoded from the canonical action code and mapped to the
-    /// corresponding Rust-owned external-effect leaf implementation. Leaf-specific
-    /// payloads are consumed only for matching actions.
-    pub fn advance_finalization_action(
-        &self,
-        dag_transaction_service: &crate::dag_transaction_service::DagTransactionService,
-        cursor: u32,
-        action: u8,
-        last_block: u64,
-        request_period: u64,
-        retention_window: u64,
-        account_nonce_facts: Vec<crate::transaction_service::TransactionServiceAccountNonceFact>,
-    ) -> Result<PbftFinalizationExecutorBoundary> {
-        let finalization_action = PbftFinalizationRuntimeAction::from_u8(action)
-            .ok_or_else(|| anyhow::anyhow!("PBFT_FINALIZE_UNKNOWN_ACTION"))?;
-
-        match finalization_action {
-            PbftFinalizationRuntimeAction::CommitSortitionRuntime => {
-                self.advance_finalization_sortition_commit(dag_transaction_service, cursor)
-            }
-            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime => {
-                self.advance_finalization_reward_votes_reset(cursor)
-            }
-            PbftFinalizationRuntimeAction::SetDagBlockOrder => {
-                self.advance_finalization_dag_order(dag_transaction_service, cursor)
-            }
-            PbftFinalizationRuntimeAction::UpdateFinalizedTransactions => self
-                .advance_finalization_transaction_status(
-                    dag_transaction_service,
-                    cursor,
-                    retention_window,
-                    account_nonce_facts,
-                ),
-            PbftFinalizationRuntimeAction::FinalizeFinalChain => {
-                self.advance_finalization_final_chain_dispatch(cursor, last_block)
-            }
-            PbftFinalizationRuntimeAction::AdvancePeriod => {
-                self.advance_finalization_advance_period(cursor)
-            }
-            PbftFinalizationRuntimeAction::ProcessPillarBlock => {
-                self.advance_finalization_pillar_post_processing(cursor, request_period)
-            }
-            _ => Err(anyhow::anyhow!("PBFT_FINALIZE_UNSUPPORTED_ACTION")),
-        }
-    }
-
     /// Commits native sortition state and advances finalization.
     ///
     /// Manager-before-sortition lock order is retained. The prepared request is
@@ -3317,6 +4198,40 @@ impl PbftService {
                 })?;
             manager.continue_finalization_executor_from_step(step)
         })
+    }
+
+    /// Executes the complete native period transition before acknowledging the
+    /// finalization executor action.
+    ///
+    /// The finalized period is reset to round one, the delayed executed flag is
+    /// durably cleared, period-scoped vote/proposal state is atomically cleaned,
+    /// and only then is the executor cursor reported with the new manager period.
+    pub fn advance_period_after_finalization(
+        &self,
+        cursor: u32,
+        finalized_period: u64,
+    ) -> Result<PbftFinalizationExecutorBoundary> {
+        let new_period = finalized_period
+            .checked_add(1)
+            .context("PBFT_APPLICATION_FINALIZATION_PERIOD_OVERFLOW")?;
+        let reset = self.reset_consensus_for_period(new_period, 1)?;
+        ensure!(
+            reset.status == PbftLifecycleActionStatus::Applied,
+            "PBFT_APPLICATION_FINALIZATION_RESET_REJECTED:{}",
+            reset.error_code
+        );
+        let executed = self.apply_executed_block_reset();
+        ensure!(
+            executed.status == PbftManagerTransitionStorageStatus::Applied,
+            "PBFT_APPLICATION_FINALIZATION_EXECUTED_RESET_REJECTED:{}",
+            executed.error_code
+        );
+        let snapshot = self.apply_period_advance(new_period)?;
+        ensure!(
+            snapshot.period == new_period,
+            "PBFT_APPLICATION_FINALIZATION_PERIOD_NOT_ADVANCED"
+        );
+        self.advance_finalization_advance_period(cursor)
     }
 
     /// Starts a manager-owned synced-period admission cursor when bootstrap is ready.
@@ -3844,6 +4759,17 @@ impl PbftService {
             .plan_block_creation_for_generation(request, current_vote_counts, generation)
     }
 
+    /// Plans pillar creation from exact validator facts supplied by the
+    /// retained external-EVM owner.
+    pub fn plan_pillar_block_creation_with_vote_counts(
+        &self,
+        request: PillarBlockCreationRequest,
+        current_vote_counts: Vec<PillarValidatorVoteCount>,
+    ) -> Result<PillarBlockCreationWithVoteCountsPlan> {
+        self.pillar()
+            .plan_block_creation(request, current_vote_counts)
+    }
+
     /// Validates candidate pillar linkage against native finalized state.
     ///
     /// Missing state and deterministic mismatches are represented in the plan's
@@ -3861,6 +4787,12 @@ impl PbftService {
     /// failures are errors; returned bytes are cloned from the validated snapshot.
     pub fn latest_finalized_pillar_block_rlp(&self) -> Result<Vec<u8>> {
         self.pillar().latest_finalized_block_rlp()
+    }
+
+    /// Returns the authoritative current pillar block for compatibility
+    /// materialization; missing state is an empty payload.
+    pub fn current_pillar_block_rlp(&self) -> Result<Vec<u8>> {
+        self.pillar().current_block_rlp()
     }
 
     /// Validates one canonical pillar vote against live FinalChain eligibility.
@@ -3902,6 +4834,50 @@ impl PbftService {
                 context,
                 trusted_local_or_restore,
             )
+    }
+
+    /// Prepares one pillar vote for exact validator facts supplied by the
+    /// retained external-EVM owner.
+    ///
+    /// The returned vote hash and anchor generation identify a retained native
+    /// preparation. No FinalChain snapshot is read by this operation.
+    pub fn prepare_single_pillar_vote_external_facts(
+        &self,
+        vote_rlp: Vec<u8>,
+        context: PillarVoteSingleAdmissionContext,
+        trusted_local_or_restore: bool,
+    ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
+        if trusted_local_or_restore {
+            self.pillar()
+                .pbft_service_pillar_prepare_trusted_single_vote_admission(vote_rlp)
+        } else {
+            self.pillar()
+                .pbft_service_pillar_prepare_single_vote_admission(vote_rlp, context)
+        }
+    }
+
+    /// Completes the compatibility validation phase using an exact external
+    /// validator weight without admitting the vote.
+    pub fn validate_prepared_single_pillar_vote_external_facts(
+        &self,
+        prepared: PillarVoteSingleAdmissionPreparePlan,
+        validator_vote_count: u64,
+    ) -> Result<PillarVoteSingleAdmissionValidationPlan> {
+        self.pillar()
+            .pbft_service_pillar_validate_prepared_single_vote_external_facts(
+                prepared,
+                validator_vote_count,
+            )
+    }
+
+    /// Applies externally supplied validator facts to the exact retained
+    /// pillar-vote preparation.
+    pub fn apply_prepared_single_pillar_vote_external_facts(
+        &self,
+        input: PillarVoteSingleAdmissionApplyInput,
+    ) -> Result<PillarVoteSingleAdmissionApplyPlan> {
+        self.pillar()
+            .pbft_service_pillar_apply_prepared_single_vote_admission(input)
     }
 
     /// Resolves a pillar strict-majority threshold from FinalChain totals.
@@ -4030,6 +5006,159 @@ impl PbftService {
         )
     }
 
+    /// Prepares the signing stage for one application-root state vote.
+    ///
+    /// The request contains only public identity and a host-produced VRF proof.
+    /// This operation derives the authoritative period-minus-one DPoS facts and
+    /// restored committee policy internally. Zero stake or zero sortition weight
+    /// returns `None`, while unavailable FinalChain state remains an error.
+    pub fn prepare_state_vote_signing(
+        &self,
+        final_chain: &FinalChain,
+        request: PbftVoteVrfRequest,
+        vrf_proof: Vec<u8>,
+    ) -> Result<Option<PbftVoteSigningRequest>> {
+        let vrf_proof: [u8; rustaxa_vdf::vrf::VRF_PROOF_BYTES] = vrf_proof
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("PBFT_VOTE_GENERATION_INVALID_VRF_PROOF_LENGTH"))?;
+        let dpos_period = request
+            .input
+            .period
+            .checked_sub(1)
+            .ok_or_else(|| anyhow::anyhow!("PBFT_VOTE_GENERATION_PERIOD_UNDERFLOW"))?;
+        let voter_dpos_vote_count = final_chain
+            .pbft_dpos_eligible_vote_count(dpos_period, request.input.voter.0)
+            .map_err(|err| anyhow::anyhow!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}"))?
+            .ok_or_else(|| anyhow::anyhow!("PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD"))?;
+        let total_dpos_vote_count = if voter_dpos_vote_count == 0 {
+            0
+        } else {
+            final_chain
+                .pbft_dpos_eligible_total_vote_count(dpos_period)
+                .map_err(|err| {
+                    anyhow::anyhow!("PBFT_FINAL_CHAIN_TOTAL_VOTES_FACT_UNAVAILABLE: {err}")
+                })?
+                .ok_or_else(|| anyhow::anyhow!("PBFT_FINAL_CHAIN_TOTAL_VOTES_FACT_FUTURE_PERIOD"))?
+        };
+        prepare_pbft_vote_signing(
+            request,
+            vrf_proof,
+            PbftVoteWeightFacts {
+                voter_dpos_vote_count,
+                total_dpos_vote_count,
+                committee_size: self.committee_size,
+                number_of_proposers: self.number_of_proposers,
+            },
+        )
+    }
+
+    /// Admits one generated state vote without publishing its task-level marker.
+    ///
+    /// Committee, quorum, replay, slashing, and live cursor facts remain behind
+    /// this root task. The caller must finish every local signer and transport
+    /// leaf before invoking [`Self::commit_state_vote_task`].
+    pub fn admit_state_vote(
+        &self,
+        final_chain: &FinalChain,
+        task: &crate::consensus_state_actions::ConsensusStateVoteTask,
+        generated: &PbftGeneratedVote,
+        slashing_submitters: &[SlashingSubmitterIdentity],
+    ) -> Result<PbftVoteAdmissionWithSlashingResult> {
+        self.admit_state_vote_with_slashing_resolver(final_chain, task, generated, || {
+            Ok(slashing_submitters.to_vec())
+        })
+    }
+
+    /// Admits one generated state vote and resolves external slashing account
+    /// facts only after admission confirms a double-vote conflict.
+    ///
+    /// The resolver is invoked at most once. Ordinary, empty, duplicate, and
+    /// rejected admissions never invoke it. A confirmed conflict propagates a
+    /// resolver error without fabricating a slashing transaction effect.
+    pub fn admit_state_vote_with_slashing_resolver(
+        &self,
+        final_chain: &FinalChain,
+        task: &crate::consensus_state_actions::ConsensusStateVoteTask,
+        generated: &PbftGeneratedVote,
+        resolve_slashing_submitters: impl FnOnce() -> Result<Vec<SlashingSubmitterIdentity>>,
+    ) -> Result<PbftVoteAdmissionWithSlashingResult> {
+        anyhow::ensure!(
+            generated.period == task.period
+                && generated.round == task.round
+                && generated.step == task.step
+                && generated.vote_type == task.vote_type
+                && generated.block_hash == task.block_hash,
+            "CONSENSUS_STATE_VOTE_TASK_IDENTITY_MISMATCH"
+        );
+        let threshold = task.period.checked_sub(1).and_then(|period| {
+            self.public_vote_threshold(final_chain, period, task.vote_type)
+                .ok()
+                .filter(|plan| {
+                    plan.status == PbftTwoTPlusOneThresholdStatus::Available && plan.has_threshold
+                })
+                .map(|plan| plan.threshold)
+        });
+        self.admit_and_persist_local_generated_vote_with_slashing_resolver(
+            final_chain,
+            &generated.vote_rlp,
+            PbftVoteAdmissionValidationRequest {
+                strict_vrf: true,
+                committee_size: self.committee_size,
+                number_of_proposers: self.number_of_proposers,
+                has_preverified_weight: generated.has_weight,
+                preverified_weight: generated.weight,
+            },
+            PbftVoteEventFactFlags {
+                vote_already_known: false,
+                carries_proposed_block: !task.proposed_block_rlp.is_empty(),
+                valid_stale_reward_vote: false,
+            },
+            PbftVoteProgressContext {
+                current_period: task.period,
+                current_round: task.round,
+                max_future_period_delta: 0,
+                two_t_plus_one_threshold: threshold,
+                require_proposed_block_sidecar: !task.proposed_block_rlp.is_empty(),
+                slashing_enabled: self.slashing_enabled,
+            },
+            resolve_slashing_submitters,
+        )
+    }
+
+    /// Publishes the task-level marker after all local wallets completed.
+    ///
+    /// Callers invoke this exactly once after every staged VRF/signing,
+    /// admission, and transport leaf for the task succeeded. A failure before
+    /// this call leaves the task retryable and cannot suppress later wallets.
+    pub fn commit_state_vote_task(
+        &self,
+        task: &crate::consensus_state_actions::ConsensusStateVoteTask,
+    ) -> Result<()> {
+        match task.commit {
+            crate::consensus_state_actions::ConsensusStateVoteCommit::None => {}
+            crate::consensus_state_actions::ConsensusStateVoteCommit::SaveCertVotedBlock => {
+                anyhow::ensure!(
+                    !task.proposed_block_rlp.is_empty() && task.block_hash != H256::zero(),
+                    "CONSENSUS_STATE_VOTE_CERT_BLOCK_MISSING"
+                );
+                self.save_cert_voted_block_in_round(
+                    task.period,
+                    u32::try_from(task.round)
+                        .map_err(|_| anyhow::anyhow!("CONSENSUS_STATE_VOTE_ROUND_OVERFLOW"))?,
+                    task.block_hash,
+                    &task.proposed_block_rlp,
+                )?;
+            }
+            crate::consensus_state_actions::ConsensusStateVoteCommit::MarkNextVotedValue => {
+                self.apply_next_voted_status(2)?;
+            }
+            crate::consensus_state_actions::ConsensusStateVoteCommit::MarkNextVotedNull => {
+                self.apply_next_voted_status(3)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Validates local proposer sortition identity/keys and resolves DPoS facts.
     ///
     /// Request validation happens before any FinalChain read. The method resolves
@@ -4085,6 +5214,40 @@ impl PbftService {
             request,
             voter_dpos_vote_count,
             total_dpos_vote_count,
+        )
+    }
+
+    /// Completes public-identity proposer sortition using native DPoS policy.
+    pub fn complete_public_proposer_sortition(
+        &self,
+        final_chain: &FinalChain,
+        request: crate::pbft_vote_validation::PbftPublicProposerVrfRequest,
+        proof: Vec<u8>,
+    ) -> Result<PbftProposerSortitionResult> {
+        let proof: [u8; rustaxa_vdf::vrf::VRF_PROOF_BYTES] = proof
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("PBFT_PROPOSER_SORTITION_INVALID_VRF_PROOF_LENGTH"))?;
+        let dpos_period = request
+            .input
+            .pbft_period
+            .checked_sub(1)
+            .ok_or_else(|| anyhow::anyhow!("PBFT_PROPOSER_SORTITION_PERIOD_UNDERFLOW"))?;
+        let voter = final_chain
+            .pbft_dpos_eligible_vote_count(dpos_period, request.input.voter.0)?
+            .ok_or_else(|| anyhow::anyhow!("PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD"))?;
+        let total = if voter == 0 {
+            0
+        } else {
+            final_chain
+                .pbft_dpos_eligible_total_vote_count(dpos_period)?
+                .ok_or_else(|| anyhow::anyhow!("PBFT_FINAL_CHAIN_TOTAL_VOTES_FACT_FUTURE_PERIOD"))?
+        };
+        crate::pbft_vote_validation::complete_public_proposer_sortition(
+            request,
+            proof,
+            voter,
+            total,
+            self.number_of_proposers,
         )
     }
 
@@ -4323,6 +5486,50 @@ impl PbftService {
         Ok((validation, replay, weighted_vote_rlp))
     }
 
+    /// Strictly validates every previous-block certificate vote embedded in a
+    /// startup replay period before external FinalChain execution.
+    ///
+    /// Canonical bundle decoding and FinalChain DPoS/VRF facts stay native.
+    /// Accepted votes publish the same bounded replay marker as live strict
+    /// validation; any malformed or rejected vote aborts startup before the
+    /// non-idempotent EVM leaf is called.
+    pub(crate) fn validate_startup_replay_cert_votes(
+        &self,
+        final_chain: &FinalChain,
+        period: u64,
+        period_data_rlp: &[u8],
+    ) -> Result<Vec<Vec<u8>>> {
+        let votes = crate::consensus_query_api::pbft_cert_votes_from_period_data_bytes(
+            period,
+            period_data_rlp,
+        )?;
+        let mut weighted_votes = Vec::with_capacity(votes.len());
+        for vote in votes {
+            let (validation, _, weighted_vote_rlp) = self.validate_verified_vote_with_final_chain(
+                final_chain,
+                &vote,
+                PbftVoteAdmissionValidationRequest {
+                    strict_vrf: true,
+                    committee_size: self.committee_size,
+                    number_of_proposers: self.number_of_proposers,
+                    has_preverified_weight: false,
+                    preverified_weight: 0,
+                },
+            )?;
+            ensure!(
+                validation.accepted,
+                "CONSENSUS_STARTUP_CERT_VOTE_REJECTED:{period}:{}",
+                validation.error_code
+            );
+            weighted_votes.push(
+                weighted_vote_rlp.with_context(|| {
+                    format!("CONSENSUS_STARTUP_CERT_VOTE_WEIGHT_MISSING:{period}")
+                })?,
+            );
+        }
+        Ok(weighted_votes)
+    }
+
     /// Validates and persists one canonical PBFT vote through Rust-owned FinalChain
     /// composition.
     ///
@@ -4419,6 +5626,25 @@ impl PbftService {
         context: PbftVoteProgressContext,
         submitters: &[SlashingSubmitterIdentity],
     ) -> Result<PbftVoteAdmissionWithSlashingResult> {
+        self.admit_and_persist_local_generated_vote_with_slashing_resolver(
+            final_chain,
+            canonical_vote_rlp,
+            request,
+            flags,
+            context,
+            || Ok(submitters.to_vec()),
+        )
+    }
+
+    fn admit_and_persist_local_generated_vote_with_slashing_resolver(
+        &self,
+        final_chain: &FinalChain,
+        canonical_vote_rlp: &[u8],
+        request: PbftVoteAdmissionValidationRequest,
+        flags: PbftVoteEventFactFlags,
+        context: PbftVoteProgressContext,
+        resolve_submitters: impl FnOnce() -> Result<Vec<SlashingSubmitterIdentity>>,
+    ) -> Result<PbftVoteAdmissionWithSlashingResult> {
         let (validation, _) = self.validate_verified_vote_with_final_chain_internal(
             final_chain,
             canonical_vote_rlp,
@@ -4442,7 +5668,7 @@ impl PbftService {
             context,
             own_vote,
             || {
-                Ok(submitters
+                Ok(resolve_submitters()?
                     .iter()
                     .map(|identity| SlashingSubmitterFact {
                         wallet_index: identity.wallet_index,
@@ -5156,6 +6382,16 @@ mod tests {
         0xad, 0xe4, 0x00, 0x81,
     ];
 
+    #[test]
+    fn slashing_signature_v_preserves_unprotected_and_eip155_domains() {
+        assert_eq!(legacy_slashing_signature_v(0, 0).unwrap(), 27);
+        assert_eq!(legacy_slashing_signature_v(0, 1).unwrap(), 28);
+        assert_eq!(legacy_slashing_signature_v(1, 0).unwrap(), 37);
+        assert_eq!(legacy_slashing_signature_v(1, 1).unwrap(), 38);
+        assert!(legacy_slashing_signature_v(0, 4).is_err());
+        assert!(legacy_slashing_signature_v(u64::MAX, 0).is_err());
+    }
+
     fn temp_storage(name: &str) -> (PathBuf, Arc<Storage>) {
         let path = std::env::temp_dir().join(format!(
             "{name}_{}_{}",
@@ -5186,6 +6422,22 @@ mod tests {
             light_node_history: 0,
             committee_size: 1,
             number_of_proposers: 1,
+            dag_blocks_size: 50,
+            ghost_path_move_back: 0,
+            node_version: (0, 0, 0, 0),
+            node_version_suffix: b"T".to_vec(),
+            default_pbft_gas_limit: 1_000_000,
+            cornus_activation_period: u64::MAX,
+            cornus_pbft_gas_limit: 1_000_000,
+            process_synced_policy: PbftProcessSyncedPolicy {
+                chain_id: 2999,
+                lambda_min_ms: 500,
+                lambda_change_interval: 10,
+                lambda_change_ms: 10,
+                consensus_delay_ms: 400,
+                dpos_blocks_per_year: 500,
+                recently_finalized_factor: 3,
+            },
         }
     }
 
@@ -5267,7 +6519,7 @@ mod tests {
                 1,
                 block_hash,
                 vec![wrong_period_vote.vote_rlp],
-                Vec::new(),
+                || anyhow::bail!("shape rejection must not resolve account facts"),
             )
             .unwrap();
 
@@ -5276,6 +6528,33 @@ mod tests {
         assert!(result.weighted_vote_rlps.is_empty());
         assert!(result.slashing_transaction_effect.is_none());
         assert_eq!(service.verified_votes_size().unwrap(), 0);
+
+        drop(final_chain);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sync_cert_bundle_accepts_ordinary_vote_without_resolving_account_facts() {
+        let (path, storage) = temp_storage("pbft_sync_cert_ordinary_lazy_slashing");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter_from_secret(&NODE_SECRET),
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+        let block_hash = H256::repeat_byte(0x85);
+        let vote = generated_vote_at_period(block_hash, 1);
+
+        let result = service
+            .begin_pbft_sync_cert_bundle(&final_chain, 1, block_hash, vec![vote.vote_rlp], || {
+                anyhow::bail!("ordinary certificate must not resolve account facts")
+            })
+            .unwrap();
+
+        assert_eq!(result.action, PbftSyncCertBundleAction::Accepted);
+        assert!(result.slashing_transaction_effect.is_none());
 
         drop(final_chain);
         drop(service);
@@ -5380,16 +6659,22 @@ mod tests {
 
         let block_hash = H256::repeat_byte(0x83);
         let incoming = generated_vote_at_period(block_hash, 1);
+        let resolver_calls = std::cell::Cell::new(0_u64);
+        let mut resolve_submitters = || {
+            resolver_calls.set(resolver_calls.get() + 1);
+            Ok(submitter_facts.clone())
+        };
         let awaiting = service
             .begin_pbft_sync_cert_bundle(
                 &final_chain,
                 1,
                 block_hash,
                 vec![incoming.vote_rlp],
-                submitter_facts.clone(),
+                &mut resolve_submitters,
             )
             .unwrap();
         assert_eq!(awaiting.action, PbftSyncCertBundleAction::AwaitingSlashing);
+        assert_eq!(resolver_calls.get(), 1);
         assert!(awaiting.weighted_vote_rlps.is_empty());
         let effect = awaiting
             .slashing_transaction_effect
@@ -5403,6 +6688,7 @@ mod tests {
                     awaiting.effect_id + 1,
                     effect.proof_hash,
                     false,
+                    &mut resolve_submitters,
                 )
                 .is_err()
         );
@@ -5412,8 +6698,10 @@ mod tests {
                 awaiting.effect_id,
                 effect.proof_hash,
                 false,
+                &mut resolve_submitters,
             )
             .unwrap();
+        assert_eq!(resolver_calls.get(), 1);
         assert_eq!(accepted.action, PbftSyncCertBundleAction::Accepted);
         assert_eq!(accepted.weighted_vote_rlps.len(), 1);
         assert!(accepted.slashing_transaction_effect.is_none());
@@ -5424,9 +6712,11 @@ mod tests {
                 awaiting.effect_id,
                 effect.proof_hash,
                 false,
+                &mut resolve_submitters,
             )
             .unwrap();
         assert_eq!(duplicate, accepted);
+        assert_eq!(resolver_calls.get(), 1);
 
         let retry_hash = H256::repeat_byte(0x84);
         let retry_vote = generated_vote_at_period(retry_hash, 1);
@@ -5436,7 +6726,7 @@ mod tests {
                 1,
                 retry_hash,
                 vec![retry_vote.vote_rlp.clone()],
-                submitter_facts.clone(),
+                || Ok(submitter_facts.clone()),
             )
             .unwrap();
         assert_eq!(pending.action, PbftSyncCertBundleAction::AwaitingSlashing);
@@ -5456,7 +6746,7 @@ mod tests {
                 1,
                 retry_hash,
                 vec![retry_vote.vote_rlp],
-                submitter_facts,
+                || Ok(submitter_facts.clone()),
             )
             .unwrap();
         assert_eq!(restarted.action, PbftSyncCertBundleAction::AwaitingSlashing);
@@ -6142,7 +7432,7 @@ mod tests {
             state_root: H256::from_low_u64_be(1),
             previous_pillar_block_hash: H256::from_low_u64_be(2),
             bridge_root: H256::from_low_u64_be(3),
-            epoch: 4,
+            epoch: 4.into(),
             validator_vote_count_changes: Vec::new(),
         };
         let rlp = CurrentPillarBlockDataDb {
@@ -6217,28 +7507,45 @@ mod tests {
         stake: u64,
         delegation_delay: u64,
     ) -> FinalChain {
+        final_chain_with_vote_validators_and_delay(
+            storage,
+            &[(voter, vrf_key, stake)],
+            delegation_delay,
+        )
+    }
+
+    fn final_chain_with_vote_validators_and_delay(
+        storage: Arc<Storage>,
+        validators: &[([u8; 20], [u8; 32], u64)],
+        delegation_delay: u64,
+    ) -> FinalChain {
         use rustaxa_types::{
             DposTokenAmount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
         };
 
-        let stake = U256::from(stake).to_big_endian().to_vec();
         FinalChain::new(
             storage,
             0.into(),
             0,
             Vec::new(),
-            vec![GenesisValidator {
-                address: voter,
-                vrf_key,
-                total_stake: stake.clone(),
-                delegations: vec![(voter, stake)],
-                metadata: GenesisValidatorMetadata {
-                    owner: voter,
-                    commission: 0,
-                    description: String::new(),
-                    endpoint: String::new(),
-                },
-            }],
+            validators
+                .iter()
+                .map(|(voter, vrf_key, stake)| {
+                    let stake = U256::from(*stake).to_big_endian().to_vec();
+                    GenesisValidator {
+                        address: *voter,
+                        vrf_key: *vrf_key,
+                        total_stake: stake.clone(),
+                        delegations: vec![(*voter, stake)],
+                        metadata: GenesisValidatorMetadata {
+                            owner: *voter,
+                            commission: 0,
+                            description: String::new(),
+                            endpoint: String::new(),
+                        },
+                    }
+                })
+                .collect(),
             GenesisDposConfig {
                 eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
                 vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
@@ -6503,6 +7810,65 @@ mod tests {
         assert!(result.transaction.transition_published);
         assert!(result.slashing_transaction_effect.is_none());
         assert!(!resolver_called.get());
+    }
+
+    #[test]
+    fn conflicting_vote_admission_resolves_slashing_accounts_exactly_once() {
+        use std::cell::Cell;
+
+        let (_path, storage) = temp_storage("pbft_service_vote_conflict_lazy_slashing");
+        let service = PbftService::restore(storage.clone(), config(0)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_vote_validator(
+            storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            5_000,
+        );
+        let first = generated_vote_at_period(H256::repeat_byte(0x76), 12);
+        let conflicting = generated_vote_at_period(H256::repeat_byte(0x77), 12);
+
+        let initial = service
+            .admit_and_persist_verified_vote_with_external_slashing_facts(
+                &final_chain,
+                &first.vote_rlp,
+                vote_validation_request(true, 40),
+                vote_event_flags(),
+                vote_progress_context(80),
+                &[],
+            )
+            .unwrap();
+        assert!(initial.validation.accepted);
+
+        let (validation, _) = service
+            .validate_verified_vote_with_final_chain_internal(
+                &final_chain,
+                &conflicting.vote_rlp,
+                vote_validation_request(true, 40),
+                false,
+            )
+            .unwrap();
+        let resolver_calls = Cell::new(0_u32);
+        let result = service
+            .admit_validated_vote_with_slashing_resolver(
+                &conflicting.vote_rlp,
+                &validation,
+                vote_event_flags(),
+                vote_progress_context(80),
+                None,
+                || {
+                    resolver_calls.set(resolver_calls.get() + 1);
+                    Ok(vec![SlashingSubmitterFact {
+                        wallet_index: 0,
+                        nonce: U256::zero(),
+                        balance: U256::from(1_000_000_u64),
+                    }])
+                },
+            )
+            .unwrap();
+
+        assert_eq!(resolver_calls.get(), 1);
+        assert!(result.slashing_transaction_effect.is_some());
     }
 
     #[test]
@@ -7888,6 +9254,53 @@ mod tests {
         let _ = fs::remove_dir_all(path);
     }
 
+    struct ProcessSyncedLeavesStub;
+
+    impl PbftProcessSyncedLeaves for ProcessSyncedLeavesStub {
+        fn wait_for_finalization(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn report_malicious_peer(&self, _peer_id: [u8; 64]) -> Result<()> {
+            Ok(())
+        }
+
+        fn sign_digest(&self, _wallet_index: usize, _digest: [u8; 32]) -> Result<Vec<u8>> {
+            Ok(vec![0; 65])
+        }
+
+        fn set_sync_period(&self, _period: u64) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn process_synced_blocks_completes_empty_native_queue_without_finalizer() {
+        let (path, storage) = temp_storage("rustaxa_consensus_process_synced_empty");
+        let service = PbftService::restore(storage.clone(), config(10)).unwrap();
+        let final_chain = final_chain_with_pillar_voters(storage.clone(), &[]);
+        let dag = dag_service(storage);
+        service.complete_bootstrap();
+
+        let outcome = service
+            .process_synced_pbft_blocks(
+                &dag,
+                &final_chain,
+                || anyhow::bail!("empty queue must not resolve account facts"),
+                &ProcessSyncedLeavesStub,
+                |_| -> Result<bool> { panic!("empty queue must not finalize") },
+            )
+            .unwrap();
+        assert_eq!(outcome.processed_entries, 0);
+        assert_eq!(outcome.finalized_entries, 0);
+        assert_eq!(outcome.rejected_entries, 0);
+
+        drop(final_chain);
+        drop(service);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+    }
+
     #[test]
     fn service_commits_lifecycle_storage_before_runtime_publication() {
         let (path, storage) = temp_storage("rustaxa_consensus_pbft_service_lifecycle_commit");
@@ -7974,6 +9387,194 @@ mod tests {
             "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH"
         );
 
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn application_lifecycle_derives_round_advance_from_native_verified_votes() {
+        let (path, storage) = temp_storage("rustaxa_consensus_native_round_advance");
+        let service = PbftService::restore(storage, config(1)).expect("service restores");
+        let snapshot = service.manager_snapshot();
+        assert_eq!(
+            service.try_advance_round().expect("empty votes derive"),
+            PbftRoundAdvanceActionOutcome::NoAdvance
+        );
+        let source_round = snapshot.round + 2;
+        let block_hash = H256::repeat_byte(0x91);
+        {
+            let mut votes = service.verified_votes().lock().expect("votes lock");
+            let vote = crate::verified_votes::VerifiedVote::new(
+                H256::repeat_byte(0x92),
+                block_hash,
+                ethereum_types::H160::repeat_byte(0x93),
+                snapshot.period,
+                source_round,
+                8,
+                PbftVoteType::Next,
+                1,
+            )
+            .expect("vote is valid");
+            votes
+                .verified_votes_mut()
+                .add_verified_vote(vote, None)
+                .expect("vote inserts");
+            let inserted = votes
+                .verified_votes_mut()
+                .insert_two_t_plus_one_voted_block(
+                    snapshot.period,
+                    source_round,
+                    TwoTPlusOneVotedBlockType::NextVotedBlock,
+                    block_hash,
+                    8,
+                );
+            assert!(inserted.inserted);
+        }
+
+        assert_eq!(
+            service.try_advance_round().expect("round derives"),
+            PbftRoundAdvanceActionOutcome::AdvanceTo(DetermineNewRoundOutcome {
+                new_round: source_round + 1,
+                source_round,
+                source_kind: TwoTPlusOneVotedBlockType::NextVotedBlock,
+                block_hash,
+                step: 8,
+            })
+        );
+        assert_eq!(service.manager_snapshot(), snapshot);
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn application_lifecycle_composes_durable_cursor_transitions() {
+        let (path, storage) = temp_storage("rustaxa_consensus_native_lifecycle_actions");
+        let service = PbftService::restore(storage.clone(), config(1)).expect("service restores");
+
+        let rejected = service.reset_consensus(0).expect("invalid reset rejects");
+        assert_eq!(rejected.action, PbftLifecycleAction::ResetConsensus);
+        assert_eq!(rejected.status, PbftLifecycleActionStatus::Rejected);
+        assert_eq!((rejected.round, rejected.step), (1, 1));
+        assert_eq!(
+            rejected.error_code,
+            "PBFT_MANAGER_TRANSITION_INVALID_TARGET_ROUND"
+        );
+
+        let reset = service.reset_consensus(4).expect("reset commits");
+        assert_eq!(reset.action, PbftLifecycleAction::ResetConsensus);
+        assert_eq!(reset.status, PbftLifecycleActionStatus::Applied);
+        assert_eq!((reset.round, reset.step), (4, 1));
+
+        let filter = service.transition_to_filter().expect("filter commits");
+        assert_eq!(filter.action, PbftLifecycleAction::TransitionToFilter);
+        assert_eq!((filter.round, filter.step), (4, 2));
+
+        let certify = service.transition_to_certify().expect("certify commits");
+        assert_eq!(certify.action, PbftLifecycleAction::TransitionToCertify);
+        assert_eq!((certify.round, certify.step), (4, 3));
+        let certify_deadline = service.manager_snapshot().next_step_time_ms;
+
+        let delayed_certify = service.delay_certify_poll().expect("certify delay commits");
+        assert_eq!(
+            delayed_certify.action,
+            PbftLifecycleAction::DelayCertifyPoll
+        );
+        assert_eq!((delayed_certify.round, delayed_certify.step), (4, 3));
+        assert_eq!(
+            service.manager_snapshot().next_step_time_ms,
+            certify_deadline + 100
+        );
+
+        let finish = service.transition_to_finish().expect("finish commits");
+        assert_eq!(finish.action, PbftLifecycleAction::TransitionToFinish);
+        assert_eq!((finish.round, finish.step), (4, 4));
+
+        let polling = service
+            .transition_to_finish_polling()
+            .expect("finish polling commits");
+        assert_eq!(
+            polling.action,
+            PbftLifecycleAction::TransitionToFinishPolling
+        );
+        assert_eq!((polling.round, polling.step), (4, 5));
+        let polling_deadline = service.manager_snapshot().next_step_time_ms;
+
+        let delayed_finish = service.delay_finish_poll().expect("finish delay commits");
+        assert_eq!(delayed_finish.action, PbftLifecycleAction::DelayFinishPoll);
+        assert_eq!((delayed_finish.round, delayed_finish.step), (4, 5));
+        assert_eq!(
+            service.manager_snapshot().next_step_time_ms,
+            polling_deadline + 100
+        );
+
+        let looped = service.loop_back_finish().expect("loop back commits");
+        assert_eq!(looped.action, PbftLifecycleAction::LoopBackFinish);
+        assert_eq!((looped.round, looped.step), (4, 6));
+        assert_eq!(storage.pbft().manager_field(0).unwrap(), Some(4));
+        assert_eq!(storage.pbft().manager_field(1).unwrap(), Some(6));
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn application_root_composes_filter_certify_and_finish_vote_tasks() {
+        let (path, storage) = temp_storage("rustaxa_consensus_composed_state_actions");
+        let service = PbftService::restore(storage.clone(), config(1)).expect("service restores");
+        let final_chain = final_chain_with_vote_validator(
+            storage.clone(),
+            voter_from_secret(&NODE_SECRET),
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            100,
+        );
+        let dag_transaction = dag_service(storage);
+
+        service.transition_to_filter().expect("filter commits");
+        let filter = crate::compose_consensus_state_action(
+            &service,
+            &final_chain,
+            &dag_transaction,
+            crate::ConsensusStateActionRequest {
+                round_elapsed_ms: 0,
+            },
+        )
+        .expect("filter composes");
+        assert_eq!(filter.state, crate::PbftManagerRuntimeStateCode::Filter);
+        assert!(filter.votes.is_empty(), "no proposal candidates is no work");
+
+        service.transition_to_certify().expect("certify commits");
+        let certify = crate::compose_consensus_state_action(
+            &service,
+            &final_chain,
+            &dag_transaction,
+            crate::ConsensusStateActionRequest {
+                round_elapsed_ms: 1_000,
+            },
+        )
+        .expect("certify composes");
+        assert!(certify.go_finish_state);
+        assert!(certify.votes.is_empty());
+
+        service.transition_to_finish().expect("finish commits");
+        let finish = crate::compose_consensus_state_action(
+            &service,
+            &final_chain,
+            &dag_transaction,
+            crate::ConsensusStateActionRequest {
+                round_elapsed_ms: 0,
+            },
+        )
+        .expect("finish composes");
+        assert_eq!(finish.votes.len(), 1);
+        assert_eq!(finish.votes[0].vote_type, PbftVoteType::Next);
+        assert_eq!(finish.votes[0].block_hash, H256::zero());
+        assert_eq!(
+            finish.votes[0].commit,
+            crate::ConsensusStateVoteCommit::None
+        );
+
+        drop(final_chain);
         drop(service);
         let _ = fs::remove_dir_all(path);
     }
@@ -9215,6 +10816,91 @@ mod tests {
     }
 
     #[test]
+    fn local_proposal_selection_returns_one_winner_for_two_eligible_wallets() -> Result<()> {
+        let (path, storage) = temp_storage("rustaxa_consensus_local_proposal_two_wallets");
+        let mut service_config = config(1);
+        service_config.committee_size = 100;
+        service_config.number_of_proposers = 100;
+        let service = PbftService::restore(storage.clone(), service_config)?;
+        let dag = dag_service(storage.clone());
+        let final_chain = final_chain_with_vote_validators_and_delay(
+            storage.clone(),
+            &[
+                (
+                    voter_from_secret(&NODE_SECRET),
+                    vrf::public_key_from_secret(&VRF_SECRET)?,
+                    20_000,
+                ),
+                (
+                    voter_from_secret(&NODE_SECRET_TWO),
+                    vrf::public_key_from_secret(&VRF_SECRET)?,
+                    20_000,
+                ),
+            ],
+            2,
+        );
+        let genesis = H256::repeat_byte(1);
+        let dag_block_rlp = candidate_dag_block_rlp(genesis, 42);
+        let dag_block = dag_manager_block_from_rlp(&dag_block_rlp)?;
+        dag.lock_dag()?.state.add_block(dag_block.clone())?;
+        save_dag_block_to_storage(storage.as_ref(), dag_block.hash, 1, 0, &dag_block_rlp)?;
+        let order_hash = pbft_candidate_dag_order_hash(
+            &dag.prepare_pbft_candidate_payload(1, dag_block.hash)?
+                .expect("payload should load")
+                .payload,
+        );
+        let (block_rlp, link) = proposed_admission_block_rlp(1, dag_block.hash, order_hash);
+        let mut candidates = Vec::new();
+        for (node_secret, vrf_secret) in [(NODE_SECRET, VRF_SECRET), (NODE_SECRET_TWO, VRF_SECRET)]
+        {
+            let vote = service.generate_signed_vote_with_weight(
+                &final_chain,
+                PbftVoteGenerationInput {
+                    block_hash: link.block_hash,
+                    vote_type: PbftVoteType::Propose,
+                    period: 1,
+                    round: 2,
+                    step: 1,
+                    node_secret,
+                    vrf_secret,
+                    expected_voter: voter_from_secret(&node_secret).into(),
+                    expected_vrf_public_key: vrf::public_key_from_secret(&vrf_secret)?,
+                },
+                service.committee_size,
+                service.number_of_proposers,
+            )?;
+            assert!(
+                vote.accepted && vote.has_weight && vote.weight > 0,
+                "{vote:?}"
+            );
+            candidates.push(PbftLocalProposalCandidate {
+                block_rlp: block_rlp.clone(),
+                vote_rlp: vote.vote_rlp,
+            });
+        }
+        let result = service.select_local_proposal_candidate(
+            &final_chain,
+            &dag,
+            PbftLocalProposalSelectionRequest {
+                candidates,
+                period: 1,
+                round: 2,
+                pbft_gas_limit: u64::MAX,
+                extra_data_required: false,
+                pillar_block_required: false,
+            },
+        )?;
+        assert!(result.selected, "{result:?}");
+        assert!(result.selected_index < 2);
+
+        drop(final_chain);
+        drop(service);
+        drop(dag);
+        let _ = fs::remove_dir_all(path);
+        Ok(())
+    }
+
+    #[test]
     fn composed_block_validation_rejects_dag_missing_order() {
         use crate::pbft_manager::{
             PbftManagerBlockValidationAction as Action, PbftManagerBlockValidationStatus as Status,
@@ -10387,7 +12073,7 @@ mod tests {
                 state_root: H256::from_low_u64_be(1),
                 previous_pillar_block_hash: H256::zero(),
                 bridge_root: H256::from_low_u64_be(2),
-                epoch: 3,
+                epoch: 3.into(),
                 validator_vote_count_changes: Vec::new(),
             },
             vote_counts: vec![ValidatorVoteCount {
@@ -10453,7 +12139,7 @@ mod tests {
                 state_root: H256::repeat_byte(3),
                 previous_pillar_block_hash: H256::zero(),
                 bridge_root: H256::repeat_byte(4),
-                epoch: 0,
+                epoch: 0.into(),
                 validator_vote_count_changes: Vec::new(),
             },
             vote_counts: Vec::new(),
@@ -10505,8 +12191,8 @@ mod tests {
                 crate::pillar_vote_service::PillarVoteSingleAdmissionApplyInput {
                     vote_hash: zero_vote.hash(true).0,
                     validator_vote_count: 5,
-                    has_threshold: false,
-                    threshold: 0,
+                    has_total_eligible_vote_count: false,
+                    total_eligible_vote_count: 0,
                 },
             )
             .unwrap();
@@ -10769,6 +12455,42 @@ mod tests {
 
         drop(service);
         let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalization_period_action_publishes_checked_successor_before_ack() -> Result<()> {
+        use crate::pbft_finalize::{PbftFinalizationCleanupIntent, PbftFinalizationRuntimeAction};
+
+        let (path, storage) =
+            temp_storage("rustaxa_consensus_pbft_service_finalization_period_advance");
+        let service = PbftService::restore(storage, config(1))?;
+        install_finalization_executor(
+            &service,
+            1,
+            PbftFinalizationCleanupIntent {
+                persist_pbft_block_metadata: false,
+                reset_reward_votes: false,
+                set_dag_block_order: false,
+                update_sortition_params: false,
+                update_finalized_transactions_status: false,
+                update_pbft_chain: false,
+                clear_anchor_dag_cache: false,
+                finalize_final_chain: false,
+                maybe_update_dynamic_lambda: false,
+                advance_period: true,
+                process_pillar_block: false,
+            },
+            vec![PbftFinalizationRuntimeAction::AdvancePeriod],
+        );
+
+        let boundary = service.advance_period_after_finalization(0, 1)?;
+        assert_eq!(boundary.snapshot.period, 2);
+        assert!(boundary.next_step.complete);
+        assert_eq!(service.manager_snapshot().period, 2);
+
+        drop(service);
+        fs::remove_dir_all(path)?;
+        Ok(())
     }
 
     #[test]

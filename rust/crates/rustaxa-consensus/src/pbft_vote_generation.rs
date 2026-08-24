@@ -267,6 +267,43 @@ pub struct PbftVoteGenerationInput {
     pub expected_vrf_public_key: [u8; VRF_PUBLIC_KEY_BYTES],
 }
 
+/// Secret-free identity and consensus coordinates for staged vote generation.
+///
+/// The enclosing application resolves `wallet_index` to a host-held key. Rust
+/// receives only public identity, requests a VRF proof and signature in two
+/// stages, and validates both before constructing canonical vote bytes.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftVoteGenerationPublicInput {
+    pub wallet_index: u64,
+    pub block_hash: H256,
+    pub vote_type: PbftVoteType,
+    pub period: u64,
+    pub round: u64,
+    pub step: u64,
+    pub voter: H160,
+    pub voter_public_key: [u8; 64],
+    pub vrf_public_key: [u8; VRF_PUBLIC_KEY_BYTES],
+}
+
+/// First staged request containing the exact message the host must prove.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftVoteVrfRequest {
+    pub input: PbftVoteGenerationPublicInput,
+    pub message: Vec<u8>,
+}
+
+/// Secret-free signing stage produced after native VRF verification/sortition.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftVoteSigningRequest {
+    pub input: PbftVoteGenerationPublicInput,
+    pub vrf_proof: [u8; VRF_PROOF_BYTES],
+    pub vrf_output: [u8; VRF_OUTPUT_BYTES],
+    pub signing_hash: H256,
+    pub has_weight: bool,
+    pub weight: u64,
+    vrf_sortition_rlp: Vec<u8>,
+}
+
 /// Optional DPoS facts required when generating a weighted storage payload.
 ///
 /// The facts are read by the caller from FinalChain. Rust uses them only to
@@ -326,6 +363,123 @@ pub fn generate_pbft_vote_with_weight(
     facts: PbftVoteWeightFacts,
 ) -> Result<PbftGeneratedVote> {
     generate_pbft_vote_inner(input, Some(facts))
+}
+
+/// Prepares the exact legacy VRF message for a public signing identity.
+///
+/// Invalid vote-type/step pairs and mismatched public address identities are
+/// rejected before a host effect is issued. No secret material is accepted.
+pub fn prepare_pbft_vote_vrf(input: PbftVoteGenerationPublicInput) -> Result<PbftVoteVrfRequest> {
+    anyhow::ensure!(
+        input.vote_type != PbftVoteType::Invalid
+            && input.vote_type == pbft_vote_type_from_step(input.step),
+        "PBFT_VOTE_GENERATION_INVALID_VOTE_TYPE"
+    );
+    anyhow::ensure!(
+        address_from_public_key(&input.voter_public_key) == input.voter,
+        "PBFT_VOTE_GENERATION_PUBLIC_IDENTITY_MISMATCH"
+    );
+    Ok(PbftVoteVrfRequest {
+        message: legacy_vrf_message_rlp(input.period, input.round, input.step),
+        input,
+    })
+}
+
+/// Verifies a host VRF proof and prepares the exact PBFT signing digest.
+///
+/// DPoS facts are supplied after FinalChain reads. Zero stake, total stake, or
+/// sortition weight return `Ok(None)` and deliberately issue no signing effect.
+pub fn prepare_pbft_vote_signing(
+    request: PbftVoteVrfRequest,
+    vrf_proof: [u8; VRF_PROOF_BYTES],
+    facts: PbftVoteWeightFacts,
+) -> Result<Option<PbftVoteSigningRequest>> {
+    let vrf_output =
+        vrf::verify_output(&request.input.vrf_public_key, &vrf_proof, &request.message)?
+            .ok_or_else(|| anyhow!("PBFT_VOTE_GENERATION_INVALID_VRF_PROOF"))?;
+    if facts.voter_dpos_vote_count == 0 || facts.total_dpos_vote_count == 0 {
+        return Ok(None);
+    }
+    let threshold = pbft_vote_sortition_threshold(
+        facts.total_dpos_vote_count,
+        request.input.vote_type,
+        facts.committee_size,
+        facts.number_of_proposers,
+    )?;
+    let weight = calculate_pbft_vote_weight(
+        facts.voter_dpos_vote_count,
+        facts.total_dpos_vote_count,
+        threshold,
+        &vrf_output,
+        &request.input.voter_public_key,
+    )?;
+    if weight == 0 {
+        return Ok(None);
+    }
+    let vrf_sortition_rlp = legacy_vrf_sortition_rlp(
+        request.input.period,
+        request.input.round,
+        request.input.step,
+        &vrf_proof,
+    );
+    let signing_hash = legacy_pbft_vote_signing_hash(request.input.block_hash, &vrf_sortition_rlp);
+    Ok(Some(PbftVoteSigningRequest {
+        input: request.input,
+        vrf_proof,
+        vrf_output,
+        signing_hash,
+        has_weight: true,
+        weight,
+        vrf_sortition_rlp,
+    }))
+}
+
+/// Completes canonical weighted vote construction from a host signature.
+///
+/// The 65-byte recoverable signature must authenticate the public identity in
+/// the preparation. Mismatch or malformed bytes fail without returning a vote.
+pub fn complete_pbft_vote_signing(
+    request: PbftVoteSigningRequest,
+    signature: Vec<u8>,
+) -> Result<PbftGeneratedVote> {
+    let signature: [u8; 65] = signature
+        .try_into()
+        .map_err(|_| anyhow!("PBFT_VOTE_GENERATION_INVALID_SIGNATURE_LENGTH"))?;
+    let vote_rlp = legacy_pbft_vote_rlp(
+        request.input.block_hash,
+        &request.vrf_sortition_rlp,
+        &signature,
+        request.has_weight,
+        request.weight,
+    );
+    let inspection = crate::pbft_vote_validation::inspect_canonical_pbft_vote(&vote_rlp)?;
+    anyhow::ensure!(
+        inspection.signature_valid
+            && inspection.recovered_public_key == request.input.voter_public_key
+            && inspection.recovered_voter == request.input.voter
+            && inspection.signing_hash == request.signing_hash,
+        "PBFT_VOTE_GENERATION_SIGNATURE_IDENTITY_MISMATCH"
+    );
+    Ok(PbftGeneratedVote {
+        status: PbftVoteGenerationStatus::Generated,
+        error_code: "",
+        accepted: true,
+        vote_hash: inspection.vote_hash,
+        signing_hash: request.signing_hash,
+        block_hash: request.input.block_hash,
+        voter: request.input.voter,
+        voter_public_key: request.input.voter_public_key,
+        vrf_public_key: request.input.vrf_public_key,
+        vrf_proof: request.vrf_proof,
+        vrf_output: request.vrf_output,
+        period: request.input.period,
+        round: request.input.round,
+        step: request.input.step,
+        vote_type: request.input.vote_type,
+        has_weight: request.has_weight,
+        weight: request.weight,
+        vote_rlp,
+    })
 }
 
 fn generate_pbft_vote_inner(
@@ -614,6 +768,39 @@ mod tests {
         }
     }
 
+    fn public_input(vote_type: PbftVoteType, step: u64) -> PbftVoteGenerationPublicInput {
+        let signing_key = SigningKey::from_slice(&NODE_SECRET).unwrap();
+        let voter_public_key = public_key_from_signing_key(&signing_key);
+        PbftVoteGenerationPublicInput {
+            wallet_index: 7,
+            block_hash: H256::from_low_u64_be(0xfeed),
+            vote_type,
+            period: 11,
+            round: 2,
+            step,
+            voter: address_from_public_key(&voter_public_key),
+            voter_public_key,
+            vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+        }
+    }
+
+    fn staged_signing_request() -> PbftVoteSigningRequest {
+        let vrf_request = prepare_pbft_vote_vrf(public_input(PbftVoteType::Cert, 3)).unwrap();
+        let proof = vrf::prove(&VRF_SECRET, &vrf_request.message).unwrap();
+        prepare_pbft_vote_signing(
+            vrf_request,
+            proof,
+            PbftVoteWeightFacts {
+                voter_dpos_vote_count: 100,
+                total_dpos_vote_count: 100,
+                committee_size: 50,
+                number_of_proposers: 20,
+            },
+        )
+        .unwrap()
+        .expect("full stake must be selected")
+    }
+
     #[test]
     fn generates_canonical_signed_pbft_vote_bytes() {
         let vote = generate_pbft_vote(input(PbftVoteType::Cert, 3)).unwrap();
@@ -669,6 +856,40 @@ mod tests {
         .unwrap();
         assert!(validation.accepted);
         assert_eq!(validation.calculated_weight, vote.weight);
+    }
+
+    #[test]
+    fn staged_public_identity_generation_builds_canonical_vote() {
+        let signing_request = staged_signing_request();
+        let signing_key = SigningKey::from_slice(&NODE_SECRET).unwrap();
+        let signature = sign_hash(&signing_key, signing_request.signing_hash).unwrap();
+        let vote = complete_pbft_vote_signing(signing_request, signature.to_vec()).unwrap();
+
+        assert!(vote.accepted);
+        assert!(vote.has_weight);
+        assert_eq!(vote.voter, public_input(PbftVoteType::Cert, 3).voter);
+        let inspection = inspect_canonical_pbft_vote(&vote.vote_rlp).unwrap();
+        assert!(inspection.signature_valid);
+        assert_eq!(inspection.signing_hash, vote.signing_hash);
+    }
+
+    #[test]
+    fn staged_signer_rejects_malformed_signature() {
+        let error = complete_pbft_vote_signing(staged_signing_request(), vec![0; 64])
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "PBFT_VOTE_GENERATION_INVALID_SIGNATURE_LENGTH");
+    }
+
+    #[test]
+    fn staged_signer_rejects_public_identity_mismatch() {
+        let signing_request = staged_signing_request();
+        let other_key = SigningKey::from_slice(&[0x24; 32]).unwrap();
+        let signature = sign_hash(&other_key, signing_request.signing_hash).unwrap();
+        let error = complete_pbft_vote_signing(signing_request, signature.to_vec())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "PBFT_VOTE_GENERATION_SIGNATURE_IDENTITY_MISMATCH");
     }
 
     #[test]

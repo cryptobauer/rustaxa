@@ -299,6 +299,22 @@ mod tests {
                 light_node_history: 0,
                 committee_size: 1,
                 number_of_proposers: 1,
+                dag_blocks_size: 50,
+                ghost_path_move_back: 0,
+                node_version: (0, 0, 0, 0),
+                node_version_suffix: b"T".to_vec(),
+                default_pbft_gas_limit: 1_000_000,
+                cornus_activation_period: u64::MAX,
+                cornus_pbft_gas_limit: 1_000_000,
+                process_synced_policy: crate::pbft_service::PbftProcessSyncedPolicy {
+                    chain_id: 2999,
+                    lambda_min_ms: 100,
+                    lambda_change_interval: 10,
+                    lambda_change_ms: 10,
+                    consensus_delay_ms: 400,
+                    dpos_blocks_per_year: 500,
+                    recently_finalized_factor: 3,
+                },
             },
         )
         .unwrap();

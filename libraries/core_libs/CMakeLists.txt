@@ -11,6 +11,12 @@ endif()
 list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
 list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/shims/")
 if(RUSTAXA_ENABLE)
+    # The concrete process, signer, transport, and execution host leaves belong
+    # to the application shell. They are compiled by the app target so leaf
+    # rustaxa-bridge consumers do not inherit full-node linkage requirements.
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX
+         "/consensus/src/application/consensus_host_ports\\.cpp$")
+
     # Rust mode no longer exposes the standalone DAG/PivotTree graph facade. Its
     # DAG manager, DAG block proposer, TransactionManager, and native queue
     # runtime overlays are fully standalone. KeyManager and sortition ownership

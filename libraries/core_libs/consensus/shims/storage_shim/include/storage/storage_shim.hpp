@@ -253,12 +253,12 @@ class DbStorage : public DbStorageOld {
   std::string lookupFinalChainReceiptByTrxHash(const Slice& key) const;
 
   SharedConsensusApplication consensus_application_;
-  std::optional<::rust::Box<rustaxa::BridgeDagStorageQueries>> dag_queries_;
-  std::optional<::rust::Box<rustaxa::BridgePbftStorageQueries>> pbft_queries_;
-  std::optional<::rust::Box<rustaxa::BridgePbftVoteStorageQueries>> pbft_vote_queries_;
-  std::optional<::rust::Box<rustaxa::BridgeTransactionStorageQueries>> transaction_queries_;
-  std::optional<::rust::Box<rustaxa::BridgeFinalChainStorageQueries>> final_chain_queries_;
-  std::optional<::rust::Box<rustaxa::BridgePeriodStorageQueries>> period_queries_;
+  std::optional<::rust::Box<rustaxa::BridgeStorageQueries>> dag_queries_;
+  std::optional<::rust::Box<rustaxa::BridgeStorageQueries>> pbft_queries_;
+  std::optional<::rust::Box<rustaxa::BridgeStorageQueries>> pbft_vote_queries_;
+  std::optional<::rust::Box<rustaxa::BridgeStorageQueries>> transaction_queries_;
+  std::optional<::rust::Box<rustaxa::BridgeStorageQueries>> final_chain_queries_;
+  std::optional<::rust::Box<rustaxa::BridgeStorageQueries>> period_queries_;
   std::shared_ptr<rust::Box<rustaxa::BridgeConsensusQueryApi>> consensus_query_api_;
   std::unordered_map<Batch*, ::rust::Box<rustaxa::BridgeStorageBatch>> rust_batches_;
   std::mutex rust_batches_mutex_;
