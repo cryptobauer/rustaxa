@@ -72,7 +72,7 @@ void Rpc::start() {
     const auto dpos_node_votes = app->getPbftManager()->getCurrentNodeVotesCount();
 #endif
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = net::createConsensusQueryApi(app->getDB());
+    const auto query_api = consensus_application->queryClient();
     const auto threshold =
         (*query_api)->consensus_query_pbft_vote_threshold(chain_size, static_cast<uint8_t>(PbftVoteTypes::cert_vote));
     const auto dpos_quorum = threshold.has_threshold ? std::optional<uint64_t>{threshold.threshold} : std::nullopt;
@@ -100,8 +100,14 @@ void Rpc::start() {
 #else
     snapshot.pbft_sync_queue_size = app->getPbftManager()->periodDataQueueSize();
 #endif
+#ifdef RUSTAXA_ENABLE
+    const auto transaction_status = (*query_api)->consensus_query_live_transaction_status();
+    snapshot.transaction_pool_size = transaction_status.queue_size;
+    snapshot.nonfinalized_transaction_size = transaction_status.non_finalized_size;
+#else
     snapshot.transaction_pool_size = app->getTransactionManager()->getTransactionPoolSize();
     snapshot.nonfinalized_transaction_size = app->getTransactionManager()->getNonfinalizedTrxSize();
+#endif
     if (const auto peer = app->getNetwork()->getMaxChainPeer()) {
       snapshot.max_peer_pbft_chain_size = peer->pbft_chain_size_.load();
     }
@@ -110,7 +116,7 @@ void Rpc::start() {
   };
 
 #ifdef RUSTAXA_ENABLE
-  auto consensus_query_api = net::createConsensusQueryApi(app()->getDB());
+  auto consensus_query_api = app()->getConsensusApplication()->queryClient();
 #endif
 
   // Inits rpc related members
@@ -122,7 +128,9 @@ void Rpc::start() {
     eth_rpc_params.gas_limit = conf.genesis.dag.gas_limit;
     eth_rpc_params.final_chain = app()->getFinalChain();
 #ifdef RUSTAXA_ENABLE
-    eth_rpc_params.gas_pricer = [trx_manager = app()->getTransactionManager()]() { return trx_manager->gasPriceBid(); };
+    eth_rpc_params.gas_pricer = [query = consensus_query_api]() {
+      return dev::fromBigEndian<dev::u256>((*query)->consensus_query_live_transaction_status().gas_price_bid);
+    };
 #else
     eth_rpc_params.gas_pricer = [gas_pricer = app()->getGasPricer()]() { return gas_pricer->bid(); };
 #endif
@@ -179,6 +187,19 @@ void Rpc::start() {
       return final_chain->getCode(address, block_number);
     };
 #endif
+#ifdef RUSTAXA_ENABLE
+    eth_rpc_params.send_trx = [application = app()->getConsensusApplication(), config = conf,
+                               final_chain = app()->getFinalChain()](auto const &trx) {
+      const auto report = application->submitTransaction(trx, config, *final_chain);
+      if (!report.accepted) {
+        BOOST_THROW_EXCEPTION(
+            std::runtime_error(fmt("Transaction is rejected.\n"
+                                   "RLP: %s\n"
+                                   "Reason: %s",
+                                   dev::toJS(trx->rlp()), report.message)));
+      }
+    };
+#else
     eth_rpc_params.send_trx = [trx_manager = app()->getTransactionManager()](auto const &trx) {
       if (auto [ok, err_msg] = trx_manager->insertTransaction(trx); !ok) {
         BOOST_THROW_EXCEPTION(
@@ -188,6 +209,7 @@ void Rpc::start() {
                                    dev::toJS(trx->rlp()), err_msg)));
       }
     };
+#endif
     eth_rpc_params.live_status = live_status_reader;
 
     auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
@@ -275,6 +297,25 @@ void Rpc::start() {
           rpc_thread_pool_);
     }
 
+#ifdef RUSTAXA_ENABLE
+    app()->getConsensusApplication()->transactionObserved().subscribe(
+        [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_)](const trx_hash_t &trx_hash) {
+          if (auto rpc = eth_json_rpc.lock()) {
+            rpc->note_pending_transaction(trx_hash);
+          }
+          if (auto socket = ws.lock()) {
+            socket->newPendingTransaction(trx_hash);
+          }
+        },
+        rpc_thread_pool_);
+    app()->getConsensusApplication()->dagBlockObserved().subscribe(
+        [ws = as_weak(jsonrpc_ws_)](const std::shared_ptr<DagBlock> &dag_block) {
+          if (auto socket = ws.lock()) {
+            socket->newDagBlock(dag_block);
+          }
+        },
+        rpc_thread_pool_);
+#else
     app()->getTransactionManager()->transaction_added_.subscribe(
         [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_)](const auto &trx_hash) {
           if (auto _eth_json_rpc = eth_json_rpc.lock()) {
@@ -292,6 +333,7 @@ void Rpc::start() {
           }
         },
         rpc_thread_pool_);
+#endif
 
     app()->getPillarChainManager()->pillar_block_finalized_.subscribe(
         [ws_weak = as_weak(jsonrpc_ws_)](const auto &pillar_block_data) {
@@ -318,18 +360,24 @@ void Rpc::start() {
           app()->getDB(), app()->getGasPricer(), as_weak(app()->getNetwork()), conf.genesis.chain_id,
           live_status_reader);
 #else
-      auto gas_price_reader = graphql::taraxa::QueryGasPriceReader{
-          [trx_mgr = app()->getTransactionManager()]() { return trx_mgr ? trx_mgr->gasPriceBid() : dev::u256(0); }};
-      auto graphql_query = std::make_shared<graphql::taraxa::Query>(
-          app()->getFinalChain(), app()->getDagManager(), app()->getTransactionManager(), app()->getDB(),
-          std::move(gas_price_reader), as_weak(app()->getNetwork()), conf.genesis.chain_id, live_status_reader
+      auto gas_price_reader = graphql::taraxa::QueryGasPriceReader{[query = consensus_query_api]() {
+        return dev::fromBigEndian<dev::u256>((*query)->consensus_query_live_transaction_status().gas_price_bid);
+      }};
+      auto graphql_query = std::make_shared<graphql::taraxa::Query>(app()->getFinalChain(), std::move(gas_price_reader),
+                                                                    as_weak(app()->getNetwork()), conf.genesis.chain_id,
+                                                                    live_status_reader, consensus_query_api);
+#endif
 #ifdef RUSTAXA_ENABLE
-          ,
-          consensus_query_api
-#endif
-      );
-#endif
+      graphql::taraxa::MutationTransactionApi mutation_api;
+      mutation_api.insert_transaction = [application = app()->getConsensusApplication(), config = conf,
+                                         final_chain = app()->getFinalChain()](const SharedTransaction &trx) {
+        const auto report = application->submitTransaction(trx, config, *final_chain);
+        return std::pair{report.accepted, report.message};
+      };
+      auto graphql_mutation = std::make_shared<graphql::taraxa::Mutation>(std::move(mutation_api));
+#else
       auto graphql_mutation = std::make_shared<graphql::taraxa::Mutation>(app()->getTransactionManager());
+#endif
       graphql_http_ = std::make_shared<net::HttpServer>(
           graphql_thread_pool_->unsafe_get_io_context(),
           boost::asio::ip::tcp::endpoint{conf.network.graphql->address, *conf.network.graphql->http_port},

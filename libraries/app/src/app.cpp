@@ -12,8 +12,10 @@
 #include "config/config_utils.hpp"
 #include "dag/dag.hpp"
 #include "dag/dag_block.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "dag/dag_block_proposer.hpp"
 #include "dag/dag_manager.hpp"
+#endif
 #include "final_chain/final_chain.hpp"
 #ifndef RUSTAXA_ENABLE
 #include "key_manager/key_manager.hpp"
@@ -38,7 +40,9 @@
 #include "slashing_manager/slashing_manager.hpp"
 #include "transaction/gas_pricer.hpp"
 #endif
+#ifndef RUSTAXA_ENABLE
 #include "transaction/transaction_manager.hpp"
+#endif
 #ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
 #endif
@@ -51,7 +55,7 @@ App::~App() { close(); }
 
 PbftProgress App::getPbftProgress() const {
 #ifdef RUSTAXA_ENABLE
-  const auto query_api = net::createConsensusQueryApi(db_);
+  const auto query_api = consensus_application_->queryClient();
   if (!query_api) {
     throw std::runtime_error("Consensus query API is unavailable");
   }
@@ -205,14 +209,8 @@ void App::init(const cli::Config &cli_conf) {
     std::terminate();
   }
 
-#ifdef RUSTAXA_ENABLE
-  trx_mgr_ = std::make_shared<TransactionManager>(conf_, db_, final_chain_, node_addr, consensus_application_);
-#else
+#ifndef RUSTAXA_ENABLE
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, db_);
-#endif
-#ifdef RUSTAXA_ENABLE
-  dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, final_chain_, db_, consensus_application_);
-#else
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
 #endif
 #ifndef RUSTAXA_ENABLE
@@ -230,61 +228,71 @@ void App::init(const cli::Config &cli_conf) {
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, final_chain_,
                                             pillar_chain_mgr_);
 #endif
-#ifdef RUSTAXA_ENABLE
-  dag_block_proposer_ = std::make_shared<DagBlockProposer>(conf_, dag_mgr_, trx_mgr_, final_chain_);
-#else
+#ifndef RUSTAXA_ENABLE
   dag_block_proposer_ = std::make_shared<DagBlockProposer>(conf_, dag_mgr_, trx_mgr_, final_chain_, db_, key_manager_);
 #endif
 
-  network_ =
-      std::make_shared<Network>(conf_, genesis_hash, conf_.net_file_path().string(),
+  network_ = std::make_shared<Network>(
+      conf_, genesis_hash, conf_.net_file_path().string(),
 #ifndef RUSTAXA_ENABLE
-                                db_,
+      db_,
 #endif
 #ifndef RUSTAXA_ENABLE
-                                pbft_mgr_,
+      pbft_mgr_,
 #else
-                                [application = std::weak_ptr<ConsensusApplication>(consensus_application_)] {
-                                  const auto root = application.lock();
-                                  if (!root) {
-                                    throw std::runtime_error("CONSENSUS_APPLICATION_EXPIRED");
-                                  }
-                                  const auto runtime = root->runtimeStatus();
-                                  return network::ConsensusLiveStatus{
-                                      runtime.period,
-                                      runtime.round,
-                                      runtime.step,
-                                      runtime.syncing_period,
-                                      runtime.sync_queue_size,
-                                      runtime.syncQueueEmpty(),
-                                  };
-                                },
-                                [application = std::weak_ptr<ConsensusApplication>(consensus_application_)] {
-                                  const auto root = application.lock();
-                                  if (!root) {
-                                    throw std::runtime_error("CONSENSUS_APPLICATION_EXPIRED");
-                                  }
-                                  return network::ConsensusVoteStatus{root->currentDposTotalVotesCount(),
-                                                                      root->currentNodeVotesCount()};
-                                },
+      [application = std::weak_ptr<ConsensusApplication>(consensus_application_)] {
+        const auto root = application.lock();
+        if (!root) {
+          throw std::runtime_error("CONSENSUS_APPLICATION_EXPIRED");
+        }
+        const auto runtime = root->runtimeStatus();
+        return network::ConsensusLiveStatus{
+            runtime.period,         runtime.round,           runtime.step,
+            runtime.syncing_period, runtime.sync_queue_size, runtime.syncQueueEmpty(),
+        };
+      },
+      [application = std::weak_ptr<ConsensusApplication>(consensus_application_)] {
+        const auto root = application.lock();
+        if (!root) {
+          throw std::runtime_error("CONSENSUS_APPLICATION_EXPIRED");
+        }
+        return network::ConsensusVoteStatus{root->currentDposTotalVotesCount(), root->currentNodeVotesCount()};
+      },
 #endif
 #ifdef RUSTAXA_ENABLE
-                                net::createConsensusQueryApi(db_),
+      consensus_application_->queryClient(),
 #else
-                                pbft_chain_,
+      pbft_chain_,
 #endif
 #ifndef RUSTAXA_ENABLE
-                                vote_mgr_,
+      vote_mgr_,
 #endif
-                                dag_mgr_, trx_mgr_,
 #ifndef RUSTAXA_ENABLE
-                                std::move(slashing_manager),
+      dag_mgr_, trx_mgr_,
 #endif
-                                pillar_chain_mgr_,
+#ifndef RUSTAXA_ENABLE
+      std::move(slashing_manager),
+#endif
+      pillar_chain_mgr_,
 #ifdef RUSTAXA_ENABLE
-                                final_chain_, std::make_shared<network::ConsensusNetworkApi>(consensus_application_));
+      final_chain_,
+      std::make_shared<network::ConsensusNetworkApi>(
+          consensus_application_, final_chain_,
+          network::ConsensusNetworkObservers{
+              [application = consensus_application_](const std::vector<uint8_t> &canonical_block_rlp) {
+                try {
+                  application->publishDagBlockObserved(
+                      std::make_shared<DagBlock>(dev::bytes{canonical_block_rlp.begin(), canonical_block_rlp.end()}));
+                } catch (const std::exception &) {
+                  // Public notifications are best-effort and must not roll back native
+                  // admission when an external materializer rejects canonical bytes.
+                }
+              },
+              [application = consensus_application_](const trx_hash_t &hash) {
+                application->publishTransactionObserved(hash);
+              }}));
 #else
-                                final_chain_);
+      final_chain_);
 #endif
   auto cli_options = cli_conf.getCliOptions();
   for (auto &plugin : active_plugins_) {
@@ -309,16 +317,9 @@ void App::start() {
           }
         },
         subscription_pool_);
-#else
-    final_chain_->block_finalized_.subscribe(
-        [trx_manager = as_weak(trx_mgr_)](const auto &res) {
-          if (auto manager = trx_manager.lock()) {
-            manager->updateGasPrice(res->trxs);
-          }
-        },
-        subscription_pool_);
 #endif
 
+#ifndef RUSTAXA_ENABLE
     final_chain_->block_finalized_.subscribe(
         [trx_manager = as_weak(trx_mgr_)](const auto &res) {
           if (auto trx_mgr = trx_manager.lock()) {
@@ -326,6 +327,7 @@ void App::start() {
           }
         },
         subscription_pool_);
+#endif
   }
 
 #ifndef RUSTAXA_ENABLE
@@ -336,8 +338,10 @@ void App::start() {
 #else
   pbft_mgr_->setNetwork(network_);
 #endif
-  dag_mgr_->setNetwork(network_);
   pillar_chain_mgr_->setNetwork(network_);
+#ifndef RUSTAXA_ENABLE
+  dag_mgr_->setNetwork(network_);
+#endif
 
   if (conf_.db_config.rebuild_db) {
     rebuildDb();
@@ -356,8 +360,10 @@ void App::start() {
   }
 
   network_->start();
+#ifndef RUSTAXA_ENABLE
   dag_block_proposer_->setNetwork(network_);
   dag_block_proposer_->start();
+#endif
 
 #ifdef RUSTAXA_ENABLE
   startConsensus();
@@ -412,14 +418,19 @@ void App::setupMetricsUpdaters() {
   network_metrics->setSyncingDurationUpdater([network = network_]() { return network->syncTimeSeconds(); });
 
   auto transaction_queue_metrics = metrics_->getMetrics<metrics::TransactionQueueMetrics>();
+#ifndef RUSTAXA_ENABLE
   transaction_queue_metrics->setTransactionsCountUpdater(
       [trx_mgr = trx_mgr_]() { return trx_mgr->getTransactionPoolSize(); });
-#ifndef RUSTAXA_ENABLE
   transaction_queue_metrics->setGasPriceUpdater(
       [gas_pricer = gas_pricer_]() { return gas_pricer->bid().convert_to<double>(); });
 #else
-  transaction_queue_metrics->setGasPriceUpdater(
-      [trx_manager = trx_mgr_]() { return trx_manager->gasPriceBid().convert_to<double>(); });
+  transaction_queue_metrics->setTransactionsCountUpdater([query = consensus_application_->queryClient()]() {
+    return (*query)->consensus_query_live_transaction_status().queue_size;
+  });
+  transaction_queue_metrics->setGasPriceUpdater([query = consensus_application_->queryClient()]() {
+    const auto gas_price = (*query)->consensus_query_live_transaction_status().gas_price_bid;
+    return dev::fromBigEndian<dev::u256>(gas_price).convert_to<double>();
+  });
 #endif
 
   auto pbft_metrics = metrics_->getMetrics<metrics::PbftMetrics>();
@@ -451,9 +462,11 @@ void App::close() {
   bool was_running = false;
   const bool first_close = stopped_.compare_exchange_strong(was_running, true);
 
+#ifndef RUSTAXA_ENABLE
   if (first_close && dag_block_proposer_) {
     dag_block_proposer_->stop();
   }
+#endif
 #ifdef RUSTAXA_ENABLE
   if (consensus_process_) {
     stopConsensus();

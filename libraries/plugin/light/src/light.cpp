@@ -2,9 +2,13 @@
 
 #include "common/config_exception.hpp"
 #include "config/config.hpp"
+#include "final_chain/final_chain.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "dag/dag_manager.hpp"
+#endif
 
 #ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
 #include "network/consensus_query.hpp"
 #endif
 
@@ -37,9 +41,18 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
     if (!node) {
       throw std::runtime_error("LIGHT_HISTORY_API_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = node->getConsensusApplication()->queryClient();
+    if (!query_api) {
+      throw std::runtime_error("LIGHT_HISTORY_API_QUERY_UNAVAILABLE");
+    }
+    const auto status = (*query_api)->consensus_query_live_dag_status();
+    return LightHistoryFacts{status.period, status.expiry_level, node->getConfig().max_levels_per_period};
+#else
     auto dag_manager = node->getDagManager();
     return LightHistoryFacts{static_cast<uint64_t>(dag_manager->getLatestPeriod()), dag_manager->getDagExpiryLevel(),
                              dag_manager->getMaxLevelsPerPeriod()};
+#endif
   };
   api.proposal_period_for_dag_level = [app](uint64_t dag_level) {
     auto node = app.lock();
@@ -47,7 +60,7 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
       throw std::runtime_error("LIGHT_HISTORY_API_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = net::createConsensusQueryApi(node->getDB());
+    const auto query_api = node->getConsensusApplication()->queryClient();
     if (!query_api) {
       throw std::runtime_error("LIGHT_HISTORY_API_QUERY_UNAVAILABLE");
     }

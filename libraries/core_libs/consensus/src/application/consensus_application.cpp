@@ -27,6 +27,15 @@ std::array<uint8_t, 32> toBridgeU256(const Value& value) {
   return out;
 }
 
+rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& value) {
+  rust::Vec<uint8_t> out;
+  out.reserve(value.size());
+  for (const auto byte : value) {
+    out.push_back(byte);
+  }
+  return out;
+}
+
 rustaxa::SortitionRuntimeConfig sortitionRuntimeConfigFromNodeConfig(const FullNodeConfig& config) {
   const auto& sortition = config.genesis.sortition;
   rustaxa::SortitionRuntimeConfig bridge_config;
@@ -104,22 +113,68 @@ SharedConsensusApplication createConsensusApplication(const FullNodeConfig& conf
     signing_identities.push_back(std::move(identity));
   }
 
+  rustaxa::DagProposerConfig dag_proposer_config;
+  dag_proposer_config.total_transaction_shards = std::max(config.genesis.dag.block_proposer.shard, uint16_t(1));
+  dag_proposer_config.proposal_dag_gas_limit = config.propose_dag_gas_limit;
+  dag_proposer_config.default_dag_gas_limit = config.genesis.dag.gas_limit;
+  dag_proposer_config.cornus_dag_gas_limit = config.genesis.state.hardforks.cornus_hf.dag_gas_limit;
+
   return std::make_shared<ConsensusApplication>(rustaxa::create_consensus_application(
       config.db_path.string(), TARAXA_DB_MAJOR_VERSION, TARAXA_DB_MINOR_VERSION, config.genesis.genesisHash().asArray(),
       config.genesis.dag_genesis_block.getHash().asArray(), config.dag_expiry_limit, config.max_levels_per_period,
       sortitionRuntimeConfigFromNodeConfig(config), rustaxa::TransactionQueueConfig{config.transactions_pool_size},
       gasPricerConfigFromNodeConfig(config), config.propose_dag_gas_limit, std::move(pbft_config),
-      std::move(signing_identities), config.genesis.pbft.gas_limit, config.genesis.dag_genesis_block.getTimestamp(),
-      final_chain::makeGenesisAccounts(config.genesis.state), final_chain::makeGenesisValidators(config.genesis.state),
+      std::move(signing_identities), std::move(dag_proposer_config), config.genesis.pbft.gas_limit,
+      config.genesis.dag_genesis_block.getTimestamp(), final_chain::makeGenesisAccounts(config.genesis.state),
+      final_chain::makeGenesisValidators(config.genesis.state),
       final_chain::makeGenesisDposConfig(config.genesis.state.dpos,
                                          config.genesis.state.hardforks.magnolia_hf.block_num),
       final_chain::makeFinalChainRewardsConfig(config)));
 }
 
 ConsensusApplication::ConsensusApplication(rust::Box<rustaxa::BridgeConsensusApplication> service)
-    : service_(std::move(service)) {}
+    : service_(std::move(service)),
+      query_client_(std::make_shared<rust::Box<rustaxa::BridgeConsensusQueryApi>>(
+          rustaxa::create_consensus_query_api(*service_))) {}
 
 ConsensusApplication::~ConsensusApplication() = default;
+
+PublicTransactionSubmissionResult ConsensusApplication::submitTransaction(
+    const SharedTransaction& transaction, const FullNodeConfig& config,
+    const final_chain::FinalChain& final_chain) const {
+  if (!transaction) {
+    throw std::invalid_argument("PUBLIC_TRANSACTION_MISSING");
+  }
+
+  const auto last_block_number = final_chain.lastBlockNumber();
+  rustaxa::PublicTransactionSubmissionRequest request;
+  request.transaction_rlp = toBridgeBytes(transaction->rlp());
+  request.expected_chain_id = config.genesis.chain_id;
+  request.maximum_gas_limit = config.genesis.state.hardforks.soleirolia_hf.trx_max_gas_limit;
+  request.minimum_gas_price = toBridgeU256(val_t(config.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
+  request.last_block_number = last_block_number;
+  request.cornus_active = config.genesis.state.hardforks.isOnCornusHardfork(last_block_number);
+
+  const auto sender = transaction->getSender();
+  const auto account = final_chain.getAccount(sender);
+  const auto location = final_chain.transactionLocation(transaction->getHash());
+  rustaxa::PublicTransactionFinalChainFacts final_chain_facts;
+  final_chain_facts.sender = sender.asArray();
+  final_chain_facts.account_found = account.has_value();
+  final_chain_facts.account_nonce = toBridgeU256(account.value_or(state_api::ZeroAccount).nonce);
+  final_chain_facts.account_balance = toBridgeU256(account.value_or(state_api::ZeroAccount).balance);
+  final_chain_facts.finalized_period_found = location.has_value();
+  final_chain_facts.finalized_period = location ? location->period : 0;
+
+  auto report = rustaxa::consensus_application_submit_transaction(service(), std::move(request), final_chain_facts);
+  auto result =
+      PublicTransactionSubmissionResult{trx_hash_t(report.transaction_hash.data(), trx_hash_t::ConstructFromPointer),
+                                        report.accepted, std::string(report.message), report.transaction_observed};
+  if (result.transaction_observed) {
+    transaction_observed_.emit(result.transaction_hash);
+  }
+  return result;
+}
 
 ConsensusRuntimeStatus ConsensusApplication::runtimeStatus() const {
   const auto status = rustaxa::consensus_application_live_status(service());

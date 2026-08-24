@@ -1,14 +1,13 @@
 use crate::ffi::rustaxa_ffi::{
-    LegacySortitionParams, VdfSortitionPayload, VdfSortitionProofResult,
-    VdfSortitionVerifyResult as LegacyVdfSortitionVerifyResult, VrfProofResult,
+    LegacySortitionParams, VdfSortitionVerifyResult as LegacyVdfSortitionVerifyResult,
+    VrfProofResult,
 };
 use rustaxa_vdf::prover::{CancellationToken as InnerCancellationToken, WesolowskiProver};
 use rustaxa_vdf::sortition::{
-    LegacySortitionParams as DomainLegacySortitionParams, LEGACY_SORTITION_STATUS_INTERNAL_ERROR,
-    LEGACY_SORTITION_STATUS_INVALID_ARGUMENT, LEGACY_SORTITION_STATUS_VALID,
+    LegacySortitionParams as DomainLegacySortitionParams, LEGACY_SORTITION_STATUS_INVALID_ARGUMENT,
+    LEGACY_SORTITION_STATUS_VALID,
 };
 use rustaxa_vdf::vdf::{Solution as InnerSolution, WesolowskiVdf as InnerWesolowskiVdf};
-use rustaxa_vdf::vdf_sortition as domain_sortition_vdf;
 use rustaxa_vdf::verifier::WesolowskiVerifier;
 use rustaxa_vdf::{sortition as domain_sortition, vrf as domain_vrf};
 
@@ -99,49 +98,6 @@ pub fn prove_legacy_vrf_sortition(
     }
 }
 
-pub fn prove_legacy_vdf_sortition(
-    params: LegacySortitionParams,
-    secret_key: &[u8; 64],
-    vrf_input: &[u8],
-    vdf_input: &[u8],
-    vote_count: u64,
-    total_vote_count: u64,
-    cancellation_token: &CancellationToken,
-) -> VdfSortitionProofResult {
-    match domain_sortition::prove_legacy_vdf_sortition(
-        to_domain_sortition_params(params),
-        secret_key,
-        vrf_input,
-        vdf_input,
-        vote_count,
-        total_vote_count,
-        &cancellation_token.0,
-    ) {
-        Ok(proof) => VdfSortitionProofResult {
-            ok: proof.ok,
-            status: proof.status,
-            error: String::new(),
-            vrf_proof: proof.vrf_proof,
-            vrf_output: proof.vrf_output,
-            vrf_threshold: proof.vrf_threshold,
-            difficulty: proof.difficulty,
-            vdf_proof: proof.vdf_proof,
-            vdf_output: proof.vdf_output,
-        },
-        Err(err) => VdfSortitionProofResult {
-            ok: false,
-            status: LEGACY_SORTITION_STATUS_INTERNAL_ERROR,
-            error: err.to_string(),
-            vrf_proof: [0_u8; 80],
-            vrf_output: [0_u8; 64],
-            vrf_threshold: 0,
-            difficulty: 0,
-            vdf_proof: Vec::new(),
-            vdf_output: Vec::new(),
-        },
-    }
-}
-
 pub fn verify_legacy_vdf_sortition(
     params: LegacySortitionParams,
     public_key: &[u8; 32],
@@ -179,15 +135,6 @@ pub fn verify_legacy_vdf_sortition(
             actual_difficulty: 0,
         },
     }
-}
-
-pub fn vdf_sortition_payload_encode(payload: &VdfSortitionPayload) -> Vec<u8> {
-    domain_sortition_vdf::encode_vdf_sortition_payload(&domain_sortition_vdf::VdfSortitionPayload {
-        vrf_proof: payload.vrf_proof,
-        vdf_solution_proof: payload.vdf_solution_proof.clone(),
-        vdf_solution_output: payload.vdf_solution_output.clone(),
-        difficulty: payload.difficulty,
-    })
 }
 
 fn to_domain_sortition_params(params: LegacySortitionParams) -> DomainLegacySortitionParams {

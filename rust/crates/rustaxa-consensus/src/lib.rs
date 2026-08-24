@@ -7,8 +7,8 @@ pub mod consensus_query_api;
 pub mod consensus_state_actions;
 pub mod consensus_value_proposal;
 pub mod dag;
-pub mod dag_service;
-pub mod dag_transaction_service;
+pub(crate) mod dag_service;
+pub(crate) mod dag_transaction_service;
 pub(crate) mod dpos_reward_graph;
 pub mod gas_pricer;
 pub mod maybe_broadcast_votes;
@@ -55,17 +55,23 @@ pub mod final_chain_execution;
 
 pub use consensus_application::{
     ConsensusApplication, ConsensusApplicationBootstrap, ConsensusApplicationConfig,
-    ConsensusFinalChainConfig, ConsensusLiveStatus, ConsensusVoteStatus,
+    ConsensusFinalChainConfig, ConsensusLiveStatus, ConsensusVoteStatus, DagBlockIngressReport,
+    DagBlockIngressRequest, DagProposerConfig, DagSyncIngressReport, DagSyncIngressRequest,
+    TransactionPacketIngressReport, TransactionPacketIngressRequest,
     consensus_application_test_bootstrap,
 };
 pub use consensus_application_runtime::{
-    ConsensusApplicationRuntime, ConsensusEffectId, ConsensusExecutionPort, ConsensusProcessPort,
-    ConsensusRunExit, ConsensusRunReason, ConsensusSignReport, ConsensusSignRequest,
-    ConsensusSigningPort, ConsensusTransportPort, ConsensusTransportReport,
-    ConsensusTransportStatus, ConsensusVrfReport, ConsensusVrfRequest, ConsensusWaitOutcome,
-    ConsensusWaitReport, ConsensusWaitRequest, EvmFinalizationReport, EvmFinalizationRequest,
-    GossipPillarVoteRequest, GossipVoteBundleRequest, GossipVoteRequest, PillarAnchorStateReport,
-    PillarAnchorStateRequest, ReportMaliciousPeerRequest, SetSyncPeriodRequest, SigningIdentity,
+    ConsensusApplicationRuntime, ConsensusEffectId, ConsensusExecutionPort,
+    ConsensusObservationReport, ConsensusObservationRequest, ConsensusObserverPort,
+    ConsensusProcessPort, ConsensusRunExit, ConsensusRunReason, ConsensusSignReport,
+    ConsensusSignRequest, ConsensusSigningPort, ConsensusTransportPort, ConsensusTransportReport,
+    ConsensusTransportStatus, ConsensusVdfPort, ConsensusVrfReport, ConsensusVrfRequest,
+    ConsensusWaitOutcome, ConsensusWaitReport, ConsensusWaitRequest, DagGasEstimateInput,
+    DagGasEstimateReport, DagGasEstimateRequest, DagGasEstimateResult, DagVdfCancelReport,
+    DagVdfCancelRequest, DagVdfPollReport, DagVdfPollRequest, DagVdfRequest, DagVdfStartReport,
+    EvmFinalizationReport, EvmFinalizationRequest, GossipDagBlockRequest, GossipPillarVoteRequest,
+    GossipVoteBundleRequest, GossipVoteRequest, PillarAnchorStateReport, PillarAnchorStateRequest,
+    ReportMaliciousPeerRequest, SetSyncPeriodRequest, SigningIdentity,
 };
 pub use consensus_execution_api::ConsensusExecutionApi;
 pub use consensus_pipeline::{
@@ -87,6 +93,14 @@ pub use consensus_state_actions::{
 pub use consensus_value_proposal::{
     ConsensusUnsignedValueProposal, ConsensusValueProposalAction, ConsensusValueProposalInput,
     complete_value_proposal_signing, compose_value_proposal, prepare_value_proposal_signing,
+};
+pub use dag_service::DagServiceConfig;
+pub use dag_transaction_service::{
+    DagAnchors, DagGhostPathRoot, DagGraphView, DagLevelHashes, DagNonFinalizedIndex,
+    DagNonFinalizedSummary, DagRuntimeStatus, DagTransactionServiceConfig,
+    PublicTransactionFinalChainFacts, PublicTransactionSubmissionReport,
+    PublicTransactionSubmissionRequest, TransactionGossipAccount, TransactionGossipEntry,
+    TransactionPoolStatus,
 };
 pub use final_chain::FinalChain;
 pub use final_chain_execution::{
@@ -199,14 +213,18 @@ pub use network_api::{
     NETWORK_STATUS_PLAN_STATUS_LIGHT_NODE_HISTORY_UNAVAILABLE,
     NETWORK_STATUS_PLAN_STATUS_NO_ELIGIBLE_PEER, NETWORK_STATUS_PLAN_STATUS_OK,
     NETWORK_STATUS_PLAN_STATUS_SYNC_NOT_NEEDED, NETWORK_SYNC_KIND_PBFT_CHAIN,
-    NETWORK_SYNC_KIND_PBFT_NEXT_VOTES, NetworkEffect, NetworkEffectAck, NetworkEffectBatch,
-    NetworkEffectResult, NetworkGetPbftSyncRequest, NetworkGetPillarVotesBundleRequest,
-    NetworkIngressDecision, NetworkInitialStatusFacts, NetworkInitialStatusPlan,
-    NetworkPbftNextVotesBundleRequest, NetworkPbftSyncPeerCandidate, NetworkPbftSyncStartFacts,
-    NetworkPbftSyncStartPlan, NetworkPbftVoteAdmissionOutcome, NetworkPbftVoteIngressContext,
-    NetworkPeerSelectionFacts, NetworkPeerSelectionPlan, NetworkPendingDagBlocksRequestFacts,
+    NETWORK_SYNC_KIND_PBFT_NEXT_VOTES, NetworkDagBlockIngressContext, NetworkDagBlockIngressReport,
+    NetworkDagGossipPeer, NetworkDagGossipRequest, NetworkDagSyncIngressReport, NetworkEffect,
+    NetworkEffectAck, NetworkEffectBatch, NetworkEffectResult, NetworkGetDagSyncContext,
+    NetworkGetPbftSyncRequest, NetworkGetPillarVotesBundleRequest, NetworkIngressDecision,
+    NetworkInitialStatusFacts, NetworkInitialStatusPlan, NetworkPbftNextVotesBundleRequest,
+    NetworkPbftSyncPeerCandidate, NetworkPbftSyncStartFacts, NetworkPbftSyncStartPlan,
+    NetworkPbftVoteAdmissionOutcome, NetworkPbftVoteIngressContext, NetworkPeerSelectionFacts,
+    NetworkPeerSelectionPlan, NetworkPendingDagBlocksRequestFacts,
     NetworkPendingDagBlocksRequestPlan, NetworkPillarVoteIngressContext, NetworkStatusEgressFacts,
     NetworkStatusEgressPlan, NetworkStatusSyncFacts, NetworkStatusSyncPlan,
+    NetworkTransactionGossipPeer, NetworkTransactionGossipRequest, NetworkTransactionPacketContext,
+    NetworkTransactionPacketReport,
 };
 pub use pbft_chain::{
     PbftBlockStorageLookup, PbftChain, PbftChainPersistedHeadIdentity, PbftChainStorageRestore,

@@ -45,6 +45,7 @@ GraphQlHttpProcessor::GraphQlHttpProcessor(GraphQlOperations operations)
       subscription_(defaultGraphQlSubscription(std::move(operations.subscription))),
       operations_(query_, mutation_, subscription_) {}
 
+#ifndef RUSTAXA_ENABLE
 GraphQlHttpProcessor::GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                                            std::shared_ptr<::taraxa::DagManager> dag_manager,
 #ifndef RUSTAXA_ENABLE
@@ -79,6 +80,7 @@ GraphQlHttpProcessor::GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain
           std::make_shared<graphql::taraxa::Mutation>(std::move(transaction_manager)),
           std::make_shared<graphql::taraxa::Subscription>()}) {
 }
+#endif
 
 HttpProcessor::Response GraphQlHttpProcessor::process(const Request& request) {
   try {

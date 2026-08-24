@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "common/types.hpp"
+
 namespace rustaxa {
 class BridgeConsensusNetworkApi;
 class BridgeConsensusApplication;
@@ -17,8 +19,8 @@ class BridgeConsensusApplication;
 
 namespace taraxa {
 class ConsensusApplication;
+class DagBlock;
 struct FullNodeConfig;
-class TransactionManager;
 using SharedConsensusApplication = std::shared_ptr<ConsensusApplication>;
 }  // namespace taraxa
 
@@ -47,6 +49,12 @@ struct ConsensusVoteStatus {
 };
 
 using ConsensusVoteStatusProvider = std::function<ConsensusVoteStatus()>;
+
+/** Best-effort post-commit observers for native network admissions. */
+struct ConsensusNetworkObservers {
+  std::function<void(const std::vector<uint8_t>&)> dag_block_observed;
+  std::function<void(const trx_hash_t&)> transaction_observed;
+};
 
 /** Plain network-owned facts for one max-chain peer candidate. */
 struct ConsensusPeerCandidate {
@@ -165,6 +173,108 @@ struct PbftSyncIngressExecutor {
   std::function<bool(const PbftSyncSlashingTransaction&)> submit_slashing_transaction;
 };
 
+/** Physical tarcap leaves for native transaction-packet admission effects. */
+struct TransactionPacketExecutor {
+  std::function<void(const std::array<uint8_t, 64>&, const std::array<uint8_t, 32>&)> mark_transaction_known;
+  std::function<bool(const std::vector<uint8_t>&, const std::vector<std::array<uint8_t, 64>>&)> gossip_packet;
+};
+
+/** Terminal native decision for one canonical transaction packet. */
+struct TransactionPacketOutcome {
+  uint8_t status = 0;
+  uint32_t queued_effect_count = 0;
+  size_t admitted_transaction_count = 0;
+  std::string error_code;
+};
+
+/** One physical peer and its bounded known subset for native periodic transaction gossip. */
+struct TransactionGossipPeer {
+  std::array<uint8_t, 64> peer_id{};
+  std::vector<std::array<uint8_t, 32>> known_hashes;
+};
+
+/** Physical leaves for exact native periodic transaction-gossip effects. */
+struct TransactionGossipExecutor {
+  std::function<bool(const std::array<uint8_t, 64>&, const std::vector<uint8_t>&)> send_packet;
+  std::function<void(const std::array<uint8_t, 64>&, const std::array<uint8_t, 32>&)> mark_transaction_known;
+};
+
+/** Physical send leaf and terminal outcome for one get-DAG-sync request. */
+struct GetDagSyncExecutor {
+  std::function<bool(const std::vector<uint8_t>&, uint64_t, uint64_t)> send_response;
+};
+
+struct GetDagSyncOutcome {
+  uint8_t status = 0;
+  uint32_t queued_effect_count = 0;
+  std::string error_code;
+};
+
+/** Physical send leaf for one native pending-DAG request. */
+struct PendingDagBlocksExecutor {
+  std::function<bool(const std::array<uint8_t, 64>&, const std::vector<uint8_t>&, uint64_t)> send_request;
+};
+
+/** Terminal native decision for one pending-DAG request. */
+struct PendingDagBlocksOutcome {
+  uint8_t status = 0;
+  uint32_t queued_effect_count = 0;
+  std::string error_code;
+};
+
+/** One physical peer candidate for exact native DAG-block fanout. */
+struct DagGossipPeer {
+  std::array<uint8_t, 64> peer_id{};
+  bool syncing = false;
+  bool known_block = false;
+};
+
+/** Physical peer-known and exact packet-send leaves for native DAG packet ingress. */
+struct DagPacketExecutor {
+  std::function<void(const std::array<uint8_t, 64>&, const std::array<uint8_t, 32>&)> mark_transaction_known;
+  std::function<void(const std::array<uint8_t, 64>&, const std::array<uint8_t, 32>&)> mark_dag_block_known;
+  std::function<std::vector<DagGossipPeer>(const std::array<uint8_t, 32>&)> gossip_candidates;
+  std::function<bool(const std::array<uint8_t, 64>&, const std::vector<uint8_t>&)> send_packet;
+};
+
+/** Compact post-admission facts for one native DAG block. */
+struct DagBlockAdmissionOutcome {
+  std::array<uint8_t, 32> block_hash{};
+  uint64_t block_level = 0;
+  bool accepted = false;
+  bool duplicate = false;
+  uint32_t reject_code = 0;
+};
+
+/** Transport-owned peer facts used by Rust to select the exact DAG rejection action. */
+struct DagBlockPeerFacts {
+  bool peer_dag_synced = false;
+  bool dag_sync_allowed = false;
+  bool transactions_dropped = false;
+  bool pending_dag_request = false;
+  bool local_pbft_syncing = false;
+};
+
+/** Terminal native decision for one DAG-block packet. */
+struct DagBlockPacketOutcome {
+  uint8_t status = 0;
+  uint32_t queued_effect_count = 0;
+  /** Native action: none, ignore, full sync, pending sync, disconnect, or malicious. */
+  uint8_t rejection_action = 0;
+  std::string error_code;
+  std::optional<DagBlockAdmissionOutcome> admission;
+};
+
+/** Terminal native decision for one DAG-sync packet. */
+struct DagSyncPacketOutcome {
+  uint8_t status = 0;
+  uint32_t queued_effect_count = 0;
+  std::string error_code;
+  uint64_t request_period = 0;
+  uint64_t response_period = 0;
+  std::vector<DagBlockAdmissionOutcome> blocks;
+};
+
 /**
  * Owns the main-only Rust consensus network facade for one Network instance.
  *
@@ -174,7 +284,8 @@ struct PbftSyncIngressExecutor {
  */
 class ConsensusNetworkApi final {
  public:
-  explicit ConsensusNetworkApi(SharedConsensusApplication consensus_application);
+  ConsensusNetworkApi(SharedConsensusApplication consensus_application,
+                      std::shared_ptr<final_chain::FinalChain> final_chain, ConsensusNetworkObservers observers = {});
   ~ConsensusNetworkApi();
 
   ConsensusNetworkApi(const ConsensusNetworkApi&) = delete;
@@ -269,6 +380,41 @@ class ConsensusNetworkApi final {
                                              const std::vector<PbftSyncSlashingSubmitterFact>& slashing_submitters,
                                              const PbftSyncIngressExecutor& executor);
 
+  /** Routes one complete canonical transaction packet and executes only peer-known and physical gossip leaves. */
+  TransactionPacketOutcome ingestTransactionPacket(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
+                                                   uint64_t source_payload_id, const std::vector<uint8_t>& packet_rlp,
+                                                   bool rebroadcast, const FullNodeConfig& config,
+                                                   const TransactionPacketExecutor& executor);
+
+  /** Returns the bounded native candidate hash set used to sample physical peer-known caches. */
+  std::vector<std::array<uint8_t, 32>> transactionGossipCandidateHashes() const;
+
+  /** Plans and executes exact per-peer periodic transaction packets from the native queue. */
+  TransactionPacketOutcome planTransactionGossip(uint32_t transport_lane,
+                                                 const std::vector<TransactionGossipPeer>& peers,
+                                                 const TransactionGossipExecutor& executor);
+
+  /** Serves one canonical get-DAG-sync request from application-owned DAG/transaction bytes. */
+  GetDagSyncOutcome serveGetDagSyncRequest(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
+                                           uint64_t source_payload_id, bool request_allowed,
+                                           const std::vector<uint8_t>& request_rlp, const GetDagSyncExecutor& executor);
+
+  /** Selects canonical non-finalized hashes in Rust and sends one exact Get-DAG-sync request. */
+  PendingDagBlocksOutcome requestPendingDagBlocks(uint32_t transport_lane, uint64_t local_pbft_syncing_period,
+                                                  const ConsensusPeerCandidate& explicit_peer,
+                                                  const PendingDagBlocksExecutor& executor);
+
+  /** Routes one canonical DAG-block packet through native admission and executes only physical network leaves. */
+  DagBlockPacketOutcome ingestDagBlockPacket(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
+                                             uint64_t source_payload_id, const std::vector<uint8_t>& packet_rlp,
+                                             bool rebroadcast, const DagBlockPeerFacts& peer_facts,
+                                             const FullNodeConfig& config, const DagPacketExecutor& executor);
+
+  /** Routes one canonical DAG-sync packet through native sequential admission and physical peer-known leaves. */
+  DagSyncPacketOutcome ingestDagSyncPacket(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
+                                           uint64_t source_payload_id, const std::vector<uint8_t>& packet_rlp,
+                                           const FullNodeConfig& config, const DagPacketExecutor& executor);
+
   /** Reports the concrete transaction-insertion result for one native vote slashing effect. */
   bool reportPbftVoteSlashingSubmission(const std::array<uint8_t, 32>& proof_hash, bool transaction_inserted);
 
@@ -280,8 +426,10 @@ class ConsensusNetworkApi final {
    * insertion. Invalid effects throw before signing; the returned value is the
    * native acknowledgement of the actual insertion result.
    */
-  bool executePbftVoteSlashingTransaction(const PbftVoteSlashingTransaction& effect, const FullNodeConfig& config,
-                                          TransactionManager& transaction_manager);
+  bool executePbftVoteSlashingTransaction(const PbftVoteSlashingTransaction& effect, const FullNodeConfig& config);
+
+  /** Signs and submits one PBFT-sync slashing transaction through native transaction admission. */
+  bool executePbftSyncSlashingTransaction(const PbftSyncSlashingTransaction& effect, const FullNodeConfig& config);
 
   /**
    * Selects a serviceable max-chain peer from network-owned facts.
@@ -294,6 +442,10 @@ class ConsensusNetworkApi final {
       uint64_t local_pbft_syncing_period, const std::vector<ConsensusPeerCandidate>& candidates) const;
 
  private:
+  bool submitSlashingTransaction(size_t wallet_index, const std::array<uint8_t, 32>& nonce,
+                                 const std::array<uint8_t, 20>& contract_address, const std::array<uint8_t, 32>& value,
+                                 uint64_t gas_limit, const std::vector<uint8_t>& call_data,
+                                 const FullNodeConfig& config);
   class Impl;
   std::unique_ptr<Impl> impl_;
 };

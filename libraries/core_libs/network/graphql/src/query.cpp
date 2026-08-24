@@ -200,18 +200,34 @@ void fillMissingBlockTransactionReaderCallbacks(BlockTransactionReader& reader,
   }
 }
 
+#ifdef RUSTAXA_ENABLE
+QueryTransactionReader makeQueryTransactionReader() {
+#else
 QueryTransactionReader makeQueryTransactionReader(
     const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
+#endif
   QueryTransactionReader reader;
+#ifdef RUSTAXA_ENABLE
+  reader.transaction_by_hash = [](const ::taraxa::trx_hash_t&) { return std::shared_ptr<::taraxa::Transaction>{}; };
+#else
   reader.transaction_by_hash = [transaction_manager](const ::taraxa::trx_hash_t& hash) {
     return transaction_manager ? transaction_manager->getTransaction(hash) : nullptr;
   };
+#endif
   return reader;
 }
 
-void fillMissingQueryTransactionReaderCallbacks(
-    QueryTransactionReader& reader, const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
-  auto defaults = makeQueryTransactionReader(transaction_manager);
+void fillMissingQueryTransactionReaderCallbacks(QueryTransactionReader& reader
+#ifndef RUSTAXA_ENABLE
+                                                ,
+                                                const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager
+#endif
+) {
+  auto defaults = makeQueryTransactionReader(
+#ifndef RUSTAXA_ENABLE
+      transaction_manager
+#endif
+  );
   if (!reader.transaction_by_hash) {
     reader.transaction_by_hash = std::move(defaults.transaction_by_hash);
   }
@@ -247,17 +263,14 @@ void fillMissingQueryTransactionReceiptReaderCallbacks(
 }
 
 #ifdef RUSTAXA_ENABLE
-QueryGasPriceReader makeQueryGasPriceReader(const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
+QueryGasPriceReader makeQueryGasPriceReader() {
   QueryGasPriceReader reader;
-  reader.bid = [transaction_manager] {
-    return transaction_manager ? transaction_manager->gasPriceBid() : dev::u256(0);
-  };
+  reader.bid = [] { return dev::u256(0); };
   return reader;
 }
 
-void fillMissingQueryGasPriceReaderCallbacks(QueryGasPriceReader& reader,
-                                             const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
-  auto defaults = makeQueryGasPriceReader(transaction_manager);
+void fillMissingQueryGasPriceReaderCallbacks(QueryGasPriceReader& reader) {
+  auto defaults = makeQueryGasPriceReader();
   if (!reader.bid) {
     reader.bid = std::move(defaults.bid);
   }
@@ -280,7 +293,9 @@ void fillMissingQueryGasPriceReaderCallbacks(QueryGasPriceReader& reader,
 #endif
 
 QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
+#ifndef RUSTAXA_ENABLE
                                             const std::shared_ptr<::taraxa::DagManager>& dag_manager,
+#endif
                                             const std::shared_ptr<::taraxa::DbStorage>& db
 #ifdef RUSTAXA_ENABLE
                                             ,
@@ -288,10 +303,22 @@ QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::fina
 #endif
 ) {
   QueryDagBlockReader reader;
+#ifdef RUSTAXA_ENABLE
+  reader.block_by_hash = [consensus_query_api](const ::taraxa::blk_hash_t& hash) {
+    return consensus_query_api
+               ? materializeDagBlockView((*consensus_query_api)->consensus_query_dag_block_by_hash(hash.asArray()))
+               : std::shared_ptr<::taraxa::DagBlock>{};
+  };
+  reader.latest_level = [consensus_query_api] {
+    return consensus_query_api ? (*consensus_query_api)->consensus_query_live_dag_status().max_level
+                               : ::taraxa::level_t(0);
+  };
+#else
   reader.block_by_hash = [dag_manager](const ::taraxa::blk_hash_t& hash) {
     return dag_manager ? dag_manager->getDagBlock(hash) : nullptr;
   };
   reader.latest_level = [dag_manager] { return dag_manager ? dag_manager->getMaxLevel() : ::taraxa::level_t(0); };
+#endif
   reader.latest_finalized_period = [final_chain] { return final_chain ? final_chain->lastBlockNumber() : uint64_t(0); };
   reader.blocks_by_level = [db
 #ifdef RUSTAXA_ENABLE
@@ -342,14 +369,20 @@ QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::fina
 
 void fillMissingQueryDagBlockReaderCallbacks(QueryDagBlockReader& reader,
                                              const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
+#ifndef RUSTAXA_ENABLE
                                              const std::shared_ptr<::taraxa::DagManager>& dag_manager,
+#endif
                                              const std::shared_ptr<::taraxa::DbStorage>& db
 #ifdef RUSTAXA_ENABLE
                                              ,
                                              ::taraxa::net::ConsensusQueryApiPtr consensus_query_api
 #endif
 ) {
-  auto defaults = makeQueryDagBlockReader(final_chain, dag_manager, db
+  auto defaults = makeQueryDagBlockReader(final_chain,
+#ifndef RUSTAXA_ENABLE
+                                          dag_manager,
+#endif
+                                          db
 #ifdef RUSTAXA_ENABLE
                                           ,
                                           std::move(consensus_query_api)
@@ -372,12 +405,20 @@ void fillMissingQueryDagBlockReaderCallbacks(QueryDagBlockReader& reader,
   }
 }
 
+#ifdef RUSTAXA_ENABLE
+DagBlockTransactionReader makeQueryDagBlockTransactionReader() {
+#else
 DagBlockTransactionReader makeQueryDagBlockTransactionReader(
     const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
+#endif
   DagBlockTransactionReader reader;
+#ifdef RUSTAXA_ENABLE
+  reader.transaction_by_hash = [](const ::taraxa::trx_hash_t&) { return std::shared_ptr<::taraxa::Transaction>{}; };
+#else
   reader.transaction_by_hash = [transaction_manager](const ::taraxa::trx_hash_t& hash) {
     return transaction_manager ? transaction_manager->getTransaction(hash) : nullptr;
   };
+#endif
   return reader;
 }
 
@@ -416,8 +457,17 @@ DagBlockPeriodReader makeQueryDagBlockPeriodReader(
 }
 
 void fillMissingDagBlockTransactionReaderCallbacks(
-    DagBlockTransactionReader& reader, const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
-  auto defaults = makeQueryDagBlockTransactionReader(transaction_manager);
+    DagBlockTransactionReader& reader
+#ifndef RUSTAXA_ENABLE
+    ,
+    const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager
+#endif
+) {
+  auto defaults = makeQueryDagBlockTransactionReader(
+#ifndef RUSTAXA_ENABLE
+      transaction_manager
+#endif
+  );
   if (!reader.transaction_by_hash) {
     reader.transaction_by_hash = std::move(defaults.transaction_by_hash);
   }
@@ -442,19 +492,39 @@ void fillMissingDagBlockPeriodReaderCallbacks(DagBlockPeriodReader& reader,
   }
 }
 
-CurrentStateReader makeQueryCurrentStateReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
+CurrentStateReader makeQueryCurrentStateReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain
+#ifndef RUSTAXA_ENABLE
+                                               ,
                                                const std::shared_ptr<::taraxa::DagManager>& dag_manager) {
+#else
+) {
+#endif
   CurrentStateReader reader;
   reader.final_block = [final_chain] { return final_chain ? final_chain->lastBlockNumber() : uint64_t(0); };
+#ifdef RUSTAXA_ENABLE
+  reader.dag_block_level = [] { return uint64_t(0); };
+  reader.dag_block_period = [] { return uint64_t(0); };
+#else
   reader.dag_block_level = [dag_manager] { return dag_manager ? dag_manager->getMaxLevel() : uint64_t(0); };
   reader.dag_block_period = [dag_manager] { return dag_manager ? dag_manager->getLatestPeriod() : uint64_t(0); };
+#endif
   return reader;
 }
 
 void fillMissingCurrentStateReaderCallbacks(CurrentStateReader& reader,
-                                            const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
+                                            const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain
+#ifndef RUSTAXA_ENABLE
+                                            ,
                                             const std::shared_ptr<::taraxa::DagManager>& dag_manager) {
-  auto defaults = makeQueryCurrentStateReader(final_chain, dag_manager);
+#else
+) {
+#endif
+  auto defaults = makeQueryCurrentStateReader(final_chain
+#ifndef RUSTAXA_ENABLE
+                                              ,
+                                              dag_manager
+#endif
+  );
   if (!reader.final_block) {
     reader.final_block = std::move(defaults.final_block);
   }
@@ -562,6 +632,7 @@ std::shared_ptr<::taraxa::final_chain::BlockHeader> blockHeaderFromView(const ru
 }  // namespace
 #endif
 
+#ifndef RUSTAXA_ENABLE
 Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
              std::shared_ptr<::taraxa::DagManager> dag_manager,
 #ifndef RUSTAXA_ENABLE
@@ -620,6 +691,7 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
     return getBlock(response::Value(static_cast<int>(num)), std::nullopt);
   };
 }
+#endif
 
 Query::Query(QueryReaders readers, uint64_t chain_id) noexcept
     : kChainId(chain_id),
@@ -646,27 +718,86 @@ Query::Query(QueryReaders readers, uint64_t chain_id) noexcept
 #endif
   );
   fillMissingBlockTransactionReaderCallbacks(block_transaction_reader_, nullptr);
-  fillMissingQueryTransactionReaderCallbacks(transaction_reader_, nullptr);
+  fillMissingQueryTransactionReaderCallbacks(transaction_reader_
+#ifndef RUSTAXA_ENABLE
+                                             ,
+                                             nullptr
+#endif
+  );
   fillMissingQueryTransactionReceiptReaderCallbacks(transaction_receipt_reader_, nullptr);
-  fillMissingQueryGasPriceReaderCallbacks(gas_price_reader_, nullptr);
-  fillMissingQueryDagBlockReaderCallbacks(dag_block_reader_, nullptr, nullptr, nullptr
+  fillMissingQueryGasPriceReaderCallbacks(gas_price_reader_
+#ifndef RUSTAXA_ENABLE
+                                          ,
+                                          nullptr
+#endif
+  );
+  fillMissingQueryDagBlockReaderCallbacks(dag_block_reader_, nullptr,
+#ifndef RUSTAXA_ENABLE
+                                          nullptr,
+#endif
+                                          nullptr
 #ifdef RUSTAXA_ENABLE
                                           ,
                                           {}
 #endif
   );
-  fillMissingDagBlockTransactionReaderCallbacks(dag_block_transaction_reader_, nullptr);
+  fillMissingDagBlockTransactionReaderCallbacks(dag_block_transaction_reader_
+#ifndef RUSTAXA_ENABLE
+                                                ,
+                                                nullptr
+#endif
+  );
 #ifdef RUSTAXA_ENABLE
   fillMissingDagBlockPeriodReaderCallbacks(dag_block_period_reader_, {});
 #else
   fillMissingDagBlockPeriodReaderCallbacks(dag_block_period_reader_, nullptr);
 #endif
-  fillMissingCurrentStateReaderCallbacks(current_state_reader_, nullptr, nullptr);
+  fillMissingCurrentStateReaderCallbacks(current_state_reader_, nullptr
+#ifndef RUSTAXA_ENABLE
+                                         ,
+                                         nullptr
+#endif
+  );
   fillMissingSyncStateReaderCallbacks(sync_state_reader_, nullptr, {}, {});
   get_block_by_num_ = [&](::taraxa::EthBlockNumber num) {
     return getBlock(response::Value(static_cast<int>(num)), std::nullopt);
   };
 }
+
+#ifdef RUSTAXA_ENABLE
+Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, QueryGasPriceReader gas_price_reader,
+             std::weak_ptr<::taraxa::Network> network, uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status,
+             ::taraxa::net::ConsensusQueryApiPtr consensus_query_api) noexcept
+    : Query(
+          QueryReaders{
+              makeAccountStateReader(final_chain),
+              {},
+              {},
+              {},
+              {},
+              std::move(gas_price_reader),
+              {},
+              {},
+              {},
+              CurrentStateReader{[query = consensus_query_api] {
+                                   return query ? (*query)->consensus_query_final_chain_last_block_number()
+                                                : uint64_t(0);
+                                 },
+                                 [query = consensus_query_api] {
+                                   return query ? (*query)->consensus_query_status().latest_dag_level : uint64_t(0);
+                                 },
+                                 [query = consensus_query_api] {
+                                   if (!query) {
+                                     return uint64_t(0);
+                                   }
+                                   const auto status = (*query)->consensus_query_status();
+                                   return status.latest_dag_period_found ? status.latest_dag_period : uint64_t(0);
+                                 }},
+              makeQuerySyncStateReader(final_chain, std::move(network), std::move(live_status)),
+              makeConsensusQueryReader(std::move(consensus_query_api)),
+          },
+          chain_id) {}
+#endif
 
 Query::Query(AccountStateReader account_reader, uint64_t chain_id, QueryBlockReader block_reader,
              BlockTransactionReader block_transaction_reader, QueryTransactionReader transaction_reader,

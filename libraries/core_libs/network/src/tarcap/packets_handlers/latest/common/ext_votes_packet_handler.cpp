@@ -70,7 +70,6 @@ ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::sh
 #else
                                              network::ConsensusLiveStatusProvider consensus_status,
                                              net::ConsensusQueryClient pbft_chain,
-                                             std::shared_ptr<TransactionManager> trx_mgr,
                                              network::ConsensusNetworkApiShared consensus_network_api,
                                              TarcapVersion transport_lane,
 #endif
@@ -88,7 +87,6 @@ ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::sh
       ,
       consensus_status_(std::move(consensus_status)),
       rust_consensus_network_api_(std::move(consensus_network_api)),
-      trx_mgr_(std::move(trx_mgr)),
       transport_lane_(transport_lane)
 #endif
 {
@@ -224,7 +222,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::consumePbftVo
       network::PbftVoteSlashingTransaction{effect.status, effect.proof_hash, effect.wallet_index, effect.nonce,
                                            effect.contract_address, effect.value, effect.gas_limit,
                                            std::vector<uint8_t>(effect.call_data.begin(), effect.call_data.end())},
-      kConf, *trx_mgr_);
+      kConf);
   return result;
 }
 #endif

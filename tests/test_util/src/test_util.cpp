@@ -63,7 +63,13 @@ TransactionClient::Context TransactionClient::process(const std::shared_ptr<Tran
       TransactionStage::created,
       trx,
   };
+#ifdef RUSTAXA_ENABLE
+  if (!node_->getConsensusApplication()
+           ->submitTransaction(ctx.trx, node_->getConfig(), *node_->getFinalChain())
+           .accepted) {
+#else
   if (!node_->getTransactionManager()->insertTransaction(ctx.trx).first) {
+#endif
     return ctx;
   }
   ctx.stage = TransactionStage::inserted;

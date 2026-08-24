@@ -6,11 +6,19 @@
 namespace rustaxa {
 struct HostEvmFinalizationReport;
 struct HostEvmFinalizationRequest;
+struct HostDagGasBatch;
 struct HostFinalChainAccountFactsReport;
 struct HostFinalChainAccountFactsRequest;
 struct HostGossipPillarVoteRequest;
 struct HostGossipVoteBundleRequest;
 struct HostGossipVoteRequest;
+struct HostDagVdfRequest;
+struct HostDagVdfStartReport;
+struct HostDagVdfJobRequest;
+struct HostDagVdfPollReport;
+struct HostDagVdfCancelReport;
+struct HostConsensusObservationReport;
+struct HostConsensusObservationRequest;
 struct HostMaliciousPeerRequest;
 struct HostPillarAnchorStateReport;
 struct HostPillarAnchorStateRequest;
@@ -36,15 +44,20 @@ class FinalChain;
 }
 
 /**
- * Interruptible clock and wait leaf used by the native consensus runner.
+ * Existing host-process bridge handle used by the native consensus runner.
  *
- * The port owns only monotonic-clock and condition-variable process mechanics.
- * Every wait echoes its native generation/effect identity, and stop wakes an
- * active wait without retaining protocol phase, timer, or cursor state.
+ * The port owns monotonic-clock and condition-variable process mechanics plus
+ * private, operation-specific VDF and public-observer executors. Sharing this
+ * one CXX handle does not merge their state: every operation echoes its native
+ * effect/job identity, stop wakes active waits, VDF cancellation joins its
+ * exact job, and observation remains best-effort. No protocol phase, queue,
+ * timer cursor, DAG state, or public-event ordering cursor is retained here.
  */
 class ConsensusProcessPort final {
  public:
+  /** Constructs clock/wait mechanics only for focused host-process tests. */
   ConsensusProcessPort();
+  ConsensusProcessPort(const FullNodeConfig& config, std::shared_ptr<ConsensusApplication> application);
   ~ConsensusProcessPort();
 
   ConsensusProcessPort(const ConsensusProcessPort&) = delete;
@@ -56,6 +69,15 @@ class ConsensusProcessPort final {
   bool consensusStopRequested(uint64_t generation) const;
   uint64_t consensusNowMillis() const;
   uint64_t consensusUnixTimeSeconds() const;
+  /** Starts one exact asynchronous DAG-proposer VDF job. */
+  rustaxa::HostDagVdfStartReport consensusStartDagVdf(const rustaxa::HostDagVdfRequest& request) const;
+  /** Polls one exact asynchronous DAG-proposer VDF job without blocking. */
+  rustaxa::HostDagVdfPollReport consensusPollDagVdf(const rustaxa::HostDagVdfJobRequest& request) const;
+  /** Cancels and joins one exact asynchronous DAG-proposer VDF job. */
+  rustaxa::HostDagVdfCancelReport consensusCancelDagVdf(const rustaxa::HostDagVdfJobRequest& request) const;
+  /** Publishes one best-effort post-commit public observation. */
+  rustaxa::HostConsensusObservationReport consensusObserve(
+      const rustaxa::HostConsensusObservationRequest& request) const;
 
  private:
   friend class ConsensusProcess;
@@ -144,6 +166,14 @@ class ExternalEvmPort final {
   /** Loads an ordered account batch from one exact FinalChain snapshot. */
   rustaxa::HostFinalChainAccountFactsReport consensusLoadFinalChainAccountFacts(
       const rustaxa::HostFinalChainAccountFactsRequest& request) const;
+  /**
+   * Estimates one ordered canonical transaction batch against concrete FinalChain state.
+   *
+   * The report echoes the exact effect identity and sampled FinalChain block, preserves input hash order, and carries
+   * each complete ExecutionResult as canonical RLP. Malformed payloads, hash mismatches, unavailable periods, and EVM
+   * failures produce a failed report without partial estimates.
+   */
+  rustaxa::HostDagGasBatch consensusEstimateDagTransactionGas(const rustaxa::HostDagGasBatch& request) const;
 
  private:
   class Impl;
@@ -153,7 +183,7 @@ class ExternalEvmPort final {
 /**
  * App-owned process shell for the blocking native consensus runner.
  *
- * This type owns one worker thread plus the four exact host ports above. It
+ * This type owns one worker thread plus the exact host ports above. It
  * contains no PBFT actions, phases, manager references, protocol mirrors, or
  * materialized-object caches. Stop is interruptible, idempotent, and joins the
  * worker without holding the worker-state mutex. Concurrent lifecycle calls

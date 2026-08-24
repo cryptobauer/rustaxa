@@ -15,7 +15,15 @@
 #include "cli/config.hpp"
 #include "common/app_base.hpp"
 #include "config/config.hpp"
+#include "pbft/pbft_block.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "transaction/transaction.hpp"
+#else
 #include "transaction/transaction_manager.hpp"
+#endif
+#include "vote/pbft_vote.hpp"
+#include "vote/vote.hpp"
+#include "vote/vrf_sortition.hpp"
 
 // TODO rename this namespace to `util_test`
 namespace taraxa {

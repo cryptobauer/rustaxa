@@ -25,6 +25,9 @@ use rustaxa_vdf::vdf_sortition::decode_vdf_sortition_payload;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
+use crate::dag_transaction_service::{
+    DagNonFinalizedIndex, DagRuntimeStatus, DagTransactionService, TransactionPoolStatus,
+};
 use crate::final_chain::FinalChain;
 use crate::pbft_service::PbftService;
 use crate::sortition::{SortitionParamsChange, THRESHOLD_UPPER_MIN_VALUE};
@@ -395,6 +398,7 @@ pub struct ConsensusQueryApi {
     storage: Arc<Storage>,
     live_pbft: Option<Arc<PbftService>>,
     live_final_chain: Option<Arc<FinalChain>>,
+    live_dag_transaction: Option<Arc<DagTransactionService>>,
 }
 
 impl ConsensusQueryApi {
@@ -404,6 +408,7 @@ impl ConsensusQueryApi {
             storage,
             live_pbft: None,
             live_final_chain: None,
+            live_dag_transaction: None,
         }
     }
 
@@ -417,12 +422,49 @@ impl ConsensusQueryApi {
         storage: Arc<Storage>,
         pbft: Arc<PbftService>,
         final_chain: Arc<FinalChain>,
+        dag_transaction: Arc<DagTransactionService>,
     ) -> Self {
         Self {
             storage,
             live_pbft: Some(pbft),
             live_final_chain: Some(final_chain),
+            live_dag_transaction: Some(dag_transaction),
         }
+    }
+
+    /// Returns a lock-coherent live DAG graph/head snapshot.
+    ///
+    /// Storage-only fixtures fail with a stable unavailable error. Production
+    /// clients receive owned values and cannot access the graph or its mutex.
+    pub fn dag_live_status(&self) -> Result<DagRuntimeStatus> {
+        self.live_dag_transaction
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_DAG_UNAVAILABLE")?
+            .dag_runtime_status()
+    }
+
+    /// Returns the complete live non-finalized DAG level index.
+    pub fn dag_live_non_finalized_index(&self) -> Result<DagNonFinalizedIndex> {
+        self.live_dag_transaction
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_DAG_UNAVAILABLE")?
+            .dag_non_finalized_index()
+    }
+
+    /// Returns one lock-coherent public transaction-pool status snapshot.
+    pub fn transaction_pool_status(&self) -> Result<TransactionPoolStatus> {
+        self.live_dag_transaction
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_TRANSACTION_UNAVAILABLE")?
+            .transaction_pool_status()
+    }
+
+    /// Returns whether native live queue/sidecar state knows a transaction.
+    pub fn live_transaction_is_known(&self, hash: [u8; 32]) -> Result<bool> {
+        self.live_dag_transaction
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_TRANSACTION_UNAVAILABLE")?
+            .transaction_is_known(hash)
     }
 
     /// Returns the number of votes in the live application-owned verified-vote index.

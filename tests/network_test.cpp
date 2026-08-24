@@ -15,6 +15,7 @@
 #include "config/config.hpp"
 #include "dag/dag.hpp"
 #include "dag/dag_block_proposer.hpp"
+#include "final_chain/final_chain.hpp"
 #include "logger/logger.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_application.hpp"
@@ -23,16 +24,14 @@
 #endif
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
 #include "network/tarcap/packets_handlers/interface/pillar_vote_packet_handler.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/latest/dag_block_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/get_dag_sync_packet_handler.hpp"
-#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/latest/get_next_votes_bundle_packet_handler.hpp"
-#endif
 #include "network/tarcap/packets_handlers/latest/status_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/transaction_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/latest/votes_bundle_packet_handler.hpp"
-#ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
 #endif
 #include "pbft/period_data.hpp"
@@ -142,6 +141,7 @@ TEST_F(NetworkTest, save_network) {
   });
 }
 
+#ifndef RUSTAXA_ENABLE
 // Test creates two Network setup and verifies sending blocks between is successful
 TEST_F(NetworkTest, transfer_lot_of_blocks) {
   auto node_cfgs = make_node_cfgs(2, 1, 20);
@@ -595,6 +595,8 @@ TEST_F(NetworkTest, node_sync) {
   });
 }
 
+#endif
+
 // Test creates a PBFT chain on one node and verifies
 // that the second node syncs with it and that the resulting
 // chain on the other end is the same
@@ -631,6 +633,20 @@ TEST_F(NetworkTest, rust_mode_consensus_lifecycle_and_pbft_sync_via_query_client
   const auto synced_block = (*node2_query)->consensus_query_pbft_block_hash_by_period(expected_period);
   ASSERT_TRUE(synced_block.found);
   EXPECT_EQ(synced_block.hash, expected_block.hash);
+}
+
+TEST_F(NetworkTest, rust_mode_transaction_proposal_and_peer_sync_use_native_application_root) {
+  auto nodes = launch_nodes(make_node_cfgs(2, 1, 20));
+  ASSERT_TRUE(wait_connect(nodes));
+
+  TransactionClient client(nodes[0]);
+  const auto submitted = client.coinTransfer(addr(), 1, true);
+  ASSERT_EQ(submitted.stage, TransactionClient::TransactionStage::executed);
+  const auto transaction_hash = submitted.trx->getHash();
+
+  EXPECT_HAPPENS({60s, 100ms}, [&](auto& ctx) {
+    WAIT_EXPECT_TRUE(ctx, nodes[1]->getFinalChain()->transactionLocation(transaction_hash).has_value())
+  });
 }
 
 TEST_F(NetworkTest, rust_mode_app_teardown_preserves_escaped_consensus_root_queries) {
@@ -1025,6 +1041,7 @@ TEST_F(NetworkTest, pbft_next_votes_sync_in_same_round) {
 }
 #endif
 
+#ifndef RUSTAXA_ENABLE
 // Test creates a DAG on one node and verifies
 // that the second node syncs with it and that the resulting
 // DAG on the other end is the same
@@ -1986,6 +2003,8 @@ TEST_F(NetworkTest, peer_cache_test) {
   }
 }
 
+#endif
+
 #ifdef RUSTAXA_ENABLE
 TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane) {
   const auto node_cfgs = make_node_cfgs(1, 1, 5);
@@ -1994,7 +2013,7 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   auto conf = node->getConfig();
   conf.db_path = data_dir / "consensus_network_api";
   auto consensus_service = createConsensusApplication(conf);
-  auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service);
+  auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service, node->getFinalChain());
 
   auto first_lane_lock = network_api->lockTransportLane(6);
 

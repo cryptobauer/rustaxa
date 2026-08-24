@@ -89,6 +89,41 @@ pub struct SortitionConfig {
 }
 
 impl SortitionConfig {
+    /// Builds the complete native sortition configuration from flat bootstrap values.
+    ///
+    /// Inputs preserve the CXX bootstrap scalars exactly; the returned value groups
+    /// VRF, VDF, target-band, and interval facts without normalization. Invalid
+    /// ranges remain visible to the native service's existing validation path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_runtime_values(
+        threshold_upper: u16,
+        difficulty_min: u16,
+        difficulty_max: u16,
+        difficulty_stale: u16,
+        lambda_bound: u16,
+        changes_count_for_average: u16,
+        dag_efficiency_target_low: u16,
+        dag_efficiency_target_high: u16,
+        changing_interval: u16,
+        computation_interval: u16,
+    ) -> Self {
+        Self {
+            params: SortitionParams {
+                vrf: VrfParams { threshold_upper },
+                vdf: VdfParams {
+                    difficulty_min,
+                    difficulty_max,
+                    difficulty_stale,
+                    lambda_bound,
+                },
+            },
+            changes_count_for_average,
+            dag_efficiency_targets: (dag_efficiency_target_low, dag_efficiency_target_high),
+            changing_interval,
+            computation_interval,
+        }
+    }
+
     /// Returns the midpoint of the configured efficiency target band.
     pub fn target_efficiency(self) -> u16 {
         (self.dag_efficiency_targets.0 + self.dag_efficiency_targets.1) / 2
@@ -868,6 +903,28 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn runtime_values_constructor_preserves_complete_flat_config() {
+        let config =
+            SortitionConfig::from_runtime_values(101, 2, 7, 9, 1_500, 11, 4_900, 5_100, 200, 50);
+        assert_eq!(config.params.vrf.threshold_upper, 101);
+        assert_eq!(
+            config.params.vdf,
+            VdfParams {
+                difficulty_min: 2,
+                difficulty_max: 7,
+                difficulty_stale: 9,
+                lambda_bound: 1_500
+            }
+        );
+        assert_eq!(config.changes_count_for_average, 11);
+        assert_eq!(config.dag_efficiency_targets, (4_900, 5_100));
+        assert_eq!(
+            (config.changing_interval, config.computation_interval),
+            (200, 50)
+        );
+    }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);

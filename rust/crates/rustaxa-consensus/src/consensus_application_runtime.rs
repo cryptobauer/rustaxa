@@ -6,6 +6,7 @@
 //! never receive a manager action or mutable consensus object.
 
 use crate::FinalChain;
+use crate::consensus_application::DagProposerConfig;
 use crate::consensus_application_startup::{
     apply_startup_persisted_pillar_vote, apply_startup_pillar_anchor_state,
     apply_startup_pillar_vote, complete_consensus_startup, hydrate_recently_finalized_transactions,
@@ -18,7 +19,14 @@ use crate::consensus_state_actions::{
 use crate::consensus_value_proposal::{
     ConsensusValueProposalAction, complete_value_proposal_signing, compose_value_proposal,
 };
-use crate::dag_transaction_service::DagTransactionService;
+use crate::dag_service::{
+    DagProposerAddBlockReport, DagProposerSessionAction, DagProposerSessionBeginInput,
+    DagProposerSigningReport, DagProposerVdfProofReport, DagProposerVrfReport,
+};
+use crate::dag_transaction_service::{
+    DagAddBlockAccountNonceFact, DagAddBlockCompletion, DagAddBlockPrepareRequest,
+    DagAddBlockTransactionPayload, DagProposerPackPrepareRequest, DagTransactionService,
+};
 use crate::maybe_broadcast_votes::{
     ConsensusVoteTransportRequest, MaybeBroadcastVotesActionId, MaybeBroadcastVotesBatch,
     MaybeBroadcastVotesCommit, MaybeBroadcastVotesInput, VoteBroadcastAcknowledgement,
@@ -47,9 +55,10 @@ use crate::pbft_vote_generation::{
     prepare_pbft_vote_vrf,
 };
 use crate::pbft_vote_validation::{PbftPublicProposerSortitionInput, prepare_public_proposer_vrf};
+use crate::transaction_packing_service::TransactionPackingEstimate;
 use crate::verified_votes::PbftVoteType;
 use crate::verified_votes::TwoTPlusOneVotedBlockType;
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -195,6 +204,114 @@ pub struct ReportMaliciousPeerRequest {
     pub evidence_rlp: Vec<u8>,
 }
 
+/// Exact canonical DAG-block transport leaf.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GossipDagBlockRequest {
+    pub effect_id: ConsensusEffectId,
+    pub block_hash: [u8; 32],
+    pub block_rlp: Vec<u8>,
+}
+
+/// One canonical transaction requiring concrete EVM gas estimation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagGasEstimateInput {
+    pub hash: [u8; 32],
+    pub transaction_rlp: Vec<u8>,
+}
+
+/// Exact unlocked DAG proposer gas-estimation leaf.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagGasEstimateRequest {
+    pub effect_id: ConsensusEffectId,
+    pub proposal_period: u64,
+    pub transactions: Vec<DagGasEstimateInput>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagGasEstimateResult {
+    pub hash: [u8; 32],
+    pub gas_used: u64,
+    pub result_rlp: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagGasEstimateReport {
+    pub effect_id: ConsensusEffectId,
+    pub succeeded: bool,
+    pub observed_block: u64,
+    pub estimates: Vec<DagGasEstimateResult>,
+    pub error_code: String,
+}
+
+/// Exact key-custody-free VDF executor request for one native proposer cursor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagVdfRequest {
+    pub effect_id: ConsensusEffectId,
+    pub wallet_index: u64,
+    pub vrf_input: Vec<u8>,
+    pub vdf_message: Vec<u8>,
+    pub vote_count: u64,
+    pub max_vote_count: u64,
+    /// Dynamic sortition lambda retained by the native proposer cursor.
+    pub lambda_bound: u16,
+    pub difficulty: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagVdfStartReport {
+    pub effect_id: ConsensusEffectId,
+    pub started: bool,
+    pub job_id: u64,
+    pub error_code: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagVdfPollRequest {
+    pub effect_id: ConsensusEffectId,
+    pub job_id: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagVdfPollReport {
+    pub effect_id: ConsensusEffectId,
+    pub job_id: u64,
+    pub complete: bool,
+    pub succeeded: bool,
+    pub cancelled: bool,
+    pub vdf_rlp: Vec<u8>,
+    pub error_code: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagVdfCancelRequest {
+    pub effect_id: ConsensusEffectId,
+    pub job_id: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagVdfCancelReport {
+    pub effect_id: ConsensusEffectId,
+    pub job_id: u64,
+    pub cancelled: bool,
+    pub error_code: String,
+}
+
+/// Public observer fact emitted after native DAG/transaction publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsensusObservationRequest {
+    pub effect_id: ConsensusEffectId,
+    pub kind: u8,
+    pub hash: [u8; 32],
+    pub canonical_rlp: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsensusObservationReport {
+    pub effect_id: ConsensusEffectId,
+    pub succeeded: bool,
+    pub error_code: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsensusTransportReport {
     pub effect_id: ConsensusEffectId,
@@ -206,6 +323,8 @@ pub struct ConsensusTransportReport {
 pub struct ConsensusTransportStatus {
     pub available: bool,
     pub pbft_syncing: bool,
+    /// Whether the host packet queue is applying proposal backpressure.
+    pub packet_queue_over_limit: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -354,6 +473,26 @@ pub trait ConsensusTransportPort {
         &self,
         request: &ReportMaliciousPeerRequest,
     ) -> Result<ConsensusTransportReport>;
+
+    /// Gossips one already-published native DAG block.
+    fn gossip_dag_block(
+        &self,
+        _request: &GossipDagBlockRequest,
+    ) -> Result<ConsensusTransportReport> {
+        bail!("CONSENSUS_DAG_GOSSIP_PORT_UNAVAILABLE")
+    }
+}
+
+/// CPU-heavy VDF proof execution. Wallet secrets remain behind this port.
+pub trait ConsensusVdfPort {
+    fn start_dag_vdf(&self, request: &DagVdfRequest) -> Result<DagVdfStartReport>;
+    fn poll_dag_vdf(&self, request: &DagVdfPollRequest) -> Result<DagVdfPollReport>;
+    fn cancel_dag_vdf(&self, request: &DagVdfCancelRequest) -> Result<DagVdfCancelReport>;
+}
+
+/// Public event/WebSocket publication leaf.
+pub trait ConsensusObserverPort {
+    fn observe(&self, request: &ConsensusObservationRequest) -> Result<ConsensusObservationReport>;
 }
 
 /// Concrete external-EVM leaf; sequencing and publication remain native.
@@ -374,6 +513,14 @@ pub trait ConsensusExecutionPort {
         &self,
         request: &FinalChainAccountFactsRequest,
     ) -> Result<FinalChainAccountFactsReport>;
+
+    /// Estimates exact canonical transaction payloads for one proposer cursor.
+    fn estimate_dag_transaction_gas(
+        &self,
+        _request: &DagGasEstimateRequest,
+    ) -> Result<DagGasEstimateReport> {
+        bail!("CONSENSUS_DAG_GAS_PORT_UNAVAILABLE")
+    }
 }
 
 struct RuntimeSyncedLeaves<'a, P, S, T> {
@@ -462,13 +609,40 @@ pub struct ConsensusRunExit {
 pub struct ConsensusApplicationRuntime {
     generation: AtomicU64,
     sequence: AtomicU64,
+    operation_sequence: AtomicU64,
     running: AtomicBool,
     signing_identities: Vec<SigningIdentity>,
     polling_interval_ms: u64,
+    dag_proposers: Vec<DagProposerSessionBeginInput>,
+    dag_proposer_config: DagProposerConfig,
 }
 
 impl ConsensusApplicationRuntime {
+    /// Constructs a runtime without DAG proposers, used by focused PBFT tests.
     pub fn new(signing_identities: Vec<SigningIdentity>, polling_interval_ms: u64) -> Result<Self> {
+        Self::new_with_proposers(
+            signing_identities,
+            polling_interval_ms,
+            Vec::new(),
+            DagProposerConfig {
+                total_transaction_shards: 1,
+                proposal_dag_gas_limit: u64::MAX,
+                default_dag_gas_limit: u64::MAX,
+                default_pbft_gas_limit: u64::MAX,
+                cornus_activation_period: u64::MAX,
+                cornus_dag_gas_limit: u64::MAX,
+                cornus_pbft_gas_limit: u64::MAX,
+            },
+        )
+    }
+
+    /// Constructs the complete runtime including key-custody-free DAG schedulers.
+    pub fn new_with_proposers(
+        signing_identities: Vec<SigningIdentity>,
+        polling_interval_ms: u64,
+        dag_proposers: Vec<DagProposerSessionBeginInput>,
+        dag_proposer_config: DagProposerConfig,
+    ) -> Result<Self> {
         ensure!(
             polling_interval_ms > 0,
             "CONSENSUS_RUNTIME_ZERO_POLLING_INTERVAL"
@@ -479,17 +653,71 @@ impl ConsensusApplicationRuntime {
                 "CONSENSUS_RUNTIME_SIGNING_INDEX_NOT_DENSE"
             );
         }
+        ensure!(
+            dag_proposers.len() <= signing_identities.len(),
+            "CONSENSUS_RUNTIME_DAG_PROPOSER_IDENTITY_MISSING"
+        );
+        for (position, proposer) in dag_proposers.iter().enumerate() {
+            let identity = &signing_identities[position];
+            ensure!(
+                proposer.proposer_address == identity.address
+                    && proposer.wallet_vrf_public_key == identity.vrf_public_key,
+                "CONSENSUS_RUNTIME_DAG_PROPOSER_IDENTITY_MISMATCH"
+            );
+        }
         Ok(Self {
             generation: AtomicU64::new(0),
             sequence: AtomicU64::new(0),
+            operation_sequence: AtomicU64::new(0),
             running: AtomicBool::new(false),
             signing_identities,
             polling_interval_ms,
+            dag_proposers,
+            dag_proposer_config,
         })
+    }
+
+    /// Issues an identity for an operation-shaped leaf executed outside the
+    /// blocking daemon loop.
+    ///
+    /// Generation zero is reserved for these calls and is never issued by a
+    /// daemon run. The independent monotonic sequence prevents a concurrent RPC
+    /// or network admission report from being mistaken for another operation.
+    pub(crate) fn next_operation_effect(&self) -> Result<ConsensusEffectId> {
+        let sequence = self
+            .operation_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("CONSENSUS_OPERATION_EFFECT_SEQUENCE_EXHAUSTED"))?;
+        Ok(ConsensusEffectId {
+            generation: 0,
+            sequence,
+        })
+    }
+
+    /// Rejects a stale or reordered operation-shaped host report.
+    pub(crate) fn validate_operation_report(
+        &self,
+        expected: ConsensusEffectId,
+        actual: ConsensusEffectId,
+    ) -> Result<()> {
+        ensure!(
+            expected == actual && actual.generation == 0,
+            "CONSENSUS_OPERATION_STALE_EFFECT_REPORT"
+        );
+        Ok(())
     }
 
     pub fn signing_identities(&self) -> &[SigningIdentity] {
         &self.signing_identities
+    }
+
+    pub(crate) fn dag_gas_limit(&self, proposal_period: u64) -> u64 {
+        self.dag_proposer_config.gas_limits(proposal_period).0
+    }
+
+    pub(crate) fn pbft_gas_limit(&self, proposal_period: u64) -> u64 {
+        self.dag_proposer_config.gas_limits(proposal_period).1
     }
 
     fn begin_run(&self) -> Result<u64> {
@@ -699,6 +927,334 @@ impl ConsensusApplicationRuntime {
             );
         }
         Ok(report)
+    }
+
+    fn cancel_active_dag_vdf<V: ConsensusVdfPort>(
+        &self,
+        generation: u64,
+        job_id: u64,
+        vdf: &V,
+    ) -> Result<()> {
+        let effect_id = self
+            .next_effect(generation)
+            .or_else(|_| self.next_operation_effect())?;
+        let report = vdf.cancel_dag_vdf(&DagVdfCancelRequest { effect_id, job_id })?;
+        ensure!(
+            report.effect_id == effect_id && report.job_id == job_id && report.cancelled,
+            "CONSENSUS_DAG_VDF_CANCEL_FAILED: {}",
+            report.error_code
+        );
+        Ok(())
+    }
+
+    /// Drives one complete native DAG proposal attempt for one configured wallet.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_dag_proposer<P, S, T, E, V, O>(
+        &self,
+        generation: u64,
+        wallet_index: u64,
+        input: DagProposerSessionBeginInput,
+        dag: &DagTransactionService,
+        final_chain: &FinalChain,
+        process: &P,
+        signer: &S,
+        transport: &T,
+        execution: &E,
+        vdf: &V,
+        observer: &O,
+    ) -> Result<bool>
+    where
+        P: ConsensusProcessPort,
+        S: ConsensusSigningPort,
+        T: ConsensusTransportPort,
+        E: ConsensusExecutionPort,
+        V: ConsensusVdfPort,
+        O: ConsensusObserverPort,
+    {
+        let session_id = dag.begin_proposer_session(input)?;
+        let mut active_vdf_job = None;
+        let result = (|| {
+            let mut step =
+                dag.report_proposer_final_chain_facts_with_final_chain(session_id, final_chain)?;
+            if matches!(step.action, DagProposerSessionAction::Complete) {
+                return Ok(step.return_value);
+            }
+            ensure!(
+                matches!(step.action, DagProposerSessionAction::ProveVrf),
+                "CONSENSUS_DAG_PROPOSER_EXPECTED_VRF"
+            );
+            let vrf_id = self.next_effect(generation)?;
+            let vrf = signer.prove_vrf(&ConsensusVrfRequest {
+                effect_id: vrf_id,
+                wallet_index,
+                message: step.vrf_input.clone(),
+            })?;
+            self.validate_report(vrf_id, vrf.effect_id)?;
+            ensure!(
+                vrf.succeeded,
+                "CONSENSUS_RUNTIME_VRF_FAILED: {}",
+                vrf.error_code
+            );
+            step = dag.report_proposer_vrf(
+                session_id,
+                DagProposerVrfReport {
+                    proof: vrf.proof,
+                    output: vrf.output,
+                },
+            )?;
+            if matches!(step.action, DagProposerSessionAction::Complete) {
+                return Ok(step.return_value);
+            }
+            ensure!(
+                matches!(step.action, DagProposerSessionAction::PackTransactions),
+                "CONSENSUS_DAG_PROPOSER_EXPECTED_PACK"
+            );
+            let (dag_gas_limit, pbft_gas_limit) =
+                self.dag_proposer_config.gas_limits(step.proposal_period);
+            dag.configure_proposer_gas_policy(
+                session_id,
+                self.dag_proposer_config
+                    .proposal_weight_limit(step.proposal_period),
+                pbft_gas_limit,
+                dag_gas_limit,
+            )?;
+            let pack = dag.prepare_proposer_pack(DagProposerPackPrepareRequest {
+                session_id,
+                network_throttled: {
+                    let status = transport.transport_status();
+                    status.pbft_syncing || status.packet_queue_over_limit
+                },
+                min_transaction_gas: 21_000,
+                estimate_gas_limit: 200_000,
+                last_block_number: final_chain.last_block_number()?,
+            })?;
+            step = pack.session;
+            if !pack.estimate_requests.is_empty() {
+                let effect_id = self.next_effect(generation)?;
+                let report = execution.estimate_dag_transaction_gas(&DagGasEstimateRequest {
+                    effect_id,
+                    proposal_period: step.proposal_period,
+                    transactions: pack
+                        .estimate_requests
+                        .iter()
+                        .map(|value| DagGasEstimateInput {
+                            hash: value.hash.0,
+                            transaction_rlp: value.transaction_rlp.clone(),
+                        })
+                        .collect(),
+                })?;
+                self.validate_report(effect_id, report.effect_id)?;
+                ensure!(
+                    report.succeeded,
+                    "CONSENSUS_DAG_GAS_FAILED: {}",
+                    report.error_code
+                );
+                ensure!(
+                    report.estimates.len() == pack.estimate_requests.len(),
+                    "CONSENSUS_DAG_GAS_COUNT_MISMATCH"
+                );
+                step = dag
+                    .finalize_proposer_pack(
+                        session_id,
+                        report
+                            .estimates
+                            .into_iter()
+                            .map(|value| TransactionPackingEstimate {
+                                hash: value.hash.into(),
+                                gas_used: value.gas_used,
+                                last_block_number: report.observed_block,
+                                result_rlp: value.result_rlp,
+                            })
+                            .collect(),
+                    )?
+                    .session;
+            }
+            if matches!(step.action, DagProposerSessionAction::Complete) {
+                return Ok(step.return_value);
+            }
+            ensure!(
+                matches!(step.action, DagProposerSessionAction::StartVdf),
+                "CONSENSUS_DAG_PROPOSER_EXPECTED_VDF"
+            );
+            let start_id = self.next_effect(generation)?;
+            let started = vdf.start_dag_vdf(&DagVdfRequest {
+                effect_id: start_id,
+                wallet_index,
+                vrf_input: step.vrf_input.clone(),
+                vdf_message: step.vdf_message.clone(),
+                vote_count: step.vote_count,
+                max_vote_count: step.max_vote_count,
+                lambda_bound: step.sortition_params.vdf.lambda_bound,
+                difficulty: step.vdf_difficulty,
+            })?;
+            if started.started && started.job_id != 0 {
+                active_vdf_job = Some(started.job_id);
+            }
+            self.validate_report(start_id, started.effect_id)?;
+            ensure!(
+                started.started && started.job_id != 0,
+                "CONSENSUS_DAG_VDF_START_FAILED: {}",
+                started.error_code
+            );
+            let proof = loop {
+                let native = dag.poll_proposer_vdf(session_id)?;
+                if matches!(native.action, DagProposerSessionAction::CancelVdf)
+                    || process.stop_requested(generation)
+                {
+                    self.cancel_active_dag_vdf(generation, started.job_id, vdf)?;
+                    active_vdf_job = None;
+                    let _ = dag.abort_proposer_session(session_id);
+                    return Ok(native.return_value);
+                }
+                let poll_id = self.next_effect(generation)?;
+                let polled = vdf.poll_dag_vdf(&DagVdfPollRequest {
+                    effect_id: poll_id,
+                    job_id: started.job_id,
+                })?;
+                self.validate_report(poll_id, polled.effect_id)?;
+                ensure!(
+                    polled.job_id == started.job_id && !polled.cancelled,
+                    "CONSENSUS_DAG_VDF_POLL_IDENTITY_MISMATCH"
+                );
+                if polled.complete {
+                    active_vdf_job = None;
+                    break polled;
+                }
+                if self.wait_for(
+                    generation,
+                    crate::dag::DAG_PROPOSER_VDF_POLL_INTERVAL_MS,
+                    process,
+                )? == ConsensusWaitOutcome::Stopped
+                {
+                    continue;
+                }
+            };
+            ensure!(
+                proof.succeeded,
+                "CONSENSUS_DAG_VDF_FAILED: {}",
+                proof.error_code
+            );
+            step = dag.report_proposer_vdf_proof(
+                session_id,
+                DagProposerVdfProofReport {
+                    proof_ok: true,
+                    vdf_rlp: proof.vdf_rlp,
+                },
+            )?;
+            if matches!(step.action, DagProposerSessionAction::StaleProofSleep) {
+                let _ = self.wait_for(
+                    generation,
+                    crate::dag::DAG_PROPOSER_STALE_PROOF_SLEEP_MS,
+                    process,
+                )?;
+                step = dag.resume_proposer_stale_proof(session_id)?;
+            }
+            if matches!(step.action, DagProposerSessionAction::Complete) {
+                return Ok(step.return_value);
+            }
+            ensure!(
+                matches!(step.action, DagProposerSessionAction::SignBlock),
+                "CONSENSUS_DAG_PROPOSER_EXPECTED_SIGN"
+            );
+            let signature =
+                self.sign_digest(generation, wallet_index, step.signing_hash.0, signer)?;
+            step =
+                dag.report_proposer_signing(session_id, DagProposerSigningReport { signature })?;
+            ensure!(
+                matches!(step.action, DagProposerSessionAction::AddBlock),
+                "CONSENSUS_DAG_PROPOSER_EXPECTED_ADD"
+            );
+            let signed = step
+                .signed_intent
+                .clone()
+                .context("CONSENSUS_DAG_SIGNED_INTENT_MISSING")?;
+            let transactions = step
+                .selected_transactions
+                .iter()
+                .map(|value| DagAddBlockTransactionPayload {
+                    hash: value.hash,
+                    transaction_rlp: value.transaction_rlp.clone(),
+                })
+                .collect();
+            let prepared = dag.prepare_add_block(DagAddBlockPrepareRequest {
+                expected_hash: signed.block_hash,
+                block_rlp: signed.block_rlp.clone(),
+                validate_hash: true,
+                save: true,
+                proposed: true,
+                transactions,
+            })?;
+            let add = if prepared.cursor_id == 0 {
+                DagProposerAddBlockReport {
+                    accepted: prepared.accepted,
+                    duplicate: prepared.duplicate,
+                    expired: prepared.expired,
+                    missing_references: prepared.missing_references,
+                }
+            } else {
+                let accounts = self.load_account_facts(
+                    generation,
+                    prepared
+                        .account_requests
+                        .iter()
+                        .map(|value| value.sender.0)
+                        .collect(),
+                    execution,
+                )?;
+                let commit = dag.complete_add_block(DagAddBlockCompletion {
+                    cursor_id: prepared.cursor_id,
+                    account_nonce_facts: accounts
+                        .accounts
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, value)| DagAddBlockAccountNonceFact {
+                            input_index: idx as u64,
+                            account_nonce: ethereum_types::U256::from_big_endian(&value.nonce),
+                        })
+                        .collect(),
+                })?;
+                if commit.emit_verified {
+                    let id = self.next_effect(generation)?;
+                    if let Ok(report) = observer.observe(&ConsensusObservationRequest {
+                        effect_id: id,
+                        kind: 2,
+                        hash: signed.block_hash.0,
+                        canonical_rlp: signed.block_rlp.clone(),
+                    }) {
+                        self.validate_report(id, report.effect_id)?;
+                    }
+                }
+                if commit.gossip {
+                    let id = self.next_effect(generation)?;
+                    if let Ok(report) = transport.gossip_dag_block(&GossipDagBlockRequest {
+                        effect_id: id,
+                        block_hash: signed.block_hash.0,
+                        block_rlp: signed.block_rlp.clone(),
+                    }) {
+                        self.validate_report(id, report.effect_id)?;
+                    }
+                }
+                DagProposerAddBlockReport {
+                    accepted: commit.accepted,
+                    duplicate: false,
+                    expired: false,
+                    missing_references: Vec::new(),
+                }
+            };
+            step = dag.report_proposer_add_block(session_id, add)?;
+            ensure!(
+                matches!(step.action, DagProposerSessionAction::Complete),
+                "CONSENSUS_DAG_PROPOSER_NOT_COMPLETE"
+            );
+            Ok(step.return_value)
+        })();
+        if result.is_err() {
+            if let Some(job_id) = active_vdf_job.take() {
+                let _ = self.cancel_active_dag_vdf(generation, job_id, vdf);
+            }
+            let _ = dag.abort_proposer_session(session_id);
+        }
+        result
     }
 
     fn drive_application_finalization<E, S, T>(
@@ -1014,7 +1570,7 @@ impl ConsensusApplicationRuntime {
     /// acknowledgement, and counter publication are native. Remaining state
     /// action and finalization variants are listed explicitly and fail closed
     /// until their composed service operations are available.
-    pub fn run<P, S, T, E>(
+    pub fn run<P, S, T, E, V, O>(
         &self,
         pbft: &PbftService,
         dag_transaction: &DagTransactionService,
@@ -1023,12 +1579,16 @@ impl ConsensusApplicationRuntime {
         signer: &S,
         transport: &T,
         evm: &E,
+        vdf: &V,
+        observer: &O,
     ) -> Result<ConsensusRunExit>
     where
         P: ConsensusProcessPort,
         S: ConsensusSigningPort,
         T: ConsensusTransportPort,
         E: ConsensusExecutionPort,
+        V: ConsensusVdfPort,
+        O: ConsensusObserverPort,
     {
         let generation = self.begin_run()?;
         struct RunningGuard<'a>(&'a AtomicBool);
@@ -1166,6 +1726,21 @@ impl ConsensusApplicationRuntime {
                     generation,
                     reason: ConsensusRunReason::Stopped,
                 });
+            }
+            for (wallet_index, proposer) in self.dag_proposers.iter().cloned().enumerate() {
+                self.drive_dag_proposer(
+                    generation,
+                    wallet_index as u64,
+                    proposer,
+                    dag_transaction,
+                    final_chain,
+                    process,
+                    signer,
+                    transport,
+                    evm,
+                    vdf,
+                    observer,
+                )?;
             }
             tick_id = tick_id
                 .checked_add(1)
@@ -1865,10 +2440,39 @@ impl ConsensusApplicationRuntime {
 mod tests {
     use super::*;
     use crate::pbft_manager::{PbftManagerSleepFact, plan_pbft_manager_sleep_until_next_step};
+    use std::sync::Mutex;
 
     struct FakeProcess {
         outcome: ConsensusWaitOutcome,
         stale: bool,
+    }
+
+    struct RecordingVdf {
+        cancel_jobs: Mutex<Vec<u64>>,
+        cancel_succeeds: bool,
+    }
+
+    impl ConsensusVdfPort for RecordingVdf {
+        fn start_dag_vdf(&self, _request: &DagVdfRequest) -> Result<DagVdfStartReport> {
+            bail!("unused VDF start")
+        }
+
+        fn poll_dag_vdf(&self, _request: &DagVdfPollRequest) -> Result<DagVdfPollReport> {
+            bail!("unused VDF poll")
+        }
+
+        fn cancel_dag_vdf(&self, request: &DagVdfCancelRequest) -> Result<DagVdfCancelReport> {
+            self.cancel_jobs.lock().unwrap().push(request.job_id);
+            if !self.cancel_succeeds {
+                bail!("injected VDF cancellation failure");
+            }
+            Ok(DagVdfCancelReport {
+                effect_id: request.effect_id,
+                job_id: request.job_id,
+                cancelled: true,
+                error_code: String::new(),
+            })
+        }
     }
 
     #[test]
@@ -2104,6 +2708,7 @@ mod tests {
             ConsensusTransportStatus {
                 available: true,
                 pbft_syncing: false,
+                packet_queue_over_limit: false,
             }
         }
         fn report_malicious_peer(
@@ -2151,6 +2756,7 @@ mod tests {
             ConsensusTransportStatus {
                 available: true,
                 pbft_syncing: false,
+                packet_queue_over_limit: false,
             }
         }
 
@@ -2414,5 +3020,30 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn active_vdf_cleanup_attempts_exact_job_on_success_and_injected_failure() {
+        let runtime = ConsensusApplicationRuntime::new(vec![identity()], 1).unwrap();
+        let generation = runtime.begin_run().unwrap();
+        let successful = RecordingVdf {
+            cancel_jobs: Mutex::new(Vec::new()),
+            cancel_succeeds: true,
+        };
+        runtime
+            .cancel_active_dag_vdf(generation, 41, &successful)
+            .unwrap();
+        assert_eq!(*successful.cancel_jobs.lock().unwrap(), vec![41]);
+
+        let failing = RecordingVdf {
+            cancel_jobs: Mutex::new(Vec::new()),
+            cancel_succeeds: false,
+        };
+        assert!(
+            runtime
+                .cancel_active_dag_vdf(generation, 42, &failing)
+                .is_err()
+        );
+        assert_eq!(*failing.cancel_jobs.lock().unwrap(), vec![42]);
     }
 }

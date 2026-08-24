@@ -514,6 +514,8 @@ pub(crate) struct TransactionServiceProposerPackPrepared {
 pub struct TransactionServiceEstimateRequest {
     /// Canonical transaction identity.
     pub hash: H256,
+    /// Canonical signed transaction RLP for the concrete EVM leaf.
+    pub transaction_rlp: Vec<u8>,
     /// Declared transaction gas used by legacy estimator routing.
     pub declared_gas: u64,
     /// Recovered sender, validated against queue metadata.
@@ -1243,7 +1245,13 @@ impl TransactionServiceState {
         if precheck.status != TransactionManagerInsertTransactionStatus::Accepted {
             let admission = TransactionServiceAdmissionReport {
                 insert_status: precheck.status,
-                transaction_status: TransactionQueueInsertStatus::Inserted,
+                transaction_status: if precheck.status
+                    == TransactionManagerInsertTransactionStatus::AlreadyKnown
+                {
+                    TransactionQueueInsertStatus::Known
+                } else {
+                    TransactionQueueInsertStatus::Inserted
+                },
                 finalized_period: precheck.finalized_period,
                 inserted_hash: None,
                 emit_transaction_added: false,
@@ -1879,6 +1887,7 @@ fn transaction_estimate_request(
     );
     Ok(TransactionServiceEstimateRequest {
         hash: entry.hash,
+        transaction_rlp: entry.rlp,
         declared_gas: entry.gas,
         sender,
         nonce: entry.nonce,
@@ -3625,9 +3634,17 @@ mod tests {
         assert_eq!(
             known
                 .admission
+                .as_ref()
                 .expect("known precheck returns admission")
                 .insert_status,
             TransactionManagerInsertTransactionStatus::AlreadyKnown
+        );
+        assert_eq!(
+            known
+                .admission
+                .expect("known precheck returns admission")
+                .transaction_status,
+            TransactionQueueInsertStatus::Known
         );
         assert_eq!(
             known.public_result.message,

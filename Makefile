@@ -17,7 +17,7 @@ CPP_INTERSECTION_HEAD?=main
 CPP_INTERSECTION_EXCLUDES?=':(exclude)rust/**' ':(exclude).devcontainer/**' ':(exclude).github/**' ':(exclude).gitignore' ':(exclude)Makefile' ':(exclude)AGENTS.md' ':(exclude)PLAN.md'
 CPP_INTERSECTION_PATCH?=$(BUILD_OUTPUT_DIR)/cpp-reference-intersection.patch
 RUST_MANIFEST?=rust/Cargo.toml
-REWRITE_CONSENSUS_TESTS?=rust_consensus_tests dag_test dag_block_test pillar_chain_test
+REWRITE_CONSENSUS_TESTS?=rust_consensus_tests rpc_test network_test
 REWRITE_FINAL_CHAIN_TESTS?=final_chain_test state_api_test rpc_test
 FINAL_CHAIN_CPP_BUILD_ROOT?=/tmp/rustaxa-final-chain-pure-cpp
 
@@ -183,10 +183,6 @@ rewrite-validate-consensus: rewrite-validate-fast ## Run Rust validation plus ta
 			echo "Skipping $$test: $(BUILD_OUTPUT_DIR)/bin/$$test is not built"; \
 		fi; \
 	done
-	@cmake --build "$(BUILD_OUTPUT_DIR)" --target network_test
-	@"$(BUILD_OUTPUT_DIR)/bin/network_test" \
-		--gtest_filter=NetworkTest.rust_mode_consensus_lifecycle_and_pbft_sync_via_query_client
-
 .PHONY: rewrite-validate-final-chain
 rewrite-validate-final-chain: rewrite-validate-fast ## Run Rust validation, targeted FinalChain tests, and startup smoke.
 	$(call require_cmake_build)

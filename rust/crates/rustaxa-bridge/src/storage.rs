@@ -1357,10 +1357,18 @@ pub fn storage_shim_commit_batch(
 /// transactions. Missing hashes are returned as `found = false` rather than errors;
 /// storage/codec failures are propagated with stable context labels.
 #[cfg(test)]
+struct TestDagTransactionRlpLookup {
+    hash: [u8; 32],
+    found: bool,
+    finalized: bool,
+    tx_rlp: Vec<u8>,
+}
+
+#[cfg(test)]
 fn transaction_rlp_lookups(
     storage: &Storage,
     hashes: Vec<H256>,
-) -> Result<Vec<rustaxa_ffi::DagTransactionRlpLookup>, anyhow::Error> {
+) -> Result<Vec<TestDagTransactionRlpLookup>, anyhow::Error> {
     let transaction = storage.transaction();
     let mut out = Vec::with_capacity(hashes.len());
 
@@ -1402,7 +1410,7 @@ fn transaction_rlp_lookups(
             (None, false)
         };
 
-        out.push(rustaxa_ffi::DagTransactionRlpLookup {
+        out.push(TestDagTransactionRlpLookup {
             hash: hash.0,
             found: tx_rlp.is_some(),
             finalized,

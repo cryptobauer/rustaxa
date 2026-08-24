@@ -26,13 +26,17 @@ target_link_libraries(crypto_test
 )
 add_test(crypto_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/crypto_test)
 
-add_executable(dag_block_test dag_block_test.cpp)
-target_link_libraries(dag_block_test test_util)
-add_test(dag_block_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/dag_block_test)
+if(NOT RUSTAXA_ENABLE)
+    # Preserve direct manager/DAG object coverage in untouched pure-C++ mode.
+    # Native DAG admission, ordering, and proposer coverage lives in rustaxa-consensus.
+    add_executable(dag_block_test dag_block_test.cpp)
+    target_link_libraries(dag_block_test test_util)
+    add_test(dag_block_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/dag_block_test)
 
-add_executable(dag_test dag_test.cpp)
-target_link_libraries(dag_test test_util)
-add_test(dag_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/dag_test)
+    add_executable(dag_test dag_test.cpp)
+    target_link_libraries(dag_test test_util)
+    add_test(dag_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/dag_test)
+endif()
 
 add_executable(encoding_test encoding_test.cpp)
 target_link_libraries(encoding_test test_util)
@@ -42,13 +46,17 @@ add_executable(final_chain_test final_chain_test.cpp)
 target_link_libraries(final_chain_test test_util)
 add_test(final_chain_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/final_chain_test)
 
-add_executable(pillar_chain_test pillar_chain_test.cpp)
-target_link_libraries(pillar_chain_test test_util)
-add_test(pillar_chain_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pillar_chain_test)
+if(NOT RUSTAXA_ENABLE)
+    # These suites directly drive the retired manager-shaped fixture graph.
+    # Rust mode covers the same ownership through native service tests and smoke/RPC gates.
+    add_executable(pillar_chain_test pillar_chain_test.cpp)
+    target_link_libraries(pillar_chain_test test_util)
+    add_test(pillar_chain_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pillar_chain_test)
 
-add_executable(full_node_test full_node_test.cpp)
-target_link_libraries(full_node_test test_util)
-add_test(full_node_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/full_node_test)
+    add_executable(full_node_test full_node_test.cpp)
+    target_link_libraries(full_node_test test_util)
+    add_test(full_node_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/full_node_test)
+endif()
 
 add_executable(network_test network_test.cpp)
 target_link_libraries(network_test test_util)
@@ -62,12 +70,6 @@ if(NOT RUSTAXA_ENABLE)
     add_executable(pbft_chain_test pbft_chain_test.cpp)
     target_link_libraries(pbft_chain_test test_util)
     add_test(pbft_chain_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_chain_test)
-endif()
-
-if(RUSTAXA_ENABLE)
-    add_executable(transaction_manager_shim_test transaction_manager_shim_test.cpp)
-    target_link_libraries(transaction_manager_shim_test test_util)
-    add_test(transaction_manager_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/transaction_manager_shim_test)
 endif()
 
 if(NOT RUSTAXA_ENABLE)
@@ -88,9 +90,11 @@ add_executable(state_api_test state_api_test.cpp)
 target_link_libraries(state_api_test test_util)
 add_test(state_api_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/state_api_test)
 
-add_executable(transaction_test transaction_test.cpp)
-target_link_libraries(transaction_test test_util)
-add_test(transaction_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/transaction_test)
+if(NOT RUSTAXA_ENABLE)
+    add_executable(transaction_test transaction_test.cpp)
+    target_link_libraries(transaction_test test_util)
+    add_test(transaction_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/transaction_test)
+endif()
 
 if(NOT RUSTAXA_ENABLE)
     # The manager-shaped fixture is retained only for untouched pure-C++ mode;

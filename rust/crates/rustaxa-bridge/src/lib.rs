@@ -1,7 +1,5 @@
 mod application_host_ffi;
-mod consensus_bootstrap;
 mod consensus_host_ports;
-mod dag;
 mod dag_transaction_service;
 mod ffi;
 mod final_chain;
@@ -10,8 +8,5 @@ mod network_slashing;
 mod pillar_chain;
 mod pillar_votes;
 mod query;
-mod sortition;
 mod storage;
-mod transaction;
-mod transaction_manager;
 mod vdf;

@@ -13,7 +13,7 @@ class IDagBlockPacketHandler : public ExtSyncingPacketHandler {
                          std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
                          std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy DAG handler.
 #else
-                         network::ConsensusLiveStatusProvider consensus_status, std::shared_ptr<DagManager> dag_mgr,
+                         network::ConsensusLiveStatusProvider consensus_status,
                          network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                          const addr_t &node_addr, const std::string &logs_prefix);

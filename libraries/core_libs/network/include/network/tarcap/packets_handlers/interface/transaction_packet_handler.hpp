@@ -1,7 +1,9 @@
 #pragma once
 
 #include "network/tarcap/packets_handlers/latest/common/packet_handler.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "transaction/transaction.hpp"
+#endif
 
 namespace taraxa::network::tarcap {
 
@@ -17,6 +19,10 @@ class ITransactionPacketHandler : public PacketHandler {
    *
    * @param transactions to be sent
    */
+#ifdef RUSTAXA_ENABLE
+  /** Requests one bounded native transaction-gossip plan and executes only its physical send/known effects. */
+  virtual void periodicSendTransactions() = 0;
+#else
   void periodicSendTransactions(std::vector<SharedTransactions>&& transactions);
 
   /**
@@ -27,7 +33,7 @@ class ITransactionPacketHandler : public PacketHandler {
    *
    */
   virtual void sendTransactions(std::shared_ptr<TaraxaPeer> peer,
-                                std::pair<SharedTransactions, std::vector<trx_hash_t>>&& transactions) = 0;
+                                std::pair<SharedTransactions, std::vector<trx_hash_t> >&& transactions) = 0;
 
   /**
    * @brief select which transactions and hashes to send to which connected peer
@@ -35,7 +41,7 @@ class ITransactionPacketHandler : public PacketHandler {
    * @param transactions to be sent
    * @return selected transactions and hashes to be sent per peer
    */
-  std::vector<std::pair<std::shared_ptr<TaraxaPeer>, std::pair<SharedTransactions, std::vector<trx_hash_t>>>>
+  std::vector<std::pair<std::shared_ptr<TaraxaPeer>, std::pair<SharedTransactions, std::vector<trx_hash_t> > > >
   transactionsToSendToPeers(std::vector<SharedTransactions>&& transactions);
 
  private:
@@ -47,9 +53,10 @@ class ITransactionPacketHandler : public PacketHandler {
    * @param account_start_index which account to start with
    * @return index of the next account to continue and selected transactions and hashes to be sent per peer
    */
-  std::pair<uint32_t, std::pair<SharedTransactions, std::vector<trx_hash_t>>> transactionsToSendToPeer(
+  std::pair<uint32_t, std::pair<SharedTransactions, std::vector<trx_hash_t> > > transactionsToSendToPeer(
       std::shared_ptr<TaraxaPeer> peer, const std::vector<SharedTransactions>& transactions,
       uint32_t account_start_index);
+#endif
 };
 
 }  // namespace taraxa::network::tarcap

@@ -745,42 +745,18 @@ Completed closeout slices:
 
 1. FinalChain and DPoS fact ports: consensus-facing FinalChain/DPoS facts route through typed Rust ports, while arbitrary
    EVM/state execution remains an explicit boundary.
-2. TransactionManager public and event shell collapse: Rust owns runtime/query authority, canonical payload inspection,
-   finalized-status mutation, public admission command reports, and event/log intent selection.
-3. DAG manager mirror/materialization collapse: Rust graph/runtime state, Rust storage, typed transaction ports, and
-   Rust finalization/add/sync plans own DAG consensus decisions. The Rust-mode public facade is detached from the dead
-   legacy compile scaffold: it imports no original manager header or `DagManagerOld`, and feature-on builds exclude the
-   original `dag_manager.cpp`; pure-C++ builds retain the untouched original implementation.
-   App bootstrap now owns one `BridgeConsensusApplication` CXX wrapper over native `ConsensusApplication`, which
-   composes the PBFT and DAG/transaction/sortition graphs behind private Rust lock domains. `TransactionManager` and
-   `DagManager` receive that root instead of owning or passing separate runtime handles; full construction restores both
-   graphs before publication. Native transaction publication follows durable count and gas-history restoration.
-   The native root owns add-block preparation, canonical transaction inspection, cursor validation, one shared
-   DAG/transaction storage batch, post-commit publication, finalized-order storage cleanup, and sibling transaction
-   sidecar cleanup. The service also owns the DAG-proposer transaction-pack transition: proposal/shard limits stay private, an
-   owner-bound transaction cursor returns only required EVM estimate candidates, and selected hash/RLP/gas payloads move
-   directly into the DAG cursor. C++ retains only network-throttle observation and EVM estimate execution.
-   Finalized-DAG expiry cleanup is composed through the same service: Rust commits DAG/storage cleanup first and then
-   infallibly removes matching private transaction sidecars, so expired transaction hashes no longer cross CXX only to
-   re-enter the sibling transaction state.
-   Verify-block transaction availability is also composed: query hashes remain private while Rust prepares
-   queue/sidecar/storage views without advancing the cursor. C++ materializes and hash-validates those payloads, reads
-   each resolved sender at the exact proposal period, and reports narrow nonce facts; Rust revalidates the cursor,
-   applies finalized-transaction filtering, and only then advances. The retained EVM gas-estimation boundary stays in
-   C++.
-   Proposer session start now derives transaction-pool and non-finalized sidecar counts directly from the sibling Rust
-   TransactionManager while holding the same DAG-then-transaction lock order. Those observations no longer cross CXX
-   or route through public TransactionManager size getters; wallet identity, configured policy limits, FinalChain and
-   sortition facts, network throttling, VDF work, signing, and add-block execution remain explicit boundaries.
-   Accepted DAG persistence is composed as a cursor-bound prepare/complete transition. Rust validates the canonical
-   block and transaction payloads, C++ supplies only latest FinalChain account-nonce facts, and completion revalidates
-   the DAG plan before committing transaction rows/count plus DAG block/index/counters in one shared storage batch.
-   Graph and transaction runtime state publish only after that commit; C++ retains post-commit public materialization,
-   logging, verified events, and network gossip.
-4. DAG block proposer lifecycle shell reduction: Rust owns proposer lifecycle state, worker commands, retry cursor, VDF
-   wait/cancel decisions, stale-proof policy, atomic frontier/proposal-period observation and revalidation, block
-   construction planning, the timestamped unsigned intent, canonical signed-RLP assembly, signing boundary progression,
-   and add-block terminal classification; C++ executes VDF, signs the Rust-returned hash, and executes add-block effects.
+2. Transaction application cutover: native `ConsensusApplication` owns verification, admission, queueing, packing,
+   persistence, recovery, finalized cleanup, gas-oracle state, and public-event intent selection. Public submission is an
+   operation-shaped application task, reads/stats use `ConsensusQueryApi`, packet ingress/gossip use
+   `ConsensusNetworkApi`, and C++ retains only public formatting/event dispatch and concrete EVM gas execution.
+3. DAG application cutover: native services own graph/runtime state, verification, admission, atomic DAG/transaction
+   persistence, finalized cleanup, non-finalized sync, restart, and canonical network decisions. Rust-mode App,
+   network, RPC, GraphQL, stats, and light clients cannot obtain a `DagManager` or materialize mutable internal DAG
+   graphs; the facade, bridge task/materialization family, and shim directory are deleted.
+4. DAG proposer application cutover: native runtime owns scheduling, eligibility, packing, retry/throttle decisions,
+   asynchronous VDF progression, tip selection, block construction, signing progression, local admission, and gossip
+   planning. App supplies exact timer/process, signing/VRF, VDF start/poll/cancel, concrete gas, tarcap, and public-event
+   reports. The Rust-mode proposer facade, worker-command bridge module, App ownership, and shim directory are deleted.
 5. Vote, slashing, and pillar executor surface collapse: vote/pillar/slashing decisions consume Rust-retained payloads,
    compact facts, and typed plans; C++ executes signing, network, transaction insertion, and public sidecar edges.
 6. Rewards stats carrier ownership: Rust owns rewards-stat decisions, compatibility encoding, interval cache
@@ -847,12 +823,13 @@ must still leave Rust mode buildable, retain the pure-C++ reference route, and s
 
 ### External Consensus Facade Boundaries
 
-Three shared Rust-owned facades define the long-lived external consensus contracts. They are narrow operation
-boundaries, not service locators: they must not expose consensus manager handles, mutable sidecars, storage iterators,
-`DbStorage`, or internal runtime state.
+The native application root plus three shared Rust-owned facades define the long-lived external consensus contracts.
+They are narrow operation boundaries, not service locators: they must not expose consensus manager handles, mutable
+sidecars, storage iterators, `DbStorage`, or internal runtime state.
 
 | Boundary | Rust facade | Rust ownership | External executor or adapter ownership |
 | --- | --- | --- | --- |
+| Application tasks and public submission | `ConsensusApplication` | Lifecycle, DAG/transaction/proposer mutation tasks, canonical admission and persistence, public-event selection, and exact host-effect/result validation | App process hosting, RPC/GraphQL mutation formatting, concrete gas execution, and best-effort public event delivery |
 | Network and tarcap | `ConsensusNetworkApi` | Canonical packet ingestion, inspection, admission, routing, consensus queues, peer/gossip/send decisions, effect ordering, identity, and result validation | Socket and peer mechanics, packet wrapping, actual send/gossip/disconnect execution, and physical lane scheduling |
 | External EVM and StateAPI | `ConsensusExecutionApi` | Execution orchestration, canonical requests and rewards payloads, result/receipt validation, lifecycle, commit ordering, recovery, publication planning, and storage-publication authorization | Concrete EVM calls, staged `state_db/` mutation, contract execution, tracing, and raw `StateAPI` operations |
 | Public reads | `ConsensusQueryApi` | Stable read-only consensus DTOs backed by Rust storage and query logic | RPC/GraphQL/plugin formatting, live network/admin views, and public C++ object materialization where still required |
@@ -861,9 +838,10 @@ C++ adapters may execute or format these contracts, but they must not recreate c
 Residual adapter deletion belongs in `doc/consensus_rewrite_tracker.md`; exact DTOs and methods are owned by the Rust
 facade modules and their bridge tests rather than by a separate touchpoint inventory.
 
-Signing and VDF remain operation-specific leaf calls rather than shared service facades. Host thread, timer, sleep, and
-process mechanics may remain temporarily as Rust-commanded executors, but they do not justify an internal manager or
-service handle and are deleted or narrowed when the native application scheduler takes ownership.
+Signing, VDF, concrete gas estimation, and best-effort public observation remain operation-specific leaf calls rather
+than shared service facades. Host thread, timer, sleep, and process mechanics may remain as Rust-commanded executors,
+but they do not justify an internal manager or service handle and are deleted or narrowed when native infrastructure
+owns the physical operation.
 
 Rules:
 
@@ -1096,10 +1074,10 @@ The current Rust consensus footprint is broad but still incomplete:
   native service construction, so Rust owns the legacy vote-A-period submission gate with activation equality allowed.
   Rust FinalChain also treats Magnolia and Cacti activation block zero as active from genesis, matching the plain legacy
   hardfork comparison while keeping transaction-inclusion activation separate from local proof-evidence admission.
-- `rustaxa-types` contains shared Rust domain and codec types, including the legacy transaction envelope used by
-  Rust-enabled transaction-manager shims to decode canonical RLP bytes, hash transactions, recover/validate senders,
-  compute intrinsic gas coverage, and surface deterministic nonce/gas/value/cost facts without calling C++
-  `Transaction` getters for those fields.
+- `rustaxa-types` contains shared Rust domain and codec types, including the legacy transaction envelope used by native
+  application, query, and network tasks to decode canonical RLP bytes, hash transactions, recover/validate senders,
+  compute intrinsic gas coverage, and derive deterministic nonce/gas/value/cost facts without a C++
+  `TransactionManager` or mutable legacy object graph.
 - `rustaxa-types` now contains Rust pillar type and codec parity for `PillarBlock`,
   `ValidatorVoteCountChange`, `PillarVote`, `PillarBlockData`, optimized pillar-vote bundles, and current pillar data
   storage shape. Pillar-vote author recovery now lives on the Rust `PillarVote` type with C++ parity coverage for the
@@ -1573,9 +1551,10 @@ Use targeted validation before broad integration runs:
 - DAG changes should run relevant DAG tests such as `dag_test` and `dag_block_test`.
 - DAG proposer-routing changes should run Rust validation plus `rust_consensus_tests`, `dag_block_test`, and proposer-path
   PBFT or full-node coverage when thread/network orchestration changes.
-- Transaction queue and transaction-packing changes should run native Rust queue and bridge runtime validation plus
-  `transaction_manager_shim_test`, Rust-mode transaction/gas-pricer consumers, and queue-focused `transaction_test` and
-  `gas_pricer_test` cases in a pure-C++ reference build when legacy parity is relevant.
+- Transaction queue, submission, packing, or proposer changes should run native Rust queue/runtime, application,
+  query/network, duplicate/restart, and fake-host-port coverage plus `rust_consensus_tests`, affected RPC/GraphQL/network
+  or full-node tests, and queue-focused `transaction_test` and `gas_pricer_test` cases in a pure-C++ reference build.
+  Rust mode has no transaction-manager or proposer facade test.
 - Sortition parameter changes should run native Rust sortition coverage, `rust_consensus_tests`, affected Rust-mode DAG
   or network consumers, and `sortition_test` in the all-Rust-disabled pure-C++ reference build. Rust mode has no
   `SortitionParamsManager` facade or facade-only shim test.

@@ -379,6 +379,88 @@ pub struct PbftProcessSyncedPolicy {
     pub recently_finalized_factor: u64,
 }
 
+impl PbftServiceConfig {
+    /// Builds immutable native PBFT bootstrap policy from flat application inputs.
+    ///
+    /// Millisecond and annual-block values constrained by legacy runtime widths
+    /// are checked before construction. Overflow returns a stable field-specific
+    /// startup error and no partial configuration; all remaining inputs are
+    /// preserved exactly in the returned PBFT and synced-processing policies.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_runtime_values(
+        genesis_lambda_ms: u64,
+        cacti_lambda_max_ms: u64,
+        cacti_lambda_default_ms: u64,
+        cacti_block: u64,
+        max_exponential_lambda_ms: u64,
+        max_steps: u64,
+        deadline_ms: u64,
+        polling_interval_ms: u64,
+        report_malicious_behaviour: bool,
+        magnolia_activation_period: u64,
+        ficus_activation_period: u64,
+        pillar_blocks_interval: u64,
+        sync_level_size: u64,
+        is_light_node: bool,
+        light_node_history: u64,
+        committee_size: u64,
+        number_of_proposers: u64,
+        dag_blocks_size: u64,
+        ghost_path_move_back: u64,
+        node_version: (u16, u16, u16, u16),
+        node_version_suffix: Vec<u8>,
+        default_pbft_gas_limit: u64,
+        cornus_activation_period: u64,
+        cornus_pbft_gas_limit: u64,
+        lambda_min_ms: u64,
+        lambda_change_interval: u64,
+        lambda_change_ms: u64,
+        consensus_delay_ms: u64,
+        dpos_blocks_per_year: u64,
+        recently_finalized_factor: u64,
+        chain_id: u64,
+    ) -> Result<Self> {
+        let narrow = |value, field| {
+            u32::try_from(value).map_err(|_| anyhow!("CONSENSUS_STARTUP_{field}_OVERFLOW"))
+        };
+        Ok(Self {
+            genesis_lambda_ms: narrow(genesis_lambda_ms, "GENESIS_LAMBDA")?,
+            cacti_lambda_max_ms: narrow(cacti_lambda_max_ms, "CACTI_LAMBDA_MAX")?,
+            cacti_lambda_default_ms: narrow(cacti_lambda_default_ms, "CACTI_LAMBDA_DEFAULT")?,
+            cacti_block,
+            max_exponential_lambda_ms,
+            max_steps,
+            deadline_ms,
+            polling_interval_ms,
+            report_malicious_behaviour,
+            magnolia_activation_period,
+            ficus_activation_period,
+            pillar_blocks_interval,
+            sync_level_size,
+            is_light_node,
+            light_node_history,
+            committee_size,
+            number_of_proposers,
+            dag_blocks_size,
+            ghost_path_move_back,
+            node_version,
+            node_version_suffix,
+            default_pbft_gas_limit,
+            cornus_activation_period,
+            cornus_pbft_gas_limit,
+            process_synced_policy: PbftProcessSyncedPolicy {
+                chain_id,
+                lambda_min_ms: narrow(lambda_min_ms, "LAMBDA_MIN")?,
+                lambda_change_interval: narrow(lambda_change_interval, "LAMBDA_CHANGE_INTERVAL")?,
+                lambda_change_ms: narrow(lambda_change_ms, "LAMBDA_CHANGE_MS")?,
+                consensus_delay_ms: narrow(consensus_delay_ms, "CONSENSUS_DELAY")?,
+                dpos_blocks_per_year: narrow(dpos_blocks_per_year, "DPOS_BLOCKS_PER_YEAR")?,
+                recently_finalized_factor,
+            },
+        })
+    }
+}
+
 /// Native dynamic-lambda decision composed with its durable prior-lambda fact.
 ///
 /// `plan` contains the deterministic finalization policy decision. The lookup

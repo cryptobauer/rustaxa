@@ -3,7 +3,6 @@
 #include "common/thread_pool.hpp"
 #include "network/consensus_network_api.hpp"
 #include "network/tarcap/packets_handlers/interface/sync_packet_handler.hpp"
-#include "transaction/transaction_manager.hpp"
 
 namespace taraxa::network::tarcap {
 
@@ -20,8 +19,7 @@ class RustPbftSyncPacketHandler final : public ISyncPacketHandler {
   RustPbftSyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                             std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                             std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
-                            network::ConsensusLiveStatusProvider consensus_status, std::shared_ptr<DagManager> dag_mgr,
-                            std::shared_ptr<TransactionManager> trx_mgr,
+                            network::ConsensusLiveStatusProvider consensus_status,
                             std::shared_ptr<final_chain::FinalChain> final_chain,
                             network::ConsensusNetworkApiShared consensus_network_api, const addr_t& node_addr,
                             const std::string& logs_prefix = "");
@@ -38,7 +36,6 @@ class RustPbftSyncPacketHandler final : public ISyncPacketHandler {
 
   bool executeSlashingTransaction(const network::PbftSyncSlashingTransaction& effect) const;
 
-  std::shared_ptr<TransactionManager> trx_mgr_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   network::ConsensusNetworkApiShared consensus_network_api_;
   util::ThreadPool periodic_events_tp_;

@@ -1,7 +1,9 @@
 #include "network/tarcap/stats/node_stats.hpp"
 
 #include "config/version.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "dag/dag_manager.hpp"
+#endif
 #include "libp2p/Common.h"
 #include "network/consensus_query.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
@@ -11,8 +13,8 @@
 #ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
 #endif
-#include "transaction/transaction_manager.hpp"
 #ifndef RUSTAXA_ENABLE
+#include "transaction/transaction_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
 #endif
 
@@ -24,8 +26,8 @@ NodeStats::NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::
                      network::ConsensusVoteStatusProvider consensus_vote_status,
 #else
                      std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<VoteManager> vote_mgr,
-#endif
                      std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
+#endif
                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                      std::shared_ptr<const threadpool::PacketsThreadPool> thread_pool, const FullNodeConfig &config)
     : pbft_syncing_state_(std::move(pbft_syncing_state)),
@@ -35,12 +37,10 @@ NodeStats::NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::
       consensus_vote_status_(std::move(consensus_vote_status)),
 #else
       pbft_mgr_(std::move(pbft_mgr)),
-#endif
       dag_mgr_(std::move(dag_mgr)),
-#ifndef RUSTAXA_ENABLE
       vote_mgr_(std::move(vote_mgr)),
-#endif
       trx_mgr_(std::move(trx_mgr)),
+#endif
       packets_stats_(std::move(packets_stats)),
       thread_pool_(std::move(thread_pool)),
       node_addresses_("") {
@@ -93,7 +93,13 @@ void NodeStats::logNodeStats(const std::vector<std::shared_ptr<network::tarcap::
   }
 
   // Local dag info...
+#ifdef RUSTAXA_ENABLE
+  const auto live_dag_status = (*pbft_chain_)->consensus_query_live_dag_status();
+  const auto live_transaction_status = (*pbft_chain_)->consensus_query_live_transaction_status();
+  const auto local_max_level_in_dag = live_dag_status.max_level;
+#else
   const auto local_max_level_in_dag = dag_mgr_->getMaxLevel();
+#endif
 
   // Local pbft info...
 #ifdef RUSTAXA_ENABLE
@@ -227,10 +233,17 @@ void NodeStats::logNodeStats(const std::vector<std::shared_ptr<network::tarcap::
 #else
   LOG(log_dg_) << "Verified votes size:             " << vote_mgr_->getVerifiedVotesSize();
 #endif
-  LOG(log_dg_) << "Non finalized txs size:          " << trx_mgr_->getNonfinalizedTrxSize();
+  LOG(log_dg_) << "Non finalized txs size:          " <<
+#ifdef RUSTAXA_ENABLE
+      live_transaction_status.non_finalized_size;
+  LOG(log_dg_) << "Txs pool size:                   " << live_transaction_status.queue_size;
+  const auto non_finalized_blocks_levels = live_dag_status.non_finalized_levels;
+  const auto non_finalized_blocks_size = live_dag_status.non_finalized_blocks;
+#else
+      trx_mgr_->getNonfinalizedTrxSize();
   LOG(log_dg_) << "Txs pool size:                   " << trx_mgr_->getTransactionPoolSize();
-
   const auto [non_finalized_blocks_levels, non_finalized_blocks_size] = dag_mgr_->getNonFinalizedBlocksSize();
+#endif
   LOG(log_dg_) << "Non finalized dag blocks levels: " << non_finalized_blocks_levels;
   LOG(log_dg_) << "Non finalized dag blocks size:   " << non_finalized_blocks_size;
 

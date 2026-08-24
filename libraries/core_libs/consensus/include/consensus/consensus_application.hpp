@@ -3,12 +3,36 @@
 #include <memory>
 #include <optional>
 
+#include "common/event.hpp"
 #include "common/types.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "transaction/transaction.hpp"
 
 namespace taraxa {
 
 struct FullNodeConfig;
+namespace final_chain {
+class FinalChain;
+}
+class DagBlock;
+
+/**
+ * Stable public result for one native transaction-submission operation.
+ *
+ * The hash always identifies the decoded request. `accepted` and `message` are
+ * the native admission outcome; `transaction_observed` is true only when that
+ * operation committed a queue observation. Invalid C++ inputs fail before a
+ * result is produced, while native admission rejection is represented here.
+ */
+struct PublicTransactionSubmissionResult {
+  trx_hash_t transaction_hash;
+  bool accepted{false};
+  std::string message;
+  bool transaction_observed{false};
+};
+
+/** Shared lifetime handle for the root-bound, read-only native public query API. */
+using ConsensusQueryClient = std::shared_ptr<rust::Box<rustaxa::BridgeConsensusQueryApi>>;
 
 /** Coherent live protocol counters exposed to application scheduling and diagnostics. */
 struct ConsensusRuntimeStatus {
@@ -42,6 +66,31 @@ class ConsensusApplication final {
   /** Returns the opaque task receiver while this holder remains alive. */
   const rustaxa::BridgeConsensusApplication& service() const noexcept { return *service_; }
 
+  /** Returns the root-bound public query client without exposing native services. */
+  ConsensusQueryClient queryClient() const noexcept { return query_client_; }
+
+  /** Subscribable best-effort notification emitted after a native transaction commit requests public observation. */
+  const auto& transactionObserved() const noexcept { return transaction_observed_; }
+  /** Subscribable best-effort notification emitted after a native DAG commit requests public observation. */
+  const auto& dagBlockObserved() const noexcept { return dag_block_observed_; }
+
+  /** Publishes a post-commit transaction notification selected by a native network operation. */
+  void publishTransactionObserved(const trx_hash_t& transaction_hash) const {
+    transaction_observed_.emit(transaction_hash);
+  }
+  /** Publishes a post-commit DAG notification selected by a native network operation. */
+  void publishDagBlockObserved(const std::shared_ptr<DagBlock>& block) const { dag_block_observed_.emit(block); }
+
+  /**
+   * Validates and admits one signed public transaction through the native application operation.
+   *
+   * Immutable chain policy and concrete EVM account facts are sampled at the call boundary. The returned observer bit
+   * is set only after an accepted queue mutation and may be used for best-effort public notification.
+   */
+  PublicTransactionSubmissionResult submitTransaction(const SharedTransaction& transaction,
+                                                      const FullNodeConfig& config,
+                                                      const final_chain::FinalChain& final_chain) const;
+
   /** Returns one coherent application-root runtime status snapshot. */
   ConsensusRuntimeStatus runtimeStatus() const;
   /** Resolves the current node's DPoS votes for diagnostic metrics only. */
@@ -51,6 +100,9 @@ class ConsensusApplication final {
 
  private:
   rust::Box<rustaxa::BridgeConsensusApplication> service_;
+  ConsensusQueryClient query_client_;
+  util::event::Event<ConsensusApplication, trx_hash_t> transaction_observed_;
+  util::event::Event<ConsensusApplication, std::shared_ptr<DagBlock>> dag_block_observed_;
 };
 
 using SharedConsensusApplication = std::shared_ptr<ConsensusApplication>;

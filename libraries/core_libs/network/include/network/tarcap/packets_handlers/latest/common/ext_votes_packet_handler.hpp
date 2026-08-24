@@ -21,10 +21,6 @@
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
 
-namespace taraxa {
-class TransactionManager;
-}
-
 namespace taraxa::network::tarcap {
 
 /**
@@ -59,7 +55,6 @@ class ExtVotesPacketHandler : public PacketHandler {
                         std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<SlashingManager> slashing_manager,
 #else
                         network::ConsensusLiveStatusProvider consensus_status, net::ConsensusQueryClient pbft_chain,
-                        std::shared_ptr<TransactionManager> trx_mgr,
                         network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
 #endif
                         const addr_t& node_addr, const std::string& log_channel_name);
@@ -148,7 +143,6 @@ class ExtVotesPacketHandler : public PacketHandler {
 #ifdef RUSTAXA_ENABLE
   network::ConsensusLiveStatusProvider consensus_status_;
   network::ConsensusNetworkApiShared rust_consensus_network_api_;
-  std::shared_ptr<TransactionManager> trx_mgr_;
   const TarcapVersion transport_lane_;
 #endif
 };

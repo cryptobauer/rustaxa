@@ -5,8 +5,10 @@
 #include <memory>
 
 #include "CurrentStateObject.h"
-#include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
+#ifndef RUSTAXA_ENABLE
+#include "dag/dag_manager.hpp"
+#endif
 
 namespace graphql::taraxa {
 
@@ -21,11 +23,13 @@ struct CurrentStateReader {
 
 class CurrentState {
  public:
+#ifndef RUSTAXA_ENABLE
   explicit CurrentState(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                         std::shared_ptr<::taraxa::DagManager> dag_manager,
                         std::function<uint64_t()> final_block_query = {},
                         std::function<uint64_t()> dag_block_level_query = {},
                         std::function<uint64_t()> dag_block_period_query = {}) noexcept;
+#endif
   explicit CurrentState(CurrentStateReader reader) noexcept;
 
   response::Value getFinalBlock() const noexcept;

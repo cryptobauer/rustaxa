@@ -11,7 +11,6 @@
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_application.hpp"
 #endif
-#include "consensus/consensus_application.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/test_util.hpp"

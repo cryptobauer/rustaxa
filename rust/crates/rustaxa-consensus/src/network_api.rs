@@ -15,6 +15,17 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::consensus_application::{DagBlockIngressReport, TransactionPacketIngressReport};
+use crate::dag::{
+    DAG_VERIFY_REJECT_ADD_BLOCK_METADATA, DAG_VERIFY_REJECT_AHEAD_BLOCK,
+    DAG_VERIFY_REJECT_BLOCK_TOO_BIG, DAG_VERIFY_REJECT_EXPIRED_BLOCK,
+    DAG_VERIFY_REJECT_FAILED_TIPS_VERIFICATION, DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION,
+    DAG_VERIFY_REJECT_FUTURE_BLOCK, DAG_VERIFY_REJECT_INCORRECT_TRANSACTIONS_ESTIMATION,
+    DAG_VERIFY_REJECT_MISSING_TIP, DAG_VERIFY_REJECT_MISSING_TRANSACTION,
+    DAG_VERIFY_REJECT_NOT_ELIGIBLE,
+};
+use crate::dag_service::DagRuntimeNonFinalizedSyncPayload;
+use crate::dag_transaction_service::TransactionGossipAccount;
 use crate::final_chain::FinalChain;
 use crate::pbft_chain::PbftChainService;
 use crate::pbft_vote_payload::build_optimized_pbft_vote_bundle;
@@ -24,6 +35,7 @@ use crate::period_data_queue::{DecodedPbftSyncPacketPrecheck, decode_pbft_sync_p
 use crate::pillar_chain_service::PillarChainService;
 use crate::pillar_vote_service::PillarVoteRecord;
 use crate::proposed_blocks::ProposedBlocksService;
+use crate::transaction_queue::TransactionQueueInsertStatus;
 use crate::{
     PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,
     PbftVotePayloadRecord, inspect_canonical_pbft_vote, inspect_pillar_vote_from_rlp,
@@ -33,6 +45,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::H256;
 use rlp::{Rlp, RlpStream};
 use rustaxa_storage::Storage;
+use rustaxa_types::LegacyTransactionEnvelope;
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::pbft::PbftBlockLink;
 use rustaxa_types::{PbftBlockMetadata, PillarVote, encode_optimized_pillar_votes_bundle_rlp};
@@ -122,12 +135,10 @@ pub const NETWORK_EFFECT_KIND_DRIVE_CONSENSUS_PROGRESS: u8 = 7;
 pub const NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT: u8 = 8;
 /// Network effect asks tarcap to clear the target peer's syncing flag.
 pub const NETWORK_EFFECT_KIND_CLEAR_PEER_SYNCING: u8 = 9;
-
 /// Network sync effect requests PBFT chain synchronization.
 pub const NETWORK_SYNC_KIND_PBFT_CHAIN: u8 = 0;
 /// Network sync effect requests current-round PBFT next votes.
 pub const NETWORK_SYNC_KIND_PBFT_NEXT_VOTES: u8 = 1;
-
 /// Network peer report/disconnect reason for unsupported propose votes in a bundle.
 pub const NETWORK_REASON_UNSUPPORTED_BUNDLE_PROPOSE_VOTE: u8 = 0;
 /// Network peer report reason for mixed vote identity in a bundle.
@@ -136,7 +147,6 @@ pub const NETWORK_REASON_BUNDLE_VOTE_MISMATCH: u8 = 1;
 pub const NETWORK_REASON_INVALID_PILLAR_VOTES_REQUEST: u8 = 2;
 /// Network peer report/disconnect reason for an invalid PBFT sync range.
 pub const NETWORK_REASON_INVALID_PBFT_SYNC_REQUEST: u8 = 3;
-
 /// Network known-object effect identifies a PBFT vote hash.
 pub const NETWORK_OBJECT_KIND_PBFT_VOTE: u8 = 0;
 /// Network known-object effect identifies a PBFT block hash.
@@ -229,6 +239,41 @@ pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_COMPLETE: u8 = 21;
 pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_UNEXPECTED_PERIOD: u8 = 22;
 /// A malformed or deterministically invalid PBFT-sync packet is malicious.
 pub const NETWORK_INGRESS_STATUS_PBFT_SYNC_MALICIOUS: u8 = 23;
+/// A transaction packet does not have the canonical two-list shape.
+pub const NETWORK_INGRESS_STATUS_TRANSACTION_PACKET_MALFORMED: u8 = 24;
+/// A transaction packet exceeds a protocol member limit.
+pub const NETWORK_INGRESS_STATUS_TRANSACTION_PACKET_TOO_LARGE: u8 = 25;
+/// A transaction packet contains a deterministically rejected transaction.
+pub const NETWORK_INGRESS_STATUS_TRANSACTION_REJECTED: u8 = 26;
+/// A get-DAG-sync request is not canonical period/hash-list RLP.
+pub const NETWORK_INGRESS_STATUS_DAG_SYNC_REQUEST_MALFORMED: u8 = 27;
+/// A peer repeated get-DAG-sync before the transport rate window elapsed.
+pub const NETWORK_INGRESS_STATUS_DAG_SYNC_REQUEST_THROTTLED: u8 = 28;
+pub const NETWORK_INGRESS_STATUS_DAG_PACKET_MALFORMED: u8 = 29;
+pub const NETWORK_INGRESS_STATUS_DAG_BLOCK_REJECTED: u8 = 30;
+pub const NETWORK_INGRESS_STATUS_DAG_SYNC_PERIOD_AHEAD: u8 = 31;
+pub const NETWORK_INGRESS_STATUS_DAG_SYNC_PERIOD_BEHIND: u8 = 32;
+/// A rejected DAG block is intentionally ignored under peer-sync policy.
+pub const NETWORK_INGRESS_STATUS_DAG_BLOCK_IGNORED: u8 = 33;
+/// A rejected DAG block scheduled DAG recovery work.
+pub const NETWORK_INGRESS_STATUS_DAG_BLOCK_SYNC_REQUESTED: u8 = 34;
+/// A rejected DAG block requires disconnecting the peer without a malicious report.
+pub const NETWORK_INGRESS_STATUS_DAG_BLOCK_DISCONNECT: u8 = 35;
+/// A rejected DAG block is malicious under the legacy peer policy.
+pub const NETWORK_INGRESS_STATUS_DAG_BLOCK_MALICIOUS: u8 = 36;
+
+/// No DAG rejection action applies to an accepted or duplicate block.
+pub const NETWORK_DAG_REJECTION_ACTION_NONE: u8 = 0;
+/// Ignore the rejected block without mutating peer state.
+pub const NETWORK_DAG_REJECTION_ACTION_IGNORE: u8 = 1;
+/// Mark the peer DAG-unsynced and request DAG synchronization.
+pub const NETWORK_DAG_REJECTION_ACTION_REQUEST_DAG_SYNC: u8 = 2;
+/// Request pending DAG blocks once from an already-unsynced peer.
+pub const NETWORK_DAG_REJECTION_ACTION_REQUEST_PENDING_DAG: u8 = 3;
+/// Disconnect the peer without classifying it as malicious.
+pub const NETWORK_DAG_REJECTION_ACTION_DISCONNECT: u8 = 4;
+/// Report the peer as malicious and disconnect it.
+pub const NETWORK_DAG_REJECTION_ACTION_MALICIOUS: u8 = 5;
 
 const ERROR_PBFT_SYNC_MALFORMED_REQUEST: &str = "NETWORK_PBFT_SYNC_MALFORMED_REQUEST";
 const ERROR_PBFT_SYNC_UNSUPPORTED_VERSION: &str = "NETWORK_PBFT_SYNC_UNSUPPORTED_VERSION";
@@ -251,8 +296,116 @@ const ERROR_PBFT_SYNC_PACKET_PREVIOUS_CERT_HASH: &str =
     "NETWORK_PBFT_SYNC_PACKET_PREVIOUS_CERT_HASH";
 const ERROR_PBFT_SYNC_PACKET_PILLAR_SCHEDULE: &str = "NETWORK_PBFT_SYNC_PACKET_PILLAR_SCHEDULE";
 const ERROR_PBFT_SYNC_PACKET_ORDER_HASH: &str = "NETWORK_PBFT_SYNC_PACKET_ORDER_HASH";
+const ERROR_TRANSACTION_PACKET_MALFORMED: &str = "NETWORK_TRANSACTION_PACKET_MALFORMED";
+const ERROR_TRANSACTION_PACKET_TOO_LARGE: &str = "NETWORK_TRANSACTION_PACKET_TOO_LARGE";
+const ERROR_TRANSACTION_PACKET_REJECTED: &str = "NETWORK_TRANSACTION_PACKET_REJECTED";
+const ERROR_DAG_SYNC_REQUEST_MALFORMED: &str = "NETWORK_DAG_SYNC_REQUEST_MALFORMED";
+const ERROR_DAG_SYNC_REQUEST_THROTTLED: &str = "NETWORK_DAG_SYNC_REQUEST_THROTTLED";
+const ERROR_DAG_PACKET_MALFORMED: &str = "NETWORK_DAG_PACKET_MALFORMED";
+const ERROR_DAG_BLOCK_REJECTED: &str = "NETWORK_DAG_BLOCK_REJECTED";
+const ERROR_DAG_BLOCK_IGNORED: &str = "NETWORK_DAG_BLOCK_IGNORED";
+const ERROR_DAG_BLOCK_SYNC_REQUESTED: &str = "NETWORK_DAG_BLOCK_SYNC_REQUESTED";
+const ERROR_DAG_BLOCK_DISCONNECT: &str = "NETWORK_DAG_BLOCK_DISCONNECT";
+const ERROR_DAG_BLOCK_MALICIOUS: &str = "NETWORK_DAG_BLOCK_MALICIOUS";
+const ERROR_DAG_SYNC_PERIOD_AHEAD: &str = "NETWORK_DAG_SYNC_PERIOD_AHEAD";
+const ERROR_DAG_SYNC_PERIOD_BEHIND: &str = "NETWORK_DAG_SYNC_PERIOD_BEHIND";
 const MAX_PBFT_BLOCKS_PER_BUNDLE: usize = 10;
 const MAX_PBFT_BLOCK_EXTRA_DATA_BYTES: usize = 1024;
+const MAX_TRANSACTIONS_PER_PACKET: usize = 500;
+const MAX_TRANSACTION_HASHES_PER_PACKET: usize = 5000;
+
+/// Transport and peer facts for one canonical transaction packet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkTransactionPacketContext {
+    pub transport_lane: u32,
+    pub peer_id: [u8; 64],
+    pub source_payload_id: u64,
+}
+
+/// Terminal native transaction-packet admission report.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkTransactionPacketReport {
+    pub decision: NetworkIngressDecision,
+    pub transactions: Vec<TransactionPacketIngressReport>,
+    pub extra_transaction_hashes: Vec<[u8; 32]>,
+}
+
+/// Transport facts for one canonical get-DAG-sync request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkGetDagSyncContext {
+    pub transport_lane: u32,
+    pub peer_id: [u8; 64],
+    pub source_payload_id: u64,
+    pub request_allowed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkTransactionGossipPeer {
+    pub peer_id: [u8; 64],
+    pub known_hashes: Vec<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkTransactionGossipRequest {
+    pub transport_lane: u32,
+    pub source_payload_id: u64,
+    pub peers: Vec<NetworkTransactionGossipPeer>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkDagBlockIngressContext {
+    pub transport_lane: u32,
+    pub peer_id: [u8; 64],
+    pub source_payload_id: u64,
+    pub rebroadcast: bool,
+    /// Whether tarcap currently considers this peer's DAG synchronized.
+    pub peer_dag_synced: bool,
+    /// Whether a full DAG-sync request may be started for this peer now.
+    pub dag_sync_allowed: bool,
+    /// Whether the local transaction pool has dropped transactions.
+    pub transactions_dropped: bool,
+    /// Whether a pending-DAG request is already outstanding for this peer.
+    pub pending_dag_request: bool,
+    /// Whether local PBFT synchronization suppresses add-stage peer actions.
+    pub local_pbft_syncing: bool,
+}
+
+/// Per-peer DAG gossip eligibility observed by the transport executor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkDagGossipPeer {
+    pub peer_id: [u8; 64],
+    pub syncing: bool,
+    pub known_block: bool,
+}
+
+/// Canonical DAG packet and peer facts for exact native fanout selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkDagGossipRequest {
+    pub transport_lane: u32,
+    pub source_payload_id: u64,
+    pub source_peer_id: [u8; 64],
+    pub block_hash: [u8; 32],
+    pub packet_rlp: Vec<u8>,
+    pub peers: Vec<NetworkDagGossipPeer>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkDagBlockIngressReport {
+    pub decision: NetworkIngressDecision,
+    pub admission: Option<DagBlockIngressReport>,
+    /// Exact peer-policy action selected from native rejection facts.
+    pub rejection_action: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkDagSyncIngressReport {
+    pub decision: NetworkIngressDecision,
+    pub request_period: u64,
+    pub response_period: u64,
+    /// Ordered transaction admissions committed before DAG blocks.
+    pub transactions: Vec<TransactionPacketIngressReport>,
+    pub blocks: Vec<DagBlockIngressReport>,
+}
 
 /// Executor-visible network effect planned by Rust consensus.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1366,6 +1519,273 @@ impl ConsensusNetworkService {
         )
     }
 
+    /// Decodes and admits one canonical transaction packet sequentially.
+    ///
+    /// The network owner enforces the legacy packet limits and preserves member
+    /// order. `admit` is the application-root operation that owns transaction
+    /// verification, external account facts, and queue mutation. Accepted new
+    /// transactions queue known/gossip effects; deterministic rejection stops
+    /// the packet and returns typed peer-fault data without a bridge exception.
+    pub fn ingest_transaction_packet<F>(
+        &self,
+        context: NetworkTransactionPacketContext,
+        packet_rlp: &[u8],
+        mut admit: F,
+    ) -> Result<NetworkTransactionPacketReport>
+    where
+        F: FnMut(Vec<u8>) -> Result<TransactionPacketIngressReport>,
+    {
+        let (transactions, extra_transaction_hashes) = match decode_transaction_packet(packet_rlp) {
+            Ok(value) => value,
+            Err(TransactionPacketDecodeError::Malformed) => {
+                return Ok(NetworkTransactionPacketReport {
+                    decision: local_network_decision(
+                        context.source_payload_id,
+                        NETWORK_INGRESS_STATUS_TRANSACTION_PACKET_MALFORMED,
+                        ERROR_TRANSACTION_PACKET_MALFORMED,
+                    ),
+                    transactions: Vec::new(),
+                    extra_transaction_hashes: Vec::new(),
+                });
+            }
+            Err(TransactionPacketDecodeError::TooLarge) => {
+                return Ok(NetworkTransactionPacketReport {
+                    decision: local_network_decision(
+                        context.source_payload_id,
+                        NETWORK_INGRESS_STATUS_TRANSACTION_PACKET_TOO_LARGE,
+                        ERROR_TRANSACTION_PACKET_TOO_LARGE,
+                    ),
+                    transactions: Vec::new(),
+                    extra_transaction_hashes: Vec::new(),
+                });
+            }
+        };
+        let mut reports = Vec::with_capacity(transactions.len());
+        for transaction_rlp in transactions {
+            let report = admit(transaction_rlp)?;
+            let accepted = transaction_packet_member_is_benign(&report);
+            reports.push(report);
+            if !accepted {
+                return Ok(NetworkTransactionPacketReport {
+                    decision: local_network_decision(
+                        context.source_payload_id,
+                        NETWORK_INGRESS_STATUS_TRANSACTION_REJECTED,
+                        ERROR_TRANSACTION_PACKET_REJECTED,
+                    ),
+                    transactions: reports,
+                    extra_transaction_hashes,
+                });
+            }
+        }
+        let decision = self.lock_api()?.enqueue_transaction_packet_effects(
+            &context,
+            &reports,
+            &extra_transaction_hashes,
+        );
+        Ok(NetworkTransactionPacketReport {
+            decision,
+            transactions: reports,
+            extra_transaction_hashes,
+        })
+    }
+
+    /// Serves one canonical get-DAG-sync request from a native DAG snapshot.
+    ///
+    /// Rust decodes and deduplicates requested hashes, asks the application
+    /// owner for canonical non-finalized block/transaction bytes, encodes one
+    /// exact DAG-sync response, and queues only the physical send leaf.
+    pub fn ingest_get_dag_sync_request<F>(
+        &self,
+        context: NetworkGetDagSyncContext,
+        request_rlp: &[u8],
+        prepare: F,
+    ) -> Result<NetworkIngressDecision>
+    where
+        F: FnOnce(Vec<H256>) -> Result<DagRuntimeNonFinalizedSyncPayload>,
+    {
+        if !context.request_allowed {
+            return Ok(local_network_decision(
+                context.source_payload_id,
+                NETWORK_INGRESS_STATUS_DAG_SYNC_REQUEST_THROTTLED,
+                ERROR_DAG_SYNC_REQUEST_THROTTLED,
+            ));
+        }
+        let Some((request_period, hashes)) = decode_get_dag_sync_request(request_rlp) else {
+            return Ok(local_network_decision(
+                context.source_payload_id,
+                NETWORK_INGRESS_STATUS_DAG_SYNC_REQUEST_MALFORMED,
+                ERROR_DAG_SYNC_REQUEST_MALFORMED,
+            ));
+        };
+        let payload = prepare(hashes)?;
+        let response = encode_dag_sync_packet(request_period, &payload);
+        Ok(self.lock_api()?.enqueue_dag_sync_response(
+            &context,
+            request_period,
+            payload.period,
+            response,
+        ))
+    }
+
+    /// Plans bounded per-peer transaction gossip from a native queue snapshot.
+    pub fn plan_transaction_gossip(
+        &self,
+        request: NetworkTransactionGossipRequest,
+        accounts: Vec<TransactionGossipAccount>,
+    ) -> Result<NetworkIngressDecision> {
+        Ok(self
+            .lock_api()?
+            .enqueue_transaction_gossip(request, accounts))
+    }
+
+    /// Queues exact per-peer DAG packets and send-dependent known marks.
+    pub fn plan_dag_block_gossip(
+        &self,
+        request: NetworkDagGossipRequest,
+    ) -> Result<NetworkIngressDecision> {
+        Ok(self.lock_api()?.enqueue_dag_block_gossip(request))
+    }
+
+    /// Selects a peer and queues one canonical pending-DAG request.
+    pub fn request_pending_dag_blocks(
+        &self,
+        transport_lane: u32,
+        source_payload_id: u64,
+        facts: NetworkPendingDagBlocksRequestFacts,
+        hashes: Vec<H256>,
+    ) -> Result<NetworkIngressDecision> {
+        let plan = self.plan_pending_dag_blocks_request(facts)?;
+        if !plan.request_pending_dag_blocks || !plan.has_peer {
+            return Ok(local_network_decision(
+                source_payload_id,
+                plan.status,
+                &plan.error_code,
+            ));
+        }
+        let mut packet = RlpStream::new_list(2);
+        packet.append(&plan.request_period);
+        packet.begin_list(hashes.len());
+        for hash in hashes {
+            packet.append(&hash);
+        }
+        Ok(self.lock_api()?.enqueue_pending_dag_request(
+            transport_lane,
+            source_payload_id,
+            plan.peer_id,
+            plan.request_period,
+            packet.out().to_vec(),
+        ))
+    }
+
+    /// Decodes one DAG-block packet and delegates authoritative admission once.
+    pub fn ingest_dag_block_packet<F>(
+        &self,
+        context: NetworkDagBlockIngressContext,
+        packet_rlp: &[u8],
+        admit: F,
+    ) -> Result<NetworkDagBlockIngressReport>
+    where
+        F: FnOnce(Vec<u8>, Vec<Vec<u8>>) -> Result<DagBlockIngressReport>,
+    {
+        let Some((transactions, block_rlp)) = decode_dag_block_packet(packet_rlp) else {
+            return Ok(NetworkDagBlockIngressReport {
+                decision: local_network_decision(
+                    context.source_payload_id,
+                    NETWORK_INGRESS_STATUS_DAG_PACKET_MALFORMED,
+                    ERROR_DAG_PACKET_MALFORMED,
+                ),
+                admission: None,
+                rejection_action: NETWORK_DAG_REJECTION_ACTION_MALICIOUS,
+            });
+        };
+        let admission = admit(block_rlp, transactions.clone())?;
+        let (decision, rejection_action) = if admission.accepted || admission.duplicate {
+            (
+                self.lock_api()?
+                    .enqueue_dag_block_effects(&context, &admission, &transactions)?,
+                NETWORK_DAG_REJECTION_ACTION_NONE,
+            )
+        } else {
+            self.lock_api()?
+                .plan_dag_block_rejection_decision(&context, admission.reject_code)?
+        };
+        Ok(NetworkDagBlockIngressReport {
+            decision,
+            admission: Some(admission),
+            rejection_action,
+        })
+    }
+
+    /// Sequentially admits a canonical DAG-sync packet with partial commits.
+    pub fn ingest_dag_sync_packet<F>(
+        &self,
+        context: NetworkDagBlockIngressContext,
+        packet_rlp: &[u8],
+        admit: F,
+    ) -> Result<NetworkDagSyncIngressReport>
+    where
+        F: FnOnce(Vec<Vec<u8>>, Vec<Vec<u8>>) -> Result<crate::DagSyncIngressReport>,
+    {
+        let Some((request_period, response_period, transactions, blocks)) =
+            decode_dag_sync_packet(packet_rlp)
+        else {
+            return Ok(NetworkDagSyncIngressReport {
+                decision: local_network_decision(
+                    context.source_payload_id,
+                    NETWORK_INGRESS_STATUS_DAG_PACKET_MALFORMED,
+                    ERROR_DAG_PACKET_MALFORMED,
+                ),
+                request_period: 0,
+                response_period: 0,
+                transactions: Vec::new(),
+                blocks: Vec::new(),
+            });
+        };
+        if response_period > request_period {
+            return Ok(NetworkDagSyncIngressReport {
+                decision: local_network_decision(
+                    context.source_payload_id,
+                    NETWORK_INGRESS_STATUS_DAG_SYNC_PERIOD_AHEAD,
+                    ERROR_DAG_SYNC_PERIOD_AHEAD,
+                ),
+                request_period,
+                response_period,
+                transactions: Vec::new(),
+                blocks: Vec::new(),
+            });
+        }
+        if response_period < request_period {
+            return Ok(NetworkDagSyncIngressReport {
+                decision: local_network_decision(
+                    context.source_payload_id,
+                    NETWORK_INGRESS_STATUS_DAG_SYNC_PERIOD_BEHIND,
+                    ERROR_DAG_SYNC_PERIOD_BEHIND,
+                ),
+                request_period,
+                response_period,
+                transactions: Vec::new(),
+                blocks: Vec::new(),
+            });
+        }
+        let native = admit(transactions.clone(), blocks)?;
+        let transaction_reports = native.transactions;
+        let reports = native.blocks;
+        let mut decision =
+            self.lock_api()?
+                .enqueue_dag_sync_ingress_effects(&context, &reports, &transactions)?;
+        if !native.accepted {
+            decision.status = NETWORK_INGRESS_STATUS_DAG_BLOCK_REJECTED;
+            decision.error_code = ERROR_DAG_BLOCK_REJECTED.to_owned();
+        }
+        Ok(NetworkDagSyncIngressReport {
+            decision,
+            request_period,
+            response_period,
+            transactions: transaction_reports,
+            blocks: reports,
+        })
+    }
+
     /// Prechecks one raw latest-tarcap PBFT-sync packet without mutation.
     ///
     /// Rust owns exact outer decoding, optimized certificate reconstruction,
@@ -1418,6 +1838,15 @@ impl ConsensusNetworkService {
             pillar_blocks_interval,
         ))
     }
+}
+
+/// Returns whether one native transaction packet member may continue ingress.
+///
+/// A transaction already known to the local queue is the legacy fast-path: the
+/// sending peer is marked as knowing it, but is neither blamed nor regossiped.
+fn transaction_packet_member_is_benign(report: &TransactionPacketIngressReport) -> bool {
+    report.submission.accepted
+        || report.submission.queue_status == Some(TransactionQueueInsertStatus::Known)
 }
 
 fn classify_pbft_sync_packet_precheck(
@@ -1635,6 +2064,138 @@ fn decode_pbft_blocks_bundle_member(
     Ok((link, metadata))
 }
 
+#[derive(Debug)]
+enum TransactionPacketDecodeError {
+    Malformed,
+    TooLarge,
+}
+
+fn decode_transaction_packet(
+    packet_rlp: &[u8],
+) -> std::result::Result<(Vec<Vec<u8>>, Vec<[u8; 32]>), TransactionPacketDecodeError> {
+    let packet = Rlp::new(packet_rlp);
+    if packet.item_count().ok() != Some(2) {
+        return Err(TransactionPacketDecodeError::Malformed);
+    }
+    let transactions = packet
+        .at(0)
+        .ok()
+        .filter(Rlp::is_list)
+        .ok_or(TransactionPacketDecodeError::Malformed)?;
+    let hashes = packet
+        .at(1)
+        .ok()
+        .filter(Rlp::is_list)
+        .ok_or(TransactionPacketDecodeError::Malformed)?;
+    let transaction_count = transactions
+        .item_count()
+        .map_err(|_| TransactionPacketDecodeError::Malformed)?;
+    let hash_count = hashes
+        .item_count()
+        .map_err(|_| TransactionPacketDecodeError::Malformed)?;
+    if transaction_count > MAX_TRANSACTIONS_PER_PACKET
+        || hash_count > MAX_TRANSACTION_HASHES_PER_PACKET
+    {
+        return Err(TransactionPacketDecodeError::TooLarge);
+    }
+    let transactions = (0..transaction_count)
+        .map(|index| {
+            transactions
+                .at(index)
+                .map(|value| value.as_raw().to_vec())
+                .map_err(|_| TransactionPacketDecodeError::Malformed)
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let hashes = (0..hash_count)
+        .map(|index| {
+            hashes
+                .val_at::<H256>(index)
+                .map(Into::into)
+                .map_err(|_| TransactionPacketDecodeError::Malformed)
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok((transactions, hashes))
+}
+
+fn encode_single_transaction_packet(transaction_rlp: &[u8]) -> Vec<u8> {
+    let mut packet = RlpStream::new_list(2);
+    packet.begin_list(1);
+    packet.append_raw(transaction_rlp, 1);
+    packet.begin_list(0);
+    packet.out().to_vec()
+}
+
+fn decode_get_dag_sync_request(packet_rlp: &[u8]) -> Option<(u64, Vec<H256>)> {
+    let packet = Rlp::new(packet_rlp);
+    if packet.item_count().ok()? != 2 {
+        return None;
+    }
+    let request_period = packet.val_at(0).ok()?;
+    let hashes = packet.at(1).ok()?;
+    if !hashes.is_list() {
+        return None;
+    }
+    let mut unique = HashSet::new();
+    let mut ordered = Vec::new();
+    for index in 0..hashes.item_count().ok()? {
+        let hash = hashes.val_at::<H256>(index).ok()?;
+        if unique.insert(hash) {
+            ordered.push(hash);
+        }
+    }
+    Some((request_period, ordered))
+}
+
+fn encode_dag_sync_packet(
+    request_period: u64,
+    payload: &DagRuntimeNonFinalizedSyncPayload,
+) -> Vec<u8> {
+    let mut packet = RlpStream::new_list(4);
+    packet.append(&request_period);
+    packet.append(&payload.period);
+    packet.begin_list(payload.storage.transactions.len());
+    for transaction in &payload.storage.transactions {
+        packet.append_raw(&transaction.tx_rlp, 1);
+    }
+    packet.begin_list(payload.storage.blocks.len());
+    for block in &payload.storage.blocks {
+        packet.append_raw(&block.block_rlp, 1);
+    }
+    packet.out().to_vec()
+}
+
+fn decode_rlp_list_raw(value: &Rlp<'_>) -> Option<Vec<Vec<u8>>> {
+    if !value.is_list() {
+        return None;
+    }
+    (0..value.item_count().ok()?)
+        .map(|index| value.at(index).ok().map(|item| item.as_raw().to_vec()))
+        .collect()
+}
+
+fn decode_dag_block_packet(packet_rlp: &[u8]) -> Option<(Vec<Vec<u8>>, Vec<u8>)> {
+    let packet = Rlp::new(packet_rlp);
+    if packet.item_count().ok()? != 2 {
+        return None;
+    }
+    let transactions = decode_rlp_list_raw(&packet.at(0).ok()?)?;
+    let block = packet.at(1).ok()?.as_raw().to_vec();
+    Some((transactions, block))
+}
+
+fn decode_dag_sync_packet(packet_rlp: &[u8]) -> Option<(u64, u64, Vec<Vec<u8>>, Vec<Vec<u8>>)> {
+    let packet = Rlp::new(packet_rlp);
+    if packet.item_count().ok()? != 4 {
+        return None;
+    }
+    Some((
+        packet.val_at(0).ok()?,
+        packet.val_at(1).ok()?,
+        decode_rlp_list_raw(&packet.at(2).ok()?)?,
+        decode_rlp_list_raw(&packet.at(3).ok()?)?,
+    ))
+}
+
 /// Rust-owned external network/tarcap API facade.
 ///
 /// The facade owns an ordered network effect queue. It is intentionally small: packet-specific decoding and
@@ -1647,6 +2208,7 @@ pub(crate) struct ConsensusNetworkApi {
     pillar_blocks_interval: u64,
     next_effect_id: u64,
     next_vote_bundle_id: u64,
+    next_transaction_gossip_account: usize,
     pending_effects: VecDeque<NetworkEffect>,
     pending_vote_admissions: HashMap<u64, PendingVoteAdmissionContext>,
     pending_vote_bundles: HashMap<u64, PendingVoteBundle>,
@@ -1675,6 +2237,7 @@ impl ConsensusNetworkApi {
             pillar_blocks_interval,
             next_effect_id: 1,
             next_vote_bundle_id: 1,
+            next_transaction_gossip_account: 0,
             pending_effects: VecDeque::new(),
             pending_vote_admissions: HashMap::new(),
             pending_vote_bundles: HashMap::new(),
@@ -3035,6 +3598,502 @@ impl ConsensusNetworkApi {
         }
     }
 
+    fn enqueue_transaction_packet_effects(
+        &mut self,
+        context: &NetworkTransactionPacketContext,
+        reports: &[TransactionPacketIngressReport],
+        extra_hashes: &[[u8; 32]],
+    ) -> NetworkIngressDecision {
+        let before = self.pending_effects.len();
+        for report in reports {
+            let hash: [u8; 32] = report.submission.transaction_hash.into();
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: context.source_payload_id,
+                transport_lane: context.transport_lane,
+                kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                peer_id: context.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
+                object_hash: hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+            if report.gossip_transaction {
+                self.enqueue_effect(NetworkEffect {
+                    effect_id: 0,
+                    source_payload_id: context.source_payload_id,
+                    transport_lane: context.transport_lane,
+                    kind: NETWORK_EFFECT_KIND_GOSSIP_PACKET,
+                    peer_id: [0; 64],
+                    packet_kind: NETWORK_PACKET_KIND_TRANSACTION,
+                    payload_bytes: encode_single_transaction_packet(&report.transaction_rlp),
+                    related_payload_bytes: Vec::new(),
+                    exclude_peers: vec![context.peer_id],
+                    object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
+                    object_hash: hash,
+                    sync_kind: 0,
+                    sync_start: 0,
+                    reason_code: 0,
+                    dependency_id: 0,
+                    period: 0,
+                    round: 0,
+                });
+            }
+        }
+        for hash in extra_hashes {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: context.source_payload_id,
+                transport_lane: context.transport_lane,
+                kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                peer_id: context.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
+                object_hash: *hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+        NetworkIngressDecision {
+            payload_id: context.source_payload_id,
+            payload_accepted: true,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: String::new(),
+            queued_effect_count: u32::try_from(self.pending_effects.len() - before)
+                .unwrap_or(u32::MAX),
+            application_effect_id: 0,
+        }
+    }
+
+    fn enqueue_dag_sync_response(
+        &mut self,
+        context: &NetworkGetDagSyncContext,
+        request_period: u64,
+        response_period: u64,
+        payload_bytes: Vec<u8>,
+    ) -> NetworkIngressDecision {
+        self.enqueue_effect(NetworkEffect {
+            effect_id: 0,
+            source_payload_id: context.source_payload_id,
+            transport_lane: context.transport_lane,
+            kind: NETWORK_EFFECT_KIND_SEND_PACKET,
+            peer_id: context.peer_id,
+            packet_kind: NETWORK_PACKET_KIND_DAG_SYNC,
+            payload_bytes,
+            related_payload_bytes: Vec::new(),
+            exclude_peers: Vec::new(),
+            object_kind: NETWORK_OBJECT_KIND_DAG_SYNC_EGRESS_REQUEST,
+            object_hash: [0; 32],
+            sync_kind: 0,
+            sync_start: request_period,
+            reason_code: 0,
+            dependency_id: 0,
+            period: response_period,
+            round: 0,
+        });
+        NetworkIngressDecision {
+            payload_id: context.source_payload_id,
+            payload_accepted: true,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: String::new(),
+            queued_effect_count: 1,
+            application_effect_id: 0,
+        }
+    }
+
+    fn enqueue_transaction_gossip(
+        &mut self,
+        request: NetworkTransactionGossipRequest,
+        accounts: Vec<TransactionGossipAccount>,
+    ) -> NetworkIngressDecision {
+        if accounts.is_empty() || request.peers.is_empty() {
+            return local_network_decision(
+                request.source_payload_id,
+                NETWORK_INGRESS_STATUS_ACCEPTED,
+                ERROR_NONE,
+            );
+        }
+        let before = self.pending_effects.len();
+        let mut account_start = self.next_transaction_gossip_account % accounts.len();
+        for peer in request.peers {
+            let known = peer.known_hashes.into_iter().collect::<HashSet<_>>();
+            let mut full = Vec::new();
+            let mut hashes = Vec::new();
+            let mut next_start = (account_start + 1) % accounts.len();
+            for offset in 0..accounts.len() {
+                let index = (account_start + offset) % accounts.len();
+                for transaction in &accounts[index].transactions {
+                    let hash: [u8; 32] = transaction.hash.into();
+                    if known.contains(&hash) {
+                        continue;
+                    }
+                    if full.len() < MAX_TRANSACTIONS_PER_PACKET {
+                        full.push((hash, transaction.transaction_rlp.clone()));
+                        if full.len() == MAX_TRANSACTIONS_PER_PACKET {
+                            next_start = (index + 1) % accounts.len();
+                        }
+                    } else if hashes.len() < MAX_TRANSACTION_HASHES_PER_PACKET {
+                        hashes.push(hash);
+                    }
+                }
+                if hashes.len() == MAX_TRANSACTION_HASHES_PER_PACKET {
+                    break;
+                }
+            }
+            account_start = next_start;
+            if full.is_empty() && hashes.is_empty() {
+                continue;
+            }
+            let mut packet = RlpStream::new_list(2);
+            packet.begin_list(full.len());
+            for (_, transaction_rlp) in &full {
+                packet.append_raw(transaction_rlp, 1);
+            }
+            packet.begin_list(hashes.len());
+            for hash in &hashes {
+                packet.append(&H256::from(*hash));
+            }
+            let send_id = self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: request.source_payload_id,
+                transport_lane: request.transport_lane,
+                kind: NETWORK_EFFECT_KIND_SEND_PACKET,
+                peer_id: peer.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_TRANSACTION,
+                payload_bytes: packet.out().to_vec(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
+                object_hash: [0; 32],
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+            for (hash, _) in full {
+                self.enqueue_effect(NetworkEffect {
+                    effect_id: 0,
+                    source_payload_id: request.source_payload_id,
+                    transport_lane: request.transport_lane,
+                    kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                    peer_id: peer.peer_id,
+                    packet_kind: 0,
+                    payload_bytes: Vec::new(),
+                    related_payload_bytes: Vec::new(),
+                    exclude_peers: Vec::new(),
+                    object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
+                    object_hash: hash,
+                    sync_kind: 0,
+                    sync_start: 0,
+                    reason_code: 0,
+                    dependency_id: send_id,
+                    period: 0,
+                    round: 0,
+                });
+            }
+        }
+        self.next_transaction_gossip_account = account_start;
+        NetworkIngressDecision {
+            payload_id: request.source_payload_id,
+            payload_accepted: true,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: String::new(),
+            queued_effect_count: u32::try_from(self.pending_effects.len() - before)
+                .unwrap_or(u32::MAX),
+            application_effect_id: 0,
+        }
+    }
+
+    fn enqueue_pending_dag_request(
+        &mut self,
+        transport_lane: u32,
+        source_payload_id: u64,
+        peer_id: [u8; 64],
+        period: u64,
+        payload_bytes: Vec<u8>,
+    ) -> NetworkIngressDecision {
+        self.enqueue_effect(NetworkEffect {
+            effect_id: 0,
+            source_payload_id,
+            transport_lane,
+            kind: NETWORK_EFFECT_KIND_SEND_PACKET,
+            peer_id,
+            packet_kind: NETWORK_PACKET_KIND_GET_DAG_SYNC,
+            payload_bytes,
+            related_payload_bytes: Vec::new(),
+            exclude_peers: Vec::new(),
+            object_kind: NETWORK_OBJECT_KIND_DAG_SYNC_EGRESS_REQUEST,
+            object_hash: [0; 32],
+            sync_kind: 0,
+            sync_start: period,
+            reason_code: 0,
+            dependency_id: 0,
+            period,
+            round: 0,
+        });
+        NetworkIngressDecision {
+            payload_id: source_payload_id,
+            payload_accepted: true,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: String::new(),
+            queued_effect_count: 1,
+            application_effect_id: 0,
+        }
+    }
+
+    fn enqueue_dag_block_effects(
+        &mut self,
+        context: &NetworkDagBlockIngressContext,
+        report: &DagBlockIngressReport,
+        transactions: &[Vec<u8>],
+    ) -> Result<NetworkIngressDecision> {
+        let before = self.pending_effects.len();
+        for transaction in transactions {
+            let envelope = LegacyTransactionEnvelope::decode(transaction)
+                .context("NETWORK_DAG_TRANSACTION_DECODE")?;
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: context.source_payload_id,
+                transport_lane: context.transport_lane,
+                kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                peer_id: context.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
+                object_hash: envelope.hash.0,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+        self.enqueue_effect(NetworkEffect {
+            effect_id: 0,
+            source_payload_id: context.source_payload_id,
+            transport_lane: context.transport_lane,
+            kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+            peer_id: context.peer_id,
+            packet_kind: 0,
+            payload_bytes: Vec::new(),
+            related_payload_bytes: Vec::new(),
+            exclude_peers: Vec::new(),
+            object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
+            object_hash: report.block_hash.0,
+            sync_kind: 0,
+            sync_start: 0,
+            reason_code: 0,
+            dependency_id: 0,
+            period: 0,
+            round: 0,
+        });
+        Ok(NetworkIngressDecision {
+            payload_id: context.source_payload_id,
+            payload_accepted: true,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: String::new(),
+            queued_effect_count: u32::try_from(self.pending_effects.len() - before)
+                .unwrap_or(u32::MAX),
+            application_effect_id: 0,
+        })
+    }
+
+    /// Plans the legacy DAG rejection policy using only compact peer facts.
+    ///
+    /// The terminal action is authoritative and deliberately is not placed on
+    /// the shared effect queue: DAG-sync execution can re-enter this API and
+    /// must happen only after the caller releases its transport-lane lock.
+    fn plan_dag_block_rejection_decision(
+        &self,
+        context: &NetworkDagBlockIngressContext,
+        reject_code: u32,
+    ) -> Result<(NetworkIngressDecision, u8)> {
+        let action = plan_dag_block_rejection(context, reject_code)?;
+        let (status, error_code) = match action {
+            NETWORK_DAG_REJECTION_ACTION_IGNORE => (
+                NETWORK_INGRESS_STATUS_DAG_BLOCK_IGNORED,
+                ERROR_DAG_BLOCK_IGNORED,
+            ),
+            NETWORK_DAG_REJECTION_ACTION_REQUEST_DAG_SYNC
+            | NETWORK_DAG_REJECTION_ACTION_REQUEST_PENDING_DAG => (
+                NETWORK_INGRESS_STATUS_DAG_BLOCK_SYNC_REQUESTED,
+                ERROR_DAG_BLOCK_SYNC_REQUESTED,
+            ),
+            NETWORK_DAG_REJECTION_ACTION_DISCONNECT => (
+                NETWORK_INGRESS_STATUS_DAG_BLOCK_DISCONNECT,
+                ERROR_DAG_BLOCK_DISCONNECT,
+            ),
+            NETWORK_DAG_REJECTION_ACTION_MALICIOUS => (
+                NETWORK_INGRESS_STATUS_DAG_BLOCK_MALICIOUS,
+                ERROR_DAG_BLOCK_MALICIOUS,
+            ),
+            _ => (
+                NETWORK_INGRESS_STATUS_DAG_BLOCK_REJECTED,
+                ERROR_DAG_BLOCK_REJECTED,
+            ),
+        };
+        Ok((
+            NetworkIngressDecision {
+                payload_id: context.source_payload_id,
+                payload_accepted: context.source_payload_id != 0,
+                routed: true,
+                status,
+                error_code: error_code.to_owned(),
+                queued_effect_count: 0,
+                application_effect_id: 0,
+            },
+            action,
+        ))
+    }
+
+    fn enqueue_dag_block_gossip(
+        &mut self,
+        request: NetworkDagGossipRequest,
+    ) -> NetworkIngressDecision {
+        let before = self.pending_effects.len();
+        for peer in request.peers {
+            if peer.peer_id == request.source_peer_id || peer.syncing || peer.known_block {
+                continue;
+            }
+            let send_id = self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: request.source_payload_id,
+                transport_lane: request.transport_lane,
+                kind: NETWORK_EFFECT_KIND_SEND_PACKET,
+                peer_id: peer.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_DAG_BLOCK,
+                payload_bytes: request.packet_rlp.clone(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
+                object_hash: request.block_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: request.source_payload_id,
+                transport_lane: request.transport_lane,
+                kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                peer_id: peer.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
+                object_hash: request.block_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: send_id,
+                period: 0,
+                round: 0,
+            });
+        }
+        NetworkIngressDecision {
+            payload_id: request.source_payload_id,
+            payload_accepted: true,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: String::new(),
+            queued_effect_count: u32::try_from(self.pending_effects.len() - before)
+                .unwrap_or(u32::MAX),
+            application_effect_id: 0,
+        }
+    }
+
+    fn enqueue_dag_sync_ingress_effects(
+        &mut self,
+        context: &NetworkDagBlockIngressContext,
+        reports: &[DagBlockIngressReport],
+        transactions: &[Vec<u8>],
+    ) -> Result<NetworkIngressDecision> {
+        let before = self.pending_effects.len();
+        for transaction in transactions {
+            let envelope = LegacyTransactionEnvelope::decode(transaction)
+                .context("NETWORK_DAG_SYNC_TRANSACTION_DECODE")?;
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: context.source_payload_id,
+                transport_lane: context.transport_lane,
+                kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                peer_id: context.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
+                object_hash: envelope.hash.0,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+        for report in reports {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: context.source_payload_id,
+                transport_lane: context.transport_lane,
+                kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                peer_id: context.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                related_payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
+                object_hash: report.block_hash.0,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+        Ok(NetworkIngressDecision {
+            payload_id: context.source_payload_id,
+            payload_accepted: true,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: String::new(),
+            queued_effect_count: u32::try_from(self.pending_effects.len() - before)
+                .unwrap_or(u32::MAX),
+            application_effect_id: 0,
+        })
+    }
+
     /// Enqueues an executor effect for tests and future packet-specific
     /// planners.
     pub fn enqueue_effect(&mut self, mut effect: NetworkEffect) -> u64 {
@@ -3094,6 +4153,58 @@ fn local_network_decision(
         queued_effect_count: 0,
         application_effect_id: 0,
     }
+}
+
+fn plan_dag_block_rejection(
+    context: &NetworkDagBlockIngressContext,
+    reject_code: u32,
+) -> Result<u8> {
+    let action = match reject_code {
+        DAG_VERIFY_REJECT_MISSING_TRANSACTION => {
+            if context.dag_sync_allowed {
+                NETWORK_DAG_REJECTION_ACTION_REQUEST_DAG_SYNC
+            } else if context.transactions_dropped {
+                NETWORK_DAG_REJECTION_ACTION_DISCONNECT
+            } else {
+                NETWORK_DAG_REJECTION_ACTION_MALICIOUS
+            }
+        }
+        DAG_VERIFY_REJECT_MISSING_TIP => {
+            if context.peer_dag_synced && context.dag_sync_allowed {
+                NETWORK_DAG_REJECTION_ACTION_REQUEST_DAG_SYNC
+            } else if context.peer_dag_synced {
+                NETWORK_DAG_REJECTION_ACTION_MALICIOUS
+            } else if context.pending_dag_request {
+                NETWORK_DAG_REJECTION_ACTION_IGNORE
+            } else {
+                NETWORK_DAG_REJECTION_ACTION_REQUEST_PENDING_DAG
+            }
+        }
+        DAG_VERIFY_REJECT_AHEAD_BLOCK | DAG_VERIFY_REJECT_FUTURE_BLOCK => {
+            if context.peer_dag_synced {
+                NETWORK_DAG_REJECTION_ACTION_DISCONNECT
+            } else {
+                NETWORK_DAG_REJECTION_ACTION_IGNORE
+            }
+        }
+        DAG_VERIFY_REJECT_EXPIRED_BLOCK => NETWORK_DAG_REJECTION_ACTION_IGNORE,
+        DAG_VERIFY_REJECT_ADD_BLOCK_METADATA => {
+            if context.local_pbft_syncing || context.pending_dag_request {
+                NETWORK_DAG_REJECTION_ACTION_IGNORE
+            } else if context.peer_dag_synced {
+                NETWORK_DAG_REJECTION_ACTION_MALICIOUS
+            } else {
+                NETWORK_DAG_REJECTION_ACTION_REQUEST_PENDING_DAG
+            }
+        }
+        DAG_VERIFY_REJECT_INCORRECT_TRANSACTIONS_ESTIMATION
+        | DAG_VERIFY_REJECT_BLOCK_TOO_BIG
+        | DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        | DAG_VERIFY_REJECT_NOT_ELIGIBLE
+        | DAG_VERIFY_REJECT_FAILED_TIPS_VERIFICATION => NETWORK_DAG_REJECTION_ACTION_MALICIOUS,
+        _ => return Err(anyhow!("NETWORK_DAG_UNKNOWN_REJECT_CODE:{reject_code}")),
+    };
+    Ok(action)
 }
 
 fn decode_get_pbft_sync_request(request_rlp: &[u8]) -> Option<u64> {
@@ -6191,5 +7302,234 @@ mod tests {
         assert_eq!(disconnect.len(), 1);
         assert_eq!(disconnect[0].kind, NETWORK_EFFECT_KIND_DISCONNECT_PEER);
         assert_eq!(disconnect[0].dependency_id, report[0].effect_id);
+    }
+
+    #[test]
+    fn transaction_packet_decoder_preserves_members_and_rejects_bad_shape() {
+        let mut packet = RlpStream::new_list(2);
+        packet.begin_list(1);
+        packet.append_raw(&[0x01], 1);
+        packet.begin_list(1);
+        packet.append(&H256::from([7; 32]));
+        let (transactions, hashes) = decode_transaction_packet(&packet.out()).unwrap();
+        assert_eq!(transactions, vec![vec![0x01]]);
+        assert_eq!(hashes, vec![[7; 32]]);
+        assert!(matches!(
+            decode_transaction_packet(&[0xc0]),
+            Err(TransactionPacketDecodeError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn known_transaction_packet_member_is_benign_without_regossip() {
+        let report = TransactionPacketIngressReport {
+            submission: crate::PublicTransactionSubmissionReport {
+                transaction_hash: H256::from([9; 32]),
+                accepted: false,
+                message: "Transaction already in transactions pool".to_owned(),
+                verification_status:
+                    crate::transaction_manager::TransactionManagerVerifyTransactionStatus::Accepted,
+                queue_status: Some(TransactionQueueInsertStatus::Known),
+                transaction_observed: false,
+            },
+            peer_id: peer(3),
+            observe_transaction: false,
+            gossip_transaction: false,
+            transaction_rlp: vec![0x01],
+        };
+
+        assert!(transaction_packet_member_is_benign(&report));
+        assert!(!report.observe_transaction);
+        assert!(!report.gossip_transaction);
+    }
+
+    #[test]
+    fn get_dag_sync_decoder_deduplicates_hashes_in_request_order() {
+        let mut packet = RlpStream::new_list(2);
+        packet.append(&9u64);
+        packet.begin_list(3);
+        packet.append(&H256::from([1; 32]));
+        packet.append(&H256::from([2; 32]));
+        packet.append(&H256::from([1; 32]));
+        let (period, hashes) = decode_get_dag_sync_request(&packet.out()).unwrap();
+        assert_eq!(period, 9);
+        assert_eq!(hashes, vec![H256::from([1; 32]), H256::from([2; 32])]);
+    }
+
+    #[test]
+    fn transaction_gossip_known_marks_depend_on_successful_send() {
+        let mut api = ConsensusNetworkApi::new();
+        let decision = api.enqueue_transaction_gossip(
+            NetworkTransactionGossipRequest {
+                transport_lane: 6,
+                source_payload_id: 77,
+                peers: vec![NetworkTransactionGossipPeer {
+                    peer_id: peer(4),
+                    known_hashes: Vec::new(),
+                }],
+            },
+            vec![TransactionGossipAccount {
+                sender: [3; 20].into(),
+                transactions: vec![crate::TransactionGossipEntry {
+                    hash: H256::from([5; 32]),
+                    transaction_rlp: vec![0x01],
+                }],
+            }],
+        );
+        assert_eq!(decision.queued_effect_count, 2);
+        let send = api.drain_work(6, 10).effects;
+        assert_eq!(send.len(), 1);
+        assert_eq!(send[0].kind, NETWORK_EFFECT_KIND_SEND_PACKET);
+        let failed = effect_result(&send[0], NETWORK_EFFECT_RESULT_STATUS_FAILED);
+        assert_eq!(api.report_effect_results(vec![failed]).status, 0);
+        assert!(api.drain_work(6, 10).effects.is_empty());
+    }
+
+    fn dag_rejection_context() -> NetworkDagBlockIngressContext {
+        NetworkDagBlockIngressContext {
+            transport_lane: 6,
+            peer_id: peer(9),
+            source_payload_id: 77,
+            rebroadcast: false,
+            peer_dag_synced: true,
+            dag_sync_allowed: false,
+            transactions_dropped: false,
+            pending_dag_request: false,
+            local_pbft_syncing: false,
+        }
+    }
+
+    #[test]
+    fn dag_rejection_planner_preserves_missing_transaction_policy() {
+        let mut context = dag_rejection_context();
+        context.dag_sync_allowed = true;
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_MISSING_TRANSACTION).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_REQUEST_DAG_SYNC
+        );
+        context.dag_sync_allowed = false;
+        context.transactions_dropped = true;
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_MISSING_TRANSACTION).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_DISCONNECT
+        );
+        context.transactions_dropped = false;
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_MISSING_TRANSACTION).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_MALICIOUS
+        );
+    }
+
+    #[test]
+    fn dag_rejection_planner_preserves_missing_tip_policy() {
+        let mut context = dag_rejection_context();
+        context.dag_sync_allowed = true;
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_MISSING_TIP).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_REQUEST_DAG_SYNC
+        );
+        context.dag_sync_allowed = false;
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_MISSING_TIP).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_MALICIOUS
+        );
+        context.peer_dag_synced = false;
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_MISSING_TIP).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_REQUEST_PENDING_DAG
+        );
+        context.pending_dag_request = true;
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_MISSING_TIP).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_IGNORE
+        );
+    }
+
+    #[test]
+    fn dag_rejection_planner_disconnects_ahead_only_when_peer_was_synced() {
+        let mut context = dag_rejection_context();
+        for reject_code in [
+            DAG_VERIFY_REJECT_AHEAD_BLOCK,
+            DAG_VERIFY_REJECT_FUTURE_BLOCK,
+        ] {
+            assert_eq!(
+                plan_dag_block_rejection(&context, reject_code).unwrap(),
+                NETWORK_DAG_REJECTION_ACTION_DISCONNECT
+            );
+            context.peer_dag_synced = false;
+            assert_eq!(
+                plan_dag_block_rejection(&context, reject_code).unwrap(),
+                NETWORK_DAG_REJECTION_ACTION_IGNORE
+            );
+            context.peer_dag_synced = true;
+        }
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_EXPIRED_BLOCK).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_IGNORE
+        );
+    }
+
+    #[test]
+    fn dag_rejection_planner_marks_only_invalid_proofs_and_shapes_malicious() {
+        let context = dag_rejection_context();
+        for reject_code in [
+            DAG_VERIFY_REJECT_INCORRECT_TRANSACTIONS_ESTIMATION,
+            DAG_VERIFY_REJECT_BLOCK_TOO_BIG,
+            DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION,
+            DAG_VERIFY_REJECT_NOT_ELIGIBLE,
+            DAG_VERIFY_REJECT_FAILED_TIPS_VERIFICATION,
+        ] {
+            assert_eq!(
+                plan_dag_block_rejection(&context, reject_code).unwrap(),
+                NETWORK_DAG_REJECTION_ACTION_MALICIOUS
+            );
+        }
+        assert!(plan_dag_block_rejection(&context, u32::MAX).is_err());
+    }
+
+    #[test]
+    fn add_stage_metadata_rejection_preserves_sync_state_policy() {
+        let mut context = dag_rejection_context();
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_ADD_BLOCK_METADATA).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_MALICIOUS
+        );
+
+        context.pending_dag_request = true;
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_ADD_BLOCK_METADATA).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_IGNORE
+        );
+
+        context.pending_dag_request = false;
+        context.local_pbft_syncing = true;
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_ADD_BLOCK_METADATA).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_IGNORE
+        );
+
+        context.local_pbft_syncing = false;
+        context.peer_dag_synced = false;
+        assert_eq!(
+            plan_dag_block_rejection(&context, DAG_VERIFY_REJECT_ADD_BLOCK_METADATA).unwrap(),
+            NETWORK_DAG_REJECTION_ACTION_REQUEST_PENDING_DAG
+        );
+    }
+
+    #[test]
+    fn terminal_dag_sync_actions_never_enter_shared_effect_queue() {
+        let mut api = ConsensusNetworkApi::new();
+        let mut context = dag_rejection_context();
+        context.dag_sync_allowed = true;
+        let (decision, action) = api
+            .plan_dag_block_rejection_decision(&context, DAG_VERIFY_REJECT_MISSING_TRANSACTION)
+            .unwrap();
+        assert_eq!(action, NETWORK_DAG_REJECTION_ACTION_REQUEST_DAG_SYNC);
+        assert_eq!(decision.queued_effect_count, 0);
+        assert!(
+            api.drain_work(context.transport_lane, 10)
+                .effects
+                .is_empty()
+        );
     }
 }

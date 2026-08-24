@@ -7,14 +7,15 @@
 #include <stdexcept>
 
 #include "common/types.hpp"
-#include "dag/dag_manager.hpp"
+#include "final_chain/final_chain.hpp"
 #include "network/network.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_application.hpp"
 #else
+#include "dag/dag_manager.hpp"
 #include "pbft/pbft_manager.hpp"
-#endif
 #include "transaction/transaction_manager.hpp"
+#endif
 #ifndef RUSTAXA_ENABLE
 #include "vote_manager/vote_manager.hpp"
 #endif
@@ -51,7 +52,7 @@ LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBa
   const auto dpos_node_votes = node->getPbftManager()->getCurrentNodeVotesCount();
 #endif
 #ifdef RUSTAXA_ENABLE
-  const auto query = consensus_query_api ? consensus_query_api : createConsensusQueryApi(node->getDB());
+  const auto query = consensus_query_api ? consensus_query_api : consensus_application->queryClient();
   const auto threshold =
       (*query)->consensus_query_pbft_vote_threshold(chain_size, static_cast<uint8_t>(PbftVoteTypes::cert_vote));
   const auto dpos_quorum = threshold.has_threshold ? std::optional<uint64_t>{threshold.threshold} : std::nullopt;
@@ -79,8 +80,14 @@ LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBa
 #else
   snapshot.pbft_sync_queue_size = node->getPbftManager()->periodDataQueueSize();
 #endif
+#ifdef RUSTAXA_ENABLE
+  const auto transaction_status = (*query)->consensus_query_live_transaction_status();
+  snapshot.transaction_pool_size = transaction_status.queue_size;
+  snapshot.nonfinalized_transaction_size = transaction_status.non_finalized_size;
+#else
   snapshot.transaction_pool_size = node->getTransactionManager()->getTransactionPoolSize();
   snapshot.nonfinalized_transaction_size = node->getTransactionManager()->getNonfinalizedTrxSize();
+#endif
   if (const auto peer = node->getNetwork()->getMaxChainPeer()) {
     snapshot.max_peer_pbft_chain_size = peer->pbft_chain_size_.load();
   }
@@ -102,7 +109,13 @@ TestTransactionApi makeTestTransactionApi(std::weak_ptr<taraxa::AppBase> app) {
     if (!node) {
       throw std::runtime_error("TEST_TRANSACTION_API_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    const auto report =
+        node->getConsensusApplication()->submitTransaction(trx, node->getConfig(), *node->getFinalChain());
+    return std::pair{report.accepted, report.message};
+#else
     return node->getTransactionManager()->insertTransaction(trx);
+#endif
   };
   return api;
 }
@@ -152,23 +165,24 @@ TestNodeStatusReader makeTestNodeStatusReader(std::weak_ptr<taraxa::AppBase> app
       return status;
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto chain_stats = (*consensus_query_api)->consensus_query_chain_stats();
-      status.blocks_executed = chain_stats.dag_blocks_executed;
-      status.dag_blocks_count = chain_stats.dag_blocks_count;
-      status.transactions_executed = chain_stats.transactions_executed;
-      status.transactions_count = chain_stats.transactions_count;
-      const auto consensus_status = (*consensus_query_api)->consensus_query_status();
-      status.dag_level = consensus_status.latest_dag_level;
-      return status;
+    if (!consensus_query_api) {
+      throw std::runtime_error("TEST_NODE_STATUS_QUERY_UNAVAILABLE");
     }
-#endif
+    const auto chain_stats = (*consensus_query_api)->consensus_query_chain_stats();
+    status.blocks_executed = chain_stats.dag_blocks_executed;
+    status.dag_blocks_count = chain_stats.dag_blocks_count;
+    status.transactions_executed = chain_stats.transactions_executed;
+    status.transactions_count = (*consensus_query_api)->consensus_query_live_transaction_status().transaction_count;
+    status.dag_level = (*consensus_query_api)->consensus_query_live_dag_status().max_level;
+    return status;
+#else
     status.blocks_executed = node->getDB()->getNumBlockExecuted();
     status.dag_blocks_count = node->getDB()->getDagBlocksCount();
     status.transactions_executed = node->getDB()->getNumTransactionExecuted();
     status.transactions_count = node->getTransactionManager()->getTransactionCount();
     status.dag_level = node->getDagManager()->getMaxLevel();
     return status;
+#endif
   };
   return reader;
 }
@@ -294,6 +308,11 @@ Test::Test(const std::shared_ptr<taraxa::AppBase> &app, LiveStatusReader live_st
       consensus_query_api_(std::move(consensus_query_api))
 #endif
 {
+#ifdef RUSTAXA_ENABLE
+  if (!consensus_query_api_ && app) {
+    consensus_query_api_ = app->getConsensusApplication()->queryClient();
+  }
+#endif
   fillMissingTestTransactionApiCallbacks(transaction_api_, app_);
   fillMissingTestNetworkReaderCallbacks(network_reader_, app_);
   fillMissingTestNodeStatusReaderCallbacks(node_status_reader_, app_

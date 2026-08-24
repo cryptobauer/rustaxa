@@ -8,6 +8,7 @@ ITransactionPacketHandler::ITransactionPacketHandler(const FullNodeConfig &conf,
                                                      const addr_t &node_addr, const std::string &logs_prefix)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, logs_prefix) {}
 
+#ifndef RUSTAXA_ENABLE
 void ITransactionPacketHandler::periodicSendTransactions(std::vector<SharedTransactions> &&transactions) {
   auto peers_with_transactions_to_send = transactionsToSendToPeers(std::move(transactions));
   const auto peers_to_send_count = peers_with_transactions_to_send.size();
@@ -95,5 +96,6 @@ ITransactionPacketHandler::transactionsToSendToPeer(std::shared_ptr<TaraxaPeer> 
     }
   }
 }
+#endif
 
 }  // namespace taraxa::network::tarcap

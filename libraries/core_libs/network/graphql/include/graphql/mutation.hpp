@@ -8,9 +8,11 @@
 #include "MutationObject.h"
 #include "transaction/transaction.hpp"
 
+#ifndef RUSTAXA_ENABLE
 namespace taraxa {
 class TransactionManager;
 }
+#endif
 
 namespace graphql::taraxa {
 
@@ -25,8 +27,10 @@ struct MutationTransactionApi {
 class Mutation {
  public:
   Mutation() = default;
+#ifndef RUSTAXA_ENABLE
   explicit Mutation(std::shared_ptr<::taraxa::TransactionManager> trx_manager,
                     MutationTransactionApi transaction_api = {}) noexcept;
+#endif
   explicit Mutation(MutationTransactionApi transaction_api) noexcept;
 
   response::Value applySendRawTransaction(response::Value&& dataArg) const;

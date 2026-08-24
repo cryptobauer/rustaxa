@@ -14,6 +14,7 @@
 #include "config/config.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_host_ports.hpp"
+#include "rustaxa-bridge/application_host_ffi.rs.h"
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
 #include "final_chain/trie_common.hpp"
@@ -265,6 +266,47 @@ TEST_F(FinalChainTest, rustModeExternalEvmAccountFactsPreserveOrderAndMissingRow
   EXPECT_EQ(report.accounts[0].balance[31], 123);
   EXPECT_EQ(report.accounts[1].address, missing.asArray());
   EXPECT_FALSE(report.accounts[1].found);
+#else
+  GTEST_SKIP() << "FinalChain shim is disabled";
+#endif
+}
+
+TEST_F(FinalChainTest, rustModeExternalEvmDagGasEstimatePreservesIdentityAndCanonicalResult) {
+#ifdef RUSTAXA_ENABLE
+  const auto sender = dev::KeyPair::create();
+  cfg.genesis.state.initial_balances = {{sender.address(), 1000000000}};
+  init();
+
+  const auto transaction = std::make_shared<Transaction>(0, 1, 1, 100000, dev::bytes{}, sender.secret(),
+                                                         addr_t::random(), cfg.genesis.chain_id);
+  ExternalEvmPort port(SUT);
+  rustaxa::HostDagGasBatch request{};
+  request.effect_id = {.generation = 11, .sequence = 13};
+  request.proposal_period = SUT->lastBlockNumber();
+  rustaxa::DagHash input_hash{};
+  input_hash.hash = transaction->getHash().asArray();
+  request.transaction_hashes.push_back(std::move(input_hash));
+  rustaxa::CanonicalBytes input_rlp{};
+  const auto rlp = transaction->rlp();
+  input_rlp.data.reserve(rlp.size());
+  for (const auto byte : rlp) {
+    input_rlp.data.push_back(byte);
+  }
+  request.transaction_rlps.push_back(std::move(input_rlp));
+
+  const auto report = port.consensusEstimateDagTransactionGas(request);
+
+  ASSERT_TRUE(report.succeeded) << std::string(report.error_code);
+  EXPECT_EQ(report.effect_id.generation, 11);
+  EXPECT_EQ(report.effect_id.sequence, 13);
+  EXPECT_EQ(report.observed_block, SUT->lastBlockNumber());
+  EXPECT_EQ(report.proposal_period, request.proposal_period);
+  ASSERT_EQ(report.transaction_hashes.size(), 1);
+  ASSERT_EQ(report.gas_used.size(), 1);
+  ASSERT_EQ(report.result_rlps.size(), 1);
+  EXPECT_EQ(report.transaction_hashes[0].hash, transaction->getHash().asArray());
+  EXPECT_GT(report.gas_used[0], 0);
+  EXPECT_FALSE(report.result_rlps[0].data.empty());
 #else
   GTEST_SKIP() << "FinalChain shim is disabled";
 #endif

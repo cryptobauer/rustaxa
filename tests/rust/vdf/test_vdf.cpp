@@ -166,30 +166,3 @@ TEST_F(VDFTest, LegacyVrfSortitionBridgeProof) {
   ASSERT_TRUE(proof.ok) << proof.error;
   EXPECT_NE(proof.threshold, 0);
 }
-
-TEST_F(VDFTest, LegacyVdfSortitionBridgeRoundTrip) {
-  const auto vrf_input = std::vector<uint8_t>{0xa1, 0x02, 0x03};
-  const auto vdf_input = std::vector<uint8_t>{0xb1, 0x04};
-  std::atomic_bool cancelled{false};
-  auto cancellation_token = make_test_cancellation_token(cancelled);
-  const auto vrf = prove_legacy_vrf_sortition(kVrfSecretKey, to_slice(vrf_input), 1000);
-  ASSERT_TRUE(vrf.ok) << vrf.error;
-
-  const auto proof = prove_legacy_vdf_sortition(sortition_params(), kVrfSecretKey, to_slice(vrf_input),
-                                                to_slice(vdf_input), 1, 1, *cancellation_token);
-  ASSERT_TRUE(proof.ok) << proof.error;
-
-  const auto payload = VdfSortitionPayload{
-      .vrf_proof = proof.vrf_proof,
-      .vdf_solution_proof = proof.vdf_proof,
-      .vdf_solution_output = proof.vdf_output,
-      .difficulty = proof.difficulty,
-  };
-  const auto encoded = vdf_sortition_payload_encode(payload);
-  const auto verified = verify_legacy_vdf_sortition(sortition_params(), vrf.public_key, to_rust_vec_slice(encoded),
-                                                    to_slice(vrf_input), to_slice(vdf_input), 1, 1);
-  EXPECT_TRUE(verified.ok) << verified.error;
-  EXPECT_EQ(verified.expected_difficulty, proof.difficulty);
-  EXPECT_EQ(verified.vrf_threshold, proof.vrf_threshold);
-  EXPECT_EQ(verified.vrf_output, proof.vrf_output);
-}

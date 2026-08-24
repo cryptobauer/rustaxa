@@ -52,6 +52,35 @@ fn consensus_status_view_to_ffi(
     }
 }
 
+fn live_dag_status_view_to_ffi(
+    status: rustaxa_consensus::DagRuntimeStatus,
+) -> rustaxa_ffi::LiveDagStatusView {
+    rustaxa_ffi::LiveDagStatusView {
+        vertex_count: status.vertex_count,
+        edge_count: status.edge_count,
+        max_level: status.max_level,
+        period: status.period,
+        old_anchor: status.anchors.old.into(),
+        current_anchor: status.anchors.current.into(),
+        expiry_level: status.expiry_level,
+        non_finalized_levels: status.non_finalized_levels,
+        non_finalized_blocks: status.non_finalized_blocks,
+    }
+}
+
+fn live_transaction_status_view_to_ffi(
+    status: rustaxa_consensus::TransactionPoolStatus,
+) -> rustaxa_ffi::LiveTransactionStatusView {
+    rustaxa_ffi::LiveTransactionStatusView {
+        transaction_count: status.transaction_count,
+        queue_size: status.queue_size,
+        non_finalized_size: status.non_finalized_size,
+        gas_price_bid: status.gas_price_bid,
+        transactions_dropped: status.transactions_dropped,
+        non_proposable_over_limit: status.non_proposable_over_limit,
+    }
+}
+
 fn sortition_params_change_view_to_ffi(
     view: rustaxa_consensus::SortitionParamsChangeView,
 ) -> rustaxa_ffi::SortitionParamsChangeView {
@@ -281,6 +310,22 @@ pub fn create_consensus_query_api(runtime: &BridgeApp) -> Box<BridgeConsensusQue
 }
 
 impl BridgeConsensusQueryApi {
+    /// Returns compact live DAG graph and non-finalized pressure facts.
+    pub fn consensus_query_live_dag_status(
+        &self,
+    ) -> Result<rustaxa_ffi::LiveDagStatusView, anyhow::Error> {
+        Ok(live_dag_status_view_to_ffi(self.0.dag_live_status()?))
+    }
+
+    /// Returns compact live transaction queue and pressure facts.
+    pub fn consensus_query_live_transaction_status(
+        &self,
+    ) -> Result<rustaxa_ffi::LiveTransactionStatusView, anyhow::Error> {
+        Ok(live_transaction_status_view_to_ffi(
+            self.0.transaction_pool_status()?,
+        ))
+    }
+
     /// Returns the live application-owned verified-vote count for public clients.
     pub fn consensus_query_verified_vote_count(&self) -> Result<u64, anyhow::Error> {
         self.0.verified_vote_count()

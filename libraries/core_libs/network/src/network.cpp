@@ -55,11 +55,8 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #endif
                  net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
-                 std::shared_ptr<VoteManager> vote_mgr,
-#endif
-                 std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
-#ifndef RUSTAXA_ENABLE
-                 std::shared_ptr<SlashingManager> slashing_manager,
+                 std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
+                 std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
 #endif
                  std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
                  std::shared_ptr<final_chain::FinalChain> final_chain
@@ -102,17 +99,18 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
   all_packets_stats_ = std::make_shared<network::tarcap::TimePeriodPacketsStats>(
       kConf.network.ddos_protection.packets_stats_time_period_ms, node_addr);
 
-  node_stats_ = std::make_shared<network::tarcap::NodeStats>(pbft_syncing_state_, pbft_chain,
+  node_stats_ =
+      std::make_shared<network::tarcap::NodeStats>(pbft_syncing_state_, pbft_chain,
 #ifdef RUSTAXA_ENABLE
-                                                             consensus_status_, consensus_vote_status_,
+                                                   consensus_status_, consensus_vote_status_,
 #else
-                                                             pbft_mgr,
+                                                   pbft_mgr,
 #endif
 #ifndef RUSTAXA_ENABLE
-                                                             vote_mgr,
+                                                   vote_mgr, dag_mgr, trx_mgr, all_packets_stats_, packets_tp_, kConf);
+#else
+                                                   all_packets_stats_, packets_tp_, kConf);
 #endif
-                                                             dag_mgr,
-                                                             trx_mgr, all_packets_stats_, packets_tp_, kConf);
 
   // TODO make all these properties configurable
   dev::p2p::NetworkConfig net_conf;
@@ -154,11 +152,7 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #endif
         pbft_chain,
 #ifndef RUSTAXA_ENABLE
-        vote_mgr,
-#endif
-        dag_mgr, trx_mgr,
-#ifndef RUSTAXA_ENABLE
-        slashing_manager,
+        vote_mgr, dag_mgr, trx_mgr, slashing_manager,
 #endif
         pillar_chain_mgr, final_chain
 #ifdef RUSTAXA_ENABLE
@@ -182,11 +176,7 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #endif
         pbft_chain,
 #ifndef RUSTAXA_ENABLE
-        vote_mgr,
-#endif
-        dag_mgr, trx_mgr,
-#ifndef RUSTAXA_ENABLE
-        slashing_manager,
+        vote_mgr, dag_mgr, trx_mgr, slashing_manager,
 #endif
         pillar_chain_mgr, final_chain,
 #ifdef RUSTAXA_ENABLE
@@ -209,7 +199,11 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
   addBootNodes(true);
 
   // Register periodic events. Must be called after full init of tarcaps
-  registerPeriodicEvents(trx_mgr);
+  registerPeriodicEvents(
+#ifndef RUSTAXA_ENABLE
+      trx_mgr
+#endif
+  );
 
   for (uint i = 0; i < tp_.capacity(); ++i) {
     tp_.post_loop({100 + i * 20}, [this] { while (0 < host_->do_work()); });
@@ -267,7 +261,11 @@ uint64_t Network::syncTimeSeconds() const {
 
 void Network::setSyncStatePeriod(PbftPeriod period) { pbft_syncing_state_->setSyncStatePeriod(period); }
 
-void Network::registerPeriodicEvents(std::shared_ptr<TransactionManager> trx_mgr) {
+void Network::registerPeriodicEvents(
+#ifndef RUSTAXA_ENABLE
+    std::shared_ptr<TransactionManager> trx_mgr
+#endif
+) {
   auto getAllPeers = [this]() {
     std::vector<std::shared_ptr<network::tarcap::TaraxaPeer>> all_peers;
     for (auto &tarcap : tarcaps_) {
@@ -280,11 +278,20 @@ void Network::registerPeriodicEvents(std::shared_ptr<TransactionManager> trx_mgr
   };
 
   // Send new transactions
-  auto sendTxs = [this, trx_mgr = trx_mgr]() {
+  auto sendTxs = [this
+#ifndef RUSTAXA_ENABLE
+                  ,
+                  trx_mgr = std::move(trx_mgr)
+#endif
+  ]() {
     for (auto &tarcap : tarcaps_) {
       auto tx_packet_handler = tarcap.second->getSpecificHandler<network::tarcap::ITransactionPacketHandler>(
           network::SubprotocolPacketType::kTransactionPacket);
+#ifdef RUSTAXA_ENABLE
+      tx_packet_handler->periodicSendTransactions();
+#else
       tx_packet_handler->periodicSendTransactions(trx_mgr->getAllPoolTrxs());
+#endif
     }
   };
   periodic_events_tp_.post_loop({kConf.network.transaction_interval_ms}, sendTxs);

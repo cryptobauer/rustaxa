@@ -10,8 +10,10 @@
 namespace taraxa {
 struct FullNodeConfig;
 class Network;
+#ifndef RUSTAXA_ENABLE
 class TransactionManager;
 class DagManager;
+#endif
 class DbStorage;
 #ifdef RUSTAXA_ENABLE
 class ConsensusApplication;
@@ -21,7 +23,9 @@ class PbftManager;
 class VoteManager;
 class PbftChain;
 #endif
+#ifndef RUSTAXA_ENABLE
 class DagBlockProposer;
+#endif
 #ifndef RUSTAXA_ENABLE
 class GasPricer;
 #endif
@@ -53,8 +57,10 @@ class AppBase {
   virtual const FullNodeConfig &getConfig() const = 0;
   virtual FullNodeConfig &getMutableConfig() = 0;
   virtual std::shared_ptr<Network> getNetwork() const = 0;
+#ifndef RUSTAXA_ENABLE
   virtual std::shared_ptr<TransactionManager> getTransactionManager() const = 0;
   virtual std::shared_ptr<DagManager> getDagManager() const = 0;
+#endif
   virtual std::shared_ptr<DbStorage> getDB() const = 0;
 #ifdef RUSTAXA_ENABLE
   /** Returns the native application root for Rust-mode fixtures and named executors. */
@@ -73,9 +79,9 @@ class AppBase {
   virtual PbftProgress getPbftProgress() const = 0;
   virtual std::shared_ptr<final_chain::FinalChain> getFinalChain() const = 0;
   virtual std::shared_ptr<metrics::MetricsService> getMetrics() const = 0;
-  // used only in tests
-  virtual std::shared_ptr<DagBlockProposer> getDagBlockProposer() const = 0;
 #ifndef RUSTAXA_ENABLE
+  // used only in pure-C++ reference tests
+  virtual std::shared_ptr<DagBlockProposer> getDagBlockProposer() const = 0;
   virtual std::shared_ptr<GasPricer> getGasPricer() const = 0;
 #endif
 

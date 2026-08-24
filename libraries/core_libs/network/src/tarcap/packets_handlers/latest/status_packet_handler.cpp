@@ -35,7 +35,6 @@ StatusPacketHandler::StatusPacketHandler(const FullNodeConfig& conf, std::shared
                                                                          // legacy status handler.
 #else
                                          network::ConsensusLiveStatusProvider consensus_status,
-                                         std::shared_ptr<DagManager> dag_mgr,
                                          network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                          h256 genesis_hash, const addr_t& node_addr, const std::string& logs_prefix)
@@ -43,7 +42,7 @@ StatusPacketHandler::StatusPacketHandler(const FullNodeConfig& conf, std::shared
 #ifndef RUSTAXA_ENABLE
                          std::move(pbft_mgr), std::move(dag_mgr), std::move(db),
 #else
-                         std::move(consensus_status), std::move(dag_mgr), std::move(consensus_network_api),
+                         std::move(consensus_status), std::move(consensus_network_api),
 #endif
                          node_addr, logs_prefix + "STATUS_PH"),
       kGenesisHash(genesis_hash) {

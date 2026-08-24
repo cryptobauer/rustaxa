@@ -205,7 +205,7 @@ rust::Box<rustaxa::BridgeConsensusApplication> createConformanceApplication(cons
   auto dag_genesis = h256Array(0xAC);
   return rustaxa::create_consensus_application(
       path.string(), 1, 0, genesis, dag_genesis, 32, 1'000'000, sortition, rustaxa::TransactionQueueConfig{16},
-      gas_pricer, 1'000'000, std::move(pbft), {}, 1'000'000, 0, {}, {}, std::move(dpos), std::move(rewards));
+      gas_pricer, 1'000'000, std::move(pbft), {}, {}, 1'000'000, 0, {}, {}, std::move(dpos), std::move(rewards));
 }
 
 std::vector<uint8_t> encodeSingleHashListRlp(const std::array<uint8_t, 32>& hash) {

@@ -22,20 +22,15 @@ struct GraphQlOperations {
 class GraphQlHttpProcessor final : public HttpProcessor {
  public:
   explicit GraphQlHttpProcessor(GraphQlOperations operations);
+#ifndef RUSTAXA_ENABLE
   GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                        std::shared_ptr<::taraxa::DagManager> dag_manager,
-#ifndef RUSTAXA_ENABLE
                        std::shared_ptr<::taraxa::PbftManager> pbft_manager,
-#endif
                        std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
-                       std::shared_ptr<::taraxa::DbStorage> db,
-#ifdef RUSTAXA_ENABLE
-                       graphql::taraxa::QueryGasPriceReader gas_price_reader,
-#else
-                       std::shared_ptr<::taraxa::GasPricer> gas_pricer,
-#endif
+                       std::shared_ptr<::taraxa::DbStorage> db, std::shared_ptr<::taraxa::GasPricer> gas_pricer,
                        std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
                        ::taraxa::net::LiveStatusReader live_status = {});
+#endif
   Response process(const Request& request) override;
 
  private:

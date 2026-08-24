@@ -1,6 +1,8 @@
 #pragma once
 
+#ifndef RUSTAXA_ENABLE
 #include "dag/dag_manager.hpp"
+#endif
 #include "network/consensus_query.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "packet_handler.hpp"
@@ -33,7 +35,7 @@ class ExtSyncingPacketHandler : public PacketHandler {
                           std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
                           std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler.
 #else
-                          network::ConsensusLiveStatusProvider consensus_status, std::shared_ptr<DagManager> dag_mgr,
+                          network::ConsensusLiveStatusProvider consensus_status,
                           network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                           const addr_t &node_addr, const std::string &log_channel_name);
@@ -59,8 +61,8 @@ class ExtSyncingPacketHandler : public PacketHandler {
 #else
   network::ConsensusLiveStatusProvider consensus_status_;
 #endif
-  std::shared_ptr<DagManager> dag_mgr_{nullptr};
 #ifndef RUSTAXA_ENABLE
+  std::shared_ptr<DagManager> dag_mgr_{nullptr};
   std::shared_ptr<DbStorage> db_{nullptr};  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler storage.
 #else
   network::ConsensusNetworkApiShared rust_consensus_network_api_;

@@ -20,8 +20,8 @@ use crate::dag_service::{
     DagProposerAddBlockReport, DagProposerFinalChainFactsPreparation,
     DagProposerFinalChainFactsSnapshot, DagProposerSessionBeginInput, DagProposerSessionStep,
     DagProposerSigningReport, DagProposerTransactionObservation, DagProposerVdfProofReport,
-    DagRuntimeNonFinalizedSyncPayload, DagService, DagServiceConfig, DagServiceGuard,
-    DagVerifyBlockAuthorizationPreparation, DagVerifyBlockAuthorizationSnapshot,
+    DagProposerVrfReport, DagRuntimeNonFinalizedSyncPayload, DagService, DagServiceConfig,
+    DagServiceGuard, DagVerifyBlockAuthorizationPreparation, DagVerifyBlockAuthorizationSnapshot,
     DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
 };
 use crate::final_chain::FinalChain;
@@ -381,6 +381,10 @@ pub struct DagRuntimeStatus {
     pub anchors: DagAnchors,
     /// Lowest currently retained DAG level.
     pub expiry_level: u64,
+    /// Number of non-empty non-finalized DAG levels.
+    pub non_finalized_levels: u64,
+    /// Total live non-finalized DAG blocks.
+    pub non_finalized_blocks: u64,
 }
 
 /// Non-finalized hashes stored at one DAG level.
@@ -406,6 +410,87 @@ pub struct DagNonFinalizedSummary {
     pub levels: u64,
     /// Total number of non-finalized blocks.
     pub blocks: u64,
+}
+
+/// Canonical public transaction submitted to the native application owner.
+///
+/// Rust decodes, hashes, and recovers the signed legacy envelope. The remaining
+/// fields are immutable chain-policy facts selected by node configuration and
+/// the observed FinalChain height; callers cannot supply decoded transaction
+/// fields that disagree with `transaction_rlp`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicTransactionSubmissionRequest {
+    /// Canonical signed legacy transaction RLP.
+    pub transaction_rlp: Vec<u8>,
+    /// Configured replay-protection chain identifier.
+    pub expected_chain_id: u64,
+    /// Maximum transaction gas permitted at `last_block_number`.
+    pub maximum_gas_limit: u64,
+    /// Minimum transaction gas price permitted at `last_block_number`.
+    pub minimum_gas_price: U256,
+    /// FinalChain head used for hardfork validation and queue expiry metadata.
+    pub last_block_number: u64,
+    /// Whether Cornus transaction validation is active at the supplied head.
+    pub cornus_active: bool,
+}
+
+/// Exact external-EVM facts needed to admit one canonical public transaction.
+///
+/// The address is repeated so the native operation can reject reordered or
+/// stale host reports before mutating queue state. A missing account carries
+/// zero nonce and balance. `finalized_period` identifies an already-finalized
+/// transaction and preserves duplicate/public-result behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicTransactionFinalChainFacts {
+    pub sender: [u8; 20],
+    pub account_found: bool,
+    pub account_nonce: U256,
+    pub account_balance: U256,
+    pub finalized_period: Option<u64>,
+}
+
+/// Operation-shaped public submission result.
+///
+/// `transaction_observed` is an exact leaf effect: when true the public event
+/// adapter emits the transaction hash once. Duplicate, rejected, malformed,
+/// and overflow paths never request observer publication. The queue mutation
+/// is already complete when this value is returned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicTransactionSubmissionReport {
+    pub transaction_hash: H256,
+    pub accepted: bool,
+    pub message: String,
+    pub verification_status: crate::transaction_manager::TransactionManagerVerifyTransactionStatus,
+    pub queue_status: Option<crate::transaction_queue::TransactionQueueInsertStatus>,
+    pub transaction_observed: bool,
+}
+
+/// Lock-coherent live transaction-pool facts for public and operational clients.
+///
+/// The snapshot contains no queue entries or mutable manager state. Counts and
+/// pressure flags are sampled during one native transaction lock epoch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionPoolStatus {
+    pub transaction_count: u64,
+    pub queue_size: u64,
+    pub non_finalized_size: u64,
+    pub gas_price_bid: [u8; 32],
+    pub transactions_dropped: bool,
+    pub non_proposable_over_limit: bool,
+}
+
+/// Canonical queued transaction selected for periodic gossip.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionGossipEntry {
+    pub hash: H256,
+    pub transaction_rlp: Vec<u8>,
+}
+
+/// One deterministic proposer-account group for periodic gossip.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionGossipAccount {
+    pub sender: H160,
+    pub transactions: Vec<TransactionGossipEntry>,
 }
 
 impl DagTransactionService {
@@ -456,6 +541,135 @@ impl DagTransactionService {
     /// Returns the transaction owner's queue-aware gas-price bid.
     pub fn transaction_gas_price_bid(&self) -> Result<[u8; 32]> {
         self.transaction.gas_price_bid()
+    }
+
+    /// Decodes and admits one canonical signed public transaction.
+    ///
+    /// Malformed envelopes, missing senders, cost overflow, mismatched external
+    /// account identity, and lock failures return an error without queue
+    /// mutation. Deterministic verification/admission rejection is returned as
+    /// a successful report. Duplicate submissions preserve native known-first
+    /// semantics and never repeat the observer effect.
+    pub fn submit_public_transaction(
+        &self,
+        request: PublicTransactionSubmissionRequest,
+        final_chain: PublicTransactionFinalChainFacts,
+    ) -> Result<PublicTransactionSubmissionReport> {
+        let envelope = LegacyTransactionEnvelope::decode(&request.transaction_rlp)
+            .context("PUBLIC_TRANSACTION_DECODE_FAILED")?;
+        let sender = envelope
+            .sender
+            .context("PUBLIC_TRANSACTION_SENDER_MISSING")?;
+        ensure!(
+            sender.0 == final_chain.sender,
+            "PUBLIC_TRANSACTION_FINAL_CHAIN_SENDER_MISMATCH"
+        );
+        let transaction_cost = envelope.cost().context("PUBLIC_TRANSACTION_COST_FAILED")?;
+        let hash = envelope.hash;
+        let verification = TransactionManagerVerifyTransactionFact {
+            tx_hash: hash,
+            chain_id: envelope.chain_id,
+            expected_chain_id: request.expected_chain_id,
+            gas_limit: envelope.gas,
+            max_gas_limit: request.maximum_gas_limit,
+            last_block_number: request.last_block_number,
+            cornus_active: request.cornus_active,
+            intrinsic_gas_covered: envelope.intrinsic_gas_covered,
+            signature_valid: envelope.signature_valid,
+            gas_price: envelope.gas_price,
+            minimum_gas_price: request.minimum_gas_price,
+        };
+        let admission = TransactionServiceValidatedAdmissionFact {
+            tx_hash: hash,
+            transaction_nonce: envelope.nonce,
+            transaction_cost,
+            gas_limit: envelope.gas,
+            proposal_dag_gas_limit: self.transaction_proposal_dag_gas_limit()?,
+            insert_non_proposable: false,
+        };
+        let entry = TransactionQueueEntry {
+            hash,
+            sender,
+            nonce: envelope.nonce,
+            gas_price: envelope.gas_price,
+            gas: envelope.gas,
+            data_size: envelope.data.len() as u64,
+            rlp: envelope.rlp,
+            last_block_number: request.last_block_number,
+        };
+        let report = self.transaction.execute_public_admission(
+            verification,
+            admission,
+            TransactionServiceFinalChainAdmissionFact {
+                account_found: final_chain.account_found,
+                account_nonce: final_chain.account_nonce,
+                account_balance: final_chain.account_balance,
+                finalized_period: final_chain.finalized_period,
+            },
+            entry,
+        )?;
+        Ok(PublicTransactionSubmissionReport {
+            transaction_hash: hash,
+            accepted: report.public_result.accepted,
+            message: report.public_result.message,
+            verification_status: report.verification_status,
+            queue_status: report
+                .admission
+                .as_ref()
+                .map(|value| value.transaction_status),
+            transaction_observed: report
+                .admission
+                .as_ref()
+                .is_some_and(|value| value.emit_transaction_added),
+        })
+    }
+
+    /// Returns one lock-coherent transaction-pool status snapshot.
+    pub fn transaction_pool_status(&self) -> Result<TransactionPoolStatus> {
+        let transaction = self.transaction.lock()?;
+        Ok(TransactionPoolStatus {
+            transaction_count: transaction.transaction_count(),
+            queue_size: transaction.queue_size() as u64,
+            non_finalized_size: transaction.non_finalized_size() as u64,
+            gas_price_bid: transaction.gas_price_bid(),
+            transactions_dropped: transaction.queue_transactions_dropped(),
+            non_proposable_over_limit: transaction.queue_non_proposable_over_limit(),
+        })
+    }
+
+    /// Returns a bounded canonical periodic-gossip snapshot.
+    ///
+    /// Accounts preserve native proposer ordering and each account preserves
+    /// nonce order. The global cap is clamped to the legacy 5,500 transaction
+    /// batch bound. No queue entry, guard, or manager-shaped iterator escapes.
+    pub fn transaction_gossip_snapshot(
+        &self,
+        max_count: u64,
+    ) -> Result<Vec<TransactionGossipAccount>> {
+        let transaction = self.transaction.lock()?;
+        let mut remaining = max_count.min(5_500) as usize;
+        let mut result = Vec::new();
+        for group in transaction.queue_transaction_groups() {
+            if remaining == 0 {
+                break;
+            }
+            let Some(first) = group.first() else { continue };
+            let sender = first.sender;
+            let transactions = group
+                .into_iter()
+                .take(remaining)
+                .map(|entry| TransactionGossipEntry {
+                    hash: entry.hash,
+                    transaction_rlp: entry.rlp,
+                })
+                .collect::<Vec<_>>();
+            remaining -= transactions.len();
+            result.push(TransactionGossipAccount {
+                sender,
+                transactions,
+            });
+        }
+        Ok(result)
     }
 
     /// Returns the proposal gas-weight limit owned by the native transaction service.
@@ -948,6 +1162,7 @@ impl DagTransactionService {
     pub fn dag_runtime_status(&self) -> Result<DagRuntimeStatus> {
         let dag = self.lock_dag()?;
         let (old, current) = dag.state.anchors();
+        let (non_finalized_levels, non_finalized_blocks) = dag.state.non_finalized_blocks_size();
         Ok(DagRuntimeStatus {
             vertex_count: u64::try_from(dag.state.vertex_count())
                 .context("DAG_RUNTIME_VERTEX_COUNT_OVERFLOW")?,
@@ -957,6 +1172,10 @@ impl DagTransactionService {
             period: dag.state.period(),
             anchors: DagAnchors { old, current },
             expiry_level: dag.state.dag_expiry_level(),
+            non_finalized_levels: u64::try_from(non_finalized_levels)
+                .context("DAG_RUNTIME_LEVEL_COUNT_OVERFLOW")?,
+            non_finalized_blocks: u64::try_from(non_finalized_blocks)
+                .context("DAG_RUNTIME_BLOCK_COUNT_OVERFLOW")?,
         })
     }
 
@@ -1073,6 +1292,15 @@ impl DagTransactionService {
         final_chain: &FinalChain,
     ) -> Result<DagProposerSessionStep> {
         self.report_proposer_final_chain_facts_with_final_chain_hook(session_id, final_chain, || {})
+    }
+
+    /// Applies a host-key-custody VRF proof to one exact proposer cursor.
+    pub fn report_proposer_vrf(
+        &self,
+        session_id: u64,
+        report: DagProposerVrfReport,
+    ) -> Result<DagProposerSessionStep> {
+        self.dag.lock()?.report_proposer_vrf(session_id, report)
     }
 
     fn report_proposer_final_chain_facts_with_final_chain_hook(
@@ -1666,6 +1894,26 @@ impl DagTransactionService {
         })
     }
 
+    /// Applies the canonical gas policy selected for a proposal period.
+    ///
+    /// The update is accepted only at the transaction-pack stage, after the
+    /// session has resolved its exact proposal period and before any queue
+    /// candidate is selected.
+    pub fn configure_proposer_gas_policy(
+        &self,
+        session_id: u64,
+        proposal_weight_limit: u64,
+        pbft_gas_limit: u64,
+        dag_gas_limit: u64,
+    ) -> Result<()> {
+        self.lock_dag()?.configure_proposer_gas_policy(
+            session_id,
+            proposal_weight_limit,
+            pbft_gas_limit,
+            dag_gas_limit,
+        )
+    }
+
     /// Prepares one owner-bound proposer transaction-pack stage.
     ///
     /// A throttled request validates and advances only the DAG cursor. Other
@@ -2242,7 +2490,6 @@ mod tests {
             dag_expiry_level_limit: 100,
             wallet_vrf_public_key: public_key_from_secret(&PROPOSER_VRF_SECRET)
                 .expect("proposer VRF public key"),
-            wallet_vrf_secret: PROPOSER_VRF_SECRET,
             proposer_address: proposer_address(),
             max_non_finalized_dag_blocks: 100,
             max_non_finalized_dag_blocks_low_difficulty: 50,
@@ -2255,6 +2502,29 @@ mod tests {
             dag_gas_limit: 100_000,
             max_tips: 16,
         }
+    }
+
+    fn report_proposer_facts_and_vrf(
+        root: &DagTransactionService,
+        session_id: u64,
+        final_chain: &FinalChain,
+    ) -> Result<DagProposerSessionStep> {
+        let step =
+            root.report_proposer_final_chain_facts_with_final_chain(session_id, final_chain)?;
+        if !matches!(step.action, DagProposerSessionAction::ProveVrf) {
+            return Ok(step);
+        }
+        let proof = rustaxa_vdf::vrf::prove(&PROPOSER_VRF_SECRET, &step.vrf_input)?;
+        let public_key = rustaxa_vdf::vrf::public_key_from_secret(&PROPOSER_VRF_SECRET)?;
+        let output = rustaxa_vdf::vrf::verify_output(&public_key, &proof, &step.vrf_input)?
+            .context("test proposer VRF output")?;
+        root.report_proposer_vrf(
+            session_id,
+            DagProposerVrfReport {
+                proof: proof.to_vec(),
+                output: output.to_vec(),
+            },
+        )
     }
 
     fn final_chain_with_proposer(storage: Arc<Storage>, address: [u8; 20]) -> FinalChain {
@@ -2497,7 +2767,6 @@ mod tests {
                     max_non_finalized_transactions: 100,
                     dag_expiry_level_limit: 100,
                     wallet_vrf_public_key: [2; 32],
-                    wallet_vrf_secret: [3; 64],
                     proposer_address: [4; 20],
                     max_non_finalized_dag_blocks: 100,
                     max_non_finalized_dag_blocks_low_difficulty: 50,
@@ -4552,8 +4821,7 @@ mod tests {
         let final_chain = final_chain_with_proposer(storage.clone(), proposer_address());
 
         let empty_id = root.begin_proposer_session(proposer_begin_input())?;
-        let empty =
-            root.report_proposer_final_chain_facts_with_final_chain(empty_id, &final_chain)?;
+        let empty = report_proposer_facts_and_vrf(&root, empty_id, &final_chain)?;
         assert_eq!(
             empty.reason_code,
             DAG_PROPOSER_REASON_TRANSACTION_POOL_EMPTY
@@ -4570,16 +4838,14 @@ mod tests {
         let mut limited_input = proposer_begin_input();
         limited_input.max_non_finalized_transactions = 0;
         let limited_id = root.begin_proposer_session(limited_input)?;
-        let limited =
-            root.report_proposer_final_chain_facts_with_final_chain(limited_id, &final_chain)?;
+        let limited = report_proposer_facts_and_vrf(&root, limited_id, &final_chain)?;
         assert_eq!(
             limited.reason_code,
             crate::dag::DAG_PROPOSER_REASON_NON_FINALIZED_TRANSACTION_LIMIT
         );
 
         let session_id = root.begin_proposer_session(proposer_begin_input())?;
-        let pack =
-            root.report_proposer_final_chain_facts_with_final_chain(session_id, &final_chain)?;
+        let pack = report_proposer_facts_and_vrf(&root, session_id, &final_chain)?;
         assert_eq!(pack.action, DagProposerSessionAction::PackTransactions);
         assert_eq!(pack.vote_count, 10);
         assert_eq!(pack.max_vote_count, 30);
@@ -4687,6 +4953,28 @@ mod tests {
         );
 
         drop(final_chain);
+        drop(root);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn aborted_proposer_session_allows_clean_restart() -> Result<()> {
+        let path = unique_temp_dir("rustaxa_consensus_dag_proposer_abort_restart");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let root = DagTransactionService::restore(storage.clone(), service_config())?;
+        let stopped = root.begin_proposer_session(proposer_begin_input())?;
+        assert!(root.abort_proposer_session(stopped)?);
+        assert!(!root.abort_proposer_session(stopped)?);
+
+        let restarted = root.begin_proposer_session(proposer_begin_input())?;
+        assert_ne!(restarted, stopped);
+        assert_eq!(
+            root.next_proposer_session(restarted)?.action,
+            DagProposerSessionAction::CollectFinalChainFacts
+        );
+
         drop(root);
         drop(storage);
         std::fs::remove_dir_all(path)?;

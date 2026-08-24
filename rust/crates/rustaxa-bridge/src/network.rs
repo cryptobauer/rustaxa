@@ -55,6 +55,21 @@ pub fn create_consensus_network_api(
     })
 }
 
+/// Returns the bounded ordered candidate identities used for peer-known tests.
+pub fn consensus_network_transaction_gossip_candidate_hashes(
+    application: &BridgeApp,
+) -> anyhow::Result<Vec<rustaxa_ffi::DagHash>> {
+    Ok(application
+        .0
+        .prepare_transaction_gossip(5500)?
+        .into_iter()
+        .flat_map(|account| account.transactions)
+        .map(|transaction| rustaxa_ffi::DagHash {
+            hash: transaction.hash.into(),
+        })
+        .collect())
+}
+
 impl BridgeConsensusNetworkApi {
     /// Drains lane work, optionally scoped to an exact source payload id.
     pub fn consensus_network_drain_work(
@@ -163,6 +178,32 @@ impl BridgeConsensusNetworkApi {
         Ok(to_bridge_network_pending_dag_blocks_request_plan(
             self.network.plan_pending_dag_blocks_request(
                 to_domain_network_pending_dag_blocks_request_facts(facts),
+            )?,
+        ))
+    }
+
+    /// Selects the pending-DAG peer and queues canonical non-finalized hashes.
+    pub fn consensus_network_request_pending_dag_blocks(
+        &self,
+        application: &BridgeApp,
+        transport_lane: u32,
+        source_payload_id: u64,
+        facts: rustaxa_ffi::NetworkPendingDagBlocksRequestFacts,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let hashes = application
+            .0
+            .consensus_query_api_for_bridge()
+            .dag_live_non_finalized_index()?
+            .levels
+            .into_iter()
+            .flat_map(|level| level.hashes)
+            .collect();
+        Ok(to_bridge_network_ingress_decision(
+            self.network.request_pending_dag_blocks(
+                transport_lane,
+                source_payload_id,
+                to_domain_network_pending_dag_blocks_request_facts(facts),
+                hashes,
             )?,
         ))
     }
@@ -326,6 +367,82 @@ impl BridgeConsensusNetworkApi {
                 &packet_rlp,
                 source_payload_id,
             )?,
+        ))
+    }
+
+    /// Serves one canonical get-DAG-sync request from application-owned bytes.
+    pub fn consensus_network_ingest_get_dag_sync_request(
+        &self,
+        application: &BridgeApp,
+        request: rustaxa_ffi::NetworkGetDagSyncRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        Ok(to_bridge_network_ingress_decision(
+            self.network.ingest_get_dag_sync_request(
+                rustaxa_consensus::NetworkGetDagSyncContext {
+                    transport_lane: request.transport_lane,
+                    peer_id: request.peer_id,
+                    source_payload_id: request.source_payload_id,
+                    request_allowed: request.request_allowed,
+                },
+                &request.request_rlp,
+                |hashes| application.0.prepare_dag_sync_egress(hashes),
+            )?,
+        ))
+    }
+
+    /// Plans exact per-peer transaction packets from a bounded native snapshot.
+    pub fn consensus_network_plan_transaction_gossip(
+        &self,
+        application: &BridgeApp,
+        request: rustaxa_ffi::NetworkTransactionGossipRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let snapshot = application.0.prepare_transaction_gossip(5500)?;
+        Ok(to_bridge_network_ingress_decision(
+            self.network.plan_transaction_gossip(
+                rustaxa_consensus::NetworkTransactionGossipRequest {
+                    transport_lane: request.transport_lane,
+                    source_payload_id: request.source_payload_id,
+                    peers: request
+                        .peers
+                        .into_iter()
+                        .map(|peer| rustaxa_consensus::NetworkTransactionGossipPeer {
+                            peer_id: peer.peer_id,
+                            known_hashes: peer
+                                .known_hashes
+                                .into_iter()
+                                .map(|hash| hash.hash)
+                                .collect(),
+                        })
+                        .collect(),
+                },
+                snapshot,
+            )?,
+        ))
+    }
+
+    /// Plans exact DAG fanout after application admission has committed.
+    pub fn consensus_network_plan_dag_block_gossip(
+        &self,
+        request: rustaxa_ffi::NetworkDagGossipRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        Ok(to_bridge_network_ingress_decision(
+            self.network
+                .plan_dag_block_gossip(rustaxa_consensus::NetworkDagGossipRequest {
+                    transport_lane: request.transport_lane,
+                    source_payload_id: request.source_payload_id,
+                    source_peer_id: request.source_peer_id,
+                    block_hash: request.block_hash,
+                    packet_rlp: request.packet_rlp,
+                    peers: request
+                        .peers
+                        .into_iter()
+                        .map(|peer| rustaxa_consensus::NetworkDagGossipPeer {
+                            peer_id: peer.peer_id,
+                            syncing: peer.syncing,
+                            known_block: peer.known_block,
+                        })
+                        .collect(),
+                })?,
         ))
     }
 }
@@ -582,7 +699,7 @@ fn to_bridge_network_pending_dag_blocks_request_plan(
     }
 }
 
-fn to_bridge_network_ingress_decision(
+pub(crate) fn to_bridge_network_ingress_decision(
     decision: rustaxa_consensus::NetworkIngressDecision,
 ) -> rustaxa_ffi::NetworkIngressDecision {
     rustaxa_ffi::NetworkIngressDecision {

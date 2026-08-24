@@ -985,8 +985,6 @@ impl BridgeApp {
 mod tests {
     use super::*;
     use crate::dag_transaction_service::create_test_consensus_application;
-    use crate::ffi::BridgeStorageQueries;
-    use crate::storage::create_dag_storage_queries;
     use ethereum_types::{H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
@@ -1113,10 +1111,6 @@ mod tests {
             .as_nanos();
         let process_id = std::process::id();
         std::env::temp_dir().join(format!("{prefix}_{process_id}_{now_ns}"))
-    }
-
-    fn dag_queries(runtime: &BridgeApp) -> Box<BridgeStorageQueries> {
-        create_dag_storage_queries(runtime)
     }
 
     fn genesis_validator(address: [u8; 20], stake: u64) -> rustaxa_ffi::GenesisValidator {
@@ -1585,30 +1579,6 @@ mod tests {
                 report,
             ),
         ))
-    }
-
-    fn execution_session_attach_external_evm_rewards_stats(
-        session: &mut BridgeFinalChainExecutionSession,
-        rewards_stats_update: rustaxa_consensus::FinalChainExternalEvmRewardsStatsUpdate,
-    ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
-        Ok(
-            rustaxa_consensus::final_chain_execution_session_attach_external_evm_rewards_stats(
-                &mut session.state,
-                rewards_stats_update,
-            ),
-        )
-    }
-
-    fn execution_session_attach_external_evm_proposal_period_dag_level(
-        session: &mut BridgeFinalChainExecutionSession,
-        update: rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate,
-    ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
-        Ok(
-            rustaxa_consensus::final_chain_execution_session_attach_external_evm_proposal_period_dag_level(
-                &mut session.state,
-                proposal_period_dag_level_update_from_ffi(update),
-            ),
-        )
     }
 
     fn execution_session_publish_external_evm_publication(

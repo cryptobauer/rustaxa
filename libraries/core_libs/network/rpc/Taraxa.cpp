@@ -9,14 +9,16 @@
 #include <stdexcept>
 
 #include "config/version.hpp"
-#include "dag/dag_manager.hpp"
+#include "final_chain/final_chain.hpp"
 #ifndef RUSTAXA_ENABLE
+#include "dag/dag_manager.hpp"
 #include "pbft/pbft_manager.hpp"
+#include "transaction/transaction_manager.hpp"
 #endif
 #include "pillar_chain/pillar_block.hpp"
-#include "transaction/transaction_manager.hpp"
 
 #ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/system_transaction.hpp"
 #endif
@@ -85,11 +87,13 @@ TaraxaDagStatusReader makeTaraxaDagStatusReader(std::weak_ptr<taraxa::AppBase> a
       throw std::runtime_error("TARAXA_DAG_STATUS_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      return (*consensus_query_api)->consensus_query_status().latest_dag_level;
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_DAG_STATUS_QUERY_UNAVAILABLE");
     }
-#endif
+    return (*consensus_query_api)->consensus_query_live_dag_status().max_level;
+#else
     return static_cast<uint64_t>(node->getDagManager()->getMaxLevel());
+#endif
   };
   reader.latest_period = [app
 #ifdef RUSTAXA_ENABLE
@@ -102,12 +106,13 @@ TaraxaDagStatusReader makeTaraxaDagStatusReader(std::weak_ptr<taraxa::AppBase> a
       throw std::runtime_error("TARAXA_DAG_STATUS_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto status = (*consensus_query_api)->consensus_query_status();
-      return status.latest_dag_period_found ? status.latest_dag_period : uint64_t(0);
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_DAG_STATUS_QUERY_UNAVAILABLE");
     }
-#endif
+    return (*consensus_query_api)->consensus_query_live_dag_status().period;
+#else
     return static_cast<uint64_t>(node->getDagManager()->getLatestPeriod());
+#endif
   };
   return reader;
 }
@@ -119,12 +124,28 @@ TaraxaDagBlockReader makeTaraxaDagBlockReader(std::weak_ptr<taraxa::AppBase> app
 #endif
 ) {
   TaraxaDagBlockReader reader;
-  reader.block_by_hash = [app](const blk_hash_t& hash) {
+  reader.block_by_hash = [app
+#ifdef RUSTAXA_ENABLE
+                          ,
+                          consensus_query_api
+#endif
+  ](const blk_hash_t& hash) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_DAG_BLOCK_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_DAG_BLOCK_QUERY_UNAVAILABLE");
+    }
+    const auto view = (*consensus_query_api)->consensus_query_dag_block_by_hash(hash.asArray());
+    if (!view.found) {
+      return std::shared_ptr<::taraxa::DagBlock>{};
+    }
+    return std::make_shared<::taraxa::DagBlock>(dev::bytes(view.block_rlp.begin(), view.block_rlp.end()));
+#else
     return node->getDagManager()->getDagBlock(hash);
+#endif
   };
   reader.blocks_by_level = [app
 #ifdef RUSTAXA_ENABLE
@@ -137,18 +158,20 @@ TaraxaDagBlockReader makeTaraxaDagBlockReader(std::weak_ptr<taraxa::AppBase> app
       throw std::runtime_error("TARAXA_DAG_BLOCK_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto views = (*consensus_query_api)->consensus_query_dag_blocks_by_level(level, 1);
-      std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
-      blocks.reserve(views.size());
-      for (const auto& view : views) {
-        auto block_rlp = dev::bytes(view.block_rlp.begin(), view.block_rlp.end());
-        blocks.emplace_back(std::make_shared<::taraxa::DagBlock>(block_rlp));
-      }
-      return blocks;
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_DAG_BLOCK_QUERY_UNAVAILABLE");
     }
-#endif
+    const auto views = (*consensus_query_api)->consensus_query_dag_blocks_by_level(level, 1);
+    std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
+    blocks.reserve(views.size());
+    for (const auto& view : views) {
+      auto block_rlp = dev::bytes(view.block_rlp.begin(), view.block_rlp.end());
+      blocks.emplace_back(std::make_shared<::taraxa::DagBlock>(block_rlp));
+    }
+    return blocks;
+#else
     return node->getDB()->getDagBlocksAtLevel(level, 1);
+#endif
   };
   reader.period_by_hash = [app
 #ifdef RUSTAXA_ENABLE
@@ -177,12 +200,29 @@ TaraxaDagBlockReader makeTaraxaDagBlockReader(std::weak_ptr<taraxa::AppBase> app
     return period.second;
 #endif
   };
-  reader.transaction_by_hash = [app](const trx_hash_t& hash) {
+  reader.transaction_by_hash = [app
+#ifdef RUSTAXA_ENABLE
+                                ,
+                                consensus_query_api
+#endif
+  ](const trx_hash_t& hash) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_DAG_BLOCK_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_TRANSACTION_QUERY_UNAVAILABLE");
+    }
+    const auto view = (*consensus_query_api)->consensus_query_transaction_by_hash(hash.asArray());
+    if (!view.found) {
+      return std::shared_ptr<::taraxa::Transaction>{};
+    }
+    return std::make_shared<::taraxa::Transaction>(
+        dev::bytes(view.transaction_rlp.begin(), view.transaction_rlp.end()));
+#else
     return node->getTransactionManager()->getTransaction(hash);
+#endif
   };
   return reader;
 }
@@ -738,6 +778,11 @@ Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader, Tarax
       consensus_query_api_(std::move(consensus_query_api))
 #endif
 {
+#ifdef RUSTAXA_ENABLE
+  if (!consensus_query_api_ && app) {
+    consensus_query_api_ = app->getConsensusApplication()->queryClient();
+  }
+#endif
   fillMissingTaraxaDposReaderCallbacks(dpos_reader_, app_);
   fillMissingTaraxaDagStatusReaderCallbacks(dag_status_reader_, app_
 #ifdef RUSTAXA_ENABLE

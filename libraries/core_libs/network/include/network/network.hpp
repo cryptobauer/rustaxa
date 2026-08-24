@@ -49,11 +49,8 @@ class Network {
 #endif
           net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
-          std::shared_ptr<VoteManager> vote_mgr,
-#endif
-          std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
-#ifndef RUSTAXA_ENABLE
-          std::shared_ptr<SlashingManager> slashing_manager,
+          std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
+          std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
 #endif
           std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
           std::shared_ptr<final_chain::FinalChain> final_chain
@@ -123,9 +120,14 @@ class Network {
    * @brief Register period events, e.g. sending status packet, transaction packet etc...
    *
    * @param config
-   * @param trx_mgr
+   * Rust mode obtains bounded transaction gossip plans from the native application root; pure-C++ mode retains the
+   * legacy transaction-pool argument.
    */
-  void registerPeriodicEvents(std::shared_ptr<TransactionManager> trx_mgr);
+  void registerPeriodicEvents(
+#ifndef RUSTAXA_ENABLE
+      std::shared_ptr<TransactionManager> trx_mgr
+#endif
+  );
 
   void addBootNodes(bool initial = false);
 

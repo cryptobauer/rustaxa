@@ -13,7 +13,6 @@ IVotePacketHandler::IVotePacketHandler(const FullNodeConfig &conf, std::shared_p
 #else
                                        network::ConsensusLiveStatusProvider consensus_status,
                                        net::ConsensusQueryClient pbft_chain,
-                                       std::shared_ptr<TransactionManager> trx_mgr,
                                        network::ConsensusNetworkApiShared consensus_network_api,
                                        TarcapVersion transport_lane,
 #endif
@@ -23,8 +22,8 @@ IVotePacketHandler::IVotePacketHandler(const FullNodeConfig &conf, std::shared_p
                             std::move(pbft_mgr), std::move(pbft_chain), std::move(vote_mgr),
                             std::move(slashing_manager),
 #else
-                            std::move(consensus_status), std::move(pbft_chain), std::move(trx_mgr),
-                            std::move(consensus_network_api), transport_lane,
+                            std::move(consensus_status), std::move(pbft_chain), std::move(consensus_network_api),
+                            transport_lane,
 #endif
                             node_addr, logs_prefix) {
 }

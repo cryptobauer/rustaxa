@@ -1,5 +1,4 @@
 use crate::consensus_host_ports::*;
-use crate::dag::*;
 pub(crate) use crate::dag_transaction_service::BridgeApp;
 pub use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::dag_transaction_service::*;
@@ -8,8 +7,6 @@ use crate::network::*;
 use crate::network_slashing::*;
 use crate::query::*;
 use crate::storage::*;
-use crate::transaction::*;
-use crate::transaction_manager::*;
 use crate::vdf::*;
 use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusQueryApi;
@@ -85,18 +82,6 @@ pub mod rustaxa_ffi {
     /// Canonical encoded bytes shared by storage and host-port list payloads.
     struct CanonicalBytes {
         data: Vec<u8>,
-    }
-
-    /// Optional canonical block RLP lookup shared by DAG and PBFT query adapters.
-    struct BlockRlpLookup {
-        found: bool,
-        block_rlp: Vec<u8>,
-    }
-
-    /// Persisted DAG block/edge counters loaded from storage status fields.
-    struct DagPersistenceCounters {
-        dag_blocks: u64,
-        dag_edges: u64,
     }
 
     struct LevelBlocks {
@@ -197,6 +182,32 @@ pub mod rustaxa_ffi {
         latest_dag_period: u64,
     }
 
+    /// Lock-owned live DAG status for public and operational clients.
+    ///
+    /// The DTO contains only scalar/hash projections and never exposes the
+    /// native graph, manager, service handle, or mutable lock domain.
+    struct LiveDagStatusView {
+        vertex_count: u64,
+        edge_count: u64,
+        max_level: u64,
+        period: u64,
+        old_anchor: [u8; 32],
+        current_anchor: [u8; 32],
+        expiry_level: u64,
+        non_finalized_levels: u64,
+        non_finalized_blocks: u64,
+    }
+
+    /// Lock-owned live transaction-pool status for public clients and metrics.
+    struct LiveTransactionStatusView {
+        transaction_count: u64,
+        queue_size: u64,
+        non_finalized_size: u64,
+        gas_price_bid: [u8; 32],
+        transactions_dropped: bool,
+        non_proposable_over_limit: bool,
+    }
+
     /// Public/query sortition params-change view for Test RPC compatibility.
     struct SortitionParamsChangeView {
         found: bool,
@@ -229,69 +240,49 @@ pub mod rustaxa_ffi {
         is_system: bool,
     }
 
-    /// Rust-inspected legacy transaction facts.
-    ///
-    /// `sender_found == false` means regular signature recovery failed. System
-    /// transaction inspection always returns the fixed Taraxa system sender.
-    struct LegacyTransactionInspection {
-        hash: [u8; 32],
-        sender_found: bool,
-        sender: [u8; 20],
-        signature_valid: bool,
-        nonce: [u8; 32],
-        gas_price: [u8; 32],
-        gas_limit: u64,
-        receiver_found: bool,
-        receiver: [u8; 20],
-        value: [u8; 32],
-        data: Vec<u8>,
-        data_size: usize,
-        chain_id: u64,
-        intrinsic_gas_covered: bool,
-        cost: [u8; 32],
-        tx_rlp: Vec<u8>,
-    }
-
     /// TransactionQueue construction limits.
     struct TransactionQueueConfig {
         max_size: usize,
     }
 
-    /// C++-originated transaction queue metadata for one insert attempt.
-    struct TransactionQueueInsertInput {
-        hash: [u8; 32],
-        sender: [u8; 20],
-        nonce: [u8; 32],
-        gas_price: [u8; 32],
-        gas: u64,
-        data_size: usize,
-        tx_rlp: Vec<u8>,
-        proposable: bool,
+    /// Canonical public transaction plus immutable chain-policy facts.
+    ///
+    /// Rust decodes every transaction field from `transaction_rlp`; the scalar
+    /// policy fields describe the configured chain rules at `last_block_number`.
+    struct PublicTransactionSubmissionRequest {
+        transaction_rlp: Vec<u8>,
+        expected_chain_id: u64,
+        maximum_gas_limit: u64,
+        minimum_gas_price: [u8; 32],
         last_block_number: u64,
+        cornus_active: bool,
     }
 
-    /// Queued transaction payload retained by Rust and materialized by C++.
-    struct TransactionQueueStoredTransaction {
-        found: bool,
-        hash: [u8; 32],
-        tx_rlp: Vec<u8>,
-    }
-
-    /// Proposable queued transactions returned per sender.
-    struct TransactionQueueTransactionGroup {
-        transactions: Vec<TransactionQueueStoredTransaction>,
-    }
-
-    /// C++-supplied nonce fact for one proposable account.
-    struct TransactionQueueAccountNonceFact {
+    /// Exact FinalChain facts for the sender of one public transaction.
+    ///
+    /// `finalized_period_found == false` means the transaction is not present
+    /// in finalized storage and `finalized_period` is ignored.
+    struct PublicTransactionFinalChainFacts {
         sender: [u8; 20],
         account_found: bool,
         account_nonce: [u8; 32],
+        account_balance: [u8; 32],
+        finalized_period_found: bool,
+        finalized_period: u64,
     }
 
-    /// Proposable account observed from queue state.
-    struct TransactionQueueProposableAccountFact {
-        sender: [u8; 20],
+    /// Terminal native result for one operation-shaped public submission.
+    ///
+    /// Deterministic rejection is represented by `accepted == false`; bridge
+    /// errors are reserved for malformed input or infrastructure failure.
+    struct PublicTransactionSubmissionReport {
+        transaction_hash: [u8; 32],
+        accepted: bool,
+        message: String,
+        verification_status: u8,
+        queue_status_found: bool,
+        queue_status: u8,
+        transaction_observed: bool,
     }
 
     /// Fixed-size peer id used by network effect payloads.
@@ -384,6 +375,112 @@ pub mod rustaxa_ffi {
         peer_id: [u8; 64],
         request_rlp: Vec<u8>,
         source_payload_id: u64,
+    }
+
+    /// Canonical transaction-packet ingress plus immutable chain policy.
+    struct NetworkTransactionPacketRequest {
+        transport_lane: u32,
+        peer_id: [u8; 64],
+        source_payload_id: u64,
+        packet_rlp: Vec<u8>,
+        expected_chain_id: u64,
+        maximum_gas_limit: u64,
+        minimum_gas_price: [u8; 32],
+        last_block_number: u64,
+        cornus_active: bool,
+        rebroadcast: bool,
+    }
+
+    /// One transaction member admitted from a canonical network packet.
+    struct NetworkTransactionPacketMemberReport {
+        submission: PublicTransactionSubmissionReport,
+        observe_transaction: bool,
+        gossip_transaction: bool,
+        transaction_rlp: Vec<u8>,
+    }
+
+    /// Terminal report for one canonical transaction packet.
+    struct NetworkTransactionPacketReport {
+        decision: NetworkIngressDecision,
+        transactions: Vec<NetworkTransactionPacketMemberReport>,
+        extra_transaction_hashes: Vec<DagHash>,
+    }
+
+    /// Canonical get-DAG-sync ingress plus transport rate-limit fact.
+    struct NetworkGetDagSyncRequest {
+        transport_lane: u32,
+        peer_id: [u8; 64],
+        source_payload_id: u64,
+        request_allowed: bool,
+        request_rlp: Vec<u8>,
+    }
+
+    struct NetworkTransactionGossipPeer {
+        peer_id: [u8; 64],
+        known_hashes: Vec<DagHash>,
+    }
+    struct NetworkTransactionGossipRequest {
+        transport_lane: u32,
+        source_payload_id: u64,
+        peers: Vec<NetworkTransactionGossipPeer>,
+    }
+
+    struct NetworkDagGossipPeer {
+        peer_id: [u8; 64],
+        syncing: bool,
+        known_block: bool,
+    }
+    struct NetworkDagGossipRequest {
+        transport_lane: u32,
+        source_payload_id: u64,
+        source_peer_id: [u8; 64],
+        block_hash: [u8; 32],
+        packet_rlp: Vec<u8>,
+        peers: Vec<NetworkDagGossipPeer>,
+    }
+
+    struct NetworkDagPacketRequest {
+        transport_lane: u32,
+        peer_id: [u8; 64],
+        source_payload_id: u64,
+        packet_rlp: Vec<u8>,
+        expected_chain_id: u64,
+        maximum_gas_limit: u64,
+        minimum_gas_price: [u8; 32],
+        last_block_number: u64,
+        cornus_active: bool,
+        rebroadcast: bool,
+        peer_dag_synced: bool,
+        dag_sync_allowed: bool,
+        transactions_dropped: bool,
+        pending_dag_request: bool,
+        local_pbft_syncing: bool,
+    }
+
+    #[derive(Default)]
+    struct DagBlockIngressReport {
+        block_hash: [u8; 32],
+        block_level: u64,
+        accepted: bool,
+        duplicate: bool,
+        reject_code: u32,
+        observe_block: bool,
+        gossip_block: bool,
+        block_rlp: Vec<u8>,
+    }
+
+    struct NetworkDagBlockIngressReport {
+        decision: NetworkIngressDecision,
+        admission_found: bool,
+        admission: DagBlockIngressReport,
+        rejection_action: u8,
+    }
+    struct NetworkDagSyncIngressReport {
+        decision: NetworkIngressDecision,
+        request_period: u64,
+        response_period: u64,
+        transactions: Vec<NetworkTransactionPacketMemberReport>,
+        blocks: Vec<DagBlockIngressReport>,
     }
 
     /// Packet-specific network ingress decision with queued-effect summary.
@@ -557,86 +654,6 @@ pub mod rustaxa_ffi {
         request_period: u64,
     }
 
-    /// Gas-estimation request supplied before C++ may call FinalChain/EVM.
-    struct TransactionManagerGasEstimationFact {
-        hash: [u8; 32],
-        declared_gas: u64,
-        proposal_period: u64,
-        estimate_gas_limit: u64,
-    }
-
-    /// Rust-owned cache/orchestration plan for one gas-estimation request.
-    struct TransactionManagerGasEstimationPlan {
-        use_declared_gas: bool,
-        cache_hit: bool,
-        requires_evm_call: bool,
-        gas_used: u64,
-        result_rlp: Vec<u8>,
-    }
-
-    /// Opaque C++ gas-estimation result to retain in the Rust runtime cache.
-    struct TransactionManagerGasEstimationResult {
-        hash: [u8; 32],
-        proposal_period: u64,
-        gas_used: u64,
-        result_rlp: Vec<u8>,
-    }
-
-    /// One candidate returned by a Rust-owned runtime packing session.
-    struct TransactionPackSessionCandidate {
-        found: bool,
-        hash: [u8; 32],
-        declared_gas: u64,
-        sender: [u8; 20],
-        nonce: [u8; 32],
-        gas_price: [u8; 32],
-        gas: u64,
-        receiver_found: bool,
-        receiver: [u8; 20],
-        value: [u8; 32],
-        data: Vec<u8>,
-    }
-
-    /// C++ gas-estimation fact supplied for the active runtime packing candidate.
-    struct TransactionPackSessionEstimateInput {
-        hash: [u8; 32],
-        gas_used: u64,
-        last_block_number: u64,
-        result_rlp: Vec<u8>,
-    }
-
-    /// One executor step while Rust drives the packTrxs session loop.
-    ///
-    /// `request_estimate` is true when C++ should estimate `candidate`.
-    /// `request_estimate` is false when the session is complete and
-    /// `selected_transactions` carries final output.
-    struct TransactionPackSessionStep {
-        request_estimate: bool,
-        candidate: TransactionPackSessionCandidate,
-        selected_transactions: Vec<TransactionPackSelectedTransaction>,
-        demoted_hashes: Vec<DagHash>,
-        stopped: bool,
-    }
-
-    /// One-shot packing plan returned before C++ estimates are executed.
-    ///
-    /// `estimate_requests` contains candidates that require live gas estimation.
-    /// `selected_transactions` and `demoted_hashes` already include the
-    /// candidates resolved via declared gas or cache hits.
-    struct TransactionPackPreparedPlan {
-        request_estimates: Vec<TransactionPackSessionCandidate>,
-        selected_transactions: Vec<TransactionPackSelectedTransaction>,
-        demoted_hashes: Vec<DagHash>,
-        stopped: bool,
-    }
-
-    /// One transaction accepted by a Rust-owned runtime packing session.
-    struct TransactionPackSelectedTransaction {
-        hash: [u8; 32],
-        gas_used: u64,
-        tx_rlp: Vec<u8>,
-    }
-
     /// GasPricer construction limits and mode flags supplied by C++ genesis config.
     struct GasPricerConfig {
         percentile: u64,
@@ -644,11 +661,6 @@ pub mod rustaxa_ffi {
         history_blocks: usize,
         is_light_node: bool,
         blocks_gas_pricer: bool,
-    }
-
-    /// One live or finalized transaction gas-price fact supplied to Rust.
-    struct GasPricerGasPrice {
-        price: [u8; 32],
     }
 
     /// Bootstrap identity or live concrete-EVM slashing account fact in stable wallet order.
@@ -1413,537 +1425,10 @@ pub mod rustaxa_ffi {
         tips_count: u64,
     }
 
-    /// Hash wrapper for transaction lists used by DAG planning payloads.
-    struct DagTransactionHash {
-        hash: [u8; 32],
-    }
-
-    /// Canonical DAG block RLP selected for non-finalized sync payloads.
-    struct DagSyncBlockRlp {
-        hash: [u8; 32],
-        block_rlp: Vec<u8>,
-    }
-
-    /// Rust-storage-backed non-finalized DAG sync payload.
-    struct DagManagerNonFinalizedSyncPayload {
-        period: u64,
-        blocks: Vec<DagSyncBlockRlp>,
-        transactions: Vec<DagTransactionRlpLookup>,
-    }
-
-    /// Rust-storage-backed transaction lookup result for DAG transaction materialization.
-    struct DagTransactionRlpLookup {
-        hash: [u8; 32],
-        found: bool,
-        /// True when the RLP was loaded through finalized transaction location metadata.
-        finalized: bool,
-        tx_rlp: Vec<u8>,
-    }
-
-    /// One ordered TransactionManager runtime transaction view request.
-    struct TransactionManagerTransactionViewRequest {
-        input_index: u64,
-        hash: [u8; 32],
-    }
-
-    /// One source-ordered TransactionManager runtime payload view entry.
-    struct TransactionManagerTransactionView {
-        input_index: u64,
-        hash: [u8; 32],
-        found: bool,
-        /// Source precedence is queue / live sidecars / storage in one API surface.
-        source: u8,
-        /// True when a proposal-period account snapshot filtered a finalized tx as old.
-        old_finalized: bool,
-        tx_rlp: Vec<u8>,
-    }
-
-    /// Bounded payload-view plan preserving caller ordering semantics.
-    struct TransactionManagerTransactionViewPlan {
-        requested_count: u64,
-        complete: bool,
-        views: Vec<TransactionManagerTransactionView>,
-    }
-
-    /// One sidecar insertion payload for live non-finalized transaction state.
-    struct TransactionManagerSidecarInsertInput {
-        hash: [u8; 32],
-        trx_rlp: Vec<u8>,
-    }
-
-    /// One ordered sidecar lookup request for C++ transaction materialization.
-    struct TransactionManagerSidecarLookupRequest {
-        input_index: u64,
-        hash: [u8; 32],
-    }
-
-    /// Input transaction fact for runtime-owned DAG transaction persistence.
-    ///
-    /// Native `TransactionService` computes sidecar membership instead of
-    /// accepting C++ membership booleans.
-    struct DagTransactionSaveSidecarFact {
-        input_index: u64,
-        hash: [u8; 32],
-        trx_rlp: Vec<u8>,
-        transaction_nonce: [u8; 32],
-        sender_account_nonce: [u8; 32],
-    }
-
-    /// Filtered finalized transaction action with preserved index mapping.
-    struct TransactionManagerFilterAction {
-        input_index: u64,
-        hash: [u8; 32],
-    }
-
-    /// Finalized-filtering outcome for Rust-only decision logic.
-    struct FinalizedTransactionFilterPlan {
-        not_finalized: Vec<TransactionManagerFilterAction>,
-    }
-
-    /// Input for `verifyTransactionsNotFinalized` when sender nonce facts are
-    /// supplied by the C++ external-EVM boundary.
-    struct TransactionManagerVerifyNotFinalizedSidecarFact {
-        input_index: u64,
-        hash: [u8; 32],
-        transaction_nonce: [u8; 32],
-        sender_account_nonce: [u8; 32],
-    }
-
-    /// Decision returned when the first finalized transaction is observed.
-    ///
-    /// `is_finalized` is false when all inputs are accepted.
-    struct TransactionManagerVerifyNotFinalizedOutcome {
-        is_finalized: bool,
-        input_index: u64,
-        hash: [u8; 32],
-        source: u8,
-    }
-
-    /// Facts extracted by C++ for TransactionManager::verifyTransaction admission checks.
-    struct TransactionManagerVerifyTransactionFact {
-        /// Transaction hash being evaluated.
-        tx_hash: [u8; 32],
-        /// Transaction chain id.
-        chain_id: u64,
-        /// Configured node chain id.
-        expected_chain_id: u64,
-        /// Gas limit declared in the transaction.
-        gas_limit: u64,
-        /// Maximum gas limit configured in genesis.
-        max_gas_limit: u64,
-        /// Last finalized block number; supplied for precomputed hardfork evaluation.
-        last_block_number: u64,
-        /// Hardfork gate for Cornus is active.
-        cornus_active: bool,
-        /// `Transaction::intrinsicGasCovered()` result from C++ side.
-        intrinsic_gas_covered: bool,
-        /// Signature validation result from C++ side.
-        signature_valid: bool,
-        /// Gas price from the transaction envelope.
-        gas_price: [u8; 32],
-        /// Minimum gas price from chain policy.
-        minimum_gas_price: [u8; 32],
-    }
-
-    /// TransactionManager::verifyTransaction plan status for C++.
-    struct TransactionManagerVerifyTransactionOutcome {
-        status: u8,
-    }
-
-    /// Facts for runtime validated insert with account facts sourced from
-    /// FinalChain at execution time.
-    struct TransactionManagerValidatedInsertRuntimeFact {
-        tx_hash: [u8; 32],
-        sender: [u8; 20],
-        transaction_nonce: [u8; 32],
-        transaction_cost: [u8; 32],
-        gas_limit: u64,
-        propose_dag_gas_limit: u64,
-        insert_non_proposable: bool,
-    }
-
-    /// FinalChain facts collected by C++ when account state is still owned by
-    /// the external EVM adapter.
-    struct TransactionManagerFinalChainAdmissionFact {
-        account_found: bool,
-        account_nonce: [u8; 32],
-        account_balance: [u8; 32],
-        finalized_period_known: bool,
-        finalized_period: u64,
-    }
-
-    /// Typed command report for DAG-block transaction persistence.
-    ///
-    /// Rust has already persisted storage, updated sidecars, erased queued
-    /// transactions, and updated the authoritative runtime count. C++ consumes
-    /// this report only for logging.
-    struct TransactionManagerDagSaveCommandReport {
-        queue_erased: Vec<DagHash>,
-    }
-
-    /// Typed admission result attached to admission command reports.
-    struct TransactionManagerAdmissionResult {
-        present: bool,
-        insert_status: u8,
-        transaction_status: u8,
-        finalized_period_known: bool,
-        finalized_period: u64,
-        requires_finalized_lookup: bool,
-    }
-
-    /// One Rust-authored admission shell side effect.
-    ///
-    /// Rust selects these intents after queue mutation and public-status
-    /// planning. C++ only realizes the requested legacy shell effect while app
-    /// event/log infrastructure remains C++ hosted.
-    struct TransactionManagerAdmissionShellIntent {
-        kind: u8,
-        hash: [u8; 32],
-    }
-
-    /// Typed command report for TransactionManager admission.
-    ///
-    /// Rust has already completed validated queue mutation and public status
-    /// mapping, then selected the shell logging/event intents. C++ consumes this
-    /// report only for legacy shell realization and public status conversion.
-    struct TransactionManagerAdmissionCommandReport {
-        inserted_hash_found: bool,
-        inserted_hash: [u8; 32],
-        transaction_added_hash_found: bool,
-        transaction_added_hash: [u8; 32],
-        shell_intents: Vec<TransactionManagerAdmissionShellIntent>,
-        admission: TransactionManagerAdmissionResult,
-    }
-
-    /// Legacy public insert result selected by Rust.
-    ///
-    /// `accepted` and `message` map directly to the C++ public
-    /// `TransactionManager::insertTransaction` return value.
-    struct TransactionManagerPublicInsertResult {
-        accepted: bool,
-        message: String,
-    }
-
-    /// Typed command report for public `insertTransaction` admission.
-    ///
-    /// Rust owns known-fast-path precheck, verification status decision, account
-    /// fact sourcing, finalized-location lookup, queue mutation, and admission
-    /// status mapping plus legacy public result text.
-    struct TransactionManagerPublicAdmissionCommandReport {
-        verification_status: u8,
-        verification_chain_id: u64,
-        verification_expected_chain_id: u64,
-        public_result: TransactionManagerPublicInsertResult,
-        admission: TransactionManagerAdmissionCommandReport,
-    }
-
     struct FinalizationDagBlock {
         author: [u8; 20],
         difficulty: u16,
         transaction_hashes: Vec<DagHash>,
-    }
-
-    struct DagLevelHashes {
-        level: u64,
-        hashes: Vec<DagHash>,
-    }
-
-    struct DagOrder {
-        found: bool,
-        hashes: Vec<DagHash>,
-    }
-
-    struct DagFrontier {
-        pivot: [u8; 32],
-        tips: Vec<DagHash>,
-    }
-
-    struct DagPivotTipsValidation {
-        ok: bool,
-        expected_level: u64,
-        level_matches: bool,
-        missing_references: Vec<DagHash>,
-    }
-
-    /// Compact block and caller-supplied transaction facts used to open one
-    /// Rust-owned `DagManager::verifyBlock` runtime session.
-    struct DagVerifyBlockSessionInput {
-        /// Canonical Keccak-256 hash of the complete signed block RLP.
-        block_hash: [u8; 32],
-        block_level: u64,
-        pivot: [u8; 32],
-        tips: Vec<DagHash>,
-        block_transaction_hashes: Vec<DagTransactionHash>,
-        supplied_transaction_hashes: Vec<DagTransactionHash>,
-        /// Canonical signed block bytes retained for authorization-stage sender recovery.
-        block_rlp: Vec<u8>,
-    }
-
-    /// One requested Rust-owned `verifyBlock` session step.
-    struct DagVerifyBlockSessionStep {
-        /// Identity of the active cursor; zero only when no cursor exists.
-        cursor_id: u64,
-        status: u8,
-        action: u8,
-        complete: bool,
-        reject_code: u32,
-        proposal_period: u64,
-        vote_count: u64,
-        max_vote_count: u64,
-        error_code: String,
-    }
-
-    /// Non-advancing Rust transaction preparation for one `verifyBlock` session.
-    ///
-    /// `transactions` preserves the private query's canonical order. C++ must
-    /// materialize and validate every found payload before completing this exact
-    /// cursor with proposal-period account facts.
-    struct DagVerifyBlockTransactionPreparation {
-        /// Identity of the active Rust verification cursor.
-        cursor_id: u64,
-        /// Proposal period used for FinalChain account lookup and completion.
-        proposal_period: u64,
-        /// Ordered TransactionManager views for C++ transaction materialization.
-        transactions: Vec<TransactionManagerTransactionView>,
-    }
-
-    /// Cursor-bound completion facts for prepared verify-block transactions.
-    struct DagVerifyBlockTransactionCompletionReport {
-        /// Cursor returned by the matching preparation.
-        cursor_id: u64,
-        /// Proposal period returned by the matching preparation.
-        proposal_period: u64,
-        /// Per-sender account facts read at `proposal_period` after materialization.
-        account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
-    }
-
-    /// Proof-bearing facts needed to verify the active Rust-owned DAG cursor.
-    /// Session identity, proposal period, normalized vote counts, and
-    /// historical sortition parameters remain private Rust state.
-    struct DagVerifyBlockVdfRequest {
-        /// Cursor identity returned by the VDF action step.
-        cursor_id: u64,
-        block_rlp: Vec<u8>,
-        block_level: u64,
-        proposal_period_hash: [u8; 32],
-    }
-
-    /// External gas facts for one `verifyBlock` session.
-    ///
-    /// Rust retains canonical tips in the active cursor and derives any
-    /// required per-tip gas metadata from private DAG storage.
-    struct DagVerifyBlockGasReport {
-        block_gas_estimation: u64,
-        estimated_transactions_weight: u64,
-        dag_gas_limit: u64,
-        pbft_gas_limit: u64,
-    }
-
-    /// External/configured facts used to open one runtime-owned proposal session.
-    ///
-    /// The caller supplies trusted wallet identity (VRF keys and proposer address), packing limits, and
-    /// block-construction gas/tip limits. The composed Rust service derives transaction queue and non-finalized sidecar
-    /// counts from its sibling TransactionManager, while the DAG runtime derives frontier, proposal level/period/hash,
-    /// and observation fingerprint. Invalid storage state is returned as an error; a missing proposal-period mapping
-    /// produces a terminal session step instead. Identity, limits, and derived observations are retained by the cursor.
-    struct DagProposerSessionBeginInput {
-        max_non_finalized_transactions: u64,
-        dag_expiry_level_limit: u64,
-        wallet_vrf_public_key: [u8; 32],
-        wallet_vrf_secret: [u8; 64],
-        proposer_address: [u8; 20],
-        max_non_finalized_dag_blocks: u64,
-        max_non_finalized_dag_blocks_low_difficulty: u64,
-        max_retry_count: u64,
-        proposal_weight_limit: u64,
-        total_transaction_shards: u16,
-        node_transaction_shard: u16,
-        shard_period_interval: u64,
-        pbft_gas_limit: u64,
-        dag_gas_limit: u64,
-        max_tips: u16,
-    }
-
-    /// Complete instruction/result snapshot returned by the Rust-owned DAG proposer cursor.
-    ///
-    /// `status` distinguishes active, complete, and invalid-report outcomes; `action` selects the one external boundary
-    /// to execute. Retry fields are authoritative only when `update_retry_state` is true. Vectors may be empty when the
-    /// selected action does not consume them. Action 1 exposes only EVM candidates in `transaction_estimate_requests`;
-    /// canonical selected RLP payloads remain private until action 6 exposes `selected_transactions` beside the signed
-    /// block. Action 5 exposes only the Rust-owned intent's `signing_hash`. Terminal steps remove the cursor after
-    /// construction.
-    struct DagProposerSessionStep {
-        status: u8,
-        action: u8,
-        reason_code: u32,
-        return_value: bool,
-        update_retry_state: bool,
-        next_last_propose_level: u64,
-        next_retry_count: u64,
-        frontier_pivot: [u8; 32],
-        proposal_level: u64,
-        proposal_period: u64,
-        last_finalized_period: u64,
-        vrf_input: Vec<u8>,
-        vote_count: u64,
-        max_vote_count: u64,
-        vdf_difficulty: u16,
-        /// Exact historical parameters for StartVdf; zeroed for every other action.
-        vdf_sortition_params: LegacySortitionParams,
-        vdf_stale: bool,
-        old_proposal: bool,
-        vdf_message: Vec<u8>,
-        selected_transaction_hashes: Vec<DagHash>,
-        transaction_estimate_requests: Vec<TransactionPackSessionCandidate>,
-        selected_transactions: Vec<TransactionPackSelectedTransaction>,
-        signing_hash: [u8; 32],
-        signed_block: DagProposerSignedBlockIntent,
-        record_proposed_block: bool,
-        vdf_poll_interval_ms: u64,
-        stale_proof_sleep_ms: u64,
-        error_code: String,
-    }
-
-    /// Result of the external VDF executor boundary.
-    ///
-    /// `vdf_rlp` is consumed only when `proof_ok` is true and becomes the canonical proof field of the session-owned
-    /// unsigned intent. The caller cannot supply any other block field. Malformed storage during subsequent construction
-    /// returns an error and removes the session.
-    struct DagProposerVdfProofReport {
-        proof_ok: bool,
-        vdf_rlp: Vec<u8>,
-    }
-
-    /// Recoverable signature returned by the external signer.
-    ///
-    /// The signature must be exactly 65 bytes over the signing hash from action 5 and recover to the trusted proposer
-    /// address captured at begin. Rust combines it only with the stored unsigned intent; malformed or wrong-key
-    /// signatures return an error and remove the session without retry mutation.
-    struct DagProposerSigningReport {
-        signature: Vec<u8>,
-    }
-
-    /// Typed report after C++ materializes/signs/adds the proposed DAG block.
-    ///
-    /// C++ remains the executor for compatibility side effects, but Rust consumes
-    /// the complete executor outcome before advancing the proposer session.
-    struct DagProposerAddBlockReport {
-        accepted: bool,
-        duplicate: bool,
-        expired: bool,
-        missing_references: Vec<DagHash>,
-    }
-
-    /// Live facts for one Rust-owned DAG proposer worker-loop command decision.
-    struct DagProposerWorkerCommandInput {
-        pbft_syncing: bool,
-        packet_queue_over_limit: bool,
-        has_attempt_result: bool,
-        attempt_returned_proposed: bool,
-    }
-
-    /// Command C++ executes for one DAG proposer worker-loop tick.
-    struct DagProposerWorkerCommand {
-        attempt_proposal: bool,
-        sleep_after_tick: bool,
-        sleep_ms: u64,
-        reason_code: u32,
-    }
-
-    /// Rust-runtime DAG proposer tip-selection facts for the legacy compatibility API.
-    struct DagProposerStorageTipSelectionInput {
-        frontier_tips: Vec<DagHash>,
-        gas_limit: u64,
-        max_tips: u16,
-    }
-
-    /// Rust producer-side DAG tip-selection plan.
-    struct DagProposerTipSelectionPlan {
-        selected_tips: Vec<DagHash>,
-        skipped_missing_tips: u64,
-    }
-
-    /// Canonical signed DAG block executor payload returned by action 6.
-    ///
-    /// `block_rlp` is the complete eight-field canonical block encoding assembled from session-owned facts and the
-    /// external signature. `block_hash` is its Keccak hash. Both fields are empty/zero on non-add-block actions.
-    struct DagProposerSignedBlockIntent {
-        block_rlp: Vec<u8>,
-        block_hash: [u8; 32],
-    }
-
-    /// One canonical transaction payload supplied with an accepted DAG block.
-    struct DagAddBlockTransactionPayload {
-        hash: [u8; 32],
-        trx_rlp: Vec<u8>,
-    }
-
-    /// Canonical add-block input inspected by the composed DAG/transaction service.
-    struct DagAddBlockPrepareInput {
-        expected_block_hash: [u8; 32],
-        /// Whether the canonical RLP hash must match `expected_block_hash`.
-        /// Object-backed compatibility calls disable this and retain the object's
-        /// externally supplied identity while still decoding all other RLP facts.
-        validate_block_hash: bool,
-        block_rlp: Vec<u8>,
-        save: bool,
-        proposed: bool,
-        transactions: Vec<DagAddBlockTransactionPayload>,
-    }
-
-    /// Latest-account request for one inspected block transaction.
-    struct DagAddBlockAccountRequest {
-        input_index: u64,
-        sender: [u8; 20],
-    }
-
-    /// Non-mutating add-block preparation or terminal admission result.
-    struct DagAddBlockPreparation {
-        cursor_id: u64,
-        block_level: u64,
-        accepted: bool,
-        duplicate: bool,
-        expired: bool,
-        missing_references: Vec<DagHash>,
-        account_requests: Vec<DagAddBlockAccountRequest>,
-    }
-
-    /// Indexed latest account nonce returned after preparation.
-    struct DagAddBlockAccountNonceFact {
-        input_index: u64,
-        account_nonce: [u8; 32],
-    }
-
-    /// Cursor-bound completion facts for one prepared add-block transition.
-    struct DagAddBlockCompletionInput {
-        cursor_id: u64,
-        account_nonce_facts: Vec<DagAddBlockAccountNonceFact>,
-    }
-
-    /// Durable add-block result and retained C++ shell effects.
-    struct DagAddBlockCommitReport {
-        accepted: bool,
-        emit_verified: bool,
-        gossip: bool,
-        proposed: bool,
-        queue_erased: Vec<DagHash>,
-        counters: DagPersistenceCounters,
-    }
-
-    struct DagManagerAnchors {
-        old_anchor: [u8; 32],
-        anchor: [u8; 32],
-    }
-
-    /// Rust-applied finalized DAG order result for C++ live side effects.
-    struct DagManagerFinalizationApplyPayload {
-        finalized_count: u64,
-        expired_hashes: Vec<DagHash>,
-    }
-
-    struct DagManagerNonFinalizedSize {
-        levels: u64,
-        blocks: u64,
     }
 
     struct SortitionRuntimeConfig {
@@ -1987,25 +1472,6 @@ pub mod rustaxa_ffi {
         actual_difficulty: u16,
     }
 
-    struct VdfSortitionPayload {
-        vrf_proof: [u8; 80],
-        vdf_solution_proof: Vec<u8>,
-        vdf_solution_output: Vec<u8>,
-        difficulty: u16,
-    }
-
-    struct VdfSortitionProofResult {
-        ok: bool,
-        status: u8,
-        error: String,
-        vrf_proof: [u8; 80],
-        vrf_output: [u8; 64],
-        vrf_threshold: u16,
-        difficulty: u16,
-        vdf_proof: Vec<u8>,
-        vdf_output: Vec<u8>,
-    }
-
     /// Public identity of one configured signing wallet.
     ///
     /// The stable index selects host-held key material for later effects;
@@ -2015,6 +1481,14 @@ pub mod rustaxa_ffi {
         address: [u8; 20],
         node_public_key: [u8; 64],
         vrf_public_key: [u8; 32],
+    }
+
+    /// Key-custody-free native DAG proposer policy for one signing identity.
+    struct DagProposerConfig {
+        total_transaction_shards: u16,
+        proposal_dag_gas_limit: u64,
+        default_dag_gas_limit: u64,
+        cornus_dag_gas_limit: u64,
     }
 
     /// Hot application-root PBFT status used by App scheduling and networking.
@@ -2082,6 +1556,12 @@ pub mod rustaxa_ffi {
         pub fn consensus_query_status(
             self: &BridgeConsensusQueryApi,
         ) -> Result<ConsensusStatusView>;
+        pub fn consensus_query_live_dag_status(
+            self: &BridgeConsensusQueryApi,
+        ) -> Result<LiveDagStatusView>;
+        pub fn consensus_query_live_transaction_status(
+            self: &BridgeConsensusQueryApi,
+        ) -> Result<LiveTransactionStatusView>;
         pub fn consensus_query_sortition_params_change_by_period(
             self: &BridgeConsensusQueryApi,
             period: u64,
@@ -2214,6 +1694,23 @@ pub mod rustaxa_ffi {
             packet_rlp: Vec<u8>,
             source_payload_id: u64,
         ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_ingest_get_dag_sync_request(
+            self: &BridgeConsensusNetworkApi,
+            application: &BridgeConsensusApplication,
+            request: NetworkGetDagSyncRequest,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_plan_transaction_gossip(
+            self: &BridgeConsensusNetworkApi,
+            application: &BridgeConsensusApplication,
+            request: NetworkTransactionGossipRequest,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_plan_dag_block_gossip(
+            self: &BridgeConsensusNetworkApi,
+            request: NetworkDagGossipRequest,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_transaction_gossip_candidate_hashes(
+            application: &BridgeConsensusApplication,
+        ) -> Result<Vec<DagHash>>;
         pub fn consensus_network_plan_status_sync(
             self: &BridgeConsensusNetworkApi,
             facts: NetworkStatusSyncFacts,
@@ -2238,6 +1735,13 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             facts: NetworkPendingDagBlocksRequestFacts,
         ) -> Result<NetworkPendingDagBlocksRequestPlan>;
+        pub fn consensus_network_request_pending_dag_blocks(
+            self: &BridgeConsensusNetworkApi,
+            application: &BridgeConsensusApplication,
+            transport_lane: u32,
+            source_payload_id: u64,
+            facts: NetworkPendingDagBlocksRequestFacts,
+        ) -> Result<NetworkIngressDecision>;
 
         type WesolowskiVdf;
         type CancellationToken;
@@ -2262,23 +1766,11 @@ pub mod rustaxa_ffi {
         pub fn solution_get_proof(solution: &Solution) -> &[u8];
         pub fn solution_get_output(solution: &Solution) -> &[u8];
 
-        pub fn vdf_sortition_payload_encode(payload: &VdfSortitionPayload) -> Vec<u8>;
-
         pub fn prove_legacy_vrf_sortition(
             secret_key: &[u8; 64],
             message: &[u8],
             vote_count: u16,
         ) -> VrfProofResult;
-
-        pub fn prove_legacy_vdf_sortition(
-            params: LegacySortitionParams,
-            secret_key: &[u8; 64],
-            vrf_input: &[u8],
-            vdf_input: &[u8],
-            vote_count: u64,
-            total_vote_count: u64,
-            cancellation_token: &CancellationToken,
-        ) -> VdfSortitionProofResult;
 
         pub fn verify_legacy_vdf_sortition(
             params: LegacySortitionParams,
@@ -2308,6 +1800,7 @@ pub mod rustaxa_ffi {
             proposal_dag_gas_limit: u64,
             pbft_config: PbftServiceConfig,
             signing_identities: Vec<SigningIdentity>,
+            dag_proposer: DagProposerConfig,
             final_chain_block_gas_limit: u64,
             final_chain_genesis_timestamp: u64,
             final_chain_genesis_accounts: Vec<GenesisAccount>,
@@ -2320,250 +1813,23 @@ pub mod rustaxa_ffi {
         pub fn consensus_application_live_status(
             application: &BridgeConsensusApplication,
         ) -> Result<HostConsensusLiveStatus>;
+        /// Submits one canonical signed transaction without exposing the
+        /// application-owned transaction service or queue.
+        pub fn consensus_application_submit_transaction(
+            application: &BridgeConsensusApplication,
+            request: PublicTransactionSubmissionRequest,
+            final_chain: PublicTransactionFinalChainFacts,
+        ) -> Result<PublicTransactionSubmissionReport>;
+        /// Returns the adaptive native transaction bid needed before the host
+        /// signs an operation-specific system or slashing transaction.
+        pub fn consensus_application_transaction_gas_price_bid(
+            application: &BridgeConsensusApplication,
+        ) -> Result<[u8; 32]>;
         /// Prunes native FinalChain lookup indexes below the retained block.
         pub fn prune_final_chain_before(
             self: &BridgeConsensusApplication,
             first_to_keep: u64,
         ) -> Result<u64>;
-        /// Prepares one canonical add-block transition without mutation.
-        pub fn dag_transaction_service_prepare_add_block(
-            self: &BridgeConsensusApplication,
-            input: DagAddBlockPrepareInput,
-        ) -> Result<DagAddBlockPreparation>;
-        /// Atomically persists and publishes one prepared add-block transition.
-        pub fn dag_transaction_service_complete_add_block(
-            self: &BridgeConsensusApplication,
-            input: DagAddBlockCompletionInput,
-        ) -> Result<DagAddBlockCommitReport>;
-        /// Idempotently aborts only the matching prepared add-block cursor.
-        pub fn dag_transaction_service_abort_add_block(
-            self: &BridgeConsensusApplication,
-            cursor_id: u64,
-        ) -> Result<bool>;
-        /// Validates candidate pivot/tip references from Rust runtime state and
-        /// storage without C++ `DagBlock` materialization.
-        pub fn dag_manager_runtime_validate_pivot_tips(
-            self: &BridgeConsensusApplication,
-            block_level: u64,
-            pivot: &[u8; 32],
-            tips: Vec<DagHash>,
-        ) -> Result<DagPivotTipsValidation>;
-        /// Applies finalized DAG order using Rust state and Rust storage.
-        pub fn dag_manager_runtime_apply_finalized_order(
-            self: &BridgeConsensusApplication,
-            new_anchor: [u8; 32],
-            new_period: u64,
-            finalized_order: Vec<DagHash>,
-        ) -> Result<DagManagerFinalizationApplyPayload>;
-        /// Returns non-finalized sync DAG block RLPs and referenced transaction
-        /// RLPs through Rust-owned storage access.
-        pub fn dag_manager_runtime_non_finalized_sync_payload(
-            self: &BridgeConsensusApplication,
-            known_hashes: Vec<DagHash>,
-        ) -> Result<DagManagerNonFinalizedSyncPayload>;
-        pub fn dag_manager_runtime_compute_order(
-            self: &BridgeConsensusApplication,
-            anchor: &[u8; 32],
-        ) -> Result<DagOrder>;
-        pub fn dag_manager_runtime_frontier(
-            self: &BridgeConsensusApplication,
-        ) -> Result<DagFrontier>;
-        pub fn dag_manager_runtime_ghost_path(
-            self: &BridgeConsensusApplication,
-            source: &[u8; 32],
-        ) -> Result<Vec<DagHash>>;
-        pub fn dag_manager_runtime_anchor_ghost_path(
-            self: &BridgeConsensusApplication,
-        ) -> Result<Vec<DagHash>>;
-        pub fn dag_manager_runtime_graphviz_dot(
-            self: &BridgeConsensusApplication,
-            pivot_tree: bool,
-        ) -> Result<String>;
-        pub fn dag_manager_runtime_vertex_count(self: &BridgeConsensusApplication)
-            -> Result<usize>;
-        pub fn dag_manager_runtime_edge_count(self: &BridgeConsensusApplication) -> Result<usize>;
-        pub fn dag_manager_runtime_max_level(self: &BridgeConsensusApplication) -> Result<u64>;
-        pub fn dag_manager_runtime_latest_period(self: &BridgeConsensusApplication) -> Result<u64>;
-        pub fn dag_manager_runtime_anchors(
-            self: &BridgeConsensusApplication,
-        ) -> Result<DagManagerAnchors>;
-        pub fn dag_manager_runtime_dag_expiry_level(
-            self: &BridgeConsensusApplication,
-        ) -> Result<u64>;
-        pub fn dag_manager_runtime_non_finalized_blocks(
-            self: &BridgeConsensusApplication,
-        ) -> Result<Vec<DagLevelHashes>>;
-        pub fn dag_manager_runtime_non_finalized_blocks_size(
-            self: &BridgeConsensusApplication,
-        ) -> Result<DagManagerNonFinalizedSize>;
-        /// Returns DAG block membership from Rust graph state plus canonical
-        /// Rust storage without consulting C++ compatibility caches.
-        pub fn dag_manager_runtime_is_block_known(
-            self: &BridgeConsensusApplication,
-            hash: &[u8; 32],
-        ) -> Result<bool>;
-        /// Loads one canonical DAG block payload from Rust storage.
-        pub fn dag_manager_runtime_load_block(
-            self: &BridgeConsensusApplication,
-            hash: &[u8; 32],
-        ) -> Result<BlockRlpLookup>;
-        pub fn dag_manager_runtime_plan_proposal_tip_selection(
-            self: &BridgeConsensusApplication,
-            input: DagProposerStorageTipSelectionInput,
-        ) -> Result<DagProposerTipSelectionPlan>;
-        /// Opens a runtime-owned proposer cursor from wallet/configuration input.
-        /// Returns a unique cursor id or a storage/decode error. Rust derives DAG observations plus queue and sidecar
-        /// pressure; callers must eventually consume a terminal step or call the idempotent abort function.
-        #[rust_name = "service_dag_manager_runtime_begin_proposer_session"]
-        pub fn dag_manager_runtime_begin_proposer_session(
-            runtime: &BridgeConsensusApplication,
-            input: DagProposerSessionBeginInput,
-        ) -> Result<u64>;
-        /// Idempotently removes a live proposer cursor without planner or retry effects.
-        /// Returns true only when this call removed the cursor; missing or already-removed ids return false.
-        #[rust_name = "service_dag_manager_runtime_abort_proposer_session"]
-        pub fn dag_manager_runtime_abort_proposer_session(
-            runtime: &BridgeConsensusApplication,
-            session_id: u64,
-        ) -> Result<bool>;
-        pub fn dag_manager_runtime_period_block_hash(
-            self: &BridgeConsensusApplication,
-            period: u64,
-        ) -> Result<HashLookup>;
-        pub fn dag_manager_runtime_persistence_counters(
-            self: &BridgeConsensusApplication,
-        ) -> Result<DagPersistenceCounters>;
-        #[rust_name = "service_dag_manager_runtime_begin_verify_block_session"]
-        pub fn dag_manager_runtime_begin_verify_block_session(
-            runtime: &BridgeConsensusApplication,
-            input: DagVerifyBlockSessionInput,
-        ) -> Result<()>;
-        #[rust_name = "service_dag_manager_runtime_verify_block_session_next"]
-        pub fn dag_manager_runtime_verify_block_session_next(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<DagVerifyBlockSessionStep>;
-        /// Resolves the active private transaction query without advancing it.
-        ///
-        /// Rust reads query hashes and proposal period, locks DAG then
-        /// TransactionManager, preserves duplicate/caller-supplied semantics, and
-        /// returns ordered payload views plus cursor identity for completion.
-        #[rust_name = "service_dag_manager_runtime_verify_block_session_prepare_transactions"]
-        pub fn dag_manager_runtime_verify_block_session_prepare_transactions(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<DagVerifyBlockTransactionPreparation>;
-        /// Applies proposal-period account facts after successful C++ materialization.
-        /// Rejects stale cursor/period identities without advancing the active session.
-        #[rust_name = "service_dag_manager_runtime_verify_block_session_complete_transactions"]
-        pub fn dag_manager_runtime_verify_block_session_complete_transactions(
-            runtime: &BridgeConsensusApplication,
-            report: DagVerifyBlockTransactionCompletionReport,
-        ) -> Result<DagVerifyBlockSessionStep>;
-        /// Collects DPoS/VRF facts from the borrowed Rust FinalChain for the
-        /// active authorization cursor. Missing or wrong-stage cursors return
-        /// the stable invalid-step carrier. The DAG lock is released during
-        /// sender recovery and FinalChain lookup; Rust then revalidates the
-        /// exact cursor before applying facts. Decode, recovery, storage, or
-        /// FinalChain failures remove only the unchanged owning cursor and
-        /// propagate as bridge errors.
-        #[rust_name = "service_dag_manager_runtime_verify_block_session_report_authorization"]
-        pub fn dag_manager_runtime_verify_block_session_report_authorization(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<DagVerifyBlockSessionStep>;
-        /// Verifies the active VDF action through isolated DAG and sortition
-        /// lock intervals, then advances only the unchanged cursor.
-        #[rust_name = "service_dag_transaction_service_verify_block_session_vdf"]
-        pub fn dag_transaction_service_verify_block_session_vdf(
-            runtime: &BridgeConsensusApplication,
-            request: DagVerifyBlockVdfRequest,
-        ) -> Result<DagVerifyBlockSessionStep>;
-        #[rust_name = "service_dag_manager_runtime_verify_block_session_report_gas"]
-        pub fn dag_manager_runtime_verify_block_session_report_gas(
-            runtime: &BridgeConsensusApplication,
-            report: DagVerifyBlockGasReport,
-        ) -> Result<DagVerifyBlockSessionStep>;
-        /// Reads the cursor's current executor instruction; terminal reads remove it.
-        /// Missing ids return an invalid-report step and do not mutate retry state.
-        #[rust_name = "service_dag_manager_runtime_proposer_session_next"]
-        pub fn dag_manager_runtime_proposer_session_next(
-            runtime: &BridgeConsensusApplication,
-            session_id: u64,
-        ) -> Result<DagProposerSessionStep>;
-        /// Supplies requested FinalChain facts; Rust loads and revalidates exact
-        /// historical sortition parameters inside the composed service.
-        /// Any returned error removes the cursor, so callers may also invoke abort safely during generic cleanup.
-        #[rust_name = "service_dag_manager_runtime_proposer_session_report_final_chain_facts"]
-        pub fn dag_manager_runtime_proposer_session_report_final_chain_facts(
-            runtime: &BridgeConsensusApplication,
-            session_id: u64,
-        ) -> Result<DagProposerSessionStep>;
-        /// Prepares a DAG-owned transaction pack from private cursor configuration.
-        /// Estimate-needed results keep action 1 and expose only `transaction_estimate_requests`; declared/cache-only,
-        /// empty, and throttled results advance immediately. No Rust lock crosses the external EVM interval.
-        pub fn dag_transaction_service_proposer_pack_prepare(
-            self: &BridgeConsensusApplication,
-            session_id: u64,
-            network_throttled: bool,
-            min_transaction_gas: u64,
-            estimate_gas_limit: u64,
-            last_block_number: u64,
-        ) -> Result<DagProposerSessionStep>;
-        /// Finalizes the matching owner-bound transaction cursor and transfers canonical selected payloads directly into
-        /// the DAG cursor. Wrong-owner or malformed estimates abort both matching cursors before returning an error.
-        pub fn dag_transaction_service_proposer_pack_finalize(
-            self: &BridgeConsensusApplication,
-            session_id: u64,
-            estimates: Vec<TransactionPackSessionEstimateInput>,
-        ) -> Result<DagProposerSessionStep>;
-        /// Idempotently aborts matching proposer/transaction cursors. Transaction-only services fail before transaction
-        /// mutation; a wrong-owner transaction cursor is never removed.
-        pub fn dag_transaction_service_proposer_pack_abort(
-            self: &BridgeConsensusApplication,
-            session_id: u64,
-        ) -> Result<bool>;
-        /// Polls VDF cancellation using the current Rust-derived proposal frontier level.
-        /// Missing/out-of-order ids return an invalid-report step; cancellation returns a terminal cancel action.
-        #[rust_name = "service_dag_manager_runtime_proposer_session_poll_vdf"]
-        pub fn dag_manager_runtime_proposer_session_poll_vdf(
-            runtime: &BridgeConsensusApplication,
-            session_id: u64,
-        ) -> Result<DagProposerSessionStep>;
-        /// Supplies proof success and canonical VDF RLP, revalidates the observation, and constructs the unsigned intent.
-        /// Success returns signing action 5; stale observations terminate without retry mutation, and construction
-        /// errors remove the cursor before throwing across CXX.
-        #[rust_name = "service_dag_manager_runtime_proposer_session_report_vdf_proof"]
-        pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
-            runtime: &BridgeConsensusApplication,
-            session_id: u64,
-            report: DagProposerVdfProofReport,
-        ) -> Result<DagProposerSessionStep>;
-        /// Rechecks a stale proof after compatibility sleep and revalidates the complete Rust observation.
-        /// An unchanged observation constructs the stored proof's unsigned intent and returns signing action 5; stale
-        /// observations terminate without retry mutation, and construction errors remove the cursor.
-        #[rust_name = "service_dag_manager_runtime_proposer_session_resume_stale_proof"]
-        pub fn dag_manager_runtime_proposer_session_resume_stale_proof(
-            runtime: &BridgeConsensusApplication,
-            session_id: u64,
-        ) -> Result<DagProposerSessionStep>;
-        /// Finalizes the stored unsigned intent with a 65-byte recoverable signature.
-        /// Success returns add-block action 6 with canonical RLP/hash; malformed signatures and finalization errors remove
-        /// the cursor, while missing/out-of-order ids return an invalid terminal step.
-        #[rust_name = "service_dag_manager_runtime_proposer_session_report_signing"]
-        pub fn dag_manager_runtime_proposer_session_report_signing(
-            runtime: &BridgeConsensusApplication,
-            session_id: u64,
-            report: DagProposerSigningReport,
-        ) -> Result<DagProposerSessionStep>;
-        #[rust_name = "service_dag_manager_runtime_proposer_session_report_add_block"]
-        pub fn dag_manager_runtime_proposer_session_report_add_block(
-            runtime: &BridgeConsensusApplication,
-            session_id: u64,
-            report: DagProposerAddBlockReport,
-        ) -> Result<DagProposerSessionStep>;
-        pub fn dag_plan_proposer_worker_command(
-            input: DagProposerWorkerCommandInput,
-        ) -> DagProposerWorkerCommand;
-        pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
-
         // Network-owned PBFT ingress leaves retained for tarcap clients.
         pub fn pbft_service_begin_pbft_sync_ingress(
             service: &BridgeConsensusApplication,
@@ -2583,153 +1849,6 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusApplication,
             canonical_signed_block_rlp: Vec<u8>,
         ) -> Result<bool>;
-        // Consensus transaction manager planning
-
-        pub fn transaction_manager_runtime_gas_price_bid(
-            self: &BridgeConsensusApplication,
-        ) -> [u8; 32];
-        pub fn transaction_manager_runtime_gas_price_update(
-            self: &BridgeConsensusApplication,
-            gas_prices: Vec<GasPricerGasPrice>,
-        );
-        pub fn transaction_manager_runtime_pack_prepare_sharded(
-            self: &BridgeConsensusApplication,
-            weight_limit: u64,
-            min_transaction_gas: u64,
-            proposal_period: u64,
-            estimate_gas_limit: u64,
-            last_block_number: u64,
-            total_shards: u16,
-            node_shard: u16,
-            shard_period_interval: u64,
-        ) -> Result<TransactionPackPreparedPlan>;
-        pub fn transaction_manager_runtime_pack_finalize_with_estimates(
-            self: &BridgeConsensusApplication,
-            inputs: Vec<TransactionPackSessionEstimateInput>,
-        ) -> Result<TransactionPackSessionStep>;
-        pub fn transaction_manager_runtime_pack_abort(self: &BridgeConsensusApplication) -> bool;
-        pub fn transaction_manager_runtime_plan_gas_estimation(
-            self: &BridgeConsensusApplication,
-            fact: TransactionManagerGasEstimationFact,
-        ) -> Result<TransactionManagerGasEstimationPlan>;
-        pub fn transaction_manager_runtime_store_gas_estimation(
-            self: &BridgeConsensusApplication,
-            result: TransactionManagerGasEstimationResult,
-        ) -> Result<bool>;
-        pub fn transaction_manager_runtime_transaction_count(
-            self: &BridgeConsensusApplication,
-        ) -> u64;
-        /// Returns Rust's known-transaction decision from runtime-owned queue and sidecar state.
-        pub fn transaction_manager_runtime_is_transaction_known_hash(
-            self: &BridgeConsensusApplication,
-            hash: &[u8; 32],
-        ) -> Result<bool>;
-        /// Inserts payloads and moves them into recently-finalized sidecar state in one Rust command.
-        pub fn transaction_manager_runtime_initialize_recently_finalized_payloads(
-            self: &BridgeConsensusApplication,
-            period: u64,
-            payloads: Vec<TransactionManagerSidecarInsertInput>,
-        ) -> Result<()>;
-        pub fn transaction_manager_runtime_non_finalized_size(
-            self: &BridgeConsensusApplication,
-        ) -> usize;
-        pub fn transaction_manager_runtime_remove_non_finalized(
-            self: &BridgeConsensusApplication,
-            requests: Vec<TransactionManagerSidecarLookupRequest>,
-        ) -> Result<u64>;
-        /// Executes admission with FinalChain facts supplied by the C++ external-EVM boundary.
-        pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
-            self: &BridgeConsensusApplication,
-            fact: TransactionManagerValidatedInsertRuntimeFact,
-            final_chain_fact: TransactionManagerFinalChainAdmissionFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerAdmissionCommandReport>;
-        /// Executes public insertTransaction verification and fact-backed admission as one Rust-owned command.
-        pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(
-            self: &BridgeConsensusApplication,
-            verify_fact: TransactionManagerVerifyTransactionFact,
-            admission_fact: TransactionManagerValidatedInsertRuntimeFact,
-            final_chain_fact: TransactionManagerFinalChainAdmissionFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerPublicAdmissionCommandReport>;
-        /// Resolves requested hashes against Rust-owned live queue payloads only.
-        pub fn transaction_manager_runtime_queue_lookup_transaction_views(
-            self: &BridgeConsensusApplication,
-            requests: Vec<TransactionManagerTransactionViewRequest>,
-        ) -> Result<Vec<TransactionManagerTransactionView>>;
-        pub fn transaction_manager_runtime_queue_all_transaction_groups(
-            self: &BridgeConsensusApplication,
-        ) -> Vec<TransactionQueueTransactionGroup>;
-        pub fn transaction_manager_runtime_queue_size(self: &BridgeConsensusApplication) -> usize;
-        pub fn transaction_manager_runtime_queue_proposable_accounts(
-            self: &BridgeConsensusApplication,
-        ) -> Vec<TransactionQueueProposableAccountFact>;
-        pub fn transaction_manager_runtime_queue_block_finalized(
-            self: &BridgeConsensusApplication,
-            block_number: u64,
-        ) -> Vec<DagHash>;
-        pub fn transaction_manager_runtime_queue_transactions_dropped(
-            self: &BridgeConsensusApplication,
-        ) -> bool;
-        pub fn transaction_manager_runtime_queue_non_proposable_over_limit(
-            self: &BridgeConsensusApplication,
-        ) -> bool;
-        pub fn transaction_manager_runtime_queue_min_gas_price_for_block_inclusion(
-            self: &BridgeConsensusApplication,
-            limit: u64,
-        ) -> [u8; 32];
-        /// Resolves requested hashes against non-finalized/recently-finalized sidecars.
-        pub fn transaction_manager_runtime_lookup_non_finalized_transaction_views(
-            self: &BridgeConsensusApplication,
-            requests: Vec<TransactionManagerTransactionViewRequest>,
-        ) -> Result<Vec<TransactionManagerTransactionView>>;
-        /// Resolves requested hashes through queue, sidecars, then Rust storage.
-        pub fn transaction_manager_runtime_lookup_transaction_views(
-            self: &BridgeConsensusApplication,
-            requests: Vec<TransactionManagerTransactionViewRequest>,
-            max_count: u64,
-        ) -> Result<TransactionManagerTransactionViewPlan>;
-        /// Resolves requested hashes through queue, sidecars, then proposal-filtered Rust storage.
-        pub fn transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
-            self: &BridgeConsensusApplication,
-            proposal_period: u64,
-            requests: Vec<TransactionManagerTransactionViewRequest>,
-            account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
-            max_count: u64,
-        ) -> Result<TransactionManagerTransactionViewPlan>;
-        /// Applies DAG transaction persistence and returns a typed command report.
-        #[rust_name = "service_save_transactions_from_dag_block_command_report_with_runtime"]
-        pub fn save_transactions_from_dag_block_command_report_with_runtime(
-            runtime: &BridgeConsensusApplication,
-            facts: Vec<DagTransactionSaveSidecarFact>,
-        ) -> Result<TransactionManagerDagSaveCommandReport>;
-        pub fn service_update_finalized_transactions_status_from_transaction_list(
-            service: &BridgeConsensusApplication,
-            period: u64,
-            retention_window: u64,
-            account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
-            transaction_list_rlp: Vec<u8>,
-        ) -> Result<()>;
-        /// Builds deterministic TransactionManager::verifyTransaction admission plan.
-        pub fn transaction_manager_verify_transaction(
-            fact: TransactionManagerVerifyTransactionFact,
-        ) -> Result<TransactionManagerVerifyTransactionOutcome>;
-        #[rust_name = "service_transaction_manager_filter_non_finalized_with_runtime"]
-        pub fn transaction_manager_filter_non_finalized_with_runtime(
-            runtime: &BridgeConsensusApplication,
-            requests: Vec<TransactionManagerSidecarLookupRequest>,
-        ) -> Result<FinalizedTransactionFilterPlan>;
-        #[rust_name = "service_transaction_manager_verify_not_finalized_with_runtime"]
-        pub fn transaction_manager_verify_not_finalized_with_runtime(
-            runtime: &BridgeConsensusApplication,
-            facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
-        ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
-        /// Rebuilds runtime recovery sidecars from Rust-backed storage.
-        #[rust_name = "service_transaction_manager_recover_nonfinalized_with_runtime"]
-        pub fn transaction_manager_recover_nonfinalized_with_runtime(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<()>;
-
         // Network-owned verified-vote slashing acknowledgement leaf.
         pub fn pbft_service_verified_votes_report_slashing_transaction_submission(
             self: &BridgeConsensusApplication,
@@ -3132,13 +2251,6 @@ pub mod rustaxa_ffi {
             self: &BridgeStorageQueries,
             trx_hash: &[u8; 32],
         ) -> Result<Vec<u8>>;
-
-        // Transaction envelope
-
-        pub fn inspect_legacy_transaction_rlp(
-            tx_rlp: Vec<u8>,
-            source: u8,
-        ) -> Result<LegacyTransactionInspection>;
 
         // FinalChain
 

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "QueryObject.h"
-#include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
 #include "graphql/account.hpp"
 #include "graphql/block.hpp"
@@ -13,11 +12,11 @@
 #include "network/live_status.hpp"
 #include "network/network.hpp"
 #ifndef RUSTAXA_ENABLE
+#include "dag/dag_manager.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "transaction/gas_pricer.hpp"
-#endif
 #include "transaction/transaction_manager.hpp"
-
+#endif
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
@@ -107,25 +106,21 @@ struct QueryReaders {
 class Query {
  public:
   explicit Query(QueryReaders readers, uint64_t chain_id = 0) noexcept;
-  explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-                 std::shared_ptr<::taraxa::DagManager> dag_manager,
 #ifndef RUSTAXA_ENABLE
-                 std::shared_ptr<::taraxa::PbftManager> pbft_manager,
-#endif
+  explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
+                 std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                  std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
-                 std::shared_ptr<::taraxa::DbStorage> db,
-#ifdef RUSTAXA_ENABLE
-                 QueryGasPriceReader gas_price_reader,
-#else
-                 std::shared_ptr<::taraxa::GasPricer> gas_pricer,
-#endif
+                 std::shared_ptr<::taraxa::DbStorage> db, std::shared_ptr<::taraxa::GasPricer> gas_pricer,
                  std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
-                 ::taraxa::net::LiveStatusReader live_status = {}
-#ifdef RUSTAXA_ENABLE
-                 ,
-                 ::taraxa::net::ConsensusQueryApiPtr consensus_query_api = {}
+                 ::taraxa::net::LiveStatusReader live_status = {}) noexcept;
 #endif
-                 ) noexcept;
+#ifdef RUSTAXA_ENABLE
+  /** Builds a public-query client over the native query API and retained account/network leaves. */
+  explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, QueryGasPriceReader gas_price_reader,
+                 std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
+                 ::taraxa::net::LiveStatusReader live_status,
+                 ::taraxa::net::ConsensusQueryApiPtr consensus_query_api) noexcept;
+#endif
   explicit Query(AccountStateReader account_reader, uint64_t chain_id = 0, QueryBlockReader block_reader = {},
                  BlockTransactionReader block_transaction_reader = {}, QueryTransactionReader transaction_reader = {},
                  QueryGasPriceReader gas_price_reader = {}, QueryDagBlockReader dag_block_reader = {},

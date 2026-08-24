@@ -8,10 +8,11 @@ tests, and the tracker’s concise completion evidence rather than in this file.
 
 ## Problem Statement
 
-The bridge and consensus shims are approximately 71,000 lines: about 49,000 lines under
-`rust/crates/rustaxa-bridge/src` and 22,000 lines of shim headers and implementations. The bridge crate contains native
-application runtimes and their tests, while the shims reproduce broad C++ manager APIs and repeatedly materialize Rust
-bytes into legacy object graphs. A fully classified surface is not necessarily a minimal surface.
+The aggressive-cutover campaign started from approximately 71,000 bridge/shim lines: about 49,000 lines under
+`rust/crates/rustaxa-bridge/src` and 22,000 lines of shim headers and implementations. The checked live surface is now
+12,100 bridge lines and 4,075 shim lines; exact budgets remain authoritative only in
+`doc/consensus_bridge_shim_audit.md`. The remaining reduction problem is still architectural, not merely classificatory:
+bridge code must stay boundary-only and the three surviving shim directories must retain named external clients.
 
 The reduction target is architectural:
 
@@ -80,9 +81,10 @@ waterfall. The remaining campaign uses five coherent vertical checkpoints:
 2. **PBFT cluster cutover.** Move the daemon/state-machine, vote, pillar, chain, sync, and finalization orchestration
    behind application tasks. Network, signing, timers, and EVM remain exact typed leaves. Delete PBFT/vote/pillar
    manager-to-manager APIs, internal object sidecars, CXX families, and complete shims when their last named leaf moves.
-3. **DAG/transaction cluster cutover.** Move proposer, verification, queue, packing, admission, and DAG lifecycle behind
-   application tasks. VDF, signing, network, and EVM gas execution remain exact typed leaves. Delete the DAG,
-   transaction, and proposer Rust-mode facades and their compatibility construction/materialization families together.
+3. **DAG/transaction cluster cutover.** Implemented: proposer, verification, queue, packing, admission, sync, and DAG
+   lifecycle are native application tasks. VDF, signing, tarcap, concrete EVM gas execution, timer/process mechanics,
+   public reads/submission, and best-effort public observation are exact typed leaves. The DAG, transaction, and proposer
+   Rust-mode facades and their compatibility construction/materialization families are deleted together.
 4. **Materialization and broad-handle cutover.** Replace remaining internal `PbftBlock`, `PbftVote`, `PeriodData`,
    `DagBlock`, `Transaction`, and pillar object graphs with canonical bytes, opaque identities, or client-specific DTOs;
    delete exposed internal service/storage/FinalChain handles after their callers use application, query, admin,
@@ -542,6 +544,12 @@ as lock-owning tasks: C++ supplies retained FinalChain/account facts, while the
 bridge performs carrier conversion and no longer plans or mutates admission
 state.
 
+Final DAG-family contraction supersedes the temporary bridge-task/facade wording above: all DAG, transaction, packing,
+verification, admission, recovery, finalization-cleanup, sync, and proposer orchestration now enters native
+`ConsensusApplication` tasks. C++ no longer supplies a manager shell or materializes internal transaction/DAG objects
+for those operations; it implements only the named public-client, observer, tarcap, signing/VRF, asynchronous VDF, and
+concrete EVM/gas leaves. The removed bridge task modules and shims are listed in section 7 and the live audit.
+
 ### 3. Collapse configuration topology
 
 - One Rust-enabled production feature bundle is defined by `RUSTAXA_ENABLE`.
@@ -552,9 +560,9 @@ state.
 - The storage-free gas-pricer partial factory and shim-owned compatibility service are deleted. Rust production uses
   the App-owned transaction service; native oracle tests own deterministic percentile/history behavior, and the
   untouched standalone C++ test remains reference-only.
-- The transaction-only DAG/transaction partial factory is deleted. Every Rust-mode `TransactionManager` constructor now
-  restores the same fully composed DAG/transaction/sortition service shape used by production; native bridge tests no
-  longer preserve unavailable-domain behavior for a topology the application does not support.
+- The transaction-only DAG/transaction partial factory is deleted. The intermediate Rust-mode constructors all used the
+  fully composed production root; the final DAG-family cutover then deleted the Rust-mode `TransactionManager` facade
+  and every constructor entirely. Native tests no longer preserve unavailable-domain behavior for unsupported topology.
 - The PBFT-chain-only factory and Rust-mode `PbftChain(DbStorage)` constructor are deleted. The retained facade accepts
   only the full App-owned PBFT service, and C++/CXX tests use that same composition. No production or test-visible
   partial-service factory remains.
@@ -757,9 +765,10 @@ snapshot projection are deleted. Latest-version proposed-block bundle intake now
 transport adapter: Rust decodes canonical signed blocks, applies the period window and per-period author uniqueness,
 queries native FinalChain DPoS eligibility, and publishes accepted proposals through native storage. The adapter retains
 only syncing-peer gating and malicious-peer execution, and the PBFT-manager eligibility export is deleted. PBFT-sync
-weighted-certificate ingress is now native through the resumable PBFT-root session; the other handler-local
-DAG/status/transaction families remain active `CRW-N01` work. These remain
-contraction milestones rather than item completion.
+weighted-certificate ingress is now native through the resumable PBFT-root session. DAG-block, DAG-sync, get-DAG-sync,
+transaction ingress, and periodic DAG/transaction gossip now use the same application-owned network boundary; any
+other handler-local consensus families remain active `CRW-N01` work. These remain contraction milestones rather than
+global item completion.
 
 ### 7. Contract DAG and transaction shims
 
@@ -773,6 +782,21 @@ contraction milestones rather than item completion.
 Completion condition: all three manager/proposer shim directories are deleted in Rust mode; retained VDF, signing,
 network, EVM-gas, timer/process, and public operations live in separately named leaf adapters rather than methods on a
 manager facade.
+
+Current state: complete for the DAG/transaction/proposer family. Native `ConsensusApplication` owns DAG verification,
+admission, storage publication, sync and lifecycle; transaction verification, admission, packing, recovery and
+finalization cleanup; and proposer scheduling, retry, VDF progression, block construction, local admission, and gossip
+planning. `ConsensusNetworkApi` owns canonical transaction, DAG-block, DAG-sync, and get-DAG-sync packet routes plus
+periodic gossip selection. `ConsensusQueryApi` owns live DAG/transaction status and public reads. RPC and GraphQL
+submission enters one operation-shaped application task. App hosts exact timer/process, digest-signing/VRF,
+asynchronous VDF, tarcap, concrete EVM/gas, FinalChain-fact, and best-effort public-observer operations.
+
+The `dag_manager_shim`, `transaction_manager_shim`, and `dag_block_proposer_shim` directories; App/AppBase ownership and
+getters; proposer and transaction-manager bridge modules; manager-shaped exports/carriers/materializers; and
+`transaction_manager_shim_test` are deleted. Native runtime, query, submission, network, duplicate/restart,
+partial-DAG-sync, and fake-host-port tests replace compatibility behavior. Untouched original manager/proposer classes
+remain available only in the all-Rust-disabled pure-C++ source selection. Global `CRW-12`/`CRW-14`/`CRW-15`/`CRW-16`
+and `CRW-N01` statuses remain active for their other families and completion conditions.
 
 ### 8. Reduce storage to bootstrap/admin/query boundaries
 

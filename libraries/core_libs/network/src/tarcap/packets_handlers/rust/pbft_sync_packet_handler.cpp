@@ -12,14 +12,6 @@ namespace taraxa::network::tarcap {
 
 namespace {
 
-u256 fromBridgeU256(const std::array<uint8_t, 32>& value) {
-  return dev::fromBigEndian<u256>(dev::bytes(value.begin(), value.end()));
-}
-
-addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
-  return addr_t(address.data(), addr_t::ConstructFromPointer);
-}
-
 std::array<uint8_t, 32> toBridgeU256(const u256& value) {
   std::array<uint8_t, 32> out{};
   const auto bytes = dev::toBigEndian(value);
@@ -47,13 +39,11 @@ RustPbftSyncPacketHandler::RustPbftSyncPacketHandler(
     const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftSyncingState> pbft_syncing_state,
     net::ConsensusQueryClient pbft_chain, network::ConsensusLiveStatusProvider consensus_status,
-    std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
     std::shared_ptr<final_chain::FinalChain> final_chain, network::ConsensusNetworkApiShared consensus_network_api,
     const addr_t& node_addr, const std::string& logs_prefix)
     : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
-                         std::move(pbft_chain), std::move(consensus_status), std::move(dag_mgr), consensus_network_api,
-                         node_addr, logs_prefix + "PBFT_SYNC_PH"),
-      trx_mgr_(std::move(trx_mgr)),
+                         std::move(pbft_chain), std::move(consensus_status), consensus_network_api, node_addr,
+                         logs_prefix + "PBFT_SYNC_PH"),
       final_chain_(std::move(final_chain)),
       consensus_network_api_(std::move(consensus_network_api)),
       periodic_events_tp_(1, true) {}
@@ -144,12 +134,7 @@ bool RustPbftSyncPacketHandler::executeSlashingTransaction(const network::PbftSy
     throw std::runtime_error("Native PBFT-sync ingress returned an invalid slashing wallet index");
   }
 
-  const auto& wallet = kConf.wallets[effect.wallet_index];
-  bytes call_data(effect.call_data.begin(), effect.call_data.end());
-  auto transaction = std::make_shared<Transaction>(
-      fromBridgeU256(effect.nonce), fromBridgeU256(effect.value), trx_mgr_->gasPriceBid(), effect.gas_limit,
-      std::move(call_data), wallet.node_secret, fromBridgeAddress(effect.contract_address), kConf.genesis.chain_id);
-  return trx_mgr_->insertTransaction(transaction).first;
+  return consensus_network_api_->executePbftSyncSlashingTransaction(effect, kConf);
 }
 
 void RustPbftSyncPacketHandler::pbftSyncComplete() {

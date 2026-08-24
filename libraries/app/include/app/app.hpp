@@ -40,8 +40,10 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   FullNodeConfig& getMutableConfig() { return conf_; }
   const FullNodeConfig& getConfig() const { return conf_; }
   std::shared_ptr<Network> getNetwork() const { return network_; }
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<TransactionManager> getTransactionManager() const { return trx_mgr_; }
   std::shared_ptr<DagManager> getDagManager() const { return dag_mgr_; }
+#endif
   std::shared_ptr<DbStorage> getDB() const { return db_; }
 #ifdef RUSTAXA_ENABLE
   /** Returns the application-owned native consensus task root for Rust-mode fixtures and named executors. */
@@ -59,9 +61,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   PbftProgress getPbftProgress() const;
   std::shared_ptr<final_chain::FinalChain> getFinalChain() const { return final_chain_; }
   std::shared_ptr<metrics::MetricsService> getMetrics() const { return metrics_; }
-  // used only in tests
-  std::shared_ptr<DagBlockProposer> getDagBlockProposer() const { return dag_block_proposer_; }
 #ifndef RUSTAXA_ENABLE
+  // used only in pure-C++ reference tests
+  std::shared_ptr<DagBlockProposer> getDagBlockProposer() const { return dag_block_proposer_; }
   std::shared_ptr<GasPricer> getGasPricer() const { return gas_pricer_; }
 #endif
   std::shared_ptr<pillar_chain::PillarChainManager> getPillarChainManager() const { return pillar_chain_mgr_; }
@@ -120,14 +122,14 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<ConsensusApplication> consensus_application_;
   std::unique_ptr<ConsensusProcess> consensus_process_;
 #endif
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<DagManager> dag_mgr_;
   std::shared_ptr<TransactionManager> trx_mgr_;
-#ifndef RUSTAXA_ENABLE
   std::shared_ptr<GasPricer> gas_pricer_;
 #endif
   std::shared_ptr<Network> network_;
-  std::shared_ptr<DagBlockProposer> dag_block_proposer_;
 #ifndef RUSTAXA_ENABLE
+  std::shared_ptr<DagBlockProposer> dag_block_proposer_;
   std::shared_ptr<VoteManager> vote_mgr_;
 #endif
 #ifndef RUSTAXA_ENABLE

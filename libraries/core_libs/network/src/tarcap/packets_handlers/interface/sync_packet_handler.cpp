@@ -25,7 +25,6 @@ ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_p
                                                                        // legacy sync handler.
 #else
                                        network::ConsensusLiveStatusProvider consensus_status,
-                                       std::shared_ptr<DagManager> dag_mgr,
                                        network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                        const addr_t& node_addr, const std::string& logs_prefix)
@@ -34,7 +33,7 @@ ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_p
 #ifndef RUSTAXA_ENABLE
                               std::move(pbft_mgr), std::move(dag_mgr), std::move(db),
 #else
-                              std::move(consensus_status), std::move(dag_mgr), std::move(consensus_network_api),
+                              std::move(consensus_status), std::move(consensus_network_api),
 #endif
                               node_addr, logs_prefix),
       kGenesisHash(kConf.genesis.genesisHash()) {
@@ -192,7 +191,12 @@ bool ISyncPacketHandler::sendStatus(const dev::p2p::NodeID& node_id, bool initia
                << TARAXA_NET_VERSION << ", network id " << kConf.genesis.chain_id << ", genesis " << kGenesisHash
                << ", node version " << TARAXA_VERSION;
 
-  auto dag_max_level = dag_mgr_->getMaxLevel();
+  const auto dag_max_level =
+#ifdef RUSTAXA_ENABLE
+      (*pbft_chain_)->consensus_query_live_dag_status().max_level;
+#else
+      dag_mgr_->getMaxLevel();
+#endif
   auto pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
   const auto pbft_round =
 #ifdef RUSTAXA_ENABLE
