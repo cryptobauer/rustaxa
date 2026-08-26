@@ -27,8 +27,9 @@ use rustaxa_types::codec::rlp::dag::{DagBlockRlp, FinalizedDagBlockBundleRlp};
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::pbft::PbftBlockLink;
 use rustaxa_types::{
-    CurrentPillarBlockDataDb, DagBlock, LegacyTransactionEnvelope, PillarBlock, PillarVote,
-    ValidatorVoteCount, ValidatorVoteCountChange, encode_optimized_pillar_votes_bundle_rlp,
+    CurrentPillarBlockDataDb, DagBlock, LegacyTransactionEnvelope, PillarBlock, PillarBlockData,
+    PillarVote, ValidatorVoteCount, ValidatorVoteCountChange,
+    encode_optimized_pillar_votes_bundle_rlp,
 };
 use std::collections::HashMap;
 use tiny_keccak::{Hasher, Keccak};
@@ -141,6 +142,25 @@ pub struct PbftApplicationPillarGossipRequest {
 pub struct PbftApplicationFinalizationOutcome {
     pub period: u64,
     pub block_hash: H256,
+}
+
+/// Public pillar event made available only after durable native acknowledgement.
+///
+/// The canonical payload is the legacy-compatible `PillarBlockData` envelope,
+/// not a manager object: it contains the finalized pillar block and exactly the
+/// selected threshold votes. Application runtimes may publish this event on a
+/// best-effort observer leaf without affecting committed consensus state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PbftApplicationPillarObservation {
+    pub block_hash: [u8; 32],
+    pub block_data_rlp: Vec<u8>,
+}
+
+/// Initial native finalization boundary plus any post-commit public event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedPbftApplicationFinalization {
+    pub step: PbftApplicationFinalizationStep,
+    pub pillar_observation: Option<PbftApplicationPillarObservation>,
 }
 
 /// Operation-shaped boundary returned to the application runner.
@@ -423,7 +443,7 @@ pub fn prepare_pbft_application_finalization(
     dag: &DagTransactionService,
     final_chain: &FinalChain,
     request: PbftApplicationFinalizationRequest,
-) -> Result<PbftApplicationFinalizationStep> {
+) -> Result<PreparedPbftApplicationFinalization> {
     let mut decoded = decode_finalization(&request)?;
     decoded.previous_cert_vote_rlps = previous_cert_vote_rlps(pbft, &decoded)?;
     let snapshot = pbft.manager_snapshot();
@@ -505,11 +525,14 @@ pub fn prepare_pbft_application_finalization(
         pbft.plan_finalization_intent(intent)?
     };
     if !plan.finalize_block {
-        return Ok(PbftApplicationFinalizationStep::Rejected {
-            error_code: format!(
-                "PBFT_APPLICATION_FINALIZATION_PLAN_REJECTED:{:?}",
-                plan.status
-            ),
+        return Ok(PreparedPbftApplicationFinalization {
+            step: PbftApplicationFinalizationStep::Rejected {
+                error_code: format!(
+                    "PBFT_APPLICATION_FINALIZATION_PLAN_REJECTED:{:?}",
+                    plan.status
+                ),
+            },
+            pillar_observation: None,
         });
     }
     let mut primary_stage = PbftFinalizationStorageWriteStage::default();
@@ -534,21 +557,51 @@ pub fn prepare_pbft_application_finalization(
             },
         },
     )?;
-    if let Some(prepared) = pillar_preparation {
-        pbft.acknowledge_pillar_block_finalization(PillarBlockFinalizationAcknowledgeRequest {
-            anchor_generation: prepared.preparation_anchor_generation,
-            preparation_token: prepared.preparation_token,
-        })?;
-    }
-    drive_boundary(
-        pbft,
-        dag,
-        final_chain,
-        &decoded,
-        request.synchronous,
-        Some(dynamic.plan.blocks_per_year),
-        boundary,
-    )
+    let pillar_observation = if let Some(prepared) = pillar_preparation {
+        let block_data_rlp = if prepared.should_emit {
+            Some(
+                PillarBlockData {
+                    pillar_block: PillarBlock::decode_rlp(&prepared.prepared_pillar_block_rlp)?,
+                    pillar_votes: prepared
+                        .votes
+                        .iter()
+                        .map(|vote| PillarVote::decode_rlp(&vote.vote_rlp))
+                        .collect::<Result<Vec<_>>>()?,
+                }
+                .encode_rlp()?,
+            )
+        } else {
+            None
+        };
+        let acknowledged = pbft.acknowledge_pillar_block_finalization(
+            PillarBlockFinalizationAcknowledgeRequest {
+                anchor_generation: prepared.preparation_anchor_generation,
+                preparation_token: prepared.preparation_token,
+            },
+        )?;
+        ensure!(
+            acknowledged.should_emit == block_data_rlp.is_some(),
+            "PBFT_APPLICATION_FINALIZATION_PILLAR_OBSERVER_FLAG_MISMATCH"
+        );
+        block_data_rlp.map(|block_data_rlp| PbftApplicationPillarObservation {
+            block_hash: acknowledged.latest_finalized_hash,
+            block_data_rlp,
+        })
+    } else {
+        None
+    };
+    Ok(PreparedPbftApplicationFinalization {
+        step: drive_boundary(
+            pbft,
+            dag,
+            final_chain,
+            &decoded,
+            request.synchronous,
+            Some(dynamic.plan.blocks_per_year),
+            boundary,
+        )?,
+        pillar_observation,
+    })
 }
 
 /// Reports the exact EVM result and drives the retained executor to its next boundary.
@@ -980,7 +1033,7 @@ pub fn prepare_certified_pbft_application_finalization(
     synchronous: bool,
 ) -> Result<(
     PbftApplicationFinalizationRequest,
-    PbftApplicationFinalizationStep,
+    PreparedPbftApplicationFinalization,
 )> {
     let block = Rlp::new(&proposed_block_rlp);
     let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&proposed_block_rlp))?;
@@ -1068,6 +1121,6 @@ pub fn prepare_certified_pbft_application_finalization(
         current_cert_vote_rlps,
         synchronous,
     };
-    let step = prepare_pbft_application_finalization(pbft, dag, final_chain, request.clone())?;
-    Ok((request, step))
+    let prepared = prepare_pbft_application_finalization(pbft, dag, final_chain, request.clone())?;
+    Ok((request, prepared))
 }

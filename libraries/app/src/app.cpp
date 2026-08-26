@@ -33,7 +33,9 @@
 #ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
 #endif
+#ifndef RUSTAXA_ENABLE
 #include "pillar_chain/pillar_chain_manager.hpp"
+#endif
 #include "storage/migration/block_stats.hpp"
 #include "storage/migration/migration_manager.hpp"
 #ifndef RUSTAXA_ENABLE
@@ -217,10 +219,7 @@ void App::init(const cli::Config &cli_conf) {
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
   vote_mgr_ = std::make_shared<VoteManager>(conf_, db_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
 #endif
-#ifdef RUSTAXA_ENABLE
-  pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(
-      conf_.genesis.state.hardforks.ficus_hf, db_, consensus_application_, final_chain_, node_addr);
-#else
+#ifndef RUSTAXA_ENABLE
   pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(conf_.genesis.state.hardforks.ficus_hf, db_,
                                                                          final_chain_, key_manager_, node_addr);
 #endif
@@ -273,7 +272,9 @@ void App::init(const cli::Config &cli_conf) {
 #ifndef RUSTAXA_ENABLE
       std::move(slashing_manager),
 #endif
+#ifndef RUSTAXA_ENABLE
       pillar_chain_mgr_,
+#endif
 #ifdef RUSTAXA_ENABLE
       final_chain_,
       std::make_shared<network::ConsensusNetworkApi>(
@@ -338,7 +339,9 @@ void App::start() {
 #else
   pbft_mgr_->setNetwork(network_);
 #endif
+#ifndef RUSTAXA_ENABLE
   pillar_chain_mgr_->setNetwork(network_);
+#endif
 #ifndef RUSTAXA_ENABLE
   dag_mgr_->setNetwork(network_);
 #endif

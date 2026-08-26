@@ -485,6 +485,15 @@ rustaxa::HostConsensusObservationReport ConsensusObserverExecutor::observe(
                                                                      "OBSERVED_DAG_BLOCK_HASH_MISMATCH");
       }
       application->publishDagBlockObserved(block);
+    } else if (request.kind == 3) {
+      const auto canonical_rlp = fromRustBytes(request.canonical_rlp);
+      const dev::RLP decoded(canonical_rlp);
+      const pillar_chain::PillarBlockData block_data(decoded);
+      if (!block_data.block_ || block_data.block_->getHash() != hash) {
+        return failedReport<rustaxa::HostConsensusObservationReport>(request.effect_id,
+                                                                     "OBSERVED_PILLAR_BLOCK_HASH_MISMATCH");
+      }
+      application->publishPillarBlockObserved(block_data);
     } else {
       return failedReport<rustaxa::HostConsensusObservationReport>(request.effect_id, "OBSERVATION_KIND_UNSUPPORTED");
     }

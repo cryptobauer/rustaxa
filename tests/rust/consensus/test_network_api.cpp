@@ -5,11 +5,17 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "consensus_application_test.hpp"
+#include "config/config.hpp"
+#include "consensus/consensus_application.hpp"
+#include "consensus/consensus_host_ports.hpp"
+#include "pillar_chain/pillar_block.hpp"
+#include "rustaxa-bridge/application_host_ffi.rs.h"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pillar_vote.hpp"
 
@@ -19,15 +25,6 @@ std::array<uint8_t, 64> nodeId(uint8_t byte) {
   std::array<uint8_t, 64> id{};
   id.fill(byte);
   return id;
-}
-
-rust::Vec<uint8_t> bridgeBytes(const taraxa::bytes& values) {
-  rust::Vec<uint8_t> out;
-  out.reserve(values.size());
-  for (const auto value : values) {
-    out.push_back(static_cast<uint8_t>(value));
-  }
-  return out;
 }
 
 rustaxa::PbftServiceConfig serviceConfig() {
@@ -72,9 +69,7 @@ struct TemporaryStorageDirectory {
 struct NetworkApiFixture {
   NetworkApiFixture()
       : service(rustaxa::test::createConsensusApplication(directory.path, serviceConfig())),
-        network_api(rustaxa::create_consensus_network_api(*service)) {
-    service->pbft_service_complete_pillar_bootstrap();
-  }
+        network_api(rustaxa::create_consensus_network_api(*service)) {}
 
   rustaxa::BridgeConsensusNetworkApi* operator->() { return &*network_api; }
 
@@ -91,19 +86,79 @@ std::array<uint8_t, 32> hash(uint8_t byte) {
   return id;
 }
 
-rustaxa::NetworkEffectResult successfulResult(const rustaxa::NetworkEffect& effect) {
-  rustaxa::NetworkEffectResult result{};
-  result.effect_id = effect.effect_id;
-  result.kind = effect.kind;
-  result.peer_id = effect.peer_id;
-  result.packet_kind = effect.packet_kind;
-  result.object_kind = effect.object_kind;
-  result.object_hash = effect.object_hash;
-  result.status = 0;
+rust::Vec<uint8_t> bridgeBytes(const dev::bytes& bytes) {
+  rust::Vec<uint8_t> result;
+  result.reserve(bytes.size());
+  for (const auto byte : bytes) result.push_back(byte);
   return result;
 }
 
 }  // namespace
+
+TEST(ConsensusObserverBridgeTest, canonicalPillarDataPublishesThroughHostPort) {
+  TemporaryStorageDirectory directory;
+  auto application = std::make_shared<taraxa::ConsensusApplication>(
+      rustaxa::test::createConsensusApplication(directory.path, serviceConfig()));
+  taraxa::FullNodeConfig config{};
+  taraxa::ConsensusProcessPort process(config, application);
+  auto block = std::make_shared<taraxa::pillar_chain::PillarBlock>(
+      21, dev::h256(1), taraxa::blk_hash_t(2), dev::h256(3), 4,
+      std::vector<taraxa::pillar_chain::PillarBlock::ValidatorVoteCountChange>{});
+  auto vote = std::make_shared<taraxa::PillarVote>(taraxa::secret_t::random(), 22, block->getHash());
+  const taraxa::pillar_chain::PillarBlockData block_data(block, {vote});
+  auto execution_context = std::make_shared<taraxa::util::ThreadPool>(1);
+  std::promise<taraxa::PbftPeriod> observed_period;
+  auto observed = observed_period.get_future();
+  application->pillarBlockObserved().subscribe(
+      [&observed_period](const taraxa::pillar_chain::PillarBlockData& value) {
+        observed_period.set_value(value.block_->getPeriod());
+      },
+      execution_context);
+
+  rustaxa::HostConsensusObservationRequest request{};
+  request.effect_id = rustaxa::HostEffectId{7, 7};
+  request.kind = 3;
+  request.hash = block->getHash().asArray();
+  request.canonical_rlp = bridgeBytes(block_data.getRlp());
+  const auto report = process.consensusObserve(request);
+
+  EXPECT_EQ(report.effect_id.generation, 7);
+  EXPECT_EQ(report.effect_id.sequence, 7);
+  EXPECT_TRUE(report.succeeded) << std::string(report.error_code);
+  ASSERT_EQ(observed.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  EXPECT_EQ(observed.get(), 21);
+}
+
+TEST(ConsensusObserverBridgeTest, rejectsMismatchedAndMalformedPillarData) {
+  TemporaryStorageDirectory directory;
+  auto application = std::make_shared<taraxa::ConsensusApplication>(
+      rustaxa::test::createConsensusApplication(directory.path, serviceConfig()));
+  taraxa::FullNodeConfig config{};
+  taraxa::ConsensusProcessPort process(config, application);
+  auto block = std::make_shared<taraxa::pillar_chain::PillarBlock>(
+      21, dev::h256(1), taraxa::blk_hash_t(2), dev::h256(3), 4,
+      std::vector<taraxa::pillar_chain::PillarBlock::ValidatorVoteCountChange>{});
+  auto vote = std::make_shared<taraxa::PillarVote>(taraxa::secret_t::random(), 22, block->getHash());
+  const taraxa::pillar_chain::PillarBlockData block_data(block, {vote});
+
+  rustaxa::HostConsensusObservationRequest mismatch{};
+  mismatch.effect_id = rustaxa::HostEffectId{7, 8};
+  mismatch.kind = 3;
+  mismatch.hash = hash(0xff);
+  mismatch.canonical_rlp = bridgeBytes(block_data.getRlp());
+  const auto mismatch_report = process.consensusObserve(mismatch);
+  EXPECT_FALSE(mismatch_report.succeeded);
+  EXPECT_EQ(std::string(mismatch_report.error_code), "OBSERVED_PILLAR_BLOCK_HASH_MISMATCH");
+
+  rustaxa::HostConsensusObservationRequest malformed{};
+  malformed.effect_id = rustaxa::HostEffectId{7, 9};
+  malformed.kind = 3;
+  malformed.hash = block->getHash().asArray();
+  malformed.canonical_rlp.push_back(0x80);
+  const auto malformed_report = process.consensusObserve(malformed);
+  EXPECT_FALSE(malformed_report.succeeded);
+  EXPECT_TRUE(std::string(malformed_report.error_code).starts_with("OBSERVATION_FAILED:"));
+}
 
 TEST(ConsensusNetworkApiBridgeTest, drainWorkAndReportResultsExposeExecutorContract) {
   auto network_api = NetworkApiFixture{};
@@ -120,43 +175,6 @@ TEST(ConsensusNetworkApiBridgeTest, drainWorkAndReportResultsExposeExecutorContr
   EXPECT_EQ(ack.accepted_results, 0);
   EXPECT_EQ(ack.failed_results, 0);
   EXPECT_TRUE(ack.error_code.empty());
-}
-
-TEST(ConsensusNetworkApiBridgeTest, pillarVoteIngressQueuesAdmissionAndAcceptedFollowUps) {
-  auto network_api = NetworkApiFixture{};
-  const auto secret = taraxa::secret_t("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd");
-  const taraxa::PillarVote vote(secret, taraxa::PbftPeriod{21}, taraxa::blk_hash_t{456});
-  rustaxa::NetworkPillarVoteIngressContext context{};
-  context.transport_lane = 6;
-  context.peer_id = nodeId(0x71);
-  context.source_payload_id = 101;
-  context.ficus_activation_period = 10;
-  context.allow_gossip = true;
-  rustaxa::PillarVoteRlpPayload payload;
-  payload.vote_rlp = bridgeBytes(vote.rlp());
-  rust::Vec<rustaxa::PillarVoteRlpPayload> payloads;
-  payloads.push_back(std::move(payload));
-
-  const auto decisions = network_api->consensus_network_ingest_pillar_vote_bundle(context, std::move(payloads));
-  ASSERT_EQ(decisions.size(), 1);
-  EXPECT_EQ(decisions[0].status, 0);
-  EXPECT_NE(decisions[0].application_effect_id, 0);
-
-  const auto admission = network_api->consensus_network_drain_work(6, 0, false, 10);
-  ASSERT_EQ(admission.effects.size(), 1);
-  EXPECT_EQ(admission.effects[0].kind, 8);
-  EXPECT_EQ(admission.effects[0].object_kind, 5);
-  auto result = successfulResult(admission.effects[0]);
-  result.admission_accepted = true;
-  rust::Vec<rustaxa::NetworkEffectResult> results;
-  results.push_back(std::move(result));
-  EXPECT_EQ(network_api->consensus_network_report_effect_results(std::move(results)).status, 0);
-
-  const auto follow_ups = network_api->consensus_network_drain_work(6, 0, false, 10);
-  ASSERT_EQ(follow_ups.effects.size(), 2);
-  EXPECT_EQ(follow_ups.effects[0].kind, 2);
-  EXPECT_EQ(follow_ups.effects[1].kind, 1);
-  EXPECT_EQ(follow_ups.effects[1].packet_kind, 13);
 }
 
 TEST(ConsensusNetworkApiBridgeTest, statusSyncPlanningRoutesThroughNetworkApi) {

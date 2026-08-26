@@ -5,8 +5,6 @@ mod ffi;
 mod final_chain;
 mod network;
 mod network_slashing;
-mod pillar_chain;
-mod pillar_votes;
 mod query;
 mod storage;
 mod vdf;

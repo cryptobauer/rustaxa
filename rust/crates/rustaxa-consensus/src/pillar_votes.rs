@@ -4,10 +4,9 @@
 //! `pillar_chain::PillarVotes`: period initialization, per-period voter
 //! uniqueness, per-block vote-weight accumulation, threshold subset selection,
 //! and stale-period cleanup. It also exposes stateless pillar-vote inspection
-//! so C++ shims can use Rust-recovered identity before DPoS lookup. DPoS
-//! eligibility, vote-count lookup, storage fallback, networking, and
-//! finalization side effects remain outside this domain boundary until the
-//! broader `PillarChainManager` rewrite lands.
+//! for native pillar admission before DPoS lookup. Application-root services
+//! compose eligibility, storage fallback, networking, persistence, and
+//! finalization around this deterministic in-memory owner.
 
 use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::{H160, H256};

@@ -1,18 +1,22 @@
 #include "network/tarcap/packets_handlers/interface/pillar_vote_packet_handler.hpp"
 
+#include "vote/pillar_vote.hpp"
+
 namespace taraxa::network::tarcap {
 
 IPillarVotePacketHandler::IPillarVotePacketHandler(
     const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
     std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
-#ifdef RUSTAXA_ENABLE
+#else
     network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
 #endif
     const addr_t& node_addr, const std::string& logs_prefix)
     : ExtPillarVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats),
+#ifndef RUSTAXA_ENABLE
                                  std::move(pillar_chain_manager),
-#ifdef RUSTAXA_ENABLE
+#else
                                  std::move(consensus_network_api), transport_lane,
 #endif
                                  node_addr, logs_prefix) {

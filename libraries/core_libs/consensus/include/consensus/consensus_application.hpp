@@ -5,6 +5,7 @@
 
 #include "common/event.hpp"
 #include "common/types.hpp"
+#include "pillar_chain/pillar_block.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/transaction.hpp"
 
@@ -73,6 +74,8 @@ class ConsensusApplication final {
   const auto& transactionObserved() const noexcept { return transaction_observed_; }
   /** Subscribable best-effort notification emitted after a native DAG commit requests public observation. */
   const auto& dagBlockObserved() const noexcept { return dag_block_observed_; }
+  /** Subscribable best-effort notification emitted after native pillar finalization is durably acknowledged. */
+  const auto& pillarBlockObserved() const noexcept { return pillar_block_observed_; }
 
   /** Publishes a post-commit transaction notification selected by a native network operation. */
   void publishTransactionObserved(const trx_hash_t& transaction_hash) const {
@@ -80,6 +83,10 @@ class ConsensusApplication final {
   }
   /** Publishes a post-commit DAG notification selected by a native network operation. */
   void publishDagBlockObserved(const std::shared_ptr<DagBlock>& block) const { dag_block_observed_.emit(block); }
+  /** Publishes canonical finalized pillar data after native durability and hash validation. */
+  void publishPillarBlockObserved(const pillar_chain::PillarBlockData& block_data) const {
+    pillar_block_observed_.emit(block_data);
+  }
 
   /**
    * Validates and admits one signed public transaction through the native application operation.
@@ -103,6 +110,7 @@ class ConsensusApplication final {
   ConsensusQueryClient query_client_;
   util::event::Event<ConsensusApplication, trx_hash_t> transaction_observed_;
   util::event::Event<ConsensusApplication, std::shared_ptr<DagBlock>> dag_block_observed_;
+  util::event::Event<ConsensusApplication, pillar_chain::PillarBlockData> pillar_block_observed_;
 };
 
 using SharedConsensusApplication = std::shared_ptr<ConsensusApplication>;

@@ -10,9 +10,9 @@ tests, and the tracker’s concise completion evidence rather than in this file.
 
 The aggressive-cutover campaign started from approximately 71,000 bridge/shim lines: about 49,000 lines under
 `rust/crates/rustaxa-bridge/src` and 22,000 lines of shim headers and implementations. The checked live surface is now
-12,100 bridge lines and 4,075 shim lines; exact budgets remain authoritative only in
+11,334 bridge lines and 2,859 shim lines; exact budgets remain authoritative only in
 `doc/consensus_bridge_shim_audit.md`. The remaining reduction problem is still architectural, not merely classificatory:
-bridge code must stay boundary-only and the three surviving shim directories must retain named external clients.
+bridge code must stay boundary-only and the two surviving shim directories must retain named external clients.
 
 The reduction target is architectural:
 
@@ -78,9 +78,10 @@ waterfall. The remaining campaign uses five coherent vertical checkpoints:
    The first two vertical slices now compose PBFT, DAG/transaction/sortition, storage, and FinalChain behind that root
    and remove their separate production bootstrap handles and factories. Public query, storage admin/conformance, and
    concrete EVM/`StateAPI` execution remain narrow named adapters rather than alternate composition roots.
-2. **PBFT cluster cutover.** Move the daemon/state-machine, vote, pillar, chain, sync, and finalization orchestration
-   behind application tasks. Network, signing, timers, and EVM remain exact typed leaves. Delete PBFT/vote/pillar
-   manager-to-manager APIs, internal object sidecars, CXX families, and complete shims when their last named leaf moves.
+2. **PBFT cluster cutover.** Implemented for PBFT, vote, and pillar facades: daemon/state-machine, vote/pillar, chain,
+   sync, finalization persistence/lifecycle, and post-ack observation are application tasks. Network, signing, timers,
+   FinalChain pillar-anchor facts, observer delivery, and EVM remain exact typed leaves. PBFT/vote/pillar
+   manager-to-manager APIs, internal object sidecars, bridge families, and complete shims are deleted.
 3. **DAG/transaction cluster cutover.** Implemented: proposer, verification, queue, packing, admission, sync, and DAG
    lifecycle are native application tasks. VDF, signing, tarcap, concrete EVM gas execution, timer/process mechanics,
    public reads/submission, and best-effort public observation are exact typed leaves. The DAG, transaction, and proposer
@@ -550,6 +551,12 @@ verification, admission, recovery, finalization-cleanup, sync, and proposer orch
 for those operations; it implements only the named public-client, observer, tarcap, signing/VRF, asynchronous VDF, and
 concrete EVM/gas leaves. The removed bridge task modules and shims are listed in section 7 and the live audit.
 
+Final pillar-family contraction likewise supersedes the temporary pillar bridge/facade wording above: native
+application, network, and query owners handle admission, persistence, restart, finalization/lifecycle, public reads, and
+post-ack observation. C++ retains only named signing/VRF, tarcap, FinalChain pillar-anchor fact, observer-delivery, and
+pure-C++ reference boundaries. No pillar service handle, manager object, mutable sidecar, or bridge behavioral suite
+crosses CXX.
+
 ### 3. Collapse configuration topology
 
 - One Rust-enabled production feature bundle is defined by `RUSTAXA_ENABLE`.
@@ -700,7 +707,7 @@ materializes accepted RLP at the retained vote/executor boundary. The bridge fac
 mutation, and C++ lookup/validation loop are deleted; remaining generic block validation is retained for sync and
 leader-selection callers that have not yet moved behind operation-shaped native tasks.
 
-### 6. Contract PBFT and vote shims
+### 6. Contract PBFT, vote, and pillar shims
 
 - Route internal PBFT, vote, proposed-block, verified-vote, pillar, and chain consumers through the native PBFT
   application service.
@@ -717,11 +724,19 @@ single application root; daemon, proposal/certificate, period/sync, finalization
 and local vote admission persists the own-vote row atomically. The private C++ runtime and manager-shaped task/effect
 carriers are now deleted. Native application tasks own scheduling, startup recovery, lifecycle/state progression, sync
 continuation, proposals, votes, and finalization; the App-owned process shell supplies only exact monotonic/Unix-time,
-signing/VRF, tarcap, FinalChain account facts, pillar-anchor-state facts, and concrete EVM execution leaves. The pillar
-compatibility facade queries canonical current-pillar bytes from the native owner. `App::close` stops and joins that
+signing/VRF, tarcap, FinalChain account facts, pillar-anchor-state facts, concrete EVM execution, and post-ack observer
+leaves. Pillar public reads use `ConsensusQueryApi` without a compatibility facade. `App::close` stops and joins that
 shell before configuration and process services are destroyed; ordinary `stopConsensus` remains restartable. Network
-status and sync planning each consume one coherent root snapshot. Remaining work in `CRW-12`/`CRW-15`/`CRW-16` concerns other subsystem families,
-not PBFT application-runtime compatibility.
+status and sync planning each consume one coherent root snapshot. Remaining work in `CRW-12`/`CRW-15` concerns bridge
+runtime/tests and named executor/public materialization, not PBFT/vote/pillar manager compatibility.
+
+The pillar follow-on completes `CRW-14` and `CRW-16`. Native application state owns pillar restoration/readiness,
+vote admission/duplicates, weighted threshold state, block construction/linkage, finalization persistence/cleanup,
+lifecycle, and the post-durable-ack observation decision. `ConsensusNetworkApi` owns pillar single/bundle ingress and
+bundle response planning; `ConsensusQueryApi` owns the bounded period-indexed finalized pillar-data read. C++ retains only exact signing/VRF,
+tarcap, FinalChain pillar-anchor facts, and best-effort observer delivery. The Rust-mode `PillarChainManager`, its shim,
+pillar bridge modules, manager-shaped CXX exports/carriers/materializers, App/Network/RPC ownership, and compatibility
+tests are deleted; pure-C++ source selection retains the untouched original manager and codecs.
 
 Current network-root progress: native `PbftService` constructs and owns the single `ConsensusNetworkService`; App gives
 `Network` only a thin CXX adapter cloned from that root and injects it through both tarcap capabilities into the vote,
@@ -752,11 +767,11 @@ slashing manager, or generic vote-handler runtime; the network service snapshots
 querying verified votes, and the bridge drain is source-scoped so concurrent same-lane work remains queued. Pillar
 bundle response egress is direct too: Rust owns Ficus schedule validation, live-first/storage-fallback lookup, canonical
 vote verification, 250-vote chunking, and send-dependent known-vote effects. Tarcap retains request decoding, packet
-wrapping, physical send, malicious-peer bookkeeping/disconnect execution, and physical known marking. Pillar single-vote and bundle ingress now share one native preflight
-and exact-ID admission route. Rust owns canonical/signature/activation/duplicate checks and accepted-only known/gossip
-decisions; the PillarChain shim retains one FinalChain-composed native admission leaf but no validation receipt or trusted
-follow-up insertion path. Tarcap retains decoded object materialization, peer state, packet wrapping, physical fanout,
-and lane scheduling. Get-PBFT-sync egress now follows the same boundary for both supported capability versions. Rust
+wrapping, physical send, malicious-peer bookkeeping/disconnect execution, and physical known marking. Pillar single-vote
+and bundle ingress now share one native preflight and application-root admission route. Rust owns canonical/signature/
+activation/duplicate checks, state mutation, and accepted-only known/gossip decisions; no C++ pillar admission or object
+sidecar remains. Tarcap retains peer state, packet wrapping, physical fanout, and lane scheduling. Get-PBFT-sync egress
+now follows the same boundary for both supported capability versions. Rust
 decodes the canonical request, validates chain/history bounds, reads finalized period bytes from native storage,
 attaches the native reward-vote snapshot, and emits complete PBFT-sync packet payloads. Version six additionally
 snapshots and chunks native proposed blocks; version five intentionally omits them. Tarcap executes the ordered sends,

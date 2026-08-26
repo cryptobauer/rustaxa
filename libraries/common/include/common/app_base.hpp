@@ -41,8 +41,10 @@ namespace final_chain {
 class FinalChain;
 }
 namespace pillar_chain {
+#ifndef RUSTAXA_ENABLE
 class PillarChainManager;
-}
+#endif
+}  // namespace pillar_chain
 
 namespace metrics {
 class MetricsService;
@@ -89,7 +91,9 @@ class AppBase {
   const Secret &getSecretKey() const { return conf_.getFirstWallet().node_secret; }
   vrf_wrapper::vrf_sk_t getVrfSecretKey() const { return conf_.getFirstWallet().vrf_secret; }
 
+#ifndef RUSTAXA_ENABLE
   virtual std::shared_ptr<pillar_chain::PillarChainManager> getPillarChainManager() const = 0;
+#endif
 
   virtual std::shared_ptr<Plugin> getPlugin(const std::string &name) const = 0;
 

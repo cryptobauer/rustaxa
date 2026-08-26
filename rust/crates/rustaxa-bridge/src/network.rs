@@ -272,15 +272,17 @@ impl BridgeConsensusNetworkApi {
         &self,
         context: rustaxa_ffi::NetworkPillarVoteIngressContext,
         votes: Vec<rustaxa_ffi::PillarVoteRlpPayload>,
-    ) -> anyhow::Result<Vec<rustaxa_ffi::NetworkIngressDecision>> {
+    ) -> anyhow::Result<Vec<rustaxa_ffi::NetworkPillarVoteAdmissionOutcome>> {
         Ok(self
             .network
-            .ingest_pillar_vote_bundle(
+            .ingest_and_admit_pillar_vote_bundle(
+                self.pbft.as_ref(),
+                self.final_chain.as_ref(),
                 to_domain_pillar_vote_ingress_context(context),
                 votes.into_iter().map(|value| value.vote_rlp).collect(),
             )?
             .into_iter()
-            .map(to_bridge_network_ingress_decision)
+            .map(to_bridge_pillar_vote_admission_outcome)
             .collect())
     }
 
@@ -501,7 +503,6 @@ fn to_domain_pillar_vote_ingress_context(
         transport_lane: value.transport_lane,
         peer_id: value.peer_id,
         source_payload_id: value.source_payload_id,
-        ficus_activation_period: value.ficus_activation_period,
         allow_gossip: value.allow_gossip,
     }
 }
@@ -764,6 +765,34 @@ fn to_bridge_pbft_vote_admission_outcome(
     }
 }
 
+fn to_bridge_pillar_vote_admission_outcome(
+    value: rustaxa_consensus::NetworkPillarVoteAdmissionOutcome,
+) -> rustaxa_ffi::NetworkPillarVoteAdmissionOutcome {
+    let decision = to_bridge_network_ingress_decision(value.decision);
+    let Some(admission) = value.admission else {
+        return rustaxa_ffi::NetworkPillarVoteAdmissionOutcome {
+            decision,
+            has_admission: false,
+            status: 0,
+            accepted: false,
+            duplicate: false,
+            conflict_found: false,
+            vote_hash: [0; 32],
+            conflicting_vote_hash: [0; 32],
+        };
+    };
+    rustaxa_ffi::NetworkPillarVoteAdmissionOutcome {
+        decision,
+        has_admission: true,
+        status: admission.status,
+        accepted: admission.accepted,
+        duplicate: admission.duplicate,
+        conflict_found: admission.conflict_found,
+        vote_hash: admission.vote_hash,
+        conflicting_vote_hash: admission.conflicting_vote_hash,
+    }
+}
+
 fn from_bridge_effect_result(
     result: rustaxa_ffi::NetworkEffectResult,
 ) -> rustaxa_consensus::NetworkEffectResult {
@@ -807,5 +836,46 @@ mod tests {
         });
         assert!(result.admission_accepted);
         assert_eq!(result.effect_id, 7);
+    }
+
+    #[test]
+    fn pillar_admission_outcome_conversion_preserves_terminal_facts() {
+        let converted = to_bridge_pillar_vote_admission_outcome(
+            rustaxa_consensus::NetworkPillarVoteAdmissionOutcome {
+                decision: rustaxa_consensus::NetworkIngressDecision {
+                    payload_id: 101,
+                    payload_accepted: true,
+                    routed: true,
+                    status: 0,
+                    error_code: String::new(),
+                    queued_effect_count: 1,
+                    application_effect_id: 0,
+                },
+                admission: Some(
+                    rustaxa_consensus::pillar_vote_service::PillarVoteSingleAdmissionWithFinalChainPlan {
+                        status: 5,
+                        accepted: false,
+                        duplicate: true,
+                        conflict_found: true,
+                        conflicting_vote_hash: [8; 32],
+                        block_weight: 13,
+                        validator_vote_count: 7,
+                        period: 21,
+                        vote_hash: [9; 32],
+                        voter: [4; 20],
+                    },
+                ),
+            },
+        );
+
+        assert_eq!(converted.decision.payload_id, 101);
+        assert_eq!(converted.decision.application_effect_id, 0);
+        assert!(converted.has_admission);
+        assert_eq!(converted.status, 5);
+        assert!(!converted.accepted);
+        assert!(converted.duplicate);
+        assert!(converted.conflict_found);
+        assert_eq!(converted.vote_hash, [9; 32]);
+        assert_eq!(converted.conflicting_vote_hash, [8; 32]);
     }
 }

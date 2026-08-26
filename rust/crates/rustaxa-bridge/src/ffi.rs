@@ -365,7 +365,6 @@ pub mod rustaxa_ffi {
         transport_lane: u32,
         peer_id: [u8; 64],
         source_payload_id: u64,
-        ficus_activation_period: u64,
         allow_gossip: bool,
     }
 
@@ -510,6 +509,18 @@ pub mod rustaxa_ffi {
         report_slashing: bool,
         has_slashing_transaction_effect: bool,
         slashing_transaction_effect: SlashingTransactionEffect,
+    }
+
+    /// One pillar vote packet after native routing and root-owned admission.
+    struct NetworkPillarVoteAdmissionOutcome {
+        decision: NetworkIngressDecision,
+        has_admission: bool,
+        status: u8,
+        accepted: bool,
+        duplicate: bool,
+        conflict_found: bool,
+        vote_hash: [u8; 32],
+        conflicting_vote_hash: [u8; 32],
     }
 
     /// Compact facts for status-triggered network sync planning.
@@ -793,108 +804,6 @@ pub mod rustaxa_ffi {
         vote_rlp: Vec<u8>,
     }
 
-    /// Local context for preparing one pillar-vote admission.
-    ///
-    /// Rust sources current-pillar anchor facts and owns RLP decoding,
-    /// signature recovery, duplicate detection, relevance, and identity
-    /// uniqueness checks. C++ supplies only immutable scheduling configuration;
-    /// FinalChain DPoS facts remain outside this DTO.
-    struct PillarVoteSingleAdmissionContext {
-        first_pillar_block_period: u64,
-        pillar_blocks_interval: u64,
-    }
-
-    /// CXX-visible result of composed pillar-vote validation.
-    ///
-    /// Status values match `PillarVoteValidationPlanStatus` in the C++ shim:
-    /// `0` is valid and non-zero values identify deterministic rejection. Rust
-    /// owns generation-bound preparation and deterministic validation; C++
-    /// supplies exact external-EVM DPoS facts and receives only compatibility
-    /// result fields.
-    struct PillarVoteSingleAdmissionPreparePlan {
-        status: u8,
-        can_query_dpos: bool,
-        needs_threshold: bool,
-        period: u64,
-        block_hash: [u8; 32],
-        vote_hash: [u8; 32],
-        voter: [u8; 20],
-        anchor_generation: u64,
-        has_current_anchor: bool,
-        current_period: u64,
-        current_hash: [u8; 32],
-    }
-
-    /// Non-mutating validation result for one exact retained preparation.
-    struct PillarVoteSingleAdmissionValidationPlan {
-        status: u8,
-        period: u64,
-        vote_hash: [u8; 32],
-        voter: [u8; 20],
-    }
-
-    /// External DPoS facts used to consume one retained pillar-vote preparation.
-    struct PillarVoteSingleAdmissionApplyInput {
-        vote_hash: [u8; 32],
-        validator_vote_count: u64,
-        has_total_eligible_vote_count: bool,
-        total_eligible_vote_count: u64,
-    }
-
-    /// Mutation result for one exact retained pillar-vote preparation.
-    struct PillarVoteSingleAdmissionApplyPlan {
-        status: u8,
-        accepted: bool,
-        duplicate: bool,
-        conflict_found: bool,
-        conflicting_vote_hash: [u8; 32],
-        block_weight: u64,
-    }
-
-    /// Pillar vote payload selected for C++ edge materialization.
-    ///
-    /// Records may come from live Rust runtime state or from a verified stored
-    /// `PeriodData` fallback, depending on the runtime lookup API used.
-    struct PillarVoteRecord {
-        vote_hash: [u8; 32],
-        weight: u64,
-        vote_rlp: Vec<u8>,
-    }
-
-    /// Lookup result with Rust-retained vote payloads for edge materialization.
-    struct PillarVotesPayloadLookup {
-        threshold_met: bool,
-        block_weight: u64,
-        selected_weight: u64,
-        votes: Vec<PillarVoteRecord>,
-    }
-
-    /// Compatibility lookup for the externally visible pillar threshold API.
-    struct PillarConsensusThresholdLookup {
-        available: bool,
-        threshold: u64,
-        error_code: String,
-    }
-
-    /// Deterministic relevance decision returned by Rust.
-    ///
-    /// Status values:
-    /// - `0` - relevant
-    /// - `1` - vote already known
-    /// - `2` - missing current pillar block context
-    /// - `3` - vote period mismatch
-    /// - `4` - vote hash mismatch for `current_period + 1`
-    struct PillarVoteRelevancePlan {
-        status: u8,
-        is_relevant: bool,
-    }
-
-    /// Validator vote-count snapshot fact supplied for pillar-block planning.
-    struct PillarValidatorVoteCount {
-        address: [u8; 20],
-        vote_count: u64,
-    }
-
     /// One signed validator vote-count change shared by pillar planning and query views.
     struct PillarValidatorVoteCountChange {
         address: [u8; 20],
@@ -920,17 +829,6 @@ pub mod rustaxa_ffi {
         signatures: Vec<PillarBlockViewSignature>,
     }
 
-    /// Durable pillar-chain rows required to reconstruct manager startup state.
-    ///
-    /// Empty byte vectors represent rows that have not yet been persisted. Rust
-    /// owns the latest-finalized block snapshot and derives its following PBFT
-    /// period before returning that period's opaque data row.
-    struct PillarChainStartupBootstrap {
-        own_vote_rlp: Vec<u8>,
-        current_block_data_rlp: Vec<u8>,
-        latest_pillar_votes_period_data_rlp: Vec<u8>,
-    }
-
     /// Public FinalChain block view returned by `ConsensusQueryApi`.
     ///
     /// The view is read-only and contains stable scalar/hash facts plus the
@@ -951,93 +849,6 @@ pub mod rustaxa_ffi {
         stored_header_rlp: Vec<u8>,
         has_pbft_hash: bool,
         pbft_block_hash: [u8; 32],
-    }
-
-    /// External facts for runtime-owned pillar-block shell planning.
-    struct PillarBlockCreationRequest {
-        pillar_block_period: u64,
-        state_root: [u8; 32],
-        bridge_root: [u8; 32],
-        bridge_epoch: [u8; 32],
-        first_pillar_block_period: u64,
-        pillar_blocks_interval: u64,
-    }
-
-    /// Rust-planned shell fields and validator deltas for temporary C++
-    /// `PillarBlock` materialization.
-    ///
-    /// Status values match native pillar-block linkage planning.
-    struct PillarBlockCreationWithVoteCountsPlan {
-        status: u8,
-        valid: bool,
-        expected_previous_period: u64,
-        previous_pillar_block_hash: [u8; 32],
-        state_root: [u8; 32],
-        bridge_root: [u8; 32],
-        bridge_epoch: [u8; 32],
-        vote_count_changes: Vec<PillarValidatorVoteCountChange>,
-        current_vote_counts: Vec<PillarValidatorVoteCount>,
-        anchor_generation: u64,
-    }
-
-    /// Compact request for Rust-owned pillar-block finalization execution.
-    ///
-    /// C++ supplies only the requested hash. Rust derives current and
-    /// latest-finalized identity from its runtime snapshot and owns verified-
-    /// vote lookup and planning. The prepared canonical row is persisted in
-    /// the PBFT primary batch, then Rust authenticates it during acknowledgement
-    /// before publishing the latest snapshot and cleaning votes.
-    struct PillarBlockFinalizationRequest {
-        requested_pillar_block_hash: [u8; 32],
-    }
-
-    /// Result of Rust-owned pillar-block finalization prepare.
-    ///
-    /// Status values match the native pillar finalization planner: `0` ready,
-    /// `1` missing current block, `2` current hash mismatch, `3` missing
-    /// votes, and `4` already finalized.
-    ///
-    /// In the ready path, Rust emits the canonical pillar block RLP plus a
-    /// one-time preparation token so C++ can attach it to the existing PBFT
-    /// primary persistence stage instead of mutating storage here.
-    struct PillarBlockFinalizationPrepareResult {
-        status: u8,
-        success: bool,
-        should_request_votes: bool,
-        has_request_votes_period: bool,
-        request_votes_period: u64,
-        should_emit: bool,
-        current_period: u64,
-        current_hash: [u8; 32],
-        block_weight: u64,
-        selected_weight: u64,
-        selected_vote_count: u64,
-        prepared_pillar_block_period: u64,
-        prepared_pillar_block_rlp: Vec<u8>,
-        has_prepared_pillar_block: bool,
-        preparation_anchor_generation: u64,
-        preparation_token: u64,
-        votes: Vec<PillarVoteRecord>,
-    }
-
-    /// Request to acknowledge one prepared pillar-block finalization.
-    ///
-    /// The generation + token pair is required before persistence side-effects
-    /// can be applied. This keeps replay and stale acknowledge paths explicit.
-    struct PillarBlockFinalizationAcknowledgeRequest {
-        anchor_generation: u64,
-        preparation_token: u64,
-    }
-
-    /// Result after acknowledging one prepared pillar-block finalization.
-    ///
-    /// Returns the latest finalized identity that is now mirrored into the runtime
-    /// snapshot so compatibility event emission can use one canonical source.
-    #[derive(Debug)]
-    struct PillarBlockFinalizationAcknowledgeResult {
-        should_emit: bool,
-        latest_finalized_period: u64,
-        latest_finalized_hash: [u8; 32],
     }
 
     struct FinalChainBlockNumberLookup {
@@ -1667,7 +1478,7 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             context: NetworkPillarVoteIngressContext,
             votes: Vec<PillarVoteRlpPayload>,
-        ) -> Result<Vec<NetworkIngressDecision>>;
+        ) -> Result<Vec<NetworkPillarVoteAdmissionOutcome>>;
         pub fn consensus_network_ingest_pbft_next_votes_bundle_request(
             self: &BridgeConsensusNetworkApi,
             transport_lane: u32,
@@ -1855,23 +1666,7 @@ pub mod rustaxa_ffi {
             proof_hash: &[u8; 32],
             transaction_inserted: bool,
         ) -> Result<bool>;
-        // Consensus pillar votes
-
-        pub fn pbft_service_pillar_plan_block_creation_with_final_chain(
-            self: &BridgeConsensusApplication,
-            request: PillarBlockCreationRequest,
-        ) -> Result<PillarBlockCreationWithVoteCountsPlan>;
-        pub fn pbft_service_pillar_latest_finalized_block_rlp(
-            self: &BridgeConsensusApplication,
-        ) -> Result<Vec<u8>>;
-        pub fn pbft_service_pillar_current_block_rlp(
-            self: &BridgeConsensusApplication,
-        ) -> Result<Vec<u8>>;
-
-        pub fn pbft_service_pillar_ready(self: &BridgeConsensusApplication) -> bool;
-        pub fn pbft_service_complete_pillar_bootstrap(
-            self: &BridgeConsensusApplication,
-        ) -> Result<()>;
+        // Storage compatibility leaves retained by the DbStorage overlay.
         pub fn pillar_chain_storage_apply_current_block_data(
             self: &BridgeConsensusApplication,
             data_rlp: Vec<u8>,
@@ -1917,57 +1712,6 @@ pub mod rustaxa_ffi {
         pub fn get_blocks_rewards_stats(
             self: &BridgeConsensusApplication,
         ) -> Result<Vec<PeriodRlp>>;
-        pub fn pbft_service_pillar_apply_planned_current_block_data(
-            self: &BridgeConsensusApplication,
-            data_rlp: Vec<u8>,
-            expected_anchor_generation: u64,
-        ) -> Result<()>;
-        pub fn pbft_service_pillar_apply_own_vote(
-            self: &BridgeConsensusApplication,
-            vote_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn pbft_service_pillar_load_startup_bootstrap(
-            self: &BridgeConsensusApplication,
-        ) -> Result<PillarChainStartupBootstrap>;
-        pub fn pbft_service_pillar_consensus_threshold_with_final_chain(
-            self: &BridgeConsensusApplication,
-            period: u64,
-        ) -> Result<PillarConsensusThresholdLookup>;
-        pub fn pbft_service_pillar_prepare_single_vote_external_facts(
-            self: &BridgeConsensusApplication,
-            vote_rlp: Vec<u8>,
-            context: PillarVoteSingleAdmissionContext,
-            trusted_local_or_restore: bool,
-        ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
-        pub fn pbft_service_pillar_validate_prepared_single_vote_external_facts(
-            self: &BridgeConsensusApplication,
-            prepared: PillarVoteSingleAdmissionPreparePlan,
-            validator_vote_count: u64,
-        ) -> Result<PillarVoteSingleAdmissionValidationPlan>;
-        pub fn pbft_service_pillar_apply_prepared_single_vote_external_facts(
-            self: &BridgeConsensusApplication,
-            input: PillarVoteSingleAdmissionApplyInput,
-        ) -> Result<PillarVoteSingleAdmissionApplyPlan>;
-        pub fn pbft_service_pillar_plan_vote_relevance(
-            self: &BridgeConsensusApplication,
-            vote_rlp: Vec<u8>,
-            context: PillarVoteSingleAdmissionContext,
-        ) -> Result<PillarVoteRelevancePlan>;
-        pub fn pbft_service_pillar_get_verified_vote_payloads(
-            self: &BridgeConsensusApplication,
-            period: u64,
-            block_hash: &[u8; 32],
-            above_threshold: bool,
-        ) -> Result<PillarVotesPayloadLookup>;
-        pub fn pbft_service_pillar_prepare_finalized_block_for_pbft(
-            self: &BridgeConsensusApplication,
-            request: PillarBlockFinalizationRequest,
-        ) -> Result<PillarBlockFinalizationPrepareResult>;
-        pub fn pbft_service_pillar_ack_finalize_block_for_pbft(
-            self: &BridgeConsensusApplication,
-            request: PillarBlockFinalizationAcknowledgeRequest,
-        ) -> Result<PillarBlockFinalizationAcknowledgeResult>;
-
         // Storage
 
         type BridgeStorageQueries;

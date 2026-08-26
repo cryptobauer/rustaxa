@@ -28,7 +28,7 @@ must migrate or disappear; they may not be promoted into this table merely to pr
 | Signing executor | App-owned node-wallet adapter | Exact digest-signing and VRF-proof requests/reports; no manager handle | Secret-key custody and signature execution | Keep only operation-shaped signing reports; native vote, pillar, slashing, and DAG-proposer tasks own selection and sequencing. |
 | VDF executor | App-owned asynchronous `libraries/vdf` job adapter | Exact start, poll, and cancellation requests/reports | Proof work, job lifetime, and cancellation execution | Keep only the dedicated execution API; native proposer scheduling owns every decision around it. |
 | Public submission clients | RPC and GraphQL mutation adapters | `BridgeConsensusApplication` public-transaction operation | Protocol formatting, error-text mapping, and best-effort event delivery | Keep the operation-shaped submission boundary; no transaction-manager handle or legacy object graph may reappear. |
-| Public read clients | RPC, GraphQL, debug/Test RPC, and light-plugin adapters | `BridgeConsensusQueryApi` | Client formatting and protocol-specific response assembly | Migrate all manager/storage construction to client-oriented query DTOs, then keep only stable public reads. |
+| Public read clients | RPC, GraphQL, debug/Test RPC, and light-plugin adapters | `BridgeConsensusQueryApi` | Client formatting and protocol-specific response assembly | Keep only stable bounded public DTO reads; no consensus manager construction may reappear. |
 | Pure-C++ reference | All-Rust-disabled `cpp-reference` build | Untouched upstream implementations; no Rust bridge | Complete legacy behavior in reference mode only | Retain while upstream synchronization requires the pure-C++ validation gate. |
 
 ## Checked Surface Budgets
@@ -46,28 +46,33 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 12100 |
-| `shim_lines` | 4075 |
-| `cxx_functions` | 211 |
-| `cxx_carriers` | 170 |
+| `bridge_lines` | 11334 |
+| `shim_lines` | 2859 |
+| `cxx_functions` | 195 |
+| `cxx_carriers` | 154 |
 | `cxx_handles` | 14 |
-| `shim_directories` | 3 |
+| `shim_directories` | 2 |
 | `granular_flags` | 0 |
 | `partial_service_factories` | 0 |
 | `compatibility_constructor_calls` | 0 |
-| `non_test_cpp_consumers` | 28 |
+| `non_test_cpp_consumers` | 26 |
 
 This DAG/transaction/proposer cut lowers the preceding 14,340/7,628/277/217/14/6/33 checkpoint by 2,224 bridge lines,
 3,553 shim lines, 66 CXX functions, 47 carriers, zero opaque handles, three shim directories, and five non-test C++
 consumers. Granular flags, partial-service factories, and compatibility-constructor calls remain zero. The deleted
 compatibility family also includes three bridge modules and `transaction_manager_shim_test`.
 
-The Rust-mode manager facades and their PBFT, DAG, transaction, and proposer bridge/shim modules are deleted. `App` owns one
+The pillar cut lowers the 12,100/4,075/211/170/14/3/28 DAG checkpoint by 764 bridge lines, 1,216 shim lines,
+16 CXX functions, 16 carriers, zero opaque handles, one shim directory, and two non-test C++ consumers. Granular flags,
+partial-service factories, and compatibility-constructor calls remain zero. The deleted compatibility family also
+includes the two pillar bridge modules and the bridge-only pillar-vote bundle test file containing two cases.
+
+The Rust-mode manager facades and their PBFT, DAG, transaction, proposer, and pillar bridge/shim modules are deleted. `App` owns one
 `ConsensusApplication` and a process-only shell containing one worker thread and the exact timer, signing, tarcap,
 VDF, FinalChain account-fact, pillar-anchor-state, concrete EVM/gas, and public-observer ports. Daemon and proposer
-scheduling, state progression, sync continuation, startup recovery, DAG/transaction admission and packing, and
-finalization sequencing live in the native application root. The remaining pillar
-facade queries canonical current-pillar bytes from that root. Public network, RPC, GraphQL, debug, and stats clients use
+scheduling, state progression, sync continuation, startup recovery, DAG/transaction and pillar admission, packing,
+pillar finalization persistence/lifecycle, and finalization sequencing live in the native application root. Pillar
+events cross the observer only after native durable acknowledgement. Public network, RPC, GraphQL, debug, and stats clients use
 operation-shaped network, query, status, and transaction-submission APIs and cannot obtain a manager. Canonical bytes
 cross CXX only at named physical transport, signing, VDF, fact-source, execution, public-event, and public-formatting
 leaves; no manager task/action carrier remains supported. The master
@@ -127,11 +132,9 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | Sole application-root bootstrap plus operation-shaped public transaction submission | App bootstrap, RPC, and GraphQL mutations | Bootstrap/public-client adapter | Retain only root bootstrap, public submission/status conversion, and focused ABI coverage; native `ConsensusApplication` owns DAG, transaction, sortition, and proposer behavior and state. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | Root-bound FinalChain conversion and external-EVM execution APIs | FinalChain shim, execution adapters | External boundary | Native construction is complete; retain only public-query conversion and the narrow external-EVM executor API. |
-| `rust/crates/rustaxa-bridge/src/network.rs` | Root-bound packet-family adapter for native PBFT, DAG, DAG-sync, transaction, status, sync-response, and gossip pipelines | latest/v5 tarcap handler families | External boundary | Keep only canonical ingress requests, typed network decisions/reports, and tarcap transport execution; remove remaining handler-local consensus routing as `CRW-N01` completes. |
+| `rust/crates/rustaxa-bridge/src/network.rs` | Root-bound packet-family adapter for native PBFT, pillar-vote, DAG, DAG-sync, transaction, status, sync-response, and gossip pipelines | latest/v5 tarcap handler families | External boundary | Keep only canonical ingress requests, typed network decisions/reports, and tarcap transport execution; remove remaining handler-local consensus routing as `CRW-N01` completes. |
 | `rust/crates/rustaxa-bridge/src/network_slashing.rs` | Exact signing and transaction-ingress conversion for network-detected slashing effects | tarcap ingress | External boundary | Delete when the signing and transaction-ingress executors move native; never expand into consensus routing. |
-| `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | CXX conversion over native PBFT-root pillar tasks, including the canonical current-pillar-block query | pillar shim | Internal bridge route | Native `PbftService` owns current-anchor mutation/decisions, startup bootstrap, block planning, linkage, latest-finalized lookup, readiness, and private pillar state; retain the current-block query only while the C++ pillar facade must materialize its public object. |
-| `rust/crates/rustaxa-bridge/src/pillar_votes.rs` | CXX conversion and FinalChain-handle unwrapping over native PBFT-root pillar-vote tasks | pillar/PBFT shims | Internal bridge route | Native `PbftService` owns admission, FinalChain composition, relevance, weighted bundles, direct PBFT-sync reporting, payload/network lookup, finalization prepare/ack, and behavioral tests; the standalone sync-bundle export/carrier are deleted, and remaining CXX conversion exists only for named C++ pillar clients. |
-| `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, including coherent PBFT, live DAG, transaction-pool, finalized-history, and public status views | RPC, GraphQL, debug/Test RPC, stats, light plugin | External boundary | Keep a bounded client-oriented read API; never expose private services, locks, queues, cursors, or mutable object graphs. |
+| `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, including coherent PBFT, period-indexed finalized pillar data, live DAG, transaction-pool, finalized-history, and public status views | RPC, GraphQL, debug/Test RPC, stats, light plugin | External boundary | Keep a bounded client-oriented read API; never expose private services, locks, queues, cursors, or mutable object graphs. |
 | `rust/crates/rustaxa-bridge/src/storage.rs` | Root-bound typed compatibility queries and batch operations plus one named conformance seed hook | storage shim and storage conformance | Compatibility facade | Retire query families with their C++ materializers and the conformance seed with the differential CXX runner. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | Low-level VDF operations and cancellation used by the App-owned asynchronous VDF executor | VDF library adapter and application process host | External boundary | Keep the dedicated proof executor; do not recreate proposer scheduling or compatibility payload construction here. |
 
@@ -152,7 +155,6 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | Shim directory | Current role | Named consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
 | `final_chain_shim` | FinalChain public/EVM executor facade | App, RPC, PBFT, transaction | External boundary | Split public query and narrow EVM executor; delete manager class when clients migrate. |
-| `pillar_chain_manager_shim` | pillar materialization/signing/network executor | App/PBFT pillar paths | Compatibility facade | Native pillar service plus leaf effects replaces class. |
 | `storage_shim` | broad `DbStorage` compatibility overlay plus stable sortition-change codec | App/admin/query/tests | Compatibility facade | Native bootstrap and narrow admin/query clients replace the broad facade; retain the codec only while the stable storage API exposes `SortitionParamsChange`. |
 
 ## Guarded Exceptions

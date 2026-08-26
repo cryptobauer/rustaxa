@@ -13,10 +13,10 @@
 #include "network/rpc/eth/Eth.h"
 #include "network/rpc/jsonrpc_http_processor.hpp"
 #include "network/rpc/jsonrpc_ws_server.hpp"
-#include "pillar_chain/pillar_chain_manager.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_application.hpp"
 #else
+#include "pillar_chain/pillar_chain_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
 #endif
 
@@ -315,6 +315,13 @@ void Rpc::start() {
           }
         },
         rpc_thread_pool_);
+    app()->getConsensusApplication()->pillarBlockObserved().subscribe(
+        [ws_weak = as_weak(jsonrpc_ws_)](const pillar_chain::PillarBlockData &pillar_block_data) {
+          if (auto ws = ws_weak.lock()) {
+            ws->newPillarBlockData(pillar_block_data);
+          }
+        },
+        rpc_thread_pool_);
 #else
     app()->getTransactionManager()->transaction_added_.subscribe(
         [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_)](const auto &trx_hash) {
@@ -334,7 +341,7 @@ void Rpc::start() {
         },
         rpc_thread_pool_);
 #endif
-
+#ifndef RUSTAXA_ENABLE
     app()->getPillarChainManager()->pillar_block_finalized_.subscribe(
         [ws_weak = as_weak(jsonrpc_ws_)](const auto &pillar_block_data) {
           if (auto ws = ws_weak.lock()) {
@@ -342,6 +349,7 @@ void Rpc::start() {
           }
         },
         rpc_thread_pool_);
+#endif
   }
   if (conf.network.graphql) {
     graphql_thread_pool_ = std::make_shared<util::ThreadPool>(conf.network.graphql->threads_num);

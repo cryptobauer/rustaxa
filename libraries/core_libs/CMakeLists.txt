@@ -55,8 +55,8 @@ if(RUSTAXA_ENABLE)
     # facade. Keep the untouched legacy implementation only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/proposed_blocks\\.cpp$")
 
-    # The Rust-mode PillarChainManager facade and pillar-vote runtime are
-    # standalone. Keep the untouched legacy implementations only in pure C++ builds.
+    # Native pillar ownership is application-root internal. Keep the untouched
+    # legacy manager and vote runtime only in pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pillar_chain/pillar_chain_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pillar_chain/pillar_votes\\.cpp$")
 
@@ -209,12 +209,6 @@ if(RUSTAXA_ENABLE)
     # Inject the standalone Rust FinalChain facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/src/final_chain_shim.cpp)
-
-    # Inject the standalone Rust PillarChainManager facade.
-    target_include_directories(core_libs BEFORE PUBLIC
-                             ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_chain_manager_shim/include)
-    target_sources(core_libs PRIVATE
-                  ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_chain_manager_shim/src/pillar_chain_manager_shim.cpp)
 
 endif()
 

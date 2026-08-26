@@ -51,8 +51,8 @@ class Network {
 #ifndef RUSTAXA_ENABLE
           std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
           std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
-#endif
           std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
+#endif
           std::shared_ptr<final_chain::FinalChain> final_chain
 #ifdef RUSTAXA_ENABLE
           ,

@@ -36,9 +36,10 @@ use crate::maybe_broadcast_votes::{
 use crate::pbft_application_finalization::{
     PbftApplicationAccountFact, PbftApplicationAccountFactsReport, PbftApplicationEvmReport,
     PbftApplicationFinalizationRequest, PbftApplicationFinalizationStep,
-    PbftApplicationPillarAnchorReport, prepare_certified_pbft_application_finalization,
-    prepare_pbft_application_finalization, report_pbft_application_finalization_account_facts,
-    report_pbft_application_finalization_evm, report_pbft_application_finalization_pillar_anchor,
+    PbftApplicationPillarAnchorReport, PbftApplicationPillarObservation,
+    prepare_certified_pbft_application_finalization, prepare_pbft_application_finalization,
+    report_pbft_application_finalization_account_facts, report_pbft_application_finalization_evm,
+    report_pbft_application_finalization_pillar_anchor,
     report_pbft_application_finalization_pillar_gossip,
     report_pbft_application_finalization_pillar_signature,
 };
@@ -61,6 +62,8 @@ use crate::verified_votes::TwoTPlusOneVotedBlockType;
 use anyhow::{Context, Result, bail, ensure};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+const CONSENSUS_OBSERVATION_KIND_PILLAR_BLOCK: u8 = 3;
 
 /// Stable identity of one host effect within a restartable runtime generation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -927,6 +930,34 @@ impl ConsensusApplicationRuntime {
             );
         }
         Ok(report)
+    }
+
+    /// Publishes one already-committed pillar block to the public observer.
+    ///
+    /// Persistence and native finalized state have already been acknowledged
+    /// before this method receives the event. Observer unavailability,
+    /// rejection, or a malformed acknowledgement therefore cannot roll back or
+    /// fail consensus; the event leaf is deliberately best effort.
+    fn observe_finalized_pillar<O: ConsensusObserverPort>(
+        &self,
+        generation: u64,
+        observation: Option<&PbftApplicationPillarObservation>,
+        observer: &O,
+    ) {
+        let Some(observation) = observation else {
+            return;
+        };
+        let Ok(effect_id) = self.next_effect(generation) else {
+            return;
+        };
+        if let Ok(report) = observer.observe(&ConsensusObservationRequest {
+            effect_id,
+            kind: CONSENSUS_OBSERVATION_KIND_PILLAR_BLOCK,
+            hash: observation.block_hash,
+            canonical_rlp: observation.block_data_rlp.clone(),
+        }) {
+            let _ = self.validate_report(effect_id, report.effect_id);
+        }
     }
 
     fn cancel_active_dag_vdf<V: ConsensusVdfPort>(
@@ -1906,7 +1937,7 @@ impl ConsensusApplicationRuntime {
                                         PbftManagerRuntimeActionResultCode::NoProgressContinue
                                     }
                                     Some(proposed) => {
-                                        let (request, step) =
+                                        let (request, prepared) =
                                             prepare_certified_pbft_application_finalization(
                                                 pbft,
                                                 dag_transaction,
@@ -1923,10 +1954,15 @@ impl ConsensusApplicationRuntime {
                                                 // without reintroducing a manager-shaped wait port.
                                                 true,
                                             )?;
+                                        self.observe_finalized_pillar(
+                                            generation,
+                                            prepared.pillar_observation.as_ref(),
+                                            observer,
+                                        );
                                         if self.drive_application_finalization(
                                             generation,
                                             &request,
-                                            step,
+                                            prepared.step,
                                             pbft,
                                             dag_transaction,
                                             final_chain,
@@ -2372,16 +2408,21 @@ impl ConsensusApplicationRuntime {
                                     current_cert_vote_rlps: accepted.current_cert_vote_rlps,
                                     synchronous: true,
                                 };
-                                let step = prepare_pbft_application_finalization(
+                                let prepared = prepare_pbft_application_finalization(
                                     pbft,
                                     dag_transaction,
                                     final_chain,
                                     request.clone(),
                                 )?;
+                                self.observe_finalized_pillar(
+                                    generation,
+                                    prepared.pillar_observation.as_ref(),
+                                    observer,
+                                );
                                 self.drive_application_finalization(
                                     generation,
                                     &request,
-                                    step,
+                                    prepared.step,
                                     pbft,
                                     dag_transaction,
                                     final_chain,
@@ -2450,6 +2491,35 @@ mod tests {
     struct RecordingVdf {
         cancel_jobs: Mutex<Vec<u64>>,
         cancel_succeeds: bool,
+    }
+
+    struct RecordingObserver {
+        requests: Mutex<Vec<ConsensusObservationRequest>>,
+        fail: bool,
+        stale: bool,
+    }
+
+    impl ConsensusObserverPort for RecordingObserver {
+        fn observe(
+            &self,
+            request: &ConsensusObservationRequest,
+        ) -> Result<ConsensusObservationReport> {
+            self.requests.lock().unwrap().push(request.clone());
+            if self.fail {
+                bail!("INJECTED_OBSERVER_FAILURE");
+            }
+            Ok(ConsensusObservationReport {
+                effect_id: ConsensusEffectId {
+                    generation: request.effect_id.generation,
+                    sequence: request.effect_id.sequence + u64::from(self.stale),
+                },
+                succeeded: !self.stale,
+                error_code: self
+                    .stale
+                    .then_some("INJECTED_STALE_OBSERVER_REPORT".to_owned())
+                    .unwrap_or_default(),
+            })
+        }
     }
 
     impl ConsensusVdfPort for RecordingVdf {
@@ -2797,6 +2867,29 @@ mod tests {
         let second = runtime.begin_run().unwrap();
         assert_eq!(second, first + 1);
         assert!(runtime.validate_report(effect, effect).is_err());
+    }
+
+    #[test]
+    fn finalized_pillar_observer_uses_kind_three_and_is_best_effort() {
+        let runtime = ConsensusApplicationRuntime::new(vec![identity()], 100).unwrap();
+        let generation = runtime.begin_run().unwrap();
+        let observation = PbftApplicationPillarObservation {
+            block_hash: [7; 32],
+            block_data_rlp: vec![0xc2, 0x80, 0x80],
+        };
+        for (fail, stale) in [(false, false), (true, false), (false, true)] {
+            let observer = RecordingObserver {
+                requests: Mutex::new(Vec::new()),
+                fail,
+                stale,
+            };
+            runtime.observe_finalized_pillar(generation, Some(&observation), &observer);
+            let requests = observer.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].kind, CONSENSUS_OBSERVATION_KIND_PILLAR_BLOCK);
+            assert_eq!(requests[0].hash, observation.block_hash);
+            assert_eq!(requests[0].canonical_rlp, observation.block_data_rlp);
+        }
     }
 
     #[test]

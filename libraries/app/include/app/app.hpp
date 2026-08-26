@@ -66,7 +66,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<DagBlockProposer> getDagBlockProposer() const { return dag_block_proposer_; }
   std::shared_ptr<GasPricer> getGasPricer() const { return gas_pricer_; }
 #endif
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<pillar_chain::PillarChainManager> getPillarChainManager() const { return pillar_chain_mgr_; }
+#endif
 
   void rebuildDb();
 
@@ -136,7 +138,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<PbftManager> pbft_mgr_;
   std::shared_ptr<PbftChain> pbft_chain_;
 #endif
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr_;
+#endif
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<KeyManager> key_manager_;
 #endif

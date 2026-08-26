@@ -53,8 +53,8 @@
 #endif
 #include "network/consensus_query.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
-#include "pillar_chain/pillar_chain_manager.hpp"
 #ifndef RUSTAXA_ENABLE
+#include "pillar_chain/pillar_chain_manager.hpp"
 #include "transaction/transaction_manager.hpp"
 #endif
 
@@ -69,12 +69,10 @@ namespace taraxa::network::tarcap {
 #ifdef RUSTAXA_ENABLE
 #define RUSTAXA_LEGACY_DB_ARG
 #define RUSTAXA_NETWORK_API_ARG consensus_network_api,
-#define RUSTAXA_VOTE_NETWORK_ARGS consensus_network_api, version,
 #define RUSTAXA_PBFT_VOTE_NETWORK_ARGS consensus_network_api, version,
 #else
 #define RUSTAXA_LEGACY_DB_ARG db,
 #define RUSTAXA_NETWORK_API_ARG
-#define RUSTAXA_VOTE_NETWORK_ARGS
 #define RUSTAXA_PBFT_VOTE_NETWORK_ARGS
 #endif
 
@@ -92,8 +90,8 @@ TaraxaCapability::TaraxaCapability(
 #ifndef RUSTAXA_ENABLE
     std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
     std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
-#endif
     std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
+#endif
     std::shared_ptr<final_chain::FinalChain> final_chain,
 #ifdef RUSTAXA_ENABLE
     network::ConsensusNetworkApiShared consensus_network_api,
@@ -128,9 +126,9 @@ TaraxaCapability::TaraxaCapability(
 #endif
                             pbft_chain,
 #ifndef RUSTAXA_ENABLE
-                            vote_mgr, dag_mgr, trx_mgr, slashing_manager,
+                            vote_mgr, dag_mgr, trx_mgr, slashing_manager, pillar_chain_mgr,
 #endif
-                            pillar_chain_mgr, final_chain, version, node_addr);
+                            final_chain, version, node_addr);
 
   // Must be called after init_packets_handlers
   thread_pool_->setPacketsHandlers(version, packets_handlers_);
@@ -336,8 +334,8 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
 #ifndef RUSTAXA_ENABLE
        const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
        const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
-#endif
        const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
+#endif
        [[maybe_unused]] const std::shared_ptr<final_chain::FinalChain> &final_chain,
        [[maybe_unused]] TarcapVersion version, const addr_t &node_addr) {
       auto packets_handlers = std::make_shared<PacketsHandler>();
@@ -434,8 +432,13 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
           config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, consensus_status, final_chain,
           consensus_network_api, node_addr, logs_prefix);
 #endif
-      packets_handlers->registerHandler<PillarVotePacketHandler>(config, peers_state, packets_stats, pillar_chain_mgr,
-                                                                 RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
+      packets_handlers->registerHandler<PillarVotePacketHandler>(config, peers_state, packets_stats,
+#ifndef RUSTAXA_ENABLE
+                                                                 pillar_chain_mgr,
+#else
+                                                                 consensus_network_api, version,
+#endif
+                                                                 node_addr, logs_prefix);
       packets_handlers->registerHandler<GetPillarVotesBundlePacketHandler>(config, peers_state, packets_stats,
 #ifndef RUSTAXA_ENABLE
                                                                            pillar_chain_mgr,
@@ -443,8 +446,13 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
                                                                            consensus_network_api, version,
 #endif
                                                                            node_addr, logs_prefix);
-      packets_handlers->registerHandler<PillarVotesBundlePacketHandler>(
-          config, peers_state, packets_stats, pillar_chain_mgr, RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
+      packets_handlers->registerHandler<PillarVotesBundlePacketHandler>(config, peers_state, packets_stats,
+#ifndef RUSTAXA_ENABLE
+                                                                        pillar_chain_mgr,
+#else
+                                                                        consensus_network_api, version,
+#endif
+                                                                        node_addr, logs_prefix);
 
 #ifdef RUSTAXA_ENABLE
       packets_handlers->registerHandler<RustPbftBlocksBundlePacketHandler>(config, peers_state, packets_stats,
@@ -473,8 +481,8 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
 #ifndef RUSTAXA_ENABLE
        const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
        const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
-#endif
        const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
+#endif
        [[maybe_unused]] const std::shared_ptr<final_chain::FinalChain> &final_chain,
        [[maybe_unused]] TarcapVersion version, const addr_t &node_addr) {
       auto packets_handlers = std::make_shared<PacketsHandler>();
@@ -571,8 +579,13 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
           config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, consensus_status, final_chain,
           consensus_network_api, node_addr, logs_prefix);
 #endif
-      packets_handlers->registerHandler<PillarVotePacketHandler>(config, peers_state, packets_stats, pillar_chain_mgr,
-                                                                 RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
+      packets_handlers->registerHandler<PillarVotePacketHandler>(config, peers_state, packets_stats,
+#ifndef RUSTAXA_ENABLE
+                                                                 pillar_chain_mgr,
+#else
+                                                                 consensus_network_api, version,
+#endif
+                                                                 node_addr, logs_prefix);
       packets_handlers->registerHandler<GetPillarVotesBundlePacketHandler>(config, peers_state, packets_stats,
 #ifndef RUSTAXA_ENABLE
                                                                            pillar_chain_mgr,
@@ -580,14 +593,18 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
                                                                            consensus_network_api, version,
 #endif
                                                                            node_addr, logs_prefix);
-      packets_handlers->registerHandler<PillarVotesBundlePacketHandler>(
-          config, peers_state, packets_stats, pillar_chain_mgr, RUSTAXA_VOTE_NETWORK_ARGS node_addr, logs_prefix);
+      packets_handlers->registerHandler<PillarVotesBundlePacketHandler>(config, peers_state, packets_stats,
+#ifndef RUSTAXA_ENABLE
+                                                                        pillar_chain_mgr,
+#else
+                                                                        consensus_network_api, version,
+#endif
+                                                                        node_addr, logs_prefix);
       return packets_handlers;
     };
 
 #undef RUSTAXA_LEGACY_DB_ARG
 #undef RUSTAXA_NETWORK_API_ARG
-#undef RUSTAXA_VOTE_NETWORK_ARGS
 #undef RUSTAXA_PBFT_VOTE_NETWORK_ARGS
 
 }  // namespace taraxa::network::tarcap

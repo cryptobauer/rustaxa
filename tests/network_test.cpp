@@ -74,8 +74,10 @@ TEST_F(NetworkTest, pillar_vote_rebroadcast_resends_vote_known_to_peer) {
   class TestPillarVotePacketHandler final : public network::tarcap::IPillarVotePacketHandler {
    public:
     explicit TestPillarVotePacketHandler(std::shared_ptr<network::tarcap::PeersState> peers_state)
-        : IPillarVotePacketHandler({}, std::move(peers_state), {}, {},
-#ifdef RUSTAXA_ENABLE
+        : IPillarVotePacketHandler({}, std::move(peers_state), {},
+#ifndef RUSTAXA_ENABLE
+                                   {},
+#else
                                    {}, 0,
 #endif
                                    {}, "") {

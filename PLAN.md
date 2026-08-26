@@ -757,8 +757,10 @@ Completed closeout slices:
    asynchronous VDF progression, tip selection, block construction, signing progression, local admission, and gossip
    planning. App supplies exact timer/process, signing/VRF, VDF start/poll/cancel, concrete gas, tarcap, and public-event
    reports. The Rust-mode proposer facade, worker-command bridge module, App ownership, and shim directory are deleted.
-5. Vote, slashing, and pillar executor surface collapse: vote/pillar/slashing decisions consume Rust-retained payloads,
-   compact facts, and typed plans; C++ executes signing, network, transaction insertion, and public sidecar edges.
+5. Vote, slashing, and pillar application cutover: native services own pillar startup/restoration, vote admission,
+   threshold state, block construction, finalization persistence/cleanup, lifecycle, network decisions, public query
+   views, and post-ack observation. C++ retains exact signing/VRF, tarcap, FinalChain pillar-anchor facts, and best-effort
+   public event delivery; Rust mode exposes no vote or pillar manager facade.
 6. Rewards stats carrier ownership: Rust owns rewards-stat decisions, compatibility encoding, interval cache
    persistence/reload/clear, and native finalization integration; C++ decoded carriers are public/test/EVM adapters.
 7. Typed consensus storage port generalization: migrated production consensus routes use task-specific Rust storage
@@ -829,7 +831,7 @@ sidecars, storage iterators, `DbStorage`, or internal runtime state.
 
 | Boundary | Rust facade | Rust ownership | External executor or adapter ownership |
 | --- | --- | --- | --- |
-| Application tasks and public submission | `ConsensusApplication` | Lifecycle, DAG/transaction/proposer mutation tasks, canonical admission and persistence, public-event selection, and exact host-effect/result validation | App process hosting, RPC/GraphQL mutation formatting, concrete gas execution, and best-effort public event delivery |
+| Application tasks and public submission | `ConsensusApplication` | Lifecycle, DAG/transaction/proposer and pillar mutation tasks, canonical admission/finalization persistence, public-event selection, and exact host-effect/result validation | App process hosting, RPC/GraphQL mutation formatting, concrete gas execution, and best-effort public event delivery |
 | Network and tarcap | `ConsensusNetworkApi` | Canonical packet ingestion, inspection, admission, routing, consensus queues, peer/gossip/send decisions, effect ordering, identity, and result validation | Socket and peer mechanics, packet wrapping, actual send/gossip/disconnect execution, and physical lane scheduling |
 | External EVM and StateAPI | `ConsensusExecutionApi` | Execution orchestration, canonical requests and rewards payloads, result/receipt validation, lifecycle, commit ordering, recovery, publication planning, and storage-publication authorization | Concrete EVM calls, staged `state_db/` mutation, contract execution, tracing, and raw `StateAPI` operations |
 | Public reads | `ConsensusQueryApi` | Stable read-only consensus DTOs backed by Rust storage and query logic | RPC/GraphQL/plugin formatting, live network/admin views, and public C++ object materialization where still required |
@@ -941,11 +943,12 @@ Rust-enabled composition no longer includes a `PbftManager` object or shim. `App
 use operation-shaped root adapters. Local generated-vote admission and own-vote persistence commit atomically, and
 canonical proposal publication derives its identity natively. The untouched original manager remains selected only in
 all-Rust-disabled reference builds. The private C++ runtime and manager-shaped CXX task/effect family are deleted.
-Native application code owns scheduling, startup recovery, lifecycle, state actions, sync continuation, proposal and
-vote work, and finalization orchestration. An App-owned process shell supplies only exact monotonic/Unix-time, signing
-and VRF custody, tarcap transport, FinalChain account facts, pillar-anchor-state facts, and concrete EVM execution leaves
-with canonical requests and typed reports; it retains no protocol state. The remaining C++ pillar facade queries
-canonical current-pillar bytes from the native owner rather than maintaining a PBFT runtime mirror.
+Native application code owns scheduling, startup recovery, lifecycle, state actions, sync continuation, proposal,
+vote/pillar work, and finalization orchestration. An App-owned process shell supplies only exact monotonic/Unix-time,
+signing and VRF custody, tarcap transport, FinalChain account facts, pillar-anchor-state facts, concrete EVM execution,
+and best-effort post-ack public observation leaves with canonical requests and typed reports; it retains no protocol
+state. Rust-mode pillar network handlers and public readers use `ConsensusNetworkApi` and `ConsensusQueryApi` directly;
+there is no C++ pillar manager facade or PBFT runtime mirror.
 Terminal `App` teardown stops and joins that process before host configuration is destroyed; restartable stop/start
 remains a separate lifecycle operation.
 Status-packet and sync-start planning each reuse one coherent application-root status snapshot.
@@ -1561,9 +1564,10 @@ Use targeted validation before broad integration runs:
 - PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,
   and targeted `pbft_chain_test` or `pbft_manager_test` cases; broader PBFT changes should also run relevant
   `vote_test` coverage.
-- Pillar vote aggregation or PBFT sync bundle validation changes should run Rust validation plus `rust_consensus_tests`
-  and `pillar_votes_shim_test` when `RUSTAXA_ENABLE` is enabled; manager-path changes should also run
-  targeted `pbft_manager_test`/`pillar_chain_test` coverage and any affected final-chain or full-node tests.
+- Pillar vote aggregation, PBFT sync bundle, finalization, or query changes should run native service/application,
+  persistence/restart, network, query, and observer validation plus `rust_consensus_tests`, affected Rust-enabled
+  network/RPC/full-node coverage, and targeted pure-C++ `pillar_chain_test` cases. Rust mode has no pillar-manager facade
+  or compatibility test.
 - Rewards-stat planner changes should run Rust validation plus the Rust rewards-stat and FinalChain unit tests and
   `rust_consensus_tests`; add final-chain/full-node coverage when reward distribution routing changes. The legacy
   `rewards_stats_test` is a pure-C++ reference-build target only because Rust mode no longer has a rewards-stats facade.

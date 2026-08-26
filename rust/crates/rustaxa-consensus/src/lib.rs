@@ -221,9 +221,10 @@ pub use network_api::{
     NetworkPbftSyncPeerCandidate, NetworkPbftSyncStartFacts, NetworkPbftSyncStartPlan,
     NetworkPbftVoteAdmissionOutcome, NetworkPbftVoteIngressContext, NetworkPeerSelectionFacts,
     NetworkPeerSelectionPlan, NetworkPendingDagBlocksRequestFacts,
-    NetworkPendingDagBlocksRequestPlan, NetworkPillarVoteIngressContext, NetworkStatusEgressFacts,
-    NetworkStatusEgressPlan, NetworkStatusSyncFacts, NetworkStatusSyncPlan,
-    NetworkTransactionGossipPeer, NetworkTransactionGossipRequest, NetworkTransactionPacketContext,
+    NetworkPendingDagBlocksRequestPlan, NetworkPillarVoteAdmissionOutcome,
+    NetworkPillarVoteIngressContext, NetworkStatusEgressFacts, NetworkStatusEgressPlan,
+    NetworkStatusSyncFacts, NetworkStatusSyncPlan, NetworkTransactionGossipPeer,
+    NetworkTransactionGossipRequest, NetworkTransactionPacketContext,
     NetworkTransactionPacketReport,
 };
 pub use pbft_chain::{

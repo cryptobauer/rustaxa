@@ -36,8 +36,10 @@ class SlashingManager;
 enum class TransactionStatus;
 
 namespace pillar_chain {
+#ifndef RUSTAXA_ENABLE
 class PillarChainManager;
-}
+#endif
+}  // namespace pillar_chain
 
 namespace final_chain {
 class FinalChain;
@@ -79,8 +81,8 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
 #ifndef RUSTAXA_ENABLE
       const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
       const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
-#endif
       const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
+#endif
       const std::shared_ptr<final_chain::FinalChain> &final_chain, TarcapVersion version, const addr_t &node_addr)>;
 
   /**
@@ -105,8 +107,8 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
 #ifndef RUSTAXA_ENABLE
                    std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
                    std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
-#endif
                    std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
+#endif
                    std::shared_ptr<final_chain::FinalChain> final_chain,
 #ifdef RUSTAXA_ENABLE
                    network::ConsensusNetworkApiShared consensus_network_api,

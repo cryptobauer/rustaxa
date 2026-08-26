@@ -24,9 +24,6 @@ class DagManager;
 class PbftManager;
 class VoteManager;
 }  // namespace taraxa
-namespace taraxa::pillar_chain {
-class PillarChainManager;
-}
 namespace taraxa::network {
 class ConsensusNetworkApi;
 }
@@ -49,7 +46,6 @@ class FinalChain {
   friend class ::taraxa::DagManager;
   friend class ::taraxa::PbftManager;
   friend class ::taraxa::VoteManager;
-  friend class ::taraxa::pillar_chain::PillarChainManager;
   friend class ::taraxa::network::ConsensusNetworkApi;
 
  protected:

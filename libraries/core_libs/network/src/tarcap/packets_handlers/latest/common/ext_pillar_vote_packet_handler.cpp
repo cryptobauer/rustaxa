@@ -2,11 +2,12 @@
 
 #include <algorithm>
 #include <cassert>
-#include <optional>
 #include <stdexcept>
 
 #include "network/tarcap/packets/latest/pillar_vote_packet.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "pillar_chain/pillar_chain_manager.hpp"
+#endif
 #include "vote/pillar_vote.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -20,7 +21,8 @@ constexpr uint8_t kNetworkEffectResultStatusOk = 0;
 constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
 constexpr uint8_t kNetworkEffectKindGossipPacket = 1;
 constexpr uint8_t kNetworkEffectKindMarkPeerKnown = 2;
-constexpr uint8_t kNetworkEffectKindRecordConsensusObject = 8;
+constexpr uint8_t kNetworkEffectKindReportPeer = 4;
+constexpr uint8_t kNetworkEffectKindDisconnectPeer = 5;
 constexpr uint8_t kNetworkObjectKindPillarVote = 5;
 constexpr uint32_t kNetworkPacketKindPillarVote = 13;
 
@@ -39,14 +41,17 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& input) {
 ExtPillarVotePacketHandler::ExtPillarVotePacketHandler(
     const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
     std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
-#ifdef RUSTAXA_ENABLE
+#else
     network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
 #endif
     const addr_t& node_addr, const std::string& log_channel)
-    : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel),
+    : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel)
+#ifndef RUSTAXA_ENABLE
+      ,
       pillar_chain_manager_{std::move(pillar_chain_manager)}
-#ifdef RUSTAXA_ENABLE
+#else
       ,
       rust_consensus_network_api_(std::move(consensus_network_api)),
       transport_lane_(transport_lane)
@@ -64,8 +69,6 @@ bool ExtPillarVotePacketHandler::processPillarVote(const std::shared_ptr<PillarV
 std::vector<bool> ExtPillarVotePacketHandler::processPillarVotes(const std::vector<std::shared_ptr<PillarVote>>& votes,
                                                                  const std::shared_ptr<TaraxaPeer>& peer,
                                                                  SubprotocolPacketType packet_type) {
-  std::vector<bool> accepted(votes.size(), false);
-
 #ifdef RUSTAXA_ENABLE
   rust::Vec<rustaxa::PillarVoteRlpPayload> payloads;
   payloads.reserve(votes.size());
@@ -76,35 +79,43 @@ std::vector<bool> ExtPillarVotePacketHandler::processPillarVotes(const std::vect
   }
 
   auto lane_execution_lock = rust_consensus_network_api_->lockTransportLane(static_cast<uint32_t>(transport_lane_));
-  const auto decisions =
+  const auto outcomes =
       ingestPillarVotes(std::move(payloads), peer, packet_type == SubprotocolPacketType::kPillarVotePacket);
-  if (decisions.size() != votes.size()) {
-    throw std::runtime_error("Network API pillar-vote ingress returned an invalid decision count");
+  if (outcomes.size() != votes.size()) {
+    throw std::runtime_error("Network API pillar-vote ingress returned an invalid outcome count");
   }
 
-  std::vector<uint64_t> application_effect_ids;
-  std::vector<size_t> routed_vote_indices;
-  application_effect_ids.reserve(decisions.size());
-  routed_vote_indices.reserve(decisions.size());
-  for (size_t index = 0; index < decisions.size(); ++index) {
-    const auto& decision = decisions[index];
-    if (!decision.routed || decision.status != 0 || decision.application_effect_id == 0) {
+  std::vector<std::array<uint8_t, 32>> vote_hashes;
+  vote_hashes.reserve(votes.size());
+  std::vector<bool> accepted(votes.size(), false);
+  for (size_t index = 0; index < outcomes.size(); ++index) {
+    const auto& outcome = outcomes[index];
+    const auto& decision = outcome.decision;
+    const auto vote_hash = votes[index]->getHash().asArray();
+    vote_hashes.push_back(vote_hash);
+    if (!decision.routed || decision.status != 0) {
       LOG(this->log_dg_) << "Network API rejected pillar vote " << votes[index]->getHash()
                          << ". Status: " << static_cast<uint32_t>(decision.status)
                          << ", error: " << static_cast<std::string>(decision.error_code);
       continue;
     }
-    application_effect_ids.push_back(decision.application_effect_id);
-    routed_vote_indices.push_back(index);
+    if (!outcome.has_admission) {
+      throw std::runtime_error("Routed pillar vote has no native admission outcome");
+    }
+    if (outcome.vote_hash != vote_hash) {
+      throw std::runtime_error("Native pillar-vote admission returned an unexpected vote hash");
+    }
+    if (!outcome.accepted && !outcome.duplicate) {
+      LOG(this->log_dg_) << "Native pillar-vote admission rejected vote " << votes[index]->getHash()
+                         << ". Status: " << static_cast<uint32_t>(outcome.status);
+    }
+    accepted[index] = outcome.accepted;
   }
-
-  const auto routed_results = executeConsensusNetworkEffects(application_effect_ids);
-  for (size_t index = 0; index < routed_results.size(); ++index) {
-    accepted[routed_vote_indices[index]] = routed_results[index];
-  }
+  executeConsensusNetworkEffects(vote_hashes);
   return accepted;
 #else
   static_cast<void>(packet_type);
+  std::vector<bool> accepted(votes.size(), false);
   for (size_t index = 0; index < votes.size(); ++index) {
     const auto& vote = votes[index];
     if (!pillar_chain_manager_->isRelevantPillarVote(vote)) {
@@ -127,32 +138,22 @@ std::vector<bool> ExtPillarVotePacketHandler::processPillarVotes(const std::vect
 }
 
 #ifdef RUSTAXA_ENABLE
-rust::Vec<rustaxa::NetworkIngressDecision> ExtPillarVotePacketHandler::ingestPillarVotes(
+rust::Vec<rustaxa::NetworkPillarVoteAdmissionOutcome> ExtPillarVotePacketHandler::ingestPillarVotes(
     rust::Vec<rustaxa::PillarVoteRlpPayload> votes, const std::shared_ptr<TaraxaPeer>& peer, bool allow_gossip) const {
   assert(rust_consensus_network_api_);
   rustaxa::NetworkPillarVoteIngressContext context{};
   context.transport_lane = static_cast<uint32_t>(transport_lane_);
   context.peer_id = peer->getId().asArray();
   context.source_payload_id = 0;
-  context.ficus_activation_period = kConf.genesis.state.hardforks.ficus_hf.block_num;
   context.allow_gossip = allow_gossip;
   return rust_consensus_network_api_->api().consensus_network_ingest_pillar_vote_bundle(context, std::move(votes));
 }
 
-std::vector<bool> ExtPillarVotePacketHandler::executeConsensusNetworkEffects(
-    const std::vector<uint64_t>& application_effect_ids) {
-  if (application_effect_ids.empty()) {
-    return {};
-  }
-
-  std::vector<bool> application_completed(application_effect_ids.size(), false);
-  std::vector<bool> application_accepted(application_effect_ids.size(), false);
-  std::vector<std::optional<std::string>> application_failures(application_effect_ids.size());
-
+void ExtPillarVotePacketHandler::executeConsensusNetworkEffects(
+    const std::vector<std::array<uint8_t, 32>>& expected_vote_hashes) {
   while (true) {
-    const auto batch =
-        rust_consensus_network_api_->api().consensus_network_drain_work(static_cast<uint32_t>(transport_lane_), 0,
-                                                                        false, 64);
+    const auto batch = rust_consensus_network_api_->api().consensus_network_drain_work(
+        static_cast<uint32_t>(transport_lane_), 0, false, 64);
     if (batch.effects.empty()) {
       break;
     }
@@ -168,60 +169,48 @@ std::vector<bool> ExtPillarVotePacketHandler::executeConsensusNetworkEffects(
       result.object_kind = effect.object_kind;
       result.object_hash = effect.object_hash;
       result.status = kNetworkEffectResultStatusOk;
-      const auto requested_application =
-          std::find(application_effect_ids.begin(), application_effect_ids.end(), effect.effect_id);
-      const auto requested_application_index =
-          static_cast<size_t>(std::distance(application_effect_ids.begin(), requested_application));
-
       try {
         const dev::p2p::NodeID peer_id(effect.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
-        if (effect.kind == kNetworkEffectKindRecordConsensusObject &&
-            effect.object_kind == kNetworkObjectKindPillarVote) {
-          if (requested_application == application_effect_ids.end()) {
-            throw std::runtime_error("Pillar-vote network executor received an uncorrelated application effect");
+        if (effect.kind == kNetworkEffectKindMarkPeerKnown && effect.object_kind == kNetworkObjectKindPillarVote) {
+          const auto expected = std::find(expected_vote_hashes.begin(), expected_vote_hashes.end(), effect.object_hash);
+          if (expected == expected_vote_hashes.end()) {
+            throw std::runtime_error("Pillar-vote known effect has an unexpected vote hash");
           }
-          auto vote = std::make_shared<PillarVote>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
-          if (vote->getHash().asArray() != effect.object_hash || vote->getPeriod() != effect.period) {
-            throw std::runtime_error("Network API pillar-vote admission effect has mismatched payload identity");
-          }
-          const auto report = pillar_chain_manager_->admitPillarVote(vote);
-          result.admission_accepted = report.accepted;
-          result.admission_already_present = report.already_present;
-          application_completed[requested_application_index] = true;
-          application_accepted[requested_application_index] = report.accepted;
-        } else if (effect.kind == kNetworkEffectKindMarkPeerKnown &&
-                   effect.object_kind == kNetworkObjectKindPillarVote) {
           if (const auto target = peers_state_->getPeer(peer_id); target) {
             target->markPillarVoteAsKnown(vote_hash_t(effect.object_hash.data(), vote_hash_t::ConstructFromPointer));
           }
         } else if (effect.kind == kNetworkEffectKindGossipPacket &&
-                   effect.packet_kind == kNetworkPacketKindPillarVote) {
-          auto vote = std::make_shared<PillarVote>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
-          if (vote->getHash().asArray() != effect.object_hash) {
-            throw std::runtime_error("Network API pillar-vote gossip effect has mismatched payload identity");
+                   effect.packet_kind == kNetworkPacketKindPillarVote &&
+                   effect.object_kind == kNetworkObjectKindPillarVote) {
+          if (std::find(expected_vote_hashes.begin(), expected_vote_hashes.end(), effect.object_hash) ==
+              expected_vote_hashes.end()) {
+            throw std::runtime_error("Pillar-vote gossip effect has an unexpected vote hash");
           }
           for (const auto& target : peers_state_->getAllPeers()) {
             const auto excluded = std::ranges::any_of(effect.exclude_peers, [&target](const auto& excluded_peer) {
               return dev::p2p::NodeID(excluded_peer.id.data(), dev::p2p::NodeID::ConstructFromPointer) == target.first;
             });
-            if (excluded || target.second->syncing_ || target.second->isPillarVoteKnown(vote->getHash())) {
+            const vote_hash_t vote_hash(effect.object_hash.data(), vote_hash_t::ConstructFromPointer);
+            if (excluded || target.second->syncing_ || target.second->isPillarVoteKnown(vote_hash)) {
               continue;
             }
-            if (sealAndSend(target.first, SubprotocolPacketType::kPillarVotePacket,
-                            encodePacketRlp(PillarVotePacket(vote)))) {
-              target.second->markPillarVoteAsKnown(vote->getHash());
+            dev::RLPStream packet_rlp(1);
+            packet_rlp.appendRaw(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
+            if (sealAndSend(target.first, SubprotocolPacketType::kPillarVotePacket, packet_rlp.invalidate())) {
+              target.second->markPillarVoteAsKnown(vote_hash);
             }
           }
+        } else if (effect.kind == kNetworkEffectKindReportPeer) {
+          LOG(this->log_wr_) << "Network API reported peer " << peer_id
+                             << " with reason: " << static_cast<uint32_t>(effect.reason_code);
+        } else if (effect.kind == kNetworkEffectKindDisconnectPeer) {
+          disconnect(peer_id, dev::p2p::UserReason);
         } else {
           throw std::runtime_error("Pillar-vote network executor received an unsupported effect");
         }
       } catch (const std::exception& e) {
         result.status = kNetworkEffectResultStatusFailed;
         result.diagnostic = e.what();
-        if (requested_application != application_effect_ids.end()) {
-          application_completed[requested_application_index] = true;
-          application_failures[requested_application_index] = e.what();
-        }
       }
       results.push_back(std::move(result));
     }
@@ -233,16 +222,6 @@ std::vector<bool> ExtPillarVotePacketHandler::executeConsensusNetworkEffects(
                                static_cast<std::string>(acknowledgement.error_code));
     }
   }
-
-  for (size_t index = 0; index < application_effect_ids.size(); ++index) {
-    if (application_failures[index]) {
-      throw std::runtime_error(*application_failures[index]);
-    }
-    if (!application_completed[index]) {
-      throw std::runtime_error("Network API did not execute a correlated pillar-vote application effect");
-    }
-  }
-  return application_accepted;
 }
 #endif
 
