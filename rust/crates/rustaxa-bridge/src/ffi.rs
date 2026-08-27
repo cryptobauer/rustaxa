@@ -6,33 +6,11 @@ use crate::final_chain::*;
 use crate::network::*;
 use crate::network_slashing::*;
 use crate::query::*;
-use crate::storage::*;
+use crate::storage_admin::*;
 use crate::vdf::*;
 use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusQueryApi;
-use rustaxa_storage::Storage;
-use rustaxa_storage::StorageWriteBatch;
 use std::sync::Arc;
-
-/// Read-only storage compatibility handle for legacy C++ materializers.
-///
-/// Operation-shaped methods remain grouped by name while the storage shim is
-/// retired; separate per-domain opaque handles are no longer part of the ABI.
-pub struct BridgeStorageQueries {
-    pub storage: Arc<Storage>,
-}
-
-/// Rust-owned storage shim batch used to preserve the legacy C++ `Batch&` API
-/// while keeping the live write batch inside `rustaxa-storage`.
-///
-/// C++ shims may stage raw legacy column writes through this object only while
-/// public `DbStorage` compatibility methods are being retired. The batch is
-/// consumed on commit and silently dropped when the C++ compatibility batch is
-/// abandoned.
-pub struct BridgeStorageBatch {
-    pub storage: Arc<Storage>,
-    pub batch: Option<StorageWriteBatch>,
-}
 
 /// Opaque state for one in-progress FinalChain execution session.
 pub struct BridgeFinalChainExecutionSession {
@@ -73,27 +51,6 @@ pub struct BridgeConsensusNetworkApi {
 /// composition without changing the native siblings' lock domains.
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod rustaxa_ffi {
-    struct BlockPeriodLookup {
-        found: bool,
-        period: u64,
-        position: u32,
-    }
-
-    /// Canonical encoded bytes shared by storage and host-port list payloads.
-    struct CanonicalBytes {
-        data: Vec<u8>,
-    }
-
-    struct LevelBlocks {
-        level: u64,
-        blocks: Vec<CanonicalBytes>,
-    }
-
-    struct PeriodLookup {
-        found: bool,
-        period: u64,
-    }
-
     /// Public/query JSON view for PBFT block extra data.
     struct PbftBlockExtraDataView {
         found: bool,
@@ -161,6 +118,28 @@ pub mod rustaxa_ffi {
     struct PeriodLambda {
         found: bool,
         value: u32,
+    }
+
+    /// Exact exclusive cutoffs for the application-root light-history admin task.
+    struct LightHistoryPruneRequest {
+        end_period_exclusive: u64,
+        first_retained_dag_level: u64,
+        live_cleanup: bool,
+        non_block_periods_to_keep: u64,
+    }
+
+    /// Typed outcome of one atomic application-root light-history admin task.
+    struct LightHistoryPruneReport {
+        changed: bool,
+        end_period_exclusive: u64,
+        first_retained_dag_level: u64,
+        rebuilt_secondary_indexes: bool,
+    }
+
+    /// One ordered key/value result from the closed v1 storage conformance scenario.
+    struct StorageConformanceObservation {
+        key: String,
+        value: String,
     }
 
     /// Client-oriented live PBFT progress and persisted chain statistics for
@@ -697,11 +676,6 @@ pub mod rustaxa_ffi {
         call_data: Vec<u8>,
     }
 
-    struct HashPeriod {
-        hash: [u8; 32],
-        period: u64,
-    }
-
     /// Immutable application configuration for coherent PBFT service restore.
     ///
     /// The restored chain head supplies the current period and determines
@@ -1230,12 +1204,6 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
     }
 
-    struct DagCounterUpdate {
-        hash: [u8; 32],
-        level: u64,
-        tips_count: u64,
-    }
-
     struct FinalizationDagBlock {
         author: [u8; 20],
         difficulty: u16,
@@ -1442,6 +1410,13 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             block_number: u64,
         ) -> Result<Vec<TransactionReceiptPublicView>>;
+        pub fn consensus_application_prune_light_history(
+            runtime: &BridgeConsensusApplication,
+            request: LightHistoryPruneRequest,
+        ) -> Result<LightHistoryPruneReport>;
+        pub fn consensus_application_run_storage_conformance_v1(
+            runtime: &BridgeConsensusApplication,
+        ) -> Result<Vec<StorageConformanceObservation>>;
     }
 
     extern "Rust" {
@@ -1666,336 +1641,6 @@ pub mod rustaxa_ffi {
             proof_hash: &[u8; 32],
             transaction_inserted: bool,
         ) -> Result<bool>;
-        // Storage compatibility leaves retained by the DbStorage overlay.
-        pub fn pillar_chain_storage_apply_current_block_data(
-            self: &BridgeConsensusApplication,
-            data_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn pillar_chain_storage_apply_own_vote(
-            self: &BridgeConsensusApplication,
-            vote_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn pillar_chain_storage_apply_finalized_block(
-            self: &BridgeConsensusApplication,
-            period: u64,
-            pillar_block_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn pillar_chain_storage_load_own_vote(
-            self: &BridgeConsensusApplication,
-        ) -> Result<Vec<u8>>;
-        pub fn pillar_chain_storage_load_current_block_data(
-            self: &BridgeConsensusApplication,
-        ) -> Result<Vec<u8>>;
-        pub fn pillar_chain_storage_load_latest_block(
-            self: &BridgeConsensusApplication,
-        ) -> Result<Vec<u8>>;
-        pub fn pillar_chain_storage_load_block(
-            self: &BridgeConsensusApplication,
-            period: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn get_genesis_hash(self: &BridgeConsensusApplication) -> Result<Vec<u8>>;
-        pub fn get_last_sortition_params(
-            self: &BridgeConsensusApplication,
-            count: u64,
-        ) -> Result<Vec<CanonicalBytes>>;
-        pub fn get_params_change_for_period(
-            self: &BridgeConsensusApplication,
-            period: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn get_status_field(self: &BridgeConsensusApplication, field: u8) -> Result<u64>;
-        pub fn get_period_lambda(
-            self: &BridgeConsensusApplication,
-            period: u64,
-            find_closest: bool,
-        ) -> Result<PeriodLambda>;
-        pub fn get_rounds_count_dynamic_lambda(self: &BridgeConsensusApplication) -> Result<u32>;
-        pub fn get_blocks_rewards_stats(
-            self: &BridgeConsensusApplication,
-        ) -> Result<Vec<PeriodRlp>>;
-        // Storage
-
-        type BridgeStorageQueries;
-        type BridgeStorageBatch;
-
-        pub fn create_pbft_storage_queries(
-            runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgeStorageQueries>;
-        pub fn create_dag_storage_queries(
-            runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgeStorageQueries>;
-        pub fn create_pbft_vote_storage_queries(
-            runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgeStorageQueries>;
-        pub fn create_transaction_storage_queries(
-            runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgeStorageQueries>;
-        pub fn create_final_chain_storage_queries(
-            runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgeStorageQueries>;
-        pub fn create_period_storage_queries(
-            runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgeStorageQueries>;
-        pub fn create_storage_shim_batch(
-            runtime: &BridgeConsensusApplication,
-        ) -> Box<BridgeStorageBatch>;
-        pub fn storage_shim_save_status_field(
-            batch: &mut BridgeStorageBatch,
-            field: u8,
-            value: u64,
-        ) -> Result<()>;
-        pub fn storage_shim_save_sortition_params_change(
-            batch: &mut BridgeStorageBatch,
-            period: u64,
-            params_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_save_period_lambda(
-            batch: &mut BridgeStorageBatch,
-            period: u64,
-            period_lambda: u32,
-        ) -> Result<()>;
-        pub fn storage_shim_save_rounds_count_dynamic_lambda(
-            batch: &mut BridgeStorageBatch,
-            rounds_count: u32,
-        ) -> Result<()>;
-        pub fn storage_shim_save_block_rewards_stats(
-            batch: &mut BridgeStorageBatch,
-            period: u64,
-            stats_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_clear_block_rewards_stats(
-            runtime: &BridgeConsensusApplication,
-        ) -> Result<()>;
-        pub fn storage_shim_set_genesis_hash(
-            runtime: &BridgeConsensusApplication,
-            hash: &[u8; 32],
-        ) -> Result<()>;
-        #[allow(clippy::too_many_arguments)]
-        pub fn storage_shim_seed_final_chain_conformance_lookup_rows(
-            runtime: &BridgeConsensusApplication,
-            meta_key: u32,
-            meta_value: Vec<u8>,
-            block_number: u64,
-            block_hash: &[u8; 32],
-            block_header_rlp: Vec<u8>,
-            receipt_hash: &[u8; 32],
-            receipt_rlp: Vec<u8>,
-            blooms_chunk: &[u8; 32],
-            blooms_rlp: Vec<u8>,
-            receipt_period: u64,
-            receipts_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_save_pbft_mgr_field(
-            batch: &mut BridgeStorageBatch,
-            field: u8,
-            value: u32,
-        ) -> Result<()>;
-        pub fn storage_shim_save_pbft_mgr_status(
-            batch: &mut BridgeStorageBatch,
-            field: u8,
-            value: bool,
-        ) -> Result<()>;
-        pub fn storage_shim_remove_cert_voted_block_in_round(
-            batch: &mut BridgeStorageBatch,
-        ) -> Result<()>;
-        pub fn storage_shim_save_cert_voted_block_in_round(
-            batch: &mut BridgeStorageBatch,
-            round: u64,
-            block_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_save_pbft_head(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-            head: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_remove_own_verified_vote(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-        ) -> Result<()>;
-        pub fn storage_shim_save_own_verified_vote(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-            vote_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_replace_two_t_plus_one_votes(
-            batch: &mut BridgeStorageBatch,
-            vote_type: u8,
-            votes_bundle_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_remove_extra_reward_vote(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-        ) -> Result<()>;
-        pub fn storage_shim_save_extra_reward_vote(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-            vote_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_save_pbft_block_period(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-            period: u64,
-        ) -> Result<()>;
-        pub fn storage_shim_save_dag_block_period(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-            period: u64,
-            position: u32,
-        ) -> Result<()>;
-        pub fn storage_shim_save_dag_block(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-            level: u64,
-            block_rlp: Vec<u8>,
-            dag_blocks_count: u64,
-            dag_edge_count: u64,
-        ) -> Result<()>;
-        pub fn storage_shim_update_dag_block_counters(
-            batch: &mut BridgeStorageBatch,
-            updates: Vec<DagCounterUpdate>,
-            dag_blocks_count: u64,
-            dag_edge_count: u64,
-        ) -> Result<()>;
-        pub fn storage_shim_remove_dag_block(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-        ) -> Result<()>;
-        pub fn storage_shim_save_period_data(
-            batch: &mut BridgeStorageBatch,
-            period: u64,
-            period_data_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_remove_proposed_pbft_block(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-        ) -> Result<()>;
-        pub fn storage_shim_save_proposal_period_dag_level(
-            batch: &mut BridgeStorageBatch,
-            level: u64,
-            period: u64,
-        ) -> Result<()>;
-        pub fn storage_shim_save_transaction_location(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-            period: u64,
-            position: u32,
-            is_system: bool,
-        ) -> Result<()>;
-        pub fn storage_shim_save_transaction(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-            trx_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_remove_transaction(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-        ) -> Result<()>;
-        pub fn storage_shim_save_system_transaction(
-            batch: &mut BridgeStorageBatch,
-            hash: &[u8; 32],
-            trx_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_save_period_system_transactions_hashes(
-            batch: &mut BridgeStorageBatch,
-            period: u64,
-            hashes_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_commit_batch(batch: Box<BridgeStorageBatch>, sync: bool) -> Result<()>;
-
-        pub fn dag_block_in_db(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<bool>;
-        pub fn get_dag_block(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
-        pub fn get_dag_block_period_lookup(
-            self: &BridgeStorageQueries,
-            hash: &[u8; 32],
-        ) -> Result<BlockPeriodLookup>;
-        pub fn get_last_blocks_level(self: &BridgeStorageQueries) -> Result<u64>;
-        pub fn get_blocks_by_level(self: &BridgeStorageQueries, level: u64) -> Result<Vec<u8>>;
-        pub fn get_dag_blocks_at_level(
-            self: &BridgeStorageQueries,
-            level: u64,
-            number_of_levels: u32,
-        ) -> Result<Vec<CanonicalBytes>>;
-        pub fn get_nonfinalized_dag_blocks(self: &BridgeStorageQueries)
-            -> Result<Vec<LevelBlocks>>;
-        pub fn get_proposal_period_for_dag_level(
-            self: &BridgeStorageQueries,
-            level: u64,
-        ) -> Result<PeriodLookup>;
-
-        /// Typed period reads (preferred for typed query surfaces).
-        pub fn get_period_data_raw(self: &BridgeStorageQueries, period: u64) -> Result<Vec<u8>>;
-        /// Typed period-by-PBFT-block hash lookup.
-        pub fn get_period_from_pbft_hash(
-            self: &BridgeStorageQueries,
-            hash: &[u8; 32],
-        ) -> Result<PeriodLookup>;
-        /// Typed by-period receipts lookup.
-        pub fn get_block_receipt(self: &BridgeStorageQueries, period: u64) -> Result<Vec<u8>>;
-        pub fn pbft_block_in_db(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<bool>;
-        pub fn get_pbft_mgr_field(self: &BridgeStorageQueries, field: u8) -> Result<u32>;
-        pub fn get_pbft_mgr_status(self: &BridgeStorageQueries, field: u8) -> Result<bool>;
-        pub fn get_pbft_head(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
-        pub fn get_cert_voted_block_in_round(self: &BridgeStorageQueries) -> Result<Vec<u8>>;
-        pub fn save_proposed_pbft_block(
-            self: &BridgeStorageQueries,
-            expected_period: u64,
-            expected_hash: &[u8; 32],
-            expected_pivot_hash: &[u8; 32],
-            block_rlp: Vec<u8>,
-        ) -> Result<bool>;
-        pub fn get_proposed_pbft_blocks(self: &BridgeStorageQueries)
-            -> Result<Vec<CanonicalBytes>>;
-        pub fn get_own_verified_votes(self: &BridgeStorageQueries) -> Result<Vec<CanonicalBytes>>;
-        pub fn get_all_two_t_plus_one_votes(
-            self: &BridgeStorageQueries,
-        ) -> Result<Vec<CanonicalBytes>>;
-        pub fn get_reward_votes(self: &BridgeStorageQueries) -> Result<Vec<CanonicalBytes>>;
-        pub fn transaction_in_db(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<bool>;
-        pub fn transaction_finalized(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<bool>;
-        pub fn get_transaction_location(
-            self: &BridgeStorageQueries,
-            hash: &[u8; 32],
-        ) -> Result<Vec<u8>>;
-        pub fn get_transaction(self: &BridgeStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
-        pub fn get_transaction_by_period_position(
-            self: &BridgeStorageQueries,
-            period: u64,
-            position: u32,
-        ) -> Result<Vec<u8>>;
-        pub fn get_transaction_count(self: &BridgeStorageQueries, period: u64) -> Result<u64>;
-        pub fn get_system_transaction(
-            self: &BridgeStorageQueries,
-            hash: &[u8; 32],
-        ) -> Result<Vec<u8>>;
-        pub fn get_all_nonfinalized_transactions(self: &BridgeStorageQueries)
-            -> Result<Vec<TxRlp>>;
-        pub fn get_all_transaction_period(self: &BridgeStorageQueries) -> Result<Vec<HashPeriod>>;
-        pub fn get_period_system_transactions_hashes(
-            self: &BridgeStorageQueries,
-            period: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_meta_value(self: &BridgeStorageQueries, key: u32)
-            -> Result<Vec<u8>>;
-        pub fn get_final_chain_block_header(
-            self: &BridgeStorageQueries,
-            block_number: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_block_hash_by_number(
-            self: &BridgeStorageQueries,
-            block_number: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_block_number_by_hash(
-            self: &BridgeStorageQueries,
-            hash: &[u8; 32],
-        ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_log_blooms_chunk(
-            self: &BridgeStorageQueries,
-            chunk_id: &[u8; 32],
-        ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_receipt_by_trx_hash(
-            self: &BridgeStorageQueries,
-            trx_hash: &[u8; 32],
-        ) -> Result<Vec<u8>>;
-
         // FinalChain
 
         pub fn get_last_block_number(self: &BridgeConsensusApplication) -> Result<u64>;

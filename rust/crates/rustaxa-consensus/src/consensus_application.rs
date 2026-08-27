@@ -284,6 +284,13 @@ pub struct ConsensusVoteStatus {
     pub total_eligible_votes: Option<u64>,
 }
 
+/// One ordered observation from the versioned production-root storage conformance scenario.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageConformanceObservation {
+    pub key: String,
+    pub value: String,
+}
+
 /// Canonical transaction-gossip admission entering the application once.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransactionPacketIngressRequest {
@@ -346,6 +353,404 @@ pub struct DagSyncIngressReport {
 }
 
 impl ConsensusApplication {
+    /// Runs the closed v1 storage conformance scenario against this production-composed root.
+    ///
+    /// The operation requires a fresh fixture root and returns an ordered transcript. It intentionally exposes no
+    /// storage handle, column selector, iterator, or caller-owned batch; native repositories own every write group.
+    pub fn run_storage_conformance_v1(&self) -> Result<Vec<StorageConformanceObservation>> {
+        let storage = self.storage.as_ref();
+        let mut observations = Vec::new();
+        let mut observe = |key: &str, value: String| {
+            observations.push(StorageConformanceObservation {
+                key: key.to_owned(),
+                value,
+            });
+        };
+        let boolean = |value: bool| value.to_string();
+        let optional_u64 =
+            |value: Option<u64>| value.map_or_else(|| "none".into(), |v| v.to_string());
+        let optional_u32 =
+            |value: Option<u32>| value.map_or_else(|| "none".into(), |v| v.to_string());
+
+        let dag_hash_1 = H256::repeat_byte(0x11);
+        let dag_hash_2 = H256::repeat_byte(0x22);
+        let dag_hash_3 = H256::repeat_byte(0x33);
+        let dag_missing = H256::repeat_byte(0xee);
+        if storage.dag().exists(dag_hash_1)?
+            || storage.transaction().exists(H256::repeat_byte(0x51))?
+        {
+            bail!("STORAGE_CONFORMANCE_V1_REQUIRES_FRESH_ROOT");
+        }
+
+        observe(
+            "status_default_executed_blk",
+            storage
+                .metadata()
+                .status_field(StatusField::ExecutedBlkCount as u8)?
+                .to_string(),
+        );
+        observe(
+            "pbft_mgr_field_default_round",
+            storage.pbft().manager_field(0)?.unwrap_or(1).to_string(),
+        );
+        observe(
+            "pbft_mgr_status_default_executed_block",
+            boolean(storage.pbft().manager_status(0)?.unwrap_or(false)),
+        );
+        observe(
+            "proposal_period_missing",
+            optional_u64(storage.dag().proposal_period_at_level(1_000_001)?),
+        );
+        observe(
+            "period_lambda_missing",
+            optional_u32(storage.metadata().period_lambda(7, false)?),
+        );
+        observe(
+            "rounds_count_dynamic_lambda_default",
+            storage
+                .metadata()
+                .rounds_count_dynamic_lambda()?
+                .to_string(),
+        );
+        observe(
+            "genesis_present_before",
+            boolean(storage.metadata().genesis_hash()?.is_some()),
+        );
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .metadata()
+            .write_status_field_in_batch(&mut batch, 2, 11)?;
+        storage
+            .pbft()
+            .write_manager_field_in_batch(&mut batch, 0, 17)?;
+        storage
+            .pbft()
+            .write_manager_status_in_batch(&mut batch, 2, true)?;
+        storage.commit_write_batch_with_sync(batch, false)?;
+        storage.dag().write_proposal_period_at_level(100, 50)?;
+        storage.metadata().write_period_lambda(7, 42)?;
+        storage.metadata().write_rounds_count_dynamic_lambda(23)?;
+        observe(
+            "status_trx_count_after_save",
+            storage.metadata().status_field(2)?.to_string(),
+        );
+        observe(
+            "pbft_mgr_field_round_after_save",
+            storage.pbft().manager_field(0)?.unwrap_or(1).to_string(),
+        );
+        observe(
+            "pbft_mgr_status_next_voted_soft_after_save",
+            boolean(storage.pbft().manager_status(2)?.unwrap_or(false)),
+        );
+        observe(
+            "proposal_period_level_100_after_save",
+            optional_u64(storage.dag().proposal_period_at_level(100)?),
+        );
+        observe(
+            "period_lambda_exact_after_save",
+            optional_u32(storage.metadata().period_lambda(7, false)?),
+        );
+        observe(
+            "period_lambda_closest_after_save",
+            optional_u32(storage.metadata().period_lambda(8, true)?),
+        );
+        observe(
+            "rounds_count_dynamic_lambda_after_save",
+            storage
+                .metadata()
+                .rounds_count_dynamic_lambda()?
+                .to_string(),
+        );
+
+        observe(
+            "dag_missing_block",
+            boolean(!storage.dag().exists(dag_missing)?),
+        );
+        observe(
+            "dag_missing_period",
+            boolean(storage.dag().period_optional(dag_missing)?.is_none()),
+        );
+        let mut batch = storage.create_write_batch();
+        storage
+            .dag()
+            .write_in_batch(&mut batch, dag_hash_1, 1, &[0xc0], 1, 1)?;
+        storage.commit_write_batch_with_sync(batch, false)?;
+        let mut batch = storage.create_write_batch();
+        storage
+            .dag()
+            .write_in_batch(&mut batch, dag_hash_2, 1, &[0xc0], 2, 3)?;
+        storage.commit_write_batch_with_sync(batch, false)?;
+        observe(
+            "dag_saved_primary",
+            boolean(storage.dag().exists(dag_hash_1)?),
+        );
+        observe(
+            "dag_saved_batch",
+            boolean(storage.dag().exists(dag_hash_2)?),
+        );
+        observe(
+            "dag_level_1_count",
+            storage.dag().hashes_at_level(1)?.len().to_string(),
+        );
+        let mut batch = storage.create_write_batch();
+        storage
+            .dag()
+            .write_period_in_batch(&mut batch, dag_hash_1, 7, 2)?;
+        storage.commit_write_batch_with_sync(batch, false)?;
+        let dag_period = storage
+            .dag()
+            .period_optional(dag_hash_1)?
+            .context("STORAGE_CONFORMANCE_V1_DAG_PERIOD")?;
+        observe("dag_period_lookup_found", "true".into());
+        observe("dag_period_lookup_period", dag_period.0.to_string());
+        observe("dag_period_lookup_position", dag_period.1.to_string());
+        let mut batch = storage.create_write_batch();
+        storage
+            .dag()
+            .update_counters_in_batch(&mut batch, &[(dag_hash_3, 2, 2)], 3, 6)?;
+        storage.commit_write_batch_with_sync(batch, false)?;
+        observe(
+            "dag_counters_nonzero",
+            boolean(
+                storage.metadata().status_field(3)? > 0 && storage.metadata().status_field(4)? > 0,
+            ),
+        );
+        let mut batch = storage.create_write_batch();
+        storage.dag().remove_in_batch(&mut batch, dag_hash_2)?;
+        storage.commit_write_batch_with_sync(batch, false)?;
+        observe(
+            "dag_removed_batch_hash",
+            boolean(!storage.dag().exists(dag_hash_2)?),
+        );
+        observe("dag_last_level", storage.dag().last_level()?.to_string());
+        observe(
+            "dag_blocks_at_level_span_count",
+            storage.dag().at_level_range(1, 2)?.len().to_string(),
+        );
+
+        let pbft_hash = H256::repeat_byte(0x44);
+        let pbft_missing = H256::repeat_byte(0x45);
+        let mut batch = storage.create_write_batch();
+        storage
+            .period()
+            .write_pbft_period_in_batch(&mut batch, pbft_hash, 99)?;
+        storage.commit_write_batch_with_sync(batch, false)?;
+        observe(
+            "pbft_period_lookup_found",
+            boolean(storage.period().by_pbft_hash(pbft_hash)?.is_some()),
+        );
+        observe(
+            "pbft_period_lookup_value",
+            optional_u64(storage.period().by_pbft_hash(pbft_hash)?),
+        );
+        observe(
+            "pbft_period_lookup_missing",
+            boolean(storage.period().by_pbft_hash(pbft_missing)?.is_none()),
+        );
+        observe(
+            "pbft_block_in_db_found",
+            boolean(storage.pbft().exists(pbft_hash)?),
+        );
+        observe(
+            "pbft_block_in_db_missing",
+            boolean(storage.pbft().exists(pbft_missing)?),
+        );
+        let pbft_head_hash = H256::repeat_byte(0x71);
+        observe(
+            "pbft_head_missing_len",
+            storage
+                .pbft()
+                .head(pbft_head_hash)?
+                .unwrap_or_default()
+                .len()
+                .to_string(),
+        );
+        storage.pbft().write_head(pbft_head_hash, b"head")?;
+        observe(
+            "pbft_head_after_save_len",
+            storage
+                .pbft()
+                .head(pbft_head_hash)?
+                .unwrap_or_default()
+                .len()
+                .to_string(),
+        );
+
+        let tx_hash_1 = H256::repeat_byte(0x51);
+        let tx_hash_2 = H256::repeat_byte(0x52);
+        let system_hash = H256::repeat_byte(0x53);
+        let mut batch = storage.create_write_batch();
+        storage
+            .transaction()
+            .write_in_batch(&mut batch, tx_hash_1, &[0xc0])?;
+        storage
+            .transaction()
+            .write_in_batch(&mut batch, tx_hash_2, &[0xc0])?;
+        storage.commit_write_batch_with_sync(batch, false)?;
+        observe(
+            "tx_hash_1_in_db",
+            boolean(storage.transaction().exists(tx_hash_1)?),
+        );
+        observe(
+            "tx_hash_1_finalized_before",
+            boolean(storage.transaction().finalized(tx_hash_1)?),
+        );
+        let mut batch = storage.create_write_batch();
+        storage
+            .transaction()
+            .write_location_in_batch(&mut batch, tx_hash_1, 12, 0, false)?;
+        storage.commit_write_batch_with_sync(batch, false)?;
+        observe(
+            "tx_hash_1_finalized_after",
+            boolean(storage.transaction().finalized(tx_hash_1)?),
+        );
+        observe(
+            "tx_hash_1_location_present",
+            boolean(storage.transaction().location_rlp(tx_hash_1)?.is_some()),
+        );
+        observe(
+            "tx_hash_1_lookup_nonempty",
+            boolean(storage.transaction().rlp(tx_hash_1)?.is_some()),
+        );
+        observe(
+            "tx_period_map_size",
+            storage.transaction().all_with_period()?.len().to_string(),
+        );
+        let mut batch = storage.create_write_batch();
+        storage
+            .transaction()
+            .remove_in_batch(&mut batch, tx_hash_2)?;
+        storage.commit_write_batch_with_sync(batch, false)?;
+        observe(
+            "tx_hash_2_removed",
+            boolean(!storage.transaction().exists(tx_hash_2)?),
+        );
+        observe(
+            "tx_nonfinalized_count",
+            storage
+                .transaction()
+                .all_nonfinalized_rlp()?
+                .len()
+                .to_string(),
+        );
+        observe(
+            "tx_finalized_vector",
+            format!(
+                "{}{}",
+                storage.transaction().finalized(tx_hash_1)? as u8,
+                storage.transaction().finalized(tx_hash_2)? as u8
+            ),
+        );
+        storage.transaction().write_system(system_hash, &[0xc0])?;
+        observe(
+            "system_tx_lookup_nonempty",
+            boolean(storage.transaction().system_rlp(system_hash)?.is_some()),
+        );
+        let mut hashes = rlp::RlpStream::new_list(1);
+        hashes.append(&system_hash);
+        storage
+            .transaction()
+            .write_period_system_hashes(12, &hashes.out())?;
+        observe("period_system_hashes_count", "1".into());
+        storage
+            .period()
+            .write(33, &[0xc6, 0xc0, 0xc0, 0xc0, 0xe1, 0xc0, 0xc0])?;
+        observe(
+            "period_data_raw_len",
+            storage.period().data_raw(33)?.len().to_string(),
+        );
+
+        let block_hash = H256::repeat_byte(0x61);
+        let receipt_hash = H256::repeat_byte(0x62);
+        let bloom_chunk = H256::repeat_byte(0x63);
+        storage.final_chain().write_conformance_lookup_rows(
+            99,
+            b"meta",
+            42,
+            block_hash,
+            b"blk",
+            receipt_hash,
+            b"rcp",
+            bloom_chunk,
+            b"blm",
+            15,
+            &[0xc0],
+        )?;
+        observe(
+            "final_chain_meta_len",
+            storage
+                .final_chain()
+                .meta_value(99)?
+                .unwrap_or_default()
+                .len()
+                .to_string(),
+        );
+        observe(
+            "final_chain_block_len",
+            storage
+                .final_chain()
+                .block_header_raw(42)?
+                .unwrap_or_default()
+                .len()
+                .to_string(),
+        );
+        observe(
+            "final_chain_hash_len",
+            storage
+                .final_chain()
+                .block_hash_by_number(42)?
+                .unwrap_or_default()
+                .len()
+                .to_string(),
+        );
+        let number = storage
+            .final_chain()
+            .block_number_by_hash(block_hash)?
+            .context("STORAGE_CONFORMANCE_V1_FINAL_CHAIN_NUMBER")?;
+        let number = u64::from_le_bytes(
+            number
+                .as_slice()
+                .try_into()
+                .context("STORAGE_CONFORMANCE_V1_FINAL_CHAIN_NUMBER_SIZE")?,
+        );
+        observe("final_chain_number_by_hash", number.to_string());
+        observe(
+            "final_chain_receipt_len",
+            storage
+                .final_chain()
+                .receipt_by_trx_hash(receipt_hash)?
+                .unwrap_or_default()
+                .len()
+                .to_string(),
+        );
+        observe(
+            "final_chain_blooms_len",
+            storage
+                .final_chain()
+                .log_blooms_chunk_raw(bloom_chunk)?
+                .unwrap_or_default()
+                .len()
+                .to_string(),
+        );
+        observe(
+            "final_chain_receipts_by_period_count",
+            usize::from(!storage.period().receipt(15)?.is_empty()).to_string(),
+        );
+        Ok(observations)
+    }
+
+    /// Executes one atomic, root-owned light-history pruning task.
+    ///
+    /// Exact exclusive cutoffs are validated by storage. The operation exposes no storage handle and is idempotent
+    /// for repeated requests with the same policy.
+    pub fn prune_light_history(
+        &self,
+        request: rustaxa_storage::LightHistoryPruneRequest,
+    ) -> Result<rustaxa_storage::LightHistoryPruneReport> {
+        self.storage.prune_light_history(request)
+    }
+
     /// Validates one DAG-sync transaction without publishing it to the live
     /// queue. Known transactions preserve the legacy verification fast path;
     /// new transactions run canonical envelope policy only and become durable
@@ -914,16 +1319,6 @@ impl ConsensusApplication {
         )
     }
 
-    /// Borrows the application-owned storage handle for thin Rust bridge dispatch.
-    ///
-    /// This accessor is not exported through CXX. It lets operation-specific
-    /// adapters bind to the root's sole storage owner without opening RocksDB a
-    /// second time or publishing a separately constructible storage service.
-    #[doc(hidden)]
-    pub fn storage_for_bridge(&self) -> &Arc<Storage> {
-        &self.storage
-    }
-
     /// Borrows the application-owned FinalChain for thin Rust bridge dispatch.
     ///
     /// This accessor is not exported through CXX. External-EVM and query
@@ -1364,7 +1759,6 @@ mod tests {
             Some(vec![1; 32])
         );
         assert_eq!(root.dag_transaction.transaction_count().unwrap(), 0);
-        assert!(Arc::ptr_eq(root.storage_for_bridge(), &root.storage));
         let final_chain = root.final_chain_arc_for_bridge();
         assert!(Arc::ptr_eq(&final_chain, &root.final_chain));
         assert!(std::ptr::eq(

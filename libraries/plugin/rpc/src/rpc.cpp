@@ -134,8 +134,10 @@ void Rpc::start() {
 #else
     eth_rpc_params.gas_pricer = [gas_pricer = app()->getGasPricer()]() { return gas_pricer->bid(); };
 #endif
+#ifndef RUSTAXA_ENABLE
     eth_rpc_params.get_earliest_block = [db = app()->getDB()]() { return db->getEarliestBlockNumber(); };
     eth_rpc_params.get_trx = [db = app()->getDB()](auto const &trx_hash) { return db->getTransaction(trx_hash); };
+#endif
 #ifdef RUSTAXA_ENABLE
     eth_rpc_params.query_transaction = [query_api = consensus_query_api](auto const &trx_hash) {
       return (*query_api)->consensus_query_transaction_by_hash(trx_hash.asArray());
@@ -274,8 +276,13 @@ void Rpc::start() {
     }
     if (!conf.db_config.rebuild_db) {
       app()->getFinalChain()->block_finalized_.subscribe(
-          [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_),
-           db = as_weak(app()->getDB())](const auto &res) {
+          [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_)
+#ifndef RUSTAXA_ENABLE
+           , db = as_weak(app()->getDB())
+#else
+           , query = consensus_query_api
+#endif
+      ](const auto &res) {
             if (auto _eth_json_rpc = eth_json_rpc.lock()) {
               _eth_json_rpc->note_block_executed(*res->final_chain_blk, res->trxs, res->trx_receipts);
             }
@@ -284,6 +291,16 @@ void Rpc::start() {
                 auto trx_hashes = hashes_from_transactions(res->trxs);
                 _ws->newEthBlock(*res->final_chain_blk, trx_hashes);
                 _ws->newLogs(*res->final_chain_blk, std::move(trx_hashes), res->trx_receipts);
+#ifdef RUSTAXA_ENABLE
+                const auto pbft_view = (*query)->consensus_query_pbft_schedule_block_by_period(res->final_chain_blk->number);
+                if (pbft_view.found) {
+                  const auto pivot = blk_hash_t(pbft_view.dag_block_hash_as_pivot.data(), blk_hash_t::ConstructFromPointer);
+                  if (pivot != kNullBlockHash) {
+                    _ws->newDagBlockFinalized(pivot, pbft_view.period);
+                  }
+                  _ws->newPbftBlockExecuted(pbft_view);
+                }
+#else
                 if (auto _db = db.lock()) {
                   auto pbft_blk = _db->getPbftBlock(res->hash);
                   if (const auto &hash = pbft_blk->getPivotDagBlockHash(); hash != kNullBlockHash) {
@@ -291,6 +308,7 @@ void Rpc::start() {
                   }
                   _ws->newPbftBlockExecuted(*pbft_blk, res->dag_blk_hashes);
                 }
+#endif
               }
             }
           },

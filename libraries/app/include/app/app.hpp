@@ -44,7 +44,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<TransactionManager> getTransactionManager() const { return trx_mgr_; }
   std::shared_ptr<DagManager> getDagManager() const { return dag_mgr_; }
 #endif
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<DbStorage> getDB() const { return db_; }
+#endif
 #ifdef RUSTAXA_ENABLE
   /** Returns the application-owned native consensus task root for Rust-mode fixtures and named executors. */
   std::shared_ptr<ConsensusApplication> getConsensusApplication() const { return consensus_application_; }
@@ -118,8 +120,10 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   util::ThreadPool config_update_executor_{1};
 
   // components
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<DbStorage> db_;
   std::shared_ptr<DbStorage> old_db_;
+#endif
 #ifdef RUSTAXA_ENABLE
   std::shared_ptr<ConsensusApplication> consensus_application_;
   std::unique_ptr<ConsensusProcess> consensus_process_;

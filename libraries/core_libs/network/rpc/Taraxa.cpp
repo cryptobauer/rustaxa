@@ -245,19 +245,21 @@ TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase>
       throw std::runtime_error("TARAXA_PERSISTENT_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto lookup = (*consensus_query_api)->consensus_query_pbft_block_hash_by_period(period);
-      if (!lookup.found) {
-        return std::nullopt;
-      }
-      return blk_hash_t(lookup.hash.data(), blk_hash_t::ConstructFromPointer);
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_PERSISTENT_QUERY_UNAVAILABLE");
     }
-#endif
+    const auto lookup = (*consensus_query_api)->consensus_query_pbft_block_hash_by_period(period);
+    if (!lookup.found) {
+      return std::nullopt;
+    }
+    return blk_hash_t(lookup.hash.data(), blk_hash_t::ConstructFromPointer);
+#else
     const auto block = node->getDB()->getPbftBlock(period);
     if (!block) {
       return std::nullopt;
     }
     return block->getBlockHash();
+#endif
   };
   reader.chain_stats = [app
 #ifdef RUSTAXA_ENABLE
@@ -270,16 +272,18 @@ TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase>
       throw std::runtime_error("TARAXA_PERSISTENT_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto stats = (*consensus_query_api)->consensus_query_chain_stats();
-      return TaraxaChainStatsView{stats.pbft_period, stats.dag_blocks_executed, stats.transactions_executed};
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_PERSISTENT_QUERY_UNAVAILABLE");
     }
-#endif
+    const auto stats = (*consensus_query_api)->consensus_query_chain_stats();
+    return TaraxaChainStatsView{stats.pbft_period, stats.dag_blocks_executed, stats.transactions_executed};
+#else
     return TaraxaChainStatsView{
         node->getFinalChain()->lastBlockNumber(),
         node->getDB()->getNumBlockExecuted(),
         node->getDB()->getNumTransactionExecuted(),
     };
+#endif
   };
   reader.period_lambda = [app
 #ifdef RUSTAXA_ENABLE
@@ -292,15 +296,17 @@ TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase>
       throw std::runtime_error("TARAXA_PERSISTENT_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto period_lambda = (*consensus_query_api)->consensus_query_period_lambda_by_period(period);
-      if (!period_lambda.found) {
-        return std::nullopt;
-      }
-      return period_lambda.value;
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_PERSISTENT_QUERY_UNAVAILABLE");
     }
-#endif
+    const auto period_lambda = (*consensus_query_api)->consensus_query_period_lambda_by_period(period);
+    if (!period_lambda.found) {
+      return std::nullopt;
+    }
+    return period_lambda.value;
+#else
     return node->getDB()->getPeriodLambda(period, false);
+#endif
   };
   return reader;
 }
@@ -323,20 +329,22 @@ TaraxaScheduleReader makeTaraxaScheduleReader(std::weak_ptr<taraxa::AppBase> app
       throw std::runtime_error("TARAXA_SCHEDULE_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto view = (*consensus_query_api)->consensus_query_pbft_schedule_block_by_period(period);
-      if (!view.found) {
-        return std::nullopt;
-      }
-      return pbftScheduleBlockViewToJson(view);
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_SCHEDULE_QUERY_UNAVAILABLE");
     }
-#endif
+    const auto view = (*consensus_query_api)->consensus_query_pbft_schedule_block_by_period(period);
+    if (!view.found) {
+      return std::nullopt;
+    }
+    return pbftScheduleBlockViewToJson(view);
+#else
     auto db = node->getDB();
     auto block = db->getPbftBlock(period);
     if (!block) {
       return std::nullopt;
     }
     return PbftBlock::toJson(*block, db->getFinalizedDagBlockHashesByPeriod(period));
+#endif
   };
   return reader;
 }
@@ -376,17 +384,18 @@ TaraxaNodeVersionReader makeTaraxaNodeVersionReader(std::weak_ptr<taraxa::AppBas
       throw std::runtime_error("TARAXA_NODE_VERSION_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto version_view = (*consensus_query_api)->consensus_query_pbft_node_version_by_period(period);
-      if (!version_view.found) {
-        return std::nullopt;
-      }
-      return TaraxaNodeVersionView{addr_t(version_view.beneficiary.data(), addr_t::ConstructFromPointer),
-                                   std::to_string(version_view.major_version) + "." +
-                                       std::to_string(version_view.minor_version) + "." +
-                                       std::to_string(version_view.patch_version)};
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_NODE_VERSION_QUERY_UNAVAILABLE");
     }
-#endif
+    const auto version_view = (*consensus_query_api)->consensus_query_pbft_node_version_by_period(period);
+    if (!version_view.found) {
+      return std::nullopt;
+    }
+    return TaraxaNodeVersionView{addr_t(version_view.beneficiary.data(), addr_t::ConstructFromPointer),
+                                 std::to_string(version_view.major_version) + "." +
+                                     std::to_string(version_view.minor_version) + "." +
+                                     std::to_string(version_view.patch_version)};
+#else
     auto block = node->getDB()->getPbftBlock(period);
     if (!block.has_value()) {
       return std::nullopt;
@@ -395,6 +404,7 @@ TaraxaNodeVersionReader makeTaraxaNodeVersionReader(std::weak_ptr<taraxa::AppBas
     return TaraxaNodeVersionView{block->getBeneficiary(), extra_data["major_version"].asString() + "." +
                                                               extra_data["minor_version"].asString() + "." +
                                                               extra_data["patch_version"].asString()};
+#endif
   };
   return reader;
 }
@@ -710,14 +720,15 @@ TaraxaPillarBlockDataReader makeTaraxaPillarBlockDataReader(std::weak_ptr<taraxa
     }
 
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto pillar_block_data = (*consensus_query_api)->consensus_query_pillar_block_data_by_period(pbft_period);
-      if (!pillar_block_data.found) {
-        return std::nullopt;
-      }
-      return pillarBlockDataViewToJson(pillar_block_data, include_signatures);
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_PILLAR_QUERY_UNAVAILABLE");
     }
-#endif
+    const auto pillar_block_data = (*consensus_query_api)->consensus_query_pillar_block_data_by_period(pbft_period);
+    if (!pillar_block_data.found) {
+      return std::nullopt;
+    }
+    return pillarBlockDataViewToJson(pillar_block_data, include_signatures);
+#else
 
     const auto pillar_block = node->getDB()->getPillarBlock(pbft_period);
     if (!pillar_block) {
@@ -730,6 +741,7 @@ TaraxaPillarBlockDataReader makeTaraxaPillarBlockDataReader(std::weak_ptr<taraxa
     }
 
     return pillar_chain::PillarBlockData{pillar_block, pillar_votes}.getJson(include_signatures);
+#endif
   };
   return reader;
 }

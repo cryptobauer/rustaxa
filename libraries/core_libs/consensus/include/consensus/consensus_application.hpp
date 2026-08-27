@@ -105,6 +105,10 @@ class ConsensusApplication final {
   /** Resolves total eligible DPoS votes for diagnostic metrics only. */
   std::optional<uint64_t> currentDposTotalVotesCount() const;
 
+  /** Atomically prunes native finalized light-node history while preserving the legacy retained-DAG-level boundary. */
+  void pruneLightHistory(PbftPeriod end_period_exclusive, uint64_t dag_level_to_keep, bool live_cleanup,
+                         uint64_t non_block_periods_to_keep) const;
+
  private:
   rust::Box<rustaxa::BridgeConsensusApplication> service_;
   ConsensusQueryClient query_client_;

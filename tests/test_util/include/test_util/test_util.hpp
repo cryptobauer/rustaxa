@@ -184,7 +184,9 @@ u256 own_effective_genesis_bal(const FullNodeConfig& cfg);
 std::shared_ptr<PbftBlock> make_simple_pbft_block(const h256& hash, uint64_t period,
                                                   const secret_t& pk = secret_t::random());
 
+#ifndef RUSTAXA_ENABLE
 std::vector<blk_hash_t> getOrderedDagBlocks(const std::shared_ptr<DbStorage>& db);
+#endif
 
 addr_t make_addr(uint8_t i);
 

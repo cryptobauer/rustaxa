@@ -815,12 +815,13 @@ and `CRW-N01` statuses remain active for their other families and completion con
 
 ### 8. Reduce storage to bootstrap/admin/query boundaries
 
-- Separate application storage ownership from the public `DbStorage` compatibility class.
-- Migrate remaining production constructors to native storage/application factories.
-- Replace seven storage query-family handles with the query API or native test fixtures.
-- Keep `BridgeStorageBatch` only if a named external compatibility client still requires the legacy `DbStorage::Batch`
-  lifecycle; otherwise delete it with the storage facade.
-- Keep storage-conformance helpers explicitly test-only and guard-confined.
+Current state: complete for Rust-enabled production. `ConsensusApplication` is the only storage bootstrap and owns native
+FinalChain construction. App, RPC/debug/stats, startup, light-plugin, and fixture callers use application-root tasks or
+`ConsensusQueryApi`; the C++ FinalChain executor receives only its exact `state_db` path. `DbStorage`, its overlay,
+`BridgeStorageQueries`, `BridgeStorageBatch`, six query-family factories, caller-owned batch exports/carriers, legacy
+materializers, compatibility mutexes, and `storage.rs` are deleted from Rust mode. Storage conformance remains one
+versioned production-root transcript, and light-history cleanup is one atomic, idempotent root task. Pure-C++ source
+selection retains the untouched legacy storage implementation.
 
 ### 9. Contract FinalChain and execution
 

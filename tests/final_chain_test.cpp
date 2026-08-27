@@ -20,7 +20,6 @@
 #include "final_chain/trie_common.hpp"
 #include "libdevcore/CommonJS.h"
 #include "network/rpc/eth/Eth.h"
-#include "test_util/consensus_storage_fixture.hpp"
 #include "test_util/gtest.hpp"
 #include "test_util/samples.hpp"
 #include "test_util/test_util.hpp"
@@ -37,9 +36,10 @@ struct advance_check_opts {
 
 struct FinalChainTest : WithDataDir {
   FullNodeConfig cfg = FullNodeConfig();
-  std::shared_ptr<DbStorage> db;
 #ifdef RUSTAXA_ENABLE
   SharedConsensusApplication consensus_application;
+#else
+  std::shared_ptr<DbStorage> db;
 #endif
   std::shared_ptr<final_chain::FinalChain> SUT;
   bool assume_only_toplevel_transfers = true;
@@ -62,14 +62,13 @@ struct FinalChainTest : WithDataDir {
 
   void resetSut() {
     SUT.reset();
-    db.reset();
 #ifdef RUSTAXA_ENABLE
     consensus_application.reset();
     cfg.db_path = data_dir / "db";
     consensus_application = createConsensusApplication(cfg);
-    db = std::make_shared<DbStorage>(consensus_application, cfg.db_path);
-    SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{}, consensus_application);
+    SUT = std::make_shared<final_chain::FinalChain>(cfg.db_path / "state_db", cfg, addr_t{}, consensus_application);
 #else
+    db.reset();
     db = std::make_shared<DbStorage>(data_dir / "db");
     SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
 #endif
@@ -102,7 +101,9 @@ struct FinalChainTest : WithDataDir {
 
     auto dag_blk = std::make_shared<DagBlock>(blk_hash_t{}, level_t{}, vec_blk_t{}, trx_hashes, 0, VdfSortition{},
                                               dag_proposer_keys.secret());
+#ifndef RUSTAXA_ENABLE
     db->saveDagBlock(dag_blk);
+#endif
     std::vector<vote_hash_t> reward_votes_hashes;
     auto pbft_block = std::make_shared<PbftBlock>(
         kNullBlockHash, kNullBlockHash, kNullBlockHash, kNullBlockHash, expected_blk_num, addr_t::random(),
@@ -117,9 +118,11 @@ struct FinalChainTest : WithDataDir {
           genDummyVote(PbftVoteTypes::cert_vote, pbft_block->getPeriod() - 1, 1, 3, pbft_block->getBlockHash())};
     }
 
+#ifndef RUSTAXA_ENABLE
     auto batch = db->createWriteBatch();
     db->savePeriodData(period_data, batch);
     db->commitWriteBatch(batch);
+#endif
 
     auto result =
         SUT->finalize(std::move(period_data), {dag_blk->getHash()}, cfg.genesis.state.dpos.blocks_per_year).get();
@@ -221,15 +224,6 @@ struct FinalChainTest : WithDataDir {
     return hash256(m);
   }
 };
-
-TEST_F(FinalChainTest, rustModePruneDoesNotRunLegacyBatchPath) {
-#ifdef RUSTAXA_ENABLE
-  init();
-  EXPECT_THROW(SUT->prune(0), DbException);
-#else
-  GTEST_SKIP() << "FinalChain shim is disabled";
-#endif
-}
 
 TEST_F(FinalChainTest, initial_balances) {
   cfg.genesis.state.initial_balances = {};
@@ -1006,7 +1000,12 @@ TEST_F(FinalChainTest, fee_rewards_distribution) {
     EXPECT_EQ(2, expected_blk_num);
     EXPECT_EQ(res->trx_receipts.size(), 1);
     auto gas_used = res->trx_receipts.front().gas_used;
-    auto dags = db->getFinalizedDagBlockByPeriod(expected_blk_num);
+#ifdef RUSTAXA_ENABLE
+    const auto dags =
+        (*consensus_application->queryClient())->consensus_query_finalized_dag_blocks_by_period(expected_blk_num);
+#else
+    const auto dags = db->getFinalizedDagBlockByPeriod(expected_blk_num);
+#endif
     EXPECT_EQ(dags.size(), 1);
     EXPECT_EQ(SUT->getBalance(dag_proposer_keys.address()).first, 0);
 
@@ -1712,7 +1711,9 @@ TEST_F(FinalChainTest, native_slashing_malformed_nested_proof_aborts_finalizatio
     const auto dag_blk =
         std::make_shared<DagBlock>(blk_hash_t{}, level_t{}, vec_blk_t(), std::vector<h256>{transaction->getHash()}, 0,
                                    VdfSortition{}, dag_proposer_keys.secret());
+#ifndef RUSTAXA_ENABLE
     db->saveDagBlock(dag_blk);
+#endif
     auto pbft_block = std::make_shared<PbftBlock>(
         kNullBlockHash, kNullBlockHash, kNullBlockHash, kNullBlockHash, 3, addr_t::random(),
         pbft_proposer_keys.secret(), std::vector<vote_hash_t>{}, PbftBlockExtraData(1, 0, 0, 1, "", blk_hash_t(123)));

@@ -14,7 +14,9 @@ class Network;
 class TransactionManager;
 class DagManager;
 #endif
+#ifndef RUSTAXA_ENABLE
 class DbStorage;
+#endif
 #ifdef RUSTAXA_ENABLE
 class ConsensusApplication;
 #endif
@@ -63,7 +65,9 @@ class AppBase {
   virtual std::shared_ptr<TransactionManager> getTransactionManager() const = 0;
   virtual std::shared_ptr<DagManager> getDagManager() const = 0;
 #endif
+#ifndef RUSTAXA_ENABLE
   virtual std::shared_ptr<DbStorage> getDB() const = 0;
+#endif
 #ifdef RUSTAXA_ENABLE
   /** Returns the native application root for Rust-mode fixtures and named executors. */
   virtual std::shared_ptr<ConsensusApplication> getConsensusApplication() const = 0;

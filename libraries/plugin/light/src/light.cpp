@@ -20,10 +20,12 @@ constexpr auto NO_STATE_DB_PRUNING = "light.no_state_db_pruning";
 constexpr auto NO_LIVE_CLEANUP = "light.no_live_cleanup";
 
 namespace {
+#ifndef RUSTAXA_ENABLE
 void clearNonBlockData(const std::shared_ptr<DbStorage>& db, PbftPeriod start, PbftPeriod end, bool live_cleanup,
                        uint64_t periods_to_keep_non_block_data);
 void recreateNonBlockData(const std::shared_ptr<DbStorage>& db, PbftPeriod last_block_number,
                           uint64_t periods_to_keep_non_block_data);
+#endif
 
 LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
   LightHistoryApi api;
@@ -69,8 +71,9 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
       return std::optional<uint64_t>{};
     }
     return std::optional<uint64_t>{lookup.value};
-#endif
+#else
     return node->getDB()->getProposalPeriodForDagLevel(dag_level);
+#endif
   };
   api.clear_history = [app](PbftPeriod end_period, uint64_t dag_level_to_keep, bool live_cleanup,
                             uint64_t periods_to_keep_non_block_data) {
@@ -78,6 +81,10 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
     if (!node) {
       throw std::runtime_error("LIGHT_HISTORY_API_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    node->getConsensusApplication()->pruneLightHistory(end_period, dag_level_to_keep, live_cleanup,
+                                                       periods_to_keep_non_block_data);
+#else
     auto db = node->getDB();
     auto it = db->getColumnIterator(DbStorage::Columns::period_data);
     // Find the first non-deleted period
@@ -118,6 +125,7 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
 
     db->DeleteRange(DbStorage::Columns::dag_blocks_level, start_level, dag_level_end);
     db->CompactRange(DbStorage::Columns::dag_blocks_level, start_level, dag_level_end);
+#endif
   };
   api.state_prune_block_number = [app] {
     auto node = app.lock();
@@ -171,6 +179,7 @@ void fillMissingLightHistoryApiCallbacks(LightHistoryApi& api, std::weak_ptr<App
   }
 }
 
+#ifndef RUSTAXA_ENABLE
 void clearNonBlockData(const std::shared_ptr<DbStorage>& db, PbftPeriod start, PbftPeriod end, bool live_cleanup,
                        uint64_t periods_to_keep_non_block_data) {
   auto length = end - start;
@@ -222,6 +231,7 @@ void recreateNonBlockData(const std::shared_ptr<DbStorage>& db, PbftPeriod last_
   db->clearColumnHistory(dag_blocks, DbStorage::Columns::dag_block_period);
   db->clearColumnHistory(pbft_blocks, DbStorage::Columns::pbft_block_period);
 }
+#endif
 }  // namespace
 
 Light::Light(std::shared_ptr<AppBase> app_, LightHistoryApi history_api)

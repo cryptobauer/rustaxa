@@ -18,6 +18,7 @@ pub use dag::DagRepository;
 pub use db::ExtraRewardVotesGuard;
 pub use db::Storage;
 pub use db::StorageWriteBatch;
+pub use db::{LightHistoryPruneReport, LightHistoryPruneRequest};
 pub use error::StorageError;
 pub use final_chain::FINAL_CHAIN_BLOOM_INDEX_LEVELS;
 pub use final_chain::FINAL_CHAIN_BLOOM_INDEX_SIZE;

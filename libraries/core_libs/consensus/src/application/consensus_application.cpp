@@ -202,6 +202,17 @@ std::optional<uint64_t> ConsensusApplication::currentDposTotalVotesCount() const
   return status.total_eligible_votes;
 }
 
+void ConsensusApplication::pruneLightHistory(PbftPeriod end_period_exclusive, uint64_t dag_level_to_keep,
+                                             bool live_cleanup, uint64_t non_block_periods_to_keep) const {
+  rustaxa::LightHistoryPruneRequest request;
+  request.end_period_exclusive = end_period_exclusive;
+  // Legacy DeleteRange used `dag_level_to_keep - 1` as its exclusive end. Preserve that retained-level boundary.
+  request.first_retained_dag_level = dag_level_to_keep == 0 ? 0 : dag_level_to_keep - 1;
+  request.live_cleanup = live_cleanup;
+  request.non_block_periods_to_keep = non_block_periods_to_keep;
+  rustaxa::consensus_application_prune_light_history(service(), request);
+}
+
 }  // namespace taraxa
 
 #endif  // RUSTAXA_ENABLE

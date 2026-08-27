@@ -199,7 +199,7 @@ telemetry.
 | PBFT vote generation planner | `rust/crates/rustaxa-consensus/src/pbft_vote_generation.rs`, `consensus_application_runtime.rs`, `maybe_broadcast_votes.rs` | `rust-owned` for PBFT application flow | Native scheduling chooses vote/proposal work and owns canonical generation, admission, own-vote persistence, and gossip gating. C++ retains only operation-specific digest signing and VRF proof custody plus physical tarcap execution; the standalone `pbft_vote_generation.rs` bridge module is deleted. |
 | PBFT vote payload builders | `rust/crates/rustaxa-consensus/src/pbft_vote_payload.rs` | `rust-owned` | Rust owns legacy-compatible PBFT vote payload construction for post-admission side effects. It derives weighted storage RLP records from canonical signed vote bytes plus the authoritative calculated weight, builds raw weighted vote-bundle RLP for latest-round 2t+1 persistence and finalized reward-vote reset stages, builds optimized PBFT vote-bundle RLP for get-next network egress from retained weighted records, and normalizes unweighted signed vote RLP for slashing evidence so storage weights do not leak into slashing calldata. The admission runtime retains these payloads for accepted votes. Own-vote persistence encodes canonical bytes plus weight inside the native service, and direct vote-progress persistence resolves extra-reward and exact 2t+1 mapping identities from retained runtime payloads before building the storage bundle under the runtime lock. The standalone bridge payload module and its two free CXX codec exports are deleted; C++ no longer supplies weighted records or bundle RLP for these writes. The bridge still exposes operation-shaped plan/build results where tarcap peer filtering or retained external effects require them. |
 | Shared DAG/PBFT types | `rust/crates/rustaxa-types/src/{dag.rs,pbft.rs}` and codec modules | partial | Useful for future consensus domain types, but not yet a full consensus model. |
-| Storage ports | `rust/crates/rustaxa-storage/src/{dag.rs,pbft.rs,pillar.rs}` | closed for migrated consensus storage; compatibility shell remains | `ConsensusApplication` opens the sole native storage owner and constructs native FinalChain before restoring consensus siblings. PBFT finalization, VoteManager persistence, TransactionManager consensus storage, DAG/proposed-block storage, rewards stats, pillar storage, PBFT-manager residual storage, gas-pricer storage, and consensus FinalChain fact ports route through root-owned Rust services. The standalone `BridgeStorage` handle/factory is deleted; `DbStorage`, root-derived typed query handles/batches, public query/network/admin compatibility, and temporary sidecar materialization remain classified debt. |
+| Storage ports | `rust/crates/rustaxa-storage/src/{dag.rs,pbft.rs,pillar.rs,db.rs}` | closed for Rust-mode production | `ConsensusApplication` is the sole native storage owner and constructs native FinalChain before restoring consensus siblings. Rust-enabled production no longer compiles or constructs `DbStorage`; its overlay, bridge module, query-family handles, batches, materializers, and compatibility mutexes are deleted. Public reads use `ConsensusQueryApi`, light-history pruning is an atomic root task, storage conformance is a versioned root transcript, and the C++ FinalChain executor receives only the exact `state_db` path leaf. |
 
 ## Storage Boundary Status
 
@@ -209,15 +209,13 @@ restart normalization, and commit/drop behavior for the audited consensus storag
 post-migration audit found no remaining unclassified production consensus route that depends on `DbStorage`, direct
 `getDB()`, public `rustBatchId`, or bridge-batch appenders as the storage authority.
 
-One C++ compatibility shell and its root-derived bridge adapters remain intentionally visible:
+Rust-enabled production no longer has a C++ storage shell. `DbStorage` and its unchanged implementation remain selected
+only by pure-C++ builds. Root construction proves bootstrap, client reads use `ConsensusQueryApi`, light-history cleanup
+is one atomic application task, and conformance receives observations from a versioned root operation rather than a
+storage handle. Snapshot, migration, iterator, and compaction operations are unsupported until a named admin task is
+justified.
 
-- `DbStorage` is the C++ lifecycle, public API, legacy/reference, storage-shim, query, network, test, and admin shell.
-  Remaining references must stay classified as storage-shim internals, marked query/network compatibility, FinalChain/EVM
-  boundary work, sidecar materialization, or app/admin lifecycle behavior.
-
-CRW-06 closes the production-authority audit; future shrink work is caller-owned compatibility retirement rather than
-storage migration. Remove root-derived storage-query/batch adapters, storage-shim, and `DbStorage` code only when the caller has moved to a
-Rust-owned runtime, read API, fixture, or executor boundary. Re-plan
+CRW-06 closes the production-authority audit and the CRW-12/15/17 storage-facade slice closes compatibility retirement. Re-plan
 before moving network/tarcap transport, packet wrapping, gossip fanout, arbitrary EVM execution, receipt/contract
 execution, or public API materialization into the consensus storage cleanup.
 
@@ -232,8 +230,8 @@ execution, or public API materialization into the consensus storage cleanup.
 - Slice 4 — Query and materialization split is complete: read paths for DAG, PBFT, Pillar, Transaction, rewards, and
   final-chain/period lookups moved onto typed query handles; remaining reads are explicitly classified as compatibility
   boundaries.
-- Slice 5 — Header and FFI pruning is complete: stale `BridgeStorage`/`storage_shim` header and CXX FFI declarations
-  were removed after their callers moved to typed Rust storage/session APIs.
+- Slice 5 — Header and FFI pruning is complete: `BridgeStorageQueries`, `BridgeStorageBatch`, six query-family factories,
+  batch exports/carriers, the bridge module, and the C++ storage overlay were deleted after callers moved to root/query APIs.
 - Slice 6 — Storage/admin/query compatibility classification is complete: remaining storage-shim admin, migration, and
   generic iterator/existence boundaries are explicitly marked as `RUSTAXA_ADMIN_COMPAT_UNSUPPORTED`,
   `RUSTAXA_ADMIN_COMPAT_LEGACY_ONLY`, or `RUSTAXA_QUERY_COMPAT_READ`. This keeps snapshot/range/compaction/migration and
@@ -246,7 +244,8 @@ execution, or public API materialization into the consensus storage cleanup.
   `PbftManagerStartupFact` out of CXX into a Rust-private test fixture. The remaining production exports have callers,
   while the one test-only FinalChain seed helper is an enforced storage-conformance boundary. Future reduction follows
   a demonstrated last-caller migration or explicitly re-scoped network/EVM work rather than the completed no-caller
-  export sweep. The first `CRW-03` sub-slice then deleted `BridgeProposedBlocks`, its factory and explicit restore
+  export sweep. The versioned storage-conformance root transcript is the sole test seam and does not expose storage.
+  The first `CRW-03` sub-slice then deleted `BridgeProposedBlocks`, its factory and explicit restore
   exports, the storage-shim-owned live handle, and the C++ facade mutex after all production callers moved to the PBFT
   service or stateless compatibility functions.
 
@@ -307,10 +306,10 @@ That checkpoint is implemented for the PBFT and DAG/transaction/sortition graphs
 native storage opening, schema/genesis preflight, and FinalChain construction behind the same consumed bootstrap. `App`
 and focused fixtures inject one opaque `BridgeConsensusApplication`; production no longer constructs or passes sibling
 storage or FinalChain roots; and DAG initialization remains deferred until every sibling restores. `CRW-12` stays active
-until bridge runtime state and behavioral suites finish moving native. `CRW-17` stays active while broad storage
-compatibility/query families are narrowed to the named public-query, admin, conformance, and external-EVM clients.
+until bridge runtime state and behavioral suites finish moving native. The storage portion of `CRW-17` is complete;
+the item stays active only for remaining FinalChain/external-EVM contraction.
 The standalone `BridgeStorage`/`BridgeFinalChain` handles and bootstrap factories are now deleted. Storage differential
-conformance also boots the production-shaped application root and retains only its named lookup-row seed hook.
+conformance boots the production application root and receives one versioned observation transcript.
 External-EVM publication now stores system-transaction payloads, locations, receipts, and period hashes in one native
 batch; FinalChain queries return the persisted system marker so C++ materializes only the retained execution DTO.
 
@@ -373,11 +372,26 @@ bridge lines, 1,216 shim lines, 16 functions, 16 carriers, one shim directory, t
 modules, and one compatibility-only test file containing two cases; handles, flags, partial factories, and compatibility constructors remain
 unchanged.
 
+The storage-facade cut completes the storage portion of `CRW-17`. Rust mode no longer compiles or constructs
+`DbStorage`; App, startup, RPC/debug/stats, light-plugin, and fixtures use `ConsensusApplication` tasks or
+`ConsensusQueryApi`. FinalChain receives only its exact `state_db` path leaf. The storage overlay and bridge module,
+`BridgeStorageQueries`, `BridgeStorageBatch`, six query-family factories, caller-owned batch exports/carriers, legacy
+materializers, compatibility mutexes, and obsolete fixture paths are deleted. The production-root conformance boundary
+returns a versioned transcript without a storage handle, and light-history pruning is atomic, idempotent, restart-tested,
+and application-owned. Live cleanup reads only the expired `PeriodData` prefix, derives exact reverse-index keys, and
+uses atomic range deletion; full index scans remain restricted to the offline rebuild path. Duplicate bridge
+storage-seeded query tests are deleted in favor of the native query owner's behavioral suite, closing the last debug
+storage-owner escape hatch. Rust-mode FinalChain fixtures now inject the application root plus the exact `state_db` path
+leaf and use its query client for finalized DAG reads; the legacy manager-shaped storage fixture remains pure-C++ only.
+The surface is now 8,285 bridge lines, 1,444 shim lines, 107 CXX functions, 152 carriers, 12
+opaque handles, one shim directory, and 26 non-test bridge consumers. Pure-C++ source selection retains the untouched
+legacy storage path.
+
 | Cluster | Native-owner prerequisite | Same-checkpoint deletion scope | Manager closeout |
 | --- | --- | --- | --- |
 | PBFT, vote, pillar | Implemented: family private under `CRW-12` root | Implemented: PBFT/vote/pillar facades, bridge modules/materializers, App ownership, and compatibility tests deleted | Implemented PBFT/pillar portion of `CRW-16`; only named process/signing/network/FinalChain-fact/public-client leaves remain |
 | DAG, transaction, proposer | Implemented: family private under `CRW-12` root | Implemented: three Rust-mode facades, bridge modules/materializers, App ownership, and compatibility test deleted | Implemented DAG portion of `CRW-16`; only named process/VDF/signing/network/EVM-gas/public-client leaves remain |
-| Storage and FinalChain | Last selected consensus caller uses the application/query/execution API | Broad handle/query/session family under `CRW-17` | Coordinate concrete EVM leaves with `CRW-E01` |
+| Storage and FinalChain | Implemented for storage; remaining FinalChain clients use application/query/execution APIs | Storage handle/query/batch/shim family deleted; FinalChain session remains under `CRW-17` | Coordinate concrete EVM leaves with `CRW-E01` |
 
 `CRW-11` is complete. The task-owner contract now retains only named tarcap transport, concrete EVM/StateAPI,
 operation-specific signing, VDF execution, public-read, and pure-C++ reference clients. The checked starting budgets are

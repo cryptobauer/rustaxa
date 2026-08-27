@@ -6,6 +6,7 @@
 #include "dag/dag_manager.hpp"
 #include "logger/logger.hpp"
 #ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
 #include "network/consensus_query.hpp"
 #endif
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
@@ -16,7 +17,7 @@ namespace taraxa::core_tests {
 namespace {
 uint64_t pbftVoteThreshold(const std::shared_ptr<AppBase> &node, PbftPeriod period) {
 #ifdef RUSTAXA_ENABLE
-  const auto query = net::createConsensusQueryApi(node->getDB());
+  const auto query = node->getConsensusApplication()->queryClient();
   const auto threshold =
       (*query)->consensus_query_pbft_vote_threshold(period, static_cast<uint8_t>(PbftVoteTypes::cert_vote));
   if (!threshold.has_threshold) {

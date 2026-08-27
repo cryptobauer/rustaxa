@@ -57,7 +57,7 @@ pub use consensus_application::{
     ConsensusApplication, ConsensusApplicationBootstrap, ConsensusApplicationConfig,
     ConsensusFinalChainConfig, ConsensusLiveStatus, ConsensusVoteStatus, DagBlockIngressReport,
     DagBlockIngressRequest, DagProposerConfig, DagSyncIngressReport, DagSyncIngressRequest,
-    TransactionPacketIngressReport, TransactionPacketIngressRequest,
+    StorageConformanceObservation, TransactionPacketIngressReport, TransactionPacketIngressRequest,
     consensus_application_test_bootstrap,
 };
 pub use consensus_application_runtime::{

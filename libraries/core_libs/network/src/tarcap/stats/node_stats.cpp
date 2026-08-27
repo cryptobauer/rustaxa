@@ -10,6 +10,7 @@
 #include "network/tarcap/stats/time_period_packets_stats.hpp"
 #include "network/tarcap/taraxa_peer.hpp"
 #include "network/threadpool/tarcap_thread_pool.hpp"
+#include "vote/vrf_sortition.hpp"
 #ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
 #endif

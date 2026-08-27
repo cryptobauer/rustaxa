@@ -1,6 +1,7 @@
 #pragma once
 
 #include "network/tarcap/packets_handlers/latest/common/ext_syncing_packet_handler.hpp"
+#include "transaction/transaction.hpp"
 
 namespace taraxa::network::tarcap {
 

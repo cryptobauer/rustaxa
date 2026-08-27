@@ -6,5 +6,5 @@ mod final_chain;
 mod network;
 mod network_slashing;
 mod query;
-mod storage;
+mod storage_admin;
 mod vdf;

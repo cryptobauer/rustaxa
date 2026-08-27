@@ -125,23 +125,22 @@ QueryBlockReader makeQueryBlockReader(const std::shared_ptr<::taraxa::final_chai
                                 consensus_query_api
 #endif
   ](::taraxa::EthBlockNumber period) -> std::optional<::taraxa::blk_hash_t> {
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      return std::nullopt;
+    }
+    auto lookup = (*consensus_query_api)->consensus_query_pbft_block_hash_by_period(period);
+    return lookup.found ? std::optional<::taraxa::blk_hash_t>{hashFromBridge(lookup.hash)} : std::nullopt;
+#else
     if (!db) {
       return std::nullopt;
     }
-#ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      auto lookup = (*consensus_query_api)->consensus_query_pbft_block_hash_by_period(period);
-      if (!lookup.found) {
-        return std::nullopt;
-      }
-      return hashFromBridge(lookup.hash);
-    }
-#endif
     auto pbft_block = db->getPbftBlock(period);
     if (!pbft_block) {
       return std::nullopt;
     }
     return pbft_block->getBlockHash();
+#endif
   };
   return reader;
 }
@@ -326,21 +325,23 @@ QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::fina
                             consensus_query_api
 #endif
   ](::taraxa::level_t level) {
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      return std::vector<std::shared_ptr<::taraxa::DagBlock>>{};
+    }
+    auto views = (*consensus_query_api)->consensus_query_dag_blocks_by_level(level, 1);
+    std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
+    blocks.reserve(views.size());
+    for (const auto& view : views) {
+      blocks.emplace_back(materializeDagBlockView(view));
+    }
+    return blocks;
+#else
     if (!db) {
       return std::vector<std::shared_ptr<::taraxa::DagBlock>>{};
     }
-#ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      auto views = (*consensus_query_api)->consensus_query_dag_blocks_by_level(level, 1);
-      std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
-      blocks.reserve(views.size());
-      for (const auto& view : views) {
-        blocks.emplace_back(materializeDagBlockView(view));
-      }
-      return blocks;
-    }
-#endif
     return db->getDagBlocksAtLevel(level, 1);
+#endif
   };
   reader.finalized_blocks_by_period = [db
 #ifdef RUSTAXA_ENABLE
@@ -348,21 +349,23 @@ QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::fina
                                        consensus_query_api
 #endif
   ](uint64_t period) {
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      return std::vector<std::shared_ptr<::taraxa::DagBlock>>{};
+    }
+    auto views = (*consensus_query_api)->consensus_query_finalized_dag_blocks_by_period(period);
+    std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
+    blocks.reserve(views.size());
+    for (const auto& view : views) {
+      blocks.emplace_back(materializeDagBlockView(view));
+    }
+    return blocks;
+#else
     if (!db) {
       return std::vector<std::shared_ptr<::taraxa::DagBlock>>{};
     }
-#ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      auto views = (*consensus_query_api)->consensus_query_finalized_dag_blocks_by_period(period);
-      std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
-      blocks.reserve(views.size());
-      for (const auto& view : views) {
-        blocks.emplace_back(materializeDagBlockView(view));
-      }
-      return blocks;
-    }
-#endif
     return db->getFinalizedDagBlockByPeriod(period);
+#endif
   };
   return reader;
 }

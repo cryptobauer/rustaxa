@@ -335,6 +335,43 @@ void WsServer::newPbftBlockExecuted(const PbftBlock &pbft_blk,
     if (!session->is_closed()) session->newPbftBlockExecuted(payload);
   }
 }
+#ifdef RUSTAXA_ENABLE
+void WsServer::newPbftBlockExecuted(const rustaxa::PbftScheduleBlockView &block) {
+  boost::shared_lock<boost::shared_mutex> lock(sessions_mtx_);
+  if (sessions_.empty()) return;
+
+  const auto hash = [](const auto &value) { return h256(value.data(), h256::ConstructFromPointer); };
+  Json::Value payload;
+  payload["prev_block_hash"] = dev::toJS(hash(block.prev_block_hash));
+  payload["dag_block_hash_as_pivot"] = dev::toJS(hash(block.dag_block_hash_as_pivot));
+  payload["order_hash"] = dev::toJS(hash(block.order_hash));
+  payload["final_chain_hash"] = dev::toJS(hash(block.final_chain_hash));
+  payload["period"] = dev::toJS(block.period);
+  payload["timestamp"] = dev::toJS(block.timestamp);
+  payload["block_hash"] = dev::toJS(hash(block.block_hash));
+  payload["signature"] = dev::toJS(bytes(block.signature.begin(), block.signature.end()));
+  payload["beneficiary"] = dev::toJS(addr_t(block.beneficiary.data(), addr_t::ConstructFromPointer));
+  payload["reward_votes"] = Json::Value(Json::arrayValue);
+  for (const auto &vote : block.reward_votes) payload["reward_votes"].append(dev::toJS(hash(vote.hash)));
+  if (block.has_extra_data) {
+    auto &extra = payload["extra_data"];
+    extra["major_version"] = block.extra_data.major_version;
+    extra["minor_version"] = block.extra_data.minor_version;
+    extra["patch_version"] = block.extra_data.patch_version;
+    extra["net_version"] = block.extra_data.net_version;
+    extra["node_implementation"] = std::string(block.extra_data.node_implementation);
+    extra["pillar_block_hash"] =
+        block.extra_data.has_pillar_block_hash ? hash(block.extra_data.pillar_block_hash).toString() : "";
+  } else {
+    payload["extra_data"] = Json::Value("");
+  }
+  auto &order = payload["schedule"]["dag_blocks_order"] = Json::Value(Json::arrayValue);
+  for (const auto &dag : block.dag_blocks_order) order.append(dev::toJS(hash(dag.hash)));
+  for (auto const &session : sessions_) {
+    if (!session->is_closed()) session->newPbftBlockExecuted(payload);
+  }
+}
+#endif
 void WsServer::newPendingTransaction(const trx_hash_t &trx_hash) {
   boost::shared_lock<boost::shared_mutex> lock(sessions_mtx_);
   if (sessions_.empty()) return;

@@ -14,7 +14,9 @@
 #include "common/lazy.hpp"
 #include "config/config.hpp"
 #include "dag/dag.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "dag/dag_block_proposer.hpp"
+#endif
 #include "final_chain/final_chain.hpp"
 #include "logger/logger.hpp"
 #ifdef RUSTAXA_ENABLE
@@ -621,7 +623,7 @@ TEST_F(NetworkTest, rust_mode_consensus_lifecycle_and_pbft_sync_via_query_client
                  [&](auto& ctx) { WAIT_EXPECT_GT(ctx, application->runtimeStatus().period, stopped_period) });
   node1->stopConsensus();
   const auto expected_period = node1->getPbftProgress().finalized_period;
-  const auto node1_query = net::createConsensusQueryApi(node1->getDB());
+  const auto node1_query = node1->getConsensusApplication()->queryClient();
   ASSERT_TRUE(node1_query);
   const auto expected_block = (*node1_query)->consensus_query_pbft_block_hash_by_period(expected_period);
   ASSERT_TRUE(expected_block.found);
@@ -630,7 +632,7 @@ TEST_F(NetworkTest, rust_mode_consensus_lifecycle_and_pbft_sync_via_query_client
   EXPECT_TRUE(wait_connect({node1, node2}));
   EXPECT_HAPPENS({45s, 100ms},
                  [&](auto& ctx) { WAIT_EXPECT_EQ(ctx, node2->getPbftProgress().finalized_period, expected_period) });
-  const auto node2_query = net::createConsensusQueryApi(node2->getDB());
+  const auto node2_query = node2->getConsensusApplication()->queryClient();
   ASSERT_TRUE(node2_query);
   const auto synced_block = (*node2_query)->consensus_query_pbft_block_hash_by_period(expected_period);
   ASSERT_TRUE(synced_block.found);
@@ -2085,6 +2087,7 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
 }
 #endif
 
+#ifndef RUSTAXA_ENABLE
 TEST_F(NetworkTest, pbft_sync_packet_rlp_encoding) {
   auto node_cfgs = make_node_cfgs(1, 1, 5);
   auto nodes = create_nodes(node_cfgs, true);
@@ -2109,6 +2112,7 @@ TEST_F(NetworkTest, pbft_sync_packet_rlp_encoding) {
     EXPECT_EQ(encoded, encoded_orig);
   }
 }
+#endif
 
 }  // namespace taraxa::core_tests
 

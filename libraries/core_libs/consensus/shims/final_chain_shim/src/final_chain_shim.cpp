@@ -412,13 +412,12 @@ rustaxa::FinalChainEvmExecutionReport make_evm_execution_report(
 
 }  // namespace
 
-FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config,
+FinalChain::FinalChain(const fs::path& state_db_path, const taraxa::FullNodeConfig& config,
                        [[maybe_unused]] const addr_t& node_addr, SharedConsensusApplication consensus_application)
-    : db_(db),
-      consensus_application_(std::move(consensus_application)),
+    : consensus_application_(std::move(consensus_application)),
       rust_execution_api_(rustaxa::create_consensus_execution_api()),
       state_api_([this](auto n) { return blockHash(n).value_or(ZeroHash()); }, config.genesis.state,
-                 config.opts_final_chain, {db->stateDbStoragePath().string()}),
+                 config.opts_final_chain, {state_db_path.string()}),
       external_evm_state_api_(state_api_, state_api_mutex_),
       config_(config) {
   if (!consensus_application_) {

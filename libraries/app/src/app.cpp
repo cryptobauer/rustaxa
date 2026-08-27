@@ -164,11 +164,6 @@ void App::init(const cli::Config &cli_conf) {
     if (db_->getDagBlocksCount() == 0) {
       db_->setGenesisHash(conf_.genesis.genesisHash());
     }
-#else
-    db_ = std::make_shared<DbStorage>(consensus_application_, conf_.db_path,
-                                      conf_.db_config.db_snapshot_each_n_pbft_block, conf_.db_config.db_max_open_files,
-                                      conf_.db_config.db_max_snapshots, conf_.db_config.db_revert_to_period, node_addr,
-                                      false);
 #endif
   }
   LOG(log_nf_) << "DB initialized ...";
@@ -184,7 +179,8 @@ void App::init(const cli::Config &cli_conf) {
   }
 
 #ifdef RUSTAXA_ENABLE
-  final_chain_ = std::make_shared<final_chain::FinalChain>(db_, conf_, node_addr, consensus_application_);
+  final_chain_ =
+      std::make_shared<final_chain::FinalChain>(conf_.db_path / "state_db", conf_, node_addr, consensus_application_);
   consensus_process_ = std::make_unique<ConsensusProcess>(consensus_application_, conf_, final_chain_);
 #else
   final_chain_ = std::make_shared<final_chain::FinalChain>(db_, conf_, node_addr);
@@ -200,6 +196,7 @@ void App::init(const cli::Config &cli_conf) {
 #endif
 
   auto genesis_hash = conf_.genesis.genesisHash();
+#ifndef RUSTAXA_ENABLE
   auto genesis_hash_from_db = db_->getGenesisHash();
   if (!genesis_hash_from_db.has_value()) {
     LOG(log_er_) << "Genesis hash was not found in DB. Something is wrong";
@@ -210,6 +207,7 @@ void App::init(const cli::Config &cli_conf) {
                  << (genesis_hash_from_db.has_value() ? *genesis_hash_from_db : h256(0)) << " in DB";
     std::terminate();
   }
+#endif
 
 #ifndef RUSTAXA_ENABLE
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, db_);

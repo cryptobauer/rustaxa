@@ -8,6 +8,9 @@
 #include "network/ws_session.hpp"
 #include "pillar_chain/pillar_block.hpp"
 #include "transaction/transaction.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 
 namespace taraxa::net {
 class WsServer : public std::enable_shared_from_this<WsServer>, public jsonrpc::AbstractServerConnector {
@@ -29,6 +32,10 @@ class WsServer : public std::enable_shared_from_this<WsServer>, public jsonrpc::
   void newDagBlock(const std::shared_ptr<DagBlock>& blk);
   void newDagBlockFinalized(const blk_hash_t& blk, uint64_t period);
   void newPbftBlockExecuted(const PbftBlock& blk, const std::vector<blk_hash_t>& finalized_dag_blk_hashes);
+#ifdef RUSTAXA_ENABLE
+  /** Publishes the PBFT execution notification from the stable public consensus-query DTO. */
+  void newPbftBlockExecuted(const rustaxa::PbftScheduleBlockView& block);
+#endif
   void newPendingTransaction(const trx_hash_t& trx_hash);
   void newPillarBlockData(const pillar_chain::PillarBlockData& pillar_block_data);
   uint32_t numberOfSessions();

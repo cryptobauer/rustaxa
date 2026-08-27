@@ -158,6 +158,7 @@ std::shared_ptr<PbftBlock> make_simple_pbft_block(const h256& hash, uint64_t per
                                      reward_votes_hashes);
 }
 
+#ifndef RUSTAXA_ENABLE
 std::vector<blk_hash_t> getOrderedDagBlocks(const std::shared_ptr<DbStorage>& db) {
   PbftPeriod period = 1;
   std::vector<blk_hash_t> res;
@@ -174,6 +175,7 @@ std::vector<blk_hash_t> getOrderedDagBlocks(const std::shared_ptr<DbStorage>& db
   }
   return res;
 }
+#endif
 
 void wait_for_balances(const std::vector<std::shared_ptr<AppBase>>& nodes, const expected_balances_map_t& balances,
                        wait_opts to_wait) {

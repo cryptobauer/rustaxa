@@ -31,10 +31,6 @@ class StorageTest : public ::testing::Test {
     return hash;
   }
 
-  static rust::Box<BridgeStorageQueries> dagQueries(const rust::Box<BridgeConsensusApplication>& application) {
-    return create_dag_storage_queries(*application);
-  }
-
   rust::Box<BridgeConsensusApplication> application() const {
     return test::createConsensusApplication(test_dir, makePbftServiceConfig());
   }
@@ -69,24 +65,29 @@ TEST_F(StorageTest, CreateStorage) {
 }
 
 TEST_F(StorageTest, MissingDagBlockReturnsEmptyPayload) {
-  auto storage = application();
+  auto root = application();
+  auto query = create_consensus_query_api(*root);
   const auto hash = h256(0x11);
-  auto value = dagQueries(storage)->get_dag_block(hash);
-  EXPECT_TRUE(value.empty());
+  const auto value = query->consensus_query_dag_block_by_hash(hash);
+  EXPECT_FALSE(value.found);
 }
 
-TEST_F(StorageTest, DagBlockPeriodLookupReflectsFoundState) {
-  auto storage = application();
-  const auto missing = h256(0x22);
-  auto lookup = dagQueries(storage)->get_dag_block_period_lookup(missing);
-  EXPECT_FALSE(lookup.found);
+TEST_F(StorageTest, LightHistoryAdminAcceptsZeroDagCutoffWithoutExposingStorage) {
+  auto root = application();
+  LightHistoryPruneRequest request;
+  request.end_period_exclusive = 10;
+  request.first_retained_dag_level = 0;
+  request.live_cleanup = true;
+  request.non_block_periods_to_keep = 5;
+  const auto report = consensus_application_prune_light_history(*root, request);
+  EXPECT_FALSE(report.changed);
+  EXPECT_EQ(report.first_retained_dag_level, 0u);
+}
 
-  const auto existing = h256(0x33);
-  auto seed_batch = create_storage_shim_batch(*storage);
-  storage_shim_save_dag_block_period(*seed_batch, existing, 7, 4);
-  storage_shim_commit_batch(std::move(seed_batch), false);
-  auto found = dagQueries(storage)->get_dag_block_period_lookup(existing);
-  EXPECT_TRUE(found.found);
-  EXPECT_EQ(found.period, 7u);
-  EXPECT_EQ(found.position, 4u);
+TEST_F(StorageTest, ProductionRootConformanceBoundaryReturnsVersionedTranscript) {
+  auto root = application();
+  const auto observations = consensus_application_run_storage_conformance_v1(*root);
+  ASSERT_EQ(observations.size(), 52u);
+  EXPECT_EQ(std::string(observations.front().key), "status_default_executed_blk");
+  EXPECT_EQ(std::string(observations.back().key), "final_chain_receipts_by_period_count");
 }

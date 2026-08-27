@@ -25,6 +25,11 @@ unsafe impl cxx::ExternType for BridgeConsensusNetworkApi {
 
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod application_host_ffi {
+    /// Canonical encoded bytes used only by application host-port list payloads.
+    struct CanonicalBytes {
+        data: Vec<u8>,
+    }
+
     /// Stable identity for one native-consensus request executed by the host.
     struct HostEffectId {
         generation: u64,
@@ -245,7 +250,6 @@ pub mod application_host_ffi {
 
         type BridgeConsensusApplication =
             crate::dag_transaction_service::BridgeConsensusApplication;
-        type CanonicalBytes = crate::ffi::rustaxa_ffi::CanonicalBytes;
         type DagHash = crate::ffi::rustaxa_ffi::DagHash;
         type HostValidatorVoteCount = crate::ffi::rustaxa_ffi::HostValidatorVoteCount;
         type PublicTransactionSubmissionRequest =

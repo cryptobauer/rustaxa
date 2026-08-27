@@ -138,6 +138,11 @@ file(GLOB_RECURSE NETWORK_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/network/*.h)
 
 file(GLOB_RECURSE STORAGE_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/storage/*.hpp)
 file(GLOB_RECURSE STORAGE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/storage/*.cpp)
+if(RUSTAXA_ENABLE)
+    # Native application-owned rustaxa-storage is the sole Rust-mode consensus database owner.
+    # Legacy DbStorage and migration implementations remain untouched and are selected only in pure-C++ builds.
+    set(STORAGE_SOURCES "")
+endif()
 
 file(GLOB_RECURSE REWARDS_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/rewards/*.hpp)
 file(GLOB_RECURSE REWARDS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/rewards/*.cpp)
@@ -193,18 +198,6 @@ endif()
 
 if(RUSTAXA_ENABLE)
     target_link_libraries(core_libs PUBLIC rustaxa-bridge RocksDB::rocksdb)
-
-    # In Rust mode, inject a header overlay that remaps legacy DbStorage
-    # to DbStorageOld and exposes a forwarding DbStorage shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/storage_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/storage_shim/src/storage_shim.cpp)
-
-    # Compile the legacy implementation as DbStorageOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/storage/src/storage.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "DbStorage=DbStorageOld"
-    )
 
     # Inject the standalone Rust FinalChain facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/include)

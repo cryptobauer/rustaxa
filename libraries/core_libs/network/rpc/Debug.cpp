@@ -426,22 +426,23 @@ DebugPeriodDagBlocksReader makeDebugPeriodDagBlocksReader(std::weak_ptr<taraxa::
     }
 
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto dag_views = (*consensus_query_api)->consensus_query_finalized_dag_blocks_by_period(period);
-      Json::Value result(Json::arrayValue);
-      for (const auto& dag_view : dag_views) {
-        result.append(dagBlockPublicViewToJson(dag_view, period));
-      }
-      return result;
+    if (!consensus_query_api) {
+      throw std::runtime_error("DEBUG_PERIOD_DAG_BLOCKS_QUERY_UNAVAILABLE");
     }
-#endif
-
+    const auto dag_views = (*consensus_query_api)->consensus_query_finalized_dag_blocks_by_period(period);
+    Json::Value result(Json::arrayValue);
+    for (const auto& dag_view : dag_views) {
+      result.append(dagBlockPublicViewToJson(dag_view, period));
+    }
+    return result;
+#else
     auto dags = node->getDB()->getFinalizedDagBlockByPeriod(period);
     return util::transformToJsonParallel(dags, [&period](const auto& dag, auto) {
       auto block_json = dag->getJson();
       block_json["period"] = toJS(period);
       return block_json;
     });
+#endif
   };
   return reader;
 }
@@ -483,10 +484,12 @@ DebugPeriodTransactionsReader makeDebugPeriodTransactionsReader(std::weak_ptr<ta
     }
     auto final_chain = node->getFinalChain();
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto receipt_views = (*consensus_query_api)->consensus_query_transaction_receipts_by_block_number(period);
-      Json::Value result(Json::arrayValue);
-      for (const auto& view : receipt_views) {
+    if (!consensus_query_api) {
+      throw std::runtime_error("DEBUG_PERIOD_TRANSACTIONS_QUERY_UNAVAILABLE");
+    }
+    const auto receipt_views = (*consensus_query_api)->consensus_query_transaction_receipts_by_block_number(period);
+    Json::Value result(Json::arrayValue);
+    for (const auto& view : receipt_views) {
         auto trx = materializeReceiptTransactionView(view);
         if (!trx) {
           throw std::runtime_error("CONSENSUS_QUERY_DEBUG_RECEIPT_TRANSACTION_MISSING");
@@ -499,11 +502,9 @@ DebugPeriodTransactionsReader makeDebugPeriodTransactionsReader(std::weak_ptr<ta
         auto receipt_json = rpc::eth::toJson(receipt);
         receipt_json.removeMember("transactionHash");
         result.append(util::mergeJsons(rpc::eth::toJson(transaction), std::move(receipt_json)));
-      }
-      return result;
     }
-#endif
-
+    return result;
+#else
     auto block_hash = final_chain->blockHash(period);
     auto trxs = node->getDB()->getPeriodTransactions(period);
     if (!trxs.has_value() || trxs->empty()) {
@@ -532,6 +533,7 @@ DebugPeriodTransactionsReader makeDebugPeriodTransactionsReader(std::weak_ptr<ta
 
       return util::mergeJsons(rpc::eth::toJson(transaction), std::move(receipt_json));
     });
+#endif
   };
   return reader;
 }
@@ -618,16 +620,17 @@ DebugTraceReplayReader makeDebugTraceReplayReader(std::weak_ptr<taraxa::AppBase>
     }
 
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      return materializeBlockTransactionsFromQuery(block_number, *consensus_query_api);
+    if (!consensus_query_api) {
+      throw std::runtime_error("DEBUG_TRACE_REPLAY_QUERY_UNAVAILABLE");
     }
-#endif
-
+    return materializeBlockTransactionsFromQuery(block_number, *consensus_query_api);
+#else
     auto legacy_transactions = node->getDB()->getPeriodTransactions(block_number);
     if (!legacy_transactions.has_value()) {
       return SharedTransactions{};
     }
     return *legacy_transactions;
+#endif
   };
   return reader;
 }

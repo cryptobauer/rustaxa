@@ -206,19 +206,20 @@ TestSortitionReader makeTestSortitionReader(std::weak_ptr<taraxa::AppBase> app
       return view;
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      const auto params_change = (*consensus_query_api)->consensus_query_sortition_params_change_by_period(period);
-      if (!params_change.found) {
-        return view;
-      }
-      view.found = true;
-      view.period = params_change.period;
-      view.interval_efficiency = params_change.interval_efficiency;
-      view.threshold_upper = params_change.threshold_upper;
-      view.threshold_upper_min = params_change.threshold_upper_min;
+    if (!consensus_query_api) {
+      throw std::runtime_error("TEST_SORTITION_QUERY_UNAVAILABLE");
+    }
+    const auto params_change = (*consensus_query_api)->consensus_query_sortition_params_change_by_period(period);
+    if (!params_change.found) {
       return view;
     }
-#endif
+    view.found = true;
+    view.period = params_change.period;
+    view.interval_efficiency = params_change.interval_efficiency;
+    view.threshold_upper = params_change.threshold_upper;
+    view.threshold_upper_min = params_change.threshold_upper_min;
+    return view;
+#else
     const auto legacy_params_change = node->getDB()->getParamsChangeForPeriod(period);
     if (!legacy_params_change) {
       return view;
@@ -229,6 +230,7 @@ TestSortitionReader makeTestSortitionReader(std::weak_ptr<taraxa::AppBase> app
     view.threshold_upper = legacy_params_change->vrf_params.threshold_upper;
     view.threshold_upper_min = legacy_params_change->vrf_params.kThresholdUpperMinValue;
     return view;
+#endif
   };
   return reader;
 }

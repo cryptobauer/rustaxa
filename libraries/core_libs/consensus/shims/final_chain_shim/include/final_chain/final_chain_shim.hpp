@@ -57,7 +57,7 @@ class FinalChain {
   decltype(block_applying_emitter_)::Subscriber const& block_applying_ = block_applying_emitter_;
 
   ~FinalChain() = default;
-  FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config,
+  FinalChain(const fs::path& state_db_path, const taraxa::FullNodeConfig& config,
              [[maybe_unused]] const addr_t& node_addr, SharedConsensusApplication consensus_application);
   FinalChain(const FinalChain&) = delete;
   FinalChain(FinalChain&&) = delete;
@@ -246,7 +246,6 @@ class FinalChain {
       rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, rustaxa::FinalChainExecutionStep initial_step,
       PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, std::shared_ptr<DagBlock>&& anchor);
 
-  std::shared_ptr<DbStorage> db_;
   SharedConsensusApplication consensus_application_;
   std::optional<::rust::Box<rustaxa::BridgeConsensusExecutionApi>> rust_execution_api_;
   EthBlockNumber delegation_delay_ = 0;

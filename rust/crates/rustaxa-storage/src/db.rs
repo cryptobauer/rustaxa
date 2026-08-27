@@ -12,6 +12,7 @@ use anyhow::Result;
 use rocksdb::{
     DBPinnableSlice, DBWithThreadMode, MultiThreaded, Options, WriteBatch, WriteOptions,
 };
+use rustaxa_types::codec::rlp::dag::FinalizedDagBlockBundleRlp;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -26,6 +27,94 @@ use crate::PeriodRepository;
 use crate::PillarRepository;
 use crate::StorageError;
 use crate::TransactionRepository;
+use tiny_keccak::{Hasher, Keccak};
+
+const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
+const DAG_BLOCKS_POS_IN_PERIOD_DATA: usize = 2;
+const TRANSACTIONS_POS_IN_PERIOD_DATA: usize = 3;
+
+#[derive(Debug)]
+struct FinalizedPeriodIndexKeys {
+    pbft_block: [u8; 32],
+    dag_blocks: Vec<[u8; 32]>,
+    transactions: Vec<[u8; 32]>,
+}
+
+fn keccak256(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Keccak::v256();
+    let mut hash = [0_u8; 32];
+    hasher.update(bytes);
+    hasher.finalize(&mut hash);
+    hash
+}
+
+/// Extracts the exact reverse-index keys owned by one canonical `PeriodData` row.
+///
+/// The decoder hashes the canonical PBFT block and transaction RLP children and
+/// reconstructs canonical DAG blocks from their compact finalized bundle before
+/// hashing. Malformed input fails before the caller commits its pruning batch.
+fn finalized_period_index_keys(period_data: &[u8]) -> Result<FinalizedPeriodIndexKeys> {
+    let period_data = rlp::Rlp::new(period_data);
+    let field_count = period_data.item_count()?;
+    if field_count != 4 && field_count != 5 {
+        return Err(StorageError::Read(
+            "LIGHT_HISTORY_PRUNE_INVALID_PERIOD_DATA_FIELD_COUNT".into(),
+        )
+        .into());
+    }
+    let pbft_block = period_data.at(PBFT_BLOCK_POS_IN_PERIOD_DATA)?;
+    let dag_bundle = period_data.at(DAG_BLOCKS_POS_IN_PERIOD_DATA)?;
+    let transactions = period_data.at(TRANSACTIONS_POS_IN_PERIOD_DATA)?;
+
+    let dag_blocks = if dag_bundle.is_empty() {
+        Vec::new()
+    } else {
+        let compact_blocks = dag_bundle.at(2)?;
+        let bundle = FinalizedDagBlockBundleRlp::new(dag_bundle.as_raw());
+        (0..compact_blocks.item_count()?)
+            .map(|position| {
+                bundle
+                    .canonical_block_rlp(position)
+                    .map(|rlp| keccak256(&rlp))
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    let transactions = (0..transactions.item_count()?)
+        .map(|position| transactions.at(position).map(|rlp| keccak256(rlp.as_raw())))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(FinalizedPeriodIndexKeys {
+        pbft_block: keccak256(pbft_block.as_raw()),
+        dag_blocks,
+        transactions,
+    })
+}
+
+/// Exact native storage task for pruning finalized light-node history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LightHistoryPruneRequest {
+    /// Finalized periods strictly below this value are removed from bulk history columns.
+    pub end_period_exclusive: u64,
+    /// DAG level keys strictly below this value are removed.
+    pub first_retained_dag_level: u64,
+    /// Selects incremental cleanup semantics used during live finalization.
+    pub live_cleanup: bool,
+    /// Number of recent periods whose transaction/DAG/PBFT reverse indexes remain available.
+    pub non_block_periods_to_keep: u64,
+}
+
+/// Result of one atomic native light-history pruning task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LightHistoryPruneReport {
+    /// True when at least one durable key was selected and deleted.
+    pub changed: bool,
+    /// Exclusive finalized-period cutoff applied by the task.
+    pub end_period_exclusive: u64,
+    /// First retained DAG level applied by the task.
+    pub first_retained_dag_level: u64,
+    /// True when the non-live rebuild policy retained only the configured recent reverse indexes.
+    pub rebuilt_secondary_indexes: bool,
+}
 
 /// Item returned by the database iterator.
 /// Key and Value are boxed slices.
@@ -271,6 +360,7 @@ pub struct Storage {
     final_chain: FinalChainRepository<DBWithThreadMode<MultiThreaded>>,
     own_verified_votes_lock: Mutex<()>,
     extra_reward_votes_lock: Mutex<()>,
+    light_history_prune_lock: Mutex<()>,
     extra_reward_votes_reset_generation: AtomicU64,
 }
 
@@ -321,6 +411,7 @@ impl Storage {
             final_chain,
             own_verified_votes_lock: Mutex::new(()),
             extra_reward_votes_lock: Mutex::new(()),
+            light_history_prune_lock: Mutex::new(()),
             extra_reward_votes_reset_generation: AtomicU64::new(0),
         })
     }
@@ -434,12 +525,165 @@ impl Storage {
         DbWriter::batch_delete(self, batch, col, key)
     }
 
+    /// Appends one RocksDB range tombstone to a caller-owned atomic batch.
+    pub fn batch_delete_range_raw(
+        &self,
+        batch: &mut StorageWriteBatch,
+        col: Column,
+        from: &[u8],
+        to: &[u8],
+    ) -> Result<()> {
+        let handle = self.db.cf_handle(col.name()).ok_or_else(|| {
+            StorageError::Config(format!("Missing column family: {}", col.name()))
+        })?;
+        batch.delete_range_cf(&handle, from, to);
+        Ok(())
+    }
+
     pub fn commit_write_batch_with_sync(&self, batch: StorageWriteBatch, sync: bool) -> Result<()> {
         let mut opts = WriteOptions::default();
         opts.set_sync(sync);
         self.db
             .write_opt(batch, &opts)
             .map_err(|e| StorageError::Database(e).into())
+    }
+
+    /// Atomically removes finalized light-node history below explicit period and DAG-level cutoffs.
+    ///
+    /// The operation owns the complete RocksDB batch, including bulk period rows and their transaction,
+    /// DAG, PBFT, and receipt reverse indexes. Level zero is a valid no-DAG-deletion cutoff. A retry with
+    /// the same cutoffs is idempotent and reports `changed = false` after the first successful commit.
+    pub fn prune_light_history(
+        &self,
+        request: LightHistoryPruneRequest,
+    ) -> Result<LightHistoryPruneReport> {
+        let _guard = self
+            .light_history_prune_lock
+            .lock()
+            .map_err(|_| StorageError::Read("LIGHT_HISTORY_PRUNE_LOCK_POISONED".into()))?;
+        let Some(first_period_entry) = self.iter(Column::PeriodData).next() else {
+            return Ok(LightHistoryPruneReport {
+                changed: false,
+                end_period_exclusive: request.end_period_exclusive,
+                first_retained_dag_level: request.first_retained_dag_level,
+                rebuilt_secondary_indexes: false,
+            });
+        };
+        let (first_period_key, _) = first_period_entry?;
+        let first_period =
+            u64::from_le_bytes(first_period_key.as_ref().try_into().map_err(|_| {
+                StorageError::Read("LIGHT_HISTORY_PRUNE_INVALID_PERIOD_DATA_KEY".into())
+            })?);
+        if first_period >= request.end_period_exclusive {
+            return Ok(LightHistoryPruneReport {
+                changed: false,
+                end_period_exclusive: request.end_period_exclusive,
+                first_retained_dag_level: request.first_retained_dag_level,
+                rebuilt_secondary_indexes: false,
+            });
+        }
+        let rebuild_secondary_indexes = !request.live_cleanup
+            && request.end_period_exclusive.saturating_sub(first_period)
+                > request.non_block_periods_to_keep.saturating_mul(2);
+        let secondary_cutoff = if rebuild_secondary_indexes {
+            request
+                .end_period_exclusive
+                .saturating_sub(request.non_block_periods_to_keep)
+        } else {
+            request.end_period_exclusive
+        };
+
+        let mut batch = self.create_write_batch();
+        let changed = true;
+        let decode_u64 = |bytes: &[u8], label: &str| -> Result<u64> {
+            let bytes: [u8; 8] = bytes.try_into().map_err(|_| {
+                StorageError::Read(format!("LIGHT_HISTORY_PRUNE_INVALID_{label}_KEY"))
+            })?;
+            Ok(u64::from_le_bytes(bytes))
+        };
+
+        if !rebuild_secondary_indexes {
+            // Live cleanup and short offline cuts read only the deleted PeriodData
+            // prefix and derive exact reverse-index keys from its canonical bytes.
+            for entry in self.iter(Column::PeriodData) {
+                let (period_key, period_data) = entry?;
+                let period = decode_u64(&period_key, Column::PeriodData.name())?;
+                if period >= request.end_period_exclusive {
+                    break;
+                }
+                let keys = finalized_period_index_keys(&period_data)?;
+                self.batch_delete_raw(&mut batch, Column::PbftBlockPeriod, &keys.pbft_block)?;
+                for hash in keys.dag_blocks {
+                    self.batch_delete_raw(&mut batch, Column::DagBlockPeriod, &hash)?;
+                }
+                for hash in keys.transactions {
+                    self.batch_delete_raw(&mut batch, Column::TrxPeriod, &hash)?;
+                    self.batch_delete_raw(&mut batch, Column::FinalChainReceiptByTrxHash, &hash)?;
+                }
+            }
+        }
+
+        for column in [
+            Column::PeriodData,
+            Column::PillarBlock,
+            Column::FinalChainReceiptByPeriod,
+            Column::PeriodLambda,
+        ] {
+            self.batch_delete_range_raw(
+                &mut batch,
+                column,
+                &first_period.to_le_bytes(),
+                &request.end_period_exclusive.to_le_bytes(),
+            )?;
+        }
+        if request.first_retained_dag_level > 0 {
+            self.batch_delete_range_raw(
+                &mut batch,
+                Column::DagBlocksLevel,
+                &0_u64.to_le_bytes(),
+                &request.first_retained_dag_level.to_le_bytes(),
+            )?;
+        }
+
+        let mut retained_transaction_hashes = std::collections::HashSet::new();
+        if rebuild_secondary_indexes {
+            for entry in self.iter(Column::PbftBlockPeriod) {
+                let (key, value) = entry?;
+                if decode_u64(&value, Column::PbftBlockPeriod.name())? < secondary_cutoff {
+                    self.batch_delete_raw(&mut batch, Column::PbftBlockPeriod, &key)?;
+                }
+            }
+            for column in [Column::TrxPeriod, Column::DagBlockPeriod] {
+                for entry in self.iter(column) {
+                    let (key, value) = entry?;
+                    let period: u64 = rlp::Rlp::new(&value).val_at(0).map_err(|error| {
+                        StorageError::Read(format!(
+                            "LIGHT_HISTORY_PRUNE_INVALID_{}_VALUE: {error}",
+                            column.name()
+                        ))
+                    })?;
+                    if period < secondary_cutoff {
+                        self.batch_delete_raw(&mut batch, column, &key)?;
+                    } else if column == Column::TrxPeriod {
+                        retained_transaction_hashes.insert(key.to_vec());
+                    }
+                }
+            }
+            for entry in self.iter(Column::FinalChainReceiptByTrxHash) {
+                let (key, _) = entry?;
+                if !retained_transaction_hashes.contains(key.as_ref()) {
+                    self.batch_delete_raw(&mut batch, Column::FinalChainReceiptByTrxHash, &key)?;
+                }
+            }
+        }
+
+        self.commit_write_batch_with_sync(batch, false)?;
+        Ok(LightHistoryPruneReport {
+            changed,
+            end_period_exclusive: request.end_period_exclusive,
+            first_retained_dag_level: request.first_retained_dag_level,
+            rebuilt_secondary_indexes: rebuild_secondary_indexes,
+        })
     }
 }
 
@@ -534,6 +778,32 @@ mod tests {
         value.to_le_bytes()
     }
 
+    fn period_lookup(period: u64) -> Vec<u8> {
+        let mut stream = rlp::RlpStream::new_list(2);
+        stream.append(&period);
+        stream.append(&0_u64);
+        stream.out().to_vec()
+    }
+
+    /// Encodes the canonical pre-Ficus four-field layout. The optional fifth
+    /// pillar-vote field is deliberately absent to cover historical pruning.
+    fn period_data_with_transactions(transactions: &[&[u8]]) -> Vec<u8> {
+        let mut transaction_list = rlp::RlpStream::new_list(transactions.len());
+        for transaction in transactions {
+            transaction_list.append_raw(transaction, 1);
+        }
+        let mut empty_dag_bundle = rlp::RlpStream::new_list(3);
+        empty_dag_bundle.begin_list(0);
+        empty_dag_bundle.begin_list(0);
+        empty_dag_bundle.begin_list(0);
+        let mut period_data = rlp::RlpStream::new_list(4);
+        period_data.append_raw(&[0xc0], 1);
+        period_data.append_raw(&[0xc0], 1);
+        period_data.append_raw(&empty_dag_bundle.out(), 1);
+        period_data.append_raw(&transaction_list.out(), 1);
+        period_data.out().to_vec()
+    }
+
     #[test]
     fn raw_batch_commit_persists_status_value() {
         let (path, storage) = storage_at("raw_batch_commit");
@@ -612,6 +882,276 @@ mod tests {
                 .get_raw(Column::Status, &[2])
                 .expect("status lookup should succeed"),
             None
+        );
+        drop(storage);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn light_history_prune_is_atomic_idempotent_and_survives_reopen() {
+        let (path, storage) = storage_at("light_history_prune");
+        let old_pbft_hash = keccak256(&[0xc0]);
+        let old_transaction_rlp = [0x01];
+        let old_transaction_hash = keccak256(&old_transaction_rlp);
+        let retained_hash = [2_u8; 32];
+        let malformed_retained_hash = [3_u8; 32];
+        let mut batch = storage.create_write_batch();
+        for column in [
+            Column::PeriodData,
+            Column::PillarBlock,
+            Column::FinalChainReceiptByPeriod,
+            Column::PeriodLambda,
+        ] {
+            let old_value = if column == Column::PeriodData {
+                period_data_with_transactions(&[&old_transaction_rlp])
+            } else {
+                b"old".to_vec()
+            };
+            storage
+                .batch_put_raw(&mut batch, column, &u64_le(4), &old_value)
+                .unwrap();
+            storage
+                .batch_put_raw(&mut batch, column, &u64_le(5), b"retained")
+                .unwrap();
+        }
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::FinalChainReceiptByTrxHash,
+                &old_transaction_hash,
+                b"old receipt",
+            )
+            .unwrap();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::FinalChainReceiptByTrxHash,
+                &retained_hash,
+                b"retained receipt",
+            )
+            .unwrap();
+        storage
+            .batch_put_raw(&mut batch, Column::DagBlocksLevel, &u64_le(6), b"old")
+            .unwrap();
+        storage
+            .batch_put_raw(&mut batch, Column::DagBlocksLevel, &u64_le(7), b"retained")
+            .unwrap();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::PbftBlockPeriod,
+                &old_pbft_hash,
+                &u64_le(4),
+            )
+            .unwrap();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::PbftBlockPeriod,
+                &retained_hash,
+                &u64_le(5),
+            )
+            .unwrap();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::TrxPeriod,
+                &old_transaction_hash,
+                &period_lookup(4),
+            )
+            .unwrap();
+        for column in [Column::TrxPeriod, Column::DagBlockPeriod] {
+            storage
+                .batch_put_raw(&mut batch, column, &retained_hash, &period_lookup(5))
+                .unwrap();
+        }
+        // A malformed retained reverse index proves live cleanup does not scan
+        // unrelated retained rows while deriving the expired exact keys.
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::TrxPeriod,
+                &malformed_retained_hash,
+                b"not rlp",
+            )
+            .unwrap();
+        storage
+            .commit_write_batch_with_sync(batch, true)
+            .expect("fixture batch should commit");
+
+        let request = LightHistoryPruneRequest {
+            end_period_exclusive: 5,
+            first_retained_dag_level: 7,
+            non_block_periods_to_keep: 2,
+            live_cleanup: true,
+        };
+        let first = storage
+            .prune_light_history(request)
+            .expect("prune should succeed");
+        assert!(first.changed);
+        assert!(!first.rebuilt_secondary_indexes);
+        let second = storage
+            .prune_light_history(request)
+            .expect("retry should succeed");
+        assert!(!second.changed);
+
+        drop(storage);
+        let reopened = Storage::new(Config::new(path.clone())).expect("storage should reopen");
+        for column in [
+            Column::PeriodData,
+            Column::PillarBlock,
+            Column::FinalChainReceiptByPeriod,
+            Column::PeriodLambda,
+        ] {
+            assert_eq!(reopened.get_raw(column, &u64_le(4)).unwrap(), None);
+            assert_eq!(
+                reopened.get_raw(column, &u64_le(5)).unwrap(),
+                Some(b"retained".to_vec())
+            );
+        }
+        assert_eq!(
+            reopened
+                .get_raw(Column::DagBlocksLevel, &u64_le(6))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            reopened
+                .get_raw(Column::DagBlocksLevel, &u64_le(7))
+                .unwrap(),
+            Some(b"retained".to_vec())
+        );
+        assert_eq!(
+            reopened
+                .get_raw(Column::PbftBlockPeriod, &old_pbft_hash)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            reopened
+                .get_raw(Column::TrxPeriod, &old_transaction_hash)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            reopened
+                .get_raw(Column::FinalChainReceiptByTrxHash, &old_transaction_hash)
+                .unwrap(),
+            None
+        );
+        for column in [Column::TrxPeriod, Column::DagBlockPeriod] {
+            assert!(reopened.get_raw(column, &retained_hash).unwrap().is_some());
+        }
+        assert_eq!(
+            reopened
+                .get_raw(Column::TrxPeriod, &malformed_retained_hash)
+                .unwrap(),
+            Some(b"not rlp".to_vec())
+        );
+        drop(reopened);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn malformed_light_history_index_does_not_commit_partial_prune() {
+        let (path, storage) = storage_at("invalid_light_history_prune");
+        storage
+            .put(Column::PeriodData, &u64_le(1), b"malformed period data")
+            .unwrap();
+
+        let result = storage.prune_light_history(LightHistoryPruneRequest {
+            end_period_exclusive: 2,
+            first_retained_dag_level: 1,
+            non_block_periods_to_keep: 0,
+            live_cleanup: true,
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            storage.get_raw(Column::PeriodData, &u64_le(1)).unwrap(),
+            Some(b"malformed period data".to_vec())
+        );
+        drop(storage);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn offline_light_history_prune_rebuilds_receipt_index_from_retained_transactions() {
+        let (path, storage) = storage_at("offline_light_history_prune");
+        let old_hash = [1_u8; 32];
+        let retained_hash = [2_u8; 32];
+        let orphan_receipt_hash = [3_u8; 32];
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(&mut batch, Column::PeriodData, &u64_le(1), b"old")
+            .unwrap();
+        storage
+            .batch_put_raw(&mut batch, Column::PeriodData, &u64_le(10), b"retained")
+            .unwrap();
+        storage
+            .batch_put_raw(&mut batch, Column::TrxPeriod, &old_hash, &period_lookup(1))
+            .unwrap();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::TrxPeriod,
+                &retained_hash,
+                &period_lookup(9),
+            )
+            .unwrap();
+        for hash in [old_hash, retained_hash, orphan_receipt_hash] {
+            storage
+                .batch_put_raw(
+                    &mut batch,
+                    Column::FinalChainReceiptByTrxHash,
+                    &hash,
+                    b"receipt",
+                )
+                .unwrap();
+        }
+        storage
+            .commit_write_batch_with_sync(batch, true)
+            .expect("fixture batch should commit");
+
+        let report = storage
+            .prune_light_history(LightHistoryPruneRequest {
+                end_period_exclusive: 10,
+                first_retained_dag_level: 0,
+                non_block_periods_to_keep: 2,
+                live_cleanup: false,
+            })
+            .expect("offline prune should succeed");
+
+        assert!(report.changed);
+        assert!(report.rebuilt_secondary_indexes);
+        assert_eq!(
+            storage
+                .get_raw(Column::FinalChainReceiptByTrxHash, &old_hash)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .get_raw(Column::FinalChainReceiptByTrxHash, &orphan_receipt_hash)
+                .unwrap(),
+            None
+        );
+        assert!(
+            storage
+                .get_raw(Column::FinalChainReceiptByTrxHash, &retained_hash)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            !storage
+                .prune_light_history(LightHistoryPruneRequest {
+                    end_period_exclusive: 10,
+                    first_retained_dag_level: 0,
+                    non_block_periods_to_keep: 2,
+                    live_cleanup: false,
+                })
+                .unwrap()
+                .changed
         );
         drop(storage);
         let _ = fs::remove_dir_all(path);
