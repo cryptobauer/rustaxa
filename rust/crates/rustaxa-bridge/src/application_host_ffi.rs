@@ -4,7 +4,8 @@
 //! retaining callbacks implemented only by the C++ application shell.
 
 use crate::consensus_host_ports::{
-    consensus_application_run, consensus_application_submit_transaction_with_execution,
+    consensus_application_finalize, consensus_application_run,
+    consensus_application_submit_transaction_with_execution,
     consensus_network_ingest_dag_block_packet, consensus_network_ingest_dag_sync_packet,
     consensus_network_ingest_transaction_packet,
 };
@@ -158,22 +159,145 @@ pub mod application_host_ffi {
         total_eligible_vote_count: u64,
         error_code: String,
     }
-    /// Typed external-EVM request for one PBFT finalization operation.
-    struct HostEvmFinalizationRequest {
-        effect_id: HostEffectId,
-        period_data_rlp: Vec<u8>,
-        previous_cert_vote_rlps: Vec<CanonicalBytes>,
+    /// Exact StateAPI facts needed by native system-transaction planning.
+    struct HostFinalChainSystemFactsRequest {
+        request_id: [u8; 32],
+        period: u64,
+        is_pillar_block_period: bool,
+        bridge_contract_address: [u8; 20],
+        block_gas_limit: u64,
+    }
+    /// Read-only state-db descriptor preflight before pending execution begins.
+    struct HostFinalChainPreflightRequest {
+        request_id: [u8; 32],
+        next_period: u64,
+        expected_prior_period: u64,
+        expected_prior_state_root: [u8; 32],
+    }
+    struct HostFinalChainPreflightReport {
+        request_id: [u8; 32],
+        committed_period: u64,
+        committed_state_root: [u8; 32],
+        succeeded: bool,
+        error_code: String,
+    }
+    struct HostFinalChainSystemFactsReport {
+        request_id: [u8; 32],
+        period: u64,
+        bridge_contract_found: bool,
+        bridge_contract_has_code: bool,
+        should_finalize_epoch: bool,
+        system_account_nonce: Vec<u8>,
+        succeeded: bool,
+        error_code: String,
+    }
+    struct HostFinalChainTransactionInput {
+        position: u32,
+        hash: [u8; 32],
+        sender: [u8; 20],
+        receiver_found: bool,
+        receiver: [u8; 20],
+        nonce: Vec<u8>,
+        value: Vec<u8>,
+        gas_price: Vec<u8>,
+        gas_limit: u64,
+        data: Vec<u8>,
+        rlp: Vec<u8>,
+        kind: u8,
+        is_system: bool,
+    }
+    struct HostFinalChainExecutionRequest {
+        request_id: [u8; 32],
+        period: u64,
+        block_author: [u8; 20],
+        timestamp: u64,
+        block_gas_limit: u64,
+        transactions: Vec<HostFinalChainTransactionInput>,
+    }
+    struct HostFinalChainLogTopic {
+        topic: [u8; 32],
+    }
+    struct HostFinalChainLog {
+        address: [u8; 20],
+        topics: Vec<HostFinalChainLogTopic>,
+        data: Vec<u8>,
+    }
+    struct HostFinalChainTransactionResult {
+        position: u32,
+        hash: [u8; 32],
+        status: u8,
+        gas_used: u64,
+        cumulative_gas_used: u64,
+        receipt_rlp: Vec<u8>,
+        logs: Vec<HostFinalChainLog>,
+        new_contract_address_found: bool,
+        new_contract_address: [u8; 20],
+        code_error: String,
+        consensus_error: String,
+    }
+    struct HostFinalChainExecutionReport {
+        request_id: [u8; 32],
+        status: u8,
+        cumulative_gas_used: u64,
+        results: Vec<HostFinalChainTransactionResult>,
+        error_code: String,
+    }
+    struct HostFinalChainRewardsRequest {
+        request_id: [u8; 32],
+        period: u64,
+        block_author: [u8; 20],
+        block_gas_used: u64,
+        transaction_gas_used: Vec<u64>,
+        transaction_fees: Vec<CanonicalBytes>,
+        finalized_dag_block_count: u64,
+        distribution_stats: Vec<HostRewardsStatsPeriod>,
+    }
+    struct HostRewardsStatsPeriod {
+        period: u64,
+        data: Vec<u8>,
+    }
+    struct HostFinalChainRewardsReport {
+        request_id: [u8; 32],
+        period: u64,
+        status: u8,
+        state_root: [u8; 32],
+        total_reward: Vec<u8>,
+        error_code: String,
+    }
+    struct HostFinalChainStateCommitRequest {
+        request_id: [u8; 32],
+        plan_id: [u8; 32],
+        period: u64,
+        publication_block_hash: [u8; 32],
+        expected_state_root: [u8; 32],
+    }
+    struct HostFinalChainStateCommitReport {
+        status: u8,
+        committed_period: u64,
+        committed_state_root: [u8; 32],
+        error_code: String,
+    }
+    struct HostFinalChainFinalizeTask {
+        pbft_block_rlp: Vec<u8>,
+        previous_cert_vote_bundle_rlp: Vec<u8>,
+        dag_block_bundle_rlp: Vec<u8>,
+        transaction_rlps: Vec<CanonicalBytes>,
+        previous_cert_votes: Vec<HostRewardCertVote>,
         finalized_dag_hashes: Vec<DagHash>,
         blocks_per_year: u32,
-        synchronous: bool,
         anchor_block_rlp: Vec<u8>,
     }
-    /// External-EVM result for one finalization request.
-    struct HostEvmFinalizationReport {
-        effect_id: HostEffectId,
-        succeeded: bool,
+    /// Signed canonical PBFT vote plus the verified legacy weight sidecar.
+    struct HostRewardCertVote {
+        rlp: Vec<u8>,
+        weight: u64,
+    }
+    struct HostFinalChainFinalizeReport {
+        period: u64,
+        block_hash: [u8; 32],
+        executed_dag_blocks: u64,
+        executed_transactions: u64,
         status: u8,
-        last_block_number: u64,
         error_code: String,
     }
     /// Bidirectional gas batch with echoed identity/order and all-or-none results.
@@ -229,6 +353,7 @@ pub mod application_host_ffi {
     struct HostConsensusObservationRequest {
         effect_id: HostEffectId,
         kind: u8,
+        period: u64,
         hash: [u8; 32],
         canonical_rlp: Vec<u8>,
     }
@@ -345,11 +470,31 @@ pub mod application_host_ffi {
             request: &HostConsensusObservationRequest,
         ) -> Result<HostConsensusObservationReport>;
 
-        #[cxx_name = "consensusExecuteFinalization"]
-        fn consensus_execute_finalization(
+        #[cxx_name = "consensusLoadFinalChainSystemFacts"]
+        fn consensus_load_final_chain_system_facts(
             self: &ExternalEvmPort,
-            request: &HostEvmFinalizationRequest,
-        ) -> Result<HostEvmFinalizationReport>;
+            request: &HostFinalChainSystemFactsRequest,
+        ) -> Result<HostFinalChainSystemFactsReport>;
+        #[cxx_name = "consensusLoadFinalChainCommittedState"]
+        fn consensus_load_final_chain_committed_state(
+            self: &ExternalEvmPort,
+            request: &HostFinalChainPreflightRequest,
+        ) -> Result<HostFinalChainPreflightReport>;
+        #[cxx_name = "consensusExecuteFinalChainTransactions"]
+        fn consensus_execute_final_chain_transactions(
+            self: &ExternalEvmPort,
+            request: &HostFinalChainExecutionRequest,
+        ) -> Result<HostFinalChainExecutionReport>;
+        #[cxx_name = "consensusDistributeFinalChainRewards"]
+        fn consensus_distribute_final_chain_rewards(
+            self: &ExternalEvmPort,
+            request: &HostFinalChainRewardsRequest,
+        ) -> Result<HostFinalChainRewardsReport>;
+        #[cxx_name = "consensusCommitFinalChainState"]
+        fn consensus_commit_final_chain_state(
+            self: &ExternalEvmPort,
+            request: &HostFinalChainStateCommitRequest,
+        ) -> Result<HostFinalChainStateCommitReport>;
         #[cxx_name = "consensusLoadPillarAnchorState"]
         fn consensus_load_pillar_anchor_state(
             self: &ExternalEvmPort,
@@ -379,6 +524,12 @@ pub mod application_host_ffi {
             transport: &ConsensusTransportPort,
             external_evm: &ExternalEvmPort,
         ) -> Result<ConsensusRunExit>;
+        /// Executes one FinalChain task through the native application root.
+        pub fn consensus_application_finalize(
+            application: &BridgeConsensusApplication,
+            external_evm: &ExternalEvmPort,
+            task: HostFinalChainFinalizeTask,
+        ) -> Result<HostFinalChainFinalizeReport>;
         /// Submits one canonical transaction through a borrowed external-EVM
         /// account-fact leaf without retaining either CXX object.
         pub fn consensus_application_submit_transaction_with_execution(

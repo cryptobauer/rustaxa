@@ -4,8 +4,16 @@
 #include <memory>
 
 namespace rustaxa {
-struct HostEvmFinalizationReport;
-struct HostEvmFinalizationRequest;
+struct HostFinalChainExecutionReport;
+struct HostFinalChainExecutionRequest;
+struct HostFinalChainPreflightReport;
+struct HostFinalChainPreflightRequest;
+struct HostFinalChainRewardsReport;
+struct HostFinalChainRewardsRequest;
+struct HostFinalChainStateCommitReport;
+struct HostFinalChainStateCommitRequest;
+struct HostFinalChainSystemFactsReport;
+struct HostFinalChainSystemFactsRequest;
 struct HostDagGasBatch;
 struct HostFinalChainAccountFactsReport;
 struct HostFinalChainAccountFactsRequest;
@@ -151,6 +159,7 @@ class ConsensusTransportPort final {
 class ExternalEvmPort final {
  public:
   explicit ExternalEvmPort(std::shared_ptr<final_chain::FinalChain> final_chain);
+  explicit ExternalEvmPort(final_chain::FinalChain& final_chain);
   ~ExternalEvmPort();
 
   ExternalEvmPort(const ExternalEvmPort&) = delete;
@@ -158,8 +167,16 @@ class ExternalEvmPort final {
   ExternalEvmPort& operator=(const ExternalEvmPort&) = delete;
   ExternalEvmPort& operator=(ExternalEvmPort&&) = delete;
 
-  rustaxa::HostEvmFinalizationReport consensusExecuteFinalization(
-      const rustaxa::HostEvmFinalizationRequest& request) const;
+  rustaxa::HostFinalChainSystemFactsReport consensusLoadFinalChainSystemFacts(
+      const rustaxa::HostFinalChainSystemFactsRequest& request) const;
+  rustaxa::HostFinalChainPreflightReport consensusLoadFinalChainCommittedState(
+      const rustaxa::HostFinalChainPreflightRequest& request) const;
+  rustaxa::HostFinalChainExecutionReport consensusExecuteFinalChainTransactions(
+      const rustaxa::HostFinalChainExecutionRequest& request) const;
+  rustaxa::HostFinalChainRewardsReport consensusDistributeFinalChainRewards(
+      const rustaxa::HostFinalChainRewardsRequest& request) const;
+  rustaxa::HostFinalChainStateCommitReport consensusCommitFinalChainState(
+      const rustaxa::HostFinalChainStateCommitRequest& request) const;
   /** Loads the exact finalized header/bridge facts needed for pillar restart recovery. */
   rustaxa::HostPillarAnchorStateReport consensusLoadPillarAnchorState(
       const rustaxa::HostPillarAnchorStateRequest& request) const;

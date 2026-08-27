@@ -119,7 +119,7 @@ std::shared_ptr<BlockHeader> blockHeaderFromView(const rustaxa::FinalChainBlockV
   if (!view.found) {
     return nullptr;
   }
-  auto header_bytes = bytesFromBridge(view.stored_header_rlp);
+  auto header_bytes = bytesFromBridge(view.header_rlp);
   auto header = BlockHeader::fromRLP(dev::RLP(header_bytes));
   if (header->hash != hashFromBridge(view.hash)) {
     throw std::runtime_error("CONSENSUS_QUERY_ETH_BLOCK_HASH_MISMATCH");

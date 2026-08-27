@@ -200,6 +200,13 @@ pub trait DbWriter: Send + Sync {
     ) -> Result<()>;
     fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()>;
     fn commit_batch(&self, batch: Self::Batch) -> Result<()>;
+    /// Commits a batch with an optional durability barrier.
+    ///
+    /// In-memory/test writers may use the default behavior; persistent RocksDB
+    /// writers override this to honor `sync` through `WriteOptions`.
+    fn commit_batch_with_sync(&self, batch: Self::Batch, _sync: bool) -> Result<()> {
+        self.commit_batch(batch)
+    }
     fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()>;
     fn delete(&self, col: Column, key: &[u8]) -> Result<()>;
 }
@@ -328,6 +335,13 @@ impl DbWriter for DBWithThreadMode<MultiThreaded> {
 
     fn commit_batch(&self, batch: Self::Batch) -> Result<()> {
         self.write_opt(batch, &WriteOptions::default())
+            .map_err(|e| StorageError::Database(e).into())
+    }
+
+    fn commit_batch_with_sync(&self, batch: Self::Batch, sync: bool) -> Result<()> {
+        let mut options = WriteOptions::default();
+        options.set_sync(sync);
+        self.write_opt(batch, &options)
             .map_err(|e| StorageError::Database(e).into())
     }
 

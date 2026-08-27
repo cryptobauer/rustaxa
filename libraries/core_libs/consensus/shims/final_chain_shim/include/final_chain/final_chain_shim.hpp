@@ -16,10 +16,12 @@
 #include "consensus/consensus_application.hpp"
 #include "final_chain/data.hpp"
 #include "final_chain/state_api.hpp"
+#include "rustaxa-bridge/application_host_ffi.rs.h"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
 
 namespace taraxa {
+class ExternalEvmPort;
 class DagManager;
 class PbftManager;
 class VoteManager;
@@ -43,17 +45,16 @@ rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const taraxa::FullN
 // Rust-mode final-chain shim facade.
 // This class is a standalone surface in Rust-enabled builds.
 class FinalChain {
+  friend class ::taraxa::ExternalEvmPort;
   friend class ::taraxa::DagManager;
   friend class ::taraxa::PbftManager;
   friend class ::taraxa::VoteManager;
   friend class ::taraxa::network::ConsensusNetworkApi;
 
  protected:
-  util::event::EventEmitter<std::shared_ptr<FinalizationResult>> const block_finalized_emitter_{};
   util::event::EventEmitter<uint64_t> const block_applying_emitter_{};
 
  public:
-  decltype(block_finalized_emitter_)::Subscriber const& block_finalized_ = block_finalized_emitter_;
   decltype(block_applying_emitter_)::Subscriber const& block_applying_ = block_applying_emitter_;
 
   ~FinalChain() = default;
@@ -67,11 +68,6 @@ class FinalChain {
 
   void stop();
   EthBlockNumber delegationDelay() const;
-
-  std::future<std::shared_ptr<const FinalizationResult>> finalize(PeriodData&& period_data,
-                                                                  std::vector<h256>&& finalized_dag_blk_hashes,
-                                                                  uint32_t blocks_per_year,
-                                                                  std::shared_ptr<DagBlock>&& anchor = nullptr);
 
   std::shared_ptr<const BlockHeader> blockHeader(std::optional<EthBlockNumber> n = {}) const;
   EthBlockNumber lastBlockNumber() const;
@@ -141,9 +137,6 @@ class FinalChain {
   h256 getBridgeEpoch(EthBlockNumber blk_num) const;
 
   std::pair<val_t, bool> getBalance(addr_t const& addr) const;
-  std::shared_ptr<const FinalizationResult> finalize_(PeriodData&& new_blk,
-                                                      std::vector<h256>&& finalized_dag_blk_hashes,
-                                                      uint32_t blocks_per_year, std::shared_ptr<DagBlock>&& anchor);
   SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
 
  private:
@@ -152,43 +145,22 @@ class FinalChain {
    *
    * Inputs are Rust bridge request DTOs plus the legacy C++ transaction material that the external executor still
    * requires. Reward statistics arrive as Rust-produced canonical RLP and are decoded only inside the rewards call.
-   * Outputs are Rust bridge report DTOs and temporary C++ receipts needed to preserve the public `FinalizationResult`
-   * surface. The adapter is the only Rust-mode finalization helper that may execute arbitrary EVM work, query
+   * Outputs are exact Rust bridge reports. The adapter is the only Rust-mode finalization helper that may execute
+   * arbitrary EVM work, query
    * bridge-contract state, distribute rewards in `StateAPI`, or commit `state_db/`; it does not publish Rust FinalChain
    * storage or decide consensus session state.
    */
   class ExternalEvmStateApiClient {
    public:
-    struct ExecutionOutcome {
-      rustaxa::FinalChainEvmExecutionReport report;
-      TransactionReceipts receipts;
-    };
-
-    struct RewardsOutcome {
-      rustaxa::FinalChainEvmRewardsReport report;
-    };
-
     ExternalEvmStateApiClient(StateAPI& state_api, std::mutex& state_api_mutex);
 
-    rustaxa::FinalChainSystemTransactionPlanFact collectSystemTransactionFacts(
-        const rustaxa::FinalChainSystemTransactionRequest& request, bool is_pillar_block_period,
-        uint64_t block_gas_limit, const addr_t& bridge_contract_address);
-
-    ExecutionOutcome executeTransactions(const rustaxa::FinalChainEvmExecutionRequest& request,
-                                         const std::vector<SharedTransaction>& transactions, const addr_t& beneficiary,
-                                         uint64_t block_gas_limit, uint64_t timestamp);
-
-    /**
-     * Executes only the external `StateAPI` rewards-distribution effect requested by Rust.
-     *
-     * Rust supplies canonical RLP for the complete ordered distribution-stat set. This adapter decodes those values
-     * into temporary legacy `BlockStats` objects only for the duration of `StateAPI::distribute_rewards`, then returns
-     * the resulting state root and total reward correlated to the request. Malformed RLP and StateAPI failures
-     * propagate as exceptions; no Rust FinalChain storage or rewards-cache state is mutated here.
-     */
-    RewardsOutcome distributeRewards(const rustaxa::FinalChainEvmRewardsRequest& request);
-
-    rustaxa::FinalChainExternalEvmStateCommitResult commitState();
+    rustaxa::HostFinalChainSystemFactsReport loadSystemTransactionFacts(
+        const rustaxa::HostFinalChainSystemFactsRequest& request);
+    rustaxa::HostFinalChainPreflightReport loadCommittedState(
+        const rustaxa::HostFinalChainPreflightRequest& request) const;
+    rustaxa::HostFinalChainExecutionReport executeTransactions(const rustaxa::HostFinalChainExecutionRequest& request);
+    rustaxa::HostFinalChainRewardsReport distributeRewards(const rustaxa::HostFinalChainRewardsRequest& request);
+    rustaxa::HostFinalChainStateCommitReport commitState(const rustaxa::HostFinalChainStateCommitRequest& request);
 
     state_api::StateDescriptor lastCommittedStateDescriptor() const;
     void updateStateConfig(const state_api::Config& new_config, EthBlockNumber& delegation_delay);
@@ -207,23 +179,8 @@ class FinalChain {
     std::mutex& state_api_mutex_;
   };
 
-  /**
-   * Collect bridge-contract facts and materialize Rust-planned system transactions for an external-EVM period.
-   *
-   * The C++ executor boundary still owns bridge-contract state queries and the `shouldFinalizeEpoch()` dry run. Rust
-   * owns the deterministic system transaction planning and canonical RLP construction. Returned `SystemTransaction`
-   * objects are temporary materialization for `StateAPI` execution only.
-   */
-  std::vector<SharedTransaction> makeSystemTransactions(const rustaxa::FinalChainSystemTransactionRequest& request);
-
   /** Read one 32-byte bridge-contract view at the latest applicable committed EVM snapshot; failures return zero. */
   h256 readBridgeContractHash(EthBlockNumber block_number, const bytes& method, const char* api_name) const;
-
-  /** Commit one Rust-native session and materialize the legacy completion DTO; validation or decoding failures throw.
-   */
-  std::shared_ptr<const FinalizationResult> commitNativeSession(
-      rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, PeriodData&& period_data,
-      std::vector<h256>&& finalized_dag_blk_hashes);
 
   /**
    * Complete any Rust-owned external-EVM FinalChain publication left pending by
@@ -234,28 +191,11 @@ class FinalChain {
    */
   void recoverExternalEvmPendingPublication();
 
-  /**
-   * Execute and publish an external-EVM FinalChain session.
-   *
-   * Rust owns request identity, report validation, publication planning, and FinalChain storage writes. This shim
-   * method owns only the temporary C++ executor side: bridge-contract state fact collection, `StateAPI` transaction
-   * execution, local RLP-to-`BlockStats` rewards materialization, rewards distribution, and staged `StateAPI` lifecycle
-   * commit. Rust owns rewards-stat planning, cache mutation, persistence, and publication recovery.
-   */
-  std::shared_ptr<const FinalizationResult> finalizeExternalEvm(
-      rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, rustaxa::FinalChainExecutionStep initial_step,
-      PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, std::shared_ptr<DagBlock>&& anchor);
-
   SharedConsensusApplication consensus_application_;
-  std::optional<::rust::Box<rustaxa::BridgeConsensusExecutionApi>> rust_execution_api_;
   EthBlockNumber delegation_delay_ = 0;
-  uint64_t block_gas_limit_ = 0;
-  uint32_t max_levels_per_period_ = 0;
   mutable std::mutex state_api_mutex_;
   StateAPI state_api_;
   ExternalEvmStateApiClient external_evm_state_api_;
-  std::atomic<uint64_t> num_executed_dag_blk_ = 0;
-  std::atomic<uint64_t> num_executed_trx_ = 0;
   const taraxa::FullNodeConfig& config_;
 };
 

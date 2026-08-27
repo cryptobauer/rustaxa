@@ -9,6 +9,11 @@
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/transaction.hpp"
 
+namespace rustaxa {
+struct HostFinalChainFinalizeReport;
+struct HostFinalChainFinalizeTask;
+}  // namespace rustaxa
+
 namespace taraxa {
 
 struct FullNodeConfig;
@@ -16,6 +21,7 @@ namespace final_chain {
 class FinalChain;
 }
 class DagBlock;
+class ExternalEvmPort;
 
 /**
  * Stable public result for one native transaction-submission operation.
@@ -30,6 +36,12 @@ struct PublicTransactionSubmissionResult {
   bool accepted{false};
   std::string message;
   bool transaction_observed{false};
+};
+
+/** Durable FinalChain identity emitted after native publication. */
+struct FinalizedBlockObservation {
+  PbftPeriod period{0};
+  blk_hash_t block_hash;
 };
 
 /** Shared lifetime handle for the root-bound, read-only native public query API. */
@@ -76,6 +88,8 @@ class ConsensusApplication final {
   const auto& dagBlockObserved() const noexcept { return dag_block_observed_; }
   /** Subscribable best-effort notification emitted after native pillar finalization is durably acknowledged. */
   const auto& pillarBlockObserved() const noexcept { return pillar_block_observed_; }
+  /** Subscribable durable block identity; payloads are loaded through the query client. */
+  const auto& finalizedBlockObserved() const noexcept { return finalized_block_observed_; }
 
   /** Publishes a post-commit transaction notification selected by a native network operation. */
   void publishTransactionObserved(const trx_hash_t& transaction_hash) const {
@@ -87,6 +101,10 @@ class ConsensusApplication final {
   void publishPillarBlockObserved(const pillar_chain::PillarBlockData& block_data) const {
     pillar_block_observed_.emit(block_data);
   }
+  /** Publishes a durable block identity without materializing consensus objects. */
+  void publishFinalizedBlockObserved(PbftPeriod period, const blk_hash_t& block_hash) const {
+    finalized_block_observed_.emit(FinalizedBlockObservation{period, block_hash});
+  }
 
   /**
    * Validates and admits one signed public transaction through the native application operation.
@@ -97,6 +115,10 @@ class ConsensusApplication final {
   PublicTransactionSubmissionResult submitTransaction(const SharedTransaction& transaction,
                                                       const FullNodeConfig& config,
                                                       const final_chain::FinalChain& final_chain) const;
+
+  /** Executes one canonical FinalChain operation through the native application root and exact concrete-EVM leaf. */
+  rustaxa::HostFinalChainFinalizeReport finalize(ExternalEvmPort& external_evm,
+                                                 rustaxa::HostFinalChainFinalizeTask task) const;
 
   /** Returns one coherent application-root runtime status snapshot. */
   ConsensusRuntimeStatus runtimeStatus() const;
@@ -115,6 +137,7 @@ class ConsensusApplication final {
   util::event::Event<ConsensusApplication, trx_hash_t> transaction_observed_;
   util::event::Event<ConsensusApplication, std::shared_ptr<DagBlock>> dag_block_observed_;
   util::event::Event<ConsensusApplication, pillar_chain::PillarBlockData> pillar_block_observed_;
+  util::event::Event<ConsensusApplication, FinalizedBlockObservation> finalized_block_observed_;
 };
 
 using SharedConsensusApplication = std::shared_ptr<ConsensusApplication>;

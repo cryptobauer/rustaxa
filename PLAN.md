@@ -511,7 +511,16 @@ retain the untouched legacy RewardsStats header, source, and focused test.
     `getJailBlock(address)` and `getJailedValidators()` are Rust-backed both through `FinalChain::call` and as finalized
     native transactions. Recognized read transactions charge the legacy fixed action gas, retain successful value at
     the slashing account, emit no logs, and leave its nonce unchanged; malformed and out-of-gas reads roll value back.
-  - FinalChain native execution is now behind a Rust-owned `FinalChainExecutionRuntime` session boundary. The
+  - The `CRW-E01` application-root cut supersedes the former C++-driven session boundary: `ConsensusApplication` now
+    owns system-transaction/rewards planning, concrete-EVM sequencing, result/receipt/root validation, durable pending
+    recovery ordering, state-commit approval, and FinalChain publication. C++ retains exact typed StateAPI leaves only;
+    the broad execution API/session handles, factories, C++ action loop, and consensus materializers are deleted.
+    A read-only committed-state preflight rejects concrete-EVM execution before mutation when StateAPI lags the native
+    FinalChain head. Mixed native-only then external-EVM periods remain fail-closed until `CRW-E02` supplies an explicit
+    concrete-state catch-up/import design; no root is fabricated when the concrete executor cannot report one.
+    Native-only DPoS/slashing execution remains Rust-owned, while stable public-state/tracing calls remain temporary
+    `final_chain_shim` leaves. The following paragraph records the superseded pre-`CRW-E01` checkpoint for history.
+  - Historical checkpoint: FinalChain native execution was behind a Rust-owned `FinalChainExecutionRuntime` session boundary. The
     C++ FinalChain shim now builds the session request directly, asks Rust for the next execution step, and commits only
     when Rust returns a native commit action. Native value transfers plus the supported DPoS/slashing precompile subset
     still commit through the existing Rust FinalChain finalizer. Arbitrary EVM contract calls and contract creation now

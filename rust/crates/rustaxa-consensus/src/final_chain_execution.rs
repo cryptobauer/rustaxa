@@ -6,7 +6,7 @@ use crate::rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
     RewardsStatsPeriodRlp,
 };
-use anyhow::Context;
+use anyhow::{Context, ensure};
 use ethereum_types::{H160, H256, U256};
 use keccak_hasher::KeccakHasher;
 use rustaxa_types::codec::rlp::final_chain::{
@@ -302,7 +302,12 @@ pub struct FinalChainEvmTransactionResult {
 pub struct FinalChainEvmExecutionReport {
     pub request_id: [u8; 32],
     pub status: u8,
-    pub state_root: [u8; 32],
+    /// Post-transaction root when the concrete executor can observe it.
+    ///
+    /// The current StateAPI ABI does not expose this intermediate root, so its
+    /// adapter returns `None`. The post-rewards root remains mandatory and is
+    /// verified against the committed state descriptor before publication.
+    pub state_root: Option<[u8; 32]>,
     pub cumulative_gas_used: FinalChainGas,
     pub results: Vec<FinalChainEvmTransactionResult>,
 }
@@ -366,7 +371,7 @@ pub struct FinalChainEvmRewardsReport {
 pub struct FinalChainExternalEvmCommitPlan {
     pub request_id: [u8; 32],
     pub period: FinalChainBlockNumber,
-    pub post_execution_state_root: [u8; 32],
+    pub post_execution_state_root: Option<[u8; 32]>,
     pub state_root: [u8; 32],
     pub total_reward: Vec<u8>,
     pub transactions_root: [u8; 32],
@@ -465,7 +470,7 @@ pub struct FinalChainExternalEvmStateCommitRequest {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
     pub period: FinalChainBlockNumber,
-    pub post_execution_state_root: [u8; 32],
+    pub post_execution_state_root: Option<[u8; 32]>,
     pub post_rewards_state_root: [u8; 32],
     pub publication_block_hash: [u8; 32],
 }
@@ -481,6 +486,8 @@ pub struct FinalChainExternalEvmStateCommitIntent {
     pub plan_id: [u8; 32],
     pub period: FinalChainBlockNumber,
     pub publication_block_hash: [u8; 32],
+    /// Exact root that the concrete state-db commit must make durable.
+    pub expected_state_root: [u8; 32],
     pub status: u8,
     pub error_code: String,
 }
@@ -511,7 +518,7 @@ pub struct FinalChainExternalEvmLifecycleReport {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
     pub period: FinalChainBlockNumber,
-    pub post_execution_state_root: [u8; 32],
+    pub post_execution_state_root: Option<[u8; 32]>,
     pub post_rewards_state_root: [u8; 32],
     pub publication_block_hash: [u8; 32],
     pub status: u8,
@@ -572,6 +579,29 @@ pub struct FinalChainExternalEvmPublicationReport {
 pub struct FinalChainExternalEvmCommittedStateDescriptor {
     pub period: FinalChainBlockNumber,
     pub state_root: [u8; 32],
+}
+
+/// Exact read-only preflight for a concrete external-EVM execution.
+///
+/// Rust supplies the expected prior FinalChain descriptor. The state-db leaf
+/// returns what is actually committed without advancing pending state. Native
+/// execution fails closed unless periods match and, after genesis, roots match.
+/// Genesis roots differ between the native and concrete state encodings, so
+/// the first external block validates the genesis period but not root bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmPreflightRequest {
+    pub request_id: [u8; 32],
+    pub next_period: FinalChainBlockNumber,
+    pub expected_prior: FinalChainExternalEvmCommittedStateDescriptor,
+}
+
+/// Observed concrete state-db descriptor for one preflight request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmPreflightReport {
+    pub request_id: [u8; 32],
+    pub committed: FinalChainExternalEvmCommittedStateDescriptor,
+    pub succeeded: bool,
+    pub error_code: String,
 }
 
 /// Result of auditing an external-EVM publication plan against storage.
@@ -1302,6 +1332,7 @@ pub fn final_chain_execution_session_request_external_evm_state_commit(
         plan_id: request.plan_id,
         period: request.period,
         publication_block_hash: request.publication_block_hash,
+        expected_state_root: request.post_rewards_state_root,
         status: FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT,
         error_code: String::new(),
     };
@@ -1763,7 +1794,10 @@ pub fn final_chain_execution_session_persist_external_evm_pending_publication(
         external_evm_pending_publication_marker(
             publication_plan,
             intent,
-            commit_plan.post_execution_state_root,
+            // Marker v1 retained this fixed-width slot. Zero is a codec
+            // sentinel when StateAPI cannot observe the intermediate root;
+            // it is never treated as an execution fact or commit condition.
+            commit_plan.post_execution_state_root.unwrap_or_default(),
             commit_plan.state_root,
         ),
     )?;
@@ -1917,6 +1951,250 @@ pub fn commit_final_chain_execution_session(
         executed_dag_blocks,
         executed_transactions,
         error_code: String::new(),
+    })
+}
+
+/// Exact bridge-contract facts requested by the native FinalChain task.
+///
+/// The concrete executor fills only StateAPI-owned observations. Rust retains
+/// system-transaction policy and canonical transaction encoding.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainSystemTransactionFactsRequest {
+    pub request_id: [u8; 32],
+    pub period: FinalChainBlockNumber,
+    pub is_pillar_block_period: bool,
+    pub bridge_contract_address: [u8; 20],
+    pub block_gas_limit: FinalChainGas,
+}
+
+/// Terminal result of one application-root FinalChain execution task.
+///
+/// No session, action cursor, publication plan, or storage handle escapes in
+/// this report. Successful reports describe an already durable native
+/// FinalChain publication.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainApplicationExecutionReport {
+    pub period: FinalChainBlockNumber,
+    pub block_hash: [u8; 32],
+    pub executed_dag_blocks: u64,
+    pub executed_transactions: u64,
+    pub status: u8,
+    pub error_code: String,
+}
+
+/// Concrete EVM and `state_db` leaves used by native FinalChain execution.
+///
+/// Implementations must not plan consensus work or publish FinalChain storage.
+/// Calls are ordered by [`execute_final_chain_application_task`]; failures
+/// after staged EVM execution are fail-closed because the current StateAPI has
+/// no safe in-process discard primitive.
+pub trait FinalChainExecutionLeaf {
+    fn load_committed_state_descriptor(
+        &self,
+        request: &FinalChainExternalEvmPreflightRequest,
+    ) -> Result<FinalChainExternalEvmPreflightReport, anyhow::Error>;
+
+    fn load_system_transaction_facts(
+        &self,
+        request: &FinalChainSystemTransactionFactsRequest,
+    ) -> Result<FinalChainSystemTransactionPlanFact, anyhow::Error>;
+
+    fn execute_transactions(
+        &self,
+        request: &FinalChainEvmExecutionRequest,
+    ) -> Result<FinalChainEvmExecutionReport, anyhow::Error>;
+
+    fn distribute_rewards(
+        &self,
+        request: &FinalChainEvmRewardsRequest,
+    ) -> Result<FinalChainEvmRewardsReport, anyhow::Error>;
+
+    fn commit_staged_state(
+        &self,
+        request: &FinalChainExternalEvmStateCommitIntent,
+    ) -> Result<FinalChainExternalEvmStateCommitResult, anyhow::Error>;
+}
+
+fn committed_application_report(
+    final_chain: &FinalChain,
+    commit: FinalChainExecutionCommitReport,
+) -> Result<FinalChainApplicationExecutionReport, anyhow::Error> {
+    let block_hash: [u8; 32] = final_chain
+        .block_hash(commit.period)?
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_APPLICATION_COMMITTED_HASH_MISSING"))?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_APPLICATION_COMMITTED_HASH_INVALID_LENGTH"))?;
+    Ok(FinalChainApplicationExecutionReport {
+        period: commit.period,
+        block_hash,
+        executed_dag_blocks: commit.executed_dag_blocks,
+        executed_transactions: commit.executed_transactions,
+        status: commit.status,
+        error_code: commit.error_code,
+    })
+}
+
+/// Executes one complete FinalChain task behind the application root.
+///
+/// Rust owns session progression, system-transaction and reward planning,
+/// report/receipt/root validation, durable pending-marker ordering, and atomic
+/// FinalChain publication. The leaf owns only concrete EVM and state-db calls.
+/// The function never exposes the private session transcript to C++.
+pub fn execute_final_chain_application_task<E: FinalChainExecutionLeaf>(
+    final_chain: &FinalChain,
+    request: FinalChainExecutionRequest,
+    proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
+    is_pillar_block_period: bool,
+    bridge_contract_address: [u8; 20],
+    leaf: &E,
+) -> Result<FinalChainApplicationExecutionReport, anyhow::Error> {
+    let mut session = create_final_chain_execution_session(request);
+    let expected_prior = final_chain.committed_state_descriptor()?;
+    let expected_next = expected_prior
+        .period
+        .checked_next()
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_APPLICATION_PRIOR_PERIOD_OVERFLOW"))?;
+    ensure!(
+        session.block_number == expected_next,
+        "FINAL_CHAIN_APPLICATION_NON_CONSECUTIVE_PERIOD: expected {}, requested {}",
+        expected_next.as_u64(),
+        session.block_number.as_u64()
+    );
+    let mut step = final_chain_execution_session_next(&mut session);
+
+    if step.action == FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE {
+        let commit = commit_final_chain_execution_session(final_chain, session)?;
+        return committed_application_report(final_chain, commit);
+    }
+
+    if step.action == FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS {
+        let system_request = &step.system_transaction_request;
+        let mut facts =
+            leaf.load_system_transaction_facts(&FinalChainSystemTransactionFactsRequest {
+                request_id: system_request.request_id,
+                period: system_request.period,
+                is_pillar_block_period,
+                bridge_contract_address,
+                block_gas_limit: session.request.block_gas_limit,
+            })?;
+        facts.request_id = system_request.request_id;
+        facts.period = system_request.period;
+        facts.is_pillar_block_period = is_pillar_block_period;
+        facts.bridge_contract_address = bridge_contract_address;
+        facts.block_gas_limit = session.request.block_gas_limit;
+        let plan = plan_external_evm_system_transactions(facts)?;
+        step = final_chain_execution_session_report_system_transactions(
+            &mut session,
+            FinalChainSystemTransactionReport {
+                request_id: plan.request_id,
+                period: plan.period,
+                transactions: plan.transactions,
+            },
+        );
+    }
+
+    if step.action == FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE {
+        let commit = commit_final_chain_execution_session(final_chain, session)?;
+        return committed_application_report(final_chain, commit);
+    }
+
+    if step.action != FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM {
+        anyhow::bail!(
+            "FINAL_CHAIN_APPLICATION_EXPECTED_EVM_EXECUTION: {}: {}",
+            step.action,
+            step.error_code
+        );
+    }
+    let preflight =
+        leaf.load_committed_state_descriptor(&FinalChainExternalEvmPreflightRequest {
+            request_id: step.evm_request.request_id,
+            next_period: session.block_number,
+            expected_prior,
+        })?;
+    ensure!(
+        preflight.succeeded,
+        "FINAL_CHAIN_EXTERNAL_EVM_PREFLIGHT_FAILED: {}",
+        preflight.error_code
+    );
+    ensure!(
+        preflight.request_id == step.evm_request.request_id,
+        "FINAL_CHAIN_EXTERNAL_EVM_PREFLIGHT_REQUEST_ID_MISMATCH"
+    );
+    ensure!(
+        preflight.committed.period == expected_prior.period
+            && (expected_prior.period.is_genesis()
+                || preflight.committed.state_root == expected_prior.state_root),
+        "FINAL_CHAIN_EXTERNAL_EVM_PRIOR_DESCRIPTOR_MISMATCH: expected period {} root {:02x?}, observed period {} root {:02x?}",
+        expected_prior.period.as_u64(),
+        expected_prior.state_root,
+        preflight.committed.period.as_u64(),
+        preflight.committed.state_root
+    );
+    let execution_report = leaf.execute_transactions(&step.evm_request)?;
+    step = final_chain_execution_session_report_evm_with_final_chain(
+        final_chain,
+        &mut session,
+        execution_report,
+    );
+    if step.action != FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS {
+        anyhow::bail!(
+            "FINAL_CHAIN_APPLICATION_EXPECTED_REWARDS: {}: {}",
+            step.action,
+            step.error_code
+        );
+    }
+    let rewards_report = leaf.distribute_rewards(&step.evm_rewards_request)?;
+    let commit_plan =
+        final_chain_execution_session_plan_external_evm_commit(&mut session, rewards_report);
+    ensure!(
+        commit_plan.error_code.is_empty(),
+        "FINAL_CHAIN_APPLICATION_COMMIT_PLAN_REJECTED: {}",
+        commit_plan.error_code
+    );
+    let intent = final_chain_execution_session_prepare_external_evm_state_commit(
+        final_chain,
+        &mut session,
+        proposal_period_update,
+    )?;
+    ensure!(
+        intent.status == FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT
+            && intent.error_code.is_empty(),
+        "FINAL_CHAIN_APPLICATION_STATE_COMMIT_NOT_READY: {}",
+        intent.error_code
+    );
+
+    // The pending-publication marker is persisted by the preparation call
+    // before this concrete state-db commit is attempted.
+    let state_commit = leaf.commit_staged_state(&intent)?;
+    let decision = final_chain_execution_session_report_external_evm_state_commit_result(
+        final_chain,
+        &mut session,
+        state_commit,
+    )?;
+    ensure!(
+        decision.status == FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH
+            && decision.error_code.is_empty(),
+        "FINAL_CHAIN_APPLICATION_STATE_COMMIT_REJECTED: {}",
+        decision.error_code
+    );
+    let publication =
+        final_chain_execution_session_publish_external_evm_publication(final_chain, &mut session)?;
+    ensure!(
+        matches!(
+            publication.status,
+            FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+                | FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
+        ),
+        "FINAL_CHAIN_APPLICATION_PUBLICATION_REJECTED: {}",
+        publication.error_code
+    );
+    Ok(FinalChainApplicationExecutionReport {
+        period: publication.period,
+        block_hash: publication.block_hash,
+        executed_dag_blocks: publication.executed_dag_block_count,
+        executed_transactions: publication.executed_transaction_count,
+        status: publication.status,
+        error_code: publication.error_code,
     })
 }
 
@@ -2490,7 +2768,7 @@ fn u256_to_big_endian(value: U256) -> Vec<u8> {
     bytes[first_nonzero..].to_vec()
 }
 
-fn u256_to_nonce_bytes(value: U256) -> Vec<u8> {
+pub(crate) fn u256_to_nonce_bytes(value: U256) -> Vec<u8> {
     if value.is_zero() {
         Vec::new()
     } else {
@@ -2882,7 +3160,7 @@ mod tests {
         let commit_plan = FinalChainExternalEvmCommitPlan {
             request_id: [0x11; 32],
             period: 7.into(),
-            post_execution_state_root: [0x22; 32],
+            post_execution_state_root: Some([0x22; 32]),
             state_root: [0x33; 32],
             error_code: String::new(),
             ..Default::default()
@@ -3366,7 +3644,7 @@ mod tests {
         let report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-            state_root: [0x11; 32],
+            state_root: Some([0x11; 32]),
             cumulative_gas_used: 1.into(),
             results: vec![evm_result(&tx, 1, 1, 1, vec![0xc0])],
         };
@@ -3394,7 +3672,7 @@ mod tests {
         let mut report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-            state_root: [0x11; 32],
+            state_root: Some([0x11; 32]),
             cumulative_gas_used: 1.into(),
             results: vec![mismatched_result],
         };
@@ -3423,7 +3701,7 @@ mod tests {
         let report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-            state_root: [0x11; 32],
+            state_root: Some([0x11; 32]),
             cumulative_gas_used: 1.into(),
             results: vec![evm_result_with_encoded_receipt(&tx, 1, 1, 1)],
         };
@@ -3470,7 +3748,7 @@ mod tests {
             FinalChainEvmExecutionReport {
                 request_id: step.evm_request.request_id,
                 status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-                state_root: [0x11; 32],
+                state_root: Some([0x11; 32]),
                 cumulative_gas_used: 1.into(),
                 results: vec![evm_result_with_encoded_receipt(&tx, 1, 1, 1)],
             },
@@ -3514,7 +3792,7 @@ mod tests {
             FinalChainEvmExecutionReport {
                 request_id: step.evm_request.request_id,
                 status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-                state_root: [0x10; 32],
+                state_root: Some([0x10; 32]),
                 cumulative_gas_used: 5.into(),
                 results: vec![first.clone(), second.clone()],
             },
@@ -3538,7 +3816,7 @@ mod tests {
         assert!(plan.error_code.is_empty());
         assert_eq!(plan.period, 7.into());
         assert_eq!(plan.request_id, step.evm_request.request_id);
-        assert_eq!(plan.post_execution_state_root, [0x10; 32]);
+        assert_eq!(plan.post_execution_state_root, Some([0x10; 32]));
         assert_eq!(plan.state_root, [0x22; 32]);
         assert_eq!(plan.total_reward, vec![0x33]);
         assert_eq!(plan.gas_used.as_u64(), 5);
@@ -3787,7 +4065,7 @@ mod tests {
         let report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-            state_root: [0x11; 32],
+            state_root: Some([0x11; 32]),
             cumulative_gas_used: 2.into(),
             results: vec![evm_result(&tx, 1, 1, 2, vec![0xc0])],
         };
@@ -3813,7 +4091,7 @@ mod tests {
         let report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-            state_root: [0x11; 32],
+            state_root: Some([0x11; 32]),
             cumulative_gas_used: 1.into(),
             results: vec![evm_result(&tx, 2, 1, 1, vec![0xc0])],
         };

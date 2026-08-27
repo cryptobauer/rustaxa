@@ -2,28 +2,13 @@ use crate::consensus_host_ports::*;
 pub(crate) use crate::dag_transaction_service::BridgeApp;
 pub use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::dag_transaction_service::*;
-use crate::final_chain::*;
 use crate::network::*;
 use crate::network_slashing::*;
 use crate::query::*;
 use crate::storage_admin::*;
 use crate::vdf::*;
-use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusQueryApi;
 use std::sync::Arc;
-
-/// Opaque state for one in-progress FinalChain execution session.
-pub struct BridgeFinalChainExecutionSession {
-    pub state: rustaxa_consensus::FinalChainExecutionSession,
-}
-
-/// Rust-owned external EVM/StateAPI facade.
-///
-/// The facade is intentionally stateless. C++ passes the live FinalChain and
-/// execution-session handles for each call while Rust owns request identity,
-/// report validation, publication planning, storage publication, and audit
-/// decisions.
-pub struct BridgeConsensusExecutionApi(pub ConsensusExecutionApi);
 
 /// Rust-owned public consensus query facade.
 ///
@@ -196,11 +181,6 @@ pub mod rustaxa_ffi {
         threshold_upper_min: u16,
     }
 
-    struct PeriodRlp {
-        period: u64,
-        data: Vec<u8>,
-    }
-
     /// Rewards distribution frequency rule active from `from_period` onward.
     struct RewardsFrequencyRule {
         from_period: u64,
@@ -208,12 +188,6 @@ pub mod rustaxa_ffi {
     }
 
     /// Previous-block cert-vote fact for rewards-stat planning.
-    struct RewardsCertVoteFact {
-        voter: [u8; 20],
-        weight: u64,
-        period: u64,
-    }
-
     struct TxRlp {
         data: Vec<u8>,
         is_system: bool,
@@ -820,6 +794,7 @@ pub mod rustaxa_ffi {
         log_bloom: Vec<u8>,
         gas_used: u64,
         total_reward: [u8; 32],
+        header_rlp: Vec<u8>,
         stored_header_rlp: Vec<u8>,
         has_pbft_hash: bool,
         pbft_block_hash: [u8; 32],
@@ -828,11 +803,6 @@ pub mod rustaxa_ffi {
     struct FinalChainBlockNumberLookup {
         found: bool,
         value: u64,
-    }
-
-    struct FinalChainExecutionStatus {
-        executed_dag_block_count: u64,
-        executed_transaction_count: u64,
     }
 
     /// Genesis account carried across the CXX bootstrap boundary.
@@ -938,91 +908,6 @@ pub mod rustaxa_ffi {
         consensus_err: String,
     }
 
-    struct FinalizationTransaction {
-        hash: [u8; 32],
-        sender: [u8; 20],
-        receiver_found: bool,
-        receiver: [u8; 20],
-        /// Canonical minimal big-endian transaction nonce (empty means zero).
-        nonce: Vec<u8>,
-        value: Vec<u8>,
-        gas_price: Vec<u8>,
-        gas_limit: u64,
-        data: Vec<u8>,
-        rlp: Vec<u8>,
-    }
-
-    struct ReceiptRlp {
-        data: Vec<u8>,
-    }
-
-    struct FinalChainExecutionRequest {
-        pbft_block_rlp: Vec<u8>,
-        transactions: Vec<FinalizationTransaction>,
-        finalized_dag_blocks: Vec<FinalizationDagBlock>,
-        blocks_per_year: u32,
-        cert_votes: Vec<RewardsCertVoteFact>,
-        block_gas_limit: u64,
-        mode: u8,
-    }
-
-    struct FinalChainEvmTransactionInput {
-        position: u64,
-        hash: [u8; 32],
-        sender: [u8; 20],
-        receiver_found: bool,
-        receiver: [u8; 20],
-        /// Canonical minimal big-endian transaction nonce (empty means zero).
-        nonce: Vec<u8>,
-        value: Vec<u8>,
-        gas_price: Vec<u8>,
-        gas_limit: u64,
-        data: Vec<u8>,
-        rlp: Vec<u8>,
-        kind: u8,
-        is_system: bool,
-    }
-
-    struct FinalChainSystemTransactionRequest {
-        request_id: [u8; 32],
-        period: u64,
-        regular_transaction_count: u64,
-    }
-
-    struct FinalChainSystemTransactionReport {
-        request_id: [u8; 32],
-        period: u64,
-        transactions: Vec<TxRlp>,
-    }
-
-    struct FinalChainSystemTransactionPlanFact {
-        request_id: [u8; 32],
-        period: u64,
-        is_pillar_block_period: bool,
-        bridge_contract_address: [u8; 20],
-        bridge_contract_found: bool,
-        bridge_contract_has_code: bool,
-        should_finalize_epoch: bool,
-        /// Canonical minimal big-endian system-account nonce (empty means zero).
-        system_account_nonce: Vec<u8>,
-        block_gas_limit: u64,
-    }
-
-    struct FinalChainSystemTransactionPlan {
-        request_id: [u8; 32],
-        period: u64,
-        transactions: Vec<TxRlp>,
-    }
-
-    struct FinalChainEvmExecutionRequest {
-        request_id: [u8; 32],
-        period: u64,
-        block_author: [u8; 20],
-        timestamp: u64,
-        block_gas_limit: u64,
-        transactions: Vec<FinalChainEvmTransactionInput>,
-    }
-
     struct FinalChainEvmLogTopic {
         topic: [u8; 32],
     }
@@ -1031,87 +916,6 @@ pub mod rustaxa_ffi {
         address: [u8; 20],
         topics: Vec<FinalChainEvmLogTopic>,
         data: Vec<u8>,
-    }
-
-    struct FinalChainEvmTransactionResult {
-        position: u64,
-        hash: [u8; 32],
-        status: u8,
-        gas_used: u64,
-        cumulative_gas_used: u64,
-        receipt_rlp: Vec<u8>,
-        logs: Vec<FinalChainEvmLog>,
-        new_contract_address_found: bool,
-        new_contract_address: [u8; 20],
-        code_error: String,
-        consensus_error: String,
-    }
-
-    struct FinalChainEvmExecutionReport {
-        request_id: [u8; 32],
-        status: u8,
-        state_root: [u8; 32],
-        cumulative_gas_used: u64,
-        results: Vec<FinalChainEvmTransactionResult>,
-    }
-
-    struct FinalChainEvmRewardsRequest {
-        request_id: [u8; 32],
-        period: u64,
-        block_author: [u8; 20],
-        block_gas_used: u64,
-        transaction_gas_used: Vec<u64>,
-        transaction_fees: Vec<ReceiptRlp>,
-        finalized_dag_block_count: u64,
-        distribution_stats: Vec<PeriodRlp>,
-    }
-
-    struct FinalChainEvmRewardsReport {
-        request_id: [u8; 32],
-        period: u64,
-        status: u8,
-        state_root: [u8; 32],
-        total_reward: Vec<u8>,
-    }
-
-    /// Minimal CXX report after external reward execution is accepted by Rust.
-    ///
-    /// The full external-EVM commit plan remains session-owned Rust state; C++
-    /// only needs correlation fields and any validation error before calling
-    /// the one-shot state-commit preparation API.
-    struct FinalChainExternalEvmCommitReport {
-        request_id: [u8; 32],
-        period: u64,
-        error_code: String,
-    }
-
-    struct FinalChainProposalPeriodDagLevelUpdate {
-        has_update: bool,
-        level: u64,
-    }
-
-    struct FinalChainExternalEvmStateCommitIntent {
-        request_id: [u8; 32],
-        plan_id: [u8; 32],
-        period: u64,
-        publication_block_hash: [u8; 32],
-        status: u8,
-        error_code: String,
-    }
-
-    struct FinalChainExternalEvmStateCommitResult {
-        status: u8,
-        error_code: String,
-    }
-
-    struct FinalChainExternalEvmCommitDecision {
-        request_id: [u8; 32],
-        plan_id: [u8; 32],
-        decision_id: [u8; 32],
-        period: u64,
-        publication_block_hash: [u8; 32],
-        status: u8,
-        error_code: String,
     }
 
     struct FinalChainExternalEvmPublicationReport {
@@ -1124,28 +928,6 @@ pub mod rustaxa_ffi {
         dpos_snapshot_status: u8,
         account_snapshot_status: u8,
         status: u8,
-        error_code: String,
-    }
-
-    struct FinalChainExecutionStep {
-        status: u8,
-        action: u8,
-        period: u64,
-        external_evm_transaction_count: u64,
-        evm_request: FinalChainEvmExecutionRequest,
-        evm_rewards_request: FinalChainEvmRewardsRequest,
-        system_transaction_request: FinalChainSystemTransactionRequest,
-        error_code: String,
-    }
-
-    struct FinalChainExecutionCommitReport {
-        status: u8,
-        period: u64,
-        block_header_rlp: Vec<u8>,
-        receipts: Vec<ReceiptRlp>,
-        gas_used: u64,
-        executed_dag_blocks: u64,
-        executed_transactions: u64,
         error_code: String,
     }
 
@@ -1202,12 +984,6 @@ pub mod rustaxa_ffi {
         is_system: bool,
         block_hash_found: bool,
         block_hash: [u8; 32],
-    }
-
-    struct FinalizationDagBlock {
-        author: [u8; 20],
-        difficulty: u16,
-        transaction_hashes: Vec<DagHash>,
     }
 
     struct SortitionRuntimeConfig {
@@ -1589,6 +1365,7 @@ pub mod rustaxa_ffi {
             dag_proposer: DagProposerConfig,
             final_chain_block_gas_limit: u64,
             final_chain_genesis_timestamp: u64,
+            final_chain_bridge_contract_address: [u8; 20],
             final_chain_genesis_accounts: Vec<GenesisAccount>,
             final_chain_genesis_validators: Vec<GenesisValidator>,
             final_chain_genesis_dpos_config: GenesisDposConfig,
@@ -1656,9 +1433,6 @@ pub mod rustaxa_ffi {
         ) -> Result<Vec<u8>>;
         pub fn get_transaction_count(self: &BridgeConsensusApplication, period: u64)
             -> Result<u64>;
-        pub fn get_execution_status(
-            self: &BridgeConsensusApplication,
-        ) -> Result<FinalChainExecutionStatus>;
         pub fn get_blocks_with_bloom(
             self: &BridgeConsensusApplication,
             bloom: &[u8; 256],
@@ -1700,62 +1474,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusApplication,
             request: FinalChainCall,
         ) -> Result<FinalChainCallOutcome>;
-        type BridgeFinalChainExecutionSession;
-        pub fn create_final_chain_execution_session(
-            request: FinalChainExecutionRequest,
-        ) -> Result<Box<BridgeFinalChainExecutionSession>>;
         pub fn recover_external_evm_pending_publication(
             self: &BridgeConsensusApplication,
             committed_period: u64,
             committed_state_root: &[u8; 32],
-        ) -> Result<FinalChainExternalEvmPublicationReport>;
-        type BridgeConsensusExecutionApi;
-        pub fn create_consensus_execution_api() -> Result<Box<BridgeConsensusExecutionApi>>;
-        pub fn consensus_execution_plan_system_transactions(
-            self: &BridgeConsensusExecutionApi,
-            fact: FinalChainSystemTransactionPlanFact,
-        ) -> Result<FinalChainSystemTransactionPlan>;
-        pub fn consensus_execution_commit_session(
-            self: &BridgeConsensusExecutionApi,
-            runtime: &BridgeConsensusApplication,
-            session: Box<BridgeFinalChainExecutionSession>,
-        ) -> Result<FinalChainExecutionCommitReport>;
-        pub fn consensus_execution_next_execution_request(
-            self: &BridgeConsensusExecutionApi,
-            session: &mut BridgeFinalChainExecutionSession,
-        ) -> Result<FinalChainExecutionStep>;
-        pub fn consensus_execution_report_execution_result(
-            self: &BridgeConsensusExecutionApi,
-            runtime: &BridgeConsensusApplication,
-            session: &mut BridgeFinalChainExecutionSession,
-            report: FinalChainEvmExecutionReport,
-        ) -> Result<FinalChainExecutionStep>;
-        pub fn consensus_execution_report_system_transactions(
-            self: &BridgeConsensusExecutionApi,
-            session: &mut BridgeFinalChainExecutionSession,
-            report: FinalChainSystemTransactionReport,
-        ) -> Result<FinalChainExecutionStep>;
-        pub fn consensus_execution_report_rewards_result(
-            self: &BridgeConsensusExecutionApi,
-            session: &mut BridgeFinalChainExecutionSession,
-            report: FinalChainEvmRewardsReport,
-        ) -> Result<FinalChainExternalEvmCommitReport>;
-        pub fn consensus_execution_prepare_external_evm_state_commit(
-            self: &BridgeConsensusExecutionApi,
-            runtime: &BridgeConsensusApplication,
-            session: &mut BridgeFinalChainExecutionSession,
-            proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
-        ) -> Result<FinalChainExternalEvmStateCommitIntent>;
-        pub fn consensus_execution_report_state_commit_result(
-            self: &BridgeConsensusExecutionApi,
-            runtime: &BridgeConsensusApplication,
-            session: &mut BridgeFinalChainExecutionSession,
-            result: FinalChainExternalEvmStateCommitResult,
-        ) -> Result<FinalChainExternalEvmCommitDecision>;
-        pub fn consensus_execution_publish_state_commit(
-            self: &BridgeConsensusExecutionApi,
-            runtime: &BridgeConsensusApplication,
-            session: &mut BridgeFinalChainExecutionSession,
         ) -> Result<FinalChainExternalEvmPublicationReport>;
         pub fn get_transaction_rlps(
             self: &BridgeConsensusApplication,

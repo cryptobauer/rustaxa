@@ -64,6 +64,7 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const CONSENSUS_OBSERVATION_KIND_PILLAR_BLOCK: u8 = 3;
+const CONSENSUS_OBSERVATION_KIND_FINALIZED_BLOCK: u8 = 4;
 
 /// Stable identity of one host effect within a restartable runtime generation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -304,6 +305,8 @@ pub struct DagVdfCancelReport {
 pub struct ConsensusObservationRequest {
     pub effect_id: ConsensusEffectId,
     pub kind: u8,
+    /// Finalized period for block observations; zero for other event kinds.
+    pub period: u64,
     pub hash: [u8; 32],
     pub canonical_rlp: Vec<u8>,
 }
@@ -335,6 +338,9 @@ pub struct EvmFinalizationRequest {
     pub effect_id: ConsensusEffectId,
     pub period_data_rlp: Vec<u8>,
     pub previous_cert_vote_rlps: Vec<Vec<u8>>,
+    /// Optional host-supplied legacy vote weights. Native callers leave this
+    /// empty and use the weight embedded in canonical vote RLP.
+    pub previous_cert_vote_weights: Vec<u64>,
     pub finalized_dag_hashes: Vec<[u8; 32]>,
     pub blocks_per_year: u32,
     pub synchronous: bool,
@@ -498,12 +504,42 @@ pub trait ConsensusObserverPort {
     fn observe(&self, request: &ConsensusObservationRequest) -> Result<ConsensusObservationReport>;
 }
 
-/// Concrete external-EVM leaf; sequencing and publication remain native.
+/// Concrete external-EVM leaves; sequencing and publication remain native.
 pub trait ConsensusExecutionPort {
-    fn execute_finalization(
+    fn load_final_chain_committed_state(
         &self,
-        request: &EvmFinalizationRequest,
-    ) -> Result<EvmFinalizationReport>;
+        _request: &crate::FinalChainExternalEvmPreflightRequest,
+    ) -> Result<crate::FinalChainExternalEvmPreflightReport> {
+        bail!("CONSENSUS_FINAL_CHAIN_PREFLIGHT_PORT_UNAVAILABLE")
+    }
+
+    fn load_system_transaction_facts(
+        &self,
+        _request: &crate::FinalChainSystemTransactionFactsRequest,
+    ) -> Result<crate::FinalChainSystemTransactionPlanFact> {
+        bail!("CONSENSUS_SYSTEM_TRANSACTION_FACTS_PORT_UNAVAILABLE")
+    }
+
+    fn execute_final_chain_transactions(
+        &self,
+        _request: &crate::FinalChainEvmExecutionRequest,
+    ) -> Result<crate::FinalChainEvmExecutionReport> {
+        bail!("CONSENSUS_FINAL_CHAIN_EXECUTION_PORT_UNAVAILABLE")
+    }
+
+    fn distribute_final_chain_rewards(
+        &self,
+        _request: &crate::FinalChainEvmRewardsRequest,
+    ) -> Result<crate::FinalChainEvmRewardsReport> {
+        bail!("CONSENSUS_FINAL_CHAIN_REWARDS_PORT_UNAVAILABLE")
+    }
+
+    fn commit_final_chain_state(
+        &self,
+        _request: &crate::FinalChainExternalEvmStateCommitIntent,
+    ) -> Result<crate::FinalChainExternalEvmStateCommitResult> {
+        bail!("CONSENSUS_FINAL_CHAIN_STATE_COMMIT_PORT_UNAVAILABLE")
+    }
 
     /// Loads the exact finalized state needed for restart pillar construction.
     fn load_pillar_anchor_state(
@@ -523,6 +559,43 @@ pub trait ConsensusExecutionPort {
         _request: &DagGasEstimateRequest,
     ) -> Result<DagGasEstimateReport> {
         bail!("CONSENSUS_DAG_GAS_PORT_UNAVAILABLE")
+    }
+}
+
+impl<T: ConsensusExecutionPort> crate::FinalChainExecutionLeaf for T {
+    fn load_committed_state_descriptor(
+        &self,
+        request: &crate::FinalChainExternalEvmPreflightRequest,
+    ) -> Result<crate::FinalChainExternalEvmPreflightReport> {
+        self.load_final_chain_committed_state(request)
+    }
+
+    fn load_system_transaction_facts(
+        &self,
+        request: &crate::FinalChainSystemTransactionFactsRequest,
+    ) -> Result<crate::FinalChainSystemTransactionPlanFact> {
+        ConsensusExecutionPort::load_system_transaction_facts(self, request)
+    }
+
+    fn execute_transactions(
+        &self,
+        request: &crate::FinalChainEvmExecutionRequest,
+    ) -> Result<crate::FinalChainEvmExecutionReport> {
+        self.execute_final_chain_transactions(request)
+    }
+
+    fn distribute_rewards(
+        &self,
+        request: &crate::FinalChainEvmRewardsRequest,
+    ) -> Result<crate::FinalChainEvmRewardsReport> {
+        self.distribute_final_chain_rewards(request)
+    }
+
+    fn commit_staged_state(
+        &self,
+        request: &crate::FinalChainExternalEvmStateCommitIntent,
+    ) -> Result<crate::FinalChainExternalEvmStateCommitResult> {
+        self.commit_final_chain_state(request)
     }
 }
 
@@ -618,6 +691,8 @@ pub struct ConsensusApplicationRuntime {
     polling_interval_ms: u64,
     dag_proposers: Vec<DagProposerSessionBeginInput>,
     dag_proposer_config: DagProposerConfig,
+    bridge_contract_address: [u8; 20],
+    max_levels_per_period: u64,
 }
 
 impl ConsensusApplicationRuntime {
@@ -645,6 +720,25 @@ impl ConsensusApplicationRuntime {
         polling_interval_ms: u64,
         dag_proposers: Vec<DagProposerSessionBeginInput>,
         dag_proposer_config: DagProposerConfig,
+    ) -> Result<Self> {
+        Self::new_with_proposers_and_execution(
+            signing_identities,
+            polling_interval_ms,
+            dag_proposers,
+            dag_proposer_config,
+            [0; 20],
+            0,
+        )
+    }
+
+    /// Constructs the production runtime with exact FinalChain execution policy.
+    pub fn new_with_proposers_and_execution(
+        signing_identities: Vec<SigningIdentity>,
+        polling_interval_ms: u64,
+        dag_proposers: Vec<DagProposerSessionBeginInput>,
+        dag_proposer_config: DagProposerConfig,
+        bridge_contract_address: [u8; 20],
+        max_levels_per_period: u64,
     ) -> Result<Self> {
         ensure!(
             polling_interval_ms > 0,
@@ -677,6 +771,8 @@ impl ConsensusApplicationRuntime {
             polling_interval_ms,
             dag_proposers,
             dag_proposer_config,
+            bridge_contract_address,
+            max_levels_per_period,
         })
     }
 
@@ -870,36 +966,76 @@ impl ConsensusApplicationRuntime {
         Ok(report)
     }
 
-    #[allow(
-        dead_code,
-        reason = "used by the pending native finalization composition"
-    )]
-    fn execute_finalization<E: ConsensusExecutionPort>(
+    pub(crate) fn execute_final_chain_task<E: ConsensusExecutionPort>(
         &self,
-        generation: u64,
+        pbft: &PbftService,
+        final_chain: &FinalChain,
         request: EvmFinalizationRequest,
         evm: &E,
-    ) -> Result<EvmFinalizationReport> {
-        let report = self.execute_finalization_effect(generation, request, evm)?;
+    ) -> Result<crate::FinalChainApplicationExecutionReport> {
+        let execution_request =
+            crate::pbft_application_finalization::final_chain_execution_request_from_period_data(
+                &request.period_data_rlp,
+                &request.previous_cert_vote_rlps,
+                &request.previous_cert_vote_weights,
+                request.blocks_per_year,
+                final_chain.block_gas_limit(),
+            )?;
+        let period = rustaxa_types::PbftBlockMetadata::try_from(
+            rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp::new(
+                &execution_request.pbft_block_rlp,
+            ),
+        )?
+        .period;
+        let period: rustaxa_types::FinalChainBlockNumber = period.into();
+        let expected_next = final_chain
+            .committed_state_descriptor()?
+            .period
+            .checked_next()
+            .context("FINAL_CHAIN_RUNTIME_PRIOR_PERIOD_OVERFLOW")?;
         ensure!(
-            report.succeeded,
-            "CONSENSUS_RUNTIME_FINALIZATION_FAILED: {}",
-            report.error_code
+            period == expected_next,
+            "FINAL_CHAIN_RUNTIME_NON_CONSECUTIVE_PERIOD: expected {}, requested {}",
+            expected_next.as_u64(),
+            period.as_u64()
         );
-        Ok(report)
-    }
-
-    fn execute_finalization_effect<E: ConsensusExecutionPort>(
-        &self,
-        generation: u64,
-        mut request: EvmFinalizationRequest,
-        evm: &E,
-    ) -> Result<EvmFinalizationReport> {
-        let id = self.next_effect(generation)?;
-        request.effect_id = id;
-        let report = evm.execute_finalization(&request)?;
-        self.validate_report(id, report.effect_id)?;
-        Ok(report)
+        final_chain.ensure_period_data(period, &request.period_data_rlp)?;
+        let proposal_period_update = if request.anchor_block_rlp.is_empty() {
+            crate::FinalChainProposalPeriodDagLevelUpdate::default()
+        } else {
+            let anchor = rustaxa_types::DagBlock::try_from(
+                rustaxa_types::codec::rlp::dag::DagBlockRlp::new(&request.anchor_block_rlp),
+            )?;
+            crate::FinalChainProposalPeriodDagLevelUpdate {
+                has_update: true,
+                level: anchor
+                    .level
+                    .checked_add(self.max_levels_per_period)
+                    .context("FINAL_CHAIN_PROPOSAL_PERIOD_LEVEL_OVERFLOW")?,
+            }
+        };
+        let (ficus_activation, pillar_interval) = pbft.pillar_schedule();
+        let system_period = period
+            .as_u64()
+            .checked_add(final_chain.dpos_delegation_delay())
+            .context("FINAL_CHAIN_SYSTEM_PERIOD_OVERFLOW")?;
+        let first_pillar_period = if ficus_activation == 0 {
+            pillar_interval
+        } else {
+            ficus_activation
+        };
+        let is_pillar_block_period = ficus_activation != u64::MAX
+            && pillar_interval > 0
+            && system_period >= first_pillar_period
+            && system_period % pillar_interval == 0;
+        crate::execute_final_chain_application_task(
+            final_chain,
+            execution_request,
+            proposal_period_update,
+            is_pillar_block_period,
+            self.bridge_contract_address,
+            evm,
+        )
     }
 
     fn load_account_facts<E: ConsensusExecutionPort>(
@@ -953,10 +1089,33 @@ impl ConsensusApplicationRuntime {
         if let Ok(report) = observer.observe(&ConsensusObservationRequest {
             effect_id,
             kind: CONSENSUS_OBSERVATION_KIND_PILLAR_BLOCK,
+            period: 0,
             hash: observation.block_hash,
             canonical_rlp: observation.block_data_rlp.clone(),
         }) {
             let _ = self.validate_report(effect_id, report.effect_id);
+        }
+    }
+
+    /// Publishes an already-durable FinalChain block identity. Consumers load
+    /// public block/transaction/receipt data through `ConsensusQueryApi`.
+    fn observe_finalized_block<O: ConsensusObserverPort>(
+        &self,
+        generation: u64,
+        report: &crate::FinalChainApplicationExecutionReport,
+        observer: &O,
+    ) {
+        let Ok(effect_id) = self.next_effect(generation) else {
+            return;
+        };
+        if let Ok(ack) = observer.observe(&ConsensusObservationRequest {
+            effect_id,
+            kind: CONSENSUS_OBSERVATION_KIND_FINALIZED_BLOCK,
+            period: report.period.as_u64(),
+            hash: report.block_hash,
+            canonical_rlp: Vec::new(),
+        }) {
+            let _ = self.validate_report(effect_id, ack.effect_id);
         }
     }
 
@@ -1249,6 +1408,7 @@ impl ConsensusApplicationRuntime {
                     if let Ok(report) = observer.observe(&ConsensusObservationRequest {
                         effect_id: id,
                         kind: 2,
+                        period: 0,
                         hash: signed.block_hash.0,
                         canonical_rlp: signed.block_rlp.clone(),
                     }) {
@@ -1288,7 +1448,7 @@ impl ConsensusApplicationRuntime {
         result
     }
 
-    fn drive_application_finalization<E, S, T>(
+    fn drive_application_finalization<E, S, T, O>(
         &self,
         generation: u64,
         request: &PbftApplicationFinalizationRequest,
@@ -1299,11 +1459,13 @@ impl ConsensusApplicationRuntime {
         signer: &S,
         transport: &T,
         evm: &E,
+        observer: &O,
     ) -> Result<bool>
     where
         E: ConsensusExecutionPort,
         S: ConsensusSigningPort,
         T: ConsensusTransportPort,
+        O: ConsensusObserverPort,
     {
         loop {
             step = match step {
@@ -1431,12 +1593,14 @@ impl ConsensusApplicationRuntime {
                     next
                 }
                 PbftApplicationFinalizationStep::Evm(effect) => {
-                    let report = self.execute_finalization_effect(
-                        generation,
+                    let report = self.execute_final_chain_task(
+                        pbft,
+                        final_chain,
                         EvmFinalizationRequest {
                             effect_id: ConsensusEffectId::default(),
                             period_data_rlp: effect.period_data_rlp,
                             previous_cert_vote_rlps: effect.previous_cert_vote_rlps,
+                            previous_cert_vote_weights: Vec::new(),
                             finalized_dag_hashes: effect.finalized_dag_hashes,
                             blocks_per_year: effect.blocks_per_year,
                             synchronous: effect.synchronous,
@@ -1444,8 +1608,11 @@ impl ConsensusApplicationRuntime {
                         },
                         evm,
                     )?;
-                    let succeeded = report.succeeded;
+                    let succeeded = report.error_code.is_empty();
                     let failure = report.error_code.clone();
+                    if succeeded {
+                        self.observe_finalized_block(generation, &report, observer);
+                    }
                     let next = report_pbft_application_finalization_evm(
                         pbft,
                         dag,
@@ -1453,9 +1620,9 @@ impl ConsensusApplicationRuntime {
                         request,
                         PbftApplicationEvmReport {
                             cursor: effect.cursor,
-                            succeeded: report.succeeded,
+                            succeeded,
                             status: report.status,
-                            last_block_number: report.last_block_number,
+                            last_block_number: report.period.as_u64(),
                             error_code: report.error_code,
                         },
                     )?;
@@ -1638,12 +1805,13 @@ impl ConsensusApplicationRuntime {
             let startup =
                 prepare_consensus_startup(pbft, dag_transaction, final_chain, &signing_addresses)?;
             for request in startup.finalizations.iter().cloned() {
-                let report = self.execute_finalization(generation, request, evm)?;
+                let report = self.execute_final_chain_task(pbft, final_chain, request, evm)?;
                 ensure!(
-                    report.succeeded,
+                    report.error_code.is_empty(),
                     "CONSENSUS_RUNTIME_STARTUP_FINALIZATION_FAILED: {}",
                     report.error_code
                 );
+                self.observe_finalized_block(generation, &report, observer);
             }
             ensure!(
                 pbft.finalization_ready(final_chain)?,
@@ -1969,6 +2137,7 @@ impl ConsensusApplicationRuntime {
                                             signer,
                                             transport,
                                             evm,
+                                            observer,
                                         )? {
                                             PbftManagerRuntimeActionResultCode::ProgressRestartLoop
                                         } else {
@@ -2429,6 +2598,7 @@ impl ConsensusApplicationRuntime {
                                     signer,
                                     transport,
                                     evm,
+                                    observer,
                                 )
                             },
                         ) {
@@ -2663,24 +2833,6 @@ mod tests {
     }
 
     impl ConsensusExecutionPort for FakeEvm {
-        fn execute_finalization(
-            &self,
-            request: &EvmFinalizationRequest,
-        ) -> Result<EvmFinalizationReport> {
-            Ok(EvmFinalizationReport {
-                effect_id: ConsensusEffectId {
-                    generation: request.effect_id.generation,
-                    sequence: request.effect_id.sequence + u64::from(self.stale),
-                },
-                succeeded: self.succeed,
-                status: u8::from(!self.succeed),
-                last_block_number: 1,
-                error_code: (!self.succeed)
-                    .then_some("EVM_REJECTED".into())
-                    .unwrap_or_default(),
-            })
-        }
-
         fn load_pillar_anchor_state(
             &self,
             request: &PillarAnchorStateRequest,
@@ -2893,6 +3045,31 @@ mod tests {
     }
 
     #[test]
+    fn finalized_block_observer_uses_kind_four_identity_and_is_best_effort() {
+        let runtime = ConsensusApplicationRuntime::new(vec![identity()], 100).unwrap();
+        let generation = runtime.begin_run().unwrap();
+        let report = crate::FinalChainApplicationExecutionReport {
+            period: 7u64.into(),
+            block_hash: [8; 32],
+            ..Default::default()
+        };
+        for (fail, stale) in [(false, false), (true, false), (false, true)] {
+            let observer = RecordingObserver {
+                requests: Mutex::new(Vec::new()),
+                fail,
+                stale,
+            };
+            runtime.observe_finalized_block(generation, &report, &observer);
+            let requests = observer.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].kind, CONSENSUS_OBSERVATION_KIND_FINALIZED_BLOCK);
+            assert_eq!(requests[0].period, 7);
+            assert_eq!(requests[0].hash, report.block_hash);
+            assert!(requests[0].canonical_rlp.is_empty());
+        }
+    }
+
+    #[test]
     fn signing_inventory_is_public_dense_and_secret_free() {
         let runtime = ConsensusApplicationRuntime::new(vec![identity()], 1).unwrap();
         assert_eq!(runtime.signing_identities()[0].address, [1; 20]);
@@ -3025,45 +3202,6 @@ mod tests {
             expected
         );
         assert_eq!(transport.calls.load(Ordering::Acquire), 2);
-    }
-
-    #[test]
-    fn evm_finalization_failure_and_stale_report_fail_closed() {
-        let runtime = ConsensusApplicationRuntime::new(vec![identity()], 1).unwrap();
-        let generation = runtime.begin_run().unwrap();
-        let request = EvmFinalizationRequest {
-            effect_id: ConsensusEffectId::default(),
-            period_data_rlp: vec![1],
-            previous_cert_vote_rlps: vec![],
-            finalized_dag_hashes: vec![],
-            blocks_per_year: 1,
-            synchronous: true,
-            anchor_block_rlp: vec![],
-        };
-        assert!(
-            runtime
-                .execute_finalization(
-                    generation,
-                    request.clone(),
-                    &FakeEvm {
-                        succeed: false,
-                        stale: false
-                    }
-                )
-                .is_err()
-        );
-        assert!(
-            runtime
-                .execute_finalization(
-                    generation,
-                    request,
-                    &FakeEvm {
-                        succeed: true,
-                        stale: true
-                    }
-                )
-                .is_err()
-        );
     }
 
     #[test]

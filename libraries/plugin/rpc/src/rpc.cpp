@@ -21,7 +21,9 @@
 #endif
 
 #ifdef RUSTAXA_ENABLE
+#include "common/encoding_rlp.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "transaction/system_transaction.hpp"
 #endif
 
 namespace taraxa::plugin {
@@ -30,6 +32,43 @@ namespace bpo = boost::program_options;
 constexpr auto THREADS = "rpc.threads";
 constexpr auto ENABLE_TEST_RPC = "rpc.enable-test-rpc";
 constexpr auto ENABLE_DEBUG = "rpc.debug";
+
+#ifdef RUSTAXA_ENABLE
+namespace {
+std::shared_ptr<final_chain::FinalizationResult> finalizedResultFromQuery(
+    const ConsensusQueryClient &query, const FinalizedBlockObservation &observation) {
+  const auto block_view = (*query)->consensus_query_final_chain_block_by_number(observation.period);
+  if (!block_view.found || block_view.hash != observation.block_hash.asArray()) {
+    throw std::runtime_error("FINALIZED_BLOCK_OBSERVER_QUERY_MISMATCH");
+  }
+  const auto header_bytes = dev::bytes(block_view.header_rlp.begin(), block_view.header_rlp.end());
+  auto header = final_chain::BlockHeader::fromRLP(dev::RLP(header_bytes));
+  SharedTransactions transactions;
+  TransactionReceipts receipts;
+  const auto receipt_views = (*query)->consensus_query_transaction_receipts_by_block_number(observation.period);
+  transactions.reserve(receipt_views.size());
+  receipts.reserve(receipt_views.size());
+  for (const auto &view : receipt_views) {
+    if (!view.found || view.block_number != observation.period) {
+      throw std::runtime_error("FINALIZED_BLOCK_RECEIPT_QUERY_MISMATCH");
+    }
+    const auto transaction_rlp = dev::bytes(view.transaction_rlp.begin(), view.transaction_rlp.end());
+    std::shared_ptr<Transaction> transaction = view.is_system
+        ? std::static_pointer_cast<Transaction>(std::make_shared<SystemTransaction>(transaction_rlp))
+        : std::make_shared<Transaction>(transaction_rlp);
+    if (transaction->getHash().asArray() != view.transaction_hash) {
+      throw std::runtime_error("FINALIZED_BLOCK_TRANSACTION_HASH_MISMATCH");
+    }
+    const auto receipt_rlp = dev::bytes(view.receipt_rlp.begin(), view.receipt_rlp.end());
+    transactions.push_back(std::move(transaction));
+    receipts.push_back(util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_rlp)));
+  }
+  return std::make_shared<final_chain::FinalizationResult>(final_chain::FinalizationResult{
+      {header->author, header->timestamp, {}, header->hash}, std::move(header), std::move(transactions),
+      std::move(receipts)});
+}
+}  // namespace
+#endif
 
 void Rpc::init(const boost::program_options::variables_map &opts) {
   if (!opts[THREADS].empty()) {
@@ -275,14 +314,17 @@ void Rpc::start() {
       jsonrpc_ws_->run();
     }
     if (!conf.db_config.rebuild_db) {
+#ifdef RUSTAXA_ENABLE
+      app()->getConsensusApplication()->finalizedBlockObserved().subscribe(
+          [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_), query = consensus_query_api]
+          (const FinalizedBlockObservation &observation) {
+            const auto res = finalizedResultFromQuery(query, observation);
+#else
       app()->getFinalChain()->block_finalized_.subscribe(
           [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_)
-#ifndef RUSTAXA_ENABLE
            , db = as_weak(app()->getDB())
-#else
-           , query = consensus_query_api
-#endif
       ](const auto &res) {
+#endif
             if (auto _eth_json_rpc = eth_json_rpc.lock()) {
               _eth_json_rpc->note_block_executed(*res->final_chain_blk, res->trxs, res->trx_receipts);
             }

@@ -34,9 +34,14 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
     if (!node) {
       throw std::runtime_error("LIGHT_HISTORY_API_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    node->getConsensusApplication()->finalizedBlockObserved().subscribe(
+        [callback = std::move(callback)](const FinalizedBlockObservation&) { callback(); }, std::move(executor));
+#else
     node->getFinalChain()->block_finalized_.subscribe(
         [callback = std::move(callback)](std::shared_ptr<final_chain::FinalizationResult>) { callback(); },
         std::move(executor));
+#endif
   };
   api.history_facts = [app] {
     auto node = app.lock();

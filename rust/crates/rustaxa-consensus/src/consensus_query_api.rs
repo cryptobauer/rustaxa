@@ -183,6 +183,8 @@ pub struct FinalChainBlockView {
     pub log_bloom: Vec<u8>,
     pub gas_used: u64,
     pub total_reward: [u8; 32],
+    /// Canonical fully materialized legacy header RLP when a live application root is attached.
+    pub header_rlp: Vec<u8>,
     pub stored_header_rlp: Vec<u8>,
     pub has_pbft_hash: bool,
     pub pbft_block_hash: [u8; 32],
@@ -618,6 +620,10 @@ impl ConsensusQueryApi {
             StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&stored_header_rlp))
                 .context("CONSENSUS_QUERY_FINAL_CHAIN_HEADER")?;
         let pbft_hash = self.pbft_block_hash_by_period(number)?;
+        let header_rlp = match &self.live_final_chain {
+            Some(final_chain) => final_chain.block_header(number.into())?.unwrap_or_default(),
+            None => Vec::new(),
+        };
 
         Ok(FinalChainBlockView {
             found: true,
@@ -631,6 +637,7 @@ impl ConsensusQueryApi {
             log_bloom: stored_header.log_bloom.as_ref().to_vec(),
             gas_used: stored_header.gas_used.as_u64(),
             total_reward: stored_header.total_reward.to_fixed_be_bytes(),
+            header_rlp,
             stored_header_rlp,
             has_pbft_hash: pbft_hash.found,
             pbft_block_hash: pbft_hash.hash,
@@ -1174,27 +1181,61 @@ impl ConsensusQueryApi {
             return Ok(TransactionView::default());
         }
         let transaction_index = transaction_index as u32;
-        if u64::from(transaction_index) >= self.storage.transaction().count(block_number)? {
+        let regular_count = self.storage.transaction().count(block_number)?;
+        if u64::from(transaction_index) >= self.transaction_count_by_block_number(block_number)? {
             return Ok(TransactionView::default());
         }
-        let Some(transaction_rlp) = self
-            .storage
-            .transaction()
-            .by_period_position_rlp(block_number, transaction_index)
-            .context("CONSENSUS_QUERY_TRANSACTION_INDEX_PAYLOAD")?
-        else {
-            return Ok(TransactionView::default());
-        };
-        let hash: [u8; 32] = keccak256(&transaction_rlp).into();
+        let (hash, source, is_system, transaction_rlp) =
+            if u64::from(transaction_index) < regular_count {
+                let Some(transaction_rlp) = self
+                    .storage
+                    .transaction()
+                    .by_period_position_rlp(block_number, transaction_index)
+                    .context("CONSENSUS_QUERY_TRANSACTION_INDEX_PAYLOAD")?
+                else {
+                    return Ok(TransactionView::default());
+                };
+                (
+                    keccak256(&transaction_rlp).0,
+                    STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
+                    false,
+                    transaction_rlp,
+                )
+            } else {
+                let system_position = usize::try_from(u64::from(transaction_index) - regular_count)
+                    .context("CONSENSUS_QUERY_SYSTEM_TRANSACTION_INDEX")?;
+                let hash = *self
+                    .system_transaction_hashes(block_number)?
+                    .get(system_position)
+                    .context("CONSENSUS_QUERY_SYSTEM_TRANSACTION_HASH_INDEX")?;
+                let Some(transaction_rlp) = self
+                    .storage
+                    .transaction()
+                    .system_rlp(hash)
+                    .context("CONSENSUS_QUERY_SYSTEM_TRANSACTION_PAYLOAD")?
+                else {
+                    anyhow::bail!("CONSENSUS_QUERY_SYSTEM_TRANSACTION_MISSING");
+                };
+                anyhow::ensure!(
+                    keccak256(&transaction_rlp) == hash,
+                    "CONSENSUS_QUERY_SYSTEM_TRANSACTION_HASH_MISMATCH"
+                );
+                (
+                    hash.0,
+                    STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
+                    true,
+                    transaction_rlp,
+                )
+            };
 
         Ok(TransactionView {
             found: true,
             hash,
-            source: STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
+            source,
             location_found: true,
             block_number,
             transaction_index,
-            is_system: false,
+            is_system,
             block_hash_found: true,
             block_hash: block_hash.into(),
             transaction_rlp,
@@ -1233,8 +1274,9 @@ impl ConsensusQueryApi {
     /// Returns the finalized transaction count for a block number.
     ///
     /// Unknown blocks return zero, matching ETH RPC transaction-count behavior.
-    /// The count is read from Rust-owned period data and does not expose a
-    /// `FinalChain` object or transaction vector to public adapters.
+    /// The count includes regular period-data transactions followed by the
+    /// persisted system-transaction hash list, without exposing a `FinalChain`
+    /// object or transaction vector to public adapters.
     pub fn transaction_count_by_block_number(&self, block_number: u64) -> Result<u64> {
         if self
             .storage
@@ -1244,7 +1286,34 @@ impl ConsensusQueryApi {
         {
             return Ok(0);
         }
-        self.storage.transaction().count(block_number)
+        let regular = self.storage.transaction().count(block_number)?;
+        let system = self.system_transaction_hashes(block_number)?.len() as u64;
+        regular
+            .checked_add(system)
+            .context("CONSENSUS_QUERY_TRANSACTION_COUNT_OVERFLOW")
+    }
+
+    fn system_transaction_hashes(&self, block_number: u64) -> Result<Vec<H256>> {
+        let hashes_rlp = self
+            .storage
+            .transaction()
+            .period_system_hashes_rlp(block_number)
+            .context("CONSENSUS_QUERY_SYSTEM_TRANSACTION_HASHES")?;
+        if hashes_rlp.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hashes = Rlp::new(&hashes_rlp);
+        (0..hashes.item_count()?)
+            .map(|index| {
+                h256_bytes(
+                    hashes
+                        .at(index)
+                        .context("CONSENSUS_QUERY_SYSTEM_TRANSACTION_HASH_INDEX")?
+                        .data()
+                        .context("CONSENSUS_QUERY_SYSTEM_TRANSACTION_HASH")?,
+                )
+            })
+            .collect()
     }
 
     /// Returns the finalized transaction count for a block hash.
@@ -1318,7 +1387,7 @@ impl ConsensusQueryApi {
         self.transaction_receipt_for_transaction(transaction)
     }
 
-    /// Returns all public regular-transaction receipt views for a finalized block number.
+    /// Returns all public regular and system transaction receipt views for a finalized block number.
     ///
     /// Unknown blocks return an empty vector, matching `eth_getBlockReceipts`
     /// empty-array behavior. For known finalized blocks, the query resolves the
@@ -1945,6 +2014,14 @@ mod tests {
         receipts.out().to_vec()
     }
 
+    fn hash_list_rlp(hashes: &[H256]) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(hashes.len());
+        for hash in hashes {
+            stream.append(&hash.as_bytes());
+        }
+        stream.out().to_vec()
+    }
+
     fn signature(value: u8) -> [u8; 65] {
         let mut signature = [value; 65];
         signature[64] = value & 1;
@@ -2568,6 +2645,8 @@ mod tests {
         let block_hash = H256::from_low_u64_be(0x24);
         let first_rlp = vec![0x22];
         let second_rlp = vec![0x33];
+        let system_rlp = vec![0x44];
+        let system_hash = keccak256(&system_rlp);
 
         storage
             .period()
@@ -2576,6 +2655,14 @@ mod tests {
                 &period_data_with_transactions_rlp(&[first_rlp.clone(), second_rlp.clone()]),
             )
             .expect("period transaction payloads should persist");
+        storage
+            .transaction()
+            .write_system(system_hash, &system_rlp)
+            .expect("system transaction payload should persist");
+        storage
+            .transaction()
+            .write_period_system_hashes(12, &hash_list_rlp(&[system_hash]))
+            .expect("system transaction index should persist");
         storage
             .final_chain()
             .write_conformance_lookup_rows(
@@ -2616,16 +2703,24 @@ mod tests {
         assert!(by_hash.found);
         assert_eq!(by_hash.hash, keccak256(&first_rlp).0);
         assert_eq!(by_hash.transaction_rlp, first_rlp);
-        assert_eq!(api.transaction_count_by_block_number(12).unwrap(), 2);
+        let system = api
+            .transaction_by_block_number_and_index(12, 2)
+            .expect("system transaction index query should succeed");
+        assert!(system.found);
+        assert_eq!(system.hash, system_hash.0);
+        assert_eq!(system.source, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM);
+        assert!(system.is_system);
+        assert_eq!(system.transaction_rlp, system_rlp);
+        assert_eq!(api.transaction_count_by_block_number(12).unwrap(), 3);
         assert_eq!(
             api.transaction_count_by_block_hash(block_hash.0).unwrap(),
-            2
+            3
         );
         assert_eq!(api.transaction_count_by_block_number(99).unwrap(), 0);
         assert_eq!(api.transaction_count_by_block_hash([0x99; 32]).unwrap(), 0);
 
         assert!(
-            !api.transaction_by_block_number_and_index(12, 2)
+            !api.transaction_by_block_number_and_index(12, 3)
                 .unwrap()
                 .found
         );
@@ -2645,6 +2740,66 @@ mod tests {
     }
 
     #[test]
+    fn query_api_system_only_index_is_canonical_and_corruption_fails_closed() {
+        let (path, storage) = test_storage("system_only_transaction_view");
+        let api = ConsensusQueryApi::new(storage.clone());
+        let block_hash = H256::from_low_u64_be(0x31);
+        let system_rlp = vec![0x55];
+        let system_hash = keccak256(&system_rlp);
+        storage
+            .period()
+            .write(14, &period_data_with_transactions_rlp(&[]))
+            .unwrap();
+        storage
+            .transaction()
+            .write_system(system_hash, &system_rlp)
+            .unwrap();
+        storage
+            .transaction()
+            .write_period_system_hashes(14, &hash_list_rlp(&[system_hash]))
+            .unwrap();
+        storage
+            .final_chain()
+            .write_conformance_lookup_rows(
+                0,
+                b"meta",
+                14,
+                block_hash,
+                &[0xC0],
+                H256::zero(),
+                &[0xC0],
+                H256::zero(),
+                &[0xC0],
+                14,
+                &receipt_list_rlp(&[]),
+            )
+            .unwrap();
+
+        assert_eq!(api.transaction_count_by_block_number(14).unwrap(), 1);
+        let view = api.transaction_by_block_number_and_index(14, 0).unwrap();
+        assert!(view.found);
+        assert!(view.is_system);
+        assert_eq!(view.hash, system_hash.0);
+        assert_eq!(view.transaction_rlp, system_rlp);
+
+        storage
+            .transaction()
+            .write_period_system_hashes(14, &[0xC1, 0x01])
+            .unwrap();
+        assert!(api.transaction_count_by_block_number(14).is_err());
+
+        let missing_hash = H256::from_low_u64_be(0x99);
+        storage
+            .transaction()
+            .write_period_system_hashes(14, &hash_list_rlp(&[missing_hash]))
+            .unwrap();
+        assert!(api.transaction_by_block_number_and_index(14, 0).is_err());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn query_api_reads_transaction_receipt_view_from_storage() {
         let (path, storage) = test_storage("transaction_receipt_view");
         let api = ConsensusQueryApi::new(storage.clone());
@@ -2654,13 +2809,28 @@ mod tests {
         let block_hash = H256::from_low_u64_be(0x24);
         let fallback_block_hash = H256::from_low_u64_be(0x25);
         let trx_rlp = vec![0x31];
+        let system_rlp = vec![0x33];
+        let system_hash = keccak256(&system_rlp);
         let fallback_trx_rlp = vec![0x32];
         let receipt_rlp = vec![0x41];
+        let system_receipt_rlp = vec![0x43];
         let fallback_receipt_rlp = vec![0x42];
 
         storage
             .transaction()
             .write_location(trx_hash, 12, 0, false)
+            .unwrap();
+        storage
+            .transaction()
+            .write_location(system_hash, 12, 1, true)
+            .unwrap();
+        storage
+            .transaction()
+            .write_system(system_hash, &system_rlp)
+            .unwrap();
+        storage
+            .transaction()
+            .write_period_system_hashes(12, &hash_list_rlp(&[system_hash]))
             .unwrap();
         storage
             .period()
@@ -2682,7 +2852,7 @@ mod tests {
                 H256::zero(),
                 &[0xC0],
                 12,
-                &receipt_list_rlp(std::slice::from_ref(&receipt_rlp)),
+                &receipt_list_rlp(&[receipt_rlp.clone(), system_receipt_rlp.clone()]),
             )
             .unwrap();
 
@@ -2734,13 +2904,22 @@ mod tests {
         assert_eq!(fallback.block_hash, fallback_block_hash.0);
 
         let block_receipts = api.transaction_receipts_by_block_number(12).unwrap();
-        assert_eq!(block_receipts.len(), 1);
+        assert_eq!(block_receipts.len(), 2);
         assert_eq!(block_receipts[0].transaction_hash, keccak256(&trx_rlp).0);
         assert_eq!(block_receipts[0].transaction_rlp, trx_rlp);
         assert_eq!(block_receipts[0].receipt_rlp, receipt_rlp);
         assert_eq!(block_receipts[0].block_number, 12);
         assert_eq!(block_receipts[0].transaction_index, 0);
         assert_eq!(block_receipts[0].block_hash, block_hash.0);
+        assert_eq!(block_receipts[1].transaction_hash, system_hash.0);
+        assert_eq!(
+            block_receipts[1].transaction_source,
+            STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM
+        );
+        assert_eq!(block_receipts[1].transaction_rlp, system_rlp);
+        assert_eq!(block_receipts[1].receipt_rlp, system_receipt_rlp);
+        assert_eq!(block_receipts[1].transaction_index, 1);
+        assert!(block_receipts[1].is_system);
         assert!(
             api.transaction_receipts_by_block_number(99)
                 .unwrap()

@@ -172,6 +172,7 @@ pub fn create_consensus_application(
     dag_proposer: DagProposerConfig,
     final_chain_block_gas_limit: u64,
     final_chain_genesis_timestamp: u64,
+    final_chain_bridge_contract_address: [u8; 20],
     final_chain_genesis_accounts: Vec<GenesisAccount>,
     final_chain_genesis_validators: Vec<GenesisValidator>,
     final_chain_genesis_dpos_config: GenesisDposConfig,
@@ -195,6 +196,7 @@ pub fn create_consensus_application(
         final_chain: crate::final_chain::consensus_final_chain_config_from_ffi(
             final_chain_block_gas_limit,
             final_chain_genesis_timestamp,
+            final_chain_bridge_contract_address,
             final_chain_genesis_accounts,
             final_chain_genesis_validators,
             final_chain_genesis_dpos_config,

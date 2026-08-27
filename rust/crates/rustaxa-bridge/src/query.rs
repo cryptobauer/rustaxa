@@ -108,6 +108,7 @@ fn final_chain_block_view_to_ffi(
         log_bloom: view.log_bloom,
         gas_used: view.gas_used,
         total_reward: view.total_reward,
+        header_rlp: view.header_rlp,
         stored_header_rlp: view.stored_header_rlp,
         has_pbft_hash: view.has_pbft_hash,
         pbft_block_hash: view.pbft_block_hash,

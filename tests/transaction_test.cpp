@@ -24,6 +24,7 @@
 #endif
 
 #ifdef RUSTAXA_ENABLE
+#include "test_util/consensus_finalization_fixture.hpp"
 #define RUST_CONSENSUS_APPLICATION(config, db) , storage.application
 #define TEST_FINAL_CHAIN(db, config) \
   std::make_shared<final_chain::FinalChain>(db, config, addr_t{}, storage.application)
@@ -229,7 +230,12 @@ TEST_F(TransactionTest, transaction_low_nonce) {
   auto batch = db->createWriteBatch();
   db->savePeriodData(period_data, batch);
   db->commitWriteBatch(batch);
+#ifdef RUSTAXA_ENABLE
+  test::finalizeConsensusApplication(storage.application, final_chain, std::move(period_data), {dag_blk->getHash()},
+                                     cfg.genesis.state.dpos.blocks_per_year);
+#else
   final_chain->finalize(std::move(period_data), {dag_blk->getHash()}, cfg.genesis.state.dpos.blocks_per_year).get();
+#endif
 
   // Verify low nonce transaction is detected in verification
   auto low_nonce_trx =

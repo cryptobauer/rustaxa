@@ -16,6 +16,8 @@
 #include "consensus/consensus_host_ports.hpp"
 #include "rustaxa-bridge/application_host_ffi.rs.h"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "test_util/consensus_finalization_fixture.hpp"
+#include "transaction/system_transaction.hpp"
 #endif
 #include "final_chain/trie_common.hpp"
 #include "libdevcore/CommonJS.h"
@@ -124,8 +126,39 @@ struct FinalChainTest : WithDataDir {
     db->commitWriteBatch(batch);
 #endif
 
+#ifdef RUSTAXA_ENABLE
+    test::finalizeConsensusApplication(consensus_application, SUT, std::move(period_data), {dag_blk->getHash()},
+                                       cfg.genesis.state.dpos.blocks_per_year);
+    const auto query = consensus_application->queryClient();
+    const auto block_view = (*query)->consensus_query_final_chain_block_by_number(expected_blk_num);
+    if (!block_view.found) throw std::runtime_error("FINAL_CHAIN_FIXTURE_BLOCK_MISSING");
+    const auto header_rlp = dev::bytes(block_view.header_rlp.begin(), block_view.header_rlp.end());
+    auto header = final_chain::BlockHeader::fromRLP(dev::RLP(header_rlp));
+    if (!header || header->hash.asArray() != block_view.hash) {
+      throw std::runtime_error("FINAL_CHAIN_FIXTURE_HEADER_MISMATCH");
+    }
+    SharedTransactions finalized_transactions;
+    TransactionReceipts finalized_receipts;
+    const auto receipt_views = (*query)->consensus_query_transaction_receipts_by_block_number(expected_blk_num);
+    finalized_transactions.reserve(receipt_views.size());
+    finalized_receipts.reserve(receipt_views.size());
+    for (const auto& view : receipt_views) {
+      const auto transaction_rlp = dev::bytes(view.transaction_rlp.begin(), view.transaction_rlp.end());
+      finalized_transactions.push_back(
+          view.is_system ? std::static_pointer_cast<Transaction>(std::make_shared<SystemTransaction>(transaction_rlp))
+                         : std::make_shared<Transaction>(transaction_rlp));
+      const auto receipt_rlp = dev::bytes(view.receipt_rlp.begin(), view.receipt_rlp.end());
+      finalized_receipts.push_back(util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_rlp)));
+    }
+    std::shared_ptr<const final_chain::FinalizationResult> result = std::make_shared<final_chain::FinalizationResult>(
+        final_chain::FinalizationResult{{header->author, header->timestamp, {dag_blk->getHash()}, header->hash},
+                                        std::move(header),
+                                        std::move(finalized_transactions),
+                                        std::move(finalized_receipts)});
+#else
     auto result =
         SUT->finalize(std::move(period_data), {dag_blk->getHash()}, cfg.genesis.state.dpos.blocks_per_year).get();
+#endif
     const auto& blk_h = *result->final_chain_blk;
     EXPECT_EQ(util::rlp_enc(blk_h), util::rlp_enc(*SUT->blockHeader(blk_h.number)));
     EXPECT_EQ(util::rlp_enc(blk_h), util::rlp_enc(*SUT->blockHeader()));
@@ -301,6 +334,75 @@ TEST_F(FinalChainTest, rustModeExternalEvmDagGasEstimatePreservesIdentityAndCano
   EXPECT_EQ(report.transaction_hashes[0].hash, transaction->getHash().asArray());
   EXPECT_GT(report.gas_used[0], 0);
   EXPECT_FALSE(report.result_rlps[0].data.empty());
+#else
+  GTEST_SKIP() << "FinalChain shim is disabled";
+#endif
+}
+
+TEST_F(FinalChainTest, rustModeExternalEvmFailsBeforeMutationWhenConcreteStateLagsNativeFinalChain) {
+#ifdef RUSTAXA_ENABLE
+  const auto sender = dev::KeyPair::create();
+  const auto receiver = addr_t::random();
+  cfg.genesis.state.initial_balances = {{sender.address(), taraxa::uint256_t("0x204FCE5E3E25026110000000")}};
+  init();
+
+  advance({std::make_shared<Transaction>(0, 1, 1000000000, 100000, dev::bytes{}, sender.secret(), receiver,
+                                         cfg.genesis.chain_id)});
+  ASSERT_EQ(SUT->lastBlockNumber(), 1);
+
+  ExternalEvmPort port(SUT);
+  rustaxa::HostFinalChainPreflightRequest before{};
+  before.request_id[0] = 1;
+  before.next_period = 2;
+  before.expected_prior_period = 1;
+  before.expected_prior_state_root = SUT->blockHeader(1)->state_root.asArray();
+  const auto before_report = port.consensusLoadFinalChainCommittedState(before);
+  ASSERT_TRUE(before_report.succeeded) << std::string(before_report.error_code);
+  ASSERT_EQ(before_report.committed_period, 0);
+
+  const auto external = std::make_shared<Transaction>(1, 0, 1000000000, 1000000,
+                                                      dev::fromHex(samples::greeter_contract_code), sender.secret());
+  EXPECT_THROW(advance({external}), std::exception);
+  EXPECT_EQ(SUT->lastBlockNumber(), 1);
+
+  auto after = before;
+  after.request_id[0] = 2;
+  const auto after_report = port.consensusLoadFinalChainCommittedState(after);
+  ASSERT_TRUE(after_report.succeeded) << std::string(after_report.error_code);
+  EXPECT_EQ(after_report.committed_period, before_report.committed_period);
+  EXPECT_EQ(after_report.committed_state_root, before_report.committed_state_root);
+#else
+  GTEST_SKIP() << "FinalChain shim is disabled";
+#endif
+}
+
+TEST_F(FinalChainTest, rustModeExternalEvmRejectsNonConsecutivePeriodBeforeConcreteMutation) {
+#ifdef RUSTAXA_ENABLE
+  const auto sender = dev::KeyPair::create();
+  cfg.genesis.state.initial_balances = {{sender.address(), taraxa::uint256_t("0x204FCE5E3E25026110000000")}};
+  init();
+
+  ExternalEvmPort port(SUT);
+  rustaxa::HostFinalChainPreflightRequest probe{};
+  probe.request_id[0] = 3;
+  probe.next_period = 3;
+  const auto before = port.consensusLoadFinalChainCommittedState(probe);
+  ASSERT_TRUE(before.succeeded) << std::string(before.error_code);
+
+  expected_blk_num = 2;
+  const auto external = std::make_shared<Transaction>(0, 0, 1000000000, 1000000,
+                                                      dev::fromHex(samples::greeter_contract_code), sender.secret());
+  EXPECT_THROW(advance({external}), std::exception);
+  EXPECT_EQ(SUT->lastBlockNumber(), 0);
+  const auto persisted_period =
+      (*consensus_application->queryClient())->consensus_query_pbft_block_hash_by_period(expected_blk_num);
+  EXPECT_FALSE(persisted_period.found);
+
+  probe.request_id[0] = 4;
+  const auto after = port.consensusLoadFinalChainCommittedState(probe);
+  ASSERT_TRUE(after.succeeded) << std::string(after.error_code);
+  EXPECT_EQ(after.committed_period, before.committed_period);
+  EXPECT_EQ(after.committed_state_root, before.committed_state_root);
 #else
   GTEST_SKIP() << "FinalChain shim is disabled";
 #endif
@@ -1720,9 +1822,9 @@ TEST_F(FinalChainTest, native_slashing_malformed_nested_proof_aborts_finalizatio
     PeriodData period_data(pbft_block, std::vector<std::shared_ptr<PbftVote>>{});
     period_data.dag_blocks.push_back(dag_blk);
     period_data.transactions = {transaction};
-    EXPECT_THROW(
-        SUT->finalize(std::move(period_data), {dag_blk->getHash()}, cfg.genesis.state.dpos.blocks_per_year).get(),
-        std::exception);
+    EXPECT_THROW(test::finalizeConsensusApplication(consensus_application, SUT, std::move(period_data),
+                                                    {dag_blk->getHash()}, cfg.genesis.state.dpos.blocks_per_year),
+                 std::exception);
 
     EXPECT_EQ(SUT->lastBlockNumber(), 2);
     EXPECT_FALSE(SUT->blockHeader(3));

@@ -273,7 +273,7 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-04` | `complete` | Compose transaction/gas and DAG graph/manager/proposer runtimes behind application-owned Rust services with native FinalChain/storage ports. | `CRW-01`; coordinate shared dependencies with `CRW-02` | C++ shims no longer pass internal bridge handles between transaction, DAG, PBFT, FinalChain, or storage services; they perform input conversion, explicit EVM/network execution, and public materialization only. |
 | `CRW-05` | `complete` | Compose pillar, slashing, sortition, and rewards planning/state behind their Rust application owner rather than standalone internal handles. | `CRW-01`; `CRW-02` where PBFT owns the lifetime | Remaining C++ code is limited to FinalChain/DPoS fact execution, signing, transaction insertion, tarcap/event execution, lifecycle/executor work, and public materialization; internal bridge handles and cross-shim lookup paths are deleted. |
 | `CRW-06` | `complete` | Delete storage compatibility scaffolding after runtime consumers move: `BridgeStorage`, `BridgeStorageBatch`, storage query-family handles, broad storage-shim calls, and related `DbStorage` compatibility access. | Relevant consumer migrations in `CRW-02` through `CRW-05` | No production consensus route uses broad storage handles or C++/bridge batch authority. Retained admin, migration, test, network, and public-query behavior is narrow, explicitly classified, or explicitly unsupported in Rust mode. |
-| `CRW-07` | `complete` | Continue CXX carrier/export, module-flag, shim, and compatibility-test minimization after every consumer migration. | Runs alongside every consolidation item | The bridge exposes only `BridgeConsensusQueryApi`, `BridgeConsensusNetworkApi`, `BridgeConsensusExecutionApi`, application/bootstrap handles, and demonstrably necessary public compatibility handles. The inventory guard has no undocumented or stale entries, and tests protect behavior rather than retired scaffolding. |
+| `CRW-07` | `complete` | Continue CXX carrier/export, module-flag, shim, and compatibility-test minimization after every consumer migration. | Runs alongside every consolidation item | The bridge exposes only `BridgeConsensusQueryApi`, `BridgeConsensusNetworkApi`, application/bootstrap handles, exact external-EVM/state-db leaf carriers, and demonstrably necessary public compatibility handles. The inventory guard has no undocumented or stale entries, and tests protect behavior rather than retired scaffolding. |
 | `CRW-08` | `complete` | Close remaining FinalChain/DPoS behavior parity: required contract methods outside the previously supported mutation subset and full failed-contract receipt parity for older supported paths. | Completed bounded method/receipt families and canonical legacy evidence | All 25 current-ABI DPoS methods, both slashing reads, supported slashing execution, and all 16 mutation selectors execute through Rust account/DPoS state with byte-compatible outputs, receipts, logs, blooms, persistence, restart behavior, and targeted legacy-vs-Rust parity coverage. Historical databases without complete Rust snapshots remain an explicit replay/rebuild deployment boundary rather than a current-ABI execution fallback. |
 | `CRW-09` | `complete` | Introduce missing P0 FinalChain domain types/codecs and reduce temporary C++ `StateAPI` fact collection while preserving external EVM/state execution as an explicit adapter. | `CRW-09A` through `CRW-09I` | All ready P0 FinalChain domain/codec families are complete; every retained raw scalar/byte is a demonstrated codec, FFI, or external-executor representation; C++ `StateAPI` supplies only classified execution/committed-state operations; and the tracker, audit, and plan agree. |
 | `CRW-09A` | `complete` | Establish the FinalChain scalar/codec foundation: nonce, transaction position, bloom, gas price, transaction value, account balance, and complete gas lifecycle. | None | Rust FinalChain uses the typed domains end to end while CXX carriers, persisted bytes, request identities, headers, receipts, and error ordering remain compatible. |
@@ -391,7 +391,7 @@ legacy storage path.
 | --- | --- | --- | --- |
 | PBFT, vote, pillar | Implemented: family private under `CRW-12` root | Implemented: PBFT/vote/pillar facades, bridge modules/materializers, App ownership, and compatibility tests deleted | Implemented PBFT/pillar portion of `CRW-16`; only named process/signing/network/FinalChain-fact/public-client leaves remain |
 | DAG, transaction, proposer | Implemented: family private under `CRW-12` root | Implemented: three Rust-mode facades, bridge modules/materializers, App ownership, and compatibility test deleted | Implemented DAG portion of `CRW-16`; only named process/VDF/signing/network/EVM-gas/public-client leaves remain |
-| Storage and FinalChain | Implemented for storage; remaining FinalChain clients use application/query/execution APIs | Storage handle/query/batch/shim family deleted; FinalChain session remains under `CRW-17` | Coordinate concrete EVM leaves with `CRW-E01` |
+| Storage and FinalChain | Implemented for storage and execution orchestration; remaining FinalChain clients use application/query/exact leaf APIs | Storage handle/query/batch/shim family and execution API/session handles deleted; only public-state and concrete EVM/`state_db` leaves remain | Continue public facade/query contraction under `CRW-17` |
 
 `CRW-11` is complete. The task-owner contract now retains only named tarcap transport, concrete EVM/StateAPI,
 operation-specific signing, VDF execution, public-read, and pure-C++ reference clients. The checked starting budgets are
@@ -3226,9 +3226,10 @@ narrow read/materialization view for DAG, votes, network/tarcap, RPC, stats, and
 `updatePbftChain(...)` method remains a public compatibility/test mutation adapter until direct callers migrate, but the
 mutation executes against the service-owned chain rather than an independently authoritative handle. It is distinct
 from the finalization-specific mutation/report bounce deleted below. `BridgeConsensusNetworkApi`,
-`BridgeConsensusExecutionApi`, and `BridgeConsensusQueryApi` remain separate external facades. DAG, transaction, pillar,
-FinalChain, gas, and slashing runtimes remain sibling services or typed executor ports and are never fetched from the
-PBFT service.
+and `BridgeConsensusQueryApi` remain separate external facades. DAG, transaction, pillar, FinalChain, gas, and slashing
+runtimes remain sibling services or typed executor ports and are never fetched from the PBFT service. The later
+`CRW-E01` cut deleted `BridgeConsensusExecutionApi`; exact concrete-EVM and state-db requests now enter through the
+application-root host port.
 
 The first `CRW-02` deletion/narrowing set is:
 
@@ -3347,7 +3348,34 @@ EVM/`state_db` execution remain leaf C++ boundaries.
 | ID | Status | Work | Unblock condition | Complete when |
 | --- | --- | --- | --- | --- |
 | `CRW-N01` | `active` | Implement application-owned network ingress/egress pipelines, finish PBFT gossip effect-drain integration, fix deferred vote duplicate-with-block delivery, and migrate consensus routing/queueing decisions out of tarcap handlers. | Aggressive network consensus cutover is authorized in `PLAN.md`; coordinate with `CRW-12` and `CRW-16`. | Rust owns packet inspection, admission/routing, consensus queues, peer/gossip/send decisions, typed effects, and result validation; C++ tarcap owns only socket/peer mechanics, wrapping, physical transport/disconnect execution, and lane scheduling. |
-| `CRW-E01` | `ready` | Contract the external EVM/StateAPI boundary: move execution orchestration, canonical rewards payloads, result/receipt validation, commit ordering, recovery, and publication into Rust while retaining concrete EVM and `state_db/` operations as leaf C++ calls. | Aggressive execution-orchestration cutover is authorized in `PLAN.md`; coordinate with `CRW-17`. Moving concrete EVM execution itself remains out of scope. | `ConsensusExecutionApi` presents typed leaf operations; StateAPI consumes Rust-native/canonical requests and rewards data without C++ consensus materialization; no C++ manager owns execution sequencing or publication decisions. |
+| `CRW-E01` | `complete` | Contract the external EVM/StateAPI boundary: move execution orchestration, canonical rewards payloads, result/receipt validation, commit ordering, recovery, and publication into Rust while retaining concrete EVM and `state_db` operations as leaf C++ calls. | Aggressive execution-orchestration cutover is authorized in `PLAN.md`; coordinate with `CRW-17`. Moving concrete EVM execution itself remains out of scope. | Native application/FinalChain tasks own orchestration and publication; StateAPI receives exact typed committed-state preflight, system-fact, ordered-execution, rewards, and state-commit leaves; no C++ execution/session handle or action loop remains. |
+| `CRW-E02` | `blocked` | Define and implement concrete-EVM state catch-up/import across native-only FinalChain periods. | Select a deterministic replay, state import, or unified-executor strategy and its parity oracle before expanding the concrete state boundary. | A concrete-EVM period can safely follow any native-only period with the exact prior state available; restart and mixed-lane parity prove no state fork. |
+
+`CRW-E01` is complete. `ConsensusApplication` drives a private FinalChain execution coordinator for live, startup, and
+fixture finalization. Rust validates canonical PBFT/DAG/transaction inputs, plans bridge system transactions and
+rewards, performs a read-only committed-state preflight, sequences the concrete EVM leaf, validates
+results/receipts/roots without inventing an unavailable post-execution root, persists the pending marker synchronously,
+approves and verifies the exact committed StateAPI descriptor, and publishes FinalChain storage. The former broad
+execution API/session handles, factories, action carriers, C++ loop/materializers, and bridge compatibility suite are
+deleted. The Rust overlay also deletes `FinalChain::finalize`/`finalize_`; Rust-mode fixtures use the exact
+application-root task and query APIs. Public indexed transaction/count/receipt queries include persisted system
+transactions after regular period-data order. Exact checked-next validation runs before PeriodData persistence and is
+repeated at the coordinator boundary before any concrete leaf. Session/action types and transitions are private rather
+than re-exported as an alternate API. `final_chain_shim` remains only for stable public-state/tracing methods
+and exact concrete EVM, rewards, and
+`state_db` calls; the native-only DPoS/slashing lane remains native rather than being rerouted through legacy EVM.
+Until `CRW-E02` defines deterministic catch-up/import, a later external-EVM period fails before concrete mutation when
+StateAPI's committed period or post-genesis root does not match the native FinalChain head.
+
+Closeout validation passed `make rewrite-validate-fast`, `make rewrite-validate-consensus`,
+`make rewrite-validate-final-chain` (including startup smoke), Tier 3
+`make rewrite-validate-final-chain-parity`, `make rewrite-validate-storage`, and Tier 3
+`make rewrite-validate-storage-conformance`. The explicit Rust-enabled `taraxad`, `final_chain_test`, and
+`rust_storage_tests` builds passed; `final_chain_test` passed all 59 cases and `rust_storage_tests` passed all four.
+The bridge inventory guard and its self-test passed at 5,547/1,042/96/144/10/1 with zero granular flags, partial
+factories, or compatibility constructor calls. The repo-wide `check-static` target remains non-green on its existing
+cppcheck baseline; every finding in a changed file is unchanged from the pre-slice commit, and no new correctness
+finding was introduced by this cut.
 
 Current `CRW-N01` progress includes the complete DAG/transaction/proposer caller family. Transaction, DAG-block,
 DAG-sync, and get-DAG-sync packet handlers submit canonical payloads to the application-owned network API, and periodic
@@ -4263,7 +4291,7 @@ concurrent lifecycle stress test cover those corrections.
 | --- | --- | --- | --- | --- |
 | `VerifiedVotes` | Pure-C++ reference API only; Rust mode uses native vote insertion, unique voter tracking, step/round/period lookup, 2t+1 voted blocks, and cleanup directly | `PbftVote` at retained executor boundaries | Native verified-vote tests, `vote_test`, `pbft_manager_test` | Deleted Rust-mode facade; continue contracting VoteManager materialization around the native service |
 | `VoteManager` | Pure-C++ reference vote validation, generation, rewards, thresholds, and VRF sortition | legacy C++ dependencies in all-Rust-disabled mode only | pure-C++ `vote_test`; native Rust vote/network tests and Rust-mode PBFT/network integration | Deleted in Rust mode; application-root tasks own vote behavior, `ConsensusNetworkApi` owns ingress routing/admission, `ConsensusQueryApi` owns client reads, and only signing, tarcap transport, slashing insertion, and finalization byte materialization remain named leaves |
-| FinalChain DPoS ports | eligibility, vote/stake totals, supply/yield, validator/delegator/reward/undelegation and slashing reads plus all current-ABI mutations | Rust FinalChain snapshots and the external StateAPI/EVM leaf executor | `rust_consensus_tests`, `final_chain_test`, `rpc_test`, `pbft_manager_test`, `state_api_test`, proposer tests | Complete for current-ABI DPoS/slashing behavior, typed state, receipts, logs, rewards, supply, persistence, restart, and composed consensus fact reads. Historical databases without complete Rust snapshots remain an explicit fail-closed replay/rebuild boundary. `CRW-E01` is now ready to contract orchestration around the retained concrete executor; that later authorization does not alter the completed CRW-10 evidence. |
+| FinalChain DPoS ports | eligibility, vote/stake totals, supply/yield, validator/delegator/reward/undelegation and slashing reads plus all current-ABI mutations | Rust FinalChain snapshots and the external StateAPI/EVM leaf executor | `rust_consensus_tests`, `final_chain_test`, `rpc_test`, `pbft_manager_test`, `state_api_test`, proposer tests | Complete for current-ABI DPoS/slashing behavior, typed state, receipts, logs, rewards, supply, persistence, restart, and composed consensus fact reads. Historical databases without complete Rust snapshots remain an explicit fail-closed replay/rebuild boundary. `CRW-E01` subsequently contracted orchestration around exact concrete-executor leaves without altering the completed CRW-10 evidence. |
 
 ### Transactions
 

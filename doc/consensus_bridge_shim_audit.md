@@ -23,7 +23,7 @@ must migrate or disappear; they may not be promoted into this table merely to pr
 | Client class | Named C++ clients | Retained boundary | C++ ownership | Narrowing or deletion condition |
 | --- | --- | --- | --- | --- |
 | Tarcap transport | `network::tarcap` packet handlers and `TaraxaCapability` | `BridgeConsensusNetworkApi` | Peer/socket mechanics, packet wrapping, send/gossip/disconnect execution, physical lane scheduling | Keep transport-only calls; delete all consensus admission, routing, queue, and effect-decision relays as `CRW-N01` lands. |
-| Concrete EVM/StateAPI executor | `FinalChain` overlay calling `StateAPI` and `state_db/` | `BridgeConsensusExecutionApi`; temporary `BridgeFinalChainExecutionSession` | Concrete EVM calls, staged `state_db/` mutation, tracing, and raw executor operations | `CRW-E01` moves orchestration and canonical request/result authority native, then narrows the session to executor facts/results. |
+| Concrete EVM/StateAPI executor | `FinalChain` overlay calling `StateAPI` and `state_db/` | Exact system-fact, ordered-transaction, rewards, and state-commit requests/reports | Concrete EVM calls, staged `state_db/` mutation, tracing, and raw executor operations | Keep only exact typed leaves until concrete EVM and `state_db` move native; no executor or session handle may reappear. |
 | Application process host | `App`'s single Rust-mode consensus process shell | Exact timer/process and best-effort public-observer ports | Monotonic/Unix clocks, interruptible wait/stop mechanics, worker joining, and public event dispatch | Delete each leaf when the native runtime can own that physical operation; never expand it into manager orchestration. |
 | Signing executor | App-owned node-wallet adapter | Exact digest-signing and VRF-proof requests/reports; no manager handle | Secret-key custody and signature execution | Keep only operation-shaped signing reports; native vote, pillar, slashing, and DAG-proposer tasks own selection and sequencing. |
 | VDF executor | App-owned asynchronous `libraries/vdf` job adapter | Exact start, poll, and cancellation requests/reports | Proof work, job lifetime, and cancellation execution | Keep only the dedicated execution API; native proposer scheduling owns every decision around it. |
@@ -46,11 +46,11 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 8285 |
-| `shim_lines` | 1444 |
-| `cxx_functions` | 107 |
-| `cxx_carriers` | 152 |
-| `cxx_handles` | 12 |
+| `bridge_lines` | 5547 |
+| `shim_lines` | 1042 |
+| `cxx_functions` | 96 |
+| `cxx_carriers` | 144 |
+| `cxx_handles` | 10 |
 | `shim_directories` | 1 |
 | `granular_flags` | 0 |
 | `partial_service_factories` | 0 |
@@ -68,6 +68,23 @@ factories, the bridge batch lifecycle, 88 CXX functions, compatibility materiali
 ownership. Duplicate bridge storage-seeded query behavior tests move to the native query owner's coverage, removing the
 last debug storage-owner escape hatch. The retained conformance and light-history operations are root tasks and do not
 expose storage authority.
+
+The application-root execution cut lowers that storage checkpoint to
+5,547/1,042/96/144/10/1. It deletes `BridgeConsensusExecutionApi`,
+`BridgeFinalChainExecutionSession`, both factories, the C++ action loop, execution/session carriers, C++ consensus
+transaction/DAG materializers, and 2,784 lines of superseded bridge compatibility tests. Native
+`ConsensusApplication` now owns system-transaction/rewards planning, ordered execution sequencing, canonical
+result/receipt/root validation, pending-marker recovery ordering, state-commit approval, and FinalChain publication.
+The retained StateAPI boundary is five exact typed request/report leaves: read-only committed-state preflight, system
+facts, ordered concrete-EVM execution, rewards, and state commit. Native execution checks the concrete period and,
+after genesis, root before mutation; committed reports carry the observed period/root and publication rejects a
+mismatch. Canonical PeriodData codec components and the legacy verified
+reward-vote weight sidecar cross only at the stable codec boundary.
+The Rust overlay no longer declares `FinalChain::finalize` or its private `finalize_` compatibility stub. Rust-mode
+fixtures invoke the exact application-root task API and expand canonical public results through `ConsensusQueryApi`,
+whose block-index/count/receipt views preserve regular-then-system transaction order.
+The private native session state machine is no longer re-exported: action/status constants, session/step types, and
+transition functions cannot bypass the application coordinator.
 
 The pillar cut lowers the 12,100/4,075/211/170/14/3/28 DAG checkpoint by 764 bridge lines, 1,216 shim lines,
 16 CXX functions, 16 carriers, zero opaque handles, one shim directory, and two non-test C++ consumers. Granular flags,
@@ -95,11 +112,9 @@ not compatibility promises. The guard requires exact set equality with the parse
 
 | Factory | Classification | Named client or owner | Delete or narrow when |
 | --- | --- | --- | --- |
-| `create_consensus_execution_api` | Supported boundary | FinalChain/StateAPI executor adapter | Keep only the narrow external-EVM executor API. |
 | `create_consensus_network_api` | Supported boundary | tarcap transport | Keep only transport execution after `CRW-N01`. |
 | `create_consensus_query_api` | Supported boundary | RPC, GraphQL, debug/Test RPC, light plugin | Keep only stable client-oriented public reads. |
 | `create_consensus_application` | Supported boundary | `App` and Rust-mode fixture bootstrap | Sole native bootstrap for storage, FinalChain, and restored consensus services. |
-| `create_final_chain_execution_session` | Supported boundary | FinalChain/StateAPI executor adapter | Narrow to concrete executor inputs/results during `CRW-E01`. |
 | `make_cancellation_token_with_atomic` | Supported boundary | VDF executor | Keep only dedicated VDF cancellation execution. |
 | `make_solution` | Supported boundary | VDF executor | Keep only dedicated proof-result construction. |
 | `make_vdf` | Supported boundary | VDF executor | Keep only dedicated VDF execution. |
@@ -131,7 +146,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/consensus_host_ports.rs` | Exact process, signing, asynchronous VDF, tarcap, FinalChain account-fact, pillar-anchor-state, concrete EVM/gas, public-submission, and observer leaf conversion | App-owned consensus process and public mutation clients | External boundary | Keep only physical host/execution/public-client leaves; delete each adapter when that executor, fact source, or public client moves native. |
 | `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | Sole application-root bootstrap plus operation-shaped public transaction submission | App bootstrap, RPC, and GraphQL mutations | Bootstrap/public-client adapter | Retain only root bootstrap, public submission/status conversion, and focused ABI coverage; native `ConsensusApplication` owns DAG, transaction, sortition, and proposer behavior and state. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
-| `rust/crates/rustaxa-bridge/src/final_chain.rs` | Root-bound FinalChain conversion and external-EVM execution APIs | FinalChain shim, execution adapters | External boundary | Native construction is complete; retain only public-query conversion and the narrow external-EVM executor API. |
+| `rust/crates/rustaxa-bridge/src/final_chain.rs` | Root-bound FinalChain public/query conversion | FinalChain shim and public clients | External boundary | Retain only stable public-query conversion and recovery projection; execution orchestration and compatibility tests have moved native. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | Root-bound packet-family adapter for native PBFT, pillar-vote, DAG, DAG-sync, transaction, status, sync-response, and gossip pipelines | latest/v5 tarcap handler families | External boundary | Keep only canonical ingress requests, typed network decisions/reports, and tarcap transport execution; remove remaining handler-local consensus routing as `CRW-N01` completes. |
 | `rust/crates/rustaxa-bridge/src/network_slashing.rs` | Exact signing and transaction-ingress conversion for network-detected slashing effects | tarcap ingress | External boundary | Delete when the signing and transaction-ingress executors move native; never expand into consensus routing. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, including coherent PBFT, period-indexed finalized pillar data, live DAG, transaction-pool, finalized-history, and public status views | RPC, GraphQL, debug/Test RPC, stats, light plugin | External boundary | Keep a bounded client-oriented read API; never expose private services, locks, queues, cursors, or mutable object graphs. |
@@ -145,14 +160,12 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `BridgeConsensusQueryApi` | `query.rs` | RPC, GraphQL, debug/Test RPC, stats, light plugin | External boundary | Keep only bounded client-oriented public reads. |
 | `BridgeConsensusNetworkApi` | `network.rs` | One `Network` owner shared by latest/v5 tarcap handler families | External boundary | `CRW-N01` leaves canonical packet-family ingress and typed transport execution reports after all handler-local consensus routing moves native. |
 | `BridgeConsensusApplication` | `dag_transaction_service.rs` | App bootstrap/process, query/network adapters, and RPC/GraphQL transaction submission | Bootstrap/application boundary | Keep as the sole opaque application root; it exposes operation-shaped tasks but no private consensus service handle. |
-| `BridgeFinalChainExecutionSession` | `final_chain.rs` | FinalChain shim | External boundary | Replace with narrow external executor session or complete `CRW-E01`. |
-| `BridgeConsensusExecutionApi` | `final_chain.rs` | FinalChain/PBFT execution adapters | External boundary | Keep only typed EVM/StateAPI leaf effects. |
 
 ## Consensus Shim Directories
 
 | Shim directory | Current role | Named consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
-| `final_chain_shim` | FinalChain public/EVM executor facade | App, RPC, PBFT, transaction | External boundary | Split public query and narrow EVM executor; delete manager class when clients migrate. |
+| `final_chain_shim` | Legacy public FinalChain facade plus exact concrete-EVM/`state_db` leaves | App, RPC, public observers, and application-root execution | External boundary | Keep only named public-state, tracing, concrete EVM, rewards, and state-commit leaves; delete when public clients and the concrete executor migrate. |
 
 ## Guarded Exceptions
 

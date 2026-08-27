@@ -119,6 +119,8 @@ pub struct ConsensusFinalChainConfig {
     pub block_gas_limit: FinalChainGas,
     /// Timestamp used when materializing the genesis FinalChain header.
     pub genesis_timestamp: u64,
+    /// Configured bridge contract consulted by native system-transaction policy.
+    pub bridge_contract_address: [u8; 20],
     /// Effective genesis account balances after configured delegations.
     pub genesis_accounts: Vec<GenesisAccount>,
     /// Validators and delegation ledgers used to seed native DPoS state.
@@ -174,6 +176,7 @@ impl ConsensusApplicationBootstrap {
         initialize_schema_version(&storage, self.schema_major, self.schema_minor)?;
         initialize_and_verify_genesis(&storage, self.storage_genesis_hash)?;
 
+        let bridge_contract_address = self.final_chain.bridge_contract_address;
         let final_chain = Arc::new(
             FinalChain::new_with_rewards_config(
                 storage.clone(),
@@ -187,7 +190,12 @@ impl ConsensusApplicationBootstrap {
             .context("CONSENSUS_APPLICATION_FINAL_CHAIN_RESTORE_FAILED")?,
         );
 
-        ConsensusApplication::restore_with_final_chain(storage, final_chain, self.consensus)
+        ConsensusApplication::restore_with_final_chain(
+            storage,
+            final_chain,
+            self.consensus,
+            bridge_contract_address,
+        )
     }
 }
 
@@ -1264,6 +1272,7 @@ impl ConsensusApplication {
         storage: Arc<Storage>,
         final_chain: Arc<FinalChain>,
         config: ConsensusApplicationConfig,
+        bridge_contract_address: [u8; 20],
     ) -> Result<Self> {
         let (dag_transaction, max_levels_per_period) =
             DagTransactionService::restore_deferred_mapping(
@@ -1273,11 +1282,13 @@ impl ConsensusApplication {
         let pbft = PbftService::restore(storage.clone(), config.pbft)?;
         dag_transaction.complete_restore_mapping(max_levels_per_period)?;
         let dag_proposers = dag_proposer_inputs(&config.signing_identities, config.dag_proposer);
-        let runtime = ConsensusApplicationRuntime::new_with_proposers(
+        let runtime = ConsensusApplicationRuntime::new_with_proposers_and_execution(
             config.signing_identities,
             config.polling_interval_ms,
             dag_proposers,
             config.dag_proposer,
+            bridge_contract_address,
+            max_levels_per_period,
         )?;
         Ok(Self {
             storage,
@@ -1316,6 +1327,24 @@ impl ConsensusApplication {
             evm,
             vdf,
             observer,
+        )
+    }
+
+    /// Executes one operation-shaped FinalChain task through the native root.
+    ///
+    /// This entrypoint is used by focused fixtures and non-daemon callers. It
+    /// shares the same private session coordinator and exact concrete-EVM
+    /// leaves as live PBFT finalization.
+    pub fn finalize_with_external_evm<E: ConsensusExecutionPort>(
+        &self,
+        request: crate::EvmFinalizationRequest,
+        evm: &E,
+    ) -> Result<crate::FinalChainApplicationExecutionReport> {
+        self.runtime.execute_final_chain_task(
+            self.pbft.as_ref(),
+            self.final_chain.as_ref(),
+            request,
+            evm,
         )
     }
 
@@ -1452,6 +1481,7 @@ pub fn consensus_application_test_bootstrap(
         final_chain: ConsensusFinalChainConfig {
             block_gas_limit: FinalChainGas::ZERO,
             genesis_timestamp: 0,
+            bridge_contract_address: [0; 20],
             genesis_accounts: Vec::new(),
             genesis_validators,
             genesis_dpos: GenesisDposConfig {
@@ -1617,13 +1647,6 @@ mod tests {
     struct UnusedExecution;
 
     impl ConsensusExecutionPort for UnusedExecution {
-        fn execute_finalization(
-            &self,
-            _request: &crate::consensus_application_runtime::EvmFinalizationRequest,
-        ) -> Result<crate::consensus_application_runtime::EvmFinalizationReport> {
-            bail!("unused execution finalization")
-        }
-
         fn load_pillar_anchor_state(
             &self,
             _request: &crate::consensus_application_runtime::PillarAnchorStateRequest,
@@ -1648,6 +1671,7 @@ mod tests {
             final_chain: ConsensusFinalChainConfig {
                 block_gas_limit: 1_000_000.into(),
                 genesis_timestamp: 42,
+                bridge_contract_address: [0; 20],
                 genesis_accounts: Vec::new(),
                 genesis_validators: Vec::new(),
                 genesis_dpos: GenesisDposConfig::default(),

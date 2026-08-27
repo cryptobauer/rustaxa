@@ -607,11 +607,14 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         &self,
         marker: FinalChainExternalEvmPendingPublication<'_>,
     ) -> Result<()> {
-        self.db.put(
+        let mut batch = self.db.create_batch();
+        self.db.batch_put(
+            &mut batch,
             Column::FinalChainMeta,
             Self::EXTERNAL_EVM_PENDING_PUBLICATION_KEY,
             marker.payload,
-        )
+        )?;
+        self.db.commit_batch_with_sync(batch, true)
     }
 
     /// Deletes the external-EVM pending publication marker.

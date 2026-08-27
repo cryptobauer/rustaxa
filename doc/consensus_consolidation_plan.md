@@ -58,8 +58,8 @@ The task owner has selected aggressive Rust cutover. These are implementation co
 
 - Preserve the untouched pure-C++ implementations and validation route.
 - Keep physical network transport mechanics in tarcap while implementing the now-authorized `CRW-N01` pipeline cutover.
-- Keep concrete EVM execution and `state_db/` mutation outside Rust while implementing the now-authorized `CRW-E01`
-  orchestration and adapter contraction. Moving the concrete executor itself still requires a later explicit decision.
+- Keep concrete EVM execution and `state_db/` mutation outside Rust behind the completed `CRW-E01` exact-leaf
+  boundary. Moving the concrete executor itself still requires a later explicit decision.
 - Preserve externally observable codecs, hashes, ordering, receipts, and error behavior with parity coverage.
 - Do not edit upstream-owned C++ merely to make deletion easier; migrate consumers or use the established overlay/source
   selection strategy.
@@ -825,12 +825,14 @@ selection retains the untouched legacy storage implementation.
 
 ### 9. Contract FinalChain and execution
 
-- Separate public query methods from execution methods and native FinalChain ownership.
-- Remove consensus callers of the broad `BridgeFinalChain` facade.
-- Keep a narrow concrete external-EVM executor while the ready `CRW-E01` item moves orchestration and canonical
-  payload/result ownership into Rust.
-- If the retained C++ `StateAPI` contract still forces broad session/report/materialization plumbing, prepare the
-  `CRW-E01` design and parity plan rather than adding another compatibility layer.
+Current state: execution orchestration is complete. Native application/FinalChain tasks own planning, sequencing,
+validation, recovery ordering, and publication. The broad execution API, bridge session, C++ action loop,
+manager-shaped carriers, and consensus materializers are deleted. `final_chain_shim` retains only stable public-state
+and tracing behavior plus exact committed-state preflight, system-fact, concrete ordered-EVM, rewards, and state-commit
+leaves. Native-to-external period gaps fail before concrete mutation pending the explicit `CRW-E02` catch-up/import
+design. Rust-mode fixtures call the exact application-root finalization task, and public query expansion preserves
+regular-then-system transaction and receipt order. Continue moving
+public readers to `ConsensusQueryApi`; delete the shim when those clients and the concrete executor migrate.
 
 ### 10. Final deletion and documentation closeout
 

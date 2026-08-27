@@ -450,6 +450,20 @@ void App::setupMetricsUpdaters() {
   pbft_metrics->setVotesCountUpdater(
       [pbft_mgr = pbft_mgr_]() { return pbft_mgr->getCurrentNodeVotesCount().value_or(0); });
 #endif
+#ifdef RUSTAXA_ENABLE
+  consensus_application_->finalizedBlockObserved().subscribe(
+      [pbft_metrics, query = consensus_application_->queryClient()](const FinalizedBlockObservation &observation) {
+        const auto view = (*query)->consensus_query_final_chain_block_by_number(observation.period);
+        if (!view.found || view.hash != observation.block_hash.asArray()) return;
+        const auto header_bytes = dev::bytes(view.header_rlp.begin(), view.header_rlp.end());
+        const auto header = final_chain::BlockHeader::fromRLP(dev::RLP(header_bytes));
+        pbft_metrics->setBlockNumber(observation.period);
+        pbft_metrics->setBlockTransactionsCount(
+            (*query)->consensus_query_transaction_count_by_block_number(observation.period));
+        pbft_metrics->setBlockTimestamp(header->timestamp);
+      },
+      subscription_pool_);
+#else
   final_chain_->block_finalized_.subscribe(
       [pbft_metrics](const std::shared_ptr<final_chain::FinalizationResult> &res) {
         pbft_metrics->setBlockNumber(res->final_chain_blk->number);
@@ -457,6 +471,7 @@ void App::setupMetricsUpdaters() {
         pbft_metrics->setBlockTimestamp(res->final_chain_blk->timestamp);
       },
       subscription_pool_);
+#endif
 }
 
 void App::close() {

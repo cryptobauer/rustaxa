@@ -27,9 +27,9 @@ use rustaxa_types::codec::rlp::dag::{DagBlockRlp, FinalizedDagBlockBundleRlp};
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::pbft::PbftBlockLink;
 use rustaxa_types::{
-    CurrentPillarBlockDataDb, DagBlock, LegacyTransactionEnvelope, PillarBlock, PillarBlockData,
-    PillarVote, ValidatorVoteCount, ValidatorVoteCountChange,
-    encode_optimized_pillar_votes_bundle_rlp,
+    CurrentPillarBlockDataDb, DagBlock, FinalChainGas, FinalizationDagBlock,
+    FinalizationTransaction, LegacyTransactionEnvelope, PillarBlock, PillarBlockData, PillarVote,
+    ValidatorVoteCount, ValidatorVoteCountChange, encode_optimized_pillar_votes_bundle_rlp,
 };
 use std::collections::HashMap;
 use tiny_keccak::{Hasher, Keccak};
@@ -316,6 +316,110 @@ fn previous_cert_vote_rlps(
         .into_iter()
         .map(|record| record.vote_rlp)
         .collect())
+}
+
+/// Decodes the canonical PBFT finalization payload into the complete native
+/// FinalChain execution request.
+///
+/// Transaction, DAG-author, VDF-difficulty, and certificate-weight facts are
+/// derived directly from canonical bytes. No C++ `PeriodData`, `Transaction`,
+/// `DagBlock`, or `PbftVote` object participates in consensus execution.
+pub(crate) fn final_chain_execution_request_from_period_data(
+    period_data_rlp: &[u8],
+    previous_cert_vote_rlps: &[Vec<u8>],
+    previous_cert_vote_weights: &[u64],
+    blocks_per_year: u32,
+    block_gas_limit: FinalChainGas,
+) -> Result<crate::FinalChainExecutionRequest> {
+    let period_data = Rlp::new(period_data_rlp);
+    ensure!(
+        matches!(period_data.item_count()?, 4 | 5),
+        "FINAL_CHAIN_PERIOD_DATA_SHAPE"
+    );
+    let pbft_block_rlp = period_data.at(0)?.as_raw().to_vec();
+
+    let transactions = period_data
+        .at(3)?
+        .iter()
+        .map(|transaction| {
+            let envelope = LegacyTransactionEnvelope::decode(transaction.as_raw())?;
+            Ok(FinalizationTransaction {
+                hash: envelope.hash.into(),
+                sender: envelope
+                    .sender
+                    .context("FINAL_CHAIN_TRANSACTION_SENDER_MISSING")?
+                    .into(),
+                receiver: envelope.receiver.map(Into::into),
+                nonce: rustaxa_types::FinalChainNonce::from_bytes(
+                    &crate::final_chain_execution::u256_to_nonce_bytes(envelope.nonce),
+                )?,
+                value: envelope.value.into(),
+                gas_price: envelope.gas_price.into(),
+                gas_limit: envelope.gas.into(),
+                data: envelope.data,
+                rlp: envelope.rlp,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let dag_bundle = period_data.at(2)?;
+    let finalized_dag_blocks = if dag_bundle.is_empty() {
+        Vec::new()
+    } else {
+        let bundle = FinalizedDagBlockBundleRlp::new(dag_bundle.as_raw());
+        (0..dag_bundle.at(2)?.item_count()?)
+            .map(|position| {
+                let canonical_rlp = bundle.canonical_block_rlp(position)?;
+                let block = DagBlock::try_from(DagBlockRlp::new(&canonical_rlp))?;
+                let author = block
+                    .recover_sender()
+                    .context("FINAL_CHAIN_DAG_AUTHOR_RECOVERY_FAILED")?;
+                let difficulty = Rlp::new(&block.vdf).val_at(3)?;
+                Ok(FinalizationDagBlock {
+                    author: author.into(),
+                    difficulty,
+                    transaction_hashes: block.transactions.into_iter().map(Into::into).collect(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+
+    ensure!(
+        previous_cert_vote_weights.is_empty()
+            || previous_cert_vote_weights.len() == previous_cert_vote_rlps.len(),
+        "FINAL_CHAIN_REWARD_CERT_VOTE_WEIGHT_COUNT_MISMATCH"
+    );
+    let cert_votes = previous_cert_vote_rlps
+        .iter()
+        .enumerate()
+        .map(|(index, vote_rlp)| {
+            let vote = inspect_canonical_pbft_vote(vote_rlp)?;
+            ensure!(
+                vote.status == PbftCanonicalVoteInspectionStatus::Valid && vote.signature_valid,
+                "FINAL_CHAIN_REWARD_CERT_VOTE_INVALID"
+            );
+            let weight = previous_cert_vote_weights
+                .get(index)
+                .copied()
+                .or_else(|| vote.has_embedded_weight.then_some(vote.embedded_weight))
+                .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_REWARD_CERT_VOTE_WEIGHT_MISSING"))?;
+            Ok(crate::RewardCertVoteFact {
+                voter: vote.recovered_voter,
+                weight,
+                period: vote.period,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(crate::FinalChainExecutionRequest {
+        pbft_block_rlp,
+        transactions,
+        finalized_dag_blocks,
+        blocks_per_year,
+        cert_votes,
+        block_gas_limit,
+        mode: crate::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+    })
 }
 
 fn drive_boundary(

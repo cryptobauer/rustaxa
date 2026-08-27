@@ -1056,6 +1056,24 @@ impl FinalChain {
         )?))
     }
 
+    /// Returns the exact descriptor that an external state-db must precede
+    /// before it may stage the next FinalChain block.
+    pub(crate) fn committed_state_descriptor(
+        &self,
+    ) -> Result<FinalChainExternalEvmCommittedStateDescriptor, anyhow::Error> {
+        let period = self.last_block_number_typed()?;
+        let raw_header = self
+            .storage
+            .final_chain()
+            .block_header_raw(period.as_u64())?
+            .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_COMMITTED_HEADER_MISSING"))?;
+        let header = StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&raw_header))?;
+        Ok(FinalChainExternalEvmCommittedStateDescriptor {
+            period,
+            state_root: header.state_root.into(),
+        })
+    }
+
     pub fn block_number(&self, hash: [u8; 32]) -> Result<Option<u64>, anyhow::Error> {
         Ok(self.block_number_typed(hash)?.map(Into::into))
     }
@@ -1232,6 +1250,26 @@ impl FinalChain {
         Ok(Some(
             LegacyBlockHeaderRlp::try_from(header_input)?.into_vec(),
         ))
+    }
+
+    /// Ensures the canonical PBFT period envelope needed to materialize public
+    /// FinalChain headers is durable before external state execution begins.
+    /// Existing bytes must match exactly so retries cannot rewrite consensus
+    /// history.
+    pub fn ensure_period_data(
+        &self,
+        period: FinalChainBlockNumber,
+        period_data_rlp: &[u8],
+    ) -> Result<(), anyhow::Error> {
+        let existing = self.storage.period().data_raw(period.as_u64())?;
+        if existing.is_empty() {
+            self.storage
+                .period()
+                .write(period.as_u64(), period_data_rlp)?;
+        } else if existing != period_data_rlp {
+            anyhow::bail!("FINAL_CHAIN_PERIOD_DATA_MISMATCH");
+        }
+        Ok(())
     }
 
     pub fn transaction_location(&self, hash: [u8; 32]) -> Result<Option<Vec<u8>>, anyhow::Error> {
@@ -2388,20 +2426,10 @@ impl FinalChain {
             ));
         }
         if committed_period < marker.plan.period.as_u64() {
-            self.storage
-                .final_chain()
-                .delete_external_evm_pending_publication()?;
-            return Ok(FinalChainExternalEvmPublicationReport {
-                request_id: marker.plan.request_id,
-                plan_id: marker.plan.plan_id,
-                period: marker.plan.period,
-                block_hash: marker.plan.block_hash,
-                dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
-                account_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
-                status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
-                error_code: String::new(),
-                ..Default::default()
-            });
+            return Ok(rejected_external_evm_publication_report(
+                &marker.plan,
+                "FINAL_CHAIN_EVM_PENDING_PUBLICATION_STATE_PERIOD_BEHIND",
+            ));
         }
         if committed_period != marker.plan.period.as_u64() {
             return Ok(rejected_external_evm_publication_report(
@@ -8084,11 +8112,12 @@ fn decode_external_evm_rewards_stats_update(
 fn encode_external_evm_state_commit_intent(
     intent: &FinalChainExternalEvmStateCommitIntent,
 ) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(6);
+    let mut stream = rlp::RlpStream::new_list(7);
     stream.append(&intent.request_id.as_slice());
     stream.append(&intent.plan_id.as_slice());
     stream.append(&intent.period.as_u64());
     stream.append(&intent.publication_block_hash.as_slice());
+    stream.append(&intent.expected_state_root.as_slice());
     stream.append(&intent.status);
     stream.append(&intent.error_code);
     stream.out().to_vec()
@@ -8097,9 +8126,21 @@ fn encode_external_evm_state_commit_intent(
 fn decode_external_evm_state_commit_intent(
     rlp: &Rlp<'_>,
 ) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
-    if rlp.item_count()? != 6 {
-        anyhow::bail!("external EVM state commit intent marker payload must contain six fields");
+    let item_count = rlp.item_count()?;
+    if item_count != 6 && item_count != 7 {
+        anyhow::bail!(
+            "external EVM state commit intent marker payload must contain six or seven fields"
+        );
     }
+    let (expected_state_root, status_index, error_index) = if item_count == 7 {
+        (
+            decode_fixed_hash(&rlp.at(4)?, "external EVM state commit expected state root")?,
+            5,
+            6,
+        )
+    } else {
+        ([0; 32], 4, 5)
+    };
     Ok(FinalChainExternalEvmStateCommitIntent {
         request_id: decode_fixed_hash(&rlp.at(0)?, "external EVM state commit request id")?,
         plan_id: decode_fixed_hash(&rlp.at(1)?, "external EVM state commit plan id")?,
@@ -8108,8 +8149,9 @@ fn decode_external_evm_state_commit_intent(
             &rlp.at(3)?,
             "external EVM state commit publication block hash",
         )?,
-        status: rlp.val_at(4)?,
-        error_code: rlp.val_at(5)?,
+        expected_state_root,
+        status: rlp.val_at(status_index)?,
+        error_code: rlp.val_at(error_index)?,
     })
 }
 

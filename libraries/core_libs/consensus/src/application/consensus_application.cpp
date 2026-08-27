@@ -125,8 +125,9 @@ SharedConsensusApplication createConsensusApplication(const FullNodeConfig& conf
       sortitionRuntimeConfigFromNodeConfig(config), rustaxa::TransactionQueueConfig{config.transactions_pool_size},
       gasPricerConfigFromNodeConfig(config), config.propose_dag_gas_limit, std::move(pbft_config),
       std::move(signing_identities), std::move(dag_proposer_config), config.genesis.pbft.gas_limit,
-      config.genesis.dag_genesis_block.getTimestamp(), final_chain::makeGenesisAccounts(config.genesis.state),
-      final_chain::makeGenesisValidators(config.genesis.state),
+      config.genesis.dag_genesis_block.getTimestamp(),
+      config.genesis.state.hardforks.ficus_hf.bridge_contract_address.asArray(),
+      final_chain::makeGenesisAccounts(config.genesis.state), final_chain::makeGenesisValidators(config.genesis.state),
       final_chain::makeGenesisDposConfig(config.genesis.state.dpos,
                                          config.genesis.state.hardforks.magnolia_hf.block_num),
       final_chain::makeFinalChainRewardsConfig(config)));

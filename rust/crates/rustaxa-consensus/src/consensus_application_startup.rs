@@ -150,6 +150,7 @@ pub fn prepare_consensus_startup(
                 effect_id: Default::default(),
                 period_data_rlp: replay.period_data_rlp,
                 previous_cert_vote_rlps,
+                previous_cert_vote_weights: Vec::new(),
                 finalized_dag_hashes: replay
                     .finalized_dag_hashes
                     .into_iter()
