@@ -115,71 +115,167 @@ impl BridgeConsensusNetworkApi {
         })
     }
 
-    /// Plans deterministic sync follow-up for an accepted status packet.
-    pub fn consensus_network_plan_status_sync(
+    /// Atomically selects a serviceable peer and starts one native PBFT-sync generation.
+    pub fn consensus_network_begin_pbft_sync(
         &self,
-        facts: rustaxa_ffi::NetworkStatusSyncFacts,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkStatusSyncPlan> {
-        Ok(to_bridge_network_status_sync_plan(
+        request: rustaxa_ffi::NetworkPbftSyncStartRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkPbftSyncStartOutcome> {
+        let outcome =
             self.network
-                .plan_status_sync(to_domain_network_status_sync_facts(facts))?,
-        ))
+                .begin_pbft_sync(rustaxa_consensus::NetworkPbftSyncStartRequest {
+                    start: request.start,
+                    now_ms: request.now_ms,
+                    local_pbft_synced_period: request.local_pbft_synced_period,
+                    local_pbft_chain_size: request.local_pbft_chain_size,
+                    candidates: request
+                        .candidates
+                        .into_iter()
+                        .map(to_domain_network_pbft_sync_peer_candidate)
+                        .collect(),
+                })?;
+        Ok(rustaxa_ffi::NetworkPbftSyncStartOutcome {
+            status: outcome.status,
+            error_code: outcome.error_code,
+            started: outcome.started,
+            has_peer: outcome.has_peer,
+            peer_id: outcome.peer_id,
+            peer_pbft_chain_size: outcome.peer_pbft_chain_size,
+            request_period: outcome.request_period,
+            generation: outcome.generation,
+            deep_syncing: outcome.deep_syncing,
+            enable_snapshot_creation: outcome.enable_snapshot_creation,
+        })
     }
 
-    /// Plans local status packet egress through the network/tarcap API.
-    pub fn consensus_network_plan_status_egress(
+    /// Records one accepted periodic status and returns application-owned follow-up work.
+    pub fn consensus_network_process_status_followup(
         &self,
-        facts: rustaxa_ffi::NetworkStatusEgressFacts,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkStatusEgressPlan> {
-        Ok(to_bridge_network_status_egress_plan(
-            self.network
-                .plan_status_egress(to_domain_network_status_egress_facts(facts))?,
-        ))
+        request: rustaxa_ffi::NetworkStatusFollowupRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkStatusFollowupOutcome> {
+        let outcome = self.network.process_status_followup(
+            rustaxa_consensus::NetworkStatusFollowupRequest {
+                peer_id: request.peer_id,
+                local_pbft_synced_period: request.local_pbft_synced_period,
+                local_pbft_period: request.local_pbft_period,
+                local_pbft_round: request.local_pbft_round,
+                peer_pbft_chain_size: request.peer_pbft_chain_size,
+                peer_pbft_period: request.peer_pbft_period,
+                peer_pbft_round: request.peer_pbft_round,
+                peer_dag_synced: request.peer_dag_synced,
+            },
+        )?;
+        Ok(rustaxa_ffi::NetworkStatusFollowupOutcome {
+            request_pbft_sync: outcome.request_pbft_sync,
+            request_pending_dag_blocks: outcome.request_pending_dag_blocks,
+            request_next_votes: outcome.request_next_votes,
+            next_votes_period: outcome.next_votes_period,
+            next_votes_round: outcome.next_votes_round,
+            sync_generation: outcome.sync_generation,
+        })
     }
 
-    /// Plans whether an initial status packet should be accepted.
-    pub fn consensus_network_plan_initial_status(
+    /// Selects canonical status fields, projecting active state for initial
+    /// packets and deep-sync state for periodic packets atomically.
+    pub fn consensus_network_status_egress(
         &self,
-        facts: rustaxa_ffi::NetworkInitialStatusFacts,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkInitialStatusPlan> {
-        Ok(to_bridge_network_initial_status_plan(
+        request: rustaxa_ffi::NetworkStatusEgressRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkStatusEgressOutcome> {
+        let outcome =
             self.network
-                .plan_initial_status(to_domain_network_initial_status_facts(facts))?,
-        ))
+                .plan_status_egress(rustaxa_consensus::NetworkStatusEgressFacts {
+                    initial: request.initial,
+                    local_chain_id: request.local_chain_id,
+                    genesis_hash: request.genesis_hash,
+                    node_major_version: request.node_major_version,
+                    node_minor_version: request.node_minor_version,
+                    node_patch_version: request.node_patch_version,
+                    is_light_node: request.is_light_node,
+                    light_node_history: request.light_node_history,
+                    local_pbft_chain_size: request.local_pbft_chain_size,
+                    local_pbft_round: request.local_pbft_round,
+                    local_dag_level: request.local_dag_level,
+                    pbft_syncing: false,
+                    deep_pbft_syncing: false,
+                })?;
+        Ok(rustaxa_ffi::NetworkStatusEgressOutcome {
+            status: outcome.status,
+            error_code: outcome.error_code,
+            peer_pbft_chain_size: outcome.peer_pbft_chain_size,
+            peer_pbft_round: outcome.peer_pbft_round,
+            peer_dag_level: outcome.peer_dag_level,
+            peer_syncing: outcome.peer_syncing,
+            include_initial_data: outcome.include_initial_data,
+            chain_id: outcome.chain_id,
+            genesis_hash: outcome.genesis_hash,
+            node_major_version: outcome.node_major_version,
+            node_minor_version: outcome.node_minor_version,
+            node_patch_version: outcome.node_patch_version,
+            is_light_node: outcome.is_light_node,
+            light_node_history: outcome.light_node_history,
+        })
     }
 
-    /// Plans whether PBFT sync should start and which peer should serve it.
-    pub fn consensus_network_plan_pbft_sync_start(
+    /// Applies native initial-status chain, genesis, and history admission policy.
+    pub fn consensus_network_admit_initial_status(
         &self,
-        facts: rustaxa_ffi::NetworkPbftSyncStartFacts,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkPbftSyncStartPlan> {
-        Ok(to_bridge_network_pbft_sync_start_plan(
+        request: rustaxa_ffi::NetworkInitialStatusRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkInitialStatusOutcome> {
+        let outcome =
             self.network
-                .plan_pbft_sync_start(to_domain_network_pbft_sync_start_facts(facts))?,
-        ))
+                .admit_initial_status(rustaxa_consensus::NetworkInitialStatusFacts {
+                    local_chain_id: request.local_chain_id,
+                    peer_chain_id: request.peer_chain_id,
+                    expected_genesis_hash: request.expected_genesis_hash,
+                    peer_genesis_hash: request.peer_genesis_hash,
+                    local_pbft_synced_period: request.local_pbft_synced_period,
+                    peer_pbft_chain_size: request.peer_pbft_chain_size,
+                    peer_is_light_node: request.peer_is_light_node,
+                    peer_light_node_history: request.peer_light_node_history,
+                })?;
+        Ok(rustaxa_ffi::NetworkInitialStatusOutcome {
+            status: outcome.status,
+            error_code: outcome.error_code,
+            accept_peer: outcome.accept_peer,
+            disconnect_peer: outcome.disconnect_peer,
+        })
     }
 
-    /// Selects the best max-chain peer from compact network-owned peer facts.
-    pub fn consensus_network_plan_max_chain_peer_selection(
+    /// Applies source, activity, stop, disconnect, or timer-expiry work to one
+    /// generation; unknown kinds fail without mutation.
+    pub fn consensus_network_apply_pbft_sync_command(
         &self,
-        facts: rustaxa_ffi::NetworkPeerSelectionFacts,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkPeerSelectionPlan> {
-        Ok(to_bridge_network_peer_selection_plan(
-            self.network
-                .plan_max_chain_peer_selection(to_domain_network_peer_selection_facts(facts))?,
-        ))
-    }
-
-    /// Plans whether pending DAG blocks should be requested and from which peer.
-    pub fn consensus_network_plan_pending_dag_blocks_request(
-        &self,
-        facts: rustaxa_ffi::NetworkPendingDagBlocksRequestFacts,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkPendingDagBlocksRequestPlan> {
-        Ok(to_bridge_network_pending_dag_blocks_request_plan(
-            self.network.plan_pending_dag_blocks_request(
-                to_domain_network_pending_dag_blocks_request_facts(facts),
-            )?,
-        ))
+        request: rustaxa_ffi::NetworkPbftSyncCommand,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkPbftSyncCommandOutcome> {
+        let outcome = self.network.apply_pbft_sync_command(
+            rustaxa_consensus::NetworkPbftSyncCommandRequest {
+                kind: request.kind,
+                now_ms: request.now_ms,
+                generation: request.generation,
+                peer_id: request.peer_id,
+                source: request.source,
+                reason: request.reason,
+                sync_queue_size: request.sync_queue_size,
+                syncing_period: request.syncing_period,
+                finalized_period: request.finalized_period,
+                remote_period: request.remote_period,
+                sync_level_size: request.sync_level_size,
+                retry_count: request.retry_count,
+                retry_delay_ms: request.retry_delay_ms,
+            },
+        )?;
+        Ok(rustaxa_ffi::NetworkPbftSyncCommandOutcome {
+            accepted: outcome.accepted,
+            active: outcome.active,
+            stopped: outcome.stopped,
+            expired: outcome.expired,
+            restart_sync: outcome.restart_sync,
+            retry: outcome.retry,
+            request_next: outcome.request_next,
+            request_pending_dag_if_idle: outcome.request_pending_dag_if_idle,
+            deep_syncing: outcome.deep_syncing,
+            generation: outcome.generation,
+            error_code: outcome.error_code,
+        })
     }
 
     /// Selects the pending-DAG peer and queues canonical non-finalized hashes.
@@ -507,116 +603,6 @@ fn to_domain_pillar_vote_ingress_context(
     }
 }
 
-fn to_domain_network_status_sync_facts(
-    value: rustaxa_ffi::NetworkStatusSyncFacts,
-) -> rustaxa_consensus::NetworkStatusSyncFacts {
-    rustaxa_consensus::NetworkStatusSyncFacts {
-        local_pbft_syncing: value.local_pbft_syncing,
-        local_pbft_synced_period: value.local_pbft_synced_period,
-        local_pbft_period: value.local_pbft_period,
-        local_pbft_round: value.local_pbft_round,
-        peer_pbft_chain_size: value.peer_pbft_chain_size,
-        peer_pbft_period: value.peer_pbft_period,
-        peer_pbft_round: value.peer_pbft_round,
-        peer_dag_synced: value.peer_dag_synced,
-        peer_last_status_pbft_chain_size: value.peer_last_status_pbft_chain_size,
-    }
-}
-
-fn to_bridge_network_status_sync_plan(
-    plan: rustaxa_consensus::NetworkStatusSyncPlan,
-) -> rustaxa_ffi::NetworkStatusSyncPlan {
-    rustaxa_ffi::NetworkStatusSyncPlan {
-        request_pbft_sync: plan.request_pbft_sync,
-        request_pending_dag_blocks: plan.request_pending_dag_blocks,
-        request_next_votes: plan.request_next_votes,
-        next_votes_period: plan.next_votes_period,
-        next_votes_round: plan.next_votes_round,
-    }
-}
-
-fn to_domain_network_status_egress_facts(
-    value: rustaxa_ffi::NetworkStatusEgressFacts,
-) -> rustaxa_consensus::NetworkStatusEgressFacts {
-    rustaxa_consensus::NetworkStatusEgressFacts {
-        initial: value.initial,
-        local_chain_id: value.local_chain_id,
-        genesis_hash: value.genesis_hash,
-        node_major_version: value.node_major_version,
-        node_minor_version: value.node_minor_version,
-        node_patch_version: value.node_patch_version,
-        is_light_node: value.is_light_node,
-        light_node_history: value.light_node_history,
-        local_pbft_chain_size: value.local_pbft_chain_size,
-        local_pbft_round: value.local_pbft_round,
-        local_dag_level: value.local_dag_level,
-        pbft_syncing: value.pbft_syncing,
-        deep_pbft_syncing: value.deep_pbft_syncing,
-    }
-}
-
-fn to_bridge_network_status_egress_plan(
-    plan: rustaxa_consensus::NetworkStatusEgressPlan,
-) -> rustaxa_ffi::NetworkStatusEgressPlan {
-    rustaxa_ffi::NetworkStatusEgressPlan {
-        status: plan.status,
-        error_code: plan.error_code,
-        peer_pbft_chain_size: plan.peer_pbft_chain_size,
-        peer_pbft_round: plan.peer_pbft_round,
-        peer_dag_level: plan.peer_dag_level,
-        peer_syncing: plan.peer_syncing,
-        include_initial_data: plan.include_initial_data,
-        chain_id: plan.chain_id,
-        genesis_hash: plan.genesis_hash,
-        node_major_version: plan.node_major_version,
-        node_minor_version: plan.node_minor_version,
-        node_patch_version: plan.node_patch_version,
-        is_light_node: plan.is_light_node,
-        light_node_history: plan.light_node_history,
-    }
-}
-
-fn to_domain_network_initial_status_facts(
-    value: rustaxa_ffi::NetworkInitialStatusFacts,
-) -> rustaxa_consensus::NetworkInitialStatusFacts {
-    rustaxa_consensus::NetworkInitialStatusFacts {
-        local_chain_id: value.local_chain_id,
-        peer_chain_id: value.peer_chain_id,
-        expected_genesis_hash: value.expected_genesis_hash,
-        peer_genesis_hash: value.peer_genesis_hash,
-        local_pbft_synced_period: value.local_pbft_synced_period,
-        peer_pbft_chain_size: value.peer_pbft_chain_size,
-        peer_is_light_node: value.peer_is_light_node,
-        peer_light_node_history: value.peer_light_node_history,
-    }
-}
-
-fn to_bridge_network_initial_status_plan(
-    plan: rustaxa_consensus::NetworkInitialStatusPlan,
-) -> rustaxa_ffi::NetworkInitialStatusPlan {
-    rustaxa_ffi::NetworkInitialStatusPlan {
-        status: plan.status,
-        error_code: plan.error_code,
-        accept_peer: plan.accept_peer,
-        disconnect_peer: plan.disconnect_peer,
-    }
-}
-
-fn to_domain_network_pbft_sync_start_facts(
-    value: rustaxa_ffi::NetworkPbftSyncStartFacts,
-) -> rustaxa_consensus::NetworkPbftSyncStartFacts {
-    rustaxa_consensus::NetworkPbftSyncStartFacts {
-        local_pbft_syncing: value.local_pbft_syncing,
-        local_pbft_synced_period: value.local_pbft_synced_period,
-        local_pbft_chain_size: value.local_pbft_chain_size,
-        candidates: value
-            .candidates
-            .into_iter()
-            .map(to_domain_network_pbft_sync_peer_candidate)
-            .collect(),
-    }
-}
-
 fn to_domain_network_pbft_sync_peer_candidate(
     candidate: rustaxa_ffi::NetworkPbftSyncPeerCandidate,
 ) -> rustaxa_consensus::NetworkPbftSyncPeerCandidate {
@@ -632,46 +618,6 @@ fn to_domain_network_pbft_sync_peer_candidate(
     }
 }
 
-fn to_bridge_network_pbft_sync_start_plan(
-    plan: rustaxa_consensus::NetworkPbftSyncStartPlan,
-) -> rustaxa_ffi::NetworkPbftSyncStartPlan {
-    rustaxa_ffi::NetworkPbftSyncStartPlan {
-        status: plan.status,
-        error_code: plan.error_code,
-        start_sync: plan.start_sync,
-        has_peer: plan.has_peer,
-        peer_id: plan.peer_id,
-        peer_pbft_chain_size: plan.peer_pbft_chain_size,
-        request_period: plan.request_period,
-        enable_snapshot_creation: plan.enable_snapshot_creation,
-    }
-}
-
-fn to_domain_network_peer_selection_facts(
-    value: rustaxa_ffi::NetworkPeerSelectionFacts,
-) -> rustaxa_consensus::NetworkPeerSelectionFacts {
-    rustaxa_consensus::NetworkPeerSelectionFacts {
-        local_pbft_syncing_period: value.local_pbft_syncing_period,
-        candidates: value
-            .candidates
-            .into_iter()
-            .map(to_domain_network_pbft_sync_peer_candidate)
-            .collect(),
-    }
-}
-
-fn to_bridge_network_peer_selection_plan(
-    plan: rustaxa_consensus::NetworkPeerSelectionPlan,
-) -> rustaxa_ffi::NetworkPeerSelectionPlan {
-    rustaxa_ffi::NetworkPeerSelectionPlan {
-        status: plan.status,
-        error_code: plan.error_code,
-        has_peer: plan.has_peer,
-        peer_id: plan.peer_id,
-        peer_pbft_chain_size: plan.peer_pbft_chain_size,
-    }
-}
-
 fn to_domain_network_pending_dag_blocks_request_facts(
     value: rustaxa_ffi::NetworkPendingDagBlocksRequestFacts,
 ) -> rustaxa_consensus::NetworkPendingDagBlocksRequestFacts {
@@ -684,19 +630,6 @@ fn to_domain_network_pending_dag_blocks_request_facts(
             .into_iter()
             .map(to_domain_network_pbft_sync_peer_candidate)
             .collect(),
-    }
-}
-
-fn to_bridge_network_pending_dag_blocks_request_plan(
-    plan: rustaxa_consensus::NetworkPendingDagBlocksRequestPlan,
-) -> rustaxa_ffi::NetworkPendingDagBlocksRequestPlan {
-    rustaxa_ffi::NetworkPendingDagBlocksRequestPlan {
-        status: plan.status,
-        error_code: plan.error_code,
-        request_pending_dag_blocks: plan.request_pending_dag_blocks,
-        has_peer: plan.has_peer,
-        peer_id: plan.peer_id,
-        request_period: plan.request_period,
     }
 }
 

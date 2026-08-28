@@ -1,5 +1,6 @@
 #include "plugin/rpc.hpp"
 
+#include <chrono>
 #include <boost/program_options.hpp>
 
 #include "graphql/http_processor.hpp"
@@ -119,8 +120,17 @@ void Rpc::start() {
     const auto dpos_quorum = app->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote);
 #endif
 
+#ifdef RUSTAXA_ENABLE
+    const auto sync_now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count();
+    const auto sync_status = (*query_api)->consensus_query_pbft_sync_status(sync_now);
+    snapshot.pbft_syncing = sync_status.active;
+    snapshot.syncing_seconds = sync_status.elapsed_ms / 1000;
+#else
     snapshot.pbft_syncing = app->getNetwork()->pbft_syncing();
     snapshot.syncing_seconds = app->getNetwork()->syncTimeSeconds();
+#endif
     snapshot.peer_count = app->getNetwork()->getPeerCount();
     snapshot.node_count = app->getNetwork()->getNodeCount();
     snapshot.pbft_chain_size = chain_size;

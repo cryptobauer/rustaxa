@@ -785,6 +785,16 @@ transaction ingress, and periodic DAG/transaction gossip now use the same applic
 other handler-local consensus families remain active `CRW-N01` work. These remain contraction milestones rather than
 global item completion.
 
+PBFT status and synchronization lifecycle now use that same root-owned boundary. Rust-mode tarcap no longer owns or
+injects `PbftSyncingState`, and no handler calls the former status-sync, status-egress, initial-status, sync-start,
+max-peer, or pending-DAG planners directly. `ConsensusNetworkService` owns the peer-status debounce, generation-tagged
+sync session, response-source correlation, deep/inactivity/disconnect decisions, status payload projection, and
+pending-DAG/next-vote follow-up. C++ supplies immutable peer snapshots, re-resolves the selected socket immediately
+before execution, wraps packets, physically sends/disconnects, and schedules the inactivity tick. Query, RPC, debug,
+App, and statistics readers consume the shared `ConsensusQueryApi` sync snapshot, which is deliberately side-effect
+free. The bridge retains five named operation-shaped network calls, including combined start/selection and one lifecycle command, and
+deletes the six direct planner exports plus the network-specific status snapshot.
+
 ### 7. Contract DAG and transaction shims
 
 - Move worker-neutral orchestration behind the native DAG/transaction service.

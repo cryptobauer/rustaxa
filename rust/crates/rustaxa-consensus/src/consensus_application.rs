@@ -1257,7 +1257,9 @@ impl ConsensusApplication {
     /// Creates the read-only client API bound to this application's storage and live PBFT owner.
     ///
     /// The returned API extends the lifetime of existing root-owned services;
-    /// it cannot construct or mutate a competing consensus runtime.
+    /// it cannot construct or mutate a competing consensus runtime. Live
+    /// network-sync snapshots are read through the PBFT-owned network sibling,
+    /// so public clients never receive a network-service handle.
     #[doc(hidden)]
     pub fn consensus_query_api_for_bridge(&self) -> crate::ConsensusQueryApi {
         crate::ConsensusQueryApi::new_live(
@@ -1562,6 +1564,7 @@ fn deterministic_test_config() -> ConsensusApplicationConfig {
             ficus_activation_period: 0,
             pillar_blocks_interval: 10,
             sync_level_size: 10,
+            deep_syncing_threshold: 5,
             is_light_node: false,
             light_node_history: 0,
             committee_size: 1,

@@ -4,6 +4,7 @@
 #include <jsonrpccpp/common/exception.h>
 #include <libdevcore/CommonJS.h>
 
+#include <chrono>
 #include <stdexcept>
 
 #include "common/types.hpp"
@@ -60,8 +61,17 @@ LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBa
   const auto dpos_quorum = node->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote);
 #endif
 
+#ifdef RUSTAXA_ENABLE
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  const auto sync_status = (*query)->consensus_query_pbft_sync_status(now_ms);
+  snapshot.pbft_syncing = sync_status.active;
+  snapshot.syncing_seconds = sync_status.elapsed_ms / 1000;
+#else
   snapshot.pbft_syncing = node->getNetwork()->pbft_syncing();
   snapshot.syncing_seconds = node->getNetwork()->syncTimeSeconds();
+#endif
   snapshot.peer_count = node->getNetwork()->getPeerCount();
   snapshot.node_count = node->getNetwork()->getNodeCount();
   snapshot.pbft_chain_size = chain_size;

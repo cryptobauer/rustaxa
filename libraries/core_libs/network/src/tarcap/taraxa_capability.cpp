@@ -52,7 +52,9 @@
 #include "network/tarcap/packets_handlers/v4/get_pbft_sync_packet_handler.hpp"
 #endif
 #include "network/consensus_query.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
+#endif
 #ifndef RUSTAXA_ENABLE
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "transaction/transaction_manager.hpp"
@@ -79,7 +81,10 @@ namespace taraxa::network::tarcap {
 TaraxaCapability::TaraxaCapability(
     TarcapVersion version, const FullNodeConfig &conf, const h256 &genesis_hash, std::weak_ptr<dev::p2p::Host> host,
     std::shared_ptr<network::threadpool::PacketsThreadPool> threadpool,
-    std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftSyncingState> syncing_state,
+    std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
+    std::shared_ptr<PbftSyncingState> syncing_state,
+#endif
 #ifndef RUSTAXA_ENABLE
     std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
     std::shared_ptr<PbftManager> pbft_mgr,
@@ -101,7 +106,9 @@ TaraxaCapability::TaraxaCapability(
       all_packets_stats_(std::move(packets_stats)),
       kConf(conf),
       peers_state_(nullptr),
+#ifndef RUSTAXA_ENABLE
       pbft_syncing_state_(std::move(syncing_state)),
+#endif
       packets_handlers_(std::make_shared<PacketsHandler>()),
       thread_pool_(std::move(threadpool))
 #ifdef RUSTAXA_ENABLE
@@ -116,19 +123,22 @@ TaraxaCapability::TaraxaCapability(
   LOG_OBJECTS_CREATE(logs_prefix + "TARCAP");
 
   peers_state_ = std::make_shared<PeersState>(host, kConf);
-  packets_handlers_ =
-      init_packets_handlers(logs_prefix, conf, genesis_hash, peers_state_, pbft_syncing_state_, all_packets_stats_,
+  packets_handlers_ = init_packets_handlers(logs_prefix, conf, genesis_hash, peers_state_,
+#ifndef RUSTAXA_ENABLE
+                                            pbft_syncing_state_,
+#endif
+                                            all_packets_stats_,
 #ifdef RUSTAXA_ENABLE
-                            rust_consensus_network_api_, consensus_status,
+                                            rust_consensus_network_api_, consensus_status,
 #endif
 #ifndef RUSTAXA_ENABLE
-                            db, pbft_mgr,
+                                            db, pbft_mgr,
 #endif
-                            pbft_chain,
+                                            pbft_chain,
 #ifndef RUSTAXA_ENABLE
-                            vote_mgr, dag_mgr, trx_mgr, slashing_manager, pillar_chain_mgr,
+                                            vote_mgr, dag_mgr, trx_mgr, slashing_manager, pillar_chain_mgr,
 #endif
-                            final_chain, version, node_addr);
+                                            final_chain, version, node_addr);
 
   // Must be called after init_packets_handlers
   thread_pool_->setPacketsHandlers(version, packets_handlers_);
@@ -175,6 +185,21 @@ void TaraxaCapability::onDisconnect(dev::p2p::NodeID const &_nodeID) {
   LOG(log_nf_) << "Node " << _nodeID << " disconnected";
   peers_state_->erasePeer(_nodeID);
 
+#ifdef RUSTAXA_ENABLE
+  const auto now_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+          .count();
+  const auto sync = rust_consensus_network_api_->pbftSyncStatus(now_ms);
+  const auto outcome = rust_consensus_network_api_->handlePbftSyncDisconnect(sync.generation, _nodeID.asArray());
+  if (outcome.restart_sync) {
+    if (peers_state_->getPeersCount() > 0) {
+      LOG(log_dg_) << "Restart PBFT/DAG syncing due to syncing peer disconnect.";
+      getSpecificHandler<ISyncPacketHandler>(network::SubprotocolPacketType::kPbftSyncPacket)->startSyncingPbft();
+    } else {
+      LOG(log_dg_) << "Stop PBFT/DAG syncing due to syncing peer disconnect and no other peers available.";
+    }
+  }
+#else
   const auto syncing_peer = pbft_syncing_state_->syncingPeer();
   if (pbft_syncing_state_->isPbftSyncing() && syncing_peer && syncing_peer->getId() == _nodeID) {
     pbft_syncing_state_->setPbftSyncing(false);
@@ -185,6 +210,7 @@ void TaraxaCapability::onDisconnect(dev::p2p::NodeID const &_nodeID) {
       LOG(log_dg_) << "Stop PBFT/DAG syncing due to syncing peer disconnect and no other peers available.";
     }
   }
+#endif
 }
 
 std::string TaraxaCapability::packetTypeToString(unsigned _packetType) const {
@@ -218,7 +244,15 @@ void TaraxaCapability::interpretCapabilityPacket(std::weak_ptr<dev::p2p::Session
     return;
   }
 
-  if (pbft_syncing_state_->isDeepPbftSyncing() && filterSyncIrrelevantPackets(packet_type)) {
+#ifdef RUSTAXA_ENABLE
+  const auto now_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+          .count();
+  const bool deep_pbft_syncing = rust_consensus_network_api_->pbftSyncStatus(now_ms).deep_syncing;
+#else
+  const bool deep_pbft_syncing = pbft_syncing_state_->isDeepPbftSyncing();
+#endif
+  if (deep_pbft_syncing && filterSyncIrrelevantPackets(packet_type)) {
     LOG(log_dg_) << "Ignored " << convertPacketTypeToString(packet_type) << " because we are still syncing";
     return;
   }
@@ -320,7 +354,10 @@ const std::shared_ptr<PeersState> &TaraxaCapability::getPeersState() { return pe
 
 const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersionHandlers =
     [](const std::string &logs_prefix, const FullNodeConfig &config, const h256 &genesis_hash,
-       const std::shared_ptr<PeersState> &peers_state, const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
+       const std::shared_ptr<PeersState> &peers_state,
+#ifndef RUSTAXA_ENABLE
+       const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
+#endif
        const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats,
 #ifdef RUSTAXA_ENABLE
        const network::ConsensusNetworkApiShared &consensus_network_api,
@@ -369,9 +406,9 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
                                                                pbft_chain, pbft_mgr, dag_mgr, trx_mgr, db, node_addr,
                                                                logs_prefix);
 #else
-      packets_handlers->registerHandler<RustDagBlockPacketHandler>(
-          config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, consensus_status, consensus_network_api,
-          version, node_addr, logs_prefix);
+      packets_handlers->registerHandler<RustDagBlockPacketHandler>(config, peers_state, packets_stats, pbft_chain,
+                                                                   consensus_status, consensus_network_api, version,
+                                                                   node_addr, logs_prefix);
 #endif
 
 #ifndef RUSTAXA_ENABLE
@@ -383,7 +420,10 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
 #endif
 
       // Non critical packets with low processing priority
-      packets_handlers->registerHandler<StatusPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
+      packets_handlers->registerHandler<StatusPacketHandler>(config, peers_state, packets_stats,
+#ifndef RUSTAXA_ENABLE
+                                                             pbft_syncing_state,
+#endif
                                                              pbft_chain,
 #ifndef RUSTAXA_ENABLE
                                                              pbft_mgr,
@@ -409,9 +449,9 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
                                                               pbft_chain, pbft_mgr, dag_mgr, trx_mgr, db, node_addr,
                                                               logs_prefix);
 #else
-      packets_handlers->registerHandler<RustDagSyncPacketHandler>(
-          config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, consensus_status, consensus_network_api,
-          version, node_addr, logs_prefix);
+      packets_handlers->registerHandler<RustDagSyncPacketHandler>(config, peers_state, packets_stats, pbft_chain,
+                                                                  consensus_status, consensus_network_api, version,
+                                                                  node_addr, logs_prefix);
 #endif
 
 #ifndef RUSTAXA_ENABLE
@@ -428,9 +468,9 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
                                                                pbft_chain, pbft_mgr, dag_mgr, vote_mgr, db, node_addr,
                                                                logs_prefix);
 #else
-      packets_handlers->registerHandler<RustPbftSyncPacketHandler>(
-          config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, consensus_status, final_chain,
-          consensus_network_api, node_addr, logs_prefix);
+      packets_handlers->registerHandler<RustPbftSyncPacketHandler>(config, peers_state, packets_stats, pbft_chain,
+                                                                   consensus_status, final_chain, consensus_network_api,
+                                                                   node_addr, logs_prefix);
 #endif
       packets_handlers->registerHandler<PillarVotePacketHandler>(config, peers_state, packets_stats,
 #ifndef RUSTAXA_ENABLE
@@ -455,9 +495,8 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
                                                                         node_addr, logs_prefix);
 
 #ifdef RUSTAXA_ENABLE
-      packets_handlers->registerHandler<RustPbftBlocksBundlePacketHandler>(config, peers_state, packets_stats,
-                                                                           consensus_network_api, final_chain,
-                                                                           pbft_syncing_state, node_addr, logs_prefix);
+      packets_handlers->registerHandler<RustPbftBlocksBundlePacketHandler>(
+          config, peers_state, packets_stats, consensus_network_api, final_chain, node_addr, logs_prefix);
 #else
       packets_handlers->registerHandler<PbftBlocksBundlePacketHandler>(
           config, peers_state, packets_stats, pbft_mgr, final_chain, pbft_syncing_state, node_addr, logs_prefix);
@@ -467,7 +506,10 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
 
 const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHandlers =
     [](const std::string &logs_prefix, const FullNodeConfig &config, const h256 &genesis_hash,
-       const std::shared_ptr<PeersState> &peers_state, const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
+       const std::shared_ptr<PeersState> &peers_state,
+#ifndef RUSTAXA_ENABLE
+       const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
+#endif
        const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats,
 #ifdef RUSTAXA_ENABLE
        const network::ConsensusNetworkApiShared &consensus_network_api,
@@ -516,9 +558,9 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
                                                                pbft_chain, pbft_mgr, dag_mgr, trx_mgr, db, node_addr,
                                                                logs_prefix);
 #else
-      packets_handlers->registerHandler<RustDagBlockPacketHandler>(
-          config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, consensus_status, consensus_network_api,
-          version, node_addr, logs_prefix);
+      packets_handlers->registerHandler<RustDagBlockPacketHandler>(config, peers_state, packets_stats, pbft_chain,
+                                                                   consensus_status, consensus_network_api, version,
+                                                                   node_addr, logs_prefix);
 #endif
 
 #ifndef RUSTAXA_ENABLE
@@ -530,7 +572,10 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
 #endif
 
       // Non critical packets with low processing priority
-      packets_handlers->registerHandler<StatusPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
+      packets_handlers->registerHandler<StatusPacketHandler>(config, peers_state, packets_stats,
+#ifndef RUSTAXA_ENABLE
+                                                             pbft_syncing_state,
+#endif
                                                              pbft_chain,
 #ifndef RUSTAXA_ENABLE
                                                              pbft_mgr,
@@ -556,9 +601,9 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
                                                               pbft_chain, pbft_mgr, dag_mgr, trx_mgr, db, node_addr,
                                                               logs_prefix);
 #else
-      packets_handlers->registerHandler<RustDagSyncPacketHandler>(
-          config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, consensus_status, consensus_network_api,
-          version, node_addr, logs_prefix);
+      packets_handlers->registerHandler<RustDagSyncPacketHandler>(config, peers_state, packets_stats, pbft_chain,
+                                                                  consensus_status, consensus_network_api, version,
+                                                                  node_addr, logs_prefix);
 #endif
 
 #ifndef RUSTAXA_ENABLE
@@ -575,9 +620,9 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
                                                                pbft_chain, pbft_mgr, dag_mgr, vote_mgr, db, node_addr,
                                                                logs_prefix);
 #else
-      packets_handlers->registerHandler<RustPbftSyncPacketHandler>(
-          config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, consensus_status, final_chain,
-          consensus_network_api, node_addr, logs_prefix);
+      packets_handlers->registerHandler<RustPbftSyncPacketHandler>(config, peers_state, packets_stats, pbft_chain,
+                                                                   consensus_status, final_chain, consensus_network_api,
+                                                                   node_addr, logs_prefix);
 #endif
       packets_handlers->registerHandler<PillarVotePacketHandler>(config, peers_state, packets_stats,
 #ifndef RUSTAXA_ENABLE

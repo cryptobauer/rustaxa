@@ -4,7 +4,9 @@
 #include "dag/dag_manager.hpp"
 #endif
 #include "network/consensus_query.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
+#endif
 #include "packet_handler.hpp"
 #ifdef RUSTAXA_ENABLE
 #include "network/consensus_network_api.hpp"
@@ -22,6 +24,8 @@ class PbftManager;
 
 namespace taraxa::network::tarcap {
 
+class PbftSyncingState;
+
 /**
  * @brief ExtSyncingPacketHandler is extended abstract PacketHandler with added functions that are used in packet
  *        handlers that need to interact with syncing process in some way
@@ -30,7 +34,10 @@ class ExtSyncingPacketHandler : public PacketHandler {
  public:
   ExtSyncingPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                           std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                          std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
+#ifndef RUSTAXA_ENABLE
+                          std::shared_ptr<PbftSyncingState> pbft_syncing_state,
+#endif
+                          net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
                           std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
                           std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler.
@@ -53,7 +60,9 @@ class ExtSyncingPacketHandler : public PacketHandler {
                                          PbftRound peer_pbft_round);
 #endif
 
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<PbftSyncingState> pbft_syncing_state_{nullptr};
+#endif
 
   net::ConsensusQueryClient pbft_chain_{nullptr};
 #ifndef RUSTAXA_ENABLE

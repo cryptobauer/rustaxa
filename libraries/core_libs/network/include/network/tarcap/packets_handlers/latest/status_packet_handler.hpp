@@ -8,7 +8,10 @@ class StatusPacketHandler : public ISyncPacketHandler {
  public:
   StatusPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                       std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                      std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
+#ifndef RUSTAXA_ENABLE
+                      std::shared_ptr<PbftSyncingState> pbft_syncing_state,
+#endif
+                      net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
                       std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
                       std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy status handler.

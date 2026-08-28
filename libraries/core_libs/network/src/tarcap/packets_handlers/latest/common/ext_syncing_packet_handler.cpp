@@ -4,7 +4,9 @@
 #include "network/tarcap/packets/latest/get_dag_sync_packet.hpp"
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
+#endif
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
 #else
@@ -16,9 +18,6 @@ namespace taraxa::network::tarcap {
 #ifdef RUSTAXA_ENABLE
 namespace {
 
-constexpr uint8_t kNetworkStatusPlanStatusNoEligiblePeer = 2;
-constexpr uint8_t kNetworkStatusPlanStatusDagAlreadySynced = 4;
-constexpr uint8_t kNetworkStatusPlanStatusDagPeriodMismatch = 5;
 constexpr uint32_t kPendingDagTransportLane = 0;
 
 network::ConsensusPeerCandidate toConsensusPeerCandidate(const std::shared_ptr<TaraxaPeer> &peer) {
@@ -34,27 +33,15 @@ network::ConsensusPeerCandidate toConsensusPeerCandidate(const std::shared_ptr<T
   return candidate;
 }
 
-rustaxa::NetworkPbftSyncPeerCandidate toNetworkSyncPeerCandidate(const std::shared_ptr<TaraxaPeer> &peer) {
-  const auto source = toConsensusPeerCandidate(peer);
-  rustaxa::NetworkPbftSyncPeerCandidate candidate{};
-  candidate.peer_id = source.peer_id;
-  candidate.pbft_chain_size = source.pbft_chain_size;
-  candidate.dag_level = source.dag_level;
-  candidate.is_light_node = source.is_light_node;
-  candidate.light_node_history = source.light_node_history;
-  candidate.peer_dag_synced = source.peer_dag_synced;
-  candidate.peer_dag_syncing = source.peer_dag_syncing;
-  candidate.dag_sync_allowed = source.dag_sync_allowed;
-  return candidate;
-}
-
 }  // namespace
 
 #endif
 
 ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                                  std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
                                                  std::shared_ptr<PbftSyncingState> pbft_syncing_state,
+#endif
                                                  net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
                                                  std::shared_ptr<PbftManager> pbft_mgr,
@@ -67,7 +54,9 @@ ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std
 #endif
                                                  const addr_t &node_addr, const std::string &log_channel_name)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel_name),
+#ifndef RUSTAXA_ENABLE
       pbft_syncing_state_(std::move(pbft_syncing_state)),
+#endif
       pbft_chain_(std::move(pbft_chain)),
 #ifndef RUSTAXA_ENABLE
       pbft_mgr_(std::move(pbft_mgr)),
@@ -84,73 +73,42 @@ ExtSyncingPacketHandler::~ExtSyncingPacketHandler() = default;
 
 void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer> peer) {
 #ifdef RUSTAXA_ENABLE
-  rustaxa::NetworkPendingDagBlocksRequestFacts facts{};
-  facts.local_pbft_syncing_period = consensus_status_().syncing_period;
+  std::vector<network::ConsensusPeerCandidate> candidates;
   if (peer) {
-    facts.has_explicit_peer = true;
-    facts.explicit_peer = toNetworkSyncPeerCandidate(peer);
+    candidates.push_back(toConsensusPeerCandidate(peer));
   } else {
     for (const auto &peer_entry : peers_state_->getAllPeers()) {
-      facts.candidates.push_back(toNetworkSyncPeerCandidate(peer_entry.second));
+      candidates.push_back(toConsensusPeerCandidate(peer_entry.second));
     }
   }
-
-  const auto dag_request_plan =
-      rust_consensus_network_api_->api().consensus_network_plan_pending_dag_blocks_request(facts);
-  if (!dag_request_plan.request_pending_dag_blocks) {
-    if (dag_request_plan.status == kNetworkStatusPlanStatusNoEligiblePeer) {
-      LOG(this->log_nf_) << "requestPendingDagBlocks not possible since no peers are matching conditions";
-    } else if (dag_request_plan.status == kNetworkStatusPlanStatusDagAlreadySynced) {
-      LOG(this->log_nf_) << "requestPendingDagBlocks not possible since already requested for peer";
-    } else if (dag_request_plan.status == kNetworkStatusPlanStatusDagPeriodMismatch) {
-      LOG(this->log_nf_) << "requestPendingDagBlocks not possible since PBFT periods are not matching";
-    } else {
-      LOG(this->log_dg_) << "requestPendingDagBlocks skipped with status "
-                         << static_cast<uint32_t>(dag_request_plan.status) << ", error "
-                         << static_cast<std::string>(dag_request_plan.error_code);
-    }
+  if (candidates.empty()) {
+    LOG(this->log_nf_) << "requestPendingDagBlocks not possible since no peers are matching conditions";
     return;
   }
 
-  auto selected_peer = peer ? peer
-                            : peers_state_->getPeer(dev::p2p::NodeID(dag_request_plan.peer_id.data(),
-                                                                     dev::p2p::NodeID::ConstructFromPointer));
-  if (!selected_peer) {
-    LOG(this->log_nf_) << "requestPendingDagBlocks not possible since no connected peers";
-    return;
-  }
-
-  // This prevents parallel requests. Rust owns deterministic request planning,
-  // while the live tarcap peer keeps the atomic executor-side reservation.
-  bool expected = false;
-  if (!selected_peer->peer_dag_syncing_.compare_exchange_strong(expected, true)) {
-    LOG(this->log_nf_) << "requestPendingDagBlocks not possible since already requesting for peer";
-    return;
-  }
-
-  LOG(this->log_nf_) << "Request pending blocks from peer " << selected_peer->getId();
-  const auto selected_candidate = toConsensusPeerCandidate(selected_peer);
-  try {
-    const auto outcome = rust_consensus_network_api_->requestPendingDagBlocks(
-        kPendingDagTransportLane, consensus_status_().syncing_period, selected_candidate,
-        network::PendingDagBlocksExecutor{
-            [this, selected_peer](const auto &peer_id, const auto &payload, uint64_t /* period */) {
-              const auto sent =
-                  sealAndSend(dev::p2p::NodeID(peer_id.data(), dev::p2p::NodeID::ConstructFromPointer),
-                              SubprotocolPacketType::kGetDagSyncPacket, dev::bytes(payload.begin(), payload.end()));
-              if (!sent) {
-                selected_peer->peer_dag_syncing_ = false;
-              }
-              return sent;
-            }});
-    if (outcome.queued_effect_count == 0) {
-      selected_peer->peer_dag_syncing_ = false;
-      LOG(this->log_dg_) << "Native pending-DAG request skipped with status " << static_cast<uint32_t>(outcome.status)
-                         << ", error " << outcome.error_code;
-    }
-  } catch (...) {
-    selected_peer->peer_dag_syncing_ = false;
-    throw;
+  const auto outcome = rust_consensus_network_api_->requestPendingDagBlocks(
+      kPendingDagTransportLane, consensus_status_().syncing_period, candidates,
+      network::PendingDagBlocksExecutor{[this](const auto &peer_id, const auto &payload, uint64_t /* period */) {
+        const auto selected_peer = peers_state_->getPeer(
+            dev::p2p::NodeID(peer_id.data(), dev::p2p::NodeID::ConstructFromPointer));
+        if (!selected_peer) {
+          return false;
+        }
+        bool expected = false;
+        if (!selected_peer->peer_dag_syncing_.compare_exchange_strong(expected, true)) {
+          return false;
+        }
+        LOG(this->log_nf_) << "Request pending blocks from peer " << selected_peer->getId();
+        const auto sent = sealAndSend(selected_peer->getId(), SubprotocolPacketType::kGetDagSyncPacket,
+                                      dev::bytes(payload.begin(), payload.end()));
+        if (!sent) {
+          selected_peer->peer_dag_syncing_ = false;
+        }
+        return sent;
+      }});
+  if (outcome.queued_effect_count == 0) {
+    LOG(this->log_dg_) << "Native pending-DAG request skipped with status " << static_cast<uint32_t>(outcome.status)
+                       << ", error " << outcome.error_code;
   }
   return;
 #endif

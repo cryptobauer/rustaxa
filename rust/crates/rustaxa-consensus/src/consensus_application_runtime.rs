@@ -197,11 +197,6 @@ pub struct GossipPillarVoteRequest {
     pub rebroadcast: bool,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SetSyncPeriodRequest {
-    pub effect_id: ConsensusEffectId,
-    pub period: u64,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReportMaliciousPeerRequest {
     pub effect_id: ConsensusEffectId,
     pub peer_id: [u8; 64],
@@ -328,7 +323,6 @@ pub struct ConsensusTransportReport {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConsensusTransportStatus {
     pub available: bool,
-    pub pbft_syncing: bool,
     /// Whether the host packet queue is applying proposal backpressure.
     pub packet_queue_over_limit: bool,
 }
@@ -476,7 +470,6 @@ pub trait ConsensusTransportPort {
         &self,
         request: &GossipPillarVoteRequest,
     ) -> Result<ConsensusTransportReport>;
-    fn set_sync_period(&self, request: &SetSyncPeriodRequest) -> Result<ConsensusTransportReport>;
     fn transport_status(&self) -> ConsensusTransportStatus;
     fn report_malicious_peer(
         &self,
@@ -650,21 +643,6 @@ where
     fn sign_digest(&self, wallet_index: usize, digest: [u8; 32]) -> Result<Vec<u8>> {
         self.runtime
             .sign_digest(self.generation, wallet_index as u64, digest, self.signer)
-    }
-
-    fn set_sync_period(&self, period: u64) -> Result<()> {
-        let id = self.runtime.next_effect(self.generation)?;
-        let report = self.transport.set_sync_period(&SetSyncPeriodRequest {
-            effect_id: id,
-            period,
-        })?;
-        self.runtime.validate_report(id, report.effect_id)?;
-        ensure!(
-            report.succeeded,
-            "CONSENSUS_RUNTIME_SET_SYNC_PERIOD_FAILED: {}",
-            report.error_code
-        );
-        Ok(())
     }
 }
 
@@ -1145,6 +1123,7 @@ impl ConsensusApplicationRuntime {
         wallet_index: u64,
         input: DagProposerSessionBeginInput,
         dag: &DagTransactionService,
+        pbft: &PbftService,
         final_chain: &FinalChain,
         process: &P,
         signer: &S,
@@ -1212,7 +1191,10 @@ impl ConsensusApplicationRuntime {
                 session_id,
                 network_throttled: {
                     let status = transport.transport_status();
-                    status.pbft_syncing || status.packet_queue_over_limit
+                    pbft.network_service()
+                        .pbft_sync_status(process.now_millis())?
+                        .active
+                        || status.packet_queue_over_limit
                 },
                 min_transaction_gas: 21_000,
                 estimate_gas_limit: 200_000,
@@ -1932,6 +1914,7 @@ impl ConsensusApplicationRuntime {
                     wallet_index as u64,
                     proposer,
                     dag_transaction,
+                    pbft,
                     final_chain,
                     process,
                     signer,
@@ -1947,6 +1930,9 @@ impl ConsensusApplicationRuntime {
             let snapshot = pbft.manager_snapshot();
             timing.observe(snapshot.period, snapshot.round, process.now_millis());
             let transport_status = transport.transport_status();
+            let network_sync_status = pbft
+                .network_service()
+                .pbft_sync_status(process.now_millis())?;
             let addresses: Vec<_> = self
                 .signing_identities
                 .iter()
@@ -1962,7 +1948,7 @@ impl ConsensusApplicationRuntime {
                 round: snapshot.round,
                 step: snapshot.step,
                 network_available: transport_status.available,
-                network_pbft_syncing: transport_status.pbft_syncing,
+                network_pbft_syncing: network_sync_status.active,
                 has_eligible_wallet,
                 polling_interval_ms: self.polling_interval_ms,
             });
@@ -2920,16 +2906,9 @@ mod tests {
         ) -> Result<ConsensusTransportReport> {
             Ok(self.report(request.effect_id))
         }
-        fn set_sync_period(
-            &self,
-            request: &SetSyncPeriodRequest,
-        ) -> Result<ConsensusTransportReport> {
-            Ok(self.report(request.effect_id))
-        }
         fn transport_status(&self) -> ConsensusTransportStatus {
             ConsensusTransportStatus {
                 available: true,
-                pbft_syncing: false,
                 packet_queue_over_limit: false,
             }
         }
@@ -2967,17 +2946,9 @@ mod tests {
             unreachable!("test batch contains only one vote request")
         }
 
-        fn set_sync_period(
-            &self,
-            _request: &SetSyncPeriodRequest,
-        ) -> Result<ConsensusTransportReport> {
-            unreachable!("scheduled gossip never sets sync period")
-        }
-
         fn transport_status(&self) -> ConsensusTransportStatus {
             ConsensusTransportStatus {
                 available: true,
-                pbft_syncing: false,
                 packet_queue_over_limit: false,
             }
         }

@@ -29,6 +29,7 @@ use crate::dag_transaction_service::{
     DagNonFinalizedIndex, DagRuntimeStatus, DagTransactionService, TransactionPoolStatus,
 };
 use crate::final_chain::FinalChain;
+use crate::network_api::NetworkPbftSyncSnapshot;
 use crate::pbft_service::PbftService;
 use crate::sortition::{SortitionParamsChange, THRESHOLD_UPPER_MIN_VALUE};
 use crate::verified_votes::PbftVoteType;
@@ -459,6 +460,20 @@ impl ConsensusQueryApi {
             .as_ref()
             .context("CONSENSUS_QUERY_LIVE_TRANSACTION_UNAVAILABLE")?
             .transaction_pool_status()
+    }
+
+    /// Returns a side-effect-free snapshot of the application-owned PBFT-sync lifecycle.
+    ///
+    /// `now_ms` must use the same monotonic clock domain as network lifecycle
+    /// events. It is used only to derive elapsed durations; queries never
+    /// expire, stop, or otherwise mutate a sync session. Storage-only fixtures
+    /// fail with a stable unavailable error.
+    pub fn pbft_sync_status(&self, now_ms: u64) -> Result<NetworkPbftSyncSnapshot> {
+        self.live_pbft
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_NETWORK_UNAVAILABLE")?
+            .network_service()
+            .pbft_sync_status(now_ms)
     }
 
     /// Returns whether native live queue/sidecar state knows a transaction.

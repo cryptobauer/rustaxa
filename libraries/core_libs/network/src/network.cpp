@@ -5,6 +5,7 @@
 #include <libp2p/Network.h>
 
 #include <boost/tokenizer.hpp>
+#include <chrono>
 #include <stdexcept>
 
 #include "config/version.hpp"
@@ -14,7 +15,9 @@
 #include "network/tarcap/packets_handlers/interface/sync_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/interface/transaction_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/interface/vote_packet_handler.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
+#endif
 #include "network/tarcap/stats/node_stats.hpp"
 #include "network/tarcap/stats/time_period_packets_stats.hpp"
 #include "network/tarcap/taraxa_capability.hpp"
@@ -68,7 +71,11 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
     : kConf(config),
       all_packets_stats_(nullptr),
       node_stats_(nullptr),
+#ifndef RUSTAXA_ENABLE
       pbft_syncing_state_(std::make_shared<network::tarcap::PbftSyncingState>(config.network.deep_syncing_threshold)),
+#else
+      consensus_query_(pbft_chain),
+#endif
 #ifdef RUSTAXA_ENABLE
       consensus_status_(std::move(consensus_status)),
       consensus_vote_status_(std::move(consensus_vote_status)),
@@ -99,8 +106,11 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
   all_packets_stats_ = std::make_shared<network::tarcap::TimePeriodPacketsStats>(
       kConf.network.ddos_protection.packets_stats_time_period_ms, node_addr);
 
-  node_stats_ =
-      std::make_shared<network::tarcap::NodeStats>(pbft_syncing_state_, pbft_chain,
+  node_stats_ = std::make_shared<network::tarcap::NodeStats>(
+#ifndef RUSTAXA_ENABLE
+      pbft_syncing_state_,
+#endif
+      pbft_chain,
 #ifdef RUSTAXA_ENABLE
                                                    consensus_status_, consensus_vote_status_,
 #else
@@ -141,7 +151,10 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 
     // Register latest version of taraxa capability
     auto latest_tarcap = std::make_shared<network::tarcap::TaraxaCapability>(
-        TARAXA_NET_VERSION, config, genesis_hash, host, packets_tp_, all_packets_stats_, pbft_syncing_state_,
+        TARAXA_NET_VERSION, config, genesis_hash, host, packets_tp_, all_packets_stats_,
+#ifndef RUSTAXA_ENABLE
+        pbft_syncing_state_,
+#endif
 #ifndef RUSTAXA_ENABLE
         db,
 #endif
@@ -165,7 +178,10 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
     // Register previous (v5) version of taraxa capability
     assert(TARAXA_NET_VERSION - 1 == 5);
     auto v5_tarcap = std::make_shared<network::tarcap::TaraxaCapability>(
-        TARAXA_NET_VERSION - 1, config, genesis_hash, host, packets_tp_, all_packets_stats_, pbft_syncing_state_,
+        TARAXA_NET_VERSION - 1, config, genesis_hash, host, packets_tp_, all_packets_stats_,
+#ifndef RUSTAXA_ENABLE
+        pbft_syncing_state_,
+#endif
 #ifndef RUSTAXA_ENABLE
         db,
 #endif
@@ -252,14 +268,31 @@ Json::Value Network::getStatus() {
   return node_stats_->getStatus(peers);
 }
 
-bool Network::pbft_syncing() { return pbft_syncing_state_->isPbftSyncing(); }
-
-uint64_t Network::syncTimeSeconds() const {
-  // TODO: this should be probably part of syncing_state, not node_stats
-  return node_stats_->syncTimeSeconds();
+bool Network::pbft_syncing() {
+#ifdef RUSTAXA_ENABLE
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                       .count();
+  return (*consensus_query_)->consensus_query_pbft_sync_status(now).active;
+#else
+  return pbft_syncing_state_->isPbftSyncing();
+#endif
 }
 
+uint64_t Network::syncTimeSeconds() const {
+#ifdef RUSTAXA_ENABLE
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                       .count();
+  return (*consensus_query_)->consensus_query_pbft_sync_status(now).elapsed_ms / 1000;
+#else
+  return node_stats_->syncTimeSeconds();
+#endif
+}
+
+#ifndef RUSTAXA_ENABLE
 void Network::setSyncStatePeriod(PbftPeriod period) { pbft_syncing_state_->setSyncStatePeriod(period); }
+#endif
 
 void Network::registerPeriodicEvents(
 #ifndef RUSTAXA_ENABLE

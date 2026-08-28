@@ -642,6 +642,7 @@ mod tests {
                 ficus_activation_period: 0,
                 pillar_blocks_interval: 10,
                 sync_level_size: 10,
+                deep_syncing_threshold: 5,
                 is_light_node: false,
                 light_node_history: 0,
                 committee_size: 1,

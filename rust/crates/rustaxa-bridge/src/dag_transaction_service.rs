@@ -127,6 +127,7 @@ fn domain_pbft_config(config: PbftServiceConfig) -> Result<DomainPbftServiceConf
         config.ficus_activation_period,
         config.pillar_blocks_interval,
         config.sync_level_size,
+        config.deep_syncing_threshold,
         config.is_light_node,
         config.light_node_history,
         config.committee_size,

@@ -172,6 +172,34 @@ pub mod rustaxa_ffi {
         non_proposable_over_limit: bool,
     }
 
+    /// Read-only projection of the application-owned PBFT-sync lifecycle.
+    ///
+    /// The DTO contains stable scalar and peer-identity facts only. It exposes
+    /// neither a network-service handle nor mutable lifecycle state; elapsed
+    /// fields are derived from the caller's monotonic timestamp without
+    /// advancing inactivity policy.
+    struct PbftSyncStatusView {
+        active: bool,
+        deep_syncing: bool,
+        generation: u64,
+        has_peer: bool,
+        peer_id: [u8; 64],
+        has_last_peer: bool,
+        last_peer_id: [u8; 64],
+        target_chain_size: u64,
+        current_period: u64,
+        request_period: u64,
+        started_at_ms: u64,
+        last_activity_ms: u64,
+        elapsed_ms: u64,
+        inactive_for_ms: u64,
+        start_count: u64,
+        stop_count: u64,
+        inactivity_count: u64,
+        disconnect_count: u64,
+        last_stop_reason: u8,
+    }
+
     /// Public/query sortition params-change view for Test RPC compatibility.
     struct SortitionParamsChangeView {
         found: bool,
@@ -476,65 +504,8 @@ pub mod rustaxa_ffi {
         conflicting_vote_hash: [u8; 32],
     }
 
-    /// Compact facts for status-triggered network sync planning.
-    struct NetworkStatusSyncFacts {
-        local_pbft_syncing: bool,
-        local_pbft_synced_period: u64,
-        local_pbft_period: u64,
-        local_pbft_round: u64,
-        peer_pbft_chain_size: u64,
-        peer_pbft_period: u64,
-        peer_pbft_round: u64,
-        peer_dag_synced: bool,
-        peer_last_status_pbft_chain_size: u64,
-    }
-
-    /// Side-effect-free status sync plan for tarcap execution.
-    struct NetworkStatusSyncPlan {
-        request_pbft_sync: bool,
-        request_pending_dag_blocks: bool,
-        request_next_votes: bool,
-        next_votes_period: u64,
-        next_votes_round: u64,
-    }
-
-    /// Compact facts needed to shape a local status packet for tarcap egress.
-    struct NetworkStatusEgressFacts {
-        initial: bool,
-        local_chain_id: u64,
-        genesis_hash: [u8; 32],
-        node_major_version: u32,
-        node_minor_version: u32,
-        node_patch_version: u32,
-        is_light_node: bool,
-        light_node_history: u64,
-        local_pbft_chain_size: u64,
-        local_pbft_round: u64,
-        local_dag_level: u64,
-        pbft_syncing: bool,
-        deep_pbft_syncing: bool,
-    }
-
-    /// Side-effect-free local status packet plan for tarcap egress.
-    struct NetworkStatusEgressPlan {
-        status: u8,
-        error_code: String,
-        peer_pbft_chain_size: u64,
-        peer_pbft_round: u64,
-        peer_dag_level: u64,
-        peer_syncing: bool,
-        include_initial_data: bool,
-        chain_id: u64,
-        genesis_hash: [u8; 32],
-        node_major_version: u32,
-        node_minor_version: u32,
-        node_patch_version: u32,
-        is_light_node: bool,
-        light_node_history: u64,
-    }
-
-    /// Compact facts needed to validate an initial status packet.
-    struct NetworkInitialStatusFacts {
+    /// Initial status identity and history facts for native peer admission.
+    struct NetworkInitialStatusRequest {
         local_chain_id: u64,
         peer_chain_id: u64,
         expected_genesis_hash: [u8; 32],
@@ -545,8 +516,8 @@ pub mod rustaxa_ffi {
         peer_light_node_history: u64,
     }
 
-    /// Side-effect-free initial-status admission plan for tarcap execution.
-    struct NetworkInitialStatusPlan {
+    /// Native admission decision for one initial status packet.
+    struct NetworkInitialStatusOutcome {
         status: u8,
         error_code: String,
         accept_peer: bool,
@@ -565,41 +536,6 @@ pub mod rustaxa_ffi {
         dag_sync_allowed: bool,
     }
 
-    /// Compact facts needed to plan PBFT sync start from known peers.
-    struct NetworkPbftSyncStartFacts {
-        local_pbft_syncing: bool,
-        local_pbft_synced_period: u64,
-        local_pbft_chain_size: u64,
-        candidates: Vec<NetworkPbftSyncPeerCandidate>,
-    }
-
-    /// Side-effect-free PBFT sync-start plan for tarcap execution.
-    struct NetworkPbftSyncStartPlan {
-        status: u8,
-        error_code: String,
-        start_sync: bool,
-        has_peer: bool,
-        peer_id: [u8; 64],
-        peer_pbft_chain_size: u64,
-        request_period: u64,
-        enable_snapshot_creation: bool,
-    }
-
-    /// Compact facts needed to select the best live network peer.
-    struct NetworkPeerSelectionFacts {
-        local_pbft_syncing_period: u64,
-        candidates: Vec<NetworkPbftSyncPeerCandidate>,
-    }
-
-    /// Side-effect-free peer-selection plan for tarcap execution.
-    struct NetworkPeerSelectionPlan {
-        status: u8,
-        error_code: String,
-        has_peer: bool,
-        peer_id: [u8; 64],
-        peer_pbft_chain_size: u64,
-    }
-
     /// Compact facts needed to plan a pending-DAG-block request.
     struct NetworkPendingDagBlocksRequestFacts {
         local_pbft_syncing_period: u64,
@@ -608,14 +544,117 @@ pub mod rustaxa_ffi {
         candidates: Vec<NetworkPbftSyncPeerCandidate>,
     }
 
-    /// Side-effect-free pending-DAG request plan for tarcap execution.
-    struct NetworkPendingDagBlocksRequestPlan {
+    /// Canonical peer snapshot used to start one application-owned PBFT-sync generation.
+    struct NetworkPbftSyncStartRequest {
+        start: bool,
+        now_ms: u64,
+        local_pbft_synced_period: u64,
+        local_pbft_chain_size: u64,
+        candidates: Vec<NetworkPbftSyncPeerCandidate>,
+    }
+
+    /// Atomic result of selecting a peer and starting native PBFT sync.
+    struct NetworkPbftSyncStartOutcome {
         status: u8,
         error_code: String,
-        request_pending_dag_blocks: bool,
+        started: bool,
         has_peer: bool,
         peer_id: [u8; 64],
+        peer_pbft_chain_size: u64,
         request_period: u64,
+        generation: u64,
+        deep_syncing: bool,
+        enable_snapshot_creation: bool,
+    }
+
+    /// One accepted periodic status projection for native follow-up decisions.
+    struct NetworkStatusFollowupRequest {
+        peer_id: [u8; 64],
+        local_pbft_synced_period: u64,
+        local_pbft_period: u64,
+        local_pbft_round: u64,
+        peer_pbft_chain_size: u64,
+        peer_pbft_period: u64,
+        peer_pbft_round: u64,
+        peer_dag_synced: bool,
+    }
+
+    /// Application-owned work selected after an accepted periodic status packet.
+    struct NetworkStatusFollowupOutcome {
+        request_pbft_sync: bool,
+        request_pending_dag_blocks: bool,
+        request_next_votes: bool,
+        next_votes_period: u64,
+        next_votes_round: u64,
+        sync_generation: u64,
+    }
+
+    /// Local facts for one canonical status payload; native state supplies the
+    /// active/deep-sync bit, which callers cannot override.
+    struct NetworkStatusEgressRequest {
+        initial: bool,
+        local_chain_id: u64,
+        genesis_hash: [u8; 32],
+        node_major_version: u32,
+        node_minor_version: u32,
+        node_patch_version: u32,
+        is_light_node: bool,
+        light_node_history: u64,
+        local_pbft_chain_size: u64,
+        local_pbft_round: u64,
+        local_dag_level: u64,
+    }
+
+    /// Canonical fields selected for one initial or periodic status payload.
+    struct NetworkStatusEgressOutcome {
+        status: u8,
+        error_code: String,
+        peer_pbft_chain_size: u64,
+        peer_pbft_round: u64,
+        peer_dag_level: u64,
+        peer_syncing: bool,
+        include_initial_data: bool,
+        chain_id: u64,
+        genesis_hash: [u8; 32],
+        node_major_version: u32,
+        node_minor_version: u32,
+        node_patch_version: u32,
+        is_light_node: bool,
+        light_node_history: u64,
+    }
+
+    /// Exact native lifecycle command. Kinds 0-4 consume source/time/generation/
+    /// peer/reason fields; completion kind 5 consumes queue size, and continuation
+    /// kinds 6-7 consume period/level plus retry count/delay facts.
+    struct NetworkPbftSyncCommand {
+        kind: u8,
+        now_ms: u64,
+        generation: u64,
+        peer_id: [u8; 64],
+        source: u8,
+        reason: u8,
+        sync_queue_size: u64,
+        syncing_period: u64,
+        finalized_period: u64,
+        remote_period: u64,
+        sync_level_size: u64,
+        retry_count: u32,
+        retry_delay_ms: u64,
+    }
+
+    /// Shared typed result projection for exact native sync lifecycle operations.
+    struct NetworkPbftSyncCommandOutcome {
+        accepted: bool,
+        active: bool,
+        stopped: bool,
+        expired: bool,
+        restart_sync: bool,
+        retry: bool,
+        request_next: bool,
+        request_pending_dag_if_idle: bool,
+        deep_syncing: bool,
+        generation: u64,
+        error_code: String,
     }
 
     /// GasPricer construction limits and mode flags supplied by C++ genesis config.
@@ -671,6 +710,7 @@ pub mod rustaxa_ffi {
         ficus_activation_period: u64,
         pillar_blocks_interval: u64,
         sync_level_size: u64,
+        deep_syncing_threshold: u64,
         is_light_node: bool,
         light_node_history: u64,
         committee_size: u64,
@@ -1117,6 +1157,10 @@ pub mod rustaxa_ffi {
         pub fn consensus_query_live_transaction_status(
             self: &BridgeConsensusQueryApi,
         ) -> Result<LiveTransactionStatusView>;
+        pub fn consensus_query_pbft_sync_status(
+            self: &BridgeConsensusQueryApi,
+            now_ms: u64,
+        ) -> Result<PbftSyncStatusView>;
         pub fn consensus_query_sortition_params_change_by_period(
             self: &BridgeConsensusQueryApi,
             period: u64,
@@ -1273,30 +1317,26 @@ pub mod rustaxa_ffi {
         pub fn consensus_network_transaction_gossip_candidate_hashes(
             application: &BridgeConsensusApplication,
         ) -> Result<Vec<DagHash>>;
-        pub fn consensus_network_plan_status_sync(
+        pub fn consensus_network_begin_pbft_sync(
             self: &BridgeConsensusNetworkApi,
-            facts: NetworkStatusSyncFacts,
-        ) -> Result<NetworkStatusSyncPlan>;
-        pub fn consensus_network_plan_status_egress(
+            request: NetworkPbftSyncStartRequest,
+        ) -> Result<NetworkPbftSyncStartOutcome>;
+        pub fn consensus_network_process_status_followup(
             self: &BridgeConsensusNetworkApi,
-            facts: NetworkStatusEgressFacts,
-        ) -> Result<NetworkStatusEgressPlan>;
-        pub fn consensus_network_plan_initial_status(
+            request: NetworkStatusFollowupRequest,
+        ) -> Result<NetworkStatusFollowupOutcome>;
+        pub fn consensus_network_status_egress(
             self: &BridgeConsensusNetworkApi,
-            facts: NetworkInitialStatusFacts,
-        ) -> Result<NetworkInitialStatusPlan>;
-        pub fn consensus_network_plan_pbft_sync_start(
+            request: NetworkStatusEgressRequest,
+        ) -> Result<NetworkStatusEgressOutcome>;
+        pub fn consensus_network_admit_initial_status(
             self: &BridgeConsensusNetworkApi,
-            facts: NetworkPbftSyncStartFacts,
-        ) -> Result<NetworkPbftSyncStartPlan>;
-        pub fn consensus_network_plan_max_chain_peer_selection(
+            request: NetworkInitialStatusRequest,
+        ) -> Result<NetworkInitialStatusOutcome>;
+        pub fn consensus_network_apply_pbft_sync_command(
             self: &BridgeConsensusNetworkApi,
-            facts: NetworkPeerSelectionFacts,
-        ) -> Result<NetworkPeerSelectionPlan>;
-        pub fn consensus_network_plan_pending_dag_blocks_request(
-            self: &BridgeConsensusNetworkApi,
-            facts: NetworkPendingDagBlocksRequestFacts,
-        ) -> Result<NetworkPendingDagBlocksRequestPlan>;
+            request: NetworkPbftSyncCommand,
+        ) -> Result<NetworkPbftSyncCommandOutcome>;
         pub fn consensus_network_request_pending_dag_blocks(
             self: &BridgeConsensusNetworkApi,
             application: &BridgeConsensusApplication,

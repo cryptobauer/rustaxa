@@ -21,12 +21,6 @@
 
 namespace {
 
-std::array<uint8_t, 64> nodeId(uint8_t byte) {
-  std::array<uint8_t, 64> id{};
-  id.fill(byte);
-  return id;
-}
-
 rustaxa::PbftServiceConfig serviceConfig() {
   rustaxa::PbftServiceConfig config{};
   config.genesis_lambda_ms = 100;
@@ -42,6 +36,7 @@ rustaxa::PbftServiceConfig serviceConfig() {
   config.ficus_activation_period = 10;
   config.pillar_blocks_interval = 10;
   config.sync_level_size = 10;
+  config.deep_syncing_threshold = 100;
   config.is_light_node = false;
   config.light_node_history = 0;
   config.committee_size = 5;
@@ -177,195 +172,42 @@ TEST(ConsensusNetworkApiBridgeTest, drainWorkAndReportResultsExposeExecutorContr
   EXPECT_TRUE(ack.error_code.empty());
 }
 
-TEST(ConsensusNetworkApiBridgeTest, statusSyncPlanningRoutesThroughNetworkApi) {
+TEST(ConsensusNetworkApiBridgeTest, statusAndLifecycleCommandsShareApplicationOwnedSyncState) {
   auto network_api = NetworkApiFixture{};
 
-  rustaxa::NetworkStatusSyncFacts facts{};
-  facts.local_pbft_syncing = false;
-  facts.local_pbft_synced_period = 10;
-  facts.local_pbft_period = 11;
-  facts.local_pbft_round = 2;
-  facts.peer_pbft_chain_size = 13;
-  facts.peer_pbft_period = 14;
-  facts.peer_pbft_round = 2;
-  facts.peer_dag_synced = true;
-  facts.peer_last_status_pbft_chain_size = 10;
+  rustaxa::NetworkPbftSyncStartRequest start{};
+  start.start = true;
+  start.now_ms = 100;
+  start.local_pbft_synced_period = 3;
+  start.local_pbft_chain_size = 3;
+  rustaxa::NetworkPbftSyncPeerCandidate candidate{};
+  candidate.peer_id.fill(0x42);
+  candidate.pbft_chain_size = 8;
+  candidate.peer_dag_synced = true;
+  candidate.dag_sync_allowed = true;
+  start.candidates.push_back(candidate);
+  const auto started = network_api->consensus_network_begin_pbft_sync(std::move(start));
+  ASSERT_TRUE(started.started) << std::string(started.error_code);
+  EXPECT_EQ(started.peer_id, candidate.peer_id);
 
-  auto plan = network_api->consensus_network_plan_status_sync(facts);
-  EXPECT_TRUE(plan.request_pbft_sync);
-  EXPECT_FALSE(plan.request_pending_dag_blocks);
-  EXPECT_FALSE(plan.request_next_votes);
+  rustaxa::NetworkStatusEgressRequest status{};
+  status.initial = true;
+  status.local_pbft_chain_size = 3;
+  status.local_pbft_round = 2;
+  status.local_dag_level = 7;
+  const auto egress = network_api->consensus_network_status_egress(status);
+  EXPECT_TRUE(egress.peer_syncing);
+  EXPECT_TRUE(egress.include_initial_data);
 
-  facts.peer_pbft_chain_size = 10;
-  facts.peer_pbft_period = 11;
-  facts.peer_pbft_round = 4;
-  facts.peer_dag_synced = false;
+  rustaxa::NetworkPbftSyncCommand activity{};
+  activity.kind = 1;
+  activity.now_ms = 125;
+  activity.generation = started.generation;
+  activity.peer_id = started.peer_id;
+  const auto activity_outcome = network_api->consensus_network_apply_pbft_sync_command(activity);
+  EXPECT_TRUE(activity_outcome.accepted) << std::string(activity_outcome.error_code);
+  EXPECT_EQ(activity_outcome.generation, started.generation);
 
-  plan = network_api->consensus_network_plan_status_sync(facts);
-  EXPECT_FALSE(plan.request_pbft_sync);
-  EXPECT_TRUE(plan.request_pending_dag_blocks);
-  EXPECT_TRUE(plan.request_next_votes);
-  EXPECT_EQ(plan.next_votes_period, 11);
-  EXPECT_EQ(plan.next_votes_round, 2);
-}
-
-TEST(ConsensusNetworkApiBridgeTest, statusEgressPlanningRoutesThroughNetworkApi) {
-  auto network_api = NetworkApiFixture{};
-
-  rustaxa::NetworkStatusEgressFacts facts{};
-  facts.initial = true;
-  facts.local_chain_id = 7;
-  facts.genesis_hash = hash(0xA0);
-  facts.node_major_version = 2;
-  facts.node_minor_version = 3;
-  facts.node_patch_version = 4;
-  facts.is_light_node = true;
-  facts.light_node_history = 9;
-  facts.local_pbft_chain_size = 10;
-  facts.local_pbft_round = 5;
-  facts.local_dag_level = 44;
-  facts.pbft_syncing = true;
-  facts.deep_pbft_syncing = false;
-
-  auto plan = network_api->consensus_network_plan_status_egress(facts);
-  EXPECT_EQ(plan.status, 0);
-  EXPECT_EQ(plan.peer_pbft_chain_size, 10);
-  EXPECT_EQ(plan.peer_pbft_round, 5);
-  EXPECT_EQ(plan.peer_dag_level, 44);
-  EXPECT_TRUE(plan.peer_syncing);
-  EXPECT_TRUE(plan.include_initial_data);
-  EXPECT_EQ(plan.chain_id, 7);
-  EXPECT_EQ(plan.genesis_hash, hash(0xA0));
-  EXPECT_EQ(plan.node_major_version, 2);
-  EXPECT_TRUE(plan.is_light_node);
-  EXPECT_EQ(plan.light_node_history, 9);
-
-  facts.initial = false;
-  facts.pbft_syncing = true;
-  facts.deep_pbft_syncing = false;
-  plan = network_api->consensus_network_plan_status_egress(facts);
-  EXPECT_EQ(plan.status, 0);
-  EXPECT_FALSE(plan.peer_syncing);
-  EXPECT_FALSE(plan.include_initial_data);
-  EXPECT_EQ(plan.chain_id, 0);
-}
-
-TEST(ConsensusNetworkApiBridgeTest, initialStatusPlanningRoutesThroughNetworkApi) {
-  auto network_api = NetworkApiFixture{};
-
-  rustaxa::NetworkInitialStatusFacts facts{};
-  facts.local_chain_id = 7;
-  facts.peer_chain_id = 7;
-  facts.expected_genesis_hash = hash(0xA1);
-  facts.peer_genesis_hash = hash(0xA1);
-  facts.local_pbft_synced_period = 10;
-  facts.peer_pbft_chain_size = 12;
-  facts.peer_is_light_node = true;
-  facts.peer_light_node_history = 3;
-
-  auto plan = network_api->consensus_network_plan_initial_status(facts);
-  EXPECT_EQ(plan.status, 0);
-  EXPECT_TRUE(plan.accept_peer);
-  EXPECT_FALSE(plan.disconnect_peer);
-
-  facts.peer_genesis_hash = hash(0xA2);
-  plan = network_api->consensus_network_plan_initial_status(facts);
-  EXPECT_EQ(plan.status, 7);
-  EXPECT_FALSE(plan.accept_peer);
-  EXPECT_TRUE(plan.disconnect_peer);
-}
-
-TEST(ConsensusNetworkApiBridgeTest, pbftSyncStartPlanningRoutesThroughNetworkApi) {
-  auto network_api = NetworkApiFixture{};
-
-  rustaxa::NetworkPbftSyncStartFacts facts{};
-  facts.local_pbft_syncing = false;
-  facts.local_pbft_synced_period = 10;
-  facts.local_pbft_chain_size = 10;
-  rustaxa::NetworkPbftSyncPeerCandidate first{};
-  first.peer_id = nodeId(0x41);
-  first.pbft_chain_size = 12;
-  first.dag_level = 20;
-  rustaxa::NetworkPbftSyncPeerCandidate second{};
-  second.peer_id = nodeId(0x42);
-  second.pbft_chain_size = 12;
-  second.dag_level = 21;
-  facts.candidates.push_back(first);
-  facts.candidates.push_back(second);
-
-  auto plan = network_api->consensus_network_plan_pbft_sync_start(facts);
-  EXPECT_EQ(plan.status, 0);
-  EXPECT_TRUE(plan.start_sync);
-  EXPECT_TRUE(plan.has_peer);
-  EXPECT_EQ(plan.peer_id, nodeId(0x42));
-  EXPECT_EQ(plan.request_period, 11);
-  EXPECT_FALSE(plan.enable_snapshot_creation);
-
-  facts.local_pbft_synced_period = 13;
-  facts.local_pbft_chain_size = 13;
-  plan = network_api->consensus_network_plan_pbft_sync_start(facts);
-  EXPECT_EQ(plan.status, 3);
-  EXPECT_FALSE(plan.start_sync);
-  EXPECT_TRUE(plan.enable_snapshot_creation);
-}
-
-TEST(ConsensusNetworkApiBridgeTest, maxChainPeerSelectionRoutesThroughNetworkApi) {
-  auto network_api = NetworkApiFixture{};
-
-  rustaxa::NetworkPeerSelectionFacts facts{};
-  facts.local_pbft_syncing_period = 10;
-  rustaxa::NetworkPbftSyncPeerCandidate light{};
-  light.peer_id = nodeId(0x49);
-  light.pbft_chain_size = 20;
-  light.dag_level = 50;
-  light.is_light_node = true;
-  light.light_node_history = 4;
-  rustaxa::NetworkPbftSyncPeerCandidate selected{};
-  selected.peer_id = nodeId(0x4A);
-  selected.pbft_chain_size = 12;
-  selected.dag_level = 21;
-  facts.candidates.push_back(light);
-  facts.candidates.push_back(selected);
-
-  const auto plan = network_api->consensus_network_plan_max_chain_peer_selection(facts);
-
-  EXPECT_EQ(plan.status, 0);
-  EXPECT_TRUE(plan.has_peer);
-  EXPECT_EQ(plan.peer_id, nodeId(0x4A));
-  EXPECT_EQ(plan.peer_pbft_chain_size, 12);
-}
-
-TEST(ConsensusNetworkApiBridgeTest, pendingDagBlocksRequestPlanningRoutesThroughNetworkApi) {
-  auto network_api = NetworkApiFixture{};
-
-  rustaxa::NetworkPendingDagBlocksRequestFacts facts{};
-  facts.local_pbft_syncing_period = 10;
-  facts.has_explicit_peer = false;
-  rustaxa::NetworkPbftSyncPeerCandidate already_synced{};
-  already_synced.peer_id = nodeId(0x51);
-  already_synced.pbft_chain_size = 12;
-  already_synced.dag_level = 30;
-  already_synced.peer_dag_synced = true;
-  already_synced.dag_sync_allowed = true;
-  rustaxa::NetworkPbftSyncPeerCandidate selected{};
-  selected.peer_id = nodeId(0x52);
-  selected.pbft_chain_size = 10;
-  selected.dag_level = 7;
-  selected.dag_sync_allowed = true;
-  facts.candidates.push_back(already_synced);
-  facts.candidates.push_back(selected);
-
-  auto plan = network_api->consensus_network_plan_pending_dag_blocks_request(facts);
-  EXPECT_EQ(plan.status, 0);
-  EXPECT_TRUE(plan.request_pending_dag_blocks);
-  EXPECT_TRUE(plan.has_peer);
-  EXPECT_EQ(plan.peer_id, nodeId(0x52));
-  EXPECT_EQ(plan.request_period, 10);
-
-  facts.local_pbft_syncing_period = 9;
-  plan = network_api->consensus_network_plan_pending_dag_blocks_request(facts);
-  EXPECT_EQ(plan.status, 5);
-  EXPECT_FALSE(plan.request_pending_dag_blocks);
-  EXPECT_TRUE(plan.has_peer);
-  EXPECT_EQ(plan.peer_id, nodeId(0x52));
+  activity.kind = 99;
+  EXPECT_THROW(network_api->consensus_network_apply_pbft_sync_command(activity), std::exception);
 }

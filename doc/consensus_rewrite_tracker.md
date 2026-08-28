@@ -4267,6 +4267,29 @@ without terminating the daemon, account facts are loaded only after a confirmed 
 process serializes complete concurrent start/stop transitions. Native fail-once gossip and lazy-resolution tests plus a
 concurrent lifecycle stress test cover those corrections.
 
+The `CRW-N01`/`CRW-12`/`CRW-15`/`CRW-16` status-and-sync cut removes Rust-mode `PbftSyncingState` ownership,
+injection, compilation, and every handler-local direct status/sync planner call. The application-owned
+`ConsensusNetworkService` now owns initial admission, periodic follow-up and one-block debounce, status egress,
+max-chain selection, generation-scoped start/source/activity/stop/disconnect/inactivity state, deep-sync calculation,
+and pending-DAG/next-vote decisions. Tarcap supplies canonical peer snapshots and executes only peer lookup/CAS,
+packet wrapping, physical send/disconnect, and timer-lane scheduling. Public, RPC, debug, App, and NodeStats sync reads
+use the side-effect-free `ConsensusQueryApi` projection; the production timer explicitly ticks an observed generation,
+so reads cannot expire state. Stale activity, stop, disconnect, and timer reports cannot clear a replacement generation,
+and deep-sync subtraction saturates at the peer tip.
+
+The six direct planner CXX exports and their compatibility DTOs/tests are deleted. Five operation-shaped boundaries
+(combined start/max-peer selection, periodic follow-up, initial admission, status egress, and one lifecycle command)
+replace them while lowering bridge lines; the network-only sync snapshot export is deleted in favor
+of the existing query API. Rust-mode source selection excludes the shared-state implementation while the untouched
+all-Rust-disabled path continues to construct and compile it. `CRW-N01` remains active for any other handler-local
+consensus routing family under its global completion condition; blocked `CRW-E02` is unchanged.
+
+Replacement coverage includes 100 native network lifecycle tests, two CXX application-root boundary tests, the live
+two-node Rust-mode sync/query fixture, all seven tarcap concurrency tests, and four focused all-Rust-disabled network/PBFT
+sync tests. The fast, consensus, and binary smoke gates pass. All ten registered C++ CTest executables pass; the unrelated
+Go leg remains unavailable because the configured static linker lacks `libz`/`snappy`, and Python integration cannot
+bootstrap in the image because `python3-venv`, `virtualenv`, and `pytest` are unavailable.
+
 ### DAG
 
 | Class | Public API groups | Dependencies | Tests | Target |

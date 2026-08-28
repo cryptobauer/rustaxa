@@ -32,7 +32,11 @@ class TimePeriodPacketsStats;
 
 class NodeStats {
  public:
-  NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
+  NodeStats(
+#ifndef RUSTAXA_ENABLE
+      std::shared_ptr<PbftSyncingState> pbft_syncing_state,
+#endif
+      net::ConsensusQueryClient pbft_chain,
 #ifdef RUSTAXA_ENABLE
             network::ConsensusLiveStatusProvider consensus_status,
             network::ConsensusVoteStatusProvider consensus_vote_status,
@@ -50,7 +54,9 @@ class NodeStats {
       std::map<network::tarcap::TarcapVersion, std::shared_ptr<network::tarcap::TaraxaPeer>> peers) const;
 
  private:
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<PbftSyncingState> pbft_syncing_state_;
+#endif
   net::ConsensusQueryClient pbft_chain_;
 #ifdef RUSTAXA_ENABLE
   network::ConsensusLiveStatusProvider consensus_status_;

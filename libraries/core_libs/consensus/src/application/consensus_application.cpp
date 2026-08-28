@@ -79,6 +79,7 @@ SharedConsensusApplication createConsensusApplication(const FullNodeConfig& conf
   pbft_config.ficus_activation_period = config.genesis.state.hardforks.ficus_hf.block_num;
   pbft_config.pillar_blocks_interval = config.genesis.state.hardforks.ficus_hf.pillar_blocks_interval;
   pbft_config.sync_level_size = config.network.sync_level_size;
+  pbft_config.deep_syncing_threshold = config.network.deep_syncing_threshold;
   pbft_config.is_light_node = config.is_light_node;
   pbft_config.light_node_history = config.light_node_history;
   pbft_config.committee_size = config.genesis.pbft.committee_size;

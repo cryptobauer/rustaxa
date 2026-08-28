@@ -5,6 +5,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/filesystem.hpp>
+#include <chrono>
 #include <memory>
 #include <stdexcept>
 
@@ -416,7 +417,16 @@ void App::setupMetricsUpdaters() {
   auto network_metrics = metrics_->getMetrics<metrics::NetworkMetrics>();
   network_metrics->setPeersCountUpdater([network = network_]() { return network->getPeerCount(); });
   network_metrics->setDiscoveredPeersCountUpdater([network = network_]() { return network->getNodeCount(); });
+#ifndef RUSTAXA_ENABLE
   network_metrics->setSyncingDurationUpdater([network = network_]() { return network->syncTimeSeconds(); });
+#else
+  network_metrics->setSyncingDurationUpdater([query = consensus_application_->queryClient()]() {
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+    return (*query)->consensus_query_pbft_sync_status(now).elapsed_ms / 1000;
+  });
+#endif
 
   auto transaction_queue_metrics = metrics_->getMetrics<metrics::TransactionQueueMetrics>();
 #ifndef RUSTAXA_ENABLE

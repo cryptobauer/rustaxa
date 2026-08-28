@@ -40,6 +40,29 @@ struct ConsensusLiveStatus {
   bool sync_queue_empty = true;
 };
 
+/** Read-only application-owned PBFT-sync lifecycle projection for tarcap executors. */
+struct PbftSyncStatus {
+  bool active = false;
+  bool deep_syncing = false;
+  uint64_t generation = 0;
+  bool has_peer = false;
+  std::array<uint8_t, 64> peer_id{};
+  bool has_last_peer = false;
+  std::array<uint8_t, 64> last_peer_id{};
+  uint64_t target_chain_size = 0;
+  uint64_t current_period = 0;
+  uint64_t request_period = 0;
+  uint64_t started_at_ms = 0;
+  uint64_t last_activity_ms = 0;
+  uint64_t elapsed_ms = 0;
+  uint64_t inactive_for_ms = 0;
+  uint64_t start_count = 0;
+  uint64_t stop_count = 0;
+  uint64_t inactivity_count = 0;
+  uint64_t disconnect_count = 0;
+  uint8_t last_stop_reason = 0;
+};
+
 using ConsensusLiveStatusProvider = std::function<ConsensusLiveStatus()>;
 
 /** Potentially expensive DPoS vote diagnostics, sampled only by periodic node statistics. */
@@ -136,6 +159,24 @@ struct PbftSyncIngressOutcome {
   uint64_t max_dag_level = 0;
   bool last_block = false;
   bool current_cert_present = false;
+};
+
+/** Response-source identity checked against application-owned PBFT sync state. */
+enum class PbftSyncResponseSource : uint8_t { kActive, kMostRecent };
+
+/** Typed application-owned PBFT-sync lifecycle and continuation decision. */
+struct PbftSyncLifecycleOutcome {
+  bool accepted = false;
+  bool active = false;
+  bool stopped = false;
+  bool expired = false;
+  bool restart_sync = false;
+  bool retry = false;
+  bool request_next = false;
+  bool request_pending_dag_if_idle = false;
+  bool deep_syncing = false;
+  uint64_t generation = 0;
+  std::string error_code;
 };
 
 /** Narrow C++ transaction facts for one native double-voting slashing effect. */
@@ -380,6 +421,40 @@ class ConsensusNetworkApi final {
                                              const std::vector<PbftSyncSlashingSubmitterFact>& slashing_submitters,
                                              const PbftSyncIngressExecutor& executor);
 
+  /** Correlates a response peer with the active or most-recent native sync generation. */
+  PbftSyncLifecycleOutcome admitPbftSyncSource(const std::array<uint8_t, 64>& peer_id,
+                                               PbftSyncResponseSource source) const;
+
+  /** Records progress for one exact native sync generation. */
+  PbftSyncLifecycleOutcome recordPbftSyncActivity(uint64_t now_ms, uint64_t generation,
+                                                  const std::array<uint8_t, 64>& peer_id) const;
+
+  /** Stops one exact native sync generation for a stable stop reason. */
+  PbftSyncLifecycleOutcome stopPbftSync(uint64_t generation, const std::array<uint8_t, 64>& peer_id,
+                                        uint8_t reason) const;
+
+  /** Applies selected-peer disconnect recovery to one exact generation. */
+  PbftSyncLifecycleOutcome handlePbftSyncDisconnect(uint64_t generation, const std::array<uint8_t, 64>& peer_id) const;
+
+  /** Applies inactivity policy to one timer-observed generation. */
+  PbftSyncLifecycleOutcome tickPbftSync(uint64_t now_ms, uint64_t generation) const;
+
+  /** Atomically plans queue-drain completion, restart, and pending-DAG follow-up. */
+  PbftSyncLifecycleOutcome completePbftSync(uint64_t now_ms, uint64_t generation,
+                                            const std::array<uint8_t, 64>& peer_id, uint64_t sync_queue_size) const;
+
+  /** Plans stop, retry, or next-request work after the last block in a response. */
+  PbftSyncLifecycleOutcome planPbftSyncLastBlock(uint64_t now_ms, uint64_t generation,
+                                                 const std::array<uint8_t, 64>& peer_id, uint64_t syncing_period,
+                                                 uint64_t finalized_period, uint64_t remote_period,
+                                                 uint64_t sync_level_size) const;
+
+  /** Plans bounded delayed continuation while C++ retains only timer scheduling and physical send. */
+  PbftSyncLifecycleOutcome planDelayedPbftSync(uint64_t now_ms, uint64_t generation,
+                                               const std::array<uint8_t, 64>& peer_id, uint64_t syncing_period,
+                                               uint64_t finalized_period, uint64_t sync_level_size,
+                                               uint32_t retry_count, uint64_t retry_delay_ms) const;
+
   /** Routes one complete canonical transaction packet and executes only peer-known and physical gossip leaves. */
   TransactionPacketOutcome ingestTransactionPacket(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
                                                    uint64_t source_payload_id, const std::vector<uint8_t>& packet_rlp,
@@ -401,7 +476,7 @@ class ConsensusNetworkApi final {
 
   /** Selects canonical non-finalized hashes in Rust and sends one exact Get-DAG-sync request. */
   PendingDagBlocksOutcome requestPendingDagBlocks(uint32_t transport_lane, uint64_t local_pbft_syncing_period,
-                                                  const ConsensusPeerCandidate& explicit_peer,
+                                                  const std::vector<ConsensusPeerCandidate>& candidates,
                                                   const PendingDagBlocksExecutor& executor);
 
   /** Routes one canonical DAG-block packet through native admission and executes only physical network leaves. */
@@ -440,6 +515,9 @@ class ConsensusNetworkApi final {
    */
   std::optional<std::array<uint8_t, 64>> selectMaxChainPeer(
       uint64_t local_pbft_syncing_period, const std::vector<ConsensusPeerCandidate>& candidates) const;
+
+  /** Returns a side-effect-free sync snapshot through the client-oriented query API. */
+  PbftSyncStatus pbftSyncStatus(uint64_t now_ms) const;
 
  private:
   bool submitSlashingTransaction(size_t wallet_index, const std::array<uint8_t, 32>& nonce,

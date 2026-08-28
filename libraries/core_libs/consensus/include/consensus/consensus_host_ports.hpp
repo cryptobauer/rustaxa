@@ -30,7 +30,6 @@ struct HostConsensusObservationRequest;
 struct HostMaliciousPeerRequest;
 struct HostPillarAnchorStateReport;
 struct HostPillarAnchorStateRequest;
-struct HostSetSyncPeriodRequest;
 struct HostSignReport;
 struct HostSignRequest;
 struct HostTransportReport;
@@ -139,7 +138,6 @@ class ConsensusTransportPort final {
   rustaxa::HostTransportReport consensusGossipVote(const rustaxa::HostGossipVoteRequest& request) const;
   rustaxa::HostTransportReport consensusGossipVoteBundle(const rustaxa::HostGossipVoteBundleRequest& request) const;
   rustaxa::HostTransportReport consensusGossipPillarVote(const rustaxa::HostGossipPillarVoteRequest& request) const;
-  rustaxa::HostTransportReport consensusSetSyncPeriod(const rustaxa::HostSetSyncPeriodRequest& request) const;
   rustaxa::HostTransportStatus consensusTransportStatus() const;
   rustaxa::HostTransportReport consensusReportMaliciousPeer(const rustaxa::HostMaliciousPeerRequest& request) const;
 

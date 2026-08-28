@@ -80,7 +80,9 @@ class Network {
   Json::Value getStatus();
   bool pbft_syncing();
   uint64_t syncTimeSeconds() const;
+#ifndef RUSTAXA_ENABLE
   void setSyncStatePeriod(PbftPeriod period);
+#endif
 
   void gossipDagBlock(const std::shared_ptr<DagBlock> &block, bool proposed, const SharedTransactions &trxs);
   void gossipVote(const std::shared_ptr<PbftVote> &vote, const std::shared_ptr<PbftBlock> &block,
@@ -141,8 +143,13 @@ class Network {
   // Node stats
   std::shared_ptr<network::tarcap::NodeStats> node_stats_;
 
-  // Syncing state
+#ifndef RUSTAXA_ENABLE
+  // Untouched pure-C++ synchronization state.
   std::shared_ptr<network::tarcap::PbftSyncingState> pbft_syncing_state_;
+#else
+  // Client-oriented query boundary for public sync status and statistics.
+  net::ConsensusQueryClient consensus_query_;
+#endif
 
 #ifdef RUSTAXA_ENABLE
   // Narrow read-only live status callback; App retains the sole root/executor ownership.

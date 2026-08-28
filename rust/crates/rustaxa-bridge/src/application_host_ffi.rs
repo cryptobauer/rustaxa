@@ -92,11 +92,6 @@ pub mod application_host_ffi {
         pillar_vote_rlp: Vec<u8>,
         rebroadcast: bool,
     }
-    /// Updates the physical network's externally visible PBFT sync period.
-    struct HostSetSyncPeriodRequest {
-        effect_id: HostEffectId,
-        period: u64,
-    }
     /// Reports a malicious peer and canonical evidence to the network leaf.
     struct HostMaliciousPeerRequest {
         effect_id: HostEffectId,
@@ -109,10 +104,9 @@ pub mod application_host_ffi {
         succeeded: bool,
         error_code: String,
     }
-    /// Current physical transport availability and PBFT-sync state.
+    /// Current physical transport availability and packet-queue pressure.
     struct HostTransportStatus {
         available: bool,
-        pbft_syncing: bool,
         packet_queue_over_limit: bool,
     }
     /// One canonical EVM address carried by an ordered host request.
@@ -436,11 +430,6 @@ pub mod application_host_ffi {
         fn consensus_gossip_pillar_vote(
             self: &ConsensusTransportPort,
             request: &HostGossipPillarVoteRequest,
-        ) -> Result<HostTransportReport>;
-        #[cxx_name = "consensusSetSyncPeriod"]
-        fn consensus_set_sync_period(
-            self: &ConsensusTransportPort,
-            request: &HostSetSyncPeriodRequest,
         ) -> Result<HostTransportReport>;
         #[cxx_name = "consensusTransportStatus"]
         fn consensus_transport_status(self: &ConsensusTransportPort) -> HostTransportStatus;

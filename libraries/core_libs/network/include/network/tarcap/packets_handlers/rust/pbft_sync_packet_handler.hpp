@@ -18,8 +18,7 @@ class RustPbftSyncPacketHandler final : public ISyncPacketHandler {
  public:
   RustPbftSyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                             std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                            std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
-                            network::ConsensusLiveStatusProvider consensus_status,
+                            net::ConsensusQueryClient pbft_chain, network::ConsensusLiveStatusProvider consensus_status,
                             std::shared_ptr<final_chain::FinalChain> final_chain,
                             network::ConsensusNetworkApiShared consensus_network_api, const addr_t& node_addr,
                             const std::string& logs_prefix = "");
@@ -29,8 +28,9 @@ class RustPbftSyncPacketHandler final : public ISyncPacketHandler {
 
  private:
   void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;
-  void pbftSyncComplete();
-  void delayedPbftSync(uint32_t counter);
+  void pbftSyncComplete(uint64_t generation, std::array<uint8_t, 64> peer_id);
+  void delayedPbftSync(uint32_t counter, uint64_t generation, std::array<uint8_t, 64> peer_id);
+  void stopPbftSync(uint64_t generation, const std::array<uint8_t, 64>& peer_id, uint8_t reason) const;
 
   static constexpr uint32_t kDelayedPbftSyncDelayMs = 10;
 

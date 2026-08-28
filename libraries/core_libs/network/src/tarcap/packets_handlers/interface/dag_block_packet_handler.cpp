@@ -1,10 +1,14 @@
 #include "network/tarcap/packets_handlers/interface/dag_block_packet_handler.hpp"
 
+#include <chrono>
+
 namespace taraxa::network::tarcap {
 
 IDagBlockPacketHandler::IDagBlockPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                                std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
                                                std::shared_ptr<PbftSyncingState> pbft_syncing_state,
+#endif
                                                net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
                                                std::shared_ptr<PbftManager> pbft_mgr,
@@ -16,7 +20,10 @@ IDagBlockPacketHandler::IDagBlockPacketHandler(const FullNodeConfig &conf, std::
                                                network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                                const addr_t &node_addr, const std::string &logs_prefix)
-    : ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
+    : ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats),
+#ifndef RUSTAXA_ENABLE
+                              std::move(pbft_syncing_state),
+#endif
                               std::move(pbft_chain),
 #ifndef RUSTAXA_ENABLE
                               std::move(pbft_mgr), std::move(dag_mgr), std::move(db),
@@ -30,7 +37,15 @@ void IDagBlockPacketHandler::onNewBlockVerified(const std::shared_ptr<DagBlock> 
                                                 const SharedTransactions &trxs) {
   // If node is pbft syncing and block is not proposed by us, this is an old block that has been verified - no block
   // gossip is needed
-  if (!proposed && pbft_syncing_state_->isDeepPbftSyncing()) {
+#ifdef RUSTAXA_ENABLE
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  const bool deep_pbft_syncing = rust_consensus_network_api_->pbftSyncStatus(now_ms).deep_syncing;
+#else
+  const bool deep_pbft_syncing = pbft_syncing_state_->isDeepPbftSyncing();
+#endif
+  if (!proposed && deep_pbft_syncing) {
     return;
   }
 

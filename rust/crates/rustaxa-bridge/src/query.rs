@@ -81,6 +81,32 @@ fn live_transaction_status_view_to_ffi(
     }
 }
 
+fn pbft_sync_status_view_to_ffi(
+    status: rustaxa_consensus::NetworkPbftSyncSnapshot,
+) -> rustaxa_ffi::PbftSyncStatusView {
+    rustaxa_ffi::PbftSyncStatusView {
+        active: status.active,
+        deep_syncing: status.deep_syncing,
+        generation: status.generation,
+        has_peer: status.has_peer,
+        peer_id: status.peer_id,
+        has_last_peer: status.has_last_peer,
+        last_peer_id: status.last_peer_id,
+        target_chain_size: status.target_chain_size,
+        current_period: status.current_period,
+        request_period: status.request_period,
+        started_at_ms: status.started_at_ms,
+        last_activity_ms: status.last_activity_ms,
+        elapsed_ms: status.elapsed_ms,
+        inactive_for_ms: status.inactive_for_ms,
+        start_count: status.start_count,
+        stop_count: status.stop_count,
+        inactivity_count: status.inactivity_count,
+        disconnect_count: status.disconnect_count,
+        last_stop_reason: status.last_stop_reason,
+    }
+}
+
 fn sortition_params_change_view_to_ffi(
     view: rustaxa_consensus::SortitionParamsChangeView,
 ) -> rustaxa_ffi::SortitionParamsChangeView {
@@ -324,6 +350,17 @@ impl BridgeConsensusQueryApi {
     ) -> Result<rustaxa_ffi::LiveTransactionStatusView, anyhow::Error> {
         Ok(live_transaction_status_view_to_ffi(
             self.0.transaction_pool_status()?,
+        ))
+    }
+
+    /// Returns application-owned sync state; time derives elapsed fields only,
+    /// and the query performs no timer, peer-selection, or lifecycle transition.
+    pub fn consensus_query_pbft_sync_status(
+        &self,
+        now_ms: u64,
+    ) -> anyhow::Result<rustaxa_ffi::PbftSyncStatusView> {
+        Ok(pbft_sync_status_view_to_ffi(
+            self.0.pbft_sync_status(now_ms)?,
         ))
     }
 

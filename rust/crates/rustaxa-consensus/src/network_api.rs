@@ -954,6 +954,333 @@ pub struct NetworkPendingDagBlocksRequestPlan {
     pub request_period: u64,
 }
 
+/// Stable stop reasons reported by the native PBFT-sync lifecycle.
+pub const NETWORK_PBFT_SYNC_STOP_REASON_NONE: u8 = 0;
+pub const NETWORK_PBFT_SYNC_STOP_REASON_COMPLETED: u8 = 1;
+pub const NETWORK_PBFT_SYNC_STOP_REASON_INACTIVE: u8 = 2;
+pub const NETWORK_PBFT_SYNC_STOP_REASON_DISCONNECTED: u8 = 3;
+pub const NETWORK_PBFT_SYNC_STOP_REASON_TRANSPORT_FAILED: u8 = 4;
+pub const NETWORK_PBFT_SYNC_STOP_REASON_REPLACED: u8 = 5;
+
+const NETWORK_PBFT_SYNC_INACTIVITY_THRESHOLD_MS: u64 = 60_000;
+
+/// Application-root request to atomically select a peer and begin PBFT sync.
+///
+/// The caller supplies a canonical snapshot of currently connected peers and
+/// the monotonic time at which the snapshot was taken. Rust filters and orders
+/// the candidates, rejects concurrent starts, creates a new generation, and
+/// initializes activity/deep-sync state. Peer/socket ownership remains outside
+/// the application root; a later transport failure must stop this exact
+/// generation rather than an unrelated replacement session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncStartRequest {
+    /// Whether to start a generation (`true`) or only select the best peer (`false`).
+    pub start: bool,
+    pub now_ms: u64,
+    pub local_pbft_synced_period: u64,
+    pub local_pbft_chain_size: u64,
+    pub candidates: Vec<NetworkPbftSyncPeerCandidate>,
+}
+
+/// Result of an atomic native PBFT-sync start operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncStartOutcome {
+    pub status: u8,
+    pub error_code: String,
+    pub started: bool,
+    pub has_peer: bool,
+    pub peer_id: [u8; 64],
+    pub peer_pbft_chain_size: u64,
+    pub request_period: u64,
+    pub generation: u64,
+    pub deep_syncing: bool,
+    pub enable_snapshot_creation: bool,
+}
+
+/// Status packet facts needed for application-owned follow-up decisions.
+///
+/// The service retains the previous chain-size advertisement per peer, so the
+/// one-block-behind debounce no longer relies on a handler-local sidecar. The
+/// returned decision is computed and the new advertisement is recorded under
+/// the same network-service lock.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkStatusFollowupRequest {
+    pub peer_id: [u8; 64],
+    pub local_pbft_synced_period: u64,
+    pub local_pbft_period: u64,
+    pub local_pbft_round: u64,
+    pub peer_pbft_chain_size: u64,
+    pub peer_pbft_period: u64,
+    pub peer_pbft_round: u64,
+    pub peer_dag_synced: bool,
+}
+
+/// Application-owned work selected after one accepted periodic status packet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkStatusFollowupOutcome {
+    pub request_pbft_sync: bool,
+    pub request_pending_dag_blocks: bool,
+    pub request_next_votes: bool,
+    pub next_votes_period: u64,
+    pub next_votes_round: u64,
+    pub sync_generation: u64,
+}
+
+/// Correlation mode for PBFT synchronization responses.
+pub const NETWORK_PBFT_SYNC_SOURCE_ACTIVE: u8 = 0;
+pub const NETWORK_PBFT_SYNC_SOURCE_LAST: u8 = 1;
+
+/// Request to correlate one response source with native PBFT-sync state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncSourceRequest {
+    pub peer_id: [u8; 64],
+    pub source: u8,
+}
+
+/// Result of PBFT synchronization response-source correlation.
+///
+/// Accepted active-source responses carry the exact generation that callers
+/// must report with later activity, stop, and asynchronous executor results.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncSourceOutcome {
+    pub accepted: bool,
+    pub generation: u64,
+    pub active: bool,
+    pub error_code: String,
+}
+
+/// Generation-scoped report that an accepted PBFT-sync response made progress.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncActivityRequest {
+    pub now_ms: u64,
+    pub generation: u64,
+    pub peer_id: [u8; 64],
+}
+
+/// Result of recording generation-scoped PBFT-sync activity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncActivityOutcome {
+    pub accepted: bool,
+    pub generation: u64,
+    pub deep_syncing: bool,
+    pub error_code: String,
+}
+
+/// Generation-scoped request to stop one PBFT-sync session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncStopRequest {
+    pub generation: u64,
+    pub peer_id: [u8; 64],
+    pub reason: u8,
+}
+
+/// Result of a generation-scoped PBFT-sync stop request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncStopOutcome {
+    pub stopped: bool,
+    pub generation: u64,
+    pub error_code: String,
+}
+
+/// Generation-scoped notification that the selected transport peer disconnected.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncDisconnectRequest {
+    pub generation: u64,
+    pub peer_id: [u8; 64],
+}
+
+/// Recovery decision after one selected-peer disconnect notification.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncDisconnectOutcome {
+    pub stopped: bool,
+    pub restart_sync: bool,
+    pub generation: u64,
+    pub error_code: String,
+}
+
+/// Generation-scoped inactivity check driven by the network timer lane.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncTickRequest {
+    pub now_ms: u64,
+    pub generation: u64,
+}
+
+/// Native inactivity and restart decision for one timer tick.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncTickOutcome {
+    pub expired: bool,
+    pub restart_sync: bool,
+    pub generation: u64,
+    pub error_code: String,
+}
+
+/// Shared application-root command envelope for generation-correlated PBFT sync.
+///
+/// Each command consumes only the fields required by its kind. Unknown kinds
+/// are rejected without mutating lifecycle state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncCommandRequest {
+    pub kind: u8,
+    pub now_ms: u64,
+    pub generation: u64,
+    pub peer_id: [u8; 64],
+    pub source: u8,
+    pub reason: u8,
+    pub sync_queue_size: u64,
+    pub syncing_period: u64,
+    pub finalized_period: u64,
+    pub remote_period: u64,
+    pub sync_level_size: u64,
+    pub retry_count: u32,
+    pub retry_delay_ms: u64,
+}
+
+/// Uniform lifecycle result returned to the physical network adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncCommandOutcome {
+    pub accepted: bool,
+    pub active: bool,
+    pub stopped: bool,
+    pub expired: bool,
+    pub restart_sync: bool,
+    pub retry: bool,
+    pub request_next: bool,
+    pub request_pending_dag_if_idle: bool,
+    pub deep_syncing: bool,
+    pub generation: u64,
+    pub error_code: String,
+}
+
+/// Read-only public/query view of the native PBFT-sync lifecycle.
+///
+/// Reading this snapshot never expires or otherwise mutates a session. The
+/// supplied monotonic time is used only to derive elapsed/activity durations;
+/// timer-lane callers must invoke [`ConsensusNetworkService::tick_pbft_sync`]
+/// to apply inactivity policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncSnapshot {
+    pub active: bool,
+    pub deep_syncing: bool,
+    pub generation: u64,
+    pub has_peer: bool,
+    pub peer_id: [u8; 64],
+    pub has_last_peer: bool,
+    pub last_peer_id: [u8; 64],
+    pub target_chain_size: u64,
+    pub current_period: u64,
+    pub request_period: u64,
+    pub started_at_ms: u64,
+    pub last_activity_ms: u64,
+    pub elapsed_ms: u64,
+    pub inactive_for_ms: u64,
+    pub start_count: u64,
+    pub stop_count: u64,
+    pub inactivity_count: u64,
+    pub disconnect_count: u64,
+    pub last_stop_reason: u8,
+}
+
+#[derive(Clone, Debug)]
+struct NetworkPbftSyncLifecycle {
+    active: bool,
+    deep_syncing: bool,
+    generation: u64,
+    peer_id: [u8; 64],
+    last_peer_id: [u8; 64],
+    has_last_peer: bool,
+    target_chain_size: u64,
+    current_period: u64,
+    request_period: u64,
+    started_at_ms: u64,
+    last_activity_ms: u64,
+    deep_syncing_threshold: u64,
+    inactivity_threshold_ms: u64,
+    start_count: u64,
+    stop_count: u64,
+    inactivity_count: u64,
+    disconnect_count: u64,
+    last_stop_reason: u8,
+    peer_last_status_chain_size: HashMap<[u8; 64], u64>,
+}
+
+impl NetworkPbftSyncLifecycle {
+    fn new(deep_syncing_threshold: u64) -> Self {
+        Self {
+            active: false,
+            deep_syncing: false,
+            generation: 0,
+            peer_id: [0; 64],
+            last_peer_id: [0; 64],
+            has_last_peer: false,
+            target_chain_size: 0,
+            current_period: 0,
+            request_period: 0,
+            started_at_ms: 0,
+            last_activity_ms: 0,
+            deep_syncing_threshold,
+            inactivity_threshold_ms: NETWORK_PBFT_SYNC_INACTIVITY_THRESHOLD_MS,
+            start_count: 0,
+            stop_count: 0,
+            inactivity_count: 0,
+            disconnect_count: 0,
+            last_stop_reason: NETWORK_PBFT_SYNC_STOP_REASON_NONE,
+            peer_last_status_chain_size: HashMap::new(),
+        }
+    }
+
+    fn refresh_deep_syncing(&mut self) {
+        self.deep_syncing = self.active
+            && self.target_chain_size.saturating_sub(self.current_period)
+                >= self.deep_syncing_threshold;
+    }
+
+    fn stop(&mut self, reason: u8) {
+        self.active = false;
+        self.deep_syncing = false;
+        self.peer_id = [0; 64];
+        self.stop_count = self.stop_count.saturating_add(1);
+        self.last_stop_reason = reason;
+        if reason == NETWORK_PBFT_SYNC_STOP_REASON_INACTIVE {
+            self.inactivity_count = self.inactivity_count.saturating_add(1);
+        }
+        if reason == NETWORK_PBFT_SYNC_STOP_REASON_DISCONNECTED {
+            self.disconnect_count = self.disconnect_count.saturating_add(1);
+        }
+    }
+
+    fn snapshot(&self, now_ms: u64) -> NetworkPbftSyncSnapshot {
+        NetworkPbftSyncSnapshot {
+            active: self.active,
+            deep_syncing: self.deep_syncing,
+            generation: self.generation,
+            has_peer: self.active,
+            peer_id: self.peer_id,
+            has_last_peer: self.has_last_peer,
+            last_peer_id: self.last_peer_id,
+            target_chain_size: self.target_chain_size,
+            current_period: self.current_period,
+            request_period: self.request_period,
+            started_at_ms: self.started_at_ms,
+            last_activity_ms: self.last_activity_ms,
+            elapsed_ms: if self.active {
+                now_ms.saturating_sub(self.started_at_ms)
+            } else {
+                0
+            },
+            inactive_for_ms: if self.active {
+                now_ms.saturating_sub(self.last_activity_ms)
+            } else {
+                0
+            },
+            start_count: self.start_count,
+            stop_count: self.stop_count,
+            inactivity_count: self.inactivity_count,
+            disconnect_count: self.disconnect_count,
+            last_stop_reason: self.last_stop_reason,
+        }
+    }
+}
+
 /// Cloneable native owner of consensus network routing and sibling queries.
 ///
 /// Every clone shares one ordered network-effect queue while retaining handles
@@ -996,6 +1323,7 @@ impl ConsensusNetworkService {
         storage: Arc<Storage>,
         ficus_activation_period: u64,
         pillar_blocks_interval: u64,
+        deep_syncing_threshold: u64,
         sync_level_size: u64,
         is_light_node: bool,
         light_node_history: u64,
@@ -1006,10 +1334,13 @@ impl ConsensusNetworkService {
         );
         ensure!(sync_level_size > 0, "PBFT_SERVICE_SYNC_LEVEL_SIZE_ZERO");
         Ok(Self {
-            api: Arc::new(Mutex::new(ConsensusNetworkApi::with_pillar_schedule(
-                ficus_activation_period,
-                pillar_blocks_interval,
-            ))),
+            api: Arc::new(Mutex::new(
+                ConsensusNetworkApi::with_pillar_schedule_and_sync(
+                    ficus_activation_period,
+                    pillar_blocks_interval,
+                    deep_syncing_threshold,
+                ),
+            )),
             pillar,
             verified_votes,
             chain,
@@ -1063,6 +1394,329 @@ impl ConsensusNetworkService {
         Ok(self.lock_api()?.report_effect_results(results))
     }
 
+    /// Atomically selects a serviceable peer and starts one native sync generation.
+    pub fn begin_pbft_sync(
+        &self,
+        request: NetworkPbftSyncStartRequest,
+    ) -> Result<NetworkPbftSyncStartOutcome> {
+        Ok(self.lock_api()?.begin_pbft_sync(request))
+    }
+
+    /// Records one periodic peer status and returns application-owned follow-up work.
+    pub fn process_status_followup(
+        &self,
+        request: NetworkStatusFollowupRequest,
+    ) -> Result<NetworkStatusFollowupOutcome> {
+        Ok(self.lock_api()?.process_status_followup(request))
+    }
+
+    /// Correlates one response peer with the active or most-recent sync generation.
+    pub fn admit_pbft_sync_source(
+        &self,
+        request: NetworkPbftSyncSourceRequest,
+    ) -> Result<NetworkPbftSyncSourceOutcome> {
+        Ok(self.lock_api()?.admit_pbft_sync_source(request))
+    }
+
+    /// Records progress for an exact native PBFT-sync generation.
+    pub fn record_pbft_sync_activity(
+        &self,
+        request: NetworkPbftSyncActivityRequest,
+    ) -> Result<NetworkPbftSyncActivityOutcome> {
+        Ok(self.lock_api()?.record_pbft_sync_activity(request))
+    }
+
+    /// Stops an exact native PBFT-sync generation.
+    pub fn stop_pbft_sync(
+        &self,
+        request: NetworkPbftSyncStopRequest,
+    ) -> Result<NetworkPbftSyncStopOutcome> {
+        Ok(self.lock_api()?.stop_pbft_sync(request))
+    }
+
+    /// Applies selected-peer disconnect recovery to an exact sync generation.
+    pub fn handle_pbft_sync_disconnect(
+        &self,
+        request: NetworkPbftSyncDisconnectRequest,
+    ) -> Result<NetworkPbftSyncDisconnectOutcome> {
+        Ok(self.lock_api()?.handle_pbft_sync_disconnect(request))
+    }
+
+    /// Applies the inactivity policy for an exact timer-observed generation.
+    pub fn tick_pbft_sync(
+        &self,
+        request: NetworkPbftSyncTickRequest,
+    ) -> Result<NetworkPbftSyncTickOutcome> {
+        Ok(self.lock_api()?.tick_pbft_sync(request))
+    }
+
+    /// Applies one generation-correlated lifecycle command under the service lock.
+    pub fn apply_pbft_sync_command(
+        &self,
+        request: NetworkPbftSyncCommandRequest,
+    ) -> Result<NetworkPbftSyncCommandOutcome> {
+        self.lock_api()?.apply_pbft_sync_command(request)
+    }
+}
+
+impl ConsensusNetworkApi {
+    fn apply_pbft_sync_command(
+        &mut self,
+        request: NetworkPbftSyncCommandRequest,
+    ) -> Result<NetworkPbftSyncCommandOutcome> {
+        let api = self;
+        let mut outcome = match request.kind {
+            0 => {
+                let outcome = api.admit_pbft_sync_source(NetworkPbftSyncSourceRequest {
+                    peer_id: request.peer_id,
+                    source: request.source,
+                });
+                Ok(NetworkPbftSyncCommandOutcome {
+                    accepted: outcome.accepted,
+                    active: outcome.active,
+                    stopped: false,
+                    expired: false,
+                    restart_sync: false,
+                    retry: false,
+                    request_next: false,
+                    request_pending_dag_if_idle: false,
+                    deep_syncing: false,
+                    generation: outcome.generation,
+                    error_code: outcome.error_code,
+                })
+            }
+            1 => {
+                let outcome = api.record_pbft_sync_activity(NetworkPbftSyncActivityRequest {
+                    now_ms: request.now_ms,
+                    generation: request.generation,
+                    peer_id: request.peer_id,
+                });
+                Ok(NetworkPbftSyncCommandOutcome {
+                    accepted: outcome.accepted,
+                    active: outcome.accepted,
+                    stopped: false,
+                    expired: false,
+                    restart_sync: false,
+                    retry: false,
+                    request_next: false,
+                    request_pending_dag_if_idle: false,
+                    deep_syncing: outcome.deep_syncing,
+                    generation: outcome.generation,
+                    error_code: outcome.error_code,
+                })
+            }
+            2 => {
+                let outcome = api.stop_pbft_sync(NetworkPbftSyncStopRequest {
+                    generation: request.generation,
+                    peer_id: request.peer_id,
+                    reason: request.reason,
+                });
+                Ok(NetworkPbftSyncCommandOutcome {
+                    accepted: outcome.stopped,
+                    active: false,
+                    stopped: outcome.stopped,
+                    expired: false,
+                    restart_sync: false,
+                    retry: false,
+                    request_next: false,
+                    request_pending_dag_if_idle: false,
+                    deep_syncing: false,
+                    generation: outcome.generation,
+                    error_code: outcome.error_code,
+                })
+            }
+            3 => {
+                let outcome = api.handle_pbft_sync_disconnect(NetworkPbftSyncDisconnectRequest {
+                    generation: request.generation,
+                    peer_id: request.peer_id,
+                });
+                Ok(NetworkPbftSyncCommandOutcome {
+                    accepted: outcome.stopped,
+                    active: false,
+                    stopped: outcome.stopped,
+                    expired: false,
+                    restart_sync: outcome.restart_sync,
+                    retry: false,
+                    request_next: false,
+                    request_pending_dag_if_idle: false,
+                    deep_syncing: false,
+                    generation: outcome.generation,
+                    error_code: outcome.error_code,
+                })
+            }
+            4 => {
+                let outcome = api.tick_pbft_sync(NetworkPbftSyncTickRequest {
+                    now_ms: request.now_ms,
+                    generation: request.generation,
+                });
+                Ok(NetworkPbftSyncCommandOutcome {
+                    accepted: outcome.expired,
+                    active: !outcome.expired,
+                    stopped: outcome.expired,
+                    expired: outcome.expired,
+                    restart_sync: outcome.restart_sync,
+                    retry: false,
+                    request_next: false,
+                    request_pending_dag_if_idle: false,
+                    deep_syncing: false,
+                    generation: outcome.generation,
+                    error_code: outcome.error_code,
+                })
+            }
+            5 => {
+                if !api.pbft_sync.active
+                    || api.pbft_sync.generation != request.generation
+                    || api.pbft_sync.peer_id != request.peer_id
+                {
+                    Ok(NetworkPbftSyncCommandOutcome {
+                        accepted: false,
+                        active: api.pbft_sync.active,
+                        stopped: false,
+                        expired: false,
+                        restart_sync: false,
+                        retry: false,
+                        request_next: false,
+                        request_pending_dag_if_idle: false,
+                        deep_syncing: api.pbft_sync.deep_syncing,
+                        generation: api.pbft_sync.generation,
+                        error_code: "NETWORK_PBFT_SYNC_STALE_COMPLETION".to_owned(),
+                    })
+                } else if request.sync_queue_size != 0 {
+                    Ok(NetworkPbftSyncCommandOutcome {
+                        accepted: true,
+                        active: true,
+                        stopped: false,
+                        expired: false,
+                        restart_sync: false,
+                        retry: true,
+                        request_next: false,
+                        request_pending_dag_if_idle: false,
+                        deep_syncing: api.pbft_sync.deep_syncing,
+                        generation: api.pbft_sync.generation,
+                        error_code: ERROR_NONE.to_owned(),
+                    })
+                } else {
+                    let stopped = api.stop_pbft_sync(NetworkPbftSyncStopRequest {
+                        generation: request.generation,
+                        peer_id: request.peer_id,
+                        reason: NETWORK_PBFT_SYNC_STOP_REASON_COMPLETED,
+                    });
+                    Ok(NetworkPbftSyncCommandOutcome {
+                        accepted: stopped.stopped,
+                        active: false,
+                        stopped: stopped.stopped,
+                        expired: false,
+                        restart_sync: stopped.stopped,
+                        retry: false,
+                        request_next: false,
+                        request_pending_dag_if_idle: stopped.stopped,
+                        deep_syncing: false,
+                        generation: stopped.generation,
+                        error_code: stopped.error_code,
+                    })
+                }
+            }
+            6 | 7 => {
+                if !api.pbft_sync.active
+                    || api.pbft_sync.generation != request.generation
+                    || api.pbft_sync.peer_id != request.peer_id
+                {
+                    Ok(NetworkPbftSyncCommandOutcome {
+                        accepted: false,
+                        active: api.pbft_sync.active,
+                        stopped: false,
+                        expired: false,
+                        restart_sync: false,
+                        retry: false,
+                        request_next: false,
+                        request_pending_dag_if_idle: false,
+                        deep_syncing: api.pbft_sync.deep_syncing,
+                        generation: api.pbft_sync.generation,
+                        error_code: "NETWORK_PBFT_SYNC_STALE_CONTINUATION".to_owned(),
+                    })
+                } else if request.kind == 7
+                    && (request.retry_delay_ms == 0
+                        || u64::from(request.retry_count)
+                            > NETWORK_PBFT_SYNC_INACTIVITY_THRESHOLD_MS / request.retry_delay_ms)
+                {
+                    let stopped = api.stop_pbft_sync(NetworkPbftSyncStopRequest {
+                        generation: request.generation,
+                        peer_id: request.peer_id,
+                        reason: NETWORK_PBFT_SYNC_STOP_REASON_TRANSPORT_FAILED,
+                    });
+                    Ok(NetworkPbftSyncCommandOutcome {
+                        accepted: stopped.stopped,
+                        active: false,
+                        stopped: stopped.stopped,
+                        expired: false,
+                        restart_sync: false,
+                        retry: false,
+                        request_next: false,
+                        request_pending_dag_if_idle: false,
+                        deep_syncing: false,
+                        generation: stopped.generation,
+                        error_code: stopped.error_code,
+                    })
+                } else if request.kind == 6 && request.syncing_period > request.remote_period {
+                    let stopped = api.stop_pbft_sync(NetworkPbftSyncStopRequest {
+                        generation: request.generation,
+                        peer_id: request.peer_id,
+                        reason: NETWORK_PBFT_SYNC_STOP_REASON_COMPLETED,
+                    });
+                    Ok(NetworkPbftSyncCommandOutcome {
+                        accepted: stopped.stopped,
+                        active: false,
+                        stopped: stopped.stopped,
+                        expired: false,
+                        restart_sync: false,
+                        retry: false,
+                        request_next: false,
+                        request_pending_dag_if_idle: false,
+                        deep_syncing: false,
+                        generation: stopped.generation,
+                        error_code: stopped.error_code,
+                    })
+                } else {
+                    let wait_threshold = request
+                        .finalized_period
+                        .saturating_add(10_u64.saturating_mul(request.sync_level_size));
+                    let retry = request.syncing_period > wait_threshold;
+                    Ok(NetworkPbftSyncCommandOutcome {
+                        accepted: true,
+                        active: true,
+                        stopped: false,
+                        expired: false,
+                        restart_sync: false,
+                        retry,
+                        request_next: !retry,
+                        request_pending_dag_if_idle: false,
+                        deep_syncing: api.pbft_sync.deep_syncing,
+                        generation: api.pbft_sync.generation,
+                        error_code: ERROR_NONE.to_owned(),
+                    })
+                }
+            }
+            kind => Err(anyhow!("unknown PBFT-sync lifecycle command kind {kind}")),
+        }?;
+        let snapshot = api.pbft_sync_status(request.now_ms);
+        outcome.active = snapshot.active;
+        outcome.deep_syncing = snapshot.deep_syncing;
+        outcome.generation = snapshot.generation;
+        Ok(outcome)
+    }
+}
+
+impl ConsensusNetworkService {
+    /// Updates native PBFT sync progress and recomputes deep-sync state.
+    pub fn update_pbft_sync_period(&self, current_period: u64) -> Result<NetworkPbftSyncSnapshot> {
+        Ok(self.lock_api()?.update_pbft_sync_period(current_period))
+    }
+
+    /// Returns a side-effect-free snapshot for query, statistics, and egress readers.
+    pub fn pbft_sync_status(&self, now_ms: u64) -> Result<NetworkPbftSyncSnapshot> {
+        Ok(self.lock_api()?.pbft_sync_status(now_ms))
+    }
+
     /// Plans status-triggered sync work from caller-owned scalar snapshots.
     pub fn plan_status_sync(&self, facts: NetworkStatusSyncFacts) -> Result<NetworkStatusSyncPlan> {
         Ok(self.lock_api()?.plan_status_sync(facts))
@@ -1073,11 +1727,11 @@ impl ConsensusNetworkService {
         &self,
         facts: NetworkStatusEgressFacts,
     ) -> Result<NetworkStatusEgressPlan> {
-        Ok(self.lock_api()?.plan_status_egress(facts))
+        Ok(self.lock_api()?.status_egress(facts))
     }
 
     /// Validates one initial status packet without mutating peer transport state.
-    pub fn plan_initial_status(
+    pub fn admit_initial_status(
         &self,
         facts: NetworkInitialStatusFacts,
     ) -> Result<NetworkInitialStatusPlan> {
@@ -2326,6 +2980,7 @@ pub(crate) struct ConsensusNetworkApi {
     pending_pillar_vote_admissions: HashMap<u64, PendingPillarVoteAdmissionContext>,
     outstanding_effects: HashMap<u64, NetworkEffect>,
     completed_dependency_status: HashMap<u64, bool>,
+    pbft_sync: NetworkPbftSyncLifecycle,
 }
 
 impl Default for ConsensusNetworkApi {
@@ -2343,6 +2998,14 @@ impl ConsensusNetworkApi {
     }
 
     fn with_pillar_schedule(ficus_activation_period: u64, pillar_blocks_interval: u64) -> Self {
+        Self::with_pillar_schedule_and_sync(ficus_activation_period, pillar_blocks_interval, 10)
+    }
+
+    fn with_pillar_schedule_and_sync(
+        ficus_activation_period: u64,
+        pillar_blocks_interval: u64,
+        deep_syncing_threshold: u64,
+    ) -> Self {
         Self {
             ficus_activation_period,
             pillar_blocks_interval,
@@ -2355,6 +3018,7 @@ impl ConsensusNetworkApi {
             pending_pillar_vote_admissions: HashMap::new(),
             outstanding_effects: HashMap::new(),
             completed_dependency_status: HashMap::new(),
+            pbft_sync: NetworkPbftSyncLifecycle::new(deep_syncing_threshold),
         }
     }
 
@@ -2515,6 +3179,300 @@ impl ConsensusNetworkApi {
         }
     }
 
+    /// Atomically selects a serviceable peer and opens a new sync generation.
+    #[must_use]
+    pub fn begin_pbft_sync(
+        &mut self,
+        request: NetworkPbftSyncStartRequest,
+    ) -> NetworkPbftSyncStartOutcome {
+        if !request.start {
+            let plan = plan_max_chain_peer_selection(NetworkPeerSelectionFacts {
+                local_pbft_syncing_period: request.local_pbft_synced_period,
+                candidates: request.candidates,
+            });
+            return NetworkPbftSyncStartOutcome {
+                status: plan.status,
+                error_code: plan.error_code,
+                started: false,
+                has_peer: plan.has_peer,
+                peer_id: plan.peer_id,
+                peer_pbft_chain_size: plan.peer_pbft_chain_size,
+                request_period: request.local_pbft_synced_period.saturating_add(1),
+                generation: self.pbft_sync.generation,
+                deep_syncing: self.pbft_sync.deep_syncing,
+                enable_snapshot_creation: false,
+            };
+        }
+        let plan = plan_pbft_sync_start(NetworkPbftSyncStartFacts {
+            local_pbft_syncing: self.pbft_sync.active,
+            local_pbft_synced_period: request.local_pbft_synced_period,
+            local_pbft_chain_size: request.local_pbft_chain_size,
+            candidates: request.candidates,
+        });
+        if !plan.start_sync {
+            return NetworkPbftSyncStartOutcome {
+                status: plan.status,
+                error_code: plan.error_code,
+                started: false,
+                has_peer: plan.has_peer,
+                peer_id: plan.peer_id,
+                peer_pbft_chain_size: plan.peer_pbft_chain_size,
+                request_period: plan.request_period,
+                generation: self.pbft_sync.generation,
+                deep_syncing: self.pbft_sync.deep_syncing,
+                enable_snapshot_creation: plan.enable_snapshot_creation,
+            };
+        }
+
+        let Some(generation) = self.pbft_sync.generation.checked_add(1) else {
+            return NetworkPbftSyncStartOutcome {
+                status: NETWORK_STATUS_PLAN_STATUS_ALREADY_SYNCING,
+                error_code: "NETWORK_PBFT_SYNC_GENERATION_EXHAUSTED".to_owned(),
+                started: false,
+                has_peer: plan.has_peer,
+                peer_id: plan.peer_id,
+                peer_pbft_chain_size: plan.peer_pbft_chain_size,
+                request_period: plan.request_period,
+                generation: self.pbft_sync.generation,
+                deep_syncing: false,
+                enable_snapshot_creation: false,
+            };
+        };
+        self.pbft_sync.active = true;
+        self.pbft_sync.generation = generation;
+        self.pbft_sync.peer_id = plan.peer_id;
+        self.pbft_sync.last_peer_id = plan.peer_id;
+        self.pbft_sync.has_last_peer = true;
+        self.pbft_sync.target_chain_size = plan.peer_pbft_chain_size;
+        self.pbft_sync.current_period = request.local_pbft_synced_period;
+        self.pbft_sync.request_period = plan.request_period;
+        self.pbft_sync.started_at_ms = request.now_ms;
+        self.pbft_sync.last_activity_ms = request.now_ms;
+        self.pbft_sync.start_count = self.pbft_sync.start_count.saturating_add(1);
+        self.pbft_sync.last_stop_reason = NETWORK_PBFT_SYNC_STOP_REASON_NONE;
+        self.pbft_sync.refresh_deep_syncing();
+
+        NetworkPbftSyncStartOutcome {
+            status: plan.status,
+            error_code: plan.error_code,
+            started: true,
+            has_peer: true,
+            peer_id: plan.peer_id,
+            peer_pbft_chain_size: plan.peer_pbft_chain_size,
+            request_period: plan.request_period,
+            generation,
+            deep_syncing: self.pbft_sync.deep_syncing,
+            enable_snapshot_creation: false,
+        }
+    }
+
+    /// Applies periodic status follow-up policy and advances native debounce state.
+    #[must_use]
+    pub fn process_status_followup(
+        &mut self,
+        request: NetworkStatusFollowupRequest,
+    ) -> NetworkStatusFollowupOutcome {
+        let previous_chain_size = self
+            .pbft_sync
+            .peer_last_status_chain_size
+            .insert(request.peer_id, request.peer_pbft_chain_size)
+            .unwrap_or_default();
+        let plan = plan_status_sync(NetworkStatusSyncFacts {
+            local_pbft_syncing: self.pbft_sync.active,
+            local_pbft_synced_period: request.local_pbft_synced_period,
+            local_pbft_period: request.local_pbft_period,
+            local_pbft_round: request.local_pbft_round,
+            peer_pbft_chain_size: request.peer_pbft_chain_size,
+            peer_pbft_period: request.peer_pbft_period,
+            peer_pbft_round: request.peer_pbft_round,
+            peer_dag_synced: request.peer_dag_synced,
+            peer_last_status_pbft_chain_size: previous_chain_size,
+        });
+        NetworkStatusFollowupOutcome {
+            request_pbft_sync: plan.request_pbft_sync,
+            request_pending_dag_blocks: plan.request_pending_dag_blocks,
+            request_next_votes: plan.request_next_votes,
+            next_votes_period: plan.next_votes_period,
+            next_votes_round: plan.next_votes_round,
+            sync_generation: self.pbft_sync.generation,
+        }
+    }
+
+    /// Correlates one response source against native current/last peer identity.
+    #[must_use]
+    pub fn admit_pbft_sync_source(
+        &self,
+        request: NetworkPbftSyncSourceRequest,
+    ) -> NetworkPbftSyncSourceOutcome {
+        let accepted = match request.source {
+            NETWORK_PBFT_SYNC_SOURCE_ACTIVE => {
+                self.pbft_sync.active && request.peer_id == self.pbft_sync.peer_id
+            }
+            NETWORK_PBFT_SYNC_SOURCE_LAST => {
+                self.pbft_sync.has_last_peer && request.peer_id == self.pbft_sync.last_peer_id
+            }
+            _ => false,
+        };
+        let error_code = if accepted {
+            ERROR_NONE
+        } else if request.source != NETWORK_PBFT_SYNC_SOURCE_ACTIVE
+            && request.source != NETWORK_PBFT_SYNC_SOURCE_LAST
+        {
+            "NETWORK_PBFT_SYNC_SOURCE_KIND_INVALID"
+        } else if request.source == NETWORK_PBFT_SYNC_SOURCE_ACTIVE && !self.pbft_sync.active {
+            "NETWORK_PBFT_SYNC_NOT_ACTIVE"
+        } else {
+            "NETWORK_PBFT_SYNC_SOURCE_MISMATCH"
+        };
+        NetworkPbftSyncSourceOutcome {
+            accepted,
+            generation: self.pbft_sync.generation,
+            active: self.pbft_sync.active,
+            error_code: error_code.to_owned(),
+        }
+    }
+
+    /// Records activity only when generation and response source still match.
+    #[must_use]
+    pub fn record_pbft_sync_activity(
+        &mut self,
+        request: NetworkPbftSyncActivityRequest,
+    ) -> NetworkPbftSyncActivityOutcome {
+        let accepted = self.pbft_sync.active
+            && request.generation == self.pbft_sync.generation
+            && request.peer_id == self.pbft_sync.peer_id;
+        if accepted {
+            self.pbft_sync.last_activity_ms = self.pbft_sync.last_activity_ms.max(request.now_ms);
+        }
+        NetworkPbftSyncActivityOutcome {
+            accepted,
+            generation: self.pbft_sync.generation,
+            deep_syncing: self.pbft_sync.deep_syncing,
+            error_code: if accepted {
+                ERROR_NONE.to_owned()
+            } else {
+                "NETWORK_PBFT_SYNC_STALE_ACTIVITY".to_owned()
+            },
+        }
+    }
+
+    /// Stops a session only when its generation and selected peer still match.
+    #[must_use]
+    pub fn stop_pbft_sync(
+        &mut self,
+        request: NetworkPbftSyncStopRequest,
+    ) -> NetworkPbftSyncStopOutcome {
+        let valid_reason = matches!(
+            request.reason,
+            NETWORK_PBFT_SYNC_STOP_REASON_COMPLETED
+                | NETWORK_PBFT_SYNC_STOP_REASON_INACTIVE
+                | NETWORK_PBFT_SYNC_STOP_REASON_DISCONNECTED
+                | NETWORK_PBFT_SYNC_STOP_REASON_TRANSPORT_FAILED
+                | NETWORK_PBFT_SYNC_STOP_REASON_REPLACED
+        );
+        let stopped = valid_reason
+            && self.pbft_sync.active
+            && request.generation == self.pbft_sync.generation
+            && request.peer_id == self.pbft_sync.peer_id;
+        if stopped {
+            self.pbft_sync.stop(request.reason);
+        }
+        NetworkPbftSyncStopOutcome {
+            stopped,
+            generation: self.pbft_sync.generation,
+            error_code: if stopped {
+                ERROR_NONE.to_owned()
+            } else if !valid_reason {
+                "NETWORK_PBFT_SYNC_STOP_REASON_INVALID".to_owned()
+            } else {
+                "NETWORK_PBFT_SYNC_STALE_STOP".to_owned()
+            },
+        }
+    }
+
+    /// Stops the selected session and requests recovery after a matching disconnect.
+    #[must_use]
+    pub fn handle_pbft_sync_disconnect(
+        &mut self,
+        request: NetworkPbftSyncDisconnectRequest,
+    ) -> NetworkPbftSyncDisconnectOutcome {
+        let current_generation = request.generation == self.pbft_sync.generation;
+        if current_generation {
+            self.pbft_sync
+                .peer_last_status_chain_size
+                .remove(&request.peer_id);
+        }
+        let stopped = self.pbft_sync.active
+            && current_generation
+            && request.peer_id == self.pbft_sync.peer_id;
+        if stopped {
+            self.pbft_sync
+                .stop(NETWORK_PBFT_SYNC_STOP_REASON_DISCONNECTED);
+        }
+        NetworkPbftSyncDisconnectOutcome {
+            stopped,
+            restart_sync: stopped,
+            generation: self.pbft_sync.generation,
+            error_code: if stopped {
+                ERROR_NONE.to_owned()
+            } else {
+                "NETWORK_PBFT_SYNC_STALE_DISCONNECT".to_owned()
+            },
+        }
+    }
+
+    /// Applies the fixed inactivity policy to the generation observed by a timer.
+    #[must_use]
+    pub fn tick_pbft_sync(
+        &mut self,
+        request: NetworkPbftSyncTickRequest,
+    ) -> NetworkPbftSyncTickOutcome {
+        let current_generation = request.generation == self.pbft_sync.generation;
+        let expired = self.pbft_sync.active
+            && current_generation
+            && request
+                .now_ms
+                .saturating_sub(self.pbft_sync.last_activity_ms)
+                > self.pbft_sync.inactivity_threshold_ms;
+        if expired {
+            self.pbft_sync.stop(NETWORK_PBFT_SYNC_STOP_REASON_INACTIVE);
+        }
+        NetworkPbftSyncTickOutcome {
+            expired,
+            restart_sync: expired,
+            generation: self.pbft_sync.generation,
+            error_code: if expired || (current_generation && self.pbft_sync.active) {
+                ERROR_NONE.to_owned()
+            } else if !current_generation {
+                "NETWORK_PBFT_SYNC_STALE_TICK".to_owned()
+            } else {
+                "NETWORK_PBFT_SYNC_NOT_ACTIVE".to_owned()
+            },
+        }
+    }
+
+    /// Updates the current period and recomputes deep sync with saturating subtraction.
+    #[must_use]
+    pub fn update_pbft_sync_period(&mut self, current_period: u64) -> NetworkPbftSyncSnapshot {
+        self.pbft_sync.current_period = current_period;
+        self.pbft_sync.refresh_deep_syncing();
+        self.pbft_sync.snapshot(self.pbft_sync.last_activity_ms)
+    }
+
+    /// Returns a read-only sync snapshot without applying inactivity policy.
+    #[must_use]
+    pub fn pbft_sync_status(&self, now_ms: u64) -> NetworkPbftSyncSnapshot {
+        self.pbft_sync.snapshot(now_ms)
+    }
+
+    /// Shapes status egress from native lifecycle state and caller-owned public facts.
+    #[must_use]
+    pub fn status_egress(&self, mut facts: NetworkStatusEgressFacts) -> NetworkStatusEgressPlan {
+        facts.pbft_syncing = self.pbft_sync.active;
+        facts.deep_pbft_syncing = self.pbft_sync.deep_syncing;
+        plan_status_egress(facts)
+    }
+
     /// Plans deterministic sync follow-up for an accepted status packet.
     ///
     /// Tarcap supplies compact local and peer status facts, while Rust owns the
@@ -2524,16 +3482,6 @@ impl ConsensusNetworkApi {
     #[must_use]
     pub fn plan_status_sync(&self, facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
         plan_status_sync(facts)
-    }
-
-    /// Plans local status packet egress.
-    ///
-    /// Rust owns status packet shaping from compact local snapshot facts.
-    /// Tarcap still owns gathering live snapshot facts, RLP encoding, packet
-    /// framing, and transport send execution.
-    #[must_use]
-    pub fn plan_status_egress(&self, facts: NetworkStatusEgressFacts) -> NetworkStatusEgressPlan {
-        plan_status_egress(facts)
     }
 
     /// Plans initial status packet admission.
@@ -2552,9 +3500,9 @@ impl ConsensusNetworkApi {
     /// Plans whether PBFT sync should start and which peer should serve it.
     ///
     /// Rust owns max-chain peer selection, light-node serviceability checks,
-    /// and the start/not-needed decision. Tarcap still enumerates live peers,
-    /// mutates `PbftSyncingState`, sends `GetPbftSyncPacket`, and applies the
-    /// snapshot lifecycle side effects returned by this plan.
+    /// the start/not-needed decision, and application-owned lifecycle state.
+    /// Tarcap supplies canonical live-peer snapshots and retains only peer
+    /// bookkeeping plus `GetPbftSyncPacket` wrapping and physical transport.
     #[must_use]
     pub fn plan_pbft_sync_start(
         &self,
@@ -6599,9 +7547,7 @@ mod tests {
 
     #[test]
     fn plan_status_egress_includes_initial_metadata() {
-        let api = ConsensusNetworkApi::new();
-
-        let plan = api.plan_status_egress(status_egress_facts(true));
+        let plan = plan_status_egress(status_egress_facts(true));
 
         assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
         assert_eq!(plan.peer_pbft_chain_size, 10);
@@ -6620,12 +7566,11 @@ mod tests {
 
     #[test]
     fn plan_status_egress_uses_deep_sync_flag_for_standard_status() {
-        let api = ConsensusNetworkApi::new();
         let mut facts = status_egress_facts(false);
         facts.pbft_syncing = true;
         facts.deep_pbft_syncing = false;
 
-        let plan = api.plan_status_egress(facts);
+        let plan = plan_status_egress(facts);
 
         assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
         assert!(!plan.peer_syncing);
@@ -7926,5 +8871,367 @@ mod tests {
                 .effects
                 .is_empty()
         );
+    }
+
+    fn sync_start_request(
+        now_ms: u64,
+        peer_byte: u8,
+        peer_chain_size: u64,
+    ) -> NetworkPbftSyncStartRequest {
+        NetworkPbftSyncStartRequest {
+            start: true,
+            now_ms,
+            local_pbft_synced_period: 10,
+            local_pbft_chain_size: 10,
+            candidates: vec![sync_candidate(peer_byte, peer_chain_size, 20)],
+        }
+    }
+
+    fn sync_command(kind: u8, generation: u64, peer_byte: u8) -> NetworkPbftSyncCommandRequest {
+        NetworkPbftSyncCommandRequest {
+            kind,
+            now_ms: 1_100,
+            generation,
+            peer_id: peer(peer_byte),
+            source: NETWORK_PBFT_SYNC_SOURCE_ACTIVE,
+            reason: NETWORK_PBFT_SYNC_STOP_REASON_NONE,
+            sync_queue_size: 0,
+            syncing_period: 10,
+            finalized_period: 10,
+            remote_period: 10,
+            sync_level_size: 10,
+            retry_count: 0,
+            retry_delay_ms: 100,
+        }
+    }
+
+    #[test]
+    fn native_pbft_sync_start_owns_generation_peer_and_deep_state() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let started = api.begin_pbft_sync(sync_start_request(1_000, 7, 20));
+
+        assert!(started.started);
+        assert_eq!(started.generation, 1);
+        assert_eq!(started.peer_id, peer(7));
+        assert_eq!(started.request_period, 11);
+        assert!(started.deep_syncing);
+        let snapshot = api.pbft_sync_status(1_250);
+        assert!(snapshot.active);
+        assert!(snapshot.deep_syncing);
+        assert_eq!(snapshot.peer_id, peer(7));
+        assert_eq!(snapshot.last_peer_id, peer(7));
+        assert_eq!(snapshot.elapsed_ms, 250);
+        assert_eq!(snapshot.inactive_for_ms, 250);
+        assert_eq!(snapshot.start_count, 1);
+
+        let duplicate = api.begin_pbft_sync(sync_start_request(1_300, 8, 30));
+        assert!(!duplicate.started);
+        assert_eq!(duplicate.status, NETWORK_STATUS_PLAN_STATUS_ALREADY_SYNCING);
+        assert_eq!(duplicate.generation, 1);
+        assert_eq!(api.pbft_sync_status(1_300).peer_id, peer(7));
+    }
+
+    #[test]
+    fn native_pbft_sync_period_update_uses_saturating_deep_calculation() {
+        let mut api = ConsensusNetworkApi::new();
+        assert!(
+            api.begin_pbft_sync(sync_start_request(1_000, 7, 20))
+                .deep_syncing
+        );
+
+        let near_tip = api.update_pbft_sync_period(19);
+        assert!(near_tip.active);
+        assert!(!near_tip.deep_syncing);
+
+        let beyond_peer_tip = api.update_pbft_sync_period(u64::MAX);
+        assert!(beyond_peer_tip.active);
+        assert!(!beyond_peer_tip.deep_syncing);
+    }
+
+    #[test]
+    fn native_completion_waits_for_queue_then_stops_and_requests_followup() {
+        let mut api = ConsensusNetworkApi::new();
+        let start = api.begin_pbft_sync(sync_start_request(1_000, 7, 20));
+        let mut completion = sync_command(5, start.generation, 7);
+        completion.sync_queue_size = 1;
+        let waiting = api.apply_pbft_sync_command(completion.clone()).unwrap();
+        assert!(waiting.accepted);
+        assert!(waiting.active);
+        assert!(waiting.deep_syncing);
+        assert!(waiting.retry);
+        assert!(!waiting.restart_sync);
+
+        completion.sync_queue_size = 0;
+        let completed = api.apply_pbft_sync_command(completion).unwrap();
+        assert!(completed.stopped);
+        assert!(!completed.active);
+        assert!(!completed.deep_syncing);
+        assert!(completed.restart_sync);
+        assert!(completed.request_pending_dag_if_idle);
+        assert_eq!(
+            api.pbft_sync_status(1_100).last_stop_reason,
+            NETWORK_PBFT_SYNC_STOP_REASON_COMPLETED
+        );
+    }
+
+    #[test]
+    fn native_last_block_and_delayed_continuation_own_retry_and_stop_policy() {
+        let mut api = ConsensusNetworkApi::new();
+        let first = api.begin_pbft_sync(sync_start_request(1_000, 7, 200));
+        let mut last = sync_command(6, first.generation, 7);
+        last.syncing_period = 20;
+        last.finalized_period = 1;
+        last.remote_period = 20;
+        last.sync_level_size = 1;
+        assert!(api.apply_pbft_sync_command(last.clone()).unwrap().retry);
+
+        last.finalized_period = 20;
+        let next = api.apply_pbft_sync_command(last).unwrap();
+        assert!(next.request_next);
+        assert!(!next.retry);
+
+        let mut remote_behind = sync_command(6, first.generation, 7);
+        remote_behind.syncing_period = 21;
+        remote_behind.remote_period = 20;
+        assert!(api.apply_pbft_sync_command(remote_behind).unwrap().stopped);
+
+        let second = api.begin_pbft_sync(sync_start_request(2_000, 8, 200));
+        let mut delayed = sync_command(7, second.generation, 8);
+        delayed.retry_count = 601;
+        let exhausted = api.apply_pbft_sync_command(delayed).unwrap();
+        assert!(exhausted.stopped);
+        assert!(!exhausted.active);
+        assert_eq!(
+            api.pbft_sync_status(2_100).last_stop_reason,
+            NETWORK_PBFT_SYNC_STOP_REASON_TRANSPORT_FAILED
+        );
+    }
+
+    #[test]
+    fn stale_completion_and_command_reports_project_replacement_state() {
+        let mut api = ConsensusNetworkApi::new();
+        let first = api.begin_pbft_sync(sync_start_request(1_000, 7, 20));
+        let mut stop = sync_command(2, first.generation, 7);
+        stop.reason = NETWORK_PBFT_SYNC_STOP_REASON_REPLACED;
+        assert!(api.apply_pbft_sync_command(stop).unwrap().stopped);
+        let second = api.begin_pbft_sync(sync_start_request(2_000, 8, 30));
+
+        let stale = api
+            .apply_pbft_sync_command(sync_command(5, first.generation, 7))
+            .unwrap();
+        assert!(!stale.accepted);
+        assert!(stale.active);
+        assert!(stale.deep_syncing);
+        assert_eq!(stale.generation, second.generation);
+        assert_eq!(api.pbft_sync_status(2_100).peer_id, peer(8));
+
+        let inactive_tick = {
+            let mut stop = sync_command(2, second.generation, 8);
+            stop.reason = NETWORK_PBFT_SYNC_STOP_REASON_COMPLETED;
+            assert!(api.apply_pbft_sync_command(stop).unwrap().stopped);
+            api.apply_pbft_sync_command(sync_command(4, second.generation, 8))
+                .unwrap()
+        };
+        assert!(!inactive_tick.active);
+        assert!(!inactive_tick.deep_syncing);
+    }
+
+    #[test]
+    fn max_peer_selection_does_not_open_a_sync_generation() {
+        let mut api = ConsensusNetworkApi::new();
+        let mut request = sync_start_request(1_000, 7, 20);
+        request.start = false;
+        let selected = api.begin_pbft_sync(request);
+        assert!(!selected.started);
+        assert!(selected.has_peer);
+        assert_eq!(selected.peer_id, peer(7));
+        assert!(!api.pbft_sync_status(1_000).active);
+    }
+
+    #[test]
+    fn native_status_followup_owns_one_block_debounce() {
+        let mut api = ConsensusNetworkApi::new();
+        let request = NetworkStatusFollowupRequest {
+            peer_id: peer(4),
+            local_pbft_synced_period: 10,
+            local_pbft_period: 11,
+            local_pbft_round: 2,
+            peer_pbft_chain_size: 11,
+            peer_pbft_period: 12,
+            peer_pbft_round: 2,
+            peer_dag_synced: true,
+        };
+
+        assert!(
+            !api.process_status_followup(request.clone())
+                .request_pbft_sync
+        );
+        assert!(api.process_status_followup(request).request_pbft_sync);
+
+        let ahead_round = NetworkStatusFollowupRequest {
+            peer_id: peer(5),
+            local_pbft_synced_period: 10,
+            local_pbft_period: 11,
+            local_pbft_round: 2,
+            peer_pbft_chain_size: 10,
+            peer_pbft_period: 11,
+            peer_pbft_round: 3,
+            peer_dag_synced: true,
+        };
+        let outcome = api.process_status_followup(ahead_round);
+        assert!(outcome.request_next_votes);
+        assert_eq!(outcome.next_votes_period, 11);
+        assert_eq!(outcome.next_votes_round, 2);
+    }
+
+    #[test]
+    fn native_source_correlation_retains_last_peer_after_stop() {
+        let mut api = ConsensusNetworkApi::new();
+        let start = api.begin_pbft_sync(sync_start_request(1_000, 7, 20));
+        let active = api.admit_pbft_sync_source(NetworkPbftSyncSourceRequest {
+            peer_id: peer(7),
+            source: NETWORK_PBFT_SYNC_SOURCE_ACTIVE,
+        });
+        assert!(active.accepted);
+        assert_eq!(active.generation, start.generation);
+        assert!(
+            !api.admit_pbft_sync_source(NetworkPbftSyncSourceRequest {
+                peer_id: peer(8),
+                source: NETWORK_PBFT_SYNC_SOURCE_ACTIVE,
+            })
+            .accepted
+        );
+
+        assert!(
+            api.stop_pbft_sync(NetworkPbftSyncStopRequest {
+                generation: start.generation,
+                peer_id: peer(7),
+                reason: NETWORK_PBFT_SYNC_STOP_REASON_COMPLETED,
+            })
+            .stopped
+        );
+        assert!(
+            !api.admit_pbft_sync_source(NetworkPbftSyncSourceRequest {
+                peer_id: peer(7),
+                source: NETWORK_PBFT_SYNC_SOURCE_ACTIVE,
+            })
+            .accepted
+        );
+        assert!(
+            api.admit_pbft_sync_source(NetworkPbftSyncSourceRequest {
+                peer_id: peer(7),
+                source: NETWORK_PBFT_SYNC_SOURCE_LAST,
+            })
+            .accepted
+        );
+    }
+
+    #[test]
+    fn stale_generation_reports_cannot_stop_or_touch_replacement_sync() {
+        let mut api = ConsensusNetworkApi::new();
+        let first = api.begin_pbft_sync(sync_start_request(1_000, 7, 20));
+        assert!(
+            api.stop_pbft_sync(NetworkPbftSyncStopRequest {
+                generation: first.generation,
+                peer_id: peer(7),
+                reason: NETWORK_PBFT_SYNC_STOP_REASON_REPLACED,
+            })
+            .stopped
+        );
+        let second = api.begin_pbft_sync(sync_start_request(2_000, 8, 30));
+        assert_eq!(second.generation, first.generation + 1);
+
+        assert!(
+            !api.record_pbft_sync_activity(NetworkPbftSyncActivityRequest {
+                now_ms: 9_000,
+                generation: first.generation,
+                peer_id: peer(7),
+            })
+            .accepted
+        );
+        assert!(
+            !api.stop_pbft_sync(NetworkPbftSyncStopRequest {
+                generation: first.generation,
+                peer_id: peer(7),
+                reason: NETWORK_PBFT_SYNC_STOP_REASON_TRANSPORT_FAILED,
+            })
+            .stopped
+        );
+        assert!(
+            !api.handle_pbft_sync_disconnect(NetworkPbftSyncDisconnectRequest {
+                generation: first.generation,
+                peer_id: peer(7),
+            })
+            .stopped
+        );
+        let current = api.pbft_sync_status(9_000);
+        assert!(current.active);
+        assert_eq!(current.generation, second.generation);
+        assert_eq!(current.peer_id, peer(8));
+        assert_eq!(current.last_activity_ms, 2_000);
+    }
+
+    #[test]
+    fn query_is_side_effect_free_and_timer_expires_only_after_threshold() {
+        let mut api = ConsensusNetworkApi::new();
+        let start = api.begin_pbft_sync(sync_start_request(1_000, 7, 20));
+
+        let overdue_query = api.pbft_sync_status(61_001);
+        assert!(overdue_query.active);
+        assert_eq!(overdue_query.inactive_for_ms, 60_001);
+        assert!(
+            !api.tick_pbft_sync(NetworkPbftSyncTickRequest {
+                now_ms: 61_000,
+                generation: start.generation,
+            })
+            .expired
+        );
+        assert!(api.pbft_sync_status(61_000).active);
+
+        let expired = api.tick_pbft_sync(NetworkPbftSyncTickRequest {
+            now_ms: 61_001,
+            generation: start.generation,
+        });
+        assert!(expired.expired);
+        assert!(expired.restart_sync);
+        let stopped = api.pbft_sync_status(61_001);
+        assert!(!stopped.active);
+        assert_eq!(stopped.inactivity_count, 1);
+        assert_eq!(
+            stopped.last_stop_reason,
+            NETWORK_PBFT_SYNC_STOP_REASON_INACTIVE
+        );
+    }
+
+    #[test]
+    fn selected_peer_disconnect_stops_generation_and_requests_restart() {
+        let mut api = ConsensusNetworkApi::new();
+        let start = api.begin_pbft_sync(sync_start_request(1_000, 7, 20));
+        let disconnected = api
+            .apply_pbft_sync_command(sync_command(3, start.generation, 7))
+            .unwrap();
+        assert!(disconnected.stopped);
+        assert!(disconnected.restart_sync);
+        assert!(!disconnected.active);
+        let snapshot = api.pbft_sync_status(1_100);
+        assert_eq!(snapshot.disconnect_count, 1);
+        assert_eq!(
+            snapshot.last_stop_reason,
+            NETWORK_PBFT_SYNC_STOP_REASON_DISCONNECTED
+        );
+    }
+
+    #[test]
+    fn native_status_egress_preserves_initial_active_and_periodic_deep_semantics() {
+        let mut api = ConsensusNetworkApi::new();
+        let _ = api.begin_pbft_sync(sync_start_request(1_000, 7, 20));
+        let _ = api.update_pbft_sync_period(19);
+
+        let initial = api.status_egress(status_egress_facts(true));
+        let periodic = api.status_egress(status_egress_facts(false));
+
+        assert!(initial.peer_syncing);
+        assert!(!periodic.peer_syncing);
     }
 }

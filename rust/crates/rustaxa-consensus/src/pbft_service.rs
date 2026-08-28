@@ -347,6 +347,8 @@ pub struct PbftServiceConfig {
     pub pillar_blocks_interval: u64,
     /// Maximum finalized periods served by one PBFT sync request.
     pub sync_level_size: u64,
+    /// Finalized-period distance at which native PBFT sync enters deep-sync mode.
+    pub deep_syncing_threshold: u64,
     /// Whether this node retains only bounded finalized history.
     pub is_light_node: bool,
     /// Number of finalized PBFT periods retained by a light node.
@@ -401,6 +403,7 @@ impl PbftServiceConfig {
         ficus_activation_period: u64,
         pillar_blocks_interval: u64,
         sync_level_size: u64,
+        deep_syncing_threshold: u64,
         is_light_node: bool,
         light_node_history: u64,
         committee_size: u64,
@@ -437,6 +440,7 @@ impl PbftServiceConfig {
             ficus_activation_period,
             pillar_blocks_interval,
             sync_level_size,
+            deep_syncing_threshold,
             is_light_node,
             light_node_history,
             committee_size,
@@ -644,7 +648,6 @@ pub trait PbftProcessSyncedLeaves {
     fn report_malicious_peer(&self, peer_id: [u8; 64]) -> Result<()>;
     /// Signs one exact native transaction digest while retaining private-key custody.
     fn sign_digest(&self, wallet_index: usize, digest: [u8; 32]) -> Result<Vec<u8>>;
-    fn set_sync_period(&self, period: u64) -> Result<()>;
 }
 
 /// Terminal result of one complete native sync-queue drain.
@@ -2631,7 +2634,9 @@ impl PbftService {
                 }
                 crate::pbft_sync::PbftSyncQueueDrainAction::UpdateSyncState => {
                     let snapshot = self.period_data_queue_snapshot()?;
-                    leaves.set_sync_period(snapshot.syncing_period)?;
+                    self.network
+                        .update_pbft_sync_period(snapshot.syncing_period)
+                        .context("PBFT_PROCESS_SYNCED_UPDATE_NETWORK_SYNC_PERIOD_FAILED")?;
                     let report = self
                         .report_pbft_sync_queue_drain(PbftSyncQueueDrainReport {
                             action: step.action,
@@ -3489,6 +3494,7 @@ impl PbftService {
             storage.clone(),
             config.ficus_activation_period,
             config.pillar_blocks_interval,
+            config.deep_syncing_threshold,
             config.sync_level_size,
             config.is_light_node,
             config.light_node_history,
@@ -6500,6 +6506,7 @@ mod tests {
             ficus_activation_period: 10,
             pillar_blocks_interval: 10,
             sync_level_size: 10,
+            deep_syncing_threshold: 5,
             is_light_node: false,
             light_node_history: 0,
             committee_size: 1,
@@ -9349,10 +9356,6 @@ mod tests {
 
         fn sign_digest(&self, _wallet_index: usize, _digest: [u8; 32]) -> Result<Vec<u8>> {
             Ok(vec![0; 65])
-        }
-
-        fn set_sync_period(&self, _period: u64) -> Result<()> {
-            Ok(())
         }
     }
 

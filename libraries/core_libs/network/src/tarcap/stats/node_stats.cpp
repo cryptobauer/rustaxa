@@ -6,7 +6,9 @@
 #endif
 #include "libp2p/Common.h"
 #include "network/consensus_query.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
+#endif
 #include "network/tarcap/stats/time_period_packets_stats.hpp"
 #include "network/tarcap/taraxa_peer.hpp"
 #include "network/threadpool/tarcap_thread_pool.hpp"
@@ -21,7 +23,11 @@
 
 namespace taraxa::network::tarcap {
 
-NodeStats::NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::ConsensusQueryClient pbft_chain,
+NodeStats::NodeStats(
+#ifndef RUSTAXA_ENABLE
+    std::shared_ptr<PbftSyncingState> pbft_syncing_state,
+#endif
+    net::ConsensusQueryClient pbft_chain,
 #ifdef RUSTAXA_ENABLE
                      network::ConsensusLiveStatusProvider consensus_status,
                      network::ConsensusVoteStatusProvider consensus_vote_status,
@@ -31,7 +37,10 @@ NodeStats::NodeStats(std::shared_ptr<PbftSyncingState> pbft_syncing_state, net::
 #endif
                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                      std::shared_ptr<const threadpool::PacketsThreadPool> thread_pool, const FullNodeConfig &config)
-    : pbft_syncing_state_(std::move(pbft_syncing_state)),
+    :
+#ifndef RUSTAXA_ENABLE
+      pbft_syncing_state_(std::move(pbft_syncing_state)),
+#endif
       pbft_chain_(std::move(pbft_chain)),
 #ifdef RUSTAXA_ENABLE
       consensus_status_(std::move(consensus_status)),
@@ -56,7 +65,15 @@ uint64_t NodeStats::syncTimeSeconds() const { return syncing_duration_seconds; }
 
 void NodeStats::logNodeStats(const std::vector<std::shared_ptr<network::tarcap::TaraxaPeer>> &all_peers,
                              const std::vector<std::string> &nodes) {
-  bool is_pbft_syncing = pbft_syncing_state_->isPbftSyncing();
+#ifdef RUSTAXA_ENABLE
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  const auto native_sync_status = (*pbft_chain_)->consensus_query_pbft_sync_status(now_ms);
+  const bool is_pbft_syncing = native_sync_status.active;
+#else
+  const bool is_pbft_syncing = pbft_syncing_state_->isPbftSyncing();
+#endif
 
   dev::p2p::NodeID max_pbft_round_node_id;
   dev::p2p::NodeID max_pbft_chain_node_id;
@@ -200,8 +217,27 @@ void NodeStats::logNodeStats(const std::vector<std::shared_ptr<network::tarcap::
   if (is_pbft_syncing) {
     // Syncing...
     const auto percent_synced = (local_pbft_sync_period * 100) / peer_max_pbft_chain_size;
-    const auto syncing_time_sec = syncTimeSeconds();
+    const auto syncing_time_sec =
+#ifdef RUSTAXA_ENABLE
+        native_sync_status.elapsed_ms / 1000;
+#else
+        syncTimeSeconds();
+#endif
+#ifdef RUSTAXA_ENABLE
+    std::shared_ptr<TaraxaPeer> syncing_peer;
+    if (native_sync_status.has_peer) {
+      const dev::p2p::NodeID syncing_peer_id(native_sync_status.peer_id.data(),
+                                             dev::p2p::NodeID::ConstructFromPointer);
+      const auto match = std::find_if(all_peers.begin(), all_peers.end(), [&syncing_peer_id](const auto &candidate) {
+        return candidate->getId() == syncing_peer_id;
+      });
+      if (match != all_peers.end()) {
+        syncing_peer = *match;
+      }
+    }
+#else
     const auto syncing_peer = pbft_syncing_state_->syncingPeer();
+#endif
 
     LOG(log_nf_) << "Syncing for " << syncing_time_sec << " seconds, " << percent_synced << "% synced";
     LOG(log_nf_) << "Currently syncing from node " << (syncing_peer ? syncing_peer->getId().abridged() : "None");
@@ -344,10 +380,32 @@ Json::Value NodeStats::getStatus(
     }
   }
 
+#ifdef RUSTAXA_ENABLE
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  const auto sync = (*pbft_chain_)->consensus_query_pbft_sync_status(now_ms);
+  if (sync.active && sync.has_peer) {
+    res["syncing_from_node_id"] =
+        dev::p2p::NodeID(sync.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer).toString();
+  }
+#else
+#ifdef RUSTAXA_ENABLE
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  const auto sync = (*pbft_chain_)->consensus_query_pbft_sync_status(now_ms);
+  if (sync.active && sync.has_peer) {
+    res["syncing_from_node_id"] =
+        dev::p2p::NodeID(sync.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer).toString();
+  }
+#else
   if (const auto syncing_peer = pbft_syncing_state_->syncingPeer();
       syncing_peer && pbft_syncing_state_->isPbftSyncing()) {
     res["syncing_from_node_id"] = syncing_peer->getId().toString();
   }
+#endif
+#endif
 
   res["peer_max_pbft_round"] = Json::UInt64(peer_max_pbft_round);
   res["peer_max_pbft_chain_size"] = Json::UInt64(peer_max_pbft_chain_size);

@@ -19,7 +19,7 @@ use rustaxa_consensus::{
     ConsensusTransportReport, ConsensusVrfReport, ConsensusVrfRequest, ConsensusWaitOutcome,
     ConsensusWaitReport, ConsensusWaitRequest, DagGasEstimateReport, DagGasEstimateRequest,
     DagGasEstimateResult, EvmFinalizationRequest, GossipPillarVoteRequest, GossipVoteBundleRequest,
-    GossipVoteRequest, ReportMaliciousPeerRequest, SetSyncPeriodRequest,
+    GossipVoteRequest, ReportMaliciousPeerRequest,
 };
 
 struct ProcessPortAdapter<'a>(&'a ConsensusProcessPort);
@@ -229,21 +229,10 @@ impl rustaxa_consensus::ConsensusTransportPort for TransportPortAdapter<'_> {
         Ok(to_native_transport_report(report))
     }
 
-    fn set_sync_period(&self, request: &SetSyncPeriodRequest) -> Result<ConsensusTransportReport> {
-        let report = self
-            .0
-            .consensus_set_sync_period(&HostSetSyncPeriodRequest {
-                effect_id: to_ffi_effect_id(request.effect_id),
-                period: request.period,
-            })?;
-        Ok(to_native_transport_report(report))
-    }
-
     fn transport_status(&self) -> rustaxa_consensus::ConsensusTransportStatus {
         let status = self.0.consensus_transport_status();
         rustaxa_consensus::ConsensusTransportStatus {
             available: status.available,
-            pbft_syncing: status.pbft_syncing,
             packet_queue_over_limit: status.packet_queue_over_limit,
         }
     }

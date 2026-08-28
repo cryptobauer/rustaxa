@@ -3,7 +3,9 @@
 #include "config/version.hpp"
 #include "network/consensus_query.hpp"
 #include "network/tarcap/packets/latest/status_packet.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
+#endif
 #ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
 #include "pbft/pbft_manager.hpp"
@@ -27,7 +29,9 @@ constexpr uint8_t kNetworkStatusPlanStatusLightNodeHistoryUnavailable = 8;
 
 StatusPacketHandler::StatusPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                          std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
                                          std::shared_ptr<PbftSyncingState> pbft_syncing_state,
+#endif
                                          net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
                                          std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
@@ -38,7 +42,11 @@ StatusPacketHandler::StatusPacketHandler(const FullNodeConfig& conf, std::shared
                                          network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                          h256 genesis_hash, const addr_t& node_addr, const std::string& logs_prefix)
-    : ISyncPacketHandler(conf, peers_state, packets_stats, std::move(pbft_syncing_state), std::move(pbft_chain),
+    : ISyncPacketHandler(conf, peers_state, packets_stats,
+#ifndef RUSTAXA_ENABLE
+                         std::move(pbft_syncing_state),
+#endif
+                         std::move(pbft_chain),
 #ifndef RUSTAXA_ENABLE
                          std::move(pbft_mgr), std::move(dag_mgr), std::move(db),
 #else
@@ -78,17 +86,17 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
     }
 
 #ifdef RUSTAXA_ENABLE
-    rustaxa::NetworkInitialStatusFacts initial_status_facts{};
-    initial_status_facts.local_chain_id = kConf.genesis.chain_id;
-    initial_status_facts.peer_chain_id = packet.initial_data->peer_chain_id;
-    initial_status_facts.expected_genesis_hash = kGenesisHash.asArray();
-    initial_status_facts.peer_genesis_hash = packet.initial_data->genesis_hash.asArray();
-    initial_status_facts.local_pbft_synced_period = pbft_synced_period;
-    initial_status_facts.peer_pbft_chain_size = packet.peer_pbft_chain_size;
-    initial_status_facts.peer_is_light_node = packet.initial_data->is_light_node;
-    initial_status_facts.peer_light_node_history = packet.initial_data->node_history;
+    rustaxa::NetworkInitialStatusRequest initial_status_request{};
+    initial_status_request.local_chain_id = kConf.genesis.chain_id;
+    initial_status_request.peer_chain_id = packet.initial_data->peer_chain_id;
+    initial_status_request.expected_genesis_hash = kGenesisHash.asArray();
+    initial_status_request.peer_genesis_hash = packet.initial_data->genesis_hash.asArray();
+    initial_status_request.local_pbft_synced_period = pbft_synced_period;
+    initial_status_request.peer_pbft_chain_size = packet.peer_pbft_chain_size;
+    initial_status_request.peer_is_light_node = packet.initial_data->is_light_node;
+    initial_status_request.peer_light_node_history = packet.initial_data->node_history;
     const auto initial_status_plan =
-        rust_consensus_network_api_->api().consensus_network_plan_initial_status(initial_status_facts);
+        rust_consensus_network_api_->api().consensus_network_admit_initial_status(initial_status_request);
     if (!initial_status_plan.accept_peer) {
       if (initial_status_plan.status == kNetworkStatusPlanStatusChainIdMismatch) {
         LOG((peers_state_->getPeersCount()) ? log_nf_ : log_er_)
@@ -184,28 +192,28 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
     selected_peer->pbft_round_ = packet.peer_pbft_round;
 
 #ifdef RUSTAXA_ENABLE
-    rustaxa::NetworkStatusSyncFacts sync_facts{};
-    sync_facts.local_pbft_syncing = pbft_syncing_state_->isPbftSyncing();
-    sync_facts.local_pbft_synced_period = pbft_synced_period;
-    sync_facts.local_pbft_period = consensus_status.period;
-    sync_facts.local_pbft_round = consensus_status.round;
-    sync_facts.peer_pbft_chain_size = selected_peer->pbft_chain_size_.load();
-    sync_facts.peer_pbft_period = selected_peer->pbft_period_;
-    sync_facts.peer_pbft_round = selected_peer->pbft_round_;
-    sync_facts.peer_dag_synced = selected_peer->peer_dag_synced_;
-    sync_facts.peer_last_status_pbft_chain_size = selected_peer->last_status_pbft_chain_size_.load();
-    const auto sync_plan = rust_consensus_network_api_->api().consensus_network_plan_status_sync(sync_facts);
-    if (sync_plan.request_pbft_sync) {
+    rustaxa::NetworkStatusFollowupRequest followup_request{};
+    followup_request.peer_id = selected_peer->getId().asArray();
+    followup_request.local_pbft_synced_period = pbft_synced_period;
+    followup_request.local_pbft_period = consensus_status.period;
+    followup_request.local_pbft_round = consensus_status.round;
+    followup_request.peer_pbft_chain_size = selected_peer->pbft_chain_size_.load();
+    followup_request.peer_pbft_period = selected_peer->pbft_period_;
+    followup_request.peer_pbft_round = selected_peer->pbft_round_;
+    followup_request.peer_dag_synced = selected_peer->peer_dag_synced_;
+    const auto followup =
+        rust_consensus_network_api_->api().consensus_network_process_status_followup(followup_request);
+    if (followup.request_pbft_sync) {
       LOG(log_nf_) << "Restart PBFT chain syncing. Own synced PBFT at period " << pbft_synced_period
                    << ", peer PBFT chain size " << selected_peer->pbft_chain_size_;
       startSyncingPbft();
-    } else if (sync_plan.request_pending_dag_blocks) {
+    } else if (followup.request_pending_dag_blocks) {
       requestPendingDagBlocks(selected_peer);
     }
 
-    if (sync_plan.request_next_votes) {
-      requestPbftNextVotesAtPeriodRound(selected_peer->getId(), sync_plan.next_votes_period,
-                                        sync_plan.next_votes_round);
+    if (followup.request_next_votes) {
+      requestPbftNextVotesAtPeriodRound(selected_peer->getId(), followup.next_votes_period,
+                                        followup.next_votes_round);
     }
 #else
     // TODO: Address malicious status
@@ -237,7 +245,9 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
       }
     }
 #endif
+#ifndef RUSTAXA_ENABLE
     selected_peer->last_status_pbft_chain_size_ = selected_peer->pbft_chain_size_.load();
+#endif
 
     LOG(log_dg_) << "Received status message from " << peer->getId() << ", peer DAG max level "
                  << selected_peer->dag_level_ << ", peer pbft chain size " << selected_peer->pbft_chain_size_

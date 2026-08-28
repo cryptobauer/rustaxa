@@ -66,8 +66,10 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
    */
   using InitPacketsHandlers = std::function<std::shared_ptr<PacketsHandler>(
       const std::string &logs_prefix, const FullNodeConfig &config, const h256 &genesis_hash,
-      const std::shared_ptr<PeersState> &peers_state, const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
-
+      const std::shared_ptr<PeersState> &peers_state,
+#ifndef RUSTAXA_ENABLE
+      const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
+#endif
       const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats,
 #ifdef RUSTAXA_ENABLE
       const network::ConsensusNetworkApiShared &consensus_network_api,
@@ -96,7 +98,9 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
                    std::weak_ptr<dev::p2p::Host> host,
                    std::shared_ptr<network::threadpool::PacketsThreadPool> threadpool,
                    std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
                    std::shared_ptr<PbftSyncingState> syncing_state,
+#endif
 #ifndef RUSTAXA_ENABLE
                    std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
                    std::shared_ptr<PbftManager> pbft_mgr,
@@ -159,8 +163,10 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
   // Peers state
   std::shared_ptr<PeersState> peers_state_;
 
-  // Syncing state + syncing handler
+#ifndef RUSTAXA_ENABLE
+  // Untouched pure-C++ synchronization state.
   std::shared_ptr<PbftSyncingState> pbft_syncing_state_;
+#endif
 
   // Packets handlers
   std::shared_ptr<PacketsHandler> packets_handlers_;

@@ -22,7 +22,7 @@ must migrate or disappear; they may not be promoted into this table merely to pr
 
 | Client class | Named C++ clients | Retained boundary | C++ ownership | Narrowing or deletion condition |
 | --- | --- | --- | --- | --- |
-| Tarcap transport | `network::tarcap` packet handlers and `TaraxaCapability` | `BridgeConsensusNetworkApi` | Peer/socket mechanics, packet wrapping, send/gossip/disconnect execution, physical lane scheduling | Keep transport-only calls; delete all consensus admission, routing, queue, and effect-decision relays as `CRW-N01` lands. |
+| Tarcap transport | `network::tarcap` packet handlers and `TaraxaCapability` | `BridgeConsensusNetworkApi` | Canonical peer snapshots, peer/socket mechanics, packet wrapping, send/gossip/disconnect execution, physical lane scheduling | Keep operation-shaped ingress/egress and transport execution calls; delete each remaining handler-local consensus decision relay as `CRW-N01` lands. Status/sync lifecycle state and decisions are already native-owned. |
 | Concrete EVM/StateAPI executor | `FinalChain` overlay calling `StateAPI` and `state_db/` | Exact system-fact, ordered-transaction, rewards, and state-commit requests/reports | Concrete EVM calls, staged `state_db/` mutation, tracing, and raw executor operations | Keep only exact typed leaves until concrete EVM and `state_db` move native; no executor or session handle may reappear. |
 | Application process host | `App`'s single Rust-mode consensus process shell | Exact timer/process and best-effort public-observer ports | Monotonic/Unix clocks, interruptible wait/stop mechanics, worker joining, and public event dispatch | Delete each leaf when the native runtime can own that physical operation; never expand it into manager orchestration. |
 | Signing executor | App-owned node-wallet adapter | Exact digest-signing and VRF-proof requests/reports; no manager handle | Secret-key custody and signature execution | Keep only operation-shaped signing reports; native vote, pillar, slashing, and DAG-proposer tasks own selection and sequencing. |
@@ -46,10 +46,10 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 5547 |
+| `bridge_lines` | 5536 |
 | `shim_lines` | 1042 |
 | `cxx_functions` | 96 |
-| `cxx_carriers` | 144 |
+| `cxx_carriers` | 143 |
 | `cxx_handles` | 10 |
 | `shim_directories` | 1 |
 | `granular_flags` | 0 |
@@ -85,6 +85,13 @@ fixtures invoke the exact application-root task API and expand canonical public 
 whose block-index/count/receipt views preserve regular-then-system transaction order.
 The private native session state machine is no longer re-exported: action/status constants, session/step types, and
 transition functions cannot bypass the application coordinator.
+
+The status-and-sync cut deletes six direct planner functions, their compatibility carriers/tests, and the
+network-specific sync snapshot. Five operation-shaped calls replace them: one start-or-select bootstrap, periodic
+follow-up, initial admission, native status egress, and one generation-correlated lifecycle command. Public and internal
+reads share `BridgeConsensusQueryApi`; Rust mode no longer compiles or injects `PbftSyncingState`. The replacement lowers
+bridge lines by 11 to 5,536 and carriers by one to 143 while keeping the other checked totals at 1,042/96/10/1; it eliminates the planner
+family, duplicated mutable state, and network-only query route.
 
 The pillar cut lowers the 12,100/4,075/211/170/14/3/28 DAG checkpoint by 764 bridge lines, 1,216 shim lines,
 16 CXX functions, 16 carriers, zero opaque handles, one shim directory, and two non-test C++ consumers. Granular flags,
@@ -147,7 +154,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | Sole application-root bootstrap plus operation-shaped public transaction submission | App bootstrap, RPC, and GraphQL mutations | Bootstrap/public-client adapter | Retain only root bootstrap, public submission/status conversion, and focused ABI coverage; native `ConsensusApplication` owns DAG, transaction, sortition, and proposer behavior and state. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | Root-bound FinalChain public/query conversion | FinalChain shim and public clients | External boundary | Retain only stable public-query conversion and recovery projection; execution orchestration and compatibility tests have moved native. |
-| `rust/crates/rustaxa-bridge/src/network.rs` | Root-bound packet-family adapter for native PBFT, pillar-vote, DAG, DAG-sync, transaction, status, sync-response, and gossip pipelines | latest/v5 tarcap handler families | External boundary | Keep only canonical ingress requests, typed network decisions/reports, and tarcap transport execution; remove remaining handler-local consensus routing as `CRW-N01` completes. |
+| `rust/crates/rustaxa-bridge/src/network.rs` | Root-bound packet-family adapter for native PBFT, pillar-vote, DAG, DAG-sync, transaction, status, sync lifecycle/response, and gossip pipelines | latest/v5 tarcap handler families | External boundary | Keep only canonical peer/payload requests, typed network decisions/reports, and tarcap transport execution; status/sync lifecycle uses five operation-shaped calls and query snapshots live exclusively in `query.rs`. Remove remaining handler-local consensus routing as `CRW-N01` completes. |
 | `rust/crates/rustaxa-bridge/src/network_slashing.rs` | Exact signing and transaction-ingress conversion for network-detected slashing effects | tarcap ingress | External boundary | Delete when the signing and transaction-ingress executors move native; never expand into consensus routing. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, including coherent PBFT, period-indexed finalized pillar data, live DAG, transaction-pool, finalized-history, and public status views | RPC, GraphQL, debug/Test RPC, stats, light plugin | External boundary | Keep a bounded client-oriented read API; never expose private services, locks, queues, cursors, or mutable object graphs. |
 | `rust/crates/rustaxa-bridge/src/storage_admin.rs` | Operation-shaped light-history prune and versioned conformance transcript adapters | application root, light plugin, storage conformance | Admin/conformance boundary | Keep only named root operations; never expose storage handles, query families, or caller-owned batches. |

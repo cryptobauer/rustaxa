@@ -11,7 +11,6 @@ class RustDagSyncPacketHandler final : public ISyncPacketHandler {
  public:
   RustDagSyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                            std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                           std::shared_ptr<PbftSyncingState> pbft_syncing_state,
                            net::ConsensusQueryClient consensus_query,
                            network::ConsensusLiveStatusProvider consensus_status,
                            network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,

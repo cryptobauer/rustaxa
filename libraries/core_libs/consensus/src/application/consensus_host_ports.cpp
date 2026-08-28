@@ -265,21 +265,10 @@ rustaxa::HostTransportReport ConsensusTransportPort::consensusGossipPillarVote(
   }
 }
 
-rustaxa::HostTransportReport ConsensusTransportPort::consensusSetSyncPeriod(
-    const rustaxa::HostSetSyncPeriodRequest& request) const {
-  const auto network = impl_->network();
-  if (!network) {
-    return failedReport<rustaxa::HostTransportReport>(request.effect_id, "TRANSPORT_UNAVAILABLE");
-  }
-  network->setSyncStatePeriod(request.period);
-  return successfulTransportReport(request.effect_id);
-}
-
 rustaxa::HostTransportStatus ConsensusTransportPort::consensusTransportStatus() const {
   rustaxa::HostTransportStatus status{};
   if (const auto network = impl_->network()) {
     status.available = true;
-    status.pbft_syncing = network->pbft_syncing();
     status.packet_queue_over_limit = network->packetQueueOverLimit();
   }
   return status;

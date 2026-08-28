@@ -72,6 +72,11 @@ endif()
 file(GLOB_RECURSE NETWORK_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/network/*.hpp)
 file(GLOB_RECURSE NETWORK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/network/*.cpp)
 if(RUSTAXA_ENABLE)
+    # PBFT sync lifecycle is application-owned in Rust mode. The legacy shared
+    # state remains source-selected only for the untouched pure-C++ composition.
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/shared_states/pbft_syncing_state\\.cpp$")
+
     # Native packet admission owns decoding, verification, queue mutation, and
     # egress selection. Keep the untouched manager-based handlers only in the
     # pure-C++ reference composition.

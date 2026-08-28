@@ -1,11 +1,11 @@
 #include "network/tarcap/packets_handlers/rust/pbft_sync_packet_handler.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <stdexcept>
 
 #include "final_chain/final_chain.hpp"
 #include "network/consensus_query.hpp"
-#include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "transaction/transaction.hpp"
 
 namespace taraxa::network::tarcap {
@@ -33,17 +33,23 @@ std::vector<network::PbftSyncSlashingSubmitterFact> makeSlashingSubmitterFacts(
   return submitters;
 }
 
+uint64_t monotonicMilliseconds() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+constexpr uint8_t kPbftSyncStopCompleted = 1;
+constexpr uint8_t kPbftSyncStopTransportFailed = 4;
+
 }  // namespace
 
 RustPbftSyncPacketHandler::RustPbftSyncPacketHandler(
     const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
-    std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-    net::ConsensusQueryClient pbft_chain, network::ConsensusLiveStatusProvider consensus_status,
-    std::shared_ptr<final_chain::FinalChain> final_chain, network::ConsensusNetworkApiShared consensus_network_api,
-    const addr_t& node_addr, const std::string& logs_prefix)
-    : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
-                         std::move(pbft_chain), std::move(consensus_status), consensus_network_api, node_addr,
-                         logs_prefix + "PBFT_SYNC_PH"),
+    std::shared_ptr<TimePeriodPacketsStats> packets_stats, net::ConsensusQueryClient pbft_chain,
+    network::ConsensusLiveStatusProvider consensus_status, std::shared_ptr<final_chain::FinalChain> final_chain,
+    network::ConsensusNetworkApiShared consensus_network_api, const addr_t& node_addr, const std::string& logs_prefix)
+    : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_chain),
+                         std::move(consensus_status), consensus_network_api, node_addr, logs_prefix + "PBFT_SYNC_PH"),
       final_chain_(std::move(final_chain)),
       consensus_network_api_(std::move(consensus_network_api)),
       periodic_events_tp_(1, true) {}
@@ -52,17 +58,15 @@ RustPbftSyncPacketHandler::~RustPbftSyncPacketHandler() = default;
 
 void RustPbftSyncPacketHandler::process(const threadpool::PacketData& packet_data,
                                         const std::shared_ptr<TaraxaPeer>& peer) {
-  const auto syncing_peer = pbft_syncing_state_->syncingPeer();
-  if (!syncing_peer) {
-    LOG(log_wr_) << "PbftSyncPacket received from unexpected peer " << peer->getId().abridged()
-                 << " but there is no current syncing peer set";
+  const auto source_outcome =
+      consensus_network_api_->admitPbftSyncSource(peer->getId().asArray(), network::PbftSyncResponseSource::kActive);
+  if (!source_outcome.accepted) {
+    LOG(log_wr_) << "PbftSyncPacket received from unexpected peer " << peer->getId().abridged() << ": "
+                 << static_cast<std::string>(source_outcome.error_code);
     return;
   }
-  if (syncing_peer->getId() != peer->getId()) {
-    LOG(log_wr_) << "PbftSyncPacket received from unexpected peer " << peer->getId().abridged()
-                 << " current syncing peer " << syncing_peer->getId().abridged();
-    return;
-  }
+  const auto generation = source_outcome.generation;
+  const auto peer_id = peer->getId().asArray();
 
   const auto packet_rlp = packet_data.rlp_.data().toBytes();
   const auto ingress = consensus_network_api_->admitPbftSyncPacket(
@@ -89,11 +93,11 @@ void RustPbftSyncPacketHandler::process(const threadpool::PacketData& packet_dat
     return;
   }
   if (ingress.action == network::PbftSyncIngressAction::kSyncComplete) {
-    pbftSyncComplete();
+    pbftSyncComplete(generation, peer_id);
     return;
   }
   if (ingress.action == network::PbftSyncIngressAction::kStopSyncing) {
-    pbft_syncing_state_->setPbftSyncing(false);
+    stopPbftSync(generation, peer_id, kPbftSyncStopCompleted);
     return;
   }
   if (ingress.action == network::PbftSyncIngressAction::kDuplicate) {
@@ -104,24 +108,21 @@ void RustPbftSyncPacketHandler::process(const threadpool::PacketData& packet_dat
   }
 
   const auto pbft_sync_period = consensus_status_().syncing_period;
-  pbft_syncing_state_->setLastSyncPacketTime();
+  consensus_network_api_->recordPbftSyncActivity(monotonicMilliseconds(), generation, peer_id);
   if (ingress.current_cert_present) {
-    pbftSyncComplete();
+    pbftSyncComplete(generation, peer_id);
     return;
   }
 
   if (ingress.last_block) {
-    if (pbft_sync_period > ingress.block_period) {
-      pbft_syncing_state_->setPbftSyncing(false);
-      return;
-    }
-    if (pbft_syncing_state_->isPbftSyncing()) {
-      if (pbft_sync_period >
-          net::consensusPbftProgress(pbft_chain_).finalized_period + (10 * kConf.network.sync_level_size)) {
-        periodic_events_tp_.post(kDelayedPbftSyncDelayMs, [this] { delayedPbftSync(1); });
-      } else if (!syncPeerPbft(pbft_sync_period + 1)) {
-        pbft_syncing_state_->setPbftSyncing(false);
-      }
+    const auto outcome = consensus_network_api_->planPbftSyncLastBlock(
+        monotonicMilliseconds(), generation, peer_id, pbft_sync_period,
+        net::consensusPbftProgress(pbft_chain_).finalized_period, ingress.block_period, kConf.network.sync_level_size);
+    if (outcome.retry) {
+      periodic_events_tp_.post(kDelayedPbftSyncDelayMs,
+                               [this, generation, peer_id] { delayedPbftSync(1, generation, peer_id); });
+    } else if (outcome.request_next && !syncPeerPbft(pbft_sync_period + 1)) {
+      stopPbftSync(generation, peer_id, kPbftSyncStopTransportFailed);
     }
   }
 }
@@ -137,35 +138,45 @@ bool RustPbftSyncPacketHandler::executeSlashingTransaction(const network::PbftSy
   return consensus_network_api_->executePbftSyncSlashingTransaction(effect, kConf);
 }
 
-void RustPbftSyncPacketHandler::pbftSyncComplete() {
-  if (consensus_status_().sync_queue_size != 0) {
-    periodic_events_tp_.post(kDelayedPbftSyncDelayMs, [this] { pbftSyncComplete(); });
+void RustPbftSyncPacketHandler::stopPbftSync(uint64_t generation, const std::array<uint8_t, 64>& peer_id,
+                                             uint8_t reason) const {
+  consensus_network_api_->stopPbftSync(generation, peer_id, reason);
+}
+
+void RustPbftSyncPacketHandler::pbftSyncComplete(uint64_t generation, std::array<uint8_t, 64> peer_id) {
+  const auto outcome = consensus_network_api_->completePbftSync(monotonicMilliseconds(), generation, peer_id,
+                                                                consensus_status_().sync_queue_size);
+  if (outcome.retry) {
+    periodic_events_tp_.post(kDelayedPbftSyncDelayMs,
+                             [this, generation, peer_id] { pbftSyncComplete(generation, peer_id); });
     return;
   }
-  pbft_syncing_state_->setPbftSyncing(false);
-  startSyncingPbft();
-  if (!pbft_syncing_state_->isPbftSyncing()) {
+  if (outcome.restart_sync) {
+    startSyncingPbft();
+  }
+  if (outcome.request_pending_dag_if_idle && !consensus_network_api_->pbftSyncStatus(monotonicMilliseconds()).active) {
     requestPendingDagBlocks();
   }
 }
 
-void RustPbftSyncPacketHandler::delayedPbftSync(uint32_t counter) {
-  const uint32_t max_delayed_pbft_sync_count = 60000 / kDelayedPbftSyncDelayMs;
+void RustPbftSyncPacketHandler::delayedPbftSync(uint32_t counter, uint64_t generation,
+                                                std::array<uint8_t, 64> peer_id) {
   const auto pbft_sync_period = consensus_status_().syncing_period;
-  if (counter > max_delayed_pbft_sync_count) {
+  const auto outcome =
+      consensus_network_api_->planDelayedPbftSync(monotonicMilliseconds(), generation, peer_id, pbft_sync_period,
+                                                  net::consensusPbftProgress(pbft_chain_).finalized_period,
+                                                  kConf.network.sync_level_size, counter, kDelayedPbftSyncDelayMs);
+  if (outcome.stopped) {
     LOG(log_er_) << "Pbft blocks stuck in queue, no new block processed in 60 seconds " << pbft_sync_period << " "
                  << net::consensusPbftProgress(pbft_chain_).finalized_period;
-    pbft_syncing_state_->setPbftSyncing(false);
     return;
   }
-  if (!pbft_syncing_state_->isPbftSyncing()) {
-    return;
-  }
-  if (pbft_sync_period >
-      net::consensusPbftProgress(pbft_chain_).finalized_period + (10 * kConf.network.sync_level_size)) {
-    periodic_events_tp_.post(kDelayedPbftSyncDelayMs, [this, counter] { delayedPbftSync(counter + 1); });
-  } else if (!syncPeerPbft(pbft_sync_period + 1)) {
-    pbft_syncing_state_->setPbftSyncing(false);
+  if (outcome.retry) {
+    periodic_events_tp_.post(kDelayedPbftSyncDelayMs, [this, counter, generation, peer_id] {
+      delayedPbftSync(counter + 1, generation, peer_id);
+    });
+  } else if (outcome.request_next && !syncPeerPbft(pbft_sync_period + 1)) {
+    stopPbftSync(generation, peer_id, kPbftSyncStopTransportFailed);
   }
 }
 

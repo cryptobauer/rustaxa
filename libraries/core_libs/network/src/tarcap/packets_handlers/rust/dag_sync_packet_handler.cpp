@@ -21,14 +21,13 @@ dev::p2p::NodeID toNodeId(const std::array<uint8_t, 64>& peer_id) {
 
 RustDagSyncPacketHandler::RustDagSyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                                    std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                                                   std::shared_ptr<PbftSyncingState> pbft_syncing_state,
                                                    net::ConsensusQueryClient consensus_query,
                                                    network::ConsensusLiveStatusProvider consensus_status,
                                                    network::ConsensusNetworkApiShared consensus_network_api,
                                                    TarcapVersion transport_lane, const addr_t& node_addr,
                                                    const std::string& logs_prefix)
-    : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
-                         std::move(consensus_query), std::move(consensus_status), consensus_network_api, node_addr,
+    : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(consensus_query),
+                         std::move(consensus_status), consensus_network_api, node_addr,
                          logs_prefix + "DAG_SYNC_PH"),
       consensus_network_api_(std::move(consensus_network_api)),
       transport_lane_(transport_lane) {}

@@ -1,5 +1,7 @@
 #include "network/tarcap/packets_handlers/interface/sync_packet_handler.hpp"
 
+#include <chrono>
+
 #include "config/version.hpp"
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 #include "network/tarcap/packets/latest/status_packet.hpp"
@@ -11,13 +13,21 @@ namespace {
 
 constexpr uint8_t kNetworkStatusPlanStatusNoEligiblePeer = 2;
 constexpr uint8_t kNetworkStatusPlanStatusSyncNotNeeded = 3;
+constexpr uint8_t kNetworkPbftSyncStopReasonTransportFailed = 4;
+
+uint64_t monotonicMilliseconds() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 }  // namespace
 #endif
 
 ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                        std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifndef RUSTAXA_ENABLE
                                        std::shared_ptr<PbftSyncingState> pbft_syncing_state,
+#endif
                                        net::ConsensusQueryClient pbft_chain,
 #ifndef RUSTAXA_ENABLE
                                        std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
@@ -28,7 +38,10 @@ ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_p
                                        network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                        const addr_t& node_addr, const std::string& logs_prefix)
-    : ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
+    : ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats),
+#ifndef RUSTAXA_ENABLE
+                              std::move(pbft_syncing_state),
+#endif
                               std::move(pbft_chain),
 #ifndef RUSTAXA_ENABLE
                               std::move(pbft_mgr), std::move(dag_mgr), std::move(db),
@@ -40,19 +53,20 @@ ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_p
 }
 
 void ISyncPacketHandler::startSyncingPbft() {
+#ifndef RUSTAXA_ENABLE
   if (pbft_syncing_state_->isPbftSyncing()) {
     LOG(this->log_dg_) << "startSyncingPbft called but syncing_ already true";
     return;
   }
+#endif
 
 #ifdef RUSTAXA_ENABLE
-  // The selected request period and the syncing-state transition must use the
-  // same coherent application-root snapshot.
   const auto consensus_status = consensus_status_();
-  rustaxa::NetworkPbftSyncStartFacts facts{};
-  facts.local_pbft_syncing = false;
-  facts.local_pbft_synced_period = consensus_status.syncing_period;
-  facts.local_pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
+  rustaxa::NetworkPbftSyncStartRequest request{};
+  request.start = true;
+  request.now_ms = monotonicMilliseconds();
+  request.local_pbft_synced_period = consensus_status.syncing_period;
+  request.local_pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
   for (const auto& peer_entry : peers_state_->getAllPeers()) {
     rustaxa::NetworkPbftSyncPeerCandidate candidate{};
     candidate.peer_id = peer_entry.first.asArray();
@@ -60,54 +74,52 @@ void ISyncPacketHandler::startSyncingPbft() {
     candidate.dag_level = peer_entry.second->dag_level_.load();
     candidate.is_light_node = peer_entry.second->peer_light_node.load();
     candidate.light_node_history = peer_entry.second->peer_light_node_history.load();
-    facts.candidates.push_back(candidate);
+    request.candidates.push_back(candidate);
   }
 
-  const auto sync_start_plan = rust_consensus_network_api_->api().consensus_network_plan_pbft_sync_start(facts);
-  if (!sync_start_plan.start_sync) {
-    if (sync_start_plan.status == kNetworkStatusPlanStatusNoEligiblePeer) {
+  const auto outcome = rust_consensus_network_api_->api().consensus_network_begin_pbft_sync(request);
+  if (!outcome.started) {
+    if (outcome.status == kNetworkStatusPlanStatusNoEligiblePeer) {
       LOG(this->log_nf_) << "Restarting syncing PBFT not possible since no connected peers";
-    } else if (sync_start_plan.status == kNetworkStatusPlanStatusSyncNotNeeded) {
+    } else if (outcome.status == kNetworkStatusPlanStatusSyncNotNeeded) {
       LOG(this->log_nf_) << "Restarting syncing PBFT not needed since our pbft chain size: "
-                         << facts.local_pbft_synced_period << "(" << facts.local_pbft_chain_size << ")"
-                         << " is greater or equal than max node pbft chain size:"
-                         << sync_start_plan.peer_pbft_chain_size;
+                         << request.local_pbft_synced_period << "(" << request.local_pbft_chain_size << ")"
+                         << " is greater or equal than max node pbft chain size:" << outcome.peer_pbft_chain_size;
     } else {
-      LOG(this->log_dg_) << "startSyncingPbft skipped with status " << static_cast<uint32_t>(sync_start_plan.status)
-                         << ", error " << static_cast<std::string>(sync_start_plan.error_code);
+      LOG(this->log_dg_) << "startSyncingPbft skipped with status " << static_cast<uint32_t>(outcome.status)
+                         << ", error " << static_cast<std::string>(outcome.error_code);
     }
     return;
   }
 
   const auto selected_peer =
-      peers_state_->getPeer(dev::p2p::NodeID(sync_start_plan.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer));
+      peers_state_->getPeer(dev::p2p::NodeID(outcome.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer));
   if (!selected_peer) {
     LOG(this->log_nf_) << "Restarting syncing PBFT not possible since selected peer is no longer connected";
+    rust_consensus_network_api_->stopPbftSync(outcome.generation, outcome.peer_id,
+                                              kNetworkPbftSyncStopReasonTransportFailed);
     return;
   }
 
-  const auto synced_period = consensus_status.syncing_period;
-  if (!pbft_syncing_state_->setPbftSyncing(true, synced_period, selected_peer)) {
-    LOG(this->log_dg_) << "startSyncingPbft called but syncing_ already true";
-    return;
+  // PBFT sync invalidates the transport peer's prior DAG-complete observation.
+  // This is peer bookkeeping only; native state owns the subsequent DAG-sync decision.
+  if (selected_peer->dagSyncingAllowed()) {
+    selected_peer->peer_dag_synced_ = false;
   }
 
   LOG(this->log_si_) << "Restarting syncing PBFT from peer " << selected_peer->getId().abridged()
                      << ", peer PBFT chain size " << selected_peer->pbft_chain_size_.load()
-                     << ", own PBFT chain synced at period " << synced_period;
+                     << ", own PBFT chain synced at period " << consensus_status.syncing_period;
 
-  if (sync_start_plan.request_period > selected_peer->pbft_chain_size_) {
-    pbft_syncing_state_->setPbftSyncing(false);
+  if (outcome.request_period > selected_peer->pbft_chain_size_) {
     LOG(this->log_wr_) << "Unable to start PBFT sync from peer " << selected_peer->getId().abridged()
                        << ", peer chain size " << selected_peer->pbft_chain_size_.load() << ", requested period "
-                       << sync_start_plan.request_period;
+                       << outcome.request_period;
+  } else if (syncPeerPbft(outcome.request_period)) {
     return;
   }
-
-  if (!syncPeerPbft(sync_start_plan.request_period)) {
-    pbft_syncing_state_->setPbftSyncing(false);
-    return;
-  }
+  rust_consensus_network_api_->stopPbftSync(outcome.generation, outcome.peer_id,
+                                            kNetworkPbftSyncStopReasonTransportFailed);
   return;
 #else
 
@@ -154,7 +166,17 @@ void ISyncPacketHandler::startSyncingPbft() {
 }
 
 bool ISyncPacketHandler::syncPeerPbft(PbftPeriod request_period) {
+#ifdef RUSTAXA_ENABLE
+  const auto sync = rust_consensus_network_api_->pbftSyncStatus(monotonicMilliseconds());
+  if (!sync.active || !sync.has_peer) {
+    LOG(this->log_er_) << "Unable to send GetPbftSyncPacket. No syncing peer set.";
+    return false;
+  }
+  const auto syncing_peer =
+      peers_state_->getPeer(dev::p2p::NodeID(sync.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer));
+#else
   const auto syncing_peer = pbft_syncing_state_->syncingPeer();
+#endif
   if (!syncing_peer) {
     LOG(this->log_er_) << "Unable to send GetPbftSyncPacket. No syncing peer set.";
     return false;
@@ -177,6 +199,18 @@ void ISyncPacketHandler::sendStatusToPeers() {
     LOG(log_er_) << "Unavailable host during checkLiveness";
     return;
   }
+
+#ifdef RUSTAXA_ENABLE
+  const auto now_ms = monotonicMilliseconds();
+  const auto sync = rust_consensus_network_api_->pbftSyncStatus(now_ms);
+  if (sync.active) {
+    const auto outcome = rust_consensus_network_api_->tickPbftSync(now_ms, sync.generation);
+    if (outcome.restart_sync) {
+      LOG(log_nf_) << "Restart PBFT/DAG syncing after native inactivity timeout.";
+      startSyncingPbft();
+    }
+  }
+#endif
 
   for (auto const& peer : peers_state_->getAllPeers()) {
     sendStatus(peer.first, false);
@@ -206,41 +240,38 @@ bool ISyncPacketHandler::sendStatus(const dev::p2p::NodeID& node_id, bool initia
 #endif
 
 #ifdef RUSTAXA_ENABLE
-  rustaxa::NetworkStatusEgressFacts facts{};
-  facts.initial = initial;
-  facts.local_chain_id = kConf.genesis.chain_id;
-  facts.genesis_hash = kGenesisHash.asArray();
-  facts.node_major_version = TARAXA_MAJOR_VERSION;
-  facts.node_minor_version = TARAXA_MINOR_VERSION;
-  facts.node_patch_version = TARAXA_PATCH_VERSION;
-  facts.is_light_node = kConf.is_light_node;
-  facts.light_node_history = kConf.light_node_history;
-  facts.local_pbft_chain_size = pbft_chain_size;
-  facts.local_pbft_round = pbft_round;
-  facts.local_dag_level = dag_max_level;
-  facts.pbft_syncing = pbft_syncing_state_->isPbftSyncing();
-  facts.deep_pbft_syncing = pbft_syncing_state_->isDeepPbftSyncing();
-
-  const auto status_plan = rust_consensus_network_api_->api().consensus_network_plan_status_egress(facts);
-  if (status_plan.include_initial_data) {
+  rustaxa::NetworkStatusEgressRequest request{};
+  request.initial = initial;
+  request.local_chain_id = kConf.genesis.chain_id;
+  request.genesis_hash = kGenesisHash.asArray();
+  request.node_major_version = TARAXA_MAJOR_VERSION;
+  request.node_minor_version = TARAXA_MINOR_VERSION;
+  request.node_patch_version = TARAXA_PATCH_VERSION;
+  request.is_light_node = kConf.is_light_node;
+  request.light_node_history = kConf.light_node_history;
+  request.local_pbft_chain_size = pbft_chain_size;
+  request.local_pbft_round = pbft_round;
+  request.local_dag_level = dag_max_level;
+  const auto outcome = rust_consensus_network_api_->api().consensus_network_status_egress(request);
+  if (outcome.include_initial_data) {
     success = sealAndSend(
         node_id, SubprotocolPacketType::kStatusPacket,
         encodePacketRlp(StatusPacket(
-            status_plan.peer_pbft_chain_size, status_plan.peer_pbft_round, status_plan.peer_dag_level,
-            status_plan.peer_syncing,
-            StatusPacket::InitialData{
-                status_plan.chain_id, blk_hash_t(status_plan.genesis_hash.data(), blk_hash_t::ConstructFromPointer),
-                status_plan.node_major_version, status_plan.node_minor_version, status_plan.node_patch_version,
-                status_plan.is_light_node, status_plan.light_node_history})));
+            outcome.peer_pbft_chain_size, outcome.peer_pbft_round, outcome.peer_dag_level, outcome.peer_syncing,
+            StatusPacket::InitialData{outcome.chain_id,
+                                      blk_hash_t(outcome.genesis_hash.data(), blk_hash_t::ConstructFromPointer),
+                                      outcome.node_major_version, outcome.node_minor_version,
+                                      outcome.node_patch_version, outcome.is_light_node, outcome.light_node_history})));
   } else {
     success = sealAndSend(node_id, SubprotocolPacketType::kStatusPacket,
-                          encodePacketRlp(StatusPacket(status_plan.peer_pbft_chain_size, status_plan.peer_pbft_round,
-                                                       status_plan.peer_dag_level, status_plan.peer_syncing)));
+                          encodePacketRlp(StatusPacket(outcome.peer_pbft_chain_size, outcome.peer_pbft_round,
+                                                       outcome.peer_dag_level, outcome.peer_syncing)));
   }
 
   return success;
 #endif
 
+#ifndef RUSTAXA_ENABLE
   if (initial) {
     success = sealAndSend(
         node_id, SubprotocolPacketType::kStatusPacket,
@@ -255,6 +286,7 @@ bool ISyncPacketHandler::sendStatus(const dev::p2p::NodeID& node_id, bool initia
   }
 
   return success;
+#endif
 }
 
 }  // namespace taraxa::network::tarcap

@@ -11,6 +11,7 @@
 #include "consensus/consensus_application.hpp"
 #include "consensus/consensus_host_ports.hpp"
 #include "final_chain/final_chain.hpp"
+#include "network/consensus_query.hpp"
 #include "rustaxa-bridge/application_host_ffi.rs.h"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/transaction.hpp"
@@ -47,6 +48,14 @@ constexpr uint8_t kPbftSyncIngressStop = 4;
 constexpr uint8_t kPbftSyncIngressMalicious = 5;
 constexpr uint8_t kPbftSyncIngressQueueRejected = 6;
 constexpr uint8_t kPbftSyncIngressAwaitingSlashing = 7;
+constexpr uint8_t kPbftSyncCommandAdmitSource = 0;
+constexpr uint8_t kPbftSyncCommandRecordActivity = 1;
+constexpr uint8_t kPbftSyncCommandStop = 2;
+constexpr uint8_t kPbftSyncCommandDisconnect = 3;
+constexpr uint8_t kPbftSyncCommandTick = 4;
+constexpr uint8_t kPbftSyncCommandComplete = 5;
+constexpr uint8_t kPbftSyncCommandPlanLastBlock = 6;
+constexpr uint8_t kPbftSyncCommandPlanDelayed = 7;
 
 SharedConsensusApplication requireConsensusApplication(SharedConsensusApplication consensus_application) {
   if (!consensus_application) {
@@ -75,6 +84,20 @@ std::array<uint8_t, 32> toBridgeU256(const Value& value) {
   return out;
 }
 
+PbftSyncLifecycleOutcome toPbftSyncLifecycleOutcome(const rustaxa::NetworkPbftSyncCommandOutcome& value) {
+  return {value.accepted,
+          value.active,
+          value.stopped,
+          value.expired,
+          value.restart_sync,
+          value.retry,
+          value.request_next,
+          value.request_pending_dag_if_idle,
+          value.deep_syncing,
+          value.generation,
+          static_cast<std::string>(value.error_code)};
+}
+
 }  // namespace
 
 class ConsensusNetworkApi::Impl final {
@@ -85,12 +108,14 @@ class ConsensusNetworkApi::Impl final {
         final_chain(std::move(final_chain)),
         external_evm(this->final_chain),
         api(rustaxa::create_consensus_network_api(this->consensus_application->service())),
+        query(this->consensus_application->queryClient()),
         observers(std::move(observers)) {}
 
   SharedConsensusApplication consensus_application;
   std::shared_ptr<final_chain::FinalChain> final_chain;
   ExternalEvmPort external_evm;
   rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
+  taraxa::net::ConsensusQueryClient query;
   ConsensusNetworkObservers observers;
   std::mutex lanes_mutex;
   std::unordered_map<uint32_t, std::unique_ptr<std::mutex>> lane_execution_mutexes;
@@ -106,6 +131,107 @@ ConsensusNetworkApi::~ConsensusNetworkApi() = default;
 rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() noexcept { return *impl_->api; }
 
 const rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() const noexcept { return *impl_->api; }
+
+PbftSyncStatus ConsensusNetworkApi::pbftSyncStatus(uint64_t now_ms) const {
+  const auto view = (*impl_->query)->consensus_query_pbft_sync_status(now_ms);
+  return {view.active,        view.deep_syncing,     view.generation,        view.has_peer,        view.peer_id,
+          view.has_last_peer, view.last_peer_id,     view.target_chain_size, view.current_period,  view.request_period,
+          view.started_at_ms, view.last_activity_ms, view.elapsed_ms,        view.inactive_for_ms, view.start_count,
+          view.stop_count,    view.inactivity_count, view.disconnect_count,  view.last_stop_reason};
+}
+
+PbftSyncLifecycleOutcome ConsensusNetworkApi::admitPbftSyncSource(const std::array<uint8_t, 64>& peer_id,
+                                                                  PbftSyncResponseSource source) const {
+  rustaxa::NetworkPbftSyncCommand command{};
+  command.kind = kPbftSyncCommandAdmitSource;
+  command.peer_id = peer_id;
+  command.source = static_cast<uint8_t>(source);
+  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+}
+
+PbftSyncLifecycleOutcome ConsensusNetworkApi::recordPbftSyncActivity(uint64_t now_ms, uint64_t generation,
+                                                                     const std::array<uint8_t, 64>& peer_id) const {
+  rustaxa::NetworkPbftSyncCommand command{};
+  command.kind = kPbftSyncCommandRecordActivity;
+  command.now_ms = now_ms;
+  command.generation = generation;
+  command.peer_id = peer_id;
+  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+}
+
+PbftSyncLifecycleOutcome ConsensusNetworkApi::stopPbftSync(uint64_t generation, const std::array<uint8_t, 64>& peer_id,
+                                                           uint8_t reason) const {
+  rustaxa::NetworkPbftSyncCommand command{};
+  command.kind = kPbftSyncCommandStop;
+  command.generation = generation;
+  command.peer_id = peer_id;
+  command.reason = reason;
+  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+}
+
+PbftSyncLifecycleOutcome ConsensusNetworkApi::handlePbftSyncDisconnect(uint64_t generation,
+                                                                       const std::array<uint8_t, 64>& peer_id) const {
+  rustaxa::NetworkPbftSyncCommand command{};
+  command.kind = kPbftSyncCommandDisconnect;
+  command.generation = generation;
+  command.peer_id = peer_id;
+  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+}
+
+PbftSyncLifecycleOutcome ConsensusNetworkApi::tickPbftSync(uint64_t now_ms, uint64_t generation) const {
+  rustaxa::NetworkPbftSyncCommand command{};
+  command.kind = kPbftSyncCommandTick;
+  command.now_ms = now_ms;
+  command.generation = generation;
+  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+}
+
+PbftSyncLifecycleOutcome ConsensusNetworkApi::completePbftSync(uint64_t now_ms, uint64_t generation,
+                                                               const std::array<uint8_t, 64>& peer_id,
+                                                               uint64_t sync_queue_size) const {
+  rustaxa::NetworkPbftSyncCommand command{};
+  command.kind = kPbftSyncCommandComplete;
+  command.now_ms = now_ms;
+  command.generation = generation;
+  command.peer_id = peer_id;
+  command.sync_queue_size = sync_queue_size;
+  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+}
+
+PbftSyncLifecycleOutcome ConsensusNetworkApi::planPbftSyncLastBlock(uint64_t now_ms, uint64_t generation,
+                                                                    const std::array<uint8_t, 64>& peer_id,
+                                                                    uint64_t syncing_period, uint64_t finalized_period,
+                                                                    uint64_t remote_period,
+                                                                    uint64_t sync_level_size) const {
+  rustaxa::NetworkPbftSyncCommand command{};
+  command.kind = kPbftSyncCommandPlanLastBlock;
+  command.now_ms = now_ms;
+  command.generation = generation;
+  command.peer_id = peer_id;
+  command.syncing_period = syncing_period;
+  command.finalized_period = finalized_period;
+  command.remote_period = remote_period;
+  command.sync_level_size = sync_level_size;
+  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+}
+
+PbftSyncLifecycleOutcome ConsensusNetworkApi::planDelayedPbftSync(uint64_t now_ms, uint64_t generation,
+                                                                  const std::array<uint8_t, 64>& peer_id,
+                                                                  uint64_t syncing_period, uint64_t finalized_period,
+                                                                  uint64_t sync_level_size, uint32_t retry_count,
+                                                                  uint64_t retry_delay_ms) const {
+  rustaxa::NetworkPbftSyncCommand command{};
+  command.kind = kPbftSyncCommandPlanDelayed;
+  command.now_ms = now_ms;
+  command.generation = generation;
+  command.peer_id = peer_id;
+  command.syncing_period = syncing_period;
+  command.finalized_period = finalized_period;
+  command.sync_level_size = sync_level_size;
+  command.retry_count = retry_count;
+  command.retry_delay_ms = retry_delay_ms;
+  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+}
 
 PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
     const std::vector<uint8_t>& packet_rlp, uint64_t source_payload_id, const std::array<uint8_t, 64>& source_peer_id,
@@ -623,23 +749,26 @@ DagSyncPacketOutcome ConsensusNetworkApi::ingestDagSyncPacket(
                               std::move(blocks)};
 }
 
-PendingDagBlocksOutcome ConsensusNetworkApi::requestPendingDagBlocks(uint32_t transport_lane,
-                                                                     uint64_t local_pbft_syncing_period,
-                                                                     const ConsensusPeerCandidate& explicit_peer,
-                                                                     const PendingDagBlocksExecutor& executor) {
+PendingDagBlocksOutcome ConsensusNetworkApi::requestPendingDagBlocks(
+    uint32_t transport_lane, uint64_t local_pbft_syncing_period, const std::vector<ConsensusPeerCandidate>& candidates,
+    const PendingDagBlocksExecutor& executor) {
   auto lane_lock = lockTransportLane(transport_lane);
   const auto source_payload_id = impl_->next_egress_payload_id.fetch_add(1, std::memory_order_relaxed);
   rustaxa::NetworkPendingDagBlocksRequestFacts facts{};
   facts.local_pbft_syncing_period = local_pbft_syncing_period;
-  facts.has_explicit_peer = true;
-  facts.explicit_peer.peer_id = explicit_peer.peer_id;
-  facts.explicit_peer.pbft_chain_size = explicit_peer.pbft_chain_size;
-  facts.explicit_peer.dag_level = explicit_peer.dag_level;
-  facts.explicit_peer.is_light_node = explicit_peer.is_light_node;
-  facts.explicit_peer.light_node_history = explicit_peer.light_node_history;
-  facts.explicit_peer.peer_dag_synced = explicit_peer.peer_dag_synced;
-  facts.explicit_peer.peer_dag_syncing = explicit_peer.peer_dag_syncing;
-  facts.explicit_peer.dag_sync_allowed = explicit_peer.dag_sync_allowed;
+  facts.candidates.reserve(candidates.size());
+  for (const auto& candidate : candidates) {
+    rustaxa::NetworkPbftSyncPeerCandidate bridge_candidate{};
+    bridge_candidate.peer_id = candidate.peer_id;
+    bridge_candidate.pbft_chain_size = candidate.pbft_chain_size;
+    bridge_candidate.dag_level = candidate.dag_level;
+    bridge_candidate.is_light_node = candidate.is_light_node;
+    bridge_candidate.light_node_history = candidate.light_node_history;
+    bridge_candidate.peer_dag_synced = candidate.peer_dag_synced;
+    bridge_candidate.peer_dag_syncing = candidate.peer_dag_syncing;
+    bridge_candidate.dag_sync_allowed = candidate.dag_sync_allowed;
+    facts.candidates.push_back(std::move(bridge_candidate));
+  }
   const auto decision = api().consensus_network_request_pending_dag_blocks(
       impl_->consensus_application->service(), transport_lane, source_payload_id, std::move(facts));
 
@@ -660,8 +789,9 @@ PendingDagBlocksOutcome ConsensusNetworkApi::requestPendingDagBlocks(uint32_t tr
       result.object_hash = effect.object_hash;
       result.status = kEffectResultOk;
       try {
-        if (effect.peer_id != explicit_peer.peer_id || effect.kind != kEffectSendPacket ||
-            effect.packet_kind != kPacketGetDagSync) {
+        if (effect.kind != kEffectSendPacket || effect.packet_kind != kPacketGetDagSync ||
+            std::none_of(candidates.begin(), candidates.end(),
+                         [&effect](const auto& candidate) { return candidate.peer_id == effect.peer_id; })) {
           throw std::runtime_error("Pending-DAG executor received a mismatched effect");
         }
         if (!executor.send_request(effect.peer_id,
@@ -933,9 +1063,10 @@ bool ConsensusNetworkApi::publishProposedBlockEffect(const std::vector<uint8_t>&
 
 std::optional<std::array<uint8_t, 64>> ConsensusNetworkApi::selectMaxChainPeer(
     uint64_t local_pbft_syncing_period, const std::vector<ConsensusPeerCandidate>& candidates) const {
-  rustaxa::NetworkPeerSelectionFacts facts{};
-  facts.local_pbft_syncing_period = local_pbft_syncing_period;
-  facts.candidates.reserve(candidates.size());
+  rustaxa::NetworkPbftSyncStartRequest request{};
+  request.start = false;
+  request.local_pbft_synced_period = local_pbft_syncing_period;
+  request.candidates.reserve(candidates.size());
   for (const auto& candidate : candidates) {
     rustaxa::NetworkPbftSyncPeerCandidate bridge_candidate{};
     bridge_candidate.peer_id = candidate.peer_id;
@@ -946,14 +1077,14 @@ std::optional<std::array<uint8_t, 64>> ConsensusNetworkApi::selectMaxChainPeer(
     bridge_candidate.peer_dag_synced = candidate.peer_dag_synced;
     bridge_candidate.peer_dag_syncing = candidate.peer_dag_syncing;
     bridge_candidate.dag_sync_allowed = candidate.dag_sync_allowed;
-    facts.candidates.push_back(std::move(bridge_candidate));
+    request.candidates.push_back(std::move(bridge_candidate));
   }
 
-  const auto plan = api().consensus_network_plan_max_chain_peer_selection(facts);
-  if (!plan.has_peer) {
+  const auto outcome = api().consensus_network_begin_pbft_sync(request);
+  if (!outcome.has_peer) {
     return std::nullopt;
   }
-  return plan.peer_id;
+  return outcome.peer_id;
 }
 
 }  // namespace taraxa::network

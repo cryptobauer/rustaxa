@@ -11,8 +11,6 @@ class FinalChain;
 
 namespace taraxa::network::tarcap {
 
-class PbftSyncingState;
-
 /**
  * Rust-mode PbftBlocksBundle transport adapter.
  *
@@ -25,8 +23,7 @@ class RustPbftBlocksBundlePacketHandler final : public PacketHandler {
   RustPbftBlocksBundlePacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                     std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                     network::ConsensusNetworkApiShared consensus_network_api,
-                                    std::shared_ptr<final_chain::FinalChain> final_chain,
-                                    std::shared_ptr<PbftSyncingState> syncing_state, const addr_t& node_addr,
+                                    std::shared_ptr<final_chain::FinalChain> final_chain, const addr_t& node_addr,
                                     const std::string& logs_prefix = "");
   ~RustPbftBlocksBundlePacketHandler() override;
 
@@ -38,7 +35,6 @@ class RustPbftBlocksBundlePacketHandler final : public PacketHandler {
  private:
   network::ConsensusNetworkApiShared consensus_network_api_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
-  std::shared_ptr<PbftSyncingState> pbft_syncing_state_;
 };
 
 }  // namespace taraxa::network::tarcap

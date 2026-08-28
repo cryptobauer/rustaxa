@@ -345,7 +345,7 @@ TEST_F(TarcapTpTest, block_free_packets) {
   // Creates threadpool
   // Note: make num of threads >= num of packets to check if they are processed concurrently without blocks, otherwise
   //       some blocks would be blocked for processing due to max threads limit
-  threadpool::PacketsThreadPool tp(18);
+  threadpool::PacketsThreadPool tp(18, [] { return true; });
   tp.setPacketsHandlers(TARAXA_NET_VERSION, packets_handler);
 
   // Pushes packets to the tp
@@ -491,7 +491,7 @@ TEST_F(TarcapTpTest, hard_blocking_deps) {
   packets_handler->registerHandler<DummyPbftSyncPacketHandler>(init_data, "PBFT_SYNC_PH", 20);
 
   // Creates threadpool
-  threadpool::PacketsThreadPool tp(10);
+  threadpool::PacketsThreadPool tp(10, [] { return true; });
   tp.setPacketsHandlers(TARAXA_NET_VERSION, packets_handler);
 
   // Pushes packets to the tp
@@ -613,7 +613,7 @@ TEST_F(TarcapTpTest, peer_order_blocking_deps) {
   packets_handler->registerHandler<DummyDagSyncPacketHandler>(init_data, "SYNC_TEST_PH", 40);
 
   // Creates threadpool
-  threadpool::PacketsThreadPool tp(10);
+  threadpool::PacketsThreadPool tp(10, [] { return true; });
   tp.setPacketsHandlers(TARAXA_NET_VERSION, packets_handler);
 
   // Pushes packets to the tp
@@ -699,7 +699,7 @@ TEST_F(TarcapTpTest, same_dag_blks_ordering) {
   packets_handler->registerHandler<DummyDagBlockPacketHandler>(init_data, "DAG_BLOCK_PH", 20);
 
   // Creates threadpool
-  threadpool::PacketsThreadPool tp(10);
+  threadpool::PacketsThreadPool tp(10, [] { return true; });
   tp.setPacketsHandlers(TARAXA_NET_VERSION, packets_handler);
 
   auto dag_block = createDagBlockRlp(0);
@@ -764,7 +764,7 @@ TEST_F(TarcapTpTest, dag_blks_lvls_ordering) {
   packets_handler->registerHandler<DummyDagBlockPacketHandler>(init_data, "DAG_BLOCK_PH", 20);
 
   // Creates threadpool
-  threadpool::PacketsThreadPool tp(10);
+  threadpool::PacketsThreadPool tp(10, [] { return true; });
   tp.setPacketsHandlers(TARAXA_NET_VERSION, packets_handler);
 
   // Pushes packets to the tp
@@ -866,7 +866,7 @@ TEST_F(TarcapTpTest, threads_borrowing) {
 
   // Creates threadpool
   const size_t threads_num = 10;
-  threadpool::PacketsThreadPool tp(threads_num);
+  threadpool::PacketsThreadPool tp(threads_num, [] { return true; });
   tp.setPacketsHandlers(TARAXA_NET_VERSION, packets_handler);
 
   // Pushes packets to the tp
@@ -957,7 +957,7 @@ TEST_F(TarcapTpTest, low_priotity_queue_starvation) {
 
   // Creates threadpool
   size_t threads_num = 10;
-  threadpool::PacketsThreadPool tp(threads_num);
+  threadpool::PacketsThreadPool tp(threads_num, [] { return true; });
   tp.setPacketsHandlers(TARAXA_NET_VERSION, packets_handler);
 
   // Push 10x more packets for each prioriy queue than max tp capacity to make sure that tp wont be able to process all
