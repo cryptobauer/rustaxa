@@ -1,6 +1,5 @@
 #include "network/tarcap/packets_handlers/rust/consensus_transport_packet_handler.hpp"
 
-#include <algorithm>
 #include <stdexcept>
 
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
@@ -12,17 +11,18 @@ namespace {
 
 constexpr uint32_t kPendingDagTransportLane = 0;
 constexpr uint8_t kEffectSendPacket = 0;
-constexpr uint8_t kEffectGossipPacket = 1;
 constexpr uint8_t kEffectMarkPeerKnown = 2;
 constexpr uint8_t kEffectRequestSync = 3;
 constexpr uint8_t kEffectReportPeer = 4;
 constexpr uint8_t kEffectDisconnectPeer = 5;
 constexpr uint8_t kObjectPbftVote = 0;
 constexpr uint8_t kObjectPbftBlock = 1;
+constexpr uint8_t kObjectTransaction = 2;
+constexpr uint8_t kObjectDagBlock = 3;
 constexpr uint8_t kObjectPillarVote = 5;
 constexpr uint8_t kSyncPbftChain = 0;
 constexpr uint8_t kSyncPbftNextVotes = 1;
-constexpr uint32_t kPacketPbftVote = 1;
+constexpr uint32_t kPacketDagBlock = 5;
 
 network::ConsensusPeerCandidate toPeerCandidate(const std::shared_ptr<TaraxaPeer>& peer) {
   return {peer->getId().asArray(),
@@ -118,13 +118,16 @@ network::ConsensusTransportExecutor RustConsensusTransportPacketHandler::consens
         }
       } else if (effect.kind == kEffectMarkPeerKnown) {
         if (const auto peer = peers_state_->getPeer(peer_id); peer) {
-          const vote_hash_t hash(effect.object_hash.data(), vote_hash_t::ConstructFromPointer);
           if (effect.object_kind == kObjectPbftVote) {
-            peer->markPbftVoteAsKnown(hash);
+            peer->markPbftVoteAsKnown(vote_hash_t(effect.object_hash.data(), vote_hash_t::ConstructFromPointer));
           } else if (effect.object_kind == kObjectPbftBlock) {
             peer->markPbftBlockAsKnown(blk_hash_t(effect.object_hash.data(), blk_hash_t::ConstructFromPointer));
+          } else if (effect.object_kind == kObjectTransaction) {
+            peer->markTransactionAsKnown(trx_hash_t(effect.object_hash.data(), trx_hash_t::ConstructFromPointer));
+          } else if (effect.object_kind == kObjectDagBlock) {
+            peer->markDagBlockAsKnown(blk_hash_t(effect.object_hash.data(), blk_hash_t::ConstructFromPointer));
           } else if (effect.object_kind == kObjectPillarVote) {
-            peer->markPillarVoteAsKnown(hash);
+            peer->markPillarVoteAsKnown(vote_hash_t(effect.object_hash.data(), vote_hash_t::ConstructFromPointer));
           } else {
             throw std::runtime_error("Unsupported consensus known-object effect");
           }
@@ -135,64 +138,23 @@ network::ConsensusTransportExecutor RustConsensusTransportPacketHandler::consens
         peers_state_->set_peer_malicious(peer_id);
         LOG(log_wr_) << "Native consensus network reported peer " << peer_id << ", reason "
                      << static_cast<uint32_t>(effect.reason_code);
-      } else if (effect.kind == kEffectSendPacket || effect.kind == kEffectGossipPacket) {
-        auto wrap_payload = [&effect, this](bool include_related_payload) {
-          dev::RLPStream packet;
-          if (effect.packet_kind == kPacketPbftVote) {
-            packet.appendList(2);
-            packet.appendRaw(dev::bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
-            if (!include_related_payload || effect.related_payload_bytes.empty()) {
-              packet.append(uint64_t{0});
-            } else {
-              packet.appendList(2);
-              packet.appendRaw(dev::bytes(effect.related_payload_bytes.begin(), effect.related_payload_bytes.end()));
-              packet.append(pbft_chain_ ? net::consensusPbftProgress(pbft_chain_).finalized_period : uint64_t{0});
-            }
-          } else {
-            packet.appendList(1);
-            packet.appendRaw(dev::bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
-          }
-          return packet.invalidate();
-        };
+      } else if (effect.kind == kEffectSendPacket) {
         const auto packet_type = static_cast<SubprotocolPacketType>(effect.packet_kind);
-        if (effect.kind == kEffectSendPacket) {
-          const auto packet_rlp = wrap_payload(true);
-          if (!sealAndSend(peer_id, packet_type, dev::bytes(packet_rlp.begin(), packet_rlp.end()))) {
-            throw std::runtime_error("Consensus packet send failed");
+        const auto send = [&] {
+          return sealAndSend(peer_id, packet_type,
+                             dev::bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
+        };
+        if (effect.packet_kind == kPacketDagBlock) {
+          const auto peer = peers_state_->getPeer(peer_id);
+          if (!peer) {
+            throw std::runtime_error("Consensus packet target peer disconnected");
           }
-        } else {
-          const auto related_block_hash =
-              effect.related_payload_bytes.empty()
-                  ? blk_hash_t{}
-                  : dev::sha3(dev::bytes(effect.related_payload_bytes.begin(), effect.related_payload_bytes.end()));
-          for (const auto& entry : peers_state_->getAllPeers()) {
-            const auto excluded = std::ranges::any_of(effect.excluded_peers,
-                                                      [&entry](const auto& id) { return id == entry.first.asArray(); });
-            if (excluded || entry.second->syncing_) {
-              continue;
-            }
-            const vote_hash_t object_hash(effect.object_hash.data(), vote_hash_t::ConstructFromPointer);
-            if ((effect.object_kind == kObjectPbftVote && entry.second->isPbftVoteKnown(object_hash)) ||
-                (effect.object_kind == kObjectPillarVote && entry.second->isPillarVoteKnown(object_hash))) {
-              continue;
-            }
-            const auto include_related_block = effect.packet_kind == kPacketPbftVote &&
-                                               !effect.related_payload_bytes.empty() &&
-                                               !entry.second->isPbftBlockKnown(related_block_hash);
-            const auto packet_rlp = wrap_payload(include_related_block);
-            if (!sealAndSend(entry.first, packet_type, dev::bytes(packet_rlp.begin(), packet_rlp.end()))) {
-              LOG(log_wr_) << "Consensus packet gossip skipped disconnected peer " << entry.first;
-              continue;
-            }
-            if (effect.object_kind == kObjectPbftVote) {
-              entry.second->markPbftVoteAsKnown(object_hash);
-              if (include_related_block) {
-                entry.second->markPbftBlockAsKnown(related_block_hash);
-              }
-            } else if (effect.object_kind == kObjectPillarVote) {
-              entry.second->markPillarVoteAsKnown(object_hash);
-            }
+          std::unique_lock lock(peer->mutex_for_sending_dag_blocks_);
+          if (!send()) {
+            throw std::runtime_error("Consensus DAG packet send failed");
           }
+        } else if (!send()) {
+          throw std::runtime_error("Consensus packet send failed");
         }
       } else {
         throw std::runtime_error("Unsupported native consensus transport effect");
@@ -204,9 +166,50 @@ network::ConsensusTransportExecutor RustConsensusTransportPacketHandler::consens
   }};
 }
 
+std::vector<network::ConsensusEgressPeerSnapshot> RustConsensusTransportPacketHandler::consensusEgressPeerSnapshots(
+    const std::vector<network::ConsensusEgressProbe>& probes) const {
+  const auto peers = peers_state_->getAllPeers();
+  std::vector<network::ConsensusEgressPeerSnapshot> snapshots;
+  snapshots.reserve(peers.size());
+  for (const auto& [peer_id, peer] : peers) {
+    network::ConsensusEgressPeerSnapshot snapshot{};
+    snapshot.peer_id = peer_id.asArray();
+    snapshot.syncing = peer->syncing_.load();
+    snapshot.known_probe_ids.reserve(probes.size());
+    for (const auto& probe : probes) {
+      bool known = false;
+      if (probe.object_kind == kObjectPbftVote) {
+        known = peer->isPbftVoteKnown(vote_hash_t(probe.object_hash.data(), vote_hash_t::ConstructFromPointer));
+      } else if (probe.object_kind == kObjectPbftBlock) {
+        known = peer->isPbftBlockKnown(blk_hash_t(probe.object_hash.data(), blk_hash_t::ConstructFromPointer));
+      } else if (probe.object_kind == kObjectTransaction) {
+        known = peer->isTransactionKnown(trx_hash_t(probe.object_hash.data(), trx_hash_t::ConstructFromPointer));
+      } else if (probe.object_kind == kObjectDagBlock) {
+        known = peer->isDagBlockKnown(blk_hash_t(probe.object_hash.data(), blk_hash_t::ConstructFromPointer));
+      } else if (probe.object_kind == kObjectPillarVote) {
+        known = peer->isPillarVoteKnown(vote_hash_t(probe.object_hash.data(), vote_hash_t::ConstructFromPointer));
+      } else {
+        throw std::runtime_error("Native consensus egress requested an unsupported peer-known probe");
+      }
+      if (known) {
+        snapshot.known_probe_ids.push_back(probe.probe_id);
+      }
+    }
+    snapshots.push_back(std::move(snapshot));
+  }
+  return snapshots;
+}
+
+network::ConsensusPacketOutcome RustConsensusTransportPacketHandler::routeConsensusEgress(
+    network::ConsensusEgressRequest request) {
+  return rust_consensus_network_api_->routeConsensusEgress(
+      request, [this](const auto& probes) { return consensusEgressPeerSnapshots(probes); },
+      consensusTransportExecutor());
+}
+
 network::ConsensusPacketRequest RustConsensusTransportPacketHandler::consensusPacketRequest(
     const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer, uint32_t transport_lane,
-    bool validate_max_round_step, bool allow_gossip) const {
+    bool validate_max_round_step) const {
   const auto status = consensus_status_ ? consensus_status_() : network::ConsensusLiveStatus{};
   return {transport_lane,
           peer->getId().asArray(),
@@ -221,8 +224,7 @@ network::ConsensusPacketRequest RustConsensusTransportPacketHandler::consensusPa
           kConf.network.ddos_protection.vote_accepting_steps,
           validate_max_round_step,
           true,
-          true,
-          allow_gossip};
+          true};
 }
 
 bool RustConsensusTransportPacketHandler::tryReservePbftSyncRequest() {

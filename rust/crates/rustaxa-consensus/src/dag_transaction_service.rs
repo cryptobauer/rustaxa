@@ -977,6 +977,47 @@ impl DagTransactionService {
             .context("CONSENSUS_STARTUP_ANCHOR_DAG_BLOCK_LOAD")
     }
 
+    /// Resolves the exact non-finalized transaction payloads referenced by one canonical DAG block.
+    ///
+    /// The supplied block bytes must match native storage. Transactions retain block order; a missing
+    /// non-finalized payload aborts the operation so transport never publishes a partial DAG packet.
+    pub(crate) fn dag_block_egress_transactions(
+        &self,
+        hash: H256,
+        block_rlp: &[u8],
+    ) -> Result<Vec<TransactionGossipEntry>> {
+        let canonical = self
+            .canonical_dag_block_rlp(hash)?
+            .ok_or_else(|| anyhow::anyhow!("NETWORK_EGRESS_DAG_BLOCK_MISSING"))?;
+        ensure!(
+            canonical == block_rlp,
+            "NETWORK_EGRESS_DAG_BLOCK_IDENTITY_MISMATCH"
+        );
+        let hashes = dag_block_transaction_hashes(block_rlp)?;
+        let requests = hashes
+            .iter()
+            .enumerate()
+            .map(
+                |(input_index, hash)| TransactionServiceTransactionViewRequest {
+                    input_index: input_index as u64,
+                    hash: hash.to_fixed_bytes(),
+                },
+            )
+            .collect();
+        let views = self.transaction.non_finalized_transaction_views(requests)?;
+        hashes
+            .into_iter()
+            .zip(views)
+            .map(|(hash, view)| {
+                ensure!(view.found, "NETWORK_EGRESS_DAG_TRANSACTION_MISSING");
+                Ok(TransactionGossipEntry {
+                    hash,
+                    transaction_rlp: view.tx_rlp,
+                })
+            })
+            .collect()
+    }
+
     fn pbft_candidate_order_and_storage(
         &self,
         period: u64,

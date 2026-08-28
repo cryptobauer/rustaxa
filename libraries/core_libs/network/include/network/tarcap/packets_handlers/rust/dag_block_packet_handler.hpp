@@ -16,10 +16,12 @@ class RustDagBlockPacketHandler final : public IDagBlockPacketHandler {
                             network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
                             const addr_t& node_addr, const std::string& logs_prefix = "");
 
-  void sendBlockWithTransactions(const std::shared_ptr<TaraxaPeer>& peer, const std::shared_ptr<DagBlock>& block,
-                                 SharedTransactions&& transactions) override;
-
   static constexpr SubprotocolPacketType kPacketType_ = SubprotocolPacketType::kDagBlockPacket;
+
+  /** Routes one canonical DAG block through native transaction lookup, packet construction, and exact-target egress. */
+  network::ConsensusPacketOutcome gossipCanonicalDagBlock(const std::vector<uint8_t>& block_rlp,
+                                                          const std::array<uint8_t, 32>& block_hash,
+                                                          uint64_t source_payload_id);
 
  private:
   void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;

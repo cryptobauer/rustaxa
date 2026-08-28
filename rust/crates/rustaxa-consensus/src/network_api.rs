@@ -122,8 +122,6 @@ pub const NETWORK_EFFECT_RESULT_STATUS_FAILED: u8 = 1;
 
 /// Network effect asks the executor to send a packet to one peer.
 pub const NETWORK_EFFECT_KIND_SEND_PACKET: u8 = 0;
-/// Network effect asks the executor to gossip a packet.
-pub const NETWORK_EFFECT_KIND_GOSSIP_PACKET: u8 = 1;
 /// Network effect asks the executor to mark an object known for a peer.
 pub const NETWORK_EFFECT_KIND_MARK_PEER_KNOWN: u8 = 2;
 /// Network effect asks the executor to request synchronization.
@@ -320,6 +318,59 @@ const MAX_PBFT_BLOCKS_PER_BUNDLE: usize = 10;
 const MAX_PBFT_BLOCK_EXTRA_DATA_BYTES: usize = 1024;
 const MAX_TRANSACTIONS_PER_PACKET: usize = 500;
 const MAX_TRANSACTION_HASHES_PER_PACKET: usize = 5000;
+const MAX_PENDING_EGRESS_OPERATIONS: usize = 256;
+const MAX_EGRESS_OBJECT_PROBES: usize = 5_500;
+const MAX_QUEUED_EGRESS_EFFECTS: usize = 65_536;
+
+/// Native egress family for one bounded prepare/snapshot/plan operation.
+pub const NETWORK_EGRESS_FAMILY_PBFT_VOTE: u8 = 0;
+pub const NETWORK_EGRESS_FAMILY_PBFT_VOTES_BUNDLE: u8 = 1;
+pub const NETWORK_EGRESS_FAMILY_PILLAR_VOTE: u8 = 2;
+pub const NETWORK_EGRESS_FAMILY_DAG_BLOCK: u8 = 3;
+pub const NETWORK_EGRESS_FAMILY_TRANSACTION_GOSSIP: u8 = 4;
+
+/// Canonical application egress input retained only until one snapshot is committed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkEgressPrepareRequest {
+    pub family: u8,
+    pub transport_lane: u32,
+    pub source_payload_id: u64,
+    pub source_peer_id: [u8; 64],
+    pub rebroadcast: bool,
+    pub object_hash: [u8; 32],
+    pub payload_bytes: Vec<u8>,
+    pub related_payload_bytes: Vec<u8>,
+}
+
+/// Exact object identity whose known state must be sampled by transport.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkEgressProbe {
+    pub probe_id: u32,
+    pub object_kind: u8,
+    pub object_hash: [u8; 32],
+}
+
+/// One-shot native preparation result. The token is invalid after plan/cancel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkEgressPreparation {
+    pub token: u64,
+    pub probes: Vec<NetworkEgressProbe>,
+}
+
+/// Immutable transport facts for one authenticated peer and exact native probes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkEgressPeerSnapshot {
+    pub peer_id: [u8; 64],
+    pub syncing: bool,
+    pub known_probe_ids: Vec<u32>,
+}
+
+/// Commit input for a previously prepared native egress operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkEgressPlanRequest {
+    pub token: u64,
+    pub peers: Vec<NetworkEgressPeerSnapshot>,
+}
 
 /// Transport and peer facts for one canonical transaction packet.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -347,19 +398,6 @@ pub struct NetworkGetDagSyncContext {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkTransactionGossipPeer {
-    pub peer_id: [u8; 64],
-    pub known_hashes: Vec<[u8; 32]>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkTransactionGossipRequest {
-    pub transport_lane: u32,
-    pub source_payload_id: u64,
-    pub peers: Vec<NetworkTransactionGossipPeer>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkDagBlockIngressContext {
     pub transport_lane: u32,
     pub peer_id: [u8; 64],
@@ -377,23 +415,44 @@ pub struct NetworkDagBlockIngressContext {
     pub local_pbft_syncing: bool,
 }
 
-/// Per-peer DAG gossip eligibility observed by the transport executor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkDagGossipPeer {
-    pub peer_id: [u8; 64],
-    pub syncing: bool,
-    pub known_block: bool,
+enum PendingNetworkEgressPayload {
+    PbftVote {
+        vote_rlp: Vec<u8>,
+        block_rlp: Vec<u8>,
+        vote_hash: [u8; 32],
+        block_hash: [u8; 32],
+        period: u64,
+        finalized_period: u64,
+    },
+    PbftVotesBundle {
+        votes: Vec<PbftVotePayloadRecord>,
+        period: u64,
+        round: u64,
+    },
+    PillarVote {
+        vote_rlp: Vec<u8>,
+        vote_hash: [u8; 32],
+        period: u64,
+    },
+    DagBlock {
+        block_rlp: Vec<u8>,
+        block_hash: [u8; 32],
+        transactions: Vec<crate::TransactionGossipEntry>,
+    },
+    TransactionGossip {
+        accounts: Vec<TransactionGossipAccount>,
+    },
 }
 
-/// Canonical DAG packet and peer facts for exact native fanout selection.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkDagGossipRequest {
-    pub transport_lane: u32,
-    pub source_payload_id: u64,
-    pub source_peer_id: [u8; 64],
-    pub block_hash: [u8; 32],
-    pub packet_rlp: Vec<u8>,
-    pub peers: Vec<NetworkDagGossipPeer>,
+struct PendingNetworkEgress {
+    transport_lane: u32,
+    source_payload_id: u64,
+    source_peer_id: [u8; 64],
+    rebroadcast: bool,
+    probes: Vec<NetworkEgressProbe>,
+    payload: PendingNetworkEgressPayload,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -431,10 +490,6 @@ pub struct NetworkEffect {
     pub packet_kind: u32,
     /// Packet payload bytes for send/gossip effects.
     pub payload_bytes: Vec<u8>,
-    /// Optional canonical companion payload required to execute the effect.
-    pub related_payload_bytes: Vec<u8>,
-    /// Peers excluded from gossip effects.
-    pub exclude_peers: Vec<[u8; 64]>,
     /// Optional object kind for known-peer effects.
     pub object_kind: u8,
     /// Optional object hash for known-peer effects.
@@ -525,8 +580,6 @@ pub struct NetworkPbftVoteIngressContext {
     pub source_payload_id: u64,
     /// Whether vote admission should be routed through Rust-owned effects.
     pub enqueue_admission: bool,
-    /// Whether accepted votes should be regossiped by Rust-owned follow-ups.
-    pub allow_gossip: bool,
     /// Canonical vote hash for admission and gossip effects.
     pub vote_hash: [u8; 32],
     /// Canonical serialized vote bytes for admission.
@@ -548,8 +601,6 @@ pub struct NetworkPillarVoteIngressContext {
     pub peer_id: [u8; 64],
     /// Optional network-owned source payload id for effect correlation.
     pub source_payload_id: u64,
-    /// Whether accepted votes should be regossiped by Rust-owned follow-ups.
-    pub allow_gossip: bool,
 }
 
 /// Canonical consensus-packet ingress plus the compact live policy snapshot.
@@ -575,7 +626,6 @@ pub struct NetworkConsensusPacketRequest {
     pub validate_max_round_step: bool,
     pub can_request_pbft_sync: bool,
     pub can_request_next_votes_sync: bool,
-    pub allow_gossip: bool,
 }
 
 /// Scalar request facts for PBFT next-vote bundle egress.
@@ -675,6 +725,8 @@ pub struct NetworkPbftVotePacketReport {
     pub has_peer_pbft_chain_size: bool,
     /// Peer chain size carried beside the optional proposed block.
     pub peer_pbft_chain_size: u64,
+    /// Canonical inner bundle containing only members selected for rebroadcast.
+    pub egress_payload_bytes: Vec<u8>,
 }
 
 /// Composed native result for one pillar vote arriving from tarcap.
@@ -715,8 +767,6 @@ struct PendingVoteAdmissionContext {
     pbft_block_period: u64,
     /// Retained packet payload id for effect correlation.
     source_payload_id: u64,
-    /// Whether accepted votes should be regossiped by Rust-owned follow-ups.
-    allow_gossip: bool,
     /// Bundle aggregation identity and member data, when this vote came from
     /// one all-or-nothing preflighted bundle.
     bundle: Option<PendingVoteBundleMember>,
@@ -726,16 +776,11 @@ struct PendingVoteAdmissionContext {
 struct PendingVoteBundleMember {
     bundle_id: u64,
     index: usize,
-    vote: PbftVotePayloadRecord,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingVoteBundle {
-    source_payload_id: u64,
-    transport_lane: u32,
-    peer_id: [u8; 64],
     completed: Vec<bool>,
-    accepted_votes: Vec<Option<PbftVotePayloadRecord>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -746,7 +791,6 @@ struct PendingPillarVoteAdmissionContext {
     vote_rlp: Vec<u8>,
     period: u64,
     source_payload_id: u64,
-    allow_gossip: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1943,6 +1987,7 @@ impl ConsensusNetworkService {
             outcomes: vec![outcome],
             has_peer_pbft_chain_size: decoded.peer_pbft_chain_size.is_some(),
             peer_pbft_chain_size: decoded.peer_pbft_chain_size.unwrap_or_default(),
+            egress_payload_bytes: Vec::new(),
         })
     }
 
@@ -1979,7 +2024,7 @@ impl ConsensusNetworkService {
         );
         let contexts = inspected
             .iter()
-            .zip(vote_rlps)
+            .zip(vote_rlps.iter().cloned())
             .map(|(inspection, vote_rlp)| {
                 let mut context = pbft_vote_packet_context(&request, inspection, vote_rlp);
                 context.ingress.validate_max_round_step = validate_max_round_step;
@@ -1994,10 +2039,54 @@ impl ConsensusNetworkService {
             contexts,
             slashing_submitters,
         )?;
+        let accepted_votes = outcomes
+            .iter()
+            .zip(inspected.iter().zip(vote_rlps))
+            .filter_map(|(outcome, (inspection, vote_rlp))| {
+                outcome
+                    .admission
+                    .as_ref()
+                    .filter(|admission| {
+                        admission.transaction.transition_published
+                            && admission
+                                .transaction
+                                .outcome
+                                .execution
+                                .as_ref()
+                                .is_some_and(|execution| {
+                                    execution.pipeline_step.progress_plan.intents.iter().any(
+                                        |intent| {
+                                            matches!(
+                                                intent,
+                                                PbftVoteProgressIntent::GossipVote { .. }
+                                            )
+                                        },
+                                    )
+                                })
+                    })
+                    .map(|_| PbftVotePayloadRecord {
+                        hash: inspection.vote_hash,
+                        vote_rlp,
+                    })
+            })
+            .collect::<Vec<_>>();
+        let egress_payload_bytes = if accepted_votes.is_empty() {
+            Vec::new()
+        } else {
+            build_optimized_pbft_vote_bundle(
+                &accepted_votes,
+                inspected[0].block_hash,
+                inspected[0].period,
+                inspected[0].round,
+                inspected[0].step,
+            )?
+            .bundle_rlp
+        };
         Ok(NetworkPbftVotePacketReport {
             outcomes,
             has_peer_pbft_chain_size: false,
             peer_pbft_chain_size: 0,
+            egress_payload_bytes,
         })
     }
 
@@ -2595,23 +2684,36 @@ impl ConsensusNetworkService {
         ))
     }
 
-    /// Plans bounded per-peer transaction gossip from a native queue snapshot.
-    pub fn plan_transaction_gossip(
+    /// Prepares one bounded application-owned egress operation and returns the
+    /// exact object identities whose peer-known state transport must snapshot.
+    /// Canonical decoding and packet-family validation complete before the
+    /// one-shot token is published; the retained state is capped and is never
+    /// an externally readable payload handle.
+    pub fn prepare_egress(
         &self,
-        request: NetworkTransactionGossipRequest,
-        accounts: Vec<TransactionGossipAccount>,
-    ) -> Result<NetworkIngressDecision> {
-        Ok(self
-            .lock_api()?
-            .enqueue_transaction_gossip(request, accounts))
+        request: NetworkEgressPrepareRequest,
+        transaction_accounts: Vec<TransactionGossipAccount>,
+        dag_transactions: Vec<crate::TransactionGossipEntry>,
+    ) -> Result<NetworkEgressPreparation> {
+        let finalized_period = self.chain.try_head()?.size;
+        self.lock_api()?.prepare_egress(
+            request,
+            transaction_accounts,
+            dag_transactions,
+            finalized_period,
+        )
     }
 
-    /// Queues exact per-peer DAG packets and send-dependent known marks.
-    pub fn plan_dag_block_gossip(
-        &self,
-        request: NetworkDagGossipRequest,
-    ) -> Result<NetworkIngressDecision> {
-        Ok(self.lock_api()?.enqueue_dag_block_gossip(request))
+    /// Consumes one prepared operation using an immutable authenticated peer
+    /// snapshot. Native policy selects every exact target, constructs complete
+    /// packet bytes, and queues only exact sends plus send-dependent marks.
+    pub fn plan_egress(&self, request: NetworkEgressPlanRequest) -> Result<NetworkIngressDecision> {
+        self.lock_api()?.plan_egress(request)
+    }
+
+    /// Cancels one undrained preparation. Unknown/stale tokens are harmless.
+    pub fn cancel_egress(&self, token: u64) -> Result<bool> {
+        Ok(self.lock_api()?.pending_egress.remove(&token).is_some())
     }
 
     /// Selects a peer and queues one canonical pending-DAG request.
@@ -3085,14 +3187,6 @@ fn decode_transaction_packet(
     Ok((transactions, hashes))
 }
 
-fn encode_single_transaction_packet(transaction_rlp: &[u8]) -> Vec<u8> {
-    let mut packet = RlpStream::new_list(2);
-    packet.begin_list(1);
-    packet.append_raw(transaction_rlp, 1);
-    packet.begin_list(0);
-    packet.out().to_vec()
-}
-
 fn decode_get_dag_sync_request(packet_rlp: &[u8]) -> Option<(u64, Vec<H256>)> {
     let packet = Rlp::new(packet_rlp);
     if packet.item_count().ok()? != 2 {
@@ -3203,6 +3297,13 @@ fn decode_pbft_vote_packet(packet_rlp: &[u8]) -> Result<DecodedPbftVotePacket> {
 }
 
 fn decode_pbft_votes_bundle_packet(packet_rlp: &[u8]) -> Result<Vec<Vec<u8>>> {
+    decode_pbft_votes_bundle_packet_with_limit(packet_rlp, MAX_VOTES_PER_BUNDLE_PACKET)
+}
+
+fn decode_pbft_votes_bundle_packet_with_limit(
+    packet_rlp: &[u8],
+    maximum_votes: usize,
+) -> Result<Vec<Vec<u8>>> {
     let bundle_rlp = decode_single_wrapped_packet(packet_rlp)
         .context("NETWORK_PBFT_VOTES_BUNDLE_PACKET_MALFORMED")?;
     let bundle = Rlp::new(&bundle_rlp);
@@ -3221,7 +3322,7 @@ fn decode_pbft_votes_bundle_packet(packet_rlp: &[u8]) -> Result<Vec<Vec<u8>>> {
     );
     let vote_count = votes.item_count()?;
     ensure!(
-        vote_count > 0 && vote_count <= MAX_VOTES_PER_BUNDLE_PACKET,
+        vote_count > 0 && vote_count <= maximum_votes,
         "NETWORK_PBFT_VOTES_BUNDLE_PACKET_SIZE_INVALID"
     );
 
@@ -3248,6 +3349,23 @@ fn decode_pbft_votes_bundle_packet(packet_rlp: &[u8]) -> Result<Vec<Vec<u8>>> {
             Ok(vote.out().to_vec())
         })
         .collect()
+}
+
+fn encode_pbft_vote_egress_packet(
+    vote_rlp: &[u8],
+    block_rlp: Option<&[u8]>,
+    finalized_period: u64,
+) -> Vec<u8> {
+    let mut packet = RlpStream::new_list(2);
+    packet.append_raw(vote_rlp, 1);
+    if let Some(block_rlp) = block_rlp {
+        packet.begin_list(2);
+        packet.append_raw(block_rlp, 1);
+        packet.append(&finalized_period);
+    } else {
+        packet.append(&0_u64);
+    }
+    packet.out().to_vec()
 }
 
 fn pbft_vote_ingress_fact(inspection: &crate::PbftCanonicalVoteInspection) -> PbftVoteIngressFact {
@@ -3282,7 +3400,6 @@ fn pbft_vote_packet_context(
         peer_pbft_chain_size: request.peer_pbft_chain_size,
         source_payload_id: request.source_payload_id,
         enqueue_admission: true,
-        allow_gossip: request.allow_gossip,
         vote_hash: inspection.vote_hash.to_fixed_bytes(),
         vote_rlp,
         pbft_block_rlp: Vec::new(),
@@ -3298,7 +3415,6 @@ fn pillar_vote_packet_context(
         transport_lane: request.transport_lane,
         peer_id: request.peer_id,
         source_payload_id: request.source_payload_id,
-        allow_gossip: request.allow_gossip,
     }
 }
 
@@ -3314,11 +3430,13 @@ pub(crate) struct ConsensusNetworkApi {
     pillar_blocks_interval: u64,
     next_effect_id: u64,
     next_vote_bundle_id: u64,
+    next_egress_token: u64,
     next_transaction_gossip_account: usize,
     pending_effects: VecDeque<NetworkEffect>,
     pending_vote_admissions: HashMap<u64, PendingVoteAdmissionContext>,
     pending_vote_bundles: HashMap<u64, PendingVoteBundle>,
     pending_pillar_vote_admissions: HashMap<u64, PendingPillarVoteAdmissionContext>,
+    pending_egress: HashMap<u64, PendingNetworkEgress>,
     outstanding_effects: HashMap<u64, NetworkEffect>,
     completed_dependency_status: HashMap<u64, bool>,
     pbft_sync: NetworkPbftSyncLifecycle,
@@ -3352,11 +3470,13 @@ impl ConsensusNetworkApi {
             pillar_blocks_interval,
             next_effect_id: 1,
             next_vote_bundle_id: 1,
+            next_egress_token: 1,
             next_transaction_gossip_account: 0,
             pending_effects: VecDeque::new(),
             pending_vote_admissions: HashMap::new(),
             pending_vote_bundles: HashMap::new(),
             pending_pillar_vote_admissions: HashMap::new(),
+            pending_egress: HashMap::new(),
             outstanding_effects: HashMap::new(),
             completed_dependency_status: HashMap::new(),
             pbft_sync: NetworkPbftSyncLifecycle::new(deep_syncing_threshold),
@@ -3928,7 +4048,6 @@ impl ConsensusNetworkApi {
         }
         for context in &mut contexts {
             context.enqueue_admission = true;
-            context.allow_gossip = false;
         }
 
         let plans = votes
@@ -3949,15 +4068,10 @@ impl ConsensusNetworkApi {
 
         let bundle_id = self.next_vote_bundle_id;
         self.next_vote_bundle_id = self.next_vote_bundle_id.saturating_add(1);
-        let first = &contexts[0];
         self.pending_vote_bundles.insert(
             bundle_id,
             PendingVoteBundle {
-                source_payload_id: first.source_payload_id,
-                transport_lane: first.transport_lane,
-                peer_id: first.peer_id,
                 completed: vec![false; votes.len()],
-                accepted_votes: vec![None; votes.len()],
             },
         );
 
@@ -3967,14 +4081,7 @@ impl ConsensusNetworkApi {
             .zip(contexts)
             .enumerate()
             .map(|(index, ((plan, vote), context))| {
-                let member = PendingVoteBundleMember {
-                    bundle_id,
-                    index,
-                    vote: PbftVotePayloadRecord {
-                        hash: H256::from(context.vote_hash),
-                        vote_rlp: context.vote_rlp.clone(),
-                    },
-                };
+                let member = PendingVoteBundleMember { bundle_id, index };
                 self.decision_from_vote_plan_with_bundle(plan, vote, context, member)
             })
             .collect()
@@ -4102,8 +4209,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: NETWORK_PACKET_KIND_PILLAR_VOTE,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
                 object_hash,
                 sync_kind: 0,
@@ -4121,8 +4226,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: NETWORK_PACKET_KIND_PILLAR_VOTE,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
                 object_hash,
                 sync_kind: 0,
@@ -4194,8 +4297,6 @@ impl ConsensusNetworkApi {
             peer_id: request.peer_id,
             packet_kind: 0,
             payload_bytes: Vec::new(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
             object_hash: request.pillar_block_hash,
             sync_kind: 0,
@@ -4213,8 +4314,6 @@ impl ConsensusNetworkApi {
             peer_id: request.peer_id,
             packet_kind: 0,
             payload_bytes: Vec::new(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
             object_hash: request.pillar_block_hash,
             sync_kind: 0,
@@ -4250,8 +4349,6 @@ impl ConsensusNetworkApi {
             peer_id: request.peer_id,
             packet_kind: NETWORK_PACKET_KIND_GET_PBFT_SYNC,
             payload_bytes: Vec::new(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST,
             object_hash: [0; 32],
             sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
@@ -4269,8 +4366,6 @@ impl ConsensusNetworkApi {
             peer_id: request.peer_id,
             packet_kind: NETWORK_PACKET_KIND_GET_PBFT_SYNC,
             payload_bytes: Vec::new(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST,
             object_hash: [0; 32],
             sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
@@ -4313,8 +4408,6 @@ impl ConsensusNetworkApi {
                 peer_id: request.peer_id,
                 packet_kind: NETWORK_PACKET_KIND_PBFT_SYNC,
                 payload_bytes,
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_PERIOD_DATA,
                 object_hash: [0; 32],
                 sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
@@ -4334,8 +4427,6 @@ impl ConsensusNetworkApi {
                 peer_id: request.peer_id,
                 packet_kind: NETWORK_PACKET_KIND_PBFT_SYNC,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST,
                 object_hash: [0; 32],
                 sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
@@ -4355,8 +4446,6 @@ impl ConsensusNetworkApi {
                 peer_id: request.peer_id,
                 packet_kind: NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE,
                 payload_bytes,
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,
                 object_hash: [0; 32],
                 sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
@@ -4446,8 +4535,6 @@ impl ConsensusNetworkApi {
             peer_id: context.peer_id,
             packet_kind: 0,
             payload_bytes: vote_rlp.clone(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
             object_hash: vote_hash,
             sync_kind: 0,
@@ -4469,7 +4556,6 @@ impl ConsensusNetworkApi {
                 pbft_block_hash,
                 pbft_block_period: context.pbft_block_period,
                 source_payload_id: context.source_payload_id,
-                allow_gossip: context.allow_gossip,
                 bundle,
             },
         );
@@ -4553,9 +4639,7 @@ impl ConsensusNetworkApi {
             }
             return effect_ids;
         }
-        let vote_payload = context.vote_rlp;
-        let block_payload = context.pbft_block_rlp;
-        let block_effect_id = if block_payload.is_empty()
+        let block_effect_id = if context.pbft_block_rlp.is_empty()
             || !result.admission_accepted && !result.admission_already_present
         {
             0
@@ -4568,8 +4652,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,
                 object_hash: context.pbft_block_hash,
                 sync_kind: 0,
@@ -4592,8 +4674,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
                 object_hash: context.vote_hash,
                 sync_kind: 0,
@@ -4605,34 +4685,10 @@ impl ConsensusNetworkApi {
             }));
         }
 
-        if result.admission_accepted && result.admission_gossip_vote && context.allow_gossip {
-            effect_ids.push(self.enqueue_effect(NetworkEffect {
-                effect_id: 0,
-                source_payload_id: context.source_payload_id,
-                transport_lane: context.transport_lane,
-                kind: NETWORK_EFFECT_KIND_GOSSIP_PACKET,
-                peer_id: context.peer_id,
-                packet_kind: NETWORK_PACKET_KIND_PBFT_VOTE,
-                payload_bytes: vote_payload,
-                related_payload_bytes: block_payload,
-                exclude_peers: vec![context.peer_id],
-                object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
-                object_hash: context.vote_hash,
-                sync_kind: 0,
-                sync_start: 0,
-                reason_code: 0,
-                dependency_id: block_effect_id,
-                period: 0,
-                round: 0,
-            }));
-        }
+        let _ = block_effect_id;
 
         if let Some(member) = bundle {
-            if let Some(effect_id) =
-                self.record_vote_bundle_admission(member, result.admission_accepted)
-            {
-                effect_ids.push(effect_id);
-            }
+            self.record_vote_bundle_admission(member);
         }
         effect_ids
     }
@@ -4653,8 +4709,6 @@ impl ConsensusNetworkApi {
             peer_id: context.peer_id,
             packet_kind: 0,
             payload_bytes: vote_rlp.clone(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
             object_hash: vote_hash,
             sync_kind: 0,
@@ -4674,7 +4728,6 @@ impl ConsensusNetworkApi {
                 vote_rlp,
                 period: vote_period,
                 source_payload_id,
-                allow_gossip: context.allow_gossip,
             },
         );
         effect_id
@@ -4763,8 +4816,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
                 object_hash: context.vote_hash,
                 sync_kind: 0,
@@ -4776,95 +4827,27 @@ impl ConsensusNetworkApi {
             }));
         }
 
-        if result.admission_accepted && context.allow_gossip {
-            effect_ids.push(self.enqueue_effect(NetworkEffect {
-                effect_id: 0,
-                source_payload_id: context.source_payload_id,
-                transport_lane: context.transport_lane,
-                kind: NETWORK_EFFECT_KIND_GOSSIP_PACKET,
-                peer_id: context.peer_id,
-                packet_kind: NETWORK_PACKET_KIND_PILLAR_VOTE,
-                payload_bytes: context.vote_rlp,
-                related_payload_bytes: Vec::new(),
-                exclude_peers: vec![context.peer_id],
-                object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
-                object_hash: context.vote_hash,
-                sync_kind: 0,
-                sync_start: 0,
-                reason_code: 0,
-                dependency_id: 0,
-                period: context.period,
-                round: 0,
-            }));
-        }
         effect_ids
     }
 
-    /// Records one exact-ID-correlated bundle admission result and emits one
-    /// accepted-only optimized bundle gossip effect after every member has
-    /// completed. Empty accepted sets intentionally produce no effect.
-    fn record_vote_bundle_admission(
-        &mut self,
-        member: PendingVoteBundleMember,
-        accepted: bool,
-    ) -> Option<u64> {
+    /// Records one exact-ID-correlated bundle admission result and releases the
+    /// private aggregation state after every member completes. Egress is a
+    /// separate prepare/snapshot/plan operation owned by the caller's lane.
+    fn record_vote_bundle_admission(&mut self, member: PendingVoteBundleMember) {
         let Some(bundle) = self.pending_vote_bundles.get_mut(&member.bundle_id) else {
-            return None;
+            return;
         };
         if member.index >= bundle.completed.len() || bundle.completed[member.index] {
-            return None;
+            return;
         }
         bundle.completed[member.index] = true;
-        if accepted {
-            bundle.accepted_votes[member.index] = Some(member.vote);
-        }
         if bundle.completed.iter().any(|completed| !completed) {
-            return None;
+            return;
         }
 
-        let bundle = self
-            .pending_vote_bundles
+        self.pending_vote_bundles
             .remove(&member.bundle_id)
             .expect("bundle exists");
-        let accepted_votes = bundle
-            .accepted_votes
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        let Some(first) = accepted_votes.first() else {
-            return None;
-        };
-        let Ok(inspection) = inspect_canonical_pbft_vote(&first.vote_rlp) else {
-            return None;
-        };
-        let Ok(payload) = build_optimized_pbft_vote_bundle(
-            &accepted_votes,
-            inspection.block_hash,
-            inspection.period,
-            inspection.round,
-            inspection.step,
-        ) else {
-            return None;
-        };
-        Some(self.enqueue_effect(NetworkEffect {
-            effect_id: 0,
-            source_payload_id: bundle.source_payload_id,
-            transport_lane: bundle.transport_lane,
-            kind: NETWORK_EFFECT_KIND_GOSSIP_PACKET,
-            peer_id: bundle.peer_id,
-            packet_kind: NETWORK_PACKET_KIND_PBFT_VOTES_BUNDLE,
-            payload_bytes: payload.bundle_rlp,
-            related_payload_bytes: Vec::new(),
-            exclude_peers: vec![bundle.peer_id],
-            object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
-            object_hash: [0; 32],
-            sync_kind: 0,
-            sync_start: 0,
-            reason_code: 0,
-            dependency_id: 0,
-            period: inspection.period,
-            round: inspection.round,
-        }))
     }
 
     /// Removes only the operation-owned transport effects identified by an
@@ -4914,8 +4897,6 @@ impl ConsensusNetworkApi {
                 peer_id: request.peer_id,
                 packet_kind: NETWORK_PACKET_KIND_PBFT_VOTES_BUNDLE,
                 payload_bytes,
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
                 object_hash: [0; 32],
                 sync_kind: 0,
@@ -4956,8 +4937,6 @@ impl ConsensusNetworkApi {
                 peer_id: request.peer_id,
                 packet_kind: NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE,
                 payload_bytes: chunk.payload_bytes,
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
                 object_hash: request.pillar_block_hash,
                 sync_kind: 0,
@@ -4976,8 +4955,6 @@ impl ConsensusNetworkApi {
                     peer_id: request.peer_id,
                     packet_kind: 0,
                     payload_bytes: Vec::new(),
-                    related_payload_bytes: Vec::new(),
-                    exclude_peers: Vec::new(),
                     object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
                     object_hash: vote_hash,
                     sync_kind: 0,
@@ -5019,8 +4996,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: 0,
                 object_hash: [0; 32],
                 sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
@@ -5040,8 +5015,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: 0,
                 object_hash: [0; 32],
                 sync_kind: NETWORK_SYNC_KIND_PBFT_NEXT_VOTES,
@@ -5062,8 +5035,6 @@ impl ConsensusNetworkApi {
                     peer_id: context.peer_id,
                     packet_kind: 0,
                     payload_bytes: Vec::new(),
-                    related_payload_bytes: Vec::new(),
-                    exclude_peers: Vec::new(),
                     object_kind: 0,
                     object_hash: [0; 32],
                     sync_kind: 0,
@@ -5081,8 +5052,6 @@ impl ConsensusNetworkApi {
                     peer_id: context.peer_id,
                     packet_kind: 0,
                     payload_bytes: Vec::new(),
-                    related_payload_bytes: Vec::new(),
-                    exclude_peers: Vec::new(),
                     object_kind: 0,
                     object_hash: [0; 32],
                     sync_kind: 0,
@@ -5102,8 +5071,6 @@ impl ConsensusNetworkApi {
                     peer_id: context.peer_id,
                     packet_kind: 0,
                     payload_bytes: Vec::new(),
-                    related_payload_bytes: Vec::new(),
-                    exclude_peers: Vec::new(),
                     object_kind: 0,
                     object_hash: [0; 32],
                     sync_kind: 0,
@@ -5135,8 +5102,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
                 object_hash: hash,
                 sync_kind: 0,
@@ -5146,27 +5111,6 @@ impl ConsensusNetworkApi {
                 period: 0,
                 round: 0,
             });
-            if report.gossip_transaction {
-                self.enqueue_effect(NetworkEffect {
-                    effect_id: 0,
-                    source_payload_id: context.source_payload_id,
-                    transport_lane: context.transport_lane,
-                    kind: NETWORK_EFFECT_KIND_GOSSIP_PACKET,
-                    peer_id: [0; 64],
-                    packet_kind: NETWORK_PACKET_KIND_TRANSACTION,
-                    payload_bytes: encode_single_transaction_packet(&report.transaction_rlp),
-                    related_payload_bytes: Vec::new(),
-                    exclude_peers: vec![context.peer_id],
-                    object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
-                    object_hash: hash,
-                    sync_kind: 0,
-                    sync_start: 0,
-                    reason_code: 0,
-                    dependency_id: 0,
-                    period: 0,
-                    round: 0,
-                });
-            }
         }
         for hash in extra_hashes {
             self.enqueue_effect(NetworkEffect {
@@ -5177,8 +5121,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
                 object_hash: *hash,
                 sync_kind: 0,
@@ -5216,8 +5158,6 @@ impl ConsensusNetworkApi {
             peer_id: context.peer_id,
             packet_kind: NETWORK_PACKET_KIND_DAG_SYNC,
             payload_bytes,
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_DAG_SYNC_EGRESS_REQUEST,
             object_hash: [0; 32],
             sync_kind: 0,
@@ -5240,20 +5180,22 @@ impl ConsensusNetworkApi {
 
     fn enqueue_transaction_gossip(
         &mut self,
-        request: NetworkTransactionGossipRequest,
+        transport_lane: u32,
+        source_payload_id: u64,
+        peers: Vec<([u8; 64], Vec<[u8; 32]>)>,
         accounts: Vec<TransactionGossipAccount>,
     ) -> NetworkIngressDecision {
-        if accounts.is_empty() || request.peers.is_empty() {
+        if accounts.is_empty() || peers.is_empty() {
             return local_network_decision(
-                request.source_payload_id,
+                source_payload_id,
                 NETWORK_INGRESS_STATUS_ACCEPTED,
                 ERROR_NONE,
             );
         }
         let before = self.pending_effects.len();
         let mut account_start = self.next_transaction_gossip_account % accounts.len();
-        for peer in request.peers {
-            let known = peer.known_hashes.into_iter().collect::<HashSet<_>>();
+        for (peer_id, known_hashes) in peers {
+            let known = known_hashes.into_iter().collect::<HashSet<_>>();
             let mut full = Vec::new();
             let mut hashes = Vec::new();
             let mut next_start = (account_start + 1) % accounts.len();
@@ -5292,14 +5234,12 @@ impl ConsensusNetworkApi {
             }
             let send_id = self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
-                source_payload_id: request.source_payload_id,
-                transport_lane: request.transport_lane,
+                source_payload_id,
+                transport_lane,
                 kind: NETWORK_EFFECT_KIND_SEND_PACKET,
-                peer_id: peer.peer_id,
+                peer_id,
                 packet_kind: NETWORK_PACKET_KIND_TRANSACTION,
                 payload_bytes: packet.out().to_vec(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
                 object_hash: [0; 32],
                 sync_kind: 0,
@@ -5312,14 +5252,12 @@ impl ConsensusNetworkApi {
             for (hash, _) in full {
                 self.enqueue_effect(NetworkEffect {
                     effect_id: 0,
-                    source_payload_id: request.source_payload_id,
-                    transport_lane: request.transport_lane,
+                    source_payload_id,
+                    transport_lane,
                     kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
-                    peer_id: peer.peer_id,
+                    peer_id,
                     packet_kind: 0,
                     payload_bytes: Vec::new(),
-                    related_payload_bytes: Vec::new(),
-                    exclude_peers: Vec::new(),
                     object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
                     object_hash: hash,
                     sync_kind: 0,
@@ -5333,7 +5271,7 @@ impl ConsensusNetworkApi {
         }
         self.next_transaction_gossip_account = account_start;
         NetworkIngressDecision {
-            payload_id: request.source_payload_id,
+            payload_id: source_payload_id,
             payload_accepted: true,
             routed: true,
             status: NETWORK_INGRESS_STATUS_ACCEPTED,
@@ -5342,6 +5280,567 @@ impl ConsensusNetworkApi {
                 .unwrap_or(u32::MAX),
             application_effect_id: 0,
         }
+    }
+
+    fn prepare_egress(
+        &mut self,
+        request: NetworkEgressPrepareRequest,
+        transaction_accounts: Vec<TransactionGossipAccount>,
+        dag_transactions: Vec<crate::TransactionGossipEntry>,
+        finalized_period: u64,
+    ) -> Result<NetworkEgressPreparation> {
+        ensure!(
+            self.pending_egress.len() < MAX_PENDING_EGRESS_OPERATIONS,
+            "NETWORK_EGRESS_PREPARATION_LIMIT"
+        );
+        let (payload, probes) = match request.family {
+            NETWORK_EGRESS_FAMILY_PBFT_VOTE => {
+                let (vote_rlp, related_payload_bytes) = if request.source_peer_id == [0; 64] {
+                    (
+                        request.payload_bytes.clone(),
+                        request.related_payload_bytes.clone(),
+                    )
+                } else {
+                    let decoded = decode_pbft_vote_packet(&request.payload_bytes)
+                        .context("NETWORK_EGRESS_PBFT_VOTE_PACKET_MALFORMED")?;
+                    (decoded.vote_rlp, decoded.pbft_block_rlp.unwrap_or_default())
+                };
+                let vote = inspect_canonical_pbft_vote(&vote_rlp)
+                    .context("NETWORK_EGRESS_PBFT_VOTE_MALFORMED")?;
+                ensure!(
+                    vote.signature_valid,
+                    "NETWORK_EGRESS_PBFT_VOTE_INVALID_SIGNATURE"
+                );
+                let mut probes = vec![NetworkEgressProbe {
+                    probe_id: 0,
+                    object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+                    object_hash: vote.vote_hash.to_fixed_bytes(),
+                }];
+                let (block_hash, block_period) = if related_payload_bytes.is_empty() {
+                    ([0; 32], 0)
+                } else {
+                    let link =
+                        PbftBlockLink::try_from(SignedPbftBlockRlp::new(&related_payload_bytes))
+                            .context("NETWORK_EGRESS_PBFT_BLOCK_MALFORMED")?;
+                    ensure!(
+                        link.block_hash == vote.block_hash,
+                        "NETWORK_EGRESS_PBFT_BLOCK_IDENTITY_MISMATCH"
+                    );
+                    probes.push(NetworkEgressProbe {
+                        probe_id: 1,
+                        object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,
+                        object_hash: link.block_hash.to_fixed_bytes(),
+                    });
+                    (link.block_hash.to_fixed_bytes(), link.period)
+                };
+                (
+                    PendingNetworkEgressPayload::PbftVote {
+                        vote_rlp,
+                        block_rlp: related_payload_bytes,
+                        vote_hash: vote.vote_hash.to_fixed_bytes(),
+                        block_hash,
+                        period: block_period,
+                        finalized_period,
+                    },
+                    probes,
+                )
+            }
+            NETWORK_EGRESS_FAMILY_PBFT_VOTES_BUNDLE => {
+                let packet_rlp = if request.source_peer_id == [0; 64] {
+                    let mut outer = RlpStream::new_list(1);
+                    outer.append_raw(&request.payload_bytes, 1);
+                    outer.out().to_vec()
+                } else {
+                    request.payload_bytes.clone()
+                };
+                let vote_rlps = decode_pbft_votes_bundle_packet_with_limit(
+                    &packet_rlp,
+                    MAX_EGRESS_OBJECT_PROBES,
+                )
+                .context("NETWORK_EGRESS_PBFT_BUNDLE_MALFORMED")?;
+                let mut probes = Vec::with_capacity(vote_rlps.len());
+                let mut votes = Vec::with_capacity(vote_rlps.len());
+                let mut period = 0;
+                let mut round = 0;
+                for (index, vote_rlp) in vote_rlps.into_iter().enumerate() {
+                    let inspected = inspect_canonical_pbft_vote(&vote_rlp)
+                        .context("NETWORK_EGRESS_PBFT_BUNDLE_MEMBER_MALFORMED")?;
+                    ensure!(
+                        inspected.signature_valid,
+                        "NETWORK_EGRESS_PBFT_BUNDLE_MEMBER_INVALID_SIGNATURE"
+                    );
+                    period = inspected.period;
+                    round = inspected.round;
+                    probes.push(NetworkEgressProbe {
+                        probe_id: index as u32,
+                        object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+                        object_hash: inspected.vote_hash.to_fixed_bytes(),
+                    });
+                    votes.push(PbftVotePayloadRecord {
+                        hash: inspected.vote_hash,
+                        vote_rlp,
+                    });
+                }
+                (
+                    PendingNetworkEgressPayload::PbftVotesBundle {
+                        votes,
+                        period,
+                        round,
+                    },
+                    probes,
+                )
+            }
+            NETWORK_EGRESS_FAMILY_PILLAR_VOTE => {
+                let vote_rlp = if request.source_peer_id == [0; 64] {
+                    request.payload_bytes.clone()
+                } else {
+                    decode_single_wrapped_packet(&request.payload_bytes)
+                        .context("NETWORK_EGRESS_PILLAR_VOTE_PACKET_MALFORMED")?
+                };
+                let inspected = inspect_pillar_vote_from_rlp(&vote_rlp)
+                    .context("NETWORK_EGRESS_PILLAR_VOTE_MALFORMED")?;
+                ensure!(
+                    inspected.signature_valid,
+                    "NETWORK_EGRESS_PILLAR_VOTE_INVALID_SIGNATURE"
+                );
+                let vote_hash = inspected.vote_hash.to_fixed_bytes();
+                (
+                    PendingNetworkEgressPayload::PillarVote {
+                        vote_rlp,
+                        vote_hash,
+                        period: inspected.period,
+                    },
+                    vec![NetworkEgressProbe {
+                        probe_id: 0,
+                        object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
+                        object_hash: vote_hash,
+                    }],
+                )
+            }
+            NETWORK_EGRESS_FAMILY_DAG_BLOCK => {
+                ensure!(
+                    !request.payload_bytes.is_empty(),
+                    "NETWORK_EGRESS_DAG_BLOCK_MALFORMED"
+                );
+                ensure!(
+                    request.object_hash != [0; 32],
+                    "NETWORK_EGRESS_DAG_HASH_MISSING"
+                );
+                let mut probes = vec![NetworkEgressProbe {
+                    probe_id: 0,
+                    object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
+                    object_hash: request.object_hash,
+                }];
+                probes.extend(
+                    dag_transactions
+                        .iter()
+                        .enumerate()
+                        .map(|(index, transaction)| NetworkEgressProbe {
+                            probe_id: (index + 1) as u32,
+                            object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
+                            object_hash: transaction.hash.to_fixed_bytes(),
+                        }),
+                );
+                (
+                    PendingNetworkEgressPayload::DagBlock {
+                        block_rlp: request.payload_bytes.clone(),
+                        block_hash: request.object_hash,
+                        transactions: dag_transactions,
+                    },
+                    probes,
+                )
+            }
+            NETWORK_EGRESS_FAMILY_TRANSACTION_GOSSIP => {
+                let accounts = if request.payload_bytes.is_empty() {
+                    transaction_accounts
+                } else {
+                    let (transactions, _) = decode_transaction_packet(&request.payload_bytes)
+                        .map_err(|_| anyhow!("NETWORK_EGRESS_TRANSACTION_PACKET_MALFORMED"))?;
+                    let mut grouped = Vec::<TransactionGossipAccount>::new();
+                    for transaction_rlp in transactions {
+                        let envelope = LegacyTransactionEnvelope::decode(&transaction_rlp)
+                            .context("NETWORK_EGRESS_TRANSACTION_MALFORMED")?;
+                        let sender = envelope
+                            .sender
+                            .ok_or_else(|| anyhow!("NETWORK_EGRESS_TRANSACTION_SENDER_MISSING"))?;
+                        if let Some(account) =
+                            grouped.iter_mut().find(|account| account.sender == sender)
+                        {
+                            account.transactions.push(crate::TransactionGossipEntry {
+                                hash: envelope.hash,
+                                transaction_rlp,
+                            });
+                        } else {
+                            grouped.push(TransactionGossipAccount {
+                                sender,
+                                transactions: vec![crate::TransactionGossipEntry {
+                                    hash: envelope.hash,
+                                    transaction_rlp,
+                                }],
+                            });
+                        }
+                    }
+                    grouped
+                };
+                let probes = accounts
+                    .iter()
+                    .flat_map(|account| account.transactions.iter())
+                    .enumerate()
+                    .map(|(index, transaction)| NetworkEgressProbe {
+                        probe_id: index as u32,
+                        object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
+                        object_hash: transaction.hash.to_fixed_bytes(),
+                    })
+                    .collect();
+                (
+                    PendingNetworkEgressPayload::TransactionGossip { accounts },
+                    probes,
+                )
+            }
+            _ => return Err(anyhow!("NETWORK_EGRESS_FAMILY_UNSUPPORTED")),
+        };
+        let token = self.next_egress_token;
+        self.next_egress_token = self
+            .next_egress_token
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("NETWORK_EGRESS_TOKEN_EXHAUSTED"))?;
+        self.pending_egress.insert(
+            token,
+            PendingNetworkEgress {
+                transport_lane: request.transport_lane,
+                source_payload_id: request.source_payload_id,
+                source_peer_id: request.source_peer_id,
+                rebroadcast: request.rebroadcast,
+                probes: probes.clone(),
+                payload,
+            },
+        );
+        Ok(NetworkEgressPreparation { token, probes })
+    }
+
+    fn plan_egress(&mut self, request: NetworkEgressPlanRequest) -> Result<NetworkIngressDecision> {
+        let pending = self
+            .pending_egress
+            .remove(&request.token)
+            .ok_or_else(|| anyhow!("NETWORK_EGRESS_STALE_TOKEN"))?;
+        let mut unique_peers = HashSet::new();
+        let probe_count = pending.probes.len() as u32;
+        for peer in &request.peers {
+            ensure!(
+                unique_peers.insert(peer.peer_id),
+                "NETWORK_EGRESS_DUPLICATE_PEER"
+            );
+            let mut unique_probes = HashSet::new();
+            for probe_id in &peer.known_probe_ids {
+                ensure!(*probe_id < probe_count, "NETWORK_EGRESS_UNKNOWN_PROBE");
+                ensure!(
+                    unique_probes.insert(*probe_id),
+                    "NETWORK_EGRESS_DUPLICATE_PROBE"
+                );
+            }
+        }
+        let before = self.pending_effects.len();
+        let maximum_sends_per_peer = match &pending.payload {
+            PendingNetworkEgressPayload::PbftVotesBundle { votes, .. } => {
+                votes.len().div_ceil(MAX_VOTES_PER_BUNDLE_PACKET)
+            }
+            _ => 1,
+        };
+        let maximum_new_effects = request
+            .peers
+            .len()
+            .saturating_mul(pending.probes.len().saturating_add(maximum_sends_per_peer));
+        ensure!(
+            self.pending_effects
+                .len()
+                .saturating_add(maximum_new_effects)
+                <= MAX_QUEUED_EGRESS_EFFECTS,
+            "NETWORK_EGRESS_EFFECT_LIMIT"
+        );
+        let effect_owner = pending.clone();
+        match pending.payload {
+            PendingNetworkEgressPayload::PbftVote {
+                vote_rlp,
+                block_rlp,
+                vote_hash,
+                block_hash,
+                period,
+                finalized_period,
+            } => {
+                for peer in request.peers {
+                    let known = peer.known_probe_ids.into_iter().collect::<HashSet<_>>();
+                    if peer.syncing
+                        || peer.peer_id == pending.source_peer_id
+                        || (!pending.rebroadcast && known.contains(&0))
+                    {
+                        continue;
+                    }
+                    let include_block =
+                        !block_rlp.is_empty() && (pending.rebroadcast || !known.contains(&1));
+                    let packet = encode_pbft_vote_egress_packet(
+                        &vote_rlp,
+                        include_block.then_some(block_rlp.as_slice()),
+                        finalized_period,
+                    );
+                    let send_id = self.enqueue_exact_egress_send(
+                        &effect_owner,
+                        peer.peer_id,
+                        NETWORK_PACKET_KIND_PBFT_VOTE,
+                        packet,
+                        NETWORK_OBJECT_KIND_PBFT_VOTE,
+                        vote_hash,
+                        period,
+                    );
+                    self.enqueue_egress_known_mark(
+                        &effect_owner,
+                        peer.peer_id,
+                        send_id,
+                        NETWORK_OBJECT_KIND_PBFT_VOTE,
+                        vote_hash,
+                    );
+                    if include_block {
+                        self.enqueue_egress_known_mark(
+                            &effect_owner,
+                            peer.peer_id,
+                            send_id,
+                            NETWORK_OBJECT_KIND_PBFT_BLOCK,
+                            block_hash,
+                        );
+                    }
+                }
+            }
+            PendingNetworkEgressPayload::PbftVotesBundle {
+                votes,
+                period,
+                round,
+            } => {
+                for peer in request.peers {
+                    if peer.syncing || peer.peer_id == pending.source_peer_id {
+                        continue;
+                    }
+                    let known = peer.known_probe_ids.into_iter().collect::<HashSet<_>>();
+                    let selected = votes
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| {
+                            pending.rebroadcast || !known.contains(&(*index as u32))
+                        })
+                        .map(|(_, vote)| vote.clone())
+                        .collect::<Vec<_>>();
+                    for chunk in selected.chunks(MAX_VOTES_PER_BUNDLE_PACKET) {
+                        let Some(first) = chunk.first() else {
+                            continue;
+                        };
+                        let inspected = inspect_canonical_pbft_vote(&first.vote_rlp)?;
+                        let bundle = build_optimized_pbft_vote_bundle(
+                            chunk,
+                            inspected.block_hash,
+                            inspected.period,
+                            inspected.round,
+                            inspected.step,
+                        )?;
+                        let mut packet = RlpStream::new_list(1);
+                        packet.append_raw(&bundle.bundle_rlp, 1);
+                        let send_id = self.enqueue_exact_egress_send(
+                            &effect_owner,
+                            peer.peer_id,
+                            NETWORK_PACKET_KIND_PBFT_VOTES_BUNDLE,
+                            packet.out().to_vec(),
+                            NETWORK_OBJECT_KIND_PBFT_VOTE,
+                            [0; 32],
+                            period,
+                        );
+                        for vote in chunk {
+                            self.enqueue_egress_known_mark(
+                                &effect_owner,
+                                peer.peer_id,
+                                send_id,
+                                NETWORK_OBJECT_KIND_PBFT_VOTE,
+                                vote.hash.to_fixed_bytes(),
+                            );
+                        }
+                    }
+                }
+                let _ = round;
+            }
+            PendingNetworkEgressPayload::PillarVote {
+                vote_rlp,
+                vote_hash,
+                period,
+            } => {
+                let mut packet = RlpStream::new_list(1);
+                packet.append_raw(&vote_rlp, 1);
+                let packet = packet.out().to_vec();
+                for peer in request.peers {
+                    if peer.syncing
+                        || peer.peer_id == pending.source_peer_id
+                        || (!pending.rebroadcast && peer.known_probe_ids.contains(&0))
+                    {
+                        continue;
+                    }
+                    let send_id = self.enqueue_exact_egress_send(
+                        &effect_owner,
+                        peer.peer_id,
+                        NETWORK_PACKET_KIND_PILLAR_VOTE,
+                        packet.clone(),
+                        NETWORK_OBJECT_KIND_PILLAR_VOTE,
+                        vote_hash,
+                        period,
+                    );
+                    self.enqueue_egress_known_mark(
+                        &effect_owner,
+                        peer.peer_id,
+                        send_id,
+                        NETWORK_OBJECT_KIND_PILLAR_VOTE,
+                        vote_hash,
+                    );
+                }
+            }
+            PendingNetworkEgressPayload::DagBlock {
+                block_rlp,
+                block_hash,
+                transactions,
+            } => {
+                for peer in request.peers {
+                    if peer.syncing
+                        || peer.peer_id == pending.source_peer_id
+                        || peer.known_probe_ids.contains(&0)
+                    {
+                        continue;
+                    }
+                    let known = peer.known_probe_ids.into_iter().collect::<HashSet<_>>();
+                    let selected_transactions = transactions
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| !known.contains(&((*index + 1) as u32)))
+                        .collect::<Vec<_>>();
+                    let mut packet = RlpStream::new_list(2);
+                    packet.begin_list(selected_transactions.len());
+                    for (_, transaction) in &selected_transactions {
+                        packet.append_raw(&transaction.transaction_rlp, 1);
+                    }
+                    packet.append_raw(&block_rlp, 1);
+                    let send_id = self.enqueue_exact_egress_send(
+                        &effect_owner,
+                        peer.peer_id,
+                        NETWORK_PACKET_KIND_DAG_BLOCK,
+                        packet.out().to_vec(),
+                        NETWORK_OBJECT_KIND_DAG_BLOCK,
+                        block_hash,
+                        0,
+                    );
+                    self.enqueue_egress_known_mark(
+                        &effect_owner,
+                        peer.peer_id,
+                        send_id,
+                        NETWORK_OBJECT_KIND_DAG_BLOCK,
+                        block_hash,
+                    );
+                    for (_, transaction) in selected_transactions {
+                        self.enqueue_egress_known_mark(
+                            &effect_owner,
+                            peer.peer_id,
+                            send_id,
+                            NETWORK_OBJECT_KIND_TRANSACTION,
+                            transaction.hash.to_fixed_bytes(),
+                        );
+                    }
+                }
+            }
+            PendingNetworkEgressPayload::TransactionGossip { accounts } => {
+                let probes = pending
+                    .probes
+                    .iter()
+                    .map(|probe| (probe.object_hash, probe.probe_id))
+                    .collect::<HashMap<_, _>>();
+                let peers = request
+                    .peers
+                    .into_iter()
+                    .filter(|peer| !peer.syncing && peer.peer_id != pending.source_peer_id)
+                    .map(|peer| {
+                        let known_ids = peer.known_probe_ids.into_iter().collect::<HashSet<_>>();
+                        (
+                            peer.peer_id,
+                            probes
+                                .iter()
+                                .filter_map(|(hash, id)| known_ids.contains(id).then_some(*hash))
+                                .collect(),
+                        )
+                    })
+                    .collect();
+                self.enqueue_transaction_gossip(
+                    pending.transport_lane,
+                    pending.source_payload_id,
+                    peers,
+                    accounts,
+                );
+            }
+        }
+        Ok(NetworkIngressDecision {
+            payload_id: effect_owner.source_payload_id,
+            payload_accepted: true,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: String::new(),
+            queued_effect_count: (self.pending_effects.len() - before) as u32,
+            application_effect_id: 0,
+        })
+    }
+
+    fn enqueue_exact_egress_send(
+        &mut self,
+        pending: &PendingNetworkEgress,
+        peer_id: [u8; 64],
+        packet_kind: u32,
+        payload_bytes: Vec<u8>,
+        object_kind: u8,
+        object_hash: [u8; 32],
+        period: u64,
+    ) -> u64 {
+        self.enqueue_effect(NetworkEffect {
+            effect_id: 0,
+            source_payload_id: pending.source_payload_id,
+            transport_lane: pending.transport_lane,
+            kind: NETWORK_EFFECT_KIND_SEND_PACKET,
+            peer_id,
+            packet_kind,
+            payload_bytes,
+            object_kind,
+            object_hash,
+            sync_kind: 0,
+            sync_start: 0,
+            reason_code: 0,
+            dependency_id: 0,
+            period,
+            round: 0,
+        })
+    }
+
+    fn enqueue_egress_known_mark(
+        &mut self,
+        pending: &PendingNetworkEgress,
+        peer_id: [u8; 64],
+        dependency_id: u64,
+        object_kind: u8,
+        object_hash: [u8; 32],
+    ) {
+        self.enqueue_effect(NetworkEffect {
+            effect_id: 0,
+            source_payload_id: pending.source_payload_id,
+            transport_lane: pending.transport_lane,
+            kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+            peer_id,
+            packet_kind: 0,
+            payload_bytes: Vec::new(),
+            object_kind,
+            object_hash,
+            sync_kind: 0,
+            sync_start: 0,
+            reason_code: 0,
+            dependency_id,
+            period: 0,
+            round: 0,
+        });
     }
 
     fn enqueue_pending_dag_request(
@@ -5360,8 +5859,6 @@ impl ConsensusNetworkApi {
             peer_id,
             packet_kind: NETWORK_PACKET_KIND_GET_DAG_SYNC,
             payload_bytes,
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_DAG_SYNC_EGRESS_REQUEST,
             object_hash: [0; 32],
             sync_kind: 0,
@@ -5400,8 +5897,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
                 object_hash: envelope.hash.0,
                 sync_kind: 0,
@@ -5420,8 +5915,6 @@ impl ConsensusNetworkApi {
             peer_id: context.peer_id,
             packet_kind: 0,
             payload_bytes: Vec::new(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
             object_hash: report.block_hash.0,
             sync_kind: 0,
@@ -5491,66 +5984,6 @@ impl ConsensusNetworkApi {
         ))
     }
 
-    fn enqueue_dag_block_gossip(
-        &mut self,
-        request: NetworkDagGossipRequest,
-    ) -> NetworkIngressDecision {
-        let before = self.pending_effects.len();
-        for peer in request.peers {
-            if peer.peer_id == request.source_peer_id || peer.syncing || peer.known_block {
-                continue;
-            }
-            let send_id = self.enqueue_effect(NetworkEffect {
-                effect_id: 0,
-                source_payload_id: request.source_payload_id,
-                transport_lane: request.transport_lane,
-                kind: NETWORK_EFFECT_KIND_SEND_PACKET,
-                peer_id: peer.peer_id,
-                packet_kind: NETWORK_PACKET_KIND_DAG_BLOCK,
-                payload_bytes: request.packet_rlp.clone(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
-                object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
-                object_hash: request.block_hash,
-                sync_kind: 0,
-                sync_start: 0,
-                reason_code: 0,
-                dependency_id: 0,
-                period: 0,
-                round: 0,
-            });
-            self.enqueue_effect(NetworkEffect {
-                effect_id: 0,
-                source_payload_id: request.source_payload_id,
-                transport_lane: request.transport_lane,
-                kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
-                peer_id: peer.peer_id,
-                packet_kind: 0,
-                payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
-                object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
-                object_hash: request.block_hash,
-                sync_kind: 0,
-                sync_start: 0,
-                reason_code: 0,
-                dependency_id: send_id,
-                period: 0,
-                round: 0,
-            });
-        }
-        NetworkIngressDecision {
-            payload_id: request.source_payload_id,
-            payload_accepted: true,
-            routed: true,
-            status: NETWORK_INGRESS_STATUS_ACCEPTED,
-            error_code: String::new(),
-            queued_effect_count: u32::try_from(self.pending_effects.len() - before)
-                .unwrap_or(u32::MAX),
-            application_effect_id: 0,
-        }
-    }
-
     fn enqueue_dag_sync_ingress_effects(
         &mut self,
         context: &NetworkDagBlockIngressContext,
@@ -5569,8 +6002,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
                 object_hash: envelope.hash.0,
                 sync_kind: 0,
@@ -5590,8 +6021,6 @@ impl ConsensusNetworkApi {
                 peer_id: context.peer_id,
                 packet_kind: 0,
                 payload_bytes: Vec::new(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
                 object_hash: report.block_hash.0,
                 sync_kind: 0,
@@ -6410,7 +6839,6 @@ mod tests {
             peer_pbft_chain_size: 11,
             source_payload_id: 99,
             enqueue_admission: false,
-            allow_gossip: false,
             vote_hash: [0; 32],
             vote_rlp: Vec::new(),
             pbft_block_rlp: Vec::new(),
@@ -6419,12 +6847,11 @@ mod tests {
         }
     }
 
-    fn pillar_vote_context(allow_gossip: bool) -> NetworkPillarVoteIngressContext {
+    fn pillar_vote_context() -> NetworkPillarVoteIngressContext {
         NetworkPillarVoteIngressContext {
             transport_lane: 6,
             peer_id: peer(8),
             source_payload_id: 101,
-            allow_gossip,
         }
     }
 
@@ -7145,12 +7572,11 @@ mod tests {
     }
 
     #[test]
-    fn pillar_vote_ingress_releases_known_and_gossip_only_after_acceptance() {
+    fn pillar_vote_ingress_releases_source_known_only_after_acceptance() {
         let mut api = ConsensusNetworkApi::new();
         let vote = signed_pillar_vote(0x41, 11, 90);
         let vote_rlp = vote.encode_rlp();
-        let decision =
-            api.ingest_pillar_vote_bundle(pillar_vote_context(true), vec![vote_rlp.clone()]);
+        let decision = api.ingest_pillar_vote_bundle(pillar_vote_context(), vec![vote_rlp.clone()]);
 
         assert_eq!(decision.len(), 1);
         assert_eq!(decision[0].status, NETWORK_INGRESS_STATUS_ACCEPTED);
@@ -7177,18 +7603,10 @@ mod tests {
             NETWORK_EFFECT_ACK_STATUS_ACCEPTED
         );
         let follow_ups = api.drain_work(6, 10);
-        assert_eq!(follow_ups.effects.len(), 2);
+        assert_eq!(follow_ups.effects.len(), 1);
         assert_eq!(
             follow_ups.effects[0].kind,
             NETWORK_EFFECT_KIND_MARK_PEER_KNOWN
-        );
-        assert_eq!(
-            follow_ups.effects[1].kind,
-            NETWORK_EFFECT_KIND_GOSSIP_PACKET
-        );
-        assert_eq!(
-            follow_ups.effects[1].packet_kind,
-            NETWORK_PACKET_KIND_PILLAR_VOTE
         );
     }
 
@@ -7197,8 +7615,8 @@ mod tests {
         let mut api = ConsensusNetworkApi::new();
         let vote = signed_pillar_vote(0x42, 11, 91).encode_rlp();
 
-        let malformed = api
-            .ingest_pillar_vote_bundle(pillar_vote_context(false), vec![vote.clone(), vec![0x7f]]);
+        let malformed =
+            api.ingest_pillar_vote_bundle(pillar_vote_context(), vec![vote.clone(), vec![0x7f]]);
         assert_eq!(malformed.len(), 2);
         assert!(malformed.iter().all(|decision| {
             decision.status == NETWORK_INGRESS_STATUS_PILLAR_VOTE_INVALID_RLP
@@ -7207,7 +7625,7 @@ mod tests {
         assert!(api.drain_work(6, 10).effects.is_empty());
 
         let duplicate =
-            api.ingest_pillar_vote_bundle(pillar_vote_context(false), vec![vote.clone(), vote]);
+            api.ingest_pillar_vote_bundle(pillar_vote_context(), vec![vote.clone(), vote]);
         assert_eq!(duplicate.len(), 2);
         assert!(duplicate.iter().all(|decision| {
             decision.status == NETWORK_INGRESS_STATUS_PILLAR_VOTE_INVALID_CONTEXT
@@ -7220,7 +7638,7 @@ mod tests {
     fn pillar_vote_bundle_marks_only_newly_accepted_members_and_never_gossips() {
         let mut api = ConsensusNetworkApi::new();
         let decisions = api.ingest_pillar_vote_bundle(
-            pillar_vote_context(false),
+            pillar_vote_context(),
             vec![
                 signed_pillar_vote(0x43, 11, 92).encode_rlp(),
                 signed_pillar_vote(0x44, 12, 93).encode_rlp(),
@@ -7259,7 +7677,7 @@ mod tests {
         let mut member = 0usize;
         let outcomes = ConsensusNetworkService::ingest_and_admit_pillar_vote_bundle_with(
             &api,
-            pillar_vote_context(false),
+            pillar_vote_context(),
             votes.clone(),
             |vote_rlp| {
                 let result = pillar_admission(vote_rlp, member == 0, member == 1);
@@ -7299,7 +7717,7 @@ mod tests {
         let mut member = 0usize;
         let error = ConsensusNetworkService::ingest_and_admit_pillar_vote_bundle_with(
             &api,
-            pillar_vote_context(true),
+            pillar_vote_context(),
             votes,
             |vote_rlp| {
                 let index = member;
@@ -7327,14 +7745,14 @@ mod tests {
         let next = signed_pillar_vote(0x58, 14, 107).encode_rlp();
         let outcomes = ConsensusNetworkService::ingest_and_admit_pillar_vote_bundle_with(
             &api,
-            pillar_vote_context(true),
+            pillar_vote_context(),
             vec![next.clone()],
             |vote_rlp| Ok(pillar_admission(vote_rlp, true, false)),
         )
         .expect("the next packet on the lane remains serviceable");
         assert_eq!(outcomes.len(), 1);
         let follow_ups = api.lock().unwrap().drain_work(6, 10).effects;
-        assert_eq!(follow_ups.len(), 2);
+        assert_eq!(follow_ups.len(), 1);
         assert!(follow_ups.iter().all(|effect| {
             effect.object_hash
                 == inspect_pillar_vote_from_rlp(&next)
@@ -7348,7 +7766,7 @@ mod tests {
     fn preactivation_pillar_bundle_queues_report_then_disconnect() {
         let mut api = ConsensusNetworkApi::with_pillar_schedule(20, 10);
         let decisions = api.ingest_pillar_vote_bundle(
-            pillar_vote_context(false),
+            pillar_vote_context(),
             vec![
                 signed_pillar_vote(0x59, 21, 108).encode_rlp(),
                 signed_pillar_vote(0x5a, 19, 109).encode_rlp(),
@@ -7395,7 +7813,7 @@ mod tests {
     fn failed_pillar_vote_admission_clears_context_without_follow_ups() {
         let mut api = ConsensusNetworkApi::new();
         api.ingest_pillar_vote_bundle(
-            pillar_vote_context(true),
+            pillar_vote_context(),
             vec![signed_pillar_vote(0x45, 11, 94).encode_rlp()],
         );
         let application = api.drain_work(6, 1);
@@ -7672,8 +8090,6 @@ mod tests {
             peer_id: peer(1),
             packet_kind: 0,
             payload_bytes: Vec::new(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: 0,
             object_hash: [0; 32],
             sync_kind: 2,
@@ -7691,8 +8107,6 @@ mod tests {
             peer_id: [0; 64],
             packet_kind: 0,
             payload_bytes: Vec::new(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: 0,
             object_hash: [0; 32],
             sync_kind: 0,
@@ -7736,8 +8150,6 @@ mod tests {
             peer_id: peer(1),
             packet_kind: 0,
             payload_bytes: Vec::new(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: 0,
             object_hash: [0; 32],
             sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
@@ -7811,8 +8223,6 @@ mod tests {
             peer_id: peer(1),
             packet_kind: 1,
             payload_bytes: vec![1],
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: 0,
             object_hash: [0; 32],
             sync_kind: 0,
@@ -7848,8 +8258,6 @@ mod tests {
             peer_id: peer(1),
             packet_kind: 0,
             payload_bytes: Vec::new(),
-            related_payload_bytes: Vec::new(),
-            exclude_peers: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
             object_hash: hash(0xAA),
             sync_kind: 0,
@@ -8352,7 +8760,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_admission_aggregates_only_accepted_members_before_gossip() {
+    fn bundle_admission_releases_private_aggregation_without_generic_gossip() {
         let mut api = ConsensusNetworkApi::new();
         let reference = vote_fact(10, 3, 2, PbftVoteType::Soft);
         let votes = [
@@ -8379,30 +8787,7 @@ mod tests {
             api.report_effect_results(vec![result]);
         }
 
-        let gossip = api.drain_work(6, 10);
-        assert_eq!(gossip.effects.len(), 1);
-        let effect = &gossip.effects[0];
-        assert_eq!(effect.kind, NETWORK_EFFECT_KIND_GOSSIP_PACKET);
-        assert_eq!(effect.packet_kind, NETWORK_PACKET_KIND_PBFT_VOTES_BUNDLE);
-        assert_eq!(effect.exclude_peers, vec![peer(9)]);
-        assert_eq!(effect.period, 10);
-        assert_eq!(effect.round, 3);
-        let payload = Rlp::new(&effect.payload_bytes);
-        assert_eq!(payload.item_count().unwrap(), 5);
-        assert_eq!(payload.at(0).unwrap().data().unwrap(), hash(0xA4));
-        assert_eq!(payload.val_at::<u64>(1).unwrap(), 10);
-        assert_eq!(payload.val_at::<u64>(2).unwrap(), 3);
-        assert_eq!(payload.val_at::<u64>(3).unwrap(), 2);
-        assert_eq!(payload.at(4).unwrap().item_count().unwrap(), 2);
-        let expected = build_optimized_pbft_vote_bundle(
-            &[votes[0].clone(), votes[2].clone()],
-            H256::from(hash(0xA4)),
-            10,
-            3,
-            2,
-        )
-        .unwrap();
-        assert_eq!(effect.payload_bytes, expected.bundle_rlp);
+        assert!(api.drain_work(6, 10).effects.is_empty());
     }
 
     #[test]
@@ -8589,22 +8974,16 @@ mod tests {
         let mut accepted = effect_result(&next.effects[0], NETWORK_EFFECT_RESULT_STATUS_OK);
         accepted.admission_accepted = true;
         api.report_effect_results(vec![accepted]);
-        let gossip = api.drain_work(6, 10);
-        assert_eq!(gossip.effects.len(), 1);
-        assert_eq!(
-            gossip.effects[0].packet_kind,
-            NETWORK_PACKET_KIND_PBFT_VOTES_BUNDLE
-        );
+        assert!(api.drain_work(6, 10).effects.is_empty());
     }
 
     #[test]
-    fn post_admission_route_emits_transport_follow_ups_after_native_block_publication() {
+    fn post_admission_route_emits_source_known_follow_up_after_native_block_publication() {
         let mut api = ConsensusNetworkApi::new();
         let mut context = vote_context();
         context.transport_lane = 6;
         context.peer_id = peer(10);
         context.source_payload_id = 79;
-        context.allow_gossip = true;
         context.enqueue_admission = true;
         context.vote_hash = hash(0xEF);
         context.vote_rlp = vec![0xc3, 1, 2, 3];
@@ -8640,7 +9019,7 @@ mod tests {
         api.report_effect_results(vec![result]);
 
         let dependents = api.drain_work(6, 10);
-        assert_eq!(dependents.effects.len(), 2);
+        assert_eq!(dependents.effects.len(), 1);
         assert_eq!(
             dependents.effects[0].kind,
             NETWORK_EFFECT_KIND_MARK_PEER_KNOWN
@@ -8650,28 +9029,6 @@ mod tests {
             NETWORK_OBJECT_KIND_PBFT_BLOCK
         );
         assert_eq!(dependents.effects[0].dependency_id, 0);
-        assert_eq!(
-            dependents.effects[1].kind,
-            NETWORK_EFFECT_KIND_GOSSIP_PACKET
-        );
-        assert_eq!(dependents.effects[1].peer_id, peer(10));
-        assert_eq!(
-            dependents.effects[1].packet_kind,
-            NETWORK_PACKET_KIND_PBFT_VOTE
-        );
-        assert_eq!(dependents.effects[1].exclude_peers, vec![peer(10)]);
-        assert_eq!(
-            dependents.effects[1].object_kind,
-            NETWORK_OBJECT_KIND_PBFT_VOTE
-        );
-        assert_eq!(dependents.effects[1].object_hash, hash(0xEF));
-        assert_eq!(dependents.effects[1].payload_bytes, vec![0xc3, 1, 2, 3]);
-        assert_eq!(
-            dependents.effects[1].related_payload_bytes,
-            vec![0xc2, 4, 5]
-        );
-        assert_eq!(dependents.effects[1].source_payload_id, 79);
-        assert_eq!(dependents.effects[1].dependency_id, 0);
     }
 
     #[test]
@@ -8707,12 +9064,6 @@ mod tests {
             dependent.effects[0].object_kind,
             NETWORK_OBJECT_KIND_PBFT_BLOCK
         );
-        assert!(
-            dependent
-                .effects
-                .iter()
-                .all(|effect| effect.kind != NETWORK_EFFECT_KIND_GOSSIP_PACKET)
-        );
     }
 
     #[test]
@@ -8741,11 +9092,10 @@ mod tests {
     }
 
     #[test]
-    fn failed_block_known_ack_does_not_cancel_gossip_after_native_publication() {
+    fn failed_block_known_ack_leaves_no_generic_gossip_after_native_publication() {
         let mut api = ConsensusNetworkApi::new();
         let mut context = vote_context();
         context.enqueue_admission = true;
-        context.allow_gossip = true;
         context.vote_hash = hash(0xA2);
         context.vote_rlp = vec![0xc1, 1];
         context.pbft_block_rlp = vec![0xc1, 2];
@@ -8770,10 +9120,7 @@ mod tests {
             NETWORK_EFFECT_RESULT_STATUS_FAILED,
         )]);
 
-        let gossip = api.drain_work(6, 10);
-        assert_eq!(gossip.effects.len(), 1);
-        assert_eq!(gossip.effects[0].kind, NETWORK_EFFECT_KIND_GOSSIP_PACKET);
-        assert_eq!(gossip.effects[0].dependency_id, 0);
+        assert!(api.drain_work(6, 10).effects.is_empty());
     }
 
     #[test]
@@ -8824,7 +9171,6 @@ mod tests {
             let mut context = vote_context();
             context.transport_lane = 6;
             context.enqueue_admission = true;
-            context.allow_gossip = true;
             context.peer_id = peer(byte);
             context.vote_hash = hash(byte);
             context.vote_rlp = vec![0xc1, byte];
@@ -8844,12 +9190,6 @@ mod tests {
         let mut result_two = effect_result(&batch.effects[1], NETWORK_EFFECT_RESULT_STATUS_OK);
         result_two.admission_accepted = true;
         api.report_effect_results(vec![result_one, result_two]);
-        assert!(
-            batch
-                .effects
-                .iter()
-                .all(|effect| effect.related_payload_bytes.is_empty())
-        );
     }
 
     #[test]
@@ -9089,13 +9429,11 @@ mod tests {
             },
             peer_id: peer(3),
             observe_transaction: false,
-            gossip_transaction: false,
             transaction_rlp: vec![0x01],
         };
 
         assert!(transaction_packet_member_is_benign(&report));
         assert!(!report.observe_transaction);
-        assert!(!report.gossip_transaction);
     }
 
     #[test]
@@ -9115,14 +9453,9 @@ mod tests {
     fn transaction_gossip_known_marks_depend_on_successful_send() {
         let mut api = ConsensusNetworkApi::new();
         let decision = api.enqueue_transaction_gossip(
-            NetworkTransactionGossipRequest {
-                transport_lane: 6,
-                source_payload_id: 77,
-                peers: vec![NetworkTransactionGossipPeer {
-                    peer_id: peer(4),
-                    known_hashes: Vec::new(),
-                }],
-            },
+            6,
+            77,
+            vec![(peer(4), Vec::new())],
             vec![TransactionGossipAccount {
                 sender: [3; 20].into(),
                 transactions: vec![crate::TransactionGossipEntry {
@@ -9138,6 +9471,304 @@ mod tests {
         let failed = effect_result(&send[0], NETWORK_EFFECT_RESULT_STATUS_FAILED);
         assert_eq!(api.report_effect_results(vec![failed]).status, 0);
         assert!(api.drain_work(6, 10).effects.is_empty());
+    }
+
+    #[test]
+    fn exact_pbft_vote_egress_filters_snapshot_and_builds_complete_packet() {
+        let mut api = ConsensusNetworkApi::new();
+        let vote = canonical_bundle_vote(0x42);
+        let preparation = api
+            .prepare_egress(
+                NetworkEgressPrepareRequest {
+                    family: NETWORK_EGRESS_FAMILY_PBFT_VOTE,
+                    transport_lane: 6,
+                    source_payload_id: 91,
+                    source_peer_id: peer(1),
+                    rebroadcast: false,
+                    object_hash: [0; 32],
+                    payload_bytes: encode_pbft_vote_egress_packet(&vote.vote_rlp, None, 77),
+                    related_payload_bytes: Vec::new(),
+                },
+                Vec::new(),
+                Vec::new(),
+                77,
+            )
+            .unwrap();
+        assert_eq!(preparation.probes.len(), 1);
+        assert_eq!(
+            preparation.probes[0].object_hash,
+            vote.hash.to_fixed_bytes()
+        );
+
+        let decision = api
+            .plan_egress(NetworkEgressPlanRequest {
+                token: preparation.token,
+                peers: vec![
+                    NetworkEgressPeerSnapshot {
+                        peer_id: peer(1),
+                        syncing: false,
+                        known_probe_ids: Vec::new(),
+                    },
+                    NetworkEgressPeerSnapshot {
+                        peer_id: peer(2),
+                        syncing: true,
+                        known_probe_ids: Vec::new(),
+                    },
+                    NetworkEgressPeerSnapshot {
+                        peer_id: peer(3),
+                        syncing: false,
+                        known_probe_ids: vec![0],
+                    },
+                    NetworkEgressPeerSnapshot {
+                        peer_id: peer(4),
+                        syncing: false,
+                        known_probe_ids: Vec::new(),
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(decision.queued_effect_count, 2);
+        let sends = api.drain_work(6, 10).effects;
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].kind, NETWORK_EFFECT_KIND_SEND_PACKET);
+        assert_eq!(sends[0].peer_id, peer(4));
+        let decoded = decode_pbft_vote_packet(&sends[0].payload_bytes).unwrap();
+        assert_eq!(decoded.vote_rlp, vote.vote_rlp);
+        assert!(decoded.pbft_block_rlp.is_none());
+        api.report_effect_results(vec![effect_result(
+            &sends[0],
+            NETWORK_EFFECT_RESULT_STATUS_OK,
+        )]);
+        let marks = api.drain_work(6, 10).effects;
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].kind, NETWORK_EFFECT_KIND_MARK_PEER_KNOWN);
+        assert_eq!(marks[0].dependency_id, sends[0].effect_id);
+        assert!(
+            api.plan_egress(NetworkEgressPlanRequest {
+                token: preparation.token,
+                peers: Vec::new()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn exact_bundle_egress_filters_members_before_native_reencoding() {
+        let mut api = ConsensusNetworkApi::new();
+        let votes = vec![canonical_bundle_vote(0x42), canonical_bundle_vote(0x43)];
+        let first = inspect_canonical_pbft_vote(&votes[0].vote_rlp).unwrap();
+        let bundle = build_optimized_pbft_vote_bundle(
+            &votes,
+            first.block_hash,
+            first.period,
+            first.round,
+            first.step,
+        )
+        .unwrap();
+        let preparation = api
+            .prepare_egress(
+                NetworkEgressPrepareRequest {
+                    family: NETWORK_EGRESS_FAMILY_PBFT_VOTES_BUNDLE,
+                    transport_lane: 6,
+                    source_payload_id: 92,
+                    source_peer_id: [0; 64],
+                    rebroadcast: false,
+                    object_hash: [0; 32],
+                    payload_bytes: bundle.bundle_rlp,
+                    related_payload_bytes: Vec::new(),
+                },
+                Vec::new(),
+                Vec::new(),
+                77,
+            )
+            .unwrap();
+        assert_eq!(preparation.probes.len(), 2);
+        api.plan_egress(NetworkEgressPlanRequest {
+            token: preparation.token,
+            peers: vec![NetworkEgressPeerSnapshot {
+                peer_id: peer(5),
+                syncing: false,
+                known_probe_ids: vec![0],
+            }],
+        })
+        .unwrap();
+        let send = api.drain_work(6, 10).effects;
+        assert_eq!(send.len(), 1);
+        let decoded = decode_pbft_votes_bundle_packet(&send[0].payload_bytes).unwrap();
+        assert_eq!(decoded, vec![votes[1].vote_rlp.clone()]);
+    }
+
+    #[test]
+    fn application_bundle_egress_chunks_more_than_one_wire_packet() {
+        let mut api = ConsensusNetworkApi::new();
+        let vote = canonical_bundle_vote(0x42);
+        let inspected = inspect_canonical_pbft_vote(&vote.vote_rlp).unwrap();
+        let votes = vec![vote; MAX_VOTES_PER_BUNDLE_PACKET + 1];
+        let bundle = build_optimized_pbft_vote_bundle(
+            &votes,
+            inspected.block_hash,
+            inspected.period,
+            inspected.round,
+            inspected.step,
+        )
+        .unwrap();
+        let preparation = api
+            .prepare_egress(
+                NetworkEgressPrepareRequest {
+                    family: NETWORK_EGRESS_FAMILY_PBFT_VOTES_BUNDLE,
+                    transport_lane: 6,
+                    source_payload_id: 93,
+                    source_peer_id: [0; 64],
+                    rebroadcast: false,
+                    object_hash: [0; 32],
+                    payload_bytes: bundle.bundle_rlp,
+                    related_payload_bytes: Vec::new(),
+                },
+                Vec::new(),
+                Vec::new(),
+                77,
+            )
+            .unwrap();
+        assert_eq!(preparation.probes.len(), MAX_VOTES_PER_BUNDLE_PACKET + 1);
+        api.plan_egress(NetworkEgressPlanRequest {
+            token: preparation.token,
+            peers: vec![NetworkEgressPeerSnapshot {
+                peer_id: peer(5),
+                syncing: false,
+                known_probe_ids: Vec::new(),
+            }],
+        })
+        .unwrap();
+        let sends = api.drain_work(6, 10).effects;
+        assert_eq!(sends.len(), 2);
+        assert_eq!(
+            decode_pbft_votes_bundle_packet(&sends[0].payload_bytes)
+                .unwrap()
+                .len(),
+            MAX_VOTES_PER_BUNDLE_PACKET
+        );
+        assert_eq!(
+            decode_pbft_votes_bundle_packet(&sends[1].payload_bytes)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn bundle_effect_limit_counts_every_chunk_send() {
+        let mut api = ConsensusNetworkApi::new();
+        let vote = canonical_bundle_vote(0x42);
+        let vote_count = 2_047;
+        let probes = (0..vote_count)
+            .map(|probe_id| NetworkEgressProbe {
+                probe_id: probe_id as u32,
+                object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+                object_hash: vote.hash.to_fixed_bytes(),
+            })
+            .collect::<Vec<_>>();
+        api.pending_egress.insert(
+            77,
+            PendingNetworkEgress {
+                transport_lane: 6,
+                source_payload_id: 95,
+                source_peer_id: [0; 64],
+                rebroadcast: false,
+                probes,
+                payload: PendingNetworkEgressPayload::PbftVotesBundle {
+                    votes: vec![vote; vote_count],
+                    period: 1,
+                    round: 1,
+                },
+            },
+        );
+        let peers = (1..=32)
+            .map(|id| NetworkEgressPeerSnapshot {
+                peer_id: peer(id),
+                syncing: false,
+                known_probe_ids: Vec::new(),
+            })
+            .collect();
+        let error = api
+            .plan_egress(NetworkEgressPlanRequest { token: 77, peers })
+            .unwrap_err();
+        assert!(error.to_string().contains("NETWORK_EGRESS_EFFECT_LIMIT"));
+        assert!(api.pending_effects.is_empty());
+    }
+
+    #[test]
+    fn dag_egress_builds_peer_specific_packets_and_transaction_marks() {
+        let mut api = ConsensusNetworkApi::new();
+        let transaction = crate::TransactionGossipEntry {
+            hash: H256::from([8; 32]),
+            transaction_rlp: vec![0x01],
+        };
+        let preparation = api
+            .prepare_egress(
+                NetworkEgressPrepareRequest {
+                    family: NETWORK_EGRESS_FAMILY_DAG_BLOCK,
+                    transport_lane: 6,
+                    source_payload_id: 94,
+                    source_peer_id: [0; 64],
+                    rebroadcast: false,
+                    object_hash: [7; 32],
+                    payload_bytes: vec![0xc0],
+                    related_payload_bytes: Vec::new(),
+                },
+                Vec::new(),
+                vec![transaction.clone()],
+                77,
+            )
+            .unwrap();
+        assert_eq!(preparation.probes.len(), 2);
+        api.plan_egress(NetworkEgressPlanRequest {
+            token: preparation.token,
+            peers: vec![
+                NetworkEgressPeerSnapshot {
+                    peer_id: peer(5),
+                    syncing: false,
+                    known_probe_ids: vec![1],
+                },
+                NetworkEgressPeerSnapshot {
+                    peer_id: peer(6),
+                    syncing: false,
+                    known_probe_ids: Vec::new(),
+                },
+            ],
+        })
+        .unwrap();
+        let sends = api.drain_work(6, 10).effects;
+        assert_eq!(sends.len(), 2);
+        let known_packet = sends.iter().find(|send| send.peer_id == peer(5)).unwrap();
+        let unknown_packet = sends.iter().find(|send| send.peer_id == peer(6)).unwrap();
+        assert_eq!(
+            decode_dag_block_packet(&known_packet.payload_bytes)
+                .unwrap()
+                .0
+                .len(),
+            0
+        );
+        assert_eq!(
+            decode_dag_block_packet(&unknown_packet.payload_bytes)
+                .unwrap()
+                .0,
+            vec![transaction.transaction_rlp]
+        );
+        api.report_effect_results(
+            sends
+                .iter()
+                .map(|send| effect_result(send, NETWORK_EFFECT_RESULT_STATUS_OK))
+                .collect(),
+        );
+        let marks = api.drain_work(6, 10).effects;
+        assert_eq!(marks.len(), 3);
+        assert_eq!(
+            marks
+                .iter()
+                .filter(|mark| mark.object_kind == NETWORK_OBJECT_KIND_TRANSACTION)
+                .count(),
+            1
+        );
     }
 
     fn dag_rejection_context() -> NetworkDagBlockIngressContext {

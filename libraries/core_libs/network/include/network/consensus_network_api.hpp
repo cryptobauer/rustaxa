@@ -102,7 +102,6 @@ struct ConsensusPacketRequest {
   bool validate_max_round_step = false;
   bool can_request_pbft_sync = false;
   bool can_request_next_votes_sync = false;
-  bool allow_gossip = false;
 };
 
 /** Plain physical effect selected by the native consensus network service. */
@@ -114,8 +113,6 @@ struct ConsensusTransportEffect {
   std::array<uint8_t, 64> peer_id{};
   uint32_t packet_kind = 0;
   std::vector<uint8_t> payload_bytes;
-  std::vector<uint8_t> related_payload_bytes;
-  std::vector<std::array<uint8_t, 64>> excluded_peers;
   uint8_t object_kind = 0;
   std::array<uint8_t, 32> object_hash{};
   uint8_t sync_kind = 0;
@@ -137,6 +134,35 @@ struct ConsensusTransportExecutor {
   std::function<ConsensusTransportExecutionResult(const ConsensusTransportEffect&)> execute;
 };
 
+/** Canonical object identity requested by native egress policy from socket-owned peer-known caches. */
+struct ConsensusEgressProbe {
+  uint32_t probe_id = 0;
+  uint8_t object_kind = 0;
+  std::array<uint8_t, 32> object_hash{};
+};
+
+/** Immutable physical peer facts for one prepared application-owned egress operation. */
+struct ConsensusEgressPeerSnapshot {
+  std::array<uint8_t, 64> peer_id{};
+  bool syncing = false;
+  std::vector<uint32_t> known_probe_ids;
+};
+
+using ConsensusEgressPeerSnapshotProvider =
+    std::function<std::vector<ConsensusEgressPeerSnapshot>(const std::vector<ConsensusEgressProbe>&)>;
+
+/** Canonical application egress input; native policy constructs complete packets and selects exact target peers. */
+struct ConsensusEgressRequest {
+  uint8_t family = 0;
+  uint32_t transport_lane = 0;
+  uint64_t source_payload_id = 0;
+  std::array<uint8_t, 64> source_peer_id{};
+  bool rebroadcast = false;
+  std::array<uint8_t, 32> object_hash{};
+  std::vector<uint8_t> payload_bytes;
+  std::vector<uint8_t> related_payload_bytes;
+};
+
 /** Compact terminal summary for one canonical vote or pillar-vote packet operation. */
 struct ConsensusPacketOutcome {
   uint8_t status = 0;
@@ -148,6 +174,7 @@ struct ConsensusPacketOutcome {
   bool has_peer_pbft_chain_size = false;
   uint64_t peer_pbft_chain_size = 0;
   std::string error_code;
+  std::vector<uint8_t> egress_payload_bytes;
 };
 
 /** Canonical peer snapshot and local cursor used to select and start one native PBFT-sync generation. */
@@ -367,30 +394,12 @@ struct PbftSyncIngressExecutor {
   std::function<bool(const PbftSyncSlashingTransaction&)> submit_slashing_transaction;
 };
 
-/** Physical tarcap leaves for native transaction-packet admission effects. */
-struct TransactionPacketExecutor {
-  std::function<void(const std::array<uint8_t, 64>&, const std::array<uint8_t, 32>&)> mark_transaction_known;
-  std::function<bool(const std::vector<uint8_t>&, const std::vector<std::array<uint8_t, 64>>&)> gossip_packet;
-};
-
 /** Terminal native decision for one canonical transaction packet. */
 struct TransactionPacketOutcome {
   uint8_t status = 0;
   uint32_t queued_effect_count = 0;
   size_t admitted_transaction_count = 0;
   std::string error_code;
-};
-
-/** One physical peer and its bounded known subset for native periodic transaction gossip. */
-struct TransactionGossipPeer {
-  std::array<uint8_t, 64> peer_id{};
-  std::vector<std::array<uint8_t, 32>> known_hashes;
-};
-
-/** Physical leaves for exact native periodic transaction-gossip effects. */
-struct TransactionGossipExecutor {
-  std::function<bool(const std::array<uint8_t, 64>&, const std::vector<uint8_t>&)> send_packet;
-  std::function<void(const std::array<uint8_t, 64>&, const std::array<uint8_t, 32>&)> mark_transaction_known;
 };
 
 /** Physical send leaf and terminal outcome for one get-DAG-sync request. */
@@ -416,18 +425,11 @@ struct PendingDagBlocksOutcome {
   std::string error_code;
 };
 
-/** One physical peer candidate for exact native DAG-block fanout. */
-struct DagGossipPeer {
-  std::array<uint8_t, 64> peer_id{};
-  bool syncing = false;
-  bool known_block = false;
-};
-
 /** Physical peer-known and exact packet-send leaves for native DAG packet ingress. */
 struct DagPacketExecutor {
   std::function<void(const std::array<uint8_t, 64>&, const std::array<uint8_t, 32>&)> mark_transaction_known;
   std::function<void(const std::array<uint8_t, 64>&, const std::array<uint8_t, 32>&)> mark_dag_block_known;
-  std::function<std::vector<DagGossipPeer>(const std::array<uint8_t, 32>&)> gossip_candidates;
+  ConsensusEgressPeerSnapshotProvider gossip_snapshot;
   std::function<bool(const std::array<uint8_t, 64>&, const std::vector<uint8_t>&)> send_packet;
 };
 
@@ -598,19 +600,23 @@ class ConsensusNetworkApi final {
   /** Selects exact sync follow-up operations after one accepted periodic status packet. */
   StatusFollowupOutcome planStatusFollowup(const StatusFollowupRequest& request) const;
 
+  /**
+   * Constructs and routes one application-originated consensus packet family.
+   *
+   * Native preparation decodes canonical inputs, retains complete packets and exposes only exact object probes. The
+   * provider atomically snapshots socket-owned syncing/known facts for those probes; native planning then emits exact
+   * target sends and dependent known marks. A failed snapshot or plan cancels the one-shot preparation before
+   * returning.
+   */
+  ConsensusPacketOutcome routeConsensusEgress(const ConsensusEgressRequest& request,
+                                              const ConsensusEgressPeerSnapshotProvider& peer_snapshot_provider,
+                                              const ConsensusTransportExecutor& executor);
+
   /** Routes one complete canonical transaction packet and executes only peer-known and physical gossip leaves. */
   TransactionPacketOutcome ingestTransactionPacket(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
-                                                   uint64_t source_payload_id, const std::vector<uint8_t>& packet_rlp,
-                                                   bool rebroadcast, const FullNodeConfig& config,
-                                                   const TransactionPacketExecutor& executor);
-
-  /** Returns the bounded native candidate hash set used to sample physical peer-known caches. */
-  std::vector<std::array<uint8_t, 32>> transactionGossipCandidateHashes() const;
-
-  /** Plans and executes exact per-peer periodic transaction packets from the native queue. */
-  TransactionPacketOutcome planTransactionGossip(uint32_t transport_lane,
-                                                 const std::vector<TransactionGossipPeer>& peers,
-                                                 const TransactionGossipExecutor& executor);
+                                                    uint64_t source_payload_id, const std::vector<uint8_t>& packet_rlp,
+                                                    const FullNodeConfig& config,
+                                                    const ConsensusTransportExecutor& executor);
 
   /** Serves one canonical get-DAG-sync request from application-owned DAG/transaction bytes. */
   GetDagSyncOutcome serveGetDagSyncRequest(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
@@ -680,9 +686,14 @@ class ConsensusNetworkApi final {
   PbftSyncStatus pbftSyncStatus(uint64_t now_ms) const;
 
  private:
+  struct TransportDrainOutcome {
+    size_t successful_effect_count = 0;
+    size_t failed_effect_count = 0;
+  };
   std::unique_lock<std::mutex> lockTransportLane(uint32_t transport_lane);
-  void drainAndExecuteTransportEffects(uint32_t transport_lane, uint64_t source_payload_id, bool source_scoped,
-                                       const ConsensusTransportExecutor& executor);
+  TransportDrainOutcome drainAndExecuteTransportEffects(uint32_t transport_lane, uint64_t source_payload_id,
+                                                        bool source_scoped,
+                                                        const ConsensusTransportExecutor& executor);
   bool submitSlashingTransaction(size_t wallet_index, const std::array<uint8_t, 32>& nonce,
                                  const std::array<uint8_t, 20>& contract_address, const std::array<uint8_t, 32>& value,
                                  uint64_t gas_limit, const std::vector<uint8_t>& call_data,

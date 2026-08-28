@@ -358,6 +358,37 @@ inline bool TaraxaCapability::filterSyncIrrelevantPackets(SubprotocolPacketType 
 
 const std::shared_ptr<PeersState> &TaraxaCapability::getPeersState() { return peers_state_; }
 
+#ifdef RUSTAXA_ENABLE
+network::ConsensusPacketOutcome TaraxaCapability::gossipCanonicalVote(
+    const std::vector<uint8_t> &vote_rlp, const std::vector<uint8_t> &proposed_block_rlp, bool rebroadcast,
+    uint64_t source_payload_id) {
+  return std::dynamic_pointer_cast<RustVotePacketHandler>(
+             packets_handlers_->getSpecificHandler(SubprotocolPacketType::kVotePacket))
+      ->gossipCanonicalVote(vote_rlp, proposed_block_rlp, rebroadcast, source_payload_id);
+}
+
+network::ConsensusPacketOutcome TaraxaCapability::gossipCanonicalVotesBundle(
+    const std::vector<uint8_t> &votes_bundle_rlp, bool rebroadcast, uint64_t source_payload_id) {
+  return std::dynamic_pointer_cast<RustVotesBundlePacketHandler>(
+             packets_handlers_->getSpecificHandler(SubprotocolPacketType::kVotesBundlePacket))
+      ->gossipCanonicalVotesBundle(votes_bundle_rlp, rebroadcast, source_payload_id);
+}
+
+network::ConsensusPacketOutcome TaraxaCapability::gossipCanonicalPillarVote(
+    const std::vector<uint8_t> &pillar_vote_rlp, bool rebroadcast, uint64_t source_payload_id) {
+  return std::dynamic_pointer_cast<RustPillarVotePacketHandler>(
+             packets_handlers_->getSpecificHandler(SubprotocolPacketType::kPillarVotePacket))
+      ->gossipCanonicalPillarVote(pillar_vote_rlp, rebroadcast, source_payload_id);
+}
+
+network::ConsensusPacketOutcome TaraxaCapability::gossipCanonicalDagBlock(
+    const std::vector<uint8_t> &block_rlp, const std::array<uint8_t, 32> &block_hash, uint64_t source_payload_id) {
+  return std::dynamic_pointer_cast<RustDagBlockPacketHandler>(
+             packets_handlers_->getSpecificHandler(SubprotocolPacketType::kDagBlockPacket))
+      ->gossipCanonicalDagBlock(block_rlp, block_hash, source_payload_id);
+}
+#endif
+
 const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersionHandlers =
     [](const std::string &logs_prefix, const FullNodeConfig &config, const h256 &genesis_hash,
        const std::shared_ptr<PeersState> &peers_state,

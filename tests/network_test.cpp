@@ -76,6 +76,7 @@ TEST(ConsensusHostPortsTest, processClocksExposeMonotonicAndUnixDomains) {
 }
 #endif
 
+#ifndef RUSTAXA_ENABLE
 TEST_F(NetworkTest, pillar_vote_rebroadcast_resends_vote_known_to_peer) {
   class TestPillarVotePacketHandler final : public network::tarcap::IPillarVotePacketHandler {
    public:
@@ -129,6 +130,7 @@ TEST_F(NetworkTest, pillar_vote_rebroadcast_resends_vote_known_to_peer) {
   ASSERT_EQ(handler.sent_to.size(), 1);
   EXPECT_EQ(handler.sent_to.front(), peer_id);
 }
+#endif
 
 // Test verifies saving network to a file and restoring it from a file
 // is successful. Once restored from the file it is able to reestablish

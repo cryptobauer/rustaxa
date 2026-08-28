@@ -28,7 +28,6 @@ fn consensus_packet_request_to_domain(
         validate_max_round_step: value.validate_max_round_step,
         can_request_pbft_sync: value.can_request_pbft_sync,
         can_request_next_votes_sync: value.can_request_next_votes_sync,
-        allow_gossip: value.allow_gossip,
     }
 }
 
@@ -45,21 +44,6 @@ pub fn create_consensus_network_api(
         pbft: service.0.pbft_arc_for_bridge(),
         final_chain: service.0.final_chain_arc_for_bridge(),
     })
-}
-
-/// Returns the bounded ordered candidate identities used for peer-known tests.
-pub fn consensus_network_transaction_gossip_candidate_hashes(
-    application: &BridgeApp,
-) -> anyhow::Result<Vec<rustaxa_ffi::DagHash>> {
-    Ok(application
-        .0
-        .prepare_transaction_gossip(5500)?
-        .into_iter()
-        .flat_map(|account| account.transactions)
-        .map(|transaction| rustaxa_ffi::DagHash {
-            hash: transaction.hash.into(),
-        })
-        .collect())
 }
 
 impl BridgeConsensusNetworkApi {
@@ -490,60 +474,75 @@ impl BridgeConsensusNetworkApi {
         ))
     }
 
-    /// Plans exact per-peer transaction packets from a bounded native snapshot.
-    pub fn consensus_network_plan_transaction_gossip(
+    /// Prepares canonical packets and exact known-object probes for one
+    /// application-owned egress operation. DAG and transaction payloads are
+    /// materialized from native application state; no C++ consensus object or
+    /// transaction sidecar crosses this boundary.
+    pub fn consensus_network_prepare_egress(
         &self,
         application: &BridgeApp,
-        request: rustaxa_ffi::NetworkTransactionGossipRequest,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        let snapshot = application.0.prepare_transaction_gossip(5500)?;
-        Ok(to_bridge_network_ingress_decision(
-            self.network.plan_transaction_gossip(
-                rustaxa_consensus::NetworkTransactionGossipRequest {
-                    transport_lane: request.transport_lane,
-                    source_payload_id: request.source_payload_id,
-                    peers: request
-                        .peers
-                        .into_iter()
-                        .map(|peer| rustaxa_consensus::NetworkTransactionGossipPeer {
-                            peer_id: peer.peer_id,
-                            known_hashes: peer
-                                .known_hashes
-                                .into_iter()
-                                .map(|hash| hash.hash)
-                                .collect(),
-                        })
-                        .collect(),
-                },
-                snapshot,
-            )?,
-        ))
+        request: rustaxa_ffi::NetworkEgressPrepareRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkEgressPreparation> {
+        let (transaction_accounts, dag_transactions) =
+            application.0.prepare_network_egress_inputs(
+                request.family,
+                request.object_hash,
+                &request.payload_bytes,
+            )?;
+        let payload_bytes = request.payload_bytes;
+        let preparation = self.network.prepare_egress(
+            rustaxa_consensus::NetworkEgressPrepareRequest {
+                family: request.family,
+                transport_lane: request.transport_lane,
+                source_payload_id: request.source_payload_id,
+                source_peer_id: request.source_peer_id,
+                rebroadcast: request.rebroadcast,
+                object_hash: request.object_hash,
+                payload_bytes,
+                related_payload_bytes: request.related_payload_bytes,
+            },
+            transaction_accounts,
+            dag_transactions,
+        )?;
+        Ok(rustaxa_ffi::NetworkEgressPreparation {
+            token: preparation.token,
+            probes: preparation
+                .probes
+                .into_iter()
+                .map(|probe| rustaxa_ffi::NetworkEgressProbe {
+                    probe_id: probe.probe_id,
+                    object_kind: probe.object_kind,
+                    object_hash: probe.object_hash,
+                })
+                .collect(),
+        })
     }
 
-    /// Plans exact DAG fanout after application admission has committed.
-    pub fn consensus_network_plan_dag_block_gossip(
+    /// Commits an immutable peer snapshot and queues exact-target transport effects.
+    pub fn consensus_network_plan_egress(
         &self,
-        request: rustaxa_ffi::NetworkDagGossipRequest,
+        token: u64,
+        peers: Vec<rustaxa_ffi::NetworkEgressPeerSnapshot>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
             self.network
-                .plan_dag_block_gossip(rustaxa_consensus::NetworkDagGossipRequest {
-                    transport_lane: request.transport_lane,
-                    source_payload_id: request.source_payload_id,
-                    source_peer_id: request.source_peer_id,
-                    block_hash: request.block_hash,
-                    packet_rlp: request.packet_rlp,
-                    peers: request
-                        .peers
+                .plan_egress(rustaxa_consensus::NetworkEgressPlanRequest {
+                    token,
+                    peers: peers
                         .into_iter()
-                        .map(|peer| rustaxa_consensus::NetworkDagGossipPeer {
+                        .map(|peer| rustaxa_consensus::NetworkEgressPeerSnapshot {
                             peer_id: peer.peer_id,
                             syncing: peer.syncing,
-                            known_block: peer.known_block,
+                            known_probe_ids: peer.known_probe_ids,
                         })
                         .collect(),
                 })?,
         ))
+    }
+
+    /// Cancels one preparation during C++ lane-operation unwinding.
+    pub fn consensus_network_cancel_egress(&self, token: u64) -> anyhow::Result<bool> {
+        self.network.cancel_egress(token)
     }
 }
 
@@ -558,12 +557,6 @@ fn to_bridge_network_effect(
         peer_id: effect.peer_id,
         packet_kind: effect.packet_kind,
         payload_bytes: effect.payload_bytes,
-        related_payload_bytes: effect.related_payload_bytes,
-        exclude_peers: effect
-            .exclude_peers
-            .into_iter()
-            .map(|id| rustaxa_ffi::NetworkPeerId { id })
-            .collect(),
         object_kind: effect.object_kind,
         object_hash: effect.object_hash,
         sync_kind: effect.sync_kind,
@@ -684,6 +677,7 @@ fn to_bridge_pbft_vote_packet_report(
             .collect(),
         has_peer_pbft_chain_size: value.has_peer_pbft_chain_size,
         peer_pbft_chain_size: value.peer_pbft_chain_size,
+        egress_payload_bytes: value.egress_payload_bytes,
     }
 }
 
@@ -705,6 +699,7 @@ fn pbft_peer_packet_error_report(error_code: String) -> rustaxa_ffi::NetworkPbft
         outcomes: Vec::new(),
         has_peer_pbft_chain_size: false,
         peer_pbft_chain_size: 0,
+        egress_payload_bytes: Vec::new(),
     }
 }
 

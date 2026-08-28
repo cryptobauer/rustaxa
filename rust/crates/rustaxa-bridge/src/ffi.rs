@@ -267,10 +267,6 @@ pub mod rustaxa_ffi {
     }
 
     /// Fixed-size peer id used by network effect payloads.
-    struct NetworkPeerId {
-        id: [u8; 64],
-    }
-
     /// Executor-visible network effect planned by Rust consensus.
     struct NetworkEffect {
         effect_id: u64,
@@ -280,8 +276,6 @@ pub mod rustaxa_ffi {
         peer_id: [u8; 64],
         packet_kind: u32,
         payload_bytes: Vec<u8>,
-        related_payload_bytes: Vec<u8>,
-        exclude_peers: Vec<NetworkPeerId>,
         object_kind: u8,
         object_hash: [u8; 32],
         sync_kind: u8,
@@ -341,7 +335,6 @@ pub mod rustaxa_ffi {
         validate_max_round_step: bool,
         can_request_pbft_sync: bool,
         can_request_next_votes_sync: bool,
-        allow_gossip: bool,
     }
 
     /// Operation-specific canonical get-PBFT-sync ingress request.
@@ -363,14 +356,12 @@ pub mod rustaxa_ffi {
         minimum_gas_price: [u8; 32],
         last_block_number: u64,
         cornus_active: bool,
-        rebroadcast: bool,
     }
 
     /// One transaction member admitted from a canonical network packet.
     struct NetworkTransactionPacketMemberReport {
         submission: PublicTransactionSubmissionReport,
         observe_transaction: bool,
-        gossip_transaction: bool,
         transaction_rlp: Vec<u8>,
     }
 
@@ -390,28 +381,33 @@ pub mod rustaxa_ffi {
         request_rlp: Vec<u8>,
     }
 
-    struct NetworkTransactionGossipPeer {
-        peer_id: [u8; 64],
-        known_hashes: Vec<DagHash>,
-    }
-    struct NetworkTransactionGossipRequest {
-        transport_lane: u32,
-        source_payload_id: u64,
-        peers: Vec<NetworkTransactionGossipPeer>,
-    }
-
-    struct NetworkDagGossipPeer {
-        peer_id: [u8; 64],
-        syncing: bool,
-        known_block: bool,
-    }
-    struct NetworkDagGossipRequest {
+    /// Canonical input for one bounded native egress preparation.
+    struct NetworkEgressPrepareRequest {
+        family: u8,
         transport_lane: u32,
         source_payload_id: u64,
         source_peer_id: [u8; 64],
-        block_hash: [u8; 32],
-        packet_rlp: Vec<u8>,
-        peers: Vec<NetworkDagGossipPeer>,
+        rebroadcast: bool,
+        object_hash: [u8; 32],
+        payload_bytes: Vec<u8>,
+        related_payload_bytes: Vec<u8>,
+    }
+
+    struct NetworkEgressProbe {
+        probe_id: u32,
+        object_kind: u8,
+        object_hash: [u8; 32],
+    }
+
+    struct NetworkEgressPreparation {
+        token: u64,
+        probes: Vec<NetworkEgressProbe>,
+    }
+
+    struct NetworkEgressPeerSnapshot {
+        peer_id: [u8; 64],
+        syncing: bool,
+        known_probe_ids: Vec<u32>,
     }
 
     struct NetworkDagPacketRequest {
@@ -507,6 +503,7 @@ pub mod rustaxa_ffi {
         outcomes: Vec<NetworkPbftVoteAdmissionOutcome>,
         has_peer_pbft_chain_size: bool,
         peer_pbft_chain_size: u64,
+        egress_payload_bytes: Vec<u8>,
     }
 
     /// Terminal native result for one pillar-vote-family packet.
@@ -1282,18 +1279,20 @@ pub mod rustaxa_ffi {
             application: &BridgeConsensusApplication,
             request: NetworkGetDagSyncRequest,
         ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_plan_transaction_gossip(
+        pub fn consensus_network_prepare_egress(
             self: &BridgeConsensusNetworkApi,
             application: &BridgeConsensusApplication,
-            request: NetworkTransactionGossipRequest,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_plan_dag_block_gossip(
+            request: NetworkEgressPrepareRequest,
+        ) -> Result<NetworkEgressPreparation>;
+        pub fn consensus_network_plan_egress(
             self: &BridgeConsensusNetworkApi,
-            request: NetworkDagGossipRequest,
+            token: u64,
+            peers: Vec<NetworkEgressPeerSnapshot>,
         ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_transaction_gossip_candidate_hashes(
-            application: &BridgeConsensusApplication,
-        ) -> Result<Vec<DagHash>>;
+        pub fn consensus_network_cancel_egress(
+            self: &BridgeConsensusNetworkApi,
+            token: u64,
+        ) -> Result<bool>;
         pub fn consensus_network_begin_pbft_sync(
             self: &BridgeConsensusNetworkApi,
             request: NetworkPbftSyncStartRequest,

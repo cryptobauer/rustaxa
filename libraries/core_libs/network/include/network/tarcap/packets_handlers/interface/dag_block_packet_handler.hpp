@@ -33,9 +33,11 @@ class IDagBlockPacketHandler : public
 #endif
                          const addr_t &node_addr, const std::string &logs_prefix);
 
+#ifndef RUSTAXA_ENABLE
   void onNewBlockVerified(const std::shared_ptr<DagBlock> &block, bool proposed, const SharedTransactions &trxs);
   virtual void sendBlockWithTransactions(const std::shared_ptr<TaraxaPeer> &peer,
                                          const std::shared_ptr<DagBlock> &block, SharedTransactions &&trxs) = 0;
+#endif
 
   // Note: Used only in tests
   void requestDagBlocks(std::shared_ptr<TaraxaPeer> peer);

@@ -2,11 +2,12 @@
 
 #include <stdexcept>
 
-#include "network/tarcap/packets/latest/dag_block_packet.hpp"
 #include "network/tarcap/taraxa_peer.hpp"
 
 namespace taraxa::network::tarcap {
 namespace {
+
+constexpr uint8_t kDagBlockEgressFamily = 3;
 
 constexpr uint8_t kDagRejectionNone = 0;
 constexpr uint8_t kDagRejectionIgnore = 1;
@@ -23,15 +24,20 @@ dev::p2p::NodeID toNodeId(const std::array<uint8_t, 64>& peer_id) {
 
 RustDagBlockPacketHandler::RustDagBlockPacketHandler(
     const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
-    std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-    net::ConsensusQueryClient consensus_query, network::ConsensusLiveStatusProvider consensus_status,
-    network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane, const addr_t& node_addr,
-    const std::string& logs_prefix)
+    std::shared_ptr<TimePeriodPacketsStats> packets_stats, net::ConsensusQueryClient consensus_query,
+    network::ConsensusLiveStatusProvider consensus_status, network::ConsensusNetworkApiShared consensus_network_api,
+    TarcapVersion transport_lane, const addr_t& node_addr, const std::string& logs_prefix)
     : IDagBlockPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(consensus_query),
                              std::move(consensus_status), consensus_network_api, node_addr,
                              logs_prefix + "DAG_BLOCK_PH"),
       consensus_network_api_(std::move(consensus_network_api)),
       transport_lane_(transport_lane) {}
+
+network::ConsensusPacketOutcome RustDagBlockPacketHandler::gossipCanonicalDagBlock(
+    const std::vector<uint8_t>& block_rlp, const std::array<uint8_t, 32>& block_hash, uint64_t source_payload_id) {
+  return routeConsensusEgress(network::ConsensusEgressRequest{
+      kDagBlockEgressFamily, transport_lane_, source_payload_id, {}, false, block_hash, block_rlp, {}});
+}
 
 void RustDagBlockPacketHandler::process(const threadpool::PacketData& packet_data,
                                         const std::shared_ptr<TaraxaPeer>& peer) {
@@ -54,16 +60,7 @@ void RustDagBlockPacketHandler::process(const threadpool::PacketData& packet_dat
               target->markDagBlockAsKnown(blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer));
             }
           },
-          [this](const auto& block_hash) {
-            const blk_hash_t typed_hash(block_hash.data(), blk_hash_t::ConstructFromPointer);
-            std::vector<network::DagGossipPeer> candidates;
-            for (const auto& peer_entry : peers_state_->getAllPeers()) {
-              const auto& target = peer_entry.second;
-              candidates.push_back(network::DagGossipPeer{target->getId().asArray(), target->syncing_.load(),
-                                                          target->isDagBlockKnown(typed_hash)});
-            }
-            return candidates;
-          },
+          [this](const auto& probes) { return consensusEgressPeerSnapshots(probes); },
           [this](const auto& peer_id, const auto& payload) {
             const auto target = peers_state_->getPeer(toNodeId(peer_id));
             if (!target) {
@@ -94,16 +91,6 @@ void RustDagBlockPacketHandler::process(const threadpool::PacketData& packet_dat
       throw MaliciousPeerException("Native DAG-block peer policy rejected payload: " + outcome.error_code);
     default:
       throw std::runtime_error("Native DAG-block peer policy returned an unknown rejection action");
-  }
-}
-
-void RustDagBlockPacketHandler::sendBlockWithTransactions(const std::shared_ptr<TaraxaPeer>& peer,
-                                                          const std::shared_ptr<DagBlock>& block,
-                                                          SharedTransactions&& transactions) {
-  std::unique_lock lock(peer->mutex_for_sending_dag_blocks_);
-  const DagBlockPacket packet{.transactions = std::move(transactions), .dag_block = block};
-  if (sealAndSend(peer->getId(), SubprotocolPacketType::kDagBlockPacket, encodePacketRlp(packet))) {
-    peer->markDagBlockAsKnown(block->getHash());
   }
 }
 

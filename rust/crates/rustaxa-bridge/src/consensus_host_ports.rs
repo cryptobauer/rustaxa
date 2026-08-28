@@ -18,8 +18,8 @@ use rustaxa_consensus::{
     ConsensusSignReport, ConsensusSignRequest, ConsensusSigningPort as NativeSigningPort,
     ConsensusTransportReport, ConsensusVrfReport, ConsensusVrfRequest, ConsensusWaitOutcome,
     ConsensusWaitReport, ConsensusWaitRequest, DagGasEstimateReport, DagGasEstimateRequest,
-    DagGasEstimateResult, EvmFinalizationRequest, GossipPillarVoteRequest, GossipVoteBundleRequest,
-    GossipVoteRequest, ReportMaliciousPeerRequest,
+    DagGasEstimateResult, EvmFinalizationRequest, GossipDagBlockRequest, GossipPillarVoteRequest,
+    GossipVoteBundleRequest, GossipVoteRequest, ReportMaliciousPeerRequest,
 };
 
 struct ProcessPortAdapter<'a>(&'a ConsensusProcessPort);
@@ -225,6 +225,20 @@ impl rustaxa_consensus::ConsensusTransportPort for TransportPortAdapter<'_> {
                 effect_id: to_ffi_effect_id(request.effect_id),
                 pillar_vote_rlp: request.pillar_vote_rlp.clone(),
                 rebroadcast: request.rebroadcast,
+            })?;
+        Ok(to_native_transport_report(report))
+    }
+
+    fn gossip_dag_block(
+        &self,
+        request: &GossipDagBlockRequest,
+    ) -> Result<ConsensusTransportReport> {
+        let report = self
+            .0
+            .consensus_gossip_dag_block(&HostGossipDagBlockRequest {
+                effect_id: to_ffi_effect_id(request.effect_id),
+                block_hash: request.block_hash,
+                block_rlp: request.block_rlp.clone(),
             })?;
         Ok(to_native_transport_report(report))
     }
@@ -734,7 +748,6 @@ pub fn consensus_network_ingest_transaction_packet(
         last_block_number: request.last_block_number,
         cornus_active: request.cornus_active,
     };
-    let rebroadcast = request.rebroadcast;
     let report = network.network.ingest_transaction_packet(
         context,
         &request.packet_rlp,
@@ -745,7 +758,6 @@ pub fn consensus_network_ingest_transaction_packet(
                 rustaxa_consensus::TransactionPacketIngressRequest {
                     submission,
                     peer_id: request.peer_id,
-                    rebroadcast,
                 },
                 &external_evm,
             )
@@ -787,7 +799,6 @@ fn transaction_packet_member_to_ffi(
     rustaxa_ffi::NetworkTransactionPacketMemberReport {
         submission: public_transaction_report_to_ffi(member.submission),
         observe_transaction: member.observe_transaction,
-        gossip_transaction: member.gossip_transaction,
         transaction_rlp: member.transaction_rlp,
     }
 }
@@ -879,7 +890,6 @@ pub fn consensus_network_ingest_dag_sync_packet(
                             |transaction_rlp| rustaxa_consensus::TransactionPacketIngressRequest {
                                 submission: dag_packet_policy(&request, transaction_rlp),
                                 peer_id: request.peer_id,
-                                rebroadcast: false,
                             },
                         )
                         .collect(),

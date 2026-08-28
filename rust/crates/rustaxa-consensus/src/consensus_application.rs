@@ -306,8 +306,6 @@ pub struct TransactionPacketIngressRequest {
     pub submission: PublicTransactionSubmissionRequest,
     /// Stable transport peer identity used only by the caller's effect executor.
     pub peer_id: [u8; 64],
-    /// Whether an accepted transaction should be fanned out to other peers.
-    pub rebroadcast: bool,
 }
 
 /// Native transaction-ingress decision and named leaf effects.
@@ -320,7 +318,6 @@ pub struct TransactionPacketIngressReport {
     pub submission: PublicTransactionSubmissionReport,
     pub peer_id: [u8; 64],
     pub observe_transaction: bool,
-    pub gossip_transaction: bool,
     pub transaction_rlp: Vec<u8>,
 }
 
@@ -803,7 +800,6 @@ impl ConsensusApplication {
             },
             peer_id: request.peer_id,
             observe_transaction: false,
-            gossip_transaction: false,
             transaction_rlp,
         })
     }
@@ -817,7 +813,6 @@ impl ConsensusApplication {
     ) -> Result<TransactionPacketIngressReport> {
         let transaction_rlp = request.submission.transaction_rlp.clone();
         let peer_id = request.peer_id;
-        let rebroadcast = request.rebroadcast;
         let submission =
             self.submit_public_transaction_with_execution(request.submission, execution)?;
         let newly_inserted = submission.transaction_observed;
@@ -825,7 +820,6 @@ impl ConsensusApplication {
             submission,
             peer_id,
             observe_transaction: newly_inserted,
-            gossip_transaction: newly_inserted && rebroadcast,
             transaction_rlp,
         })
     }
@@ -1103,12 +1097,52 @@ impl ConsensusApplication {
         self.dag_transaction.dag_non_finalized_sync(known_hashes)
     }
 
+    /// Resolves exact native transaction bytes for one canonical DAG-block egress operation.
+    pub fn prepare_dag_block_egress(
+        &self,
+        block_hash: H256,
+        block_rlp: &[u8],
+    ) -> Result<Vec<crate::TransactionGossipEntry>> {
+        self.dag_transaction
+            .dag_block_egress_transactions(block_hash, block_rlp)
+    }
+
     /// Returns the bounded canonical transaction-gossip snapshot.
     pub fn prepare_transaction_gossip(
         &self,
         max_count: u64,
     ) -> Result<Vec<crate::TransactionGossipAccount>> {
         self.dag_transaction.transaction_gossip_snapshot(max_count)
+    }
+
+    /// Resolves the application-owned state required by one network egress preparation.
+    ///
+    /// Transaction gossip receives a bounded canonical account snapshot and DAG-block
+    /// egress receives the exact referenced transactions. Other families require no
+    /// application materialization. Invalid DAG inputs fail before a preparation token
+    /// is created, while an explicit transaction payload suppresses periodic selection.
+    pub fn prepare_network_egress_inputs(
+        &self,
+        family: u8,
+        object_hash: [u8; 32],
+        payload_bytes: &[u8],
+    ) -> Result<(
+        Vec<crate::TransactionGossipAccount>,
+        Vec<crate::TransactionGossipEntry>,
+    )> {
+        let transactions = match family {
+            crate::NETWORK_EGRESS_FAMILY_TRANSACTION_GOSSIP if payload_bytes.is_empty() => {
+                self.prepare_transaction_gossip(5500)?
+            }
+            _ => Vec::new(),
+        };
+        let dag_transactions = match family {
+            crate::NETWORK_EGRESS_FAMILY_DAG_BLOCK => {
+                self.prepare_dag_block_egress(H256::from(object_hash), payload_bytes)?
+            }
+            _ => Vec::new(),
+        };
+        Ok((transactions, dag_transactions))
     }
 
     /// Loads slashing submitter nonce/balance facts through one exact external
@@ -2074,7 +2108,6 @@ mod tests {
                     transactions: vec![TransactionPacketIngressRequest {
                         submission,
                         peer_id: [7; 64],
-                        rebroadcast: false,
                     }],
                     blocks: Vec::new(),
                 },
@@ -2101,7 +2134,6 @@ mod tests {
                     transactions: vec![TransactionPacketIngressRequest {
                         submission: public_submission_request(rlp),
                         peer_id: [8; 64],
-                        rebroadcast: false,
                     }],
                     blocks: Vec::new(),
                 },

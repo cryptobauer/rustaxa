@@ -1,8 +1,10 @@
 #include "network/tarcap/packets_handlers/interface/vote_packet_handler.hpp"
 
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets/latest/vote_packet.hpp"
 #include "network/tarcap/packets/latest/votes_bundle_packet.hpp"
 #include "vote/votes_bundle_rlp.hpp"
+#endif
 
 namespace taraxa::network::tarcap {
 
@@ -34,6 +36,7 @@ IVotePacketHandler::IVotePacketHandler(const FullNodeConfig &conf, std::shared_p
 {
 }
 
+#ifndef RUSTAXA_ENABLE
 void IVotePacketHandler::onNewPbftVote(const std::shared_ptr<PbftVote> &vote, const std::shared_ptr<PbftBlock> &block,
                                        bool rebroadcast) {
   for (const auto &peer : peers_state_->getAllPeers()) {
@@ -143,5 +146,6 @@ void IVotePacketHandler::sendPbftVotesBundle(const std::shared_ptr<TaraxaPeer> &
     }
   }
 }
+#endif
 
 }  // namespace taraxa::network::tarcap

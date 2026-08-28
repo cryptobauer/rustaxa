@@ -1,7 +1,5 @@
 #include "network/tarcap/packets_handlers/interface/dag_block_packet_handler.hpp"
 
-#include <chrono>
-
 namespace taraxa::network::tarcap {
 
 IDagBlockPacketHandler::IDagBlockPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
@@ -39,18 +37,12 @@ IDagBlockPacketHandler::IDagBlockPacketHandler(const FullNodeConfig &conf, std::
 {
 }
 
+#ifndef RUSTAXA_ENABLE
 void IDagBlockPacketHandler::onNewBlockVerified(const std::shared_ptr<DagBlock> &block, bool proposed,
                                                 const SharedTransactions &trxs) {
   // If node is pbft syncing and block is not proposed by us, this is an old block that has been verified - no block
   // gossip is needed
-#ifdef RUSTAXA_ENABLE
-  const auto now_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
-          .count();
-  const bool deep_pbft_syncing = rust_consensus_network_api_->pbftSyncStatus(now_ms).deep_syncing;
-#else
   const bool deep_pbft_syncing = pbft_syncing_state_->isDeepPbftSyncing();
-#endif
   if (!proposed && deep_pbft_syncing) {
     return;
   }
@@ -86,16 +78,9 @@ void IDagBlockPacketHandler::onNewBlockVerified(const std::shared_ptr<DagBlock> 
     for (const auto &trx : trxs) {
       assert(trx != nullptr);
       const auto trx_hash = trx->getHash();
-#ifndef RUSTAXA_ENABLE
       if (peer->isTransactionKnown(trx_hash)) {
         continue;
       }
-#endif
-
-      // Rust storage publication, transaction-packet processing, and this
-      // retained tarcap leaf run independently. In Rust mode the peer-known
-      // hint can therefore precede durable admission; keep DAG packets
-      // self-contained so block verification never depends on that race.
       transactions_to_send.push_back(trx);
       peer_and_transactions_to_log += trx_hash.abridged();
     }
@@ -106,6 +91,7 @@ void IDagBlockPacketHandler::onNewBlockVerified(const std::shared_ptr<DagBlock> 
   LOG(log_dg_) << "Send DagBlock " << block->getHash() << " to peers: " << peer_and_transactions_to_log;
   LOG(log_tr_) << "Sent block to " << peers_to_send.size() << " peers";
 }
+#endif
 
 void IDagBlockPacketHandler::requestDagBlocks(std::shared_ptr<TaraxaPeer> peer) { requestPendingDagBlocks(peer); }
 

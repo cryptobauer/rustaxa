@@ -27,8 +27,10 @@ class IPillarVotePacketHandler : public
 #endif
                            const addr_t& node_addr, const std::string& logs_prefix);
 
+#ifndef RUSTAXA_ENABLE
   void onNewPillarVote(const std::shared_ptr<PillarVote>& vote, bool rebroadcast = false);
   virtual void sendPillarVote(const std::shared_ptr<TaraxaPeer>& peer, const std::shared_ptr<PillarVote>& vote) = 0;
+#endif
 };
 
 }  // namespace taraxa::network::tarcap

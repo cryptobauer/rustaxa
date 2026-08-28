@@ -234,18 +234,3 @@ pub fn create_consensus_application(
     .bootstrap()?;
     Ok(Box::new(BridgeConsensusApplication(root)))
 }
-
-#[cfg(test)]
-pub(crate) fn create_test_consensus_application(
-    storage_path: &str,
-    genesis_validators: Vec<GenesisValidator>,
-    delegation_delay: u64,
-) -> Result<Box<BridgeApp>> {
-    let root = rustaxa_consensus::consensus_application_test_bootstrap(
-        storage_path.into(),
-        crate::final_chain::genesis_validators_from_ffi(genesis_validators),
-        delegation_delay,
-    )
-    .bootstrap()?;
-    Ok(Box::new(BridgeConsensusApplication(root)))
-}

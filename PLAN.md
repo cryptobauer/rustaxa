@@ -859,6 +859,13 @@ Rules:
   execution. `CRW-N01` remains active for the audited residuals: object-shaped application egress fanout for PBFT,
   pillar, DAG/transaction and transactions; C++ scalar status/get-next request decoding; and generic vote/pillar gossip
   target selection in the transport executor. Blocked `CRW-E02` is unchanged.
+- The canonical egress checkpoint removes the Rust-mode object-shaped PBFT vote/bundle, pillar-vote, DAG-block, and
+  periodic transaction fanout helpers. `ConsensusNetworkApi` now prepares bounded one-shot egress operations from
+  canonical bytes, exposes only exact known-object probes for an immutable lane-serialized peer snapshot, then owns
+  peer eligibility, known/sync filtering, exclusions, bundle chunking, packet construction, target selection, and
+  send-dependent known marks. Tarcap executes only exact-peer packet sends and known-cache writes. `CRW-N01` remains
+  active because latest-status and get-next-votes scalar ingress decoding still resides in C++; blocked `CRW-E02`
+  remains unchanged.
 - Ignore logging when deciding whether behavior can move to Rust. Logs are boundary observability, not consensus
   ownership. Keep temporary C++ logging only as an executor/reporting detail while moving the underlying decision,
   state transition, or persistence logic into Rust.

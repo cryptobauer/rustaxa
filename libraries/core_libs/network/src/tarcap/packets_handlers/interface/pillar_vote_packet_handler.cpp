@@ -1,6 +1,8 @@
 #include "network/tarcap/packets_handlers/interface/pillar_vote_packet_handler.hpp"
 
+#ifndef RUSTAXA_ENABLE
 #include "vote/pillar_vote.hpp"
+#endif
 
 namespace taraxa::network::tarcap {
 
@@ -27,6 +29,7 @@ IPillarVotePacketHandler::IPillarVotePacketHandler(
 {
 }
 
+#ifndef RUSTAXA_ENABLE
 void IPillarVotePacketHandler::onNewPillarVote(const std::shared_ptr<PillarVote>& vote, bool rebroadcast) {
   for (const auto& peer : peers_state_->getAllPeers()) {
     if (peer.second->syncing_) {
@@ -42,5 +45,6 @@ void IPillarVotePacketHandler::onNewPillarVote(const std::shared_ptr<PillarVote>
     sendPillarVote(peer.second, vote);
   }
 }
+#endif
 
 }  // namespace taraxa::network::tarcap

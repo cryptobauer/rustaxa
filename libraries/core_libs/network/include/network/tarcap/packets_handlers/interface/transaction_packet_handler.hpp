@@ -1,17 +1,28 @@
 #pragma once
 
+#ifdef RUSTAXA_ENABLE
+#include "network/tarcap/packets_handlers/rust/consensus_transport_packet_handler.hpp"
+#else
 #include "network/tarcap/packets_handlers/latest/common/packet_handler.hpp"
-#ifndef RUSTAXA_ENABLE
 #include "transaction/transaction.hpp"
 #endif
 
 namespace taraxa::network::tarcap {
 
-class ITransactionPacketHandler : public PacketHandler {
+class ITransactionPacketHandler : public
+#ifdef RUSTAXA_ENABLE
+                                  RustConsensusTransportPacketHandler
+#else
+                                  PacketHandler
+#endif
+{
  public:
   ITransactionPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
-                            std::shared_ptr<TimePeriodPacketsStats> packets_stats, const addr_t& node_addr,
-                            const std::string& logs_prefix);
+                            std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifdef RUSTAXA_ENABLE
+                            network::ConsensusNetworkApiShared consensus_network_api,
+#endif
+                            const addr_t& node_addr, const std::string& logs_prefix);
 
   /**
    * @brief Sends batch of transactions to all connected peers

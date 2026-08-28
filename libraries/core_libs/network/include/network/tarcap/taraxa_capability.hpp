@@ -136,6 +136,23 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
 
   const std::shared_ptr<PeersState> &getPeersState();
 
+#ifdef RUSTAXA_ENABLE
+  /** Routes one canonical PBFT vote through this capability's exact-target native egress operation. */
+  network::ConsensusPacketOutcome gossipCanonicalVote(const std::vector<uint8_t> &vote_rlp,
+                                                       const std::vector<uint8_t> &proposed_block_rlp,
+                                                       bool rebroadcast, uint64_t source_payload_id);
+  /** Routes one canonical optimized PBFT bundle through exact-target native egress. */
+  network::ConsensusPacketOutcome gossipCanonicalVotesBundle(const std::vector<uint8_t> &votes_bundle_rlp,
+                                                              bool rebroadcast, uint64_t source_payload_id);
+  /** Routes one canonical pillar vote through exact-target native egress. */
+  network::ConsensusPacketOutcome gossipCanonicalPillarVote(const std::vector<uint8_t> &pillar_vote_rlp,
+                                                             bool rebroadcast, uint64_t source_payload_id);
+  /** Routes one canonical DAG block through exact-target native egress. */
+  network::ConsensusPacketOutcome gossipCanonicalDagBlock(const std::vector<uint8_t> &block_rlp,
+                                                           const std::array<uint8_t, 32> &block_hash,
+                                                           uint64_t source_payload_id);
+#endif
+
   /**
    * @brief templated getSpecificHandler method for getting specific packet handler based on packet_type
    *

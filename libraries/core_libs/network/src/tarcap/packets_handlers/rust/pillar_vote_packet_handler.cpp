@@ -1,10 +1,11 @@
 #include "network/tarcap/packets_handlers/rust/pillar_vote_packet_handler.hpp"
 
-#include "network/tarcap/packets/latest/pillar_vote_packet.hpp"
 #include "network/tarcap/taraxa_peer.hpp"
-#include "vote/pillar_vote.hpp"
 
 namespace taraxa::network::tarcap {
+namespace {
+constexpr uint8_t kPillarVoteEgressFamily = 2;
+}
 
 RustPillarVotePacketHandler::RustPillarVotePacketHandler(const FullNodeConfig& conf,
                                                          std::shared_ptr<PeersState> peers_state,
@@ -16,22 +17,31 @@ RustPillarVotePacketHandler::RustPillarVotePacketHandler(const FullNodeConfig& c
                                transport_lane, node_addr, logs_prefix + "PILLAR_VOTE_PH"),
       transport_lane_(transport_lane) {}
 
+network::ConsensusPacketOutcome RustPillarVotePacketHandler::gossipCanonicalPillarVote(
+    const std::vector<uint8_t>& pillar_vote_rlp, bool rebroadcast, uint64_t source_payload_id) {
+  return routeConsensusEgress(network::ConsensusEgressRequest{
+      kPillarVoteEgressFamily, transport_lane_, source_payload_id, {}, rebroadcast, {}, pillar_vote_rlp, {}});
+}
+
 void RustPillarVotePacketHandler::process(const threadpool::PacketData& packet_data,
                                           const std::shared_ptr<TaraxaPeer>& peer) {
   const auto outcome = rust_consensus_network_api_->ingestPillarVotePacket(
-      consensusPacketRequest(packet_data, peer, transport_lane_, false, true), consensusTransportExecutor());
+      consensusPacketRequest(packet_data, peer, transport_lane_, false), consensusTransportExecutor());
   if (outcome.malicious) {
     throw MaliciousPeerException("Native pillar-vote packet rejected peer payload: " + outcome.error_code);
   }
+  if (outcome.accepted_count != 0) {
+    routeConsensusEgress(network::ConsensusEgressRequest{kPillarVoteEgressFamily,
+                                                         transport_lane_,
+                                                         packet_data.id_,
+                                                         peer->getId().asArray(),
+                                                         false,
+                                                         {},
+                                                         packet_data.rlp_.data().toBytes(),
+                                                         {}});
+  }
   if (outcome.status != 0) {
     LOG(log_dg_) << "Native pillar-vote ingress skipped packet: " << outcome.error_code;
-  }
-}
-
-void RustPillarVotePacketHandler::sendPillarVote(const std::shared_ptr<TaraxaPeer>& peer,
-                                                 const std::shared_ptr<PillarVote>& vote) {
-  if (sealAndSend(peer->getId(), SubprotocolPacketType::kPillarVotePacket, encodePacketRlp(PillarVotePacket(vote)))) {
-    peer->markPillarVoteAsKnown(vote->getHash());
   }
 }
 

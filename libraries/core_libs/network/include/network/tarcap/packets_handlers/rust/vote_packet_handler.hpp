@@ -16,6 +16,11 @@ class RustVotePacketHandler final : public IVotePacketHandler {
 
   static constexpr SubprotocolPacketType kPacketType_ = SubprotocolPacketType::kVotePacket;
 
+  /** Routes one canonical vote and optional proposal through native exact-target egress. */
+  network::ConsensusPacketOutcome gossipCanonicalVote(const std::vector<uint8_t>& vote_rlp,
+                                                      const std::vector<uint8_t>& proposed_block_rlp, bool rebroadcast,
+                                                      uint64_t source_payload_id);
+
  private:
   void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;
   const TarcapVersion transport_lane_;

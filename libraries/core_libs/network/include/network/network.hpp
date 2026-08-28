@@ -84,11 +84,25 @@ class Network {
   void setSyncStatePeriod(PbftPeriod period);
 #endif
 
+#ifdef RUSTAXA_ENABLE
+  /** Routes canonical application vote bytes through each tarcap lane's native exact-target egress operation. */
+  void gossipVoteBytes(const std::vector<uint8_t> &vote_rlp, const std::vector<uint8_t> &proposed_block_rlp,
+                       bool rebroadcast, uint64_t source_payload_id);
+  /** Routes a canonical optimized vote bundle through native filtering and chunking. */
+  void gossipVotesBundleBytes(const std::vector<uint8_t> &votes_bundle_rlp, bool rebroadcast,
+                              uint64_t source_payload_id);
+  /** Routes canonical pillar-vote bytes through native exact-target egress. */
+  void gossipPillarVoteBytes(const std::vector<uint8_t> &pillar_vote_rlp, bool rebroadcast, uint64_t source_payload_id);
+  /** Routes a canonical DAG block through native transaction lookup and packet construction. */
+  void gossipDagBlockBytes(const std::vector<uint8_t> &block_rlp, const std::array<uint8_t, 32> &block_hash,
+                           uint64_t source_payload_id);
+#else
   void gossipDagBlock(const std::shared_ptr<DagBlock> &block, bool proposed, const SharedTransactions &trxs);
   void gossipVote(const std::shared_ptr<PbftVote> &vote, const std::shared_ptr<PbftBlock> &block,
                   bool rebroadcast = false);
   void gossipVotesBundle(const std::vector<std::shared_ptr<PbftVote>> &votes, bool rebroadcast = false);
   void gossipPillarBlockVote(const std::shared_ptr<PillarVote> &vote, bool rebroadcast = false);
+#endif
   void handleMaliciousSyncPeer(const dev::p2p::NodeID &id);
   std::shared_ptr<network::tarcap::TaraxaPeer> getMaxChainPeer() const;
 

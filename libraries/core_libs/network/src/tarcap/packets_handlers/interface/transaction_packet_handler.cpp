@@ -5,8 +5,19 @@ namespace taraxa::network::tarcap {
 ITransactionPacketHandler::ITransactionPacketHandler(const FullNodeConfig &conf,
                                                      std::shared_ptr<PeersState> peers_state,
                                                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+#ifdef RUSTAXA_ENABLE
+                                                     network::ConsensusNetworkApiShared consensus_network_api,
+#endif
                                                      const addr_t &node_addr, const std::string &logs_prefix)
-    : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, logs_prefix) {}
+    :
+#ifdef RUSTAXA_ENABLE
+      RustConsensusTransportPacketHandler(conf, std::move(peers_state), std::move(packets_stats), {}, {},
+                                          std::move(consensus_network_api), node_addr, logs_prefix) {
+}
+#else
+      PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, logs_prefix) {
+}
+#endif
 
 #ifndef RUSTAXA_ENABLE
 void ITransactionPacketHandler::periodicSendTransactions(std::vector<SharedTransactions> &&transactions) {

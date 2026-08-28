@@ -25,14 +25,10 @@
 #include "dag/dag_block.hpp"
 #include "final_chain/final_chain.hpp"
 #include "network/network.hpp"
-#include "pbft/pbft_block.hpp"
 #include "pbft/period_data.hpp"
 #include "rustaxa-bridge/application_host_ffi.rs.h"
 #include "transaction/transaction.hpp"
 #include "vdf/sortition.hpp"
-#include "vote/pbft_vote.hpp"
-#include "vote/pillar_vote.hpp"
-#include "vote/votes_bundle_rlp.hpp"
 
 namespace taraxa {
 
@@ -222,12 +218,9 @@ rustaxa::HostTransportReport ConsensusTransportPort::consensusGossipVote(
     return failedReport<rustaxa::HostTransportReport>(request.effect_id, "TRANSPORT_UNAVAILABLE");
   }
   try {
-    auto vote = std::make_shared<PbftVote>(fromRustBytes(request.vote_rlp));
-    std::shared_ptr<PbftBlock> block;
-    if (!request.proposed_block_rlp.empty()) {
-      block = std::make_shared<PbftBlock>(fromRustBytes(request.proposed_block_rlp));
-    }
-    network->gossipVote(vote, block, request.rebroadcast);
+    network->gossipVoteBytes(std::vector<uint8_t>(request.vote_rlp.begin(), request.vote_rlp.end()),
+                             std::vector<uint8_t>(request.proposed_block_rlp.begin(), request.proposed_block_rlp.end()),
+                             request.rebroadcast, request.effect_id.sequence);
     return successfulTransportReport(request.effect_id);
   } catch (const std::exception&) {
     return failedReport<rustaxa::HostTransportReport>(request.effect_id, "GOSSIP_VOTE_FAILED");
@@ -241,9 +234,9 @@ rustaxa::HostTransportReport ConsensusTransportPort::consensusGossipVoteBundle(
     return failedReport<rustaxa::HostTransportReport>(request.effect_id, "TRANSPORT_UNAVAILABLE");
   }
   try {
-    const auto votes_bundle_rlp = fromRustBytes(request.votes_bundle_rlp);
-    auto votes = decodePbftVotesBundleRlp(dev::RLP(votes_bundle_rlp));
-    network->gossipVotesBundle(votes, request.rebroadcast);
+    network->gossipVotesBundleBytes(
+        std::vector<uint8_t>(request.votes_bundle_rlp.begin(), request.votes_bundle_rlp.end()), request.rebroadcast,
+        request.effect_id.sequence);
     return successfulTransportReport(request.effect_id);
   } catch (const std::exception&) {
     return failedReport<rustaxa::HostTransportReport>(request.effect_id, "GOSSIP_VOTE_BUNDLE_FAILED");
@@ -257,11 +250,26 @@ rustaxa::HostTransportReport ConsensusTransportPort::consensusGossipPillarVote(
     return failedReport<rustaxa::HostTransportReport>(request.effect_id, "TRANSPORT_UNAVAILABLE");
   }
   try {
-    network->gossipPillarBlockVote(std::make_shared<PillarVote>(fromRustBytes(request.pillar_vote_rlp)),
-                                   request.rebroadcast);
+    network->gossipPillarVoteBytes(std::vector<uint8_t>(request.pillar_vote_rlp.begin(), request.pillar_vote_rlp.end()),
+                                   request.rebroadcast, request.effect_id.sequence);
     return successfulTransportReport(request.effect_id);
   } catch (const std::exception&) {
     return failedReport<rustaxa::HostTransportReport>(request.effect_id, "GOSSIP_PILLAR_VOTE_FAILED");
+  }
+}
+
+rustaxa::HostTransportReport ConsensusTransportPort::consensusGossipDagBlock(
+    const rustaxa::HostGossipDagBlockRequest& request) const {
+  const auto network = impl_->network();
+  if (!network) {
+    return failedReport<rustaxa::HostTransportReport>(request.effect_id, "TRANSPORT_UNAVAILABLE");
+  }
+  try {
+    network->gossipDagBlockBytes(std::vector<uint8_t>(request.block_rlp.begin(), request.block_rlp.end()),
+                                 request.block_hash, request.effect_id.sequence);
+    return successfulTransportReport(request.effect_id);
+  } catch (const std::exception&) {
+    return failedReport<rustaxa::HostTransportReport>(request.effect_id, "GOSSIP_DAG_BLOCK_FAILED");
   }
 }
 

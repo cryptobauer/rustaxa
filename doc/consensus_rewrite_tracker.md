@@ -4310,6 +4310,33 @@ All ten registered C++ CTest executables pass; the unrelated
 Go leg remains unavailable because the configured static linker lacks `libz`/`snappy`, and Python integration cannot
 bootstrap in the image because `python3-venv`, `virtualenv`, and `pytest` are unavailable.
 
+The next `CRW-N01` canonical-egress cut removes Rust-mode object-shaped PBFT vote/bundle, pillar-vote, DAG-block, and
+transaction-gossip fanout. One bounded prepare/probe/snapshot/plan operation now validates canonical bytes, exposes
+only exact known-object probes, and owns sync/known filtering, exclusions, per-peer bundle chunking, complete packet
+construction, exact targets, effect dependencies, cancellation, and transport-failure reporting. Application and
+accepted ingress vote families use the same route; accepted PBFT bundles return only the native admission-selected
+subset. DAG egress performs one exact application-root block/transaction lookup, probes both block and transaction
+known state, and constructs a peer-specific self-contained packet natively. Tarcap retains authenticated peer/socket
+snapshots, lane serialization, exact sends, and known-cache execution. Generic gossip effects, excluded-peer and
+companion-payload effect fields, old DAG/transaction gossip planners/carriers, candidate preflight, Rust-mode object
+`onNew*`/`send*` surfaces, and their dead ingress gossip sidecars are deleted. The effect graph and preparation table
+are explicitly bounded; application bundles larger than the 1,000-vote wire cap are filtered then chunked natively.
+
+The checked surface remains 5,535 bridge lines, 1,042 shim lines, 96 CXX functions, 141 carriers, 10 opaque handles,
+one shim directory, zero granular flags, zero partial-service factories, zero compatibility-constructor calls, and 17
+non-test bridge consumers. The missing application-root DAG transport leaf and shared bounded egress protocol are
+offset by deleting the unused test-root factory and moving egress input selection behind one native application task;
+function, carrier, handle, shim, and consumer budgets do not increase while five family-specific compatibility routes
+and their routing authority disappear. `CRW-N01` remains active only for latest-status and get-next-votes scalar
+ingress decoding. `CRW-E02` remains blocked and untouched.
+
+Validation for this checkpoint passes the fast, consensus, binary-smoke, inventory, focused Rust, Rust-enabled live
+network, tarcap concurrency, and isolated pure-C++ gates. The focused Rust run passes 1,300 tests; Rust-enabled network
+and tarcap runs pass 6 and 7 tests, while the source-selected pure-C++ runs pass 22 and 7. Ten native CTest executables
+pass. The unrelated Go CTest leg remains unavailable because the configured static linker cannot resolve `libz` and
+`snappy`; Python integration cannot bootstrap because `virtualenv` and `pytest` are absent from the image. Independent
+review found no commit-blocking correctness, ownership, source-selection, inventory, or residual-audit issues.
+
 ### DAG
 
 | Class | Public API groups | Dependencies | Tests | Target |

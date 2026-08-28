@@ -35,11 +35,16 @@ class RustConsensusTransportPacketHandler : public PacketHandler {
                                          PbftRound peer_pbft_round);
   /** Returns the shared exact-id transport executor used by every native packet family. */
   network::ConsensusTransportExecutor consensusTransportExecutor();
+  /** Snapshots immutable socket-owned eligibility/known facts for exact native object probes. */
+  std::vector<network::ConsensusEgressPeerSnapshot> consensusEgressPeerSnapshots(
+      const std::vector<network::ConsensusEgressProbe>& probes) const;
+  /** Runs native prepare, peer snapshot, exact target planning, transport, and acknowledgement on one lane. */
+  network::ConsensusPacketOutcome routeConsensusEgress(network::ConsensusEgressRequest request);
   /** Builds the plain native request shared by vote and pillar packet adapters. */
   network::ConsensusPacketRequest consensusPacketRequest(const threadpool::PacketData& packet_data,
                                                          const std::shared_ptr<TaraxaPeer>& peer,
-                                                         uint32_t transport_lane, bool validate_max_round_step,
-                                                         bool allow_gossip) const;
+                                                         uint32_t transport_lane,
+                                                         bool validate_max_round_step) const;
 
   net::ConsensusQueryClient pbft_chain_;
   network::ConsensusLiveStatusProvider consensus_status_;

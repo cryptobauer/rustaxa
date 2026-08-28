@@ -18,6 +18,7 @@ struct HostDagGasBatch;
 struct HostFinalChainAccountFactsReport;
 struct HostFinalChainAccountFactsRequest;
 struct HostGossipPillarVoteRequest;
+struct HostGossipDagBlockRequest;
 struct HostGossipVoteBundleRequest;
 struct HostGossipVoteRequest;
 struct HostDagVdfRequest;
@@ -138,6 +139,7 @@ class ConsensusTransportPort final {
   rustaxa::HostTransportReport consensusGossipVote(const rustaxa::HostGossipVoteRequest& request) const;
   rustaxa::HostTransportReport consensusGossipVoteBundle(const rustaxa::HostGossipVoteBundleRequest& request) const;
   rustaxa::HostTransportReport consensusGossipPillarVote(const rustaxa::HostGossipPillarVoteRequest& request) const;
+  rustaxa::HostTransportReport consensusGossipDagBlock(const rustaxa::HostGossipDagBlockRequest& request) const;
   rustaxa::HostTransportStatus consensusTransportStatus() const;
   rustaxa::HostTransportReport consensusReportMaliciousPeer(const rustaxa::HostMaliciousPeerRequest& request) const;
 

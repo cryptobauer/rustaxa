@@ -12,8 +12,11 @@ class RustPillarVotePacketHandler final : public IPillarVotePacketHandler {
                               network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
                               const addr_t& node_addr, const std::string& logs_prefix = "");
 
-  void sendPillarVote(const std::shared_ptr<TaraxaPeer>& peer, const std::shared_ptr<PillarVote>& vote) override;
   static constexpr SubprotocolPacketType kPacketType_ = SubprotocolPacketType::kPillarVotePacket;
+
+  /** Routes one canonical pillar vote through native exact-target egress. */
+  network::ConsensusPacketOutcome gossipCanonicalPillarVote(const std::vector<uint8_t>& pillar_vote_rlp,
+                                                            bool rebroadcast, uint64_t source_payload_id);
 
  private:
   void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;

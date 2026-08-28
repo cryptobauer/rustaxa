@@ -92,6 +92,12 @@ pub mod application_host_ffi {
         pillar_vote_rlp: Vec<u8>,
         rebroadcast: bool,
     }
+    /// Publishes one locally committed canonical DAG block by hash.
+    struct HostGossipDagBlockRequest {
+        effect_id: HostEffectId,
+        block_hash: [u8; 32],
+        block_rlp: Vec<u8>,
+    }
     /// Reports a malicious peer and canonical evidence to the network leaf.
     struct HostMaliciousPeerRequest {
         effect_id: HostEffectId,
@@ -430,6 +436,11 @@ pub mod application_host_ffi {
         fn consensus_gossip_pillar_vote(
             self: &ConsensusTransportPort,
             request: &HostGossipPillarVoteRequest,
+        ) -> Result<HostTransportReport>;
+        #[cxx_name = "consensusGossipDagBlock"]
+        fn consensus_gossip_dag_block(
+            self: &ConsensusTransportPort,
+            request: &HostGossipDagBlockRequest,
         ) -> Result<HostTransportReport>;
         #[cxx_name = "consensusTransportStatus"]
         fn consensus_transport_status(self: &ConsensusTransportPort) -> HostTransportStatus;

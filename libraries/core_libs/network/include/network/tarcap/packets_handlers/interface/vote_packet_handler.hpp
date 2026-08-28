@@ -19,10 +19,6 @@ class IVotePacketHandler : public
 #endif
 {
  public:
-#ifdef RUSTAXA_ENABLE
-  /** Legacy wire cap retained by the physical bundle encoder. */
-  static constexpr size_t kMaxVotesInBundleRlp{1000};
-#endif
   IVotePacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
 #ifndef RUSTAXA_ENABLE
@@ -34,6 +30,7 @@ class IVotePacketHandler : public
 #endif
                      const addr_t& node_addr, const std::string& logs_prefix);
 
+#ifndef RUSTAXA_ENABLE
   /**
    * @brief Sends pbft vote to connected peers
    *
@@ -71,6 +68,7 @@ class IVotePacketHandler : public
    */
   virtual void sendPbftVotesBundle(const std::shared_ptr<TaraxaPeer>& peer,
                                    std::vector<std::shared_ptr<PbftVote>>&& votes);
+#endif
 };
 
 }  // namespace taraxa::network::tarcap

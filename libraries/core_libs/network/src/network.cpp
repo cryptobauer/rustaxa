@@ -15,6 +15,12 @@
 #include "network/tarcap/packets_handlers/interface/sync_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/interface/transaction_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/interface/vote_packet_handler.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "network/tarcap/packets_handlers/rust/dag_block_packet_handler.hpp"
+#include "network/tarcap/packets_handlers/rust/pillar_vote_packet_handler.hpp"
+#include "network/tarcap/packets_handlers/rust/vote_packet_handler.hpp"
+#include "network/tarcap/packets_handlers/rust/votes_bundle_packet_handler.hpp"
+#endif
 #ifndef RUSTAXA_ENABLE
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #endif
@@ -112,14 +118,14 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #endif
       pbft_chain,
 #ifdef RUSTAXA_ENABLE
-                                                   consensus_status_, consensus_vote_status_,
+      consensus_status_, consensus_vote_status_,
 #else
-                                                   pbft_mgr,
+      pbft_mgr,
 #endif
 #ifndef RUSTAXA_ENABLE
-                                                   vote_mgr, dag_mgr, trx_mgr, all_packets_stats_, packets_tp_, kConf);
+      vote_mgr, dag_mgr, trx_mgr, all_packets_stats_, packets_tp_, kConf);
 #else
-                                                   all_packets_stats_, packets_tp_, kConf);
+      all_packets_stats_, packets_tp_, kConf);
 #endif
 
   // TODO make all these properties configurable
@@ -270,9 +276,9 @@ Json::Value Network::getStatus() {
 
 bool Network::pbft_syncing() {
 #ifdef RUSTAXA_ENABLE
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::steady_clock::now().time_since_epoch())
-                       .count();
+  const auto now =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+          .count();
   return (*consensus_query_)->consensus_query_pbft_sync_status(now).active;
 #else
   return pbft_syncing_state_->isPbftSyncing();
@@ -281,9 +287,9 @@ bool Network::pbft_syncing() {
 
 uint64_t Network::syncTimeSeconds() const {
 #ifdef RUSTAXA_ENABLE
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::steady_clock::now().time_since_epoch())
-                       .count();
+  const auto now =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+          .count();
   return (*consensus_query_)->consensus_query_pbft_sync_status(now).elapsed_ms / 1000;
 #else
   return node_stats_->syncTimeSeconds();
@@ -431,6 +437,49 @@ void Network::addBootNodes(bool initial) {
   }
 }
 
+#ifdef RUSTAXA_ENABLE
+void Network::gossipVoteBytes(const std::vector<uint8_t> &vote_rlp, const std::vector<uint8_t> &proposed_block_rlp,
+                              bool rebroadcast, uint64_t source_payload_id) {
+  for (const auto &tarcap : tarcaps_) {
+    const auto outcome =
+        tarcap.second->gossipCanonicalVote(vote_rlp, proposed_block_rlp, rebroadcast, source_payload_id);
+    if (outcome.status != 0) {
+      throw std::runtime_error("Native PBFT vote egress failed: " + outcome.error_code);
+    }
+  }
+}
+
+void Network::gossipVotesBundleBytes(const std::vector<uint8_t> &votes_bundle_rlp, bool rebroadcast,
+                                     uint64_t source_payload_id) {
+  for (const auto &tarcap : tarcaps_) {
+    const auto outcome =
+        tarcap.second->gossipCanonicalVotesBundle(votes_bundle_rlp, rebroadcast, source_payload_id);
+    if (outcome.status != 0) {
+      throw std::runtime_error("Native PBFT vote-bundle egress failed: " + outcome.error_code);
+    }
+  }
+}
+
+void Network::gossipPillarVoteBytes(const std::vector<uint8_t> &pillar_vote_rlp, bool rebroadcast,
+                                    uint64_t source_payload_id) {
+  for (const auto &tarcap : tarcaps_) {
+    const auto outcome = tarcap.second->gossipCanonicalPillarVote(pillar_vote_rlp, rebroadcast, source_payload_id);
+    if (outcome.status != 0) {
+      throw std::runtime_error("Native pillar-vote egress failed: " + outcome.error_code);
+    }
+  }
+}
+
+void Network::gossipDagBlockBytes(const std::vector<uint8_t> &block_rlp, const std::array<uint8_t, 32> &block_hash,
+                                  uint64_t source_payload_id) {
+  for (const auto &tarcap : tarcaps_) {
+    const auto outcome = tarcap.second->gossipCanonicalDagBlock(block_rlp, block_hash, source_payload_id);
+    if (outcome.status != 0) {
+      throw std::runtime_error("Native DAG-block egress failed: " + outcome.error_code);
+    }
+  }
+}
+#else
 void Network::gossipDagBlock(const std::shared_ptr<DagBlock> &block, bool proposed, const SharedTransactions &trxs) {
   for (const auto &tarcap : tarcaps_) {
     auto dag_block_packet_handler = tarcap.second->getSpecificHandler<network::tarcap::IDagBlockPacketHandler>(
@@ -463,6 +512,7 @@ void Network::gossipPillarBlockVote(const std::shared_ptr<PillarVote> &vote, boo
     pillar_vote_packet_handler->onNewPillarVote(vote, rebroadcast);
   }
 }
+#endif
 
 void Network::handleMaliciousSyncPeer(const dev::p2p::NodeID &node_id) {
   for (const auto &tarcap : tarcaps_) {

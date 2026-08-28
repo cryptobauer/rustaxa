@@ -15,7 +15,7 @@ RustPillarVotesBundlePacketHandler::RustPillarVotesBundlePacketHandler(
 void RustPillarVotesBundlePacketHandler::process(const threadpool::PacketData& packet_data,
                                                  const std::shared_ptr<TaraxaPeer>& peer) {
   const auto outcome = rust_consensus_network_api_->ingestPillarVotesBundlePacket(
-      consensusPacketRequest(packet_data, peer, transport_lane_, false, false), consensusTransportExecutor());
+      consensusPacketRequest(packet_data, peer, transport_lane_, false), consensusTransportExecutor());
   if (outcome.malicious) {
     throw MaliciousPeerException("Native pillar-vote bundle packet rejected peer payload: " + outcome.error_code);
   }

@@ -25,7 +25,6 @@ class RustTransactionPacketHandler final : public ITransactionPacketHandler {
 
  private:
   void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;
-  bool gossipPacket(const std::vector<uint8_t>& packet_rlp, const std::vector<std::array<uint8_t, 64>>& excluded_peers);
 
   network::ConsensusNetworkApiShared consensus_network_api_;
   const TarcapVersion transport_lane_;

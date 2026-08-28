@@ -810,6 +810,15 @@ eligible fanout peers inside the transport executor instead of consuming exact n
 DAG/DAG-sync, transaction ingress, status/sync lifecycle, and the four vote-family ingress routes otherwise call named
 application/network operations. These residuals define the next `CRW-N01` cut; blocked `CRW-E02` remains untouched.
 
+The following canonical-egress checkpoint removes those object-shaped application and periodic fanout families.
+Native preparation decodes canonical PBFT vote/bundle, pillar-vote, DAG-block, and transaction-gossip inputs, retains a
+bounded one-shot cursor, and returns only exact hash probes. C++ snapshots authenticated peers and their probe results
+inside the transport-lane lock; native planning then owns known/sync filtering, exclusions, per-peer bundle chunking,
+complete packet construction, exact targets, and dependent known marks. The shared executor no longer wraps vote or
+pillar packets or selects gossip peers. Rust-mode application observers and ingress rebroadcasts use the same prepared
+egress route, while the untouched object hierarchy remains source-selected for pure-C++ mode. The residual audit keeps
+`CRW-N01` active solely for latest-status and get-next-votes scalar ingress decoding; blocked `CRW-E02` is not started.
+
 ### 7. Contract DAG and transaction shims
 
 - Move worker-neutral orchestration behind the native DAG/transaction service.
