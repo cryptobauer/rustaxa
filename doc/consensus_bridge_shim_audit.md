@@ -46,16 +46,16 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 5536 |
+| `bridge_lines` | 5535 |
 | `shim_lines` | 1042 |
 | `cxx_functions` | 96 |
-| `cxx_carriers` | 143 |
+| `cxx_carriers` | 141 |
 | `cxx_handles` | 10 |
 | `shim_directories` | 1 |
 | `granular_flags` | 0 |
 | `partial_service_factories` | 0 |
 | `compatibility_constructor_calls` | 0 |
-| `non_test_cpp_consumers` | 26 |
+| `non_test_cpp_consumers` | 17 |
 
 This DAG/transaction/proposer cut lowers the preceding 14,340/7,628/277/217/14/6/33 checkpoint by 2,224 bridge lines,
 3,553 shim lines, 66 CXX functions, 47 carriers, zero opaque handles, three shim directories, and five non-test C++
@@ -92,6 +92,18 @@ follow-up, initial admission, native status egress, and one generation-correlate
 reads share `BridgeConsensusQueryApi`; Rust mode no longer compiles or injects `PbftSyncingState`. The replacement lowers
 bridge lines by 11 to 5,536 and carriers by one to 143 while keeping the other checked totals at 1,042/96/10/1; it eliminates the planner
 family, duplicated mutable state, and network-only query route.
+
+The canonical vote-family packet cut removes Rust-mode selection of `ExtVotesPacketHandler`,
+`ExtPillarVotePacketHandler`, and `ExtSyncingPacketHandler`; those implementations now compile only in the untouched
+all-Rust-disabled source selection. PBFT vote, optimized vote-bundle, pillar-vote, and optimized pillar-bundle ingress
+cross CXX once as canonical packet bytes plus a peer/status snapshot. One transport executor owns lane serialization,
+source-scoped drain, exact-id acknowledgement, dependency cancellation, packet wrapping, physical send/gossip,
+disconnect/report, and known-cache execution. Tarcap contains no generated bridge-header include or raw
+`BridgeConsensusNetworkApi` access. Obsolete scalar vote/pillar ingress carriers and exports plus the C++ proposed-block
+publication leaf are deleted. Typed malformed-packet reports preserve peer-blacklist behavior without exposing raw
+bridge errors. This lowers the checked surface to 5,535 bridge lines, 1,042 shim lines, 96 functions,
+141 carriers, 10 handles, one shim directory, and 17 non-test C++ bridge consumers; all flag/factory/constructor metrics
+remain zero.
 
 The pillar cut lowers the 12,100/4,075/211/170/14/3/28 DAG checkpoint by 764 bridge lines, 1,216 shim lines,
 16 CXX functions, 16 carriers, zero opaque handles, one shim directory, and two non-test C++ consumers. Granular flags,

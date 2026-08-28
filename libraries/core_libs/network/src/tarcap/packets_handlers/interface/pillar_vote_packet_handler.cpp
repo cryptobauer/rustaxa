@@ -10,16 +10,21 @@ IPillarVotePacketHandler::IPillarVotePacketHandler(
 #ifndef RUSTAXA_ENABLE
     std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager,
 #else
-    network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
+    network::ConsensusNetworkApiShared consensus_network_api, [[maybe_unused]] TarcapVersion transport_lane,
 #endif
     const addr_t& node_addr, const std::string& logs_prefix)
-    : ExtPillarVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats),
+    :
+#ifdef RUSTAXA_ENABLE
+      RustConsensusTransportPacketHandler(conf, std::move(peers_state), std::move(packets_stats), {}, {},
+                                          std::move(consensus_network_api), node_addr, logs_prefix)
+#else
+      ExtPillarVotePacketHandler(conf, std::move(peers_state), std::move(packets_stats),
 #ifndef RUSTAXA_ENABLE
                                  std::move(pillar_chain_manager),
-#else
-                                 std::move(consensus_network_api), transport_lane,
 #endif
-                                 node_addr, logs_prefix) {
+                                 node_addr, logs_prefix)
+#endif
+{
 }
 
 void IPillarVotePacketHandler::onNewPillarVote(const std::shared_ptr<PillarVote>& vote, bool rebroadcast) {

@@ -795,6 +795,21 @@ App, and statistics readers consume the shared `ConsensusQueryApi` sync snapshot
 free. The bridge retains five named operation-shaped network calls, including combined start/selection and one lifecycle command, and
 deletes the six direct planner exports plus the network-specific status snapshot.
 
+The next canonical packet checkpoint removes the three Rust-mode `Ext*` vote/pillar/sync compatibility bases from the
+feature-on composition and eliminates every tarcap call to a raw bridge handle. Four standalone Rust-mode adapters pass
+complete canonical vote-family packets and peer/status snapshots to operation-shaped network routes. Proposed-block
+publication now remains inside the native PBFT sibling; the centralized transport executor performs the only
+source-scoped drain/ack loop and retains only packet wrapping, socket sends/gossip, disconnect/report, known-cache, and
+lane execution. The legacy handlers remain selected only when `RUSTAXA_ENABLE=0`.
+
+The all-handler audit does not close `CRW-N01`. Exact residual families are: application-originated PBFT vote/bundle,
+pillar-vote, DAG-block/transaction and transaction gossip still enter object-shaped interface fanout helpers that apply
+peer-known/sync filtering and chunking in C++; latest status ingress and get-next-votes request ingress still decode
+their scalar packets in C++ before calling native operations; and generic vote/pillar gossip effects still select
+eligible fanout peers inside the transport executor instead of consuming exact native target snapshots. PBFT sync,
+DAG/DAG-sync, transaction ingress, status/sync lifecycle, and the four vote-family ingress routes otherwise call named
+application/network operations. These residuals define the next `CRW-N01` cut; blocked `CRW-E02` remains untouched.
+
 ### 7. Contract DAG and transaction shims
 
 - Move worker-neutral orchestration behind the native DAG/transaction service.

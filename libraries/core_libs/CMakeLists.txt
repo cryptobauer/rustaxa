@@ -77,6 +77,24 @@ if(RUSTAXA_ENABLE)
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
          "/network/src/tarcap/shared_states/pbft_syncing_state\\.cpp$")
 
+    # Rust packet adapters inherit only the transport leaf base. The three
+    # manager-shaped compatibility bases remain available solely to the
+    # untouched pure-C++ handler hierarchy.
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/common/ext_syncing_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/common/ext_votes_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/common/ext_pillar_vote_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/vote_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/votes_bundle_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/pillar_vote_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/pillar_votes_bundle_packet_handler\\.cpp$")
+
     # Native packet admission owns decoding, verification, queue mutation, and
     # egress selection. Keep the untouched manager-based handlers only in the
     # pure-C++ reference composition.
@@ -102,6 +120,14 @@ if(RUSTAXA_ENABLE)
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
          "/network/src/tarcap/packets_handlers/latest/get_next_votes_bundle_packet_handler\\.cpp$")
 else()
+    list(FILTER NETWORK_HEADERS EXCLUDE REGEX
+         "/network/include/network/tarcap/packets_handlers/rust/consensus_transport_packet_handler\\.hpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/rust/consensus_transport_packet_handler\\.cpp$")
+    list(FILTER NETWORK_HEADERS EXCLUDE REGEX
+         "/network/include/network/tarcap/packets_handlers/rust/(vote|votes_bundle|pillar_vote|pillar_votes_bundle)_packet_handler\\.hpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/rust/(vote|votes_bundle|pillar_vote|pillar_votes_bundle)_packet_handler\\.cpp$")
     list(FILTER NETWORK_HEADERS EXCLUDE REGEX
          "/network/include/network/tarcap/packets_handlers/rust/transaction_packet_handler\\.hpp$")
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX

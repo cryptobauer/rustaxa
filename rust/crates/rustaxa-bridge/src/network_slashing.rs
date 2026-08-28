@@ -118,15 +118,6 @@ pub(crate) fn empty_slashing_transaction_effect() -> FfiSlashingTransactionEffec
 }
 
 impl crate::ffi::BridgeApp {
-    /// Publishes canonical signed PBFT block bytes through the native owner.
-    pub fn pbft_service_publish_proposed_block_effect(
-        &self,
-        canonical_signed_block_rlp: Vec<u8>,
-    ) -> Result<bool, anyhow::Error> {
-        self.0
-            .publish_proposed_block_effect(canonical_signed_block_rlp)
-    }
-
     /// Reports one network-executed verified-vote slashing transaction.
     pub fn pbft_service_verified_votes_report_slashing_transaction_submission(
         &self,

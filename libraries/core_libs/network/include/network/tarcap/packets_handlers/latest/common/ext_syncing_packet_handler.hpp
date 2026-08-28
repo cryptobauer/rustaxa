@@ -1,30 +1,16 @@
 #pragma once
 
-#ifndef RUSTAXA_ENABLE
 #include "dag/dag_manager.hpp"
-#endif
-#include "network/consensus_query.hpp"
-#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
-#endif
 #include "packet_handler.hpp"
-#ifdef RUSTAXA_ENABLE
-#include "network/consensus_network_api.hpp"
-#include "rustaxa-bridge/ffi.rs.h"
-#else
+#include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
-#endif
 
 namespace taraxa {
-#ifndef RUSTAXA_ENABLE
-class DbStorage;
-#endif
 class PbftManager;
 }  // namespace taraxa
 
 namespace taraxa::network::tarcap {
-
-class PbftSyncingState;
 
 /**
  * @brief ExtSyncingPacketHandler is extended abstract PacketHandler with added functions that are used in packet
@@ -34,20 +20,11 @@ class ExtSyncingPacketHandler : public PacketHandler {
  public:
   ExtSyncingPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                           std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-#ifndef RUSTAXA_ENABLE
-                          std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-#endif
-                          net::ConsensusQueryClient pbft_chain,
-#ifndef RUSTAXA_ENABLE
+                          std::shared_ptr<PbftSyncingState> pbft_syncing_state, std::shared_ptr<PbftChain> pbft_chain,
                           std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
-                          std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler.
-#else
-                          network::ConsensusLiveStatusProvider consensus_status,
-                          network::ConsensusNetworkApiShared consensus_network_api,
-#endif
-                          const addr_t &node_addr, const std::string &log_channel_name);
+                          std::shared_ptr<DbStorage> db, const addr_t &node_addr, const std::string &log_channel_name);
 
-  virtual ~ExtSyncingPacketHandler();
+  virtual ~ExtSyncingPacketHandler() = default;
   ExtSyncingPacketHandler &operator=(const ExtSyncingPacketHandler &) = delete;
   ExtSyncingPacketHandler &operator=(ExtSyncingPacketHandler &&) = delete;
 
@@ -55,27 +32,12 @@ class ExtSyncingPacketHandler : public PacketHandler {
   void requestPendingDagBlocks(std::shared_ptr<TaraxaPeer> peer = nullptr);
 
  protected:
-#ifdef RUSTAXA_ENABLE
-  void requestPbftNextVotesAtPeriodRound(const dev::p2p::NodeID &peer_id, PbftPeriod peer_pbft_period,
-                                         PbftRound peer_pbft_round);
-#endif
-
-#ifndef RUSTAXA_ENABLE
   std::shared_ptr<PbftSyncingState> pbft_syncing_state_{nullptr};
-#endif
 
-  net::ConsensusQueryClient pbft_chain_{nullptr};
-#ifndef RUSTAXA_ENABLE
+  std::shared_ptr<PbftChain> pbft_chain_{nullptr};
   std::shared_ptr<PbftManager> pbft_mgr_{nullptr};
-#else
-  network::ConsensusLiveStatusProvider consensus_status_;
-#endif
-#ifndef RUSTAXA_ENABLE
   std::shared_ptr<DagManager> dag_mgr_{nullptr};
-  std::shared_ptr<DbStorage> db_{nullptr};  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler storage.
-#else
-  network::ConsensusNetworkApiShared rust_consensus_network_api_;
-#endif
+  std::shared_ptr<DbStorage> db_{nullptr};
 };
 
 }  // namespace taraxa::network::tarcap

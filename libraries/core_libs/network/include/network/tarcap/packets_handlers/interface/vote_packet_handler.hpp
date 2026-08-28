@@ -1,11 +1,28 @@
 #pragma once
 
+#ifdef RUSTAXA_ENABLE
+#include "network/tarcap/packets_handlers/rust/consensus_transport_packet_handler.hpp"
+#include "network/tarcap/tarcap_version.hpp"
+#include "pbft/pbft_block.hpp"
+#include "vote/pbft_vote.hpp"
+#else
 #include "network/tarcap/packets_handlers/latest/common/ext_votes_packet_handler.hpp"
+#endif
 
 namespace taraxa::network::tarcap {
 
-class IVotePacketHandler : public ExtVotesPacketHandler {
+class IVotePacketHandler : public
+#ifdef RUSTAXA_ENABLE
+                           RustConsensusTransportPacketHandler
+#else
+                           ExtVotesPacketHandler
+#endif
+{
  public:
+#ifdef RUSTAXA_ENABLE
+  /** Legacy wire cap retained by the physical bundle encoder. */
+  static constexpr size_t kMaxVotesInBundleRlp{1000};
+#endif
   IVotePacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
 #ifndef RUSTAXA_ENABLE
@@ -13,7 +30,7 @@ class IVotePacketHandler : public ExtVotesPacketHandler {
                      std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<SlashingManager> slashing_manager,
 #else
                      network::ConsensusLiveStatusProvider consensus_status, net::ConsensusQueryClient pbft_chain,
-                     network::ConsensusNetworkApiShared consensus_network_api, TarcapVersion transport_lane,
+                     network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                      const addr_t& node_addr, const std::string& logs_prefix);
 

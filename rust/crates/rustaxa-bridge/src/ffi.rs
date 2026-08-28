@@ -325,27 +325,22 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// Scalar context for authoritative PBFT vote ingress through Network/Tarcap.
-    struct NetworkPbftVoteIngressContext {
-        ingress: PbftVoteIngressContext,
+    /// Complete canonical vote-family packet plus compact live ingress policy.
+    struct NetworkConsensusPacketRequest {
         transport_lane: u32,
         peer_id: [u8; 64],
         peer_pbft_chain_size: u64,
         source_payload_id: u64,
-        enqueue_admission: bool,
-        allow_gossip: bool,
-        vote_hash: [u8; 32],
-        vote_rlp: Vec<u8>,
-        pbft_block_rlp: Vec<u8>,
-        pbft_block_hash: [u8; 32],
-        pbft_block_period: u64,
-    }
-
-    /// Scalar context for authoritative pillar-vote ingress through Network/Tarcap.
-    struct NetworkPillarVoteIngressContext {
-        transport_lane: u32,
-        peer_id: [u8; 64],
-        source_payload_id: u64,
+        packet_rlp: Vec<u8>,
+        current_period: u64,
+        current_round: u64,
+        current_step: u64,
+        max_future_period_delta: u64,
+        max_future_round_delta: u64,
+        max_future_step_delta: u64,
+        validate_max_round_step: bool,
+        can_request_pbft_sync: bool,
+        can_request_next_votes_sync: bool,
         allow_gossip: bool,
     }
 
@@ -502,6 +497,24 @@ pub mod rustaxa_ffi {
         conflict_found: bool,
         vote_hash: [u8; 32],
         conflicting_vote_hash: [u8; 32],
+    }
+
+    /// Terminal native result for one PBFT vote-family packet.
+    struct NetworkPbftVotePacketReport {
+        status: u8,
+        error_code: String,
+        malicious: bool,
+        outcomes: Vec<NetworkPbftVoteAdmissionOutcome>,
+        has_peer_pbft_chain_size: bool,
+        peer_pbft_chain_size: u64,
+    }
+
+    /// Terminal native result for one pillar-vote-family packet.
+    struct NetworkPillarVotePacketReport {
+        status: u8,
+        error_code: String,
+        malicious: bool,
+        outcomes: Vec<NetworkPillarVoteAdmissionOutcome>,
     }
 
     /// Initial status identity and history facts for native peer admission.
@@ -748,48 +761,12 @@ pub mod rustaxa_ffi {
         slashing_transaction_effect: SlashingTransactionEffect,
     }
 
-    /// Compact PBFT vote facts used by Rust-planned ingress gates.
-    ///
-    /// C++ still owns packet decoding and live vote materialization. This
-    /// payload carries only the scalar fields needed to decide relevance,
-    /// period/round/step windows, and bundle-shape policy.
-    struct PbftVoteIngressFact {
-        period: u64,
-        round: u64,
-        step: u64,
-        vote_type: u8,
-    }
-
-    /// Local PBFT state and network-window policy for one vote ingress plan.
-    ///
-    /// Zero max-window values disable the matching upper-bound check, matching
-    /// the legacy network DDoS-protection configuration semantics. The
-    /// `can_request_*` booleans keep peer-timer throttling in C++ while letting
-    /// Rust decide whether the vote shape is eligible to trigger a sync hint.
-    struct PbftVoteIngressContext {
-        current_period: u64,
-        current_round: u64,
-        current_step: u64,
-        max_future_period_delta: u64,
-        max_future_round_delta: u64,
-        max_future_step_delta: u64,
-        validate_max_round_step: bool,
-        source_peer_is_voter: bool,
-        can_request_pbft_sync: bool,
-        can_request_next_votes_sync: bool,
-    }
-
     /// Public/query PBFT `2t+1` threshold lookup result.
     struct PbftTwoTPlusOneThresholdPlan {
         status: u8,
         error_code: String,
         has_threshold: bool,
         threshold: u64,
-    }
-
-    /// Canonical pillar-vote bytes shared by batch inspection and period-data pop boundaries.
-    struct PillarVoteRlpPayload {
-        vote_rlp: Vec<u8>,
     }
 
     /// One signed validator vote-count change shared by pillar planning and query views.
@@ -1256,24 +1233,24 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             results: Vec<NetworkEffectResult>,
         ) -> Result<NetworkEffectAck>;
-        pub fn consensus_network_admit_pbft_vote(
+        pub fn consensus_network_ingest_pbft_vote_packet(
             self: &BridgeConsensusNetworkApi,
-            fact: PbftVoteIngressFact,
-            context: NetworkPbftVoteIngressContext,
+            request: NetworkConsensusPacketRequest,
             slashing_submitters: Vec<SlashingSubmitterIdentity>,
-        ) -> Result<NetworkPbftVoteAdmissionOutcome>;
-        pub fn consensus_network_admit_pbft_vote_bundle(
+        ) -> Result<NetworkPbftVotePacketReport>;
+        pub fn consensus_network_ingest_pbft_votes_bundle_packet(
             self: &BridgeConsensusNetworkApi,
-            reference: PbftVoteIngressFact,
-            votes: Vec<PbftVoteIngressFact>,
-            contexts: Vec<NetworkPbftVoteIngressContext>,
+            request: NetworkConsensusPacketRequest,
             slashing_submitters: Vec<SlashingSubmitterIdentity>,
-        ) -> Result<Vec<NetworkPbftVoteAdmissionOutcome>>;
-        pub fn consensus_network_ingest_pillar_vote_bundle(
+        ) -> Result<NetworkPbftVotePacketReport>;
+        pub fn consensus_network_ingest_pillar_vote_packet(
             self: &BridgeConsensusNetworkApi,
-            context: NetworkPillarVoteIngressContext,
-            votes: Vec<PillarVoteRlpPayload>,
-        ) -> Result<Vec<NetworkPillarVoteAdmissionOutcome>>;
+            request: NetworkConsensusPacketRequest,
+        ) -> Result<NetworkPillarVotePacketReport>;
+        pub fn consensus_network_ingest_pillar_votes_bundle_packet(
+            self: &BridgeConsensusNetworkApi,
+            request: NetworkConsensusPacketRequest,
+        ) -> Result<NetworkPillarVotePacketReport>;
         pub fn consensus_network_ingest_pbft_next_votes_bundle_request(
             self: &BridgeConsensusNetworkApi,
             transport_lane: u32,
@@ -1447,11 +1424,6 @@ pub mod rustaxa_ffi {
             transaction_inserted: bool,
         ) -> Result<PbftSyncIngressStep>;
 
-        // Network-owned proposed-block publication leaf.
-        pub fn pbft_service_publish_proposed_block_effect(
-            self: &BridgeConsensusApplication,
-            canonical_signed_block_rlp: Vec<u8>,
-        ) -> Result<bool>;
         // Network-owned verified-vote slashing acknowledgement leaf.
         pub fn pbft_service_verified_votes_report_slashing_transaction_submission(
             self: &BridgeConsensusApplication,

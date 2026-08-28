@@ -4284,9 +4284,29 @@ of the existing query API. Rust-mode source selection excludes the shared-state 
 all-Rust-disabled path continues to construct and compile it. `CRW-N01` remains active for any other handler-local
 consensus routing family under its global completion condition; blocked `CRW-E02` is unchanged.
 
-Replacement coverage includes 100 native network lifecycle tests, two CXX application-root boundary tests, the live
-two-node Rust-mode sync/query fixture, all seven tarcap concurrency tests, and four focused all-Rust-disabled network/PBFT
-sync tests. The fast, consensus, and binary smoke gates pass. All ten registered C++ CTest executables pass; the unrelated
+The following canonical vote-family cut excludes the Rust-mode `ExtVotesPacketHandler`,
+`ExtPillarVotePacketHandler`, and `ExtSyncingPacketHandler` implementations while retaining their untouched pure-C++
+source selection. Standalone PBFT vote/bundle and pillar vote/bundle adapters submit canonical packet bytes and compact
+peer/status snapshots to native application-root routes. Native PBFT publishes an attached proposed block before
+emitting transport follow-ups. A shared executor performs source-scoped drain, exact-id acknowledgement, dependency
+cancellation, physical send/gossip/disconnect/report, known-cache mutation, and lane serialization. Tarcap has zero raw
+bridge-handle calls and zero generated bridge-header includes; obsolete scalar ingress exports/carriers and the external
+proposed-block publication export are deleted. The checked inventory is 5,535/1,042/96/141/10/1/0/0/0/17, one bridge
+line below the preceding checkpoint while removing two carriers and nine non-test C++ consumers.
+
+`CRW-N01` stays active after auditing every feature-on handler. The exact residual families are application-originated
+PBFT vote/bundle, pillar-vote, DAG-block/transaction, and transaction-gossip fanout through object-shaped interface
+helpers; C++ scalar decoding for latest status and get-next-votes requests; and transport-executor selection of generic
+vote/pillar gossip targets. The already-native PBFT sync, DAG/DAG-sync, transaction ingress, status/sync lifecycle, and
+canonical vote-family ingress routes are not residual compatibility planners. `CRW-E02` remains blocked and untouched.
+
+Replacement coverage includes native network lifecycle and exact-id cancellation tests, CXX application-root boundary
+tests, legacy-C++-encoder-to-native-decoder normal and malformed fixtures for all four canonical packet families, the
+live two-node Rust-mode sync/query fixture, all seven tarcap concurrency tests, and focused all-Rust-disabled network
+tests. Independent review found and verified fixes for atomic sync cooldown reservation, transport failure
+acknowledgement, per-peer gossip continuation, related-block known marking, typed malicious-peer handling, and late
+bundle-error follow-up cancellation. The fast, consensus, binary smoke, focused live sync, and pure-C++ gates pass.
+All ten registered C++ CTest executables pass; the unrelated
 Go leg remains unavailable because the configured static linker lacks `libz`/`snappy`, and Python integration cannot
 bootstrap in the image because `python3-venv`, `virtualenv`, and `pytest` are unavailable.
 

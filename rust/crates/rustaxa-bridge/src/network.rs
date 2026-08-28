@@ -8,25 +8,17 @@ use crate::network_slashing::{
     empty_slashing_transaction_effect, slashing_submitter_identity_to_domain,
     slashing_transaction_effect_to_ffi,
 };
-use rustaxa_consensus::pbft_vote_ingress::{PbftVoteIngressContext, PbftVoteIngressFact};
 use rustaxa_consensus::pbft_vote_progress::PbftVoteProgressIntent;
-use rustaxa_consensus::verified_votes::PbftVoteType;
 
-fn vote_ingress_fact_to_domain(
-    value: rustaxa_ffi::PbftVoteIngressFact,
-) -> anyhow::Result<PbftVoteIngressFact> {
-    Ok(PbftVoteIngressFact {
-        period: value.period,
-        round: value.round,
-        step: value.step,
-        vote_type: PbftVoteType::try_from(value.vote_type)?,
-    })
-}
-
-const fn vote_ingress_context_to_domain(
-    value: rustaxa_ffi::PbftVoteIngressContext,
-) -> PbftVoteIngressContext {
-    PbftVoteIngressContext {
+fn consensus_packet_request_to_domain(
+    value: rustaxa_ffi::NetworkConsensusPacketRequest,
+) -> rustaxa_consensus::NetworkConsensusPacketRequest {
+    rustaxa_consensus::NetworkConsensusPacketRequest {
+        transport_lane: value.transport_lane,
+        peer_id: value.peer_id,
+        peer_pbft_chain_size: value.peer_pbft_chain_size,
+        source_payload_id: value.source_payload_id,
+        packet_rlp: value.packet_rlp,
         current_period: value.current_period,
         current_round: value.current_round,
         current_step: value.current_step,
@@ -34,9 +26,9 @@ const fn vote_ingress_context_to_domain(
         max_future_round_delta: value.max_future_round_delta,
         max_future_step_delta: value.max_future_step_delta,
         validate_max_round_step: value.validate_max_round_step,
-        source_peer_is_voter: value.source_peer_is_voter,
         can_request_pbft_sync: value.can_request_pbft_sync,
         can_request_next_votes_sync: value.can_request_next_votes_sync,
+        allow_gossip: value.allow_gossip,
     }
 }
 
@@ -304,82 +296,92 @@ impl BridgeConsensusNetworkApi {
         ))
     }
 
-    /// Routes single-vote PBFT ingress and queues network effects.
-    ///
-    /// Unlike the side-effect-free planner method, this production-facing route
-    /// updates the network facade's effect queue so C++ can execute sync,
-    /// report, and disconnect requests through `drain_work` /
-    /// `report_effect_results`.
-    pub fn consensus_network_admit_pbft_vote(
+    /// Decodes and admits a complete canonical PBFT vote packet in native code.
+    pub fn consensus_network_ingest_pbft_vote_packet(
         &self,
-        fact: rustaxa_ffi::PbftVoteIngressFact,
-        context: rustaxa_ffi::NetworkPbftVoteIngressContext,
+        request: rustaxa_ffi::NetworkConsensusPacketRequest,
         slashing_submitters: Vec<rustaxa_ffi::SlashingSubmitterIdentity>,
-    ) -> anyhow::Result<rustaxa_ffi::NetworkPbftVoteAdmissionOutcome> {
-        let outcome = self.network.ingest_and_admit_pbft_vote(
+    ) -> anyhow::Result<rustaxa_ffi::NetworkPbftVotePacketReport> {
+        let report = self.network.ingest_pbft_vote_packet(
             self.pbft.as_ref(),
             self.final_chain.as_ref(),
-            vote_ingress_fact_to_domain(fact)?,
-            to_domain_pbft_vote_ingress_context(context),
+            consensus_packet_request_to_domain(request),
             &slashing_submitters
                 .into_iter()
                 .map(slashing_submitter_identity_to_domain)
                 .collect::<Vec<_>>(),
-        )?;
-        Ok(to_bridge_pbft_vote_admission_outcome(outcome))
+        );
+        match report {
+            Ok(report) => Ok(to_bridge_pbft_vote_packet_report(report)),
+            Err(error) => match peer_packet_error_code(&error, &["NETWORK_PBFT_VOTE_PACKET_"]) {
+                Some(error_code) => Ok(pbft_peer_packet_error_report(error_code)),
+                None => Err(error),
+            },
+        }
     }
 
-    /// Preflights one complete vote bundle and queues its grouped admission effects.
-    pub fn consensus_network_admit_pbft_vote_bundle(
+    /// Decodes and admits a complete optimized PBFT votes-bundle packet in native code.
+    pub fn consensus_network_ingest_pbft_votes_bundle_packet(
         &self,
-        reference: rustaxa_ffi::PbftVoteIngressFact,
-        votes: Vec<rustaxa_ffi::PbftVoteIngressFact>,
-        contexts: Vec<rustaxa_ffi::NetworkPbftVoteIngressContext>,
+        request: rustaxa_ffi::NetworkConsensusPacketRequest,
         slashing_submitters: Vec<rustaxa_ffi::SlashingSubmitterIdentity>,
-    ) -> anyhow::Result<Vec<rustaxa_ffi::NetworkPbftVoteAdmissionOutcome>> {
-        let votes = votes
-            .into_iter()
-            .map(vote_ingress_fact_to_domain)
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        Ok(self
-            .network
-            .ingest_and_admit_pbft_vote_bundle(
-                self.pbft.as_ref(),
-                self.final_chain.as_ref(),
-                vote_ingress_fact_to_domain(reference)?,
-                votes,
-                contexts
-                    .into_iter()
-                    .map(to_domain_pbft_vote_ingress_context)
-                    .collect(),
-                &slashing_submitters
-                    .into_iter()
-                    .map(slashing_submitter_identity_to_domain)
-                    .collect::<Vec<_>>(),
-            )?
-            .into_iter()
-            .map(to_bridge_pbft_vote_admission_outcome)
-            .collect())
+    ) -> anyhow::Result<rustaxa_ffi::NetworkPbftVotePacketReport> {
+        let report = self.network.ingest_pbft_votes_bundle_packet(
+            self.pbft.as_ref(),
+            self.final_chain.as_ref(),
+            consensus_packet_request_to_domain(request),
+            &slashing_submitters
+                .into_iter()
+                .map(slashing_submitter_identity_to_domain)
+                .collect::<Vec<_>>(),
+        );
+        match report {
+            Ok(report) => Ok(to_bridge_pbft_vote_packet_report(report)),
+            Err(error) => match peer_packet_error_code(&error, &["NETWORK_PBFT_VOTES_BUNDLE_"]) {
+                Some(error_code) => Ok(pbft_peer_packet_error_report(error_code)),
+                None => Err(error),
+            },
+        }
     }
 
-    /// Converts one ordered canonical pillar-vote packet for native atomic preflight and exact-id effect queueing.
-    /// A poisoned shared network root is returned as a bridge error without queueing partial work.
-    pub fn consensus_network_ingest_pillar_vote_bundle(
+    /// Decodes and admits a complete canonical pillar-vote packet in native code.
+    pub fn consensus_network_ingest_pillar_vote_packet(
         &self,
-        context: rustaxa_ffi::NetworkPillarVoteIngressContext,
-        votes: Vec<rustaxa_ffi::PillarVoteRlpPayload>,
-    ) -> anyhow::Result<Vec<rustaxa_ffi::NetworkPillarVoteAdmissionOutcome>> {
-        Ok(self
-            .network
-            .ingest_and_admit_pillar_vote_bundle(
-                self.pbft.as_ref(),
-                self.final_chain.as_ref(),
-                to_domain_pillar_vote_ingress_context(context),
-                votes.into_iter().map(|value| value.vote_rlp).collect(),
-            )?
-            .into_iter()
-            .map(to_bridge_pillar_vote_admission_outcome)
-            .collect())
+        request: rustaxa_ffi::NetworkConsensusPacketRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkPillarVotePacketReport> {
+        let report = self.network.ingest_pillar_vote_packet(
+            self.pbft.as_ref(),
+            self.final_chain.as_ref(),
+            consensus_packet_request_to_domain(request),
+        );
+        match report {
+            Ok(report) => Ok(to_bridge_pillar_vote_packet_report(report)),
+            Err(error) => match peer_packet_error_code(&error, &["NETWORK_PILLAR_VOTE_PACKET_"]) {
+                Some(error_code) => Ok(pillar_peer_packet_error_report(error_code)),
+                None => Err(error),
+            },
+        }
+    }
+
+    /// Decodes and admits a complete optimized pillar-votes-bundle packet in native code.
+    pub fn consensus_network_ingest_pillar_votes_bundle_packet(
+        &self,
+        request: rustaxa_ffi::NetworkConsensusPacketRequest,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkPillarVotePacketReport> {
+        let report = self.network.ingest_pillar_votes_bundle_packet(
+            self.pbft.as_ref(),
+            self.final_chain.as_ref(),
+            consensus_packet_request_to_domain(request),
+        );
+        match report {
+            Ok(report) => Ok(to_bridge_pillar_vote_packet_report(report)),
+            Err(error) => {
+                match peer_packet_error_code(&error, &["NETWORK_PILLAR_VOTES_BUNDLE_PACKET_"]) {
+                    Some(error_code) => Ok(pillar_peer_packet_error_report(error_code)),
+                    None => Err(error),
+                }
+            }
+        }
     }
 
     /// Routes one get-next-votes request and queues its native egress leaf.
@@ -573,36 +575,6 @@ fn to_bridge_network_effect(
     }
 }
 
-fn to_domain_pbft_vote_ingress_context(
-    value: rustaxa_ffi::NetworkPbftVoteIngressContext,
-) -> rustaxa_consensus::NetworkPbftVoteIngressContext {
-    rustaxa_consensus::NetworkPbftVoteIngressContext {
-        ingress: vote_ingress_context_to_domain(value.ingress),
-        transport_lane: value.transport_lane,
-        peer_id: value.peer_id,
-        peer_pbft_chain_size: value.peer_pbft_chain_size,
-        source_payload_id: value.source_payload_id,
-        enqueue_admission: value.enqueue_admission,
-        allow_gossip: value.allow_gossip,
-        vote_hash: value.vote_hash,
-        vote_rlp: value.vote_rlp,
-        pbft_block_rlp: value.pbft_block_rlp,
-        pbft_block_hash: value.pbft_block_hash,
-        pbft_block_period: value.pbft_block_period,
-    }
-}
-
-fn to_domain_pillar_vote_ingress_context(
-    value: rustaxa_ffi::NetworkPillarVoteIngressContext,
-) -> rustaxa_consensus::NetworkPillarVoteIngressContext {
-    rustaxa_consensus::NetworkPillarVoteIngressContext {
-        transport_lane: value.transport_lane,
-        peer_id: value.peer_id,
-        source_payload_id: value.source_payload_id,
-        allow_gossip: value.allow_gossip,
-    }
-}
-
 fn to_domain_network_pbft_sync_peer_candidate(
     candidate: rustaxa_ffi::NetworkPbftSyncPeerCandidate,
 ) -> rustaxa_consensus::NetworkPbftSyncPeerCandidate {
@@ -698,6 +670,44 @@ fn to_bridge_pbft_vote_admission_outcome(
     }
 }
 
+fn to_bridge_pbft_vote_packet_report(
+    value: rustaxa_consensus::NetworkPbftVotePacketReport,
+) -> rustaxa_ffi::NetworkPbftVotePacketReport {
+    rustaxa_ffi::NetworkPbftVotePacketReport {
+        status: 0,
+        error_code: String::new(),
+        malicious: false,
+        outcomes: value
+            .outcomes
+            .into_iter()
+            .map(to_bridge_pbft_vote_admission_outcome)
+            .collect(),
+        has_peer_pbft_chain_size: value.has_peer_pbft_chain_size,
+        peer_pbft_chain_size: value.peer_pbft_chain_size,
+    }
+}
+
+fn peer_packet_error_code(error: &anyhow::Error, prefixes: &[&str]) -> Option<String> {
+    error.chain().find_map(|cause| {
+        let message = cause.to_string();
+        prefixes
+            .iter()
+            .any(|prefix| message.starts_with(prefix))
+            .then_some(message)
+    })
+}
+
+fn pbft_peer_packet_error_report(error_code: String) -> rustaxa_ffi::NetworkPbftVotePacketReport {
+    rustaxa_ffi::NetworkPbftVotePacketReport {
+        status: 1,
+        error_code,
+        malicious: true,
+        outcomes: Vec::new(),
+        has_peer_pbft_chain_size: false,
+        peer_pbft_chain_size: 0,
+    }
+}
+
 fn to_bridge_pillar_vote_admission_outcome(
     value: rustaxa_consensus::NetworkPillarVoteAdmissionOutcome,
 ) -> rustaxa_ffi::NetworkPillarVoteAdmissionOutcome {
@@ -723,6 +733,32 @@ fn to_bridge_pillar_vote_admission_outcome(
         conflict_found: admission.conflict_found,
         vote_hash: admission.vote_hash,
         conflicting_vote_hash: admission.conflicting_vote_hash,
+    }
+}
+
+fn to_bridge_pillar_vote_packet_report(
+    value: rustaxa_consensus::NetworkPillarVotePacketReport,
+) -> rustaxa_ffi::NetworkPillarVotePacketReport {
+    rustaxa_ffi::NetworkPillarVotePacketReport {
+        status: 0,
+        error_code: String::new(),
+        malicious: false,
+        outcomes: value
+            .outcomes
+            .into_iter()
+            .map(to_bridge_pillar_vote_admission_outcome)
+            .collect(),
+    }
+}
+
+fn pillar_peer_packet_error_report(
+    error_code: String,
+) -> rustaxa_ffi::NetworkPillarVotePacketReport {
+    rustaxa_ffi::NetworkPillarVotePacketReport {
+        status: 1,
+        error_code,
+        malicious: true,
+        outcomes: Vec::new(),
     }
 }
 

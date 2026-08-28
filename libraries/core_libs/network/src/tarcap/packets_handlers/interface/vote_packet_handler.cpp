@@ -1,6 +1,8 @@
 #include "network/tarcap/packets_handlers/interface/vote_packet_handler.hpp"
 
 #include "network/tarcap/packets/latest/vote_packet.hpp"
+#include "network/tarcap/packets/latest/votes_bundle_packet.hpp"
+#include "vote/votes_bundle_rlp.hpp"
 
 namespace taraxa::network::tarcap {
 
@@ -14,18 +16,22 @@ IVotePacketHandler::IVotePacketHandler(const FullNodeConfig &conf, std::shared_p
                                        network::ConsensusLiveStatusProvider consensus_status,
                                        net::ConsensusQueryClient pbft_chain,
                                        network::ConsensusNetworkApiShared consensus_network_api,
-                                       TarcapVersion transport_lane,
 #endif
                                        const addr_t &node_addr, const std::string &logs_prefix)
-    : ExtVotesPacketHandler(conf, std::move(peers_state), std::move(packets_stats),
+    :
+#ifdef RUSTAXA_ENABLE
+      RustConsensusTransportPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_chain),
+                                          std::move(consensus_status), std::move(consensus_network_api), node_addr,
+                                          logs_prefix)
+#else
+      ExtVotesPacketHandler(conf, std::move(peers_state), std::move(packets_stats),
 #ifndef RUSTAXA_ENABLE
                             std::move(pbft_mgr), std::move(pbft_chain), std::move(vote_mgr),
                             std::move(slashing_manager),
-#else
-                            std::move(consensus_status), std::move(pbft_chain), std::move(consensus_network_api),
-                            transport_lane,
 #endif
-                            node_addr, logs_prefix) {
+                            node_addr, logs_prefix)
+#endif
+{
 }
 
 void IVotePacketHandler::onNewPbftVote(const std::shared_ptr<PbftVote> &vote, const std::shared_ptr<PbftBlock> &block,

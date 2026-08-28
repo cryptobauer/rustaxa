@@ -853,6 +853,12 @@ Rules:
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep only physical network and OS-thread mechanics in C++; consensus callbacks, queues, routing, and orchestration move
   to the Rust application service.
+- The canonical vote-family network checkpoint removes Rust-mode selection of the three `Ext*` vote/pillar/sync bases,
+  raw tarcap bridge access, per-family effect drains, and PBFT/pillar ingress materialization. Four standalone adapters
+  submit canonical packets to native routes and one transport executor owns exact-id drain/ack/cancellation and lane
+  execution. `CRW-N01` remains active for the audited residuals: object-shaped application egress fanout for PBFT,
+  pillar, DAG/transaction and transactions; C++ scalar status/get-next request decoding; and generic vote/pillar gossip
+  target selection in the transport executor. Blocked `CRW-E02` is unchanged.
 - Ignore logging when deciding whether behavior can move to Rust. Logs are boundary observability, not consensus
   ownership. Keep temporary C++ logging only as an executor/reporting detail while moving the underlying decision,
   state transition, or persistence logic into Rust.

@@ -23,6 +23,10 @@
 #include "consensus/consensus_application.hpp"
 #include "consensus/consensus_host_ports.hpp"
 #include "network/consensus_network_api.hpp"
+#include "network/tarcap/packets/latest/pillar_vote_packet.hpp"
+#include "network/tarcap/packets/latest/pillar_votes_bundle_packet.hpp"
+#include "network/tarcap/packets/latest/vote_packet.hpp"
+#include "network/tarcap/packets/latest/votes_bundle_packet.hpp"
 #endif
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
 #include "network/tarcap/packets_handlers/interface/pillar_vote_packet_handler.hpp"
@@ -75,12 +79,17 @@ TEST(ConsensusHostPortsTest, processClocksExposeMonotonicAndUnixDomains) {
 TEST_F(NetworkTest, pillar_vote_rebroadcast_resends_vote_known_to_peer) {
   class TestPillarVotePacketHandler final : public network::tarcap::IPillarVotePacketHandler {
    public:
-    explicit TestPillarVotePacketHandler(std::shared_ptr<network::tarcap::PeersState> peers_state)
+    explicit TestPillarVotePacketHandler(std::shared_ptr<network::tarcap::PeersState> peers_state
+#ifdef RUSTAXA_ENABLE
+                                         ,
+                                         network::ConsensusNetworkApiShared consensus_network_api
+#endif
+                                         )
         : IPillarVotePacketHandler({}, std::move(peers_state), {},
 #ifndef RUSTAXA_ENABLE
                                    {},
 #else
-                                   {}, 0,
+                                   std::move(consensus_network_api), 0,
 #endif
                                    {}, "") {
     }
@@ -103,7 +112,15 @@ TEST_F(NetworkTest, pillar_vote_rebroadcast_resends_vote_known_to_peer) {
 
   const auto vote = std::make_shared<PillarVote>(secret_t::random(), PbftPeriod{1}, blk_hash_t{123});
   ASSERT_TRUE(peer->markPillarVoteAsKnown(vote->getHash()));
+#ifdef RUSTAXA_ENABLE
+  const auto node_cfgs = make_node_cfgs(1, 1, 5);
+  const auto nodes = create_nodes(node_cfgs, true);
+  auto consensus_network_api = std::make_shared<network::ConsensusNetworkApi>(nodes.front()->getConsensusApplication(),
+                                                                              nodes.front()->getFinalChain());
+  TestPillarVotePacketHandler handler(std::move(peers_state), std::move(consensus_network_api));
+#else
   TestPillarVotePacketHandler handler(std::move(peers_state));
+#endif
 
   handler.onNewPillarVote(vote, false);
   EXPECT_TRUE(handler.sent_to.empty());
@@ -2010,7 +2027,7 @@ TEST_F(NetworkTest, peer_cache_test) {
 #endif
 
 #ifdef RUSTAXA_ENABLE
-TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane) {
+TEST_F(NetworkTest, consensus_effect_execution_is_source_scoped_and_exactly_acknowledged) {
   const auto node_cfgs = make_node_cfgs(1, 1, 5);
   const auto nodes = create_nodes(node_cfgs, true);
   const auto& node = nodes[0];
@@ -2018,32 +2035,6 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   conf.db_path = data_dir / "consensus_network_api";
   auto consensus_service = createConsensusApplication(conf);
   auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service, node->getFinalChain());
-
-  auto first_lane_lock = network_api->lockTransportLane(6);
-
-  std::promise<void> same_lane_attempted;
-  std::promise<void> same_lane_acquired;
-  auto same_lane_attempted_future = same_lane_attempted.get_future();
-  auto same_lane_acquired_future = same_lane_acquired.get_future();
-  std::thread same_lane_worker([&] {
-    same_lane_attempted.set_value();
-    auto lock = network_api->lockTransportLane(6);
-    same_lane_acquired.set_value();
-  });
-
-  same_lane_attempted_future.wait();
-  EXPECT_EQ(same_lane_acquired_future.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
-
-  auto other_lane_future = std::async(std::launch::async, [&] {
-    auto lock = network_api->lockTransportLane(5);
-    return true;
-  });
-  EXPECT_EQ(other_lane_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
-  EXPECT_TRUE(other_lane_future.get());
-
-  first_lane_lock.unlock();
-  EXPECT_EQ(same_lane_acquired_future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
-  same_lane_worker.join();
 
   std::array<uint8_t, 64> peer_id{};
   peer_id.fill(0x71);
@@ -2072,8 +2063,6 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
   EXPECT_EQ(outcome.queued_effect_count, 2);
   EXPECT_EQ(executed, (std::vector<std::string>{"report", "disconnect"}));
   EXPECT_EQ(report_reasons, (std::vector<uint8_t>{3}));
-  EXPECT_TRUE(network_api->api().consensus_network_drain_work(6, 0, false, 10).effects.empty());
-
   // The facade owns the root required by direct ingress even after the caller releases its copy.
   consensus_service.reset();
 
@@ -2084,6 +2073,121 @@ TEST_F(NetworkTest, consensus_effect_execution_is_serialized_per_transport_lane)
       network::PbftSyncIngressExecutor{[](const network::PbftSyncSlashingTransaction&) { return false; }});
   EXPECT_EQ(malformed_sync_packet.action, network::PbftSyncIngressAction::kMalicious);
   EXPECT_EQ(malformed_sync_packet.error_code, "NETWORK_PBFT_SYNC_PACKET_MALFORMED");
+
+  network::ConsensusPacketRequest malformed_consensus_packet{
+      .transport_lane = 6,
+      .peer_id = ingress_peer_id,
+      .source_payload_id = 77,
+      .packet_rlp = {0xC1, 0x80},
+  };
+  const network::ConsensusTransportExecutor no_transport{
+      .execute =
+          [](const network::ConsensusTransportEffect&) {
+            ADD_FAILURE() << "Malformed canonical packet unexpectedly queued a transport effect";
+            return network::ConsensusTransportExecutionResult{};
+          },
+  };
+  const network::ConsensusTransportExecutor successful_transport{
+      .execute = [](const network::ConsensusTransportEffect&) { return network::ConsensusTransportExecutionResult{}; },
+  };
+
+  const auto pbft_vote = genDummyVote(PbftVoteTypes::soft_vote, 1, 1, 2, blk_hash_t{0x31});
+  const auto pillar_vote = std::make_shared<PillarVote>(secret_t::random(), PbftPeriod{1}, blk_hash_t{0x32});
+  const auto cpp_packet_bytes = [](const auto& packet) {
+    const auto bytes = network::tarcap::encodePacketRlp(packet);
+    return std::vector<uint8_t>(bytes.begin(), bytes.end());
+  };
+  const auto expect_normal_native_classification = [](const network::ConsensusPacketOutcome& outcome) {
+    EXPECT_FALSE(outcome.malicious);
+    EXPECT_EQ(outcome.error_code.find("MALFORMED"), std::string::npos) << outcome.error_code;
+  };
+
+  network::ConsensusPacketRequest canonical_consensus_packet{
+      .transport_lane = 6,
+      .peer_id = ingress_peer_id,
+      .source_payload_id = 81,
+      .packet_rlp = cpp_packet_bytes(network::tarcap::VotePacket{pbft_vote, std::nullopt}),
+      .current_period = 1,
+      .current_round = 1,
+      .current_step = 2,
+      .max_future_period_delta = 10,
+      .max_future_round_delta = 10,
+      .max_future_step_delta = 10,
+  };
+  expect_normal_native_classification(
+      network_api->ingestPbftVotePacket(canonical_consensus_packet, conf, successful_transport));
+
+  ++canonical_consensus_packet.source_payload_id;
+  canonical_consensus_packet.packet_rlp =
+      cpp_packet_bytes(network::tarcap::VotesBundlePacket{OptimizedPbftVotesBundle{{pbft_vote}}});
+  expect_normal_native_classification(
+      network_api->ingestPbftVotesBundlePacket(canonical_consensus_packet, conf, successful_transport));
+
+  ++canonical_consensus_packet.source_payload_id;
+  canonical_consensus_packet.packet_rlp = cpp_packet_bytes(network::tarcap::PillarVotePacket{pillar_vote});
+  expect_normal_native_classification(
+      network_api->ingestPillarVotePacket(canonical_consensus_packet, successful_transport));
+
+  ++canonical_consensus_packet.source_payload_id;
+  canonical_consensus_packet.packet_rlp =
+      cpp_packet_bytes(network::tarcap::PillarVotesBundlePacket{OptimizedPillarVotesBundle{{pillar_vote}}});
+  expect_normal_native_classification(
+      network_api->ingestPillarVotesBundlePacket(canonical_consensus_packet, successful_transport));
+
+  const auto malformed_vote = network_api->ingestPbftVotePacket(malformed_consensus_packet, conf, no_transport);
+  EXPECT_TRUE(malformed_vote.malicious);
+  EXPECT_EQ(malformed_vote.error_code, "NETWORK_PBFT_VOTE_PACKET_MALFORMED");
+
+  ++malformed_consensus_packet.source_payload_id;
+  const auto malformed_vote_bundle =
+      network_api->ingestPbftVotesBundlePacket(malformed_consensus_packet, conf, no_transport);
+  EXPECT_TRUE(malformed_vote_bundle.malicious);
+  EXPECT_EQ(malformed_vote_bundle.error_code, "NETWORK_PBFT_VOTES_BUNDLE_PACKET_MALFORMED");
+
+  ++malformed_consensus_packet.source_payload_id;
+  const auto malformed_pillar_vote = network_api->ingestPillarVotePacket(malformed_consensus_packet, no_transport);
+  EXPECT_TRUE(malformed_pillar_vote.malicious);
+  EXPECT_EQ(malformed_pillar_vote.error_code, "PILLAR_VOTE_INGRESS_MALFORMED_RLP");
+
+  ++malformed_consensus_packet.source_payload_id;
+  const auto malformed_pillar_vote_bundle =
+      network_api->ingestPillarVotesBundlePacket(malformed_consensus_packet, no_transport);
+  EXPECT_TRUE(malformed_pillar_vote_bundle.malicious);
+  EXPECT_EQ(malformed_pillar_vote_bundle.error_code, "NETWORK_PILLAR_VOTES_BUNDLE_PACKET_MALFORMED");
+
+  std::promise<void> first_executor_entered;
+  std::promise<void> release_first_executor;
+  std::promise<void> second_executor_entered;
+  auto release_first = release_first_executor.get_future().share();
+  auto first = std::async(std::launch::async, [&] {
+    return network_api->servePbftSyncRequest(6, peer_id, invalid_request_rlp, 75,
+                                             network::PbftSyncRequestExecutor{
+                                                 .send_packet = {},
+                                                 .clear_peer_syncing = {},
+                                                 .report_peer =
+                                                     [&](uint8_t) {
+                                                       first_executor_entered.set_value();
+                                                       release_first.wait();
+                                                     },
+                                                 .disconnect_peer = [] {},
+                                             });
+  });
+  first_executor_entered.get_future().wait();
+  auto second = std::async(std::launch::async, [&] {
+    return network_api->servePbftSyncRequest(6, peer_id, invalid_request_rlp, 76,
+                                             network::PbftSyncRequestExecutor{
+                                                 .send_packet = {},
+                                                 .clear_peer_syncing = {},
+                                                 .report_peer = [&](uint8_t) { second_executor_entered.set_value(); },
+                                                 .disconnect_peer = [] {},
+                                             });
+  });
+  auto second_entered = second_executor_entered.get_future();
+  EXPECT_EQ(second_entered.wait_for(100ms), std::future_status::timeout);
+  release_first_executor.set_value();
+  EXPECT_EQ(second_entered.wait_for(5s), std::future_status::ready);
+  EXPECT_EQ(first.get().queued_effect_count, 2);
+  EXPECT_EQ(second.get().queued_effect_count, 2);
 }
 #endif
 

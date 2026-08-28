@@ -2,9 +2,6 @@
 
 #include <stdexcept>
 
-#include "network/tarcap/packets/latest/votes_bundle_packet.hpp"
-#include "vote/votes_bundle_rlp.hpp"
-
 namespace taraxa::network::tarcap {
 
 RustGetNextVotesBundlePacketHandler::RustGetNextVotesBundlePacketHandler(
@@ -32,20 +29,12 @@ void RustGetNextVotesBundlePacketHandler::process(const threadpool::PacketData& 
       network::PbftNextVotesBundleExecutor{
           .send_bundle =
               [this, peer_id](const std::vector<uint8_t>& payload) {
-                const dev::bytes optimized_bundle_rlp(payload.begin(), payload.end());
-                auto votes = decodePbftVotesBundleRlp(dev::RLP(optimized_bundle_rlp));
-                auto target = peers_state_->getPeer(peer_id);
-                if (!target) {
+                if (!peers_state_->getPeer(peer_id)) {
                   return false;
                 }
-                auto packet = VotesBundlePacket{OptimizedPbftVotesBundle{.votes = std::move(votes)}};
-                if (!sealAndSend(peer_id, SubprotocolPacketType::kVotesBundlePacket, encodePacketRlp(packet))) {
-                  return false;
-                }
-                for (const auto& vote : packet.votes_bundle.votes) {
-                  target->markPbftVoteAsKnown(vote->getHash());
-                }
-                return true;
+                dev::RLPStream packet(1);
+                packet.appendRaw(dev::bytes(payload.begin(), payload.end()));
+                return sealAndSend(peer_id, SubprotocolPacketType::kVotesBundlePacket, packet.invalidate());
               },
       });
 

@@ -12,11 +12,6 @@
 
 #include "common/types.hpp"
 
-namespace rustaxa {
-class BridgeConsensusNetworkApi;
-class BridgeConsensusApplication;
-}  // namespace rustaxa
-
 namespace taraxa {
 class ConsensusApplication;
 class DagBlock;
@@ -89,6 +84,164 @@ struct ConsensusPeerCandidate {
   bool peer_dag_synced = false;
   bool peer_dag_syncing = false;
   bool dag_sync_allowed = false;
+};
+
+/** Canonical consensus packet plus immutable network and protocol facts for one native ingress operation. */
+struct ConsensusPacketRequest {
+  uint32_t transport_lane = 0;
+  std::array<uint8_t, 64> peer_id{};
+  uint64_t peer_pbft_chain_size = 0;
+  uint64_t source_payload_id = 0;
+  std::vector<uint8_t> packet_rlp;
+  uint64_t current_period = 0;
+  uint64_t current_round = 0;
+  uint64_t current_step = 0;
+  uint64_t max_future_period_delta = 0;
+  uint64_t max_future_round_delta = 0;
+  uint64_t max_future_step_delta = 0;
+  bool validate_max_round_step = false;
+  bool can_request_pbft_sync = false;
+  bool can_request_next_votes_sync = false;
+  bool allow_gossip = false;
+};
+
+/** Plain physical effect selected by the native consensus network service. */
+struct ConsensusTransportEffect {
+  uint64_t effect_id = 0;
+  uint64_t source_payload_id = 0;
+  uint32_t transport_lane = 0;
+  uint8_t kind = 0;
+  std::array<uint8_t, 64> peer_id{};
+  uint32_t packet_kind = 0;
+  std::vector<uint8_t> payload_bytes;
+  std::vector<uint8_t> related_payload_bytes;
+  std::vector<std::array<uint8_t, 64>> excluded_peers;
+  uint8_t object_kind = 0;
+  std::array<uint8_t, 32> object_hash{};
+  uint8_t sync_kind = 0;
+  uint64_t sync_start = 0;
+  uint8_t reason_code = 0;
+  uint64_t dependency_id = 0;
+  uint64_t period = 0;
+  uint64_t round = 0;
+};
+
+/** Typed physical execution result reported against the exact native effect id. */
+struct ConsensusTransportExecutionResult {
+  bool success = true;
+  std::string diagnostic;
+};
+
+/** Narrow executor retained by tarcap for physical transport and peer/socket bookkeeping. */
+struct ConsensusTransportExecutor {
+  std::function<ConsensusTransportExecutionResult(const ConsensusTransportEffect&)> execute;
+};
+
+/** Compact terminal summary for one canonical vote or pillar-vote packet operation. */
+struct ConsensusPacketOutcome {
+  uint8_t status = 0;
+  bool malicious = false;
+  uint32_t queued_effect_count = 0;
+  size_t accepted_count = 0;
+  size_t duplicate_count = 0;
+  size_t rejected_count = 0;
+  bool has_peer_pbft_chain_size = false;
+  uint64_t peer_pbft_chain_size = 0;
+  std::string error_code;
+};
+
+/** Canonical peer snapshot and local cursor used to select and start one native PBFT-sync generation. */
+struct PbftSyncStartRequest {
+  bool start = false;
+  uint64_t now_ms = 0;
+  uint64_t local_pbft_synced_period = 0;
+  uint64_t local_pbft_chain_size = 0;
+  std::vector<ConsensusPeerCandidate> candidates;
+};
+
+struct PbftSyncStartOutcome {
+  uint8_t status = 0;
+  std::string error_code;
+  bool started = false;
+  bool has_peer = false;
+  std::array<uint8_t, 64> peer_id{};
+  uint64_t peer_pbft_chain_size = 0;
+  uint64_t request_period = 0;
+  uint64_t generation = 0;
+  bool deep_syncing = false;
+  bool enable_snapshot_creation = false;
+};
+
+/** Identity and retained-history facts for one initial status admission. */
+struct InitialStatusRequest {
+  uint64_t local_chain_id = 0;
+  uint64_t peer_chain_id = 0;
+  std::array<uint8_t, 32> expected_genesis_hash{};
+  std::array<uint8_t, 32> peer_genesis_hash{};
+  uint64_t local_pbft_synced_period = 0;
+  uint64_t peer_pbft_chain_size = 0;
+  bool peer_is_light_node = false;
+  uint64_t peer_light_node_history = 0;
+};
+
+struct InitialStatusOutcome {
+  uint8_t status = 0;
+  std::string error_code;
+  bool accept_peer = false;
+  bool disconnect_peer = false;
+};
+
+/** Local public facts used to plan one canonical initial or periodic status packet. */
+struct StatusEgressRequest {
+  bool initial = false;
+  uint64_t local_chain_id = 0;
+  std::array<uint8_t, 32> genesis_hash{};
+  uint32_t node_major_version = 0;
+  uint32_t node_minor_version = 0;
+  uint32_t node_patch_version = 0;
+  bool is_light_node = false;
+  uint64_t light_node_history = 0;
+  uint64_t local_pbft_chain_size = 0;
+  uint64_t local_pbft_round = 0;
+  uint64_t local_dag_level = 0;
+};
+
+struct StatusEgressOutcome {
+  uint8_t status = 0;
+  std::string error_code;
+  uint64_t peer_pbft_chain_size = 0;
+  uint64_t peer_pbft_round = 0;
+  uint64_t peer_dag_level = 0;
+  bool peer_syncing = false;
+  bool include_initial_data = false;
+  uint64_t chain_id = 0;
+  std::array<uint8_t, 32> genesis_hash{};
+  uint32_t node_major_version = 0;
+  uint32_t node_minor_version = 0;
+  uint32_t node_patch_version = 0;
+  bool is_light_node = false;
+  uint64_t light_node_history = 0;
+};
+
+/** Accepted periodic status facts used for application-owned sync follow-up selection. */
+struct StatusFollowupRequest {
+  std::array<uint8_t, 64> peer_id{};
+  uint64_t local_pbft_synced_period = 0;
+  uint64_t local_pbft_period = 0;
+  uint64_t local_pbft_round = 0;
+  uint64_t peer_pbft_chain_size = 0;
+  uint64_t peer_pbft_period = 0;
+  uint64_t peer_pbft_round = 0;
+  bool peer_dag_synced = false;
+};
+
+struct StatusFollowupOutcome {
+  bool request_pbft_sync = false;
+  bool request_pending_dag_blocks = false;
+  bool request_next_votes = false;
+  uint64_t next_votes_period = 0;
+  uint64_t next_votes_round = 0;
+  uint64_t sync_generation = 0;
 };
 
 /** Physical tarcap leaves for one native pillar-vote bundle response. */
@@ -321,7 +474,8 @@ struct DagSyncPacketOutcome {
  *
  * Construction retains the application root and clones its network service for effect dispatch; it cannot create a
  * second protocol runtime or queue. Destruction releases the adapter and its shared root ownership. Native state access
- * is synchronized in Rust, while callers retain the lane lock across physical transport and acknowledgement.
+ * is synchronized in Rust, and each operation retains its private lane lock across physical transport and exact-id
+ * acknowledgement.
  */
 class ConsensusNetworkApi final {
  public:
@@ -333,19 +487,6 @@ class ConsensusNetworkApi final {
   ConsensusNetworkApi(ConsensusNetworkApi&&) = delete;
   ConsensusNetworkApi& operator=(const ConsensusNetworkApi&) = delete;
   ConsensusNetworkApi& operator=(ConsensusNetworkApi&&) = delete;
-
-  /** Returns the live Rust facade owned by this wrapper. */
-  rustaxa::BridgeConsensusNetworkApi& api() noexcept;
-  /** Returns the live Rust facade owned by this wrapper. */
-  const rustaxa::BridgeConsensusNetworkApi& api() const noexcept;
-
-  /**
-   * Locks one transport lane across effect drain, physical execution, and acknowledgement.
-   *
-   * Callers for the same lane are serialized in drain order, while distinct lanes may execute concurrently. The
-   * returned lock releases the lane when destroyed.
-   */
-  std::unique_lock<std::mutex> lockTransportLane(uint32_t transport_lane);
 
   /**
    * Routes and executes one pillar-vote bundle request on its transport lane.
@@ -397,16 +538,6 @@ class ConsensusNetworkApi final {
   PbftBlocksBundleOutcome admitPbftBlocksBundle(const std::vector<uint8_t>& packet_rlp, uint64_t source_payload_id);
 
   /**
-   * Publishes one canonical signed proposed block selected by a native network effect.
-   *
-   * Rust decodes and verifies the block identity, pivot, and period before the
-   * application root performs its storage-first publication. The return value
-   * is false only when the same live proposal was already present; malformed
-   * bytes and persistence failures propagate without C++ block materialization.
-   */
-  bool publishProposedBlockEffect(const std::vector<uint8_t>& canonical_signed_block_rlp);
-
-  /**
    * Admits one original PBFT-sync packet through the native application root.
    *
    * Rust owns exact decoding, deterministic prechecks, sequential weighted vote
@@ -454,6 +585,18 @@ class ConsensusNetworkApi final {
                                                const std::array<uint8_t, 64>& peer_id, uint64_t syncing_period,
                                                uint64_t finalized_period, uint64_t sync_level_size,
                                                uint32_t retry_count, uint64_t retry_delay_ms) const;
+
+  /** Atomically selects a peer and optionally starts one native PBFT-sync generation. */
+  PbftSyncStartOutcome beginPbftSync(const PbftSyncStartRequest& request) const;
+
+  /** Admits immutable identity/history facts from one initial status packet. */
+  InitialStatusOutcome admitInitialStatus(const InitialStatusRequest& request) const;
+
+  /** Plans canonical initial or periodic status payload fields from native lifecycle state. */
+  StatusEgressOutcome planStatusEgress(const StatusEgressRequest& request) const;
+
+  /** Selects exact sync follow-up operations after one accepted periodic status packet. */
+  StatusFollowupOutcome planStatusFollowup(const StatusFollowupRequest& request) const;
 
   /** Routes one complete canonical transaction packet and executes only peer-known and physical gossip leaves. */
   TransactionPacketOutcome ingestTransactionPacket(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
@@ -506,6 +649,23 @@ class ConsensusNetworkApi final {
   /** Signs and submits one PBFT-sync slashing transaction through native transaction admission. */
   bool executePbftSyncSlashingTransaction(const PbftSyncSlashingTransaction& effect, const FullNodeConfig& config);
 
+  /** Routes one canonical PBFT-vote packet and executes its exact physical transport effects. */
+  ConsensusPacketOutcome ingestPbftVotePacket(const ConsensusPacketRequest& request, const FullNodeConfig& config,
+                                              const ConsensusTransportExecutor& executor);
+
+  /** Routes one canonical PBFT-vote bundle and executes all member effects on the source lane. */
+  ConsensusPacketOutcome ingestPbftVotesBundlePacket(const ConsensusPacketRequest& request,
+                                                     const FullNodeConfig& config,
+                                                     const ConsensusTransportExecutor& executor);
+
+  /** Routes one canonical pillar-vote packet and executes its exact physical transport effects. */
+  ConsensusPacketOutcome ingestPillarVotePacket(const ConsensusPacketRequest& request,
+                                                const ConsensusTransportExecutor& executor);
+
+  /** Routes one canonical pillar-vote bundle and executes all member effects on the source lane. */
+  ConsensusPacketOutcome ingestPillarVotesBundlePacket(const ConsensusPacketRequest& request,
+                                                       const ConsensusTransportExecutor& executor);
+
   /**
    * Selects a serviceable max-chain peer from network-owned facts.
    *
@@ -520,6 +680,9 @@ class ConsensusNetworkApi final {
   PbftSyncStatus pbftSyncStatus(uint64_t now_ms) const;
 
  private:
+  std::unique_lock<std::mutex> lockTransportLane(uint32_t transport_lane);
+  void drainAndExecuteTransportEffects(uint32_t transport_lane, uint64_t source_payload_id, bool source_scoped,
+                                       const ConsensusTransportExecutor& executor);
   bool submitSlashingTransaction(size_t wallet_index, const std::array<uint8_t, 32>& nonce,
                                  const std::array<uint8_t, 20>& contract_address, const std::array<uint8_t, 32>& value,
                                  uint64_t gas_limit, const std::vector<uint8_t>& call_data,

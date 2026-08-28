@@ -38,17 +38,22 @@ ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_p
                                        network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                        const addr_t& node_addr, const std::string& logs_prefix)
-    : ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats),
+    :
+#ifdef RUSTAXA_ENABLE
+      RustConsensusTransportPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_chain),
+                                          std::move(consensus_status), std::move(consensus_network_api), node_addr,
+                                          logs_prefix),
+#else
+      ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats),
 #ifndef RUSTAXA_ENABLE
                               std::move(pbft_syncing_state),
 #endif
                               std::move(pbft_chain),
 #ifndef RUSTAXA_ENABLE
                               std::move(pbft_mgr), std::move(dag_mgr), std::move(db),
-#else
-                              std::move(consensus_status), std::move(consensus_network_api),
 #endif
                               node_addr, logs_prefix),
+#endif
       kGenesisHash(kConf.genesis.genesisHash()) {
 }
 
@@ -62,13 +67,13 @@ void ISyncPacketHandler::startSyncingPbft() {
 
 #ifdef RUSTAXA_ENABLE
   const auto consensus_status = consensus_status_();
-  rustaxa::NetworkPbftSyncStartRequest request{};
+  network::PbftSyncStartRequest request{};
   request.start = true;
   request.now_ms = monotonicMilliseconds();
   request.local_pbft_synced_period = consensus_status.syncing_period;
   request.local_pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
   for (const auto& peer_entry : peers_state_->getAllPeers()) {
-    rustaxa::NetworkPbftSyncPeerCandidate candidate{};
+    network::ConsensusPeerCandidate candidate{};
     candidate.peer_id = peer_entry.first.asArray();
     candidate.pbft_chain_size = peer_entry.second->pbft_chain_size_.load();
     candidate.dag_level = peer_entry.second->dag_level_.load();
@@ -77,7 +82,7 @@ void ISyncPacketHandler::startSyncingPbft() {
     request.candidates.push_back(candidate);
   }
 
-  const auto outcome = rust_consensus_network_api_->api().consensus_network_begin_pbft_sync(request);
+  const auto outcome = rust_consensus_network_api_->beginPbftSync(request);
   if (!outcome.started) {
     if (outcome.status == kNetworkStatusPlanStatusNoEligiblePeer) {
       LOG(this->log_nf_) << "Restarting syncing PBFT not possible since no connected peers";
@@ -240,7 +245,7 @@ bool ISyncPacketHandler::sendStatus(const dev::p2p::NodeID& node_id, bool initia
 #endif
 
 #ifdef RUSTAXA_ENABLE
-  rustaxa::NetworkStatusEgressRequest request{};
+  network::StatusEgressRequest request{};
   request.initial = initial;
   request.local_chain_id = kConf.genesis.chain_id;
   request.genesis_hash = kGenesisHash.asArray();
@@ -252,7 +257,7 @@ bool ISyncPacketHandler::sendStatus(const dev::p2p::NodeID& node_id, bool initia
   request.local_pbft_chain_size = pbft_chain_size;
   request.local_pbft_round = pbft_round;
   request.local_dag_level = dag_max_level;
-  const auto outcome = rust_consensus_network_api_->api().consensus_network_status_egress(request);
+  const auto outcome = rust_consensus_network_api_->planStatusEgress(request);
   if (outcome.include_initial_data) {
     success = sealAndSend(
         node_id, SubprotocolPacketType::kStatusPacket,

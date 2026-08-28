@@ -1,11 +1,21 @@
 #pragma once
 
+#ifdef RUSTAXA_ENABLE
+#include "network/tarcap/packets_handlers/rust/consensus_transport_packet_handler.hpp"
+#else
 #include "network/tarcap/packets_handlers/latest/common/ext_syncing_packet_handler.hpp"
+#endif
 #include "transaction/transaction.hpp"
 
 namespace taraxa::network::tarcap {
 
-class IDagBlockPacketHandler : public ExtSyncingPacketHandler {
+class IDagBlockPacketHandler : public
+#ifdef RUSTAXA_ENABLE
+                               RustConsensusTransportPacketHandler
+#else
+                               ExtSyncingPacketHandler
+#endif
+{
  public:
   IDagBlockPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                          std::shared_ptr<TimePeriodPacketsStats> packets_stats,

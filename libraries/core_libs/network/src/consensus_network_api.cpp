@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #ifdef RUSTAXA_ENABLE
@@ -67,9 +69,7 @@ SharedConsensusApplication requireConsensusApplication(SharedConsensusApplicatio
 rust::Vec<uint8_t> toRustBytes(const dev::bytes& value) {
   rust::Vec<uint8_t> out;
   out.reserve(value.size());
-  for (const auto byte : value) {
-    out.push_back(byte);
-  }
+  std::copy(value.begin(), value.end(), std::back_inserter(out));
   return out;
 }
 
@@ -96,6 +96,41 @@ PbftSyncLifecycleOutcome toPbftSyncLifecycleOutcome(const rustaxa::NetworkPbftSy
           value.deep_syncing,
           value.generation,
           static_cast<std::string>(value.error_code)};
+}
+
+rustaxa::NetworkConsensusPacketRequest toNativeConsensusPacketRequest(const ConsensusPacketRequest& request) {
+  rustaxa::NetworkConsensusPacketRequest native{};
+  native.transport_lane = request.transport_lane;
+  native.peer_id = request.peer_id;
+  native.peer_pbft_chain_size = request.peer_pbft_chain_size;
+  native.source_payload_id = request.source_payload_id;
+  native.packet_rlp.reserve(request.packet_rlp.size());
+  for (const auto byte : request.packet_rlp) {
+    native.packet_rlp.push_back(byte);
+  }
+  native.current_period = request.current_period;
+  native.current_round = request.current_round;
+  native.current_step = request.current_step;
+  native.max_future_period_delta = request.max_future_period_delta;
+  native.max_future_round_delta = request.max_future_round_delta;
+  native.max_future_step_delta = request.max_future_step_delta;
+  native.validate_max_round_step = request.validate_max_round_step;
+  native.can_request_pbft_sync = request.can_request_pbft_sync;
+  native.can_request_next_votes_sync = request.can_request_next_votes_sync;
+  native.allow_gossip = request.allow_gossip;
+  return native;
+}
+
+rust::Vec<rustaxa::SlashingSubmitterIdentity> makeSlashingSubmitters(const FullNodeConfig& config) {
+  rust::Vec<rustaxa::SlashingSubmitterIdentity> submitters;
+  submitters.reserve(config.wallets.size());
+  for (size_t index = 0; index < config.wallets.size(); ++index) {
+    rustaxa::SlashingSubmitterIdentity submitter{};
+    submitter.wallet_index = index;
+    submitter.address = config.wallets[index].node_addr.asArray();
+    submitters.push_back(std::move(submitter));
+  }
+  return submitters;
 }
 
 }  // namespace
@@ -128,10 +163,6 @@ ConsensusNetworkApi::ConsensusNetworkApi(SharedConsensusApplication consensus_ap
     : impl_(std::make_unique<Impl>(std::move(consensus_application), std::move(final_chain), std::move(observers))) {}
 ConsensusNetworkApi::~ConsensusNetworkApi() = default;
 
-rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() noexcept { return *impl_->api; }
-
-const rustaxa::BridgeConsensusNetworkApi& ConsensusNetworkApi::api() const noexcept { return *impl_->api; }
-
 PbftSyncStatus ConsensusNetworkApi::pbftSyncStatus(uint64_t now_ms) const {
   const auto view = (*impl_->query)->consensus_query_pbft_sync_status(now_ms);
   return {view.active,        view.deep_syncing,     view.generation,        view.has_peer,        view.peer_id,
@@ -146,7 +177,7 @@ PbftSyncLifecycleOutcome ConsensusNetworkApi::admitPbftSyncSource(const std::arr
   command.kind = kPbftSyncCommandAdmitSource;
   command.peer_id = peer_id;
   command.source = static_cast<uint8_t>(source);
-  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+  return toPbftSyncLifecycleOutcome(impl_->api->consensus_network_apply_pbft_sync_command(command));
 }
 
 PbftSyncLifecycleOutcome ConsensusNetworkApi::recordPbftSyncActivity(uint64_t now_ms, uint64_t generation,
@@ -156,7 +187,7 @@ PbftSyncLifecycleOutcome ConsensusNetworkApi::recordPbftSyncActivity(uint64_t no
   command.now_ms = now_ms;
   command.generation = generation;
   command.peer_id = peer_id;
-  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+  return toPbftSyncLifecycleOutcome(impl_->api->consensus_network_apply_pbft_sync_command(command));
 }
 
 PbftSyncLifecycleOutcome ConsensusNetworkApi::stopPbftSync(uint64_t generation, const std::array<uint8_t, 64>& peer_id,
@@ -166,7 +197,7 @@ PbftSyncLifecycleOutcome ConsensusNetworkApi::stopPbftSync(uint64_t generation, 
   command.generation = generation;
   command.peer_id = peer_id;
   command.reason = reason;
-  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+  return toPbftSyncLifecycleOutcome(impl_->api->consensus_network_apply_pbft_sync_command(command));
 }
 
 PbftSyncLifecycleOutcome ConsensusNetworkApi::handlePbftSyncDisconnect(uint64_t generation,
@@ -175,7 +206,7 @@ PbftSyncLifecycleOutcome ConsensusNetworkApi::handlePbftSyncDisconnect(uint64_t 
   command.kind = kPbftSyncCommandDisconnect;
   command.generation = generation;
   command.peer_id = peer_id;
-  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+  return toPbftSyncLifecycleOutcome(impl_->api->consensus_network_apply_pbft_sync_command(command));
 }
 
 PbftSyncLifecycleOutcome ConsensusNetworkApi::tickPbftSync(uint64_t now_ms, uint64_t generation) const {
@@ -183,7 +214,7 @@ PbftSyncLifecycleOutcome ConsensusNetworkApi::tickPbftSync(uint64_t now_ms, uint
   command.kind = kPbftSyncCommandTick;
   command.now_ms = now_ms;
   command.generation = generation;
-  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+  return toPbftSyncLifecycleOutcome(impl_->api->consensus_network_apply_pbft_sync_command(command));
 }
 
 PbftSyncLifecycleOutcome ConsensusNetworkApi::completePbftSync(uint64_t now_ms, uint64_t generation,
@@ -195,7 +226,7 @@ PbftSyncLifecycleOutcome ConsensusNetworkApi::completePbftSync(uint64_t now_ms, 
   command.generation = generation;
   command.peer_id = peer_id;
   command.sync_queue_size = sync_queue_size;
-  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+  return toPbftSyncLifecycleOutcome(impl_->api->consensus_network_apply_pbft_sync_command(command));
 }
 
 PbftSyncLifecycleOutcome ConsensusNetworkApi::planPbftSyncLastBlock(uint64_t now_ms, uint64_t generation,
@@ -212,7 +243,7 @@ PbftSyncLifecycleOutcome ConsensusNetworkApi::planPbftSyncLastBlock(uint64_t now
   command.finalized_period = finalized_period;
   command.remote_period = remote_period;
   command.sync_level_size = sync_level_size;
-  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+  return toPbftSyncLifecycleOutcome(impl_->api->consensus_network_apply_pbft_sync_command(command));
 }
 
 PbftSyncLifecycleOutcome ConsensusNetworkApi::planDelayedPbftSync(uint64_t now_ms, uint64_t generation,
@@ -230,7 +261,93 @@ PbftSyncLifecycleOutcome ConsensusNetworkApi::planDelayedPbftSync(uint64_t now_m
   command.sync_level_size = sync_level_size;
   command.retry_count = retry_count;
   command.retry_delay_ms = retry_delay_ms;
-  return toPbftSyncLifecycleOutcome(api().consensus_network_apply_pbft_sync_command(command));
+  return toPbftSyncLifecycleOutcome(impl_->api->consensus_network_apply_pbft_sync_command(command));
+}
+
+PbftSyncStartOutcome ConsensusNetworkApi::beginPbftSync(const PbftSyncStartRequest& request) const {
+  rustaxa::NetworkPbftSyncStartRequest native{};
+  native.start = request.start;
+  native.now_ms = request.now_ms;
+  native.local_pbft_synced_period = request.local_pbft_synced_period;
+  native.local_pbft_chain_size = request.local_pbft_chain_size;
+  native.candidates.reserve(request.candidates.size());
+  for (const auto& candidate : request.candidates) {
+    rustaxa::NetworkPbftSyncPeerCandidate peer{};
+    peer.peer_id = candidate.peer_id;
+    peer.pbft_chain_size = candidate.pbft_chain_size;
+    peer.dag_level = candidate.dag_level;
+    peer.is_light_node = candidate.is_light_node;
+    peer.light_node_history = candidate.light_node_history;
+    peer.peer_dag_synced = candidate.peer_dag_synced;
+    peer.peer_dag_syncing = candidate.peer_dag_syncing;
+    peer.dag_sync_allowed = candidate.dag_sync_allowed;
+    native.candidates.push_back(std::move(peer));
+  }
+  const auto outcome = impl_->api->consensus_network_begin_pbft_sync(native);
+  return {outcome.status,         static_cast<std::string>(outcome.error_code),
+          outcome.started,        outcome.has_peer,
+          outcome.peer_id,        outcome.peer_pbft_chain_size,
+          outcome.request_period, outcome.generation,
+          outcome.deep_syncing,   outcome.enable_snapshot_creation};
+}
+
+InitialStatusOutcome ConsensusNetworkApi::admitInitialStatus(const InitialStatusRequest& request) const {
+  rustaxa::NetworkInitialStatusRequest native{};
+  native.local_chain_id = request.local_chain_id;
+  native.peer_chain_id = request.peer_chain_id;
+  native.expected_genesis_hash = request.expected_genesis_hash;
+  native.peer_genesis_hash = request.peer_genesis_hash;
+  native.local_pbft_synced_period = request.local_pbft_synced_period;
+  native.peer_pbft_chain_size = request.peer_pbft_chain_size;
+  native.peer_is_light_node = request.peer_is_light_node;
+  native.peer_light_node_history = request.peer_light_node_history;
+  const auto outcome = impl_->api->consensus_network_admit_initial_status(native);
+  return {outcome.status, static_cast<std::string>(outcome.error_code), outcome.accept_peer, outcome.disconnect_peer};
+}
+
+StatusEgressOutcome ConsensusNetworkApi::planStatusEgress(const StatusEgressRequest& request) const {
+  rustaxa::NetworkStatusEgressRequest native{};
+  native.initial = request.initial;
+  native.local_chain_id = request.local_chain_id;
+  native.genesis_hash = request.genesis_hash;
+  native.node_major_version = request.node_major_version;
+  native.node_minor_version = request.node_minor_version;
+  native.node_patch_version = request.node_patch_version;
+  native.is_light_node = request.is_light_node;
+  native.light_node_history = request.light_node_history;
+  native.local_pbft_chain_size = request.local_pbft_chain_size;
+  native.local_pbft_round = request.local_pbft_round;
+  native.local_dag_level = request.local_dag_level;
+  const auto outcome = impl_->api->consensus_network_status_egress(native);
+  return {outcome.status,
+          static_cast<std::string>(outcome.error_code),
+          outcome.peer_pbft_chain_size,
+          outcome.peer_pbft_round,
+          outcome.peer_dag_level,
+          outcome.peer_syncing,
+          outcome.include_initial_data,
+          outcome.chain_id,
+          outcome.genesis_hash,
+          outcome.node_major_version,
+          outcome.node_minor_version,
+          outcome.node_patch_version,
+          outcome.is_light_node,
+          outcome.light_node_history};
+}
+
+StatusFollowupOutcome ConsensusNetworkApi::planStatusFollowup(const StatusFollowupRequest& request) const {
+  rustaxa::NetworkStatusFollowupRequest native{};
+  native.peer_id = request.peer_id;
+  native.local_pbft_synced_period = request.local_pbft_synced_period;
+  native.local_pbft_period = request.local_pbft_period;
+  native.local_pbft_round = request.local_pbft_round;
+  native.peer_pbft_chain_size = request.peer_pbft_chain_size;
+  native.peer_pbft_period = request.peer_pbft_period;
+  native.peer_pbft_round = request.peer_pbft_round;
+  native.peer_dag_synced = request.peer_dag_synced;
+  const auto outcome = impl_->api->consensus_network_process_status_followup(native);
+  return {outcome.request_pbft_sync, outcome.request_pending_dag_blocks, outcome.request_next_votes,
+          outcome.next_votes_period, outcome.next_votes_round,           outcome.sync_generation};
 }
 
 PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
@@ -326,6 +443,145 @@ bool ConsensusNetworkApi::executePbftSyncSlashingTransaction(const PbftSyncSlash
                                    effect.gas_limit, effect.call_data, config);
 }
 
+ConsensusPacketOutcome ConsensusNetworkApi::ingestPbftVotePacket(const ConsensusPacketRequest& request,
+                                                                 const FullNodeConfig& config,
+                                                                 const ConsensusTransportExecutor& executor) {
+  auto lane_lock = lockTransportLane(request.transport_lane);
+  const auto report = impl_->api->consensus_network_ingest_pbft_vote_packet(toNativeConsensusPacketRequest(request),
+                                                                            makeSlashingSubmitters(config));
+  ConsensusPacketOutcome outcome{};
+  outcome.status = report.status;
+  outcome.malicious = report.malicious;
+  outcome.error_code = static_cast<std::string>(report.error_code);
+  outcome.has_peer_pbft_chain_size = report.has_peer_pbft_chain_size;
+  outcome.peer_pbft_chain_size = report.peer_pbft_chain_size;
+  for (const auto& member : report.outcomes) {
+    outcome.queued_effect_count += member.decision.queued_effect_count;
+    if (outcome.status == 0 && member.decision.status != 0) {
+      outcome.status = member.decision.status;
+      outcome.error_code = static_cast<std::string>(member.decision.error_code);
+    }
+    if (!member.has_admission) {
+      ++outcome.rejected_count;
+    } else if (member.accepted) {
+      ++outcome.accepted_count;
+    } else if (member.already_present) {
+      ++outcome.duplicate_count;
+    } else {
+      ++outcome.rejected_count;
+    }
+    if (member.has_slashing_transaction_effect) {
+      const auto& effect = member.slashing_transaction_effect;
+      (void)executePbftVoteSlashingTransaction(
+          PbftVoteSlashingTransaction{effect.status, effect.proof_hash, effect.wallet_index, effect.nonce,
+                                      effect.contract_address, effect.value, effect.gas_limit,
+                                      std::vector<uint8_t>(effect.call_data.begin(), effect.call_data.end())},
+          config);
+    }
+  }
+  drainAndExecuteTransportEffects(request.transport_lane, request.source_payload_id, true, executor);
+  return outcome;
+}
+
+ConsensusPacketOutcome ConsensusNetworkApi::ingestPbftVotesBundlePacket(const ConsensusPacketRequest& request,
+                                                                        const FullNodeConfig& config,
+                                                                        const ConsensusTransportExecutor& executor) {
+  auto lane_lock = lockTransportLane(request.transport_lane);
+  const auto report = impl_->api->consensus_network_ingest_pbft_votes_bundle_packet(
+      toNativeConsensusPacketRequest(request), makeSlashingSubmitters(config));
+  ConsensusPacketOutcome outcome{};
+  outcome.status = report.status;
+  outcome.malicious = report.malicious;
+  outcome.error_code = static_cast<std::string>(report.error_code);
+  outcome.has_peer_pbft_chain_size = report.has_peer_pbft_chain_size;
+  outcome.peer_pbft_chain_size = report.peer_pbft_chain_size;
+  for (const auto& member : report.outcomes) {
+    outcome.queued_effect_count += member.decision.queued_effect_count;
+    if (outcome.status == 0 && member.decision.status != 0) {
+      outcome.status = member.decision.status;
+      outcome.error_code = static_cast<std::string>(member.decision.error_code);
+    }
+    if (!member.has_admission) {
+      ++outcome.rejected_count;
+    } else if (member.accepted) {
+      ++outcome.accepted_count;
+    } else if (member.already_present) {
+      ++outcome.duplicate_count;
+    } else {
+      ++outcome.rejected_count;
+    }
+    if (member.has_slashing_transaction_effect) {
+      const auto& effect = member.slashing_transaction_effect;
+      (void)executePbftVoteSlashingTransaction(
+          PbftVoteSlashingTransaction{effect.status, effect.proof_hash, effect.wallet_index, effect.nonce,
+                                      effect.contract_address, effect.value, effect.gas_limit,
+                                      std::vector<uint8_t>(effect.call_data.begin(), effect.call_data.end())},
+          config);
+    }
+  }
+  drainAndExecuteTransportEffects(request.transport_lane, request.source_payload_id, true, executor);
+  return outcome;
+}
+
+ConsensusPacketOutcome ConsensusNetworkApi::ingestPillarVotePacket(const ConsensusPacketRequest& request,
+                                                                   const ConsensusTransportExecutor& executor) {
+  auto lane_lock = lockTransportLane(request.transport_lane);
+  const auto report = impl_->api->consensus_network_ingest_pillar_vote_packet(toNativeConsensusPacketRequest(request));
+  ConsensusPacketOutcome outcome{};
+  outcome.status = report.status;
+  outcome.malicious = report.malicious;
+  outcome.error_code = static_cast<std::string>(report.error_code);
+  for (const auto& member : report.outcomes) {
+    outcome.queued_effect_count += member.decision.queued_effect_count;
+    if (outcome.status == 0 && member.decision.status != 0) {
+      outcome.status = member.decision.status;
+      outcome.error_code = static_cast<std::string>(member.decision.error_code);
+    }
+    if (static_cast<std::string>(member.decision.error_code) == "PILLAR_VOTE_INGRESS_MALFORMED_RLP") {
+      outcome.malicious = true;
+    }
+    if (member.accepted) {
+      ++outcome.accepted_count;
+    } else if (member.duplicate) {
+      ++outcome.duplicate_count;
+    } else {
+      ++outcome.rejected_count;
+    }
+  }
+  drainAndExecuteTransportEffects(request.transport_lane, request.source_payload_id, true, executor);
+  return outcome;
+}
+
+ConsensusPacketOutcome ConsensusNetworkApi::ingestPillarVotesBundlePacket(const ConsensusPacketRequest& request,
+                                                                          const ConsensusTransportExecutor& executor) {
+  auto lane_lock = lockTransportLane(request.transport_lane);
+  const auto report =
+      impl_->api->consensus_network_ingest_pillar_votes_bundle_packet(toNativeConsensusPacketRequest(request));
+  ConsensusPacketOutcome outcome{};
+  outcome.status = report.status;
+  outcome.malicious = report.malicious;
+  outcome.error_code = static_cast<std::string>(report.error_code);
+  for (const auto& member : report.outcomes) {
+    outcome.queued_effect_count += member.decision.queued_effect_count;
+    if (outcome.status == 0 && member.decision.status != 0) {
+      outcome.status = member.decision.status;
+      outcome.error_code = static_cast<std::string>(member.decision.error_code);
+    }
+    if (static_cast<std::string>(member.decision.error_code) == "PILLAR_VOTE_INGRESS_MALFORMED_RLP") {
+      outcome.malicious = true;
+    }
+    if (member.accepted) {
+      ++outcome.accepted_count;
+    } else if (member.duplicate) {
+      ++outcome.duplicate_count;
+    } else {
+      ++outcome.rejected_count;
+    }
+  }
+  drainAndExecuteTransportEffects(request.transport_lane, request.source_payload_id, true, executor);
+  return outcome;
+}
+
 TransactionPacketOutcome ConsensusNetworkApi::ingestTransactionPacket(uint32_t transport_lane,
                                                                       const std::array<uint8_t, 64>& peer_id,
                                                                       uint64_t source_payload_id,
@@ -349,7 +605,7 @@ TransactionPacketOutcome ConsensusNetworkApi::ingestTransactionPacket(uint32_t t
   request.cornus_active = config.genesis.state.hardforks.isOnCornusHardfork(last_block_number);
   request.rebroadcast = rebroadcast;
   const auto report = rustaxa::consensus_network_ingest_transaction_packet(
-      api(), impl_->consensus_application->service(), std::move(request), impl_->external_evm);
+      *impl_->api, impl_->consensus_application->service(), std::move(request), impl_->external_evm);
 
   for (const auto& member : report.transactions) {
     if (member.observe_transaction && impl_->observers.transaction_observed) {
@@ -363,50 +619,20 @@ TransactionPacketOutcome ConsensusNetworkApi::ingestTransactionPacket(uint32_t t
     }
   }
 
-  while (true) {
-    const auto batch = api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
-    if (batch.effects.empty()) {
-      break;
-    }
-    rust::Vec<rustaxa::NetworkEffectResult> results;
-    results.reserve(batch.effects.size());
-    for (const auto& effect : batch.effects) {
-      rustaxa::NetworkEffectResult result{};
-      result.effect_id = effect.effect_id;
-      result.kind = effect.kind;
-      result.peer_id = effect.peer_id;
-      result.packet_kind = effect.packet_kind;
-      result.object_kind = effect.object_kind;
-      result.object_hash = effect.object_hash;
-      result.status = kEffectResultOk;
-      try {
+  drainAndExecuteTransportEffects(
+      transport_lane, source_payload_id, true,
+      ConsensusTransportExecutor{[&executor](const ConsensusTransportEffect& effect) {
         if (effect.kind == kEffectMarkPeerKnown && effect.object_kind == kObjectTransaction) {
           executor.mark_transaction_known(effect.peer_id, effect.object_hash);
         } else if (effect.kind == kEffectGossipPacket && effect.packet_kind == kPacketTransaction) {
-          std::vector<std::array<uint8_t, 64>> excluded;
-          excluded.reserve(effect.exclude_peers.size());
-          for (const auto& excluded_peer : effect.exclude_peers) {
-            excluded.push_back(excluded_peer.id);
-          }
-          if (!executor.gossip_packet(std::vector<uint8_t>(effect.payload_bytes.begin(), effect.payload_bytes.end()),
-                                      excluded)) {
+          if (!executor.gossip_packet(effect.payload_bytes, effect.excluded_peers)) {
             throw std::runtime_error("Transaction gossip transport failed");
           }
         } else {
           throw std::runtime_error("Transaction ingress executor received an unsupported effect");
         }
-      } catch (const std::exception& error) {
-        result.status = kEffectResultFailed;
-        result.diagnostic = error.what();
-      }
-      results.push_back(std::move(result));
-    }
-    const auto acknowledgement = api().consensus_network_report_effect_results(std::move(results));
-    if (acknowledgement.status != 0) {
-      throw std::runtime_error("Network API rejected transaction executor results: " +
-                               static_cast<std::string>(acknowledgement.error_code));
-    }
-  }
+        return ConsensusTransportExecutionResult{};
+      }});
 
   return TransactionPacketOutcome{report.decision.status, report.decision.queued_effect_count,
                                   report.transactions.size(), static_cast<std::string>(report.decision.error_code)};
@@ -443,28 +669,13 @@ TransactionPacketOutcome ConsensusNetworkApi::planTransactionGossip(uint32_t tra
     }
     request.peers.push_back(std::move(native_peer));
   }
-  const auto decision =
-      api().consensus_network_plan_transaction_gossip(impl_->consensus_application->service(), std::move(request));
-  while (true) {
-    const auto batch = api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
-    if (batch.effects.empty()) {
-      break;
-    }
-    rust::Vec<rustaxa::NetworkEffectResult> results;
-    results.reserve(batch.effects.size());
-    for (const auto& effect : batch.effects) {
-      rustaxa::NetworkEffectResult result{};
-      result.effect_id = effect.effect_id;
-      result.kind = effect.kind;
-      result.peer_id = effect.peer_id;
-      result.packet_kind = effect.packet_kind;
-      result.object_kind = effect.object_kind;
-      result.object_hash = effect.object_hash;
-      result.status = kEffectResultOk;
-      try {
+  const auto decision = impl_->api->consensus_network_plan_transaction_gossip(impl_->consensus_application->service(),
+                                                                              std::move(request));
+  drainAndExecuteTransportEffects(
+      transport_lane, source_payload_id, true,
+      ConsensusTransportExecutor{[&executor](const ConsensusTransportEffect& effect) {
         if (effect.kind == kEffectSendPacket && effect.packet_kind == kPacketTransaction) {
-          if (!executor.send_packet(effect.peer_id,
-                                    std::vector<uint8_t>(effect.payload_bytes.begin(), effect.payload_bytes.end()))) {
+          if (!executor.send_packet(effect.peer_id, effect.payload_bytes)) {
             throw std::runtime_error("Periodic transaction transport failed");
           }
         } else if (effect.kind == kEffectMarkPeerKnown && effect.object_kind == kObjectTransaction) {
@@ -472,18 +683,8 @@ TransactionPacketOutcome ConsensusNetworkApi::planTransactionGossip(uint32_t tra
         } else {
           throw std::runtime_error("Periodic transaction executor received an unsupported effect");
         }
-      } catch (const std::exception& error) {
-        result.status = kEffectResultFailed;
-        result.diagnostic = error.what();
-      }
-      results.push_back(std::move(result));
-    }
-    const auto acknowledgement = api().consensus_network_report_effect_results(std::move(results));
-    if (acknowledgement.status != 0) {
-      throw std::runtime_error("Network API rejected periodic transaction executor results: " +
-                               static_cast<std::string>(acknowledgement.error_code));
-    }
-  }
+        return ConsensusTransportExecutionResult{};
+      }});
   return TransactionPacketOutcome{decision.status, decision.queued_effect_count, 0,
                                   static_cast<std::string>(decision.error_code)};
 }
@@ -503,44 +704,19 @@ GetDagSyncOutcome ConsensusNetworkApi::serveGetDagSyncRequest(uint32_t transport
   for (const auto byte : request_rlp) {
     request.request_rlp.push_back(byte);
   }
-  const auto decision =
-      api().consensus_network_ingest_get_dag_sync_request(impl_->consensus_application->service(), std::move(request));
-  while (true) {
-    const auto batch = api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
-    if (batch.effects.empty()) {
-      break;
-    }
-    rust::Vec<rustaxa::NetworkEffectResult> results;
-    results.reserve(batch.effects.size());
-    for (const auto& effect : batch.effects) {
-      rustaxa::NetworkEffectResult result{};
-      result.effect_id = effect.effect_id;
-      result.kind = effect.kind;
-      result.peer_id = effect.peer_id;
-      result.packet_kind = effect.packet_kind;
-      result.object_kind = effect.object_kind;
-      result.object_hash = effect.object_hash;
-      result.status = kEffectResultOk;
-      try {
+  const auto decision = impl_->api->consensus_network_ingest_get_dag_sync_request(
+      impl_->consensus_application->service(), std::move(request));
+  drainAndExecuteTransportEffects(
+      transport_lane, source_payload_id, true,
+      ConsensusTransportExecutor{[&executor, &peer_id](const ConsensusTransportEffect& effect) {
         if (effect.peer_id != peer_id || effect.kind != kEffectSendPacket || effect.packet_kind != kPacketDagSync) {
           throw std::runtime_error("Get-DAG-sync executor received a mismatched effect");
         }
-        if (!executor.send_response(std::vector<uint8_t>(effect.payload_bytes.begin(), effect.payload_bytes.end()),
-                                    effect.sync_start, effect.period)) {
+        if (!executor.send_response(effect.payload_bytes, effect.sync_start, effect.period)) {
           throw std::runtime_error("DAG-sync response transport failed");
         }
-      } catch (const std::exception& error) {
-        result.status = kEffectResultFailed;
-        result.diagnostic = error.what();
-      }
-      results.push_back(std::move(result));
-    }
-    const auto acknowledgement = api().consensus_network_report_effect_results(std::move(results));
-    if (acknowledgement.status != 0) {
-      throw std::runtime_error("Network API rejected get-DAG-sync executor results: " +
-                               static_cast<std::string>(acknowledgement.error_code));
-    }
-  }
+        return ConsensusTransportExecutionResult{};
+      }});
   return GetDagSyncOutcome{decision.status, decision.queued_effect_count,
                            static_cast<std::string>(decision.error_code)};
 }
@@ -570,8 +746,8 @@ DagBlockPacketOutcome ConsensusNetworkApi::ingestDagBlockPacket(
   request.transactions_dropped = peer_facts.transactions_dropped;
   request.pending_dag_request = peer_facts.pending_dag_request;
   request.local_pbft_syncing = peer_facts.local_pbft_syncing;
-  const auto report = rustaxa::consensus_network_ingest_dag_block_packet(api(), impl_->consensus_application->service(),
-                                                                         std::move(request), impl_->external_evm);
+  const auto report = rustaxa::consensus_network_ingest_dag_block_packet(
+      *impl_->api, impl_->consensus_application->service(), std::move(request), impl_->external_evm);
 
   if (report.admission_found && report.admission.observe_block && impl_->observers.dag_block_observed) {
     try {
@@ -603,50 +779,25 @@ DagBlockPacketOutcome ConsensusNetworkApi::ingestDagBlockPacket(
         gossip.peers.push_back(std::move(native_candidate));
       }
     }
-    const auto gossip_decision = api().consensus_network_plan_dag_block_gossip(std::move(gossip));
+    const auto gossip_decision = impl_->api->consensus_network_plan_dag_block_gossip(std::move(gossip));
     queued_effect_count += gossip_decision.queued_effect_count;
   }
-  while (true) {
-    const auto batch = api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
-    if (batch.effects.empty()) {
-      break;
-    }
-    rust::Vec<rustaxa::NetworkEffectResult> results;
-    results.reserve(batch.effects.size());
-    for (const auto& effect : batch.effects) {
-      rustaxa::NetworkEffectResult result{};
-      result.effect_id = effect.effect_id;
-      result.kind = effect.kind;
-      result.peer_id = effect.peer_id;
-      result.packet_kind = effect.packet_kind;
-      result.object_kind = effect.object_kind;
-      result.object_hash = effect.object_hash;
-      result.status = kEffectResultOk;
-      try {
+  drainAndExecuteTransportEffects(
+      transport_lane, source_payload_id, true,
+      ConsensusTransportExecutor{[&executor](const ConsensusTransportEffect& effect) {
         if (effect.kind == kEffectMarkPeerKnown && effect.object_kind == kObjectTransaction) {
           executor.mark_transaction_known(effect.peer_id, effect.object_hash);
         } else if (effect.kind == kEffectMarkPeerKnown && effect.object_kind == kObjectDagBlock) {
           executor.mark_dag_block_known(effect.peer_id, effect.object_hash);
         } else if (effect.kind == kEffectSendPacket && effect.packet_kind == kPacketDagBlock) {
-          if (!executor.send_packet(effect.peer_id,
-                                    std::vector<uint8_t>(effect.payload_bytes.begin(), effect.payload_bytes.end()))) {
+          if (!executor.send_packet(effect.peer_id, effect.payload_bytes)) {
             throw std::runtime_error("DAG-block transport failed");
           }
         } else {
           throw std::runtime_error("DAG-block executor received an unsupported effect");
         }
-      } catch (const std::exception& error) {
-        result.status = kEffectResultFailed;
-        result.diagnostic = error.what();
-      }
-      results.push_back(std::move(result));
-    }
-    const auto acknowledgement = api().consensus_network_report_effect_results(std::move(results));
-    if (acknowledgement.status != 0) {
-      throw std::runtime_error("Network API rejected DAG-block executor results: " +
-                               static_cast<std::string>(acknowledgement.error_code));
-    }
-  }
+        return ConsensusTransportExecutionResult{};
+      }});
   std::optional<DagBlockAdmissionOutcome> admission;
   if (report.admission_found) {
     admission =
@@ -677,8 +828,8 @@ DagSyncPacketOutcome ConsensusNetworkApi::ingestDagSyncPacket(
   request.cornus_active = config.genesis.state.hardforks.isOnCornusHardfork(last_block_number);
   request.rebroadcast = false;
   request.local_pbft_syncing = false;
-  const auto report = rustaxa::consensus_network_ingest_dag_sync_packet(api(), impl_->consensus_application->service(),
-                                                                        std::move(request), impl_->external_evm);
+  const auto report = rustaxa::consensus_network_ingest_dag_sync_packet(
+      *impl_->api, impl_->consensus_application->service(), std::move(request), impl_->external_evm);
 
   for (const auto& transaction : report.transactions) {
     if (transaction.observe_transaction && impl_->observers.transaction_observed) {
@@ -699,23 +850,9 @@ DagSyncPacketOutcome ConsensusNetworkApi::ingestDagSyncPacket(
       }
     }
   }
-  while (true) {
-    const auto batch = api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
-    if (batch.effects.empty()) {
-      break;
-    }
-    rust::Vec<rustaxa::NetworkEffectResult> results;
-    results.reserve(batch.effects.size());
-    for (const auto& effect : batch.effects) {
-      rustaxa::NetworkEffectResult result{};
-      result.effect_id = effect.effect_id;
-      result.kind = effect.kind;
-      result.peer_id = effect.peer_id;
-      result.packet_kind = effect.packet_kind;
-      result.object_kind = effect.object_kind;
-      result.object_hash = effect.object_hash;
-      result.status = kEffectResultOk;
-      try {
+  drainAndExecuteTransportEffects(
+      transport_lane, source_payload_id, true,
+      ConsensusTransportExecutor{[&executor](const ConsensusTransportEffect& effect) {
         if (effect.kind == kEffectMarkPeerKnown && effect.object_kind == kObjectTransaction) {
           executor.mark_transaction_known(effect.peer_id, effect.object_hash);
         } else if (effect.kind == kEffectMarkPeerKnown && effect.object_kind == kObjectDagBlock) {
@@ -723,18 +860,8 @@ DagSyncPacketOutcome ConsensusNetworkApi::ingestDagSyncPacket(
         } else {
           throw std::runtime_error("DAG-sync executor received an unsupported effect");
         }
-      } catch (const std::exception& error) {
-        result.status = kEffectResultFailed;
-        result.diagnostic = error.what();
-      }
-      results.push_back(std::move(result));
-    }
-    const auto acknowledgement = api().consensus_network_report_effect_results(std::move(results));
-    if (acknowledgement.status != 0) {
-      throw std::runtime_error("Network API rejected DAG-sync executor results: " +
-                               static_cast<std::string>(acknowledgement.error_code));
-    }
-  }
+        return ConsensusTransportExecutionResult{};
+      }});
   std::vector<DagBlockAdmissionOutcome> blocks;
   blocks.reserve(report.blocks.size());
   for (const auto& block : report.blocks) {
@@ -769,48 +896,22 @@ PendingDagBlocksOutcome ConsensusNetworkApi::requestPendingDagBlocks(
     bridge_candidate.dag_sync_allowed = candidate.dag_sync_allowed;
     facts.candidates.push_back(std::move(bridge_candidate));
   }
-  const auto decision = api().consensus_network_request_pending_dag_blocks(
+  const auto decision = impl_->api->consensus_network_request_pending_dag_blocks(
       impl_->consensus_application->service(), transport_lane, source_payload_id, std::move(facts));
 
-  while (true) {
-    const auto batch = api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
-    if (batch.effects.empty()) {
-      break;
-    }
-    rust::Vec<rustaxa::NetworkEffectResult> results;
-    results.reserve(batch.effects.size());
-    for (const auto& effect : batch.effects) {
-      rustaxa::NetworkEffectResult result{};
-      result.effect_id = effect.effect_id;
-      result.kind = effect.kind;
-      result.peer_id = effect.peer_id;
-      result.packet_kind = effect.packet_kind;
-      result.object_kind = effect.object_kind;
-      result.object_hash = effect.object_hash;
-      result.status = kEffectResultOk;
-      try {
+  drainAndExecuteTransportEffects(
+      transport_lane, source_payload_id, true,
+      ConsensusTransportExecutor{[&candidates, &executor](const ConsensusTransportEffect& effect) {
         if (effect.kind != kEffectSendPacket || effect.packet_kind != kPacketGetDagSync ||
             std::none_of(candidates.begin(), candidates.end(),
                          [&effect](const auto& candidate) { return candidate.peer_id == effect.peer_id; })) {
           throw std::runtime_error("Pending-DAG executor received a mismatched effect");
         }
-        if (!executor.send_request(effect.peer_id,
-                                   std::vector<uint8_t>(effect.payload_bytes.begin(), effect.payload_bytes.end()),
-                                   effect.period)) {
+        if (!executor.send_request(effect.peer_id, effect.payload_bytes, effect.period)) {
           throw std::runtime_error("Pending-DAG request transport failed");
         }
-      } catch (const std::exception& error) {
-        result.status = kEffectResultFailed;
-        result.diagnostic = error.what();
-      }
-      results.push_back(std::move(result));
-    }
-    const auto acknowledgement = api().consensus_network_report_effect_results(std::move(results));
-    if (acknowledgement.status != 0) {
-      throw std::runtime_error("Network API rejected pending-DAG executor results: " +
-                               static_cast<std::string>(acknowledgement.error_code));
-    }
-  }
+        return ConsensusTransportExecutionResult{};
+      }});
   return PendingDagBlocksOutcome{decision.status, decision.queued_effect_count,
                                  static_cast<std::string>(decision.error_code)};
 }
@@ -842,6 +943,92 @@ bool ConsensusNetworkApi::submitSlashingTransaction(size_t wallet_index, const s
   return submission.accepted;
 }
 
+void ConsensusNetworkApi::drainAndExecuteTransportEffects(uint32_t transport_lane, uint64_t source_payload_id,
+                                                          bool source_scoped,
+                                                          const ConsensusTransportExecutor& executor) {
+  if (!executor.execute) {
+    throw std::invalid_argument("Consensus transport executor has no physical execution callback");
+  }
+
+  std::unordered_set<uint64_t> observed_effect_ids;
+  while (true) {
+    const auto batch =
+        impl_->api->consensus_network_drain_work(transport_lane, source_payload_id, source_scoped, kEffectDrainBudget);
+    if (batch.status != 0) {
+      throw std::runtime_error("Network API rejected effect drain: " + static_cast<std::string>(batch.error_code));
+    }
+    if (batch.effects.empty()) {
+      if (batch.more_available) {
+        throw std::runtime_error("Network API reported more effects after returning an empty drain batch");
+      }
+      break;
+    }
+
+    rust::Vec<rustaxa::NetworkEffectResult> results;
+    results.reserve(batch.effects.size());
+    for (const auto& effect : batch.effects) {
+      if (effect.effect_id == 0 || !observed_effect_ids.insert(effect.effect_id).second) {
+        throw std::runtime_error("Network API returned a missing or duplicate effect id");
+      }
+      if (effect.transport_lane != transport_lane || (source_scoped && effect.source_payload_id != source_payload_id)) {
+        throw std::runtime_error("Network API returned an effect outside the requested lane or payload scope");
+      }
+
+      rustaxa::NetworkEffectResult result{};
+      result.effect_id = effect.effect_id;
+      result.kind = effect.kind;
+      result.peer_id = effect.peer_id;
+      result.packet_kind = effect.packet_kind;
+      result.object_kind = effect.object_kind;
+      result.object_hash = effect.object_hash;
+      result.status = kEffectResultOk;
+      try {
+        {
+          ConsensusTransportEffect physical{};
+          physical.effect_id = effect.effect_id;
+          physical.source_payload_id = effect.source_payload_id;
+          physical.transport_lane = effect.transport_lane;
+          physical.kind = effect.kind;
+          physical.peer_id = effect.peer_id;
+          physical.packet_kind = effect.packet_kind;
+          physical.payload_bytes.assign(effect.payload_bytes.begin(), effect.payload_bytes.end());
+          physical.related_payload_bytes.assign(effect.related_payload_bytes.begin(),
+                                                effect.related_payload_bytes.end());
+          physical.excluded_peers.reserve(effect.exclude_peers.size());
+          for (const auto& peer : effect.exclude_peers) {
+            physical.excluded_peers.push_back(peer.id);
+          }
+          physical.object_kind = effect.object_kind;
+          physical.object_hash = effect.object_hash;
+          physical.sync_kind = effect.sync_kind;
+          physical.sync_start = effect.sync_start;
+          physical.reason_code = effect.reason_code;
+          physical.dependency_id = effect.dependency_id;
+          physical.period = effect.period;
+          physical.round = effect.round;
+          const auto execution = executor.execute(physical);
+          if (!execution.success) {
+            throw std::runtime_error(execution.diagnostic.empty() ? "Consensus transport effect failed"
+                                                                  : execution.diagnostic);
+          }
+        }
+      } catch (const std::exception& error) {
+        result.status = kEffectResultFailed;
+        result.diagnostic = error.what();
+      }
+      results.push_back(std::move(result));
+    }
+
+    const auto expected_results = results.size();
+    const auto acknowledgement = impl_->api->consensus_network_report_effect_results(std::move(results));
+    if (acknowledgement.status != 0 || acknowledgement.accepted_results != expected_results ||
+        acknowledgement.failed_results > expected_results) {
+      throw std::runtime_error("Network API rejected or incompletely acknowledged executor results: " +
+                               static_cast<std::string>(acknowledgement.error_code));
+    }
+  }
+}
+
 std::unique_lock<std::mutex> ConsensusNetworkApi::lockTransportLane(uint32_t transport_lane) {
   std::mutex* lane_mutex = nullptr;
   {
@@ -860,33 +1047,17 @@ PillarVotesBundleRequestOutcome ConsensusNetworkApi::servePillarVotesBundleReque
     const std::array<uint8_t, 32>& pillar_block_hash, uint64_t source_payload_id,
     const PillarVotesBundleExecutor& executor) {
   auto lane_lock = lockTransportLane(transport_lane);
-  const auto decision = api().consensus_network_ingest_pillar_votes_bundle_request(
+  const auto decision = impl_->api->consensus_network_ingest_pillar_votes_bundle_request(
       transport_lane, peer_id, period, pillar_block_hash, source_payload_id);
 
-  while (true) {
-    const auto batch = api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
-    if (batch.effects.empty()) {
-      break;
-    }
-
-    rust::Vec<rustaxa::NetworkEffectResult> results;
-    results.reserve(batch.effects.size());
-    for (const auto& effect : batch.effects) {
-      rustaxa::NetworkEffectResult result{};
-      result.effect_id = effect.effect_id;
-      result.kind = effect.kind;
-      result.peer_id = effect.peer_id;
-      result.packet_kind = effect.packet_kind;
-      result.object_kind = effect.object_kind;
-      result.object_hash = effect.object_hash;
-      result.status = kEffectResultOk;
-
-      try {
+  drainAndExecuteTransportEffects(
+      transport_lane, source_payload_id, true,
+      ConsensusTransportExecutor{[&executor, &peer_id](const ConsensusTransportEffect& effect) {
         if (effect.peer_id != peer_id) {
           throw std::runtime_error("Pillar-vote bundle effect targets a different peer");
         }
         if (effect.kind == kEffectSendPacket && effect.packet_kind == kPacketPillarVotesBundle) {
-          if (!executor.send_bundle(std::vector<uint8_t>(effect.payload_bytes.begin(), effect.payload_bytes.end()))) {
+          if (!executor.send_bundle(effect.payload_bytes)) {
             throw std::runtime_error("Pillar-vote bundle transport send failed");
           }
         } else if (effect.kind == kEffectMarkPeerKnown && effect.object_kind == kObjectPillarVote) {
@@ -898,19 +1069,8 @@ PillarVotesBundleRequestOutcome ConsensusNetworkApi::servePillarVotesBundleReque
         } else {
           throw std::runtime_error("Pillar-vote bundle executor received an unsupported effect");
         }
-      } catch (const std::exception& error) {
-        result.status = kEffectResultFailed;
-        result.diagnostic = error.what();
-      }
-      results.push_back(std::move(result));
-    }
-
-    const auto acknowledgement = api().consensus_network_report_effect_results(std::move(results));
-    if (acknowledgement.status != 0) {
-      throw std::runtime_error("Network API rejected pillar-vote bundle executor results: " +
-                               static_cast<std::string>(acknowledgement.error_code));
-    }
-  }
+        return ConsensusTransportExecutionResult{};
+      }});
 
   return PillarVotesBundleRequestOutcome{decision.status, decision.queued_effect_count,
                                          static_cast<std::string>(decision.error_code)};
@@ -930,34 +1090,17 @@ PbftSyncRequestOutcome ConsensusNetworkApi::servePbftSyncRequest(uint32_t tarcap
     request.request_rlp.push_back(byte);
   }
   request.source_payload_id = source_payload_id;
-  const auto decision = api().consensus_network_ingest_get_pbft_sync_request(std::move(request));
+  const auto decision = impl_->api->consensus_network_ingest_get_pbft_sync_request(std::move(request));
 
-  while (true) {
-    const auto batch = api().consensus_network_drain_work(tarcap_version, source_payload_id, true, kEffectDrainBudget);
-    if (batch.effects.empty()) {
-      break;
-    }
-
-    rust::Vec<rustaxa::NetworkEffectResult> results;
-    results.reserve(batch.effects.size());
-    for (const auto& effect : batch.effects) {
-      rustaxa::NetworkEffectResult result{};
-      result.effect_id = effect.effect_id;
-      result.kind = effect.kind;
-      result.peer_id = effect.peer_id;
-      result.packet_kind = effect.packet_kind;
-      result.object_kind = effect.object_kind;
-      result.object_hash = effect.object_hash;
-      result.status = kEffectResultOk;
-
-      try {
+  drainAndExecuteTransportEffects(
+      tarcap_version, source_payload_id, true,
+      ConsensusTransportExecutor{[&executor, &peer_id](const ConsensusTransportEffect& effect) {
         if (effect.peer_id != peer_id) {
           throw std::runtime_error("PBFT sync effect targets a different peer");
         }
         if (effect.kind == kEffectSendPacket &&
             (effect.packet_kind == kPacketPbftSync || effect.packet_kind == kPacketPbftBlocksBundle)) {
-          if (!executor.send_packet(effect.packet_kind,
-                                    std::vector<uint8_t>(effect.payload_bytes.begin(), effect.payload_bytes.end()))) {
+          if (!executor.send_packet(effect.packet_kind, effect.payload_bytes)) {
             throw std::runtime_error("PBFT sync transport send failed");
           }
         } else if (effect.kind == kEffectClearPeerSyncing) {
@@ -969,19 +1112,8 @@ PbftSyncRequestOutcome ConsensusNetworkApi::servePbftSyncRequest(uint32_t tarcap
         } else {
           throw std::runtime_error("PBFT sync executor received an unsupported effect");
         }
-      } catch (const std::exception& error) {
-        result.status = kEffectResultFailed;
-        result.diagnostic = error.what();
-      }
-      results.push_back(std::move(result));
-    }
-
-    const auto acknowledgement = api().consensus_network_report_effect_results(std::move(results));
-    if (acknowledgement.status != 0) {
-      throw std::runtime_error("Network API rejected PBFT sync executor results: " +
-                               static_cast<std::string>(acknowledgement.error_code));
-    }
-  }
+        return ConsensusTransportExecutionResult{};
+      }});
 
   return PbftSyncRequestOutcome{decision.status, decision.queued_effect_count,
                                 static_cast<std::string>(decision.error_code)};
@@ -991,50 +1123,23 @@ PbftNextVotesBundleRequestOutcome ConsensusNetworkApi::servePbftNextVotesBundleR
     uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id, uint64_t peer_period, uint64_t peer_round,
     uint64_t source_payload_id, const PbftNextVotesBundleExecutor& executor) {
   auto lane_lock = lockTransportLane(transport_lane);
-  const auto decision = api().consensus_network_ingest_pbft_next_votes_bundle_request(
+  const auto decision = impl_->api->consensus_network_ingest_pbft_next_votes_bundle_request(
       transport_lane, peer_id, peer_period, peer_round, source_payload_id);
 
-  while (true) {
-    const auto batch = api().consensus_network_drain_work(transport_lane, source_payload_id, true, kEffectDrainBudget);
-    if (batch.effects.empty()) {
-      break;
-    }
-
-    rust::Vec<rustaxa::NetworkEffectResult> results;
-    results.reserve(batch.effects.size());
-    for (const auto& effect : batch.effects) {
-      rustaxa::NetworkEffectResult result{};
-      result.effect_id = effect.effect_id;
-      result.kind = effect.kind;
-      result.peer_id = effect.peer_id;
-      result.packet_kind = effect.packet_kind;
-      result.object_kind = effect.object_kind;
-      result.object_hash = effect.object_hash;
-      result.status = kEffectResultOk;
-
-      try {
+  drainAndExecuteTransportEffects(
+      transport_lane, source_payload_id, true,
+      ConsensusTransportExecutor{[&executor, &peer_id](const ConsensusTransportEffect& effect) {
         if (effect.peer_id != peer_id) {
           throw std::runtime_error("Next-votes bundle effect targets a different peer");
         }
         if (effect.kind != kEffectSendPacket || effect.packet_kind != kPacketPbftVotesBundle) {
           throw std::runtime_error("Next-votes bundle executor received an unsupported effect");
         }
-        if (!executor.send_bundle(std::vector<uint8_t>(effect.payload_bytes.begin(), effect.payload_bytes.end()))) {
+        if (!executor.send_bundle(effect.payload_bytes)) {
           throw std::runtime_error("Next-votes bundle transport send failed");
         }
-      } catch (const std::exception& error) {
-        result.status = kEffectResultFailed;
-        result.diagnostic = error.what();
-      }
-      results.push_back(std::move(result));
-    }
-
-    const auto acknowledgement = api().consensus_network_report_effect_results(std::move(results));
-    if (acknowledgement.status != 0) {
-      throw std::runtime_error("Network API rejected next-votes bundle executor results: " +
-                               static_cast<std::string>(acknowledgement.error_code));
-    }
-  }
+        return ConsensusTransportExecutionResult{};
+      }});
 
   return PbftNextVotesBundleRequestOutcome{decision.status, decision.queued_effect_count,
                                            static_cast<std::string>(decision.error_code)};
@@ -1044,21 +1149,10 @@ PbftBlocksBundleOutcome ConsensusNetworkApi::admitPbftBlocksBundle(const std::ve
                                                                    uint64_t source_payload_id) {
   rust::Vec<uint8_t> bridge_packet;
   bridge_packet.reserve(packet_rlp.size());
-  for (const auto byte : packet_rlp) {
-    bridge_packet.push_back(byte);
-  }
-  const auto decision = api().consensus_network_ingest_pbft_blocks_bundle(impl_->consensus_application->service(),
-                                                                          std::move(bridge_packet), source_payload_id);
+  std::copy(packet_rlp.begin(), packet_rlp.end(), std::back_inserter(bridge_packet));
+  const auto decision = impl_->api->consensus_network_ingest_pbft_blocks_bundle(
+      impl_->consensus_application->service(), std::move(bridge_packet), source_payload_id);
   return PbftBlocksBundleOutcome{decision.status, static_cast<std::string>(decision.error_code)};
-}
-
-bool ConsensusNetworkApi::publishProposedBlockEffect(const std::vector<uint8_t>& canonical_signed_block_rlp) {
-  rust::Vec<uint8_t> bridge_block;
-  bridge_block.reserve(canonical_signed_block_rlp.size());
-  for (const auto byte : canonical_signed_block_rlp) {
-    bridge_block.push_back(byte);
-  }
-  return impl_->consensus_application->service().pbft_service_publish_proposed_block_effect(std::move(bridge_block));
 }
 
 std::optional<std::array<uint8_t, 64>> ConsensusNetworkApi::selectMaxChainPeer(
@@ -1080,7 +1174,7 @@ std::optional<std::array<uint8_t, 64>> ConsensusNetworkApi::selectMaxChainPeer(
     request.candidates.push_back(std::move(bridge_candidate));
   }
 
-  const auto outcome = api().consensus_network_begin_pbft_sync(request);
+  const auto outcome = impl_->api->consensus_network_begin_pbft_sync(request);
   if (!outcome.has_peer) {
     return std::nullopt;
   }

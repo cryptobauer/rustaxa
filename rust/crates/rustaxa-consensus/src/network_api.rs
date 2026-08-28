@@ -50,7 +50,10 @@ use rustaxa_storage::Storage;
 use rustaxa_types::LegacyTransactionEnvelope;
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::pbft::PbftBlockLink;
-use rustaxa_types::{PbftBlockMetadata, PillarVote, encode_optimized_pillar_votes_bundle_rlp};
+use rustaxa_types::{
+    PbftBlockMetadata, PillarVote, decode_optimized_pillar_votes_bundle_rlp,
+    encode_optimized_pillar_votes_bundle_rlp,
+};
 
 const MAX_PILLAR_VOTES_PER_BUNDLE_PACKET: usize = 250;
 const MAX_EFFECTS_PER_DRAIN: usize = 1024;
@@ -549,6 +552,32 @@ pub struct NetworkPillarVoteIngressContext {
     pub allow_gossip: bool,
 }
 
+/// Canonical consensus-packet ingress plus the compact live policy snapshot.
+///
+/// `packet_rlp` is the complete tarcap packet payload, including its outer
+/// family wrapper. Rust decodes every vote, optional proposed block, optimized
+/// bundle member, and recovered voter from these bytes. Network-owned timer
+/// reservations remain booleans because the physical scheduler owns their
+/// clocks; all other fields are immutable consensus-window facts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkConsensusPacketRequest {
+    pub transport_lane: u32,
+    pub peer_id: [u8; 64],
+    pub peer_pbft_chain_size: u64,
+    pub source_payload_id: u64,
+    pub packet_rlp: Vec<u8>,
+    pub current_period: u64,
+    pub current_round: u64,
+    pub current_step: u64,
+    pub max_future_period_delta: u64,
+    pub max_future_round_delta: u64,
+    pub max_future_step_delta: u64,
+    pub validate_max_round_step: bool,
+    pub can_request_pbft_sync: bool,
+    pub can_request_next_votes_sync: bool,
+    pub allow_gossip: bool,
+}
+
 /// Scalar request facts for PBFT next-vote bundle egress.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkPbftNextVotesBundleRequest {
@@ -637,6 +666,17 @@ pub struct NetworkPbftVoteAdmissionOutcome {
     pub admission: Option<crate::PbftVoteAdmissionWithSlashingResult>,
 }
 
+/// Terminal result for one canonical PBFT vote-family packet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftVotePacketReport {
+    /// One terminal outcome for a single packet, or one per admitted bundle member.
+    pub outcomes: Vec<NetworkPbftVoteAdmissionOutcome>,
+    /// Whether a single-vote packet carried the optional proposed-block payload.
+    pub has_peer_pbft_chain_size: bool,
+    /// Peer chain size carried beside the optional proposed block.
+    pub peer_pbft_chain_size: u64,
+}
+
 /// Composed native result for one pillar vote arriving from tarcap.
 ///
 /// Routing and authoritative pillar admission complete before this value is
@@ -651,6 +691,13 @@ pub struct NetworkPillarVoteAdmissionOutcome {
     pub decision: NetworkIngressDecision,
     /// Native pillar admission result when the member reached the PBFT task.
     pub admission: Option<PillarVoteSingleAdmissionWithFinalChainPlan>,
+}
+
+/// Terminal result for one canonical pillar-vote-family packet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPillarVotePacketReport {
+    /// One terminal outcome for a single packet, or one per bundle member.
+    pub outcomes: Vec<NetworkPillarVoteAdmissionOutcome>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1799,7 +1846,15 @@ impl ConsensusNetworkService {
         };
         let admission =
             pbft.admit_network_verified_vote(final_chain, &pending.vote_rlp, slashing_submitters)?;
-        self.lock_api()?
+        let add = admission.transaction.outcome.add_outcome.as_ref();
+        if !pending.pbft_block_rlp.is_empty()
+            && admission.transaction.transition_published
+            && add.is_some_and(|outcome| outcome.inserted || outcome.duplicate_vote_hash)
+        {
+            pbft.publish_proposed_block_effect(pending.pbft_block_rlp.clone())?;
+        }
+        let _ = self
+            .lock_api()?
             .complete_native_vote_admission(pending, &admission);
         decision.application_effect_id = 0;
         Ok(NetworkPbftVoteAdmissionOutcome {
@@ -1843,6 +1898,109 @@ impl ConsensusNetworkService {
         )
     }
 
+    /// Decodes and authoritatively admits one complete canonical PBFT vote packet.
+    ///
+    /// The operation owns the outer packet shape, canonical vote inspection,
+    /// optional proposed-block correlation, ingress planning, admission, and
+    /// follow-up queueing. Only the optional peer chain-size observation is
+    /// returned for network-owned peer bookkeeping.
+    pub fn ingest_pbft_vote_packet(
+        &self,
+        pbft: &crate::PbftService,
+        final_chain: &FinalChain,
+        request: NetworkConsensusPacketRequest,
+        slashing_submitters: &[crate::SlashingSubmitterIdentity],
+    ) -> Result<NetworkPbftVotePacketReport> {
+        let decoded = decode_pbft_vote_packet(&request.packet_rlp)
+            .context("NETWORK_PBFT_VOTE_PACKET_MALFORMED")?;
+        let inspection = inspect_canonical_pbft_vote(&decoded.vote_rlp)
+            .context("NETWORK_PBFT_VOTE_PACKET_MALFORMED_VOTE")?;
+        ensure!(
+            inspection.signature_valid,
+            "NETWORK_PBFT_VOTE_PACKET_INVALID_SIGNATURE"
+        );
+        let fact = pbft_vote_ingress_fact(&inspection);
+        let mut context = pbft_vote_packet_context(&request, &inspection, decoded.vote_rlp);
+        context.peer_pbft_chain_size = context
+            .peer_pbft_chain_size
+            .max(decoded.peer_pbft_chain_size.unwrap_or_default());
+        if let Some(block_rlp) = decoded.pbft_block_rlp {
+            let (link, metadata) = decode_pbft_blocks_bundle_member(&block_rlp)
+                .context("NETWORK_PBFT_VOTE_PACKET_INVALID_PROPOSED_BLOCK")?;
+            ensure!(
+                link.block_hash == inspection.block_hash
+                    && link.period == inspection.period
+                    && metadata.period == inspection.period,
+                "NETWORK_PBFT_VOTE_PACKET_PROPOSED_BLOCK_MISMATCH"
+            );
+            context.pbft_block_hash = link.block_hash.to_fixed_bytes();
+            context.pbft_block_period = link.period;
+            context.pbft_block_rlp = block_rlp;
+        }
+        let outcome =
+            self.ingest_and_admit_pbft_vote(pbft, final_chain, fact, context, slashing_submitters)?;
+        Ok(NetworkPbftVotePacketReport {
+            outcomes: vec![outcome],
+            has_peer_pbft_chain_size: decoded.peer_pbft_chain_size.is_some(),
+            peer_pbft_chain_size: decoded.peer_pbft_chain_size.unwrap_or_default(),
+        })
+    }
+
+    /// Decodes, atomically preflights, and sequentially admits one complete
+    /// canonical optimized PBFT votes-bundle packet.
+    pub fn ingest_pbft_votes_bundle_packet(
+        &self,
+        pbft: &crate::PbftService,
+        final_chain: &FinalChain,
+        request: NetworkConsensusPacketRequest,
+        slashing_submitters: &[crate::SlashingSubmitterIdentity],
+    ) -> Result<NetworkPbftVotePacketReport> {
+        let vote_rlps = decode_pbft_votes_bundle_packet(&request.packet_rlp)
+            .context("NETWORK_PBFT_VOTES_BUNDLE_PACKET_MALFORMED")?;
+        let inspected = vote_rlps
+            .iter()
+            .map(|vote_rlp| inspect_canonical_pbft_vote(vote_rlp))
+            .collect::<Result<Vec<_>>>()
+            .context("NETWORK_PBFT_VOTES_BUNDLE_MEMBER_MALFORMED")?;
+        ensure!(
+            inspected.iter().all(|vote| vote.signature_valid),
+            "NETWORK_PBFT_VOTES_BUNDLE_INVALID_SIGNATURE"
+        );
+        let facts = inspected
+            .iter()
+            .map(pbft_vote_ingress_fact)
+            .collect::<Vec<_>>();
+        let reference = *facts
+            .first()
+            .ok_or_else(|| anyhow!("NETWORK_PBFT_VOTES_BUNDLE_EMPTY"))?;
+        let validate_max_round_step = !matches!(
+            reference.vote_type,
+            crate::verified_votes::PbftVoteType::Cert | crate::verified_votes::PbftVoteType::Next
+        );
+        let contexts = inspected
+            .iter()
+            .zip(vote_rlps)
+            .map(|(inspection, vote_rlp)| {
+                let mut context = pbft_vote_packet_context(&request, inspection, vote_rlp);
+                context.ingress.validate_max_round_step = validate_max_round_step;
+                context
+            })
+            .collect();
+        let outcomes = self.ingest_and_admit_pbft_vote_bundle(
+            pbft,
+            final_chain,
+            reference,
+            facts,
+            contexts,
+            slashing_submitters,
+        )?;
+        Ok(NetworkPbftVotePacketReport {
+            outcomes,
+            has_peer_pbft_chain_size: false,
+            peer_pbft_chain_size: 0,
+        })
+    }
+
     /// Runs composed bundle routing with an injected authoritative admission task.
     ///
     /// The injection is internal testability for infrastructure failures. Any
@@ -1858,6 +2016,7 @@ impl ConsensusNetworkService {
         let decisions =
             Self::lock_shared_api(api)?.ingest_pbft_vote_bundle(reference, votes, contexts);
         let mut outcomes = Vec::with_capacity(decisions.len());
+        let mut follow_up_effect_ids = Vec::new();
         for mut decision in decisions {
             let effect_id = decision.application_effect_id;
             if effect_id == 0 {
@@ -1883,10 +2042,13 @@ impl ConsensusNetworkService {
                     if let Some(bundle_id) = bundle_id {
                         Self::lock_shared_api(api)?.cancel_vote_bundle(bundle_id);
                     }
+                    Self::lock_shared_api(api)?.cancel_pending_effects(&follow_up_effect_ids);
                     return Err(error);
                 }
             };
-            Self::lock_shared_api(api)?.complete_native_vote_admission(pending, &admission);
+            follow_up_effect_ids.extend(
+                Self::lock_shared_api(api)?.complete_native_vote_admission(pending, &admission),
+            );
             decision.application_effect_id = 0;
             outcomes.push(NetworkPbftVoteAdmissionOutcome {
                 decision,
@@ -1940,6 +2102,47 @@ impl ConsensusNetworkService {
                 false,
             )
         })
+    }
+
+    /// Decodes and admits one complete canonical pillar-vote packet.
+    pub fn ingest_pillar_vote_packet(
+        &self,
+        pbft: &crate::PbftService,
+        final_chain: &FinalChain,
+        request: NetworkConsensusPacketRequest,
+    ) -> Result<NetworkPillarVotePacketReport> {
+        let vote_rlp = decode_single_wrapped_packet(&request.packet_rlp)
+            .context("NETWORK_PILLAR_VOTE_PACKET_MALFORMED")?;
+        let outcomes = self.ingest_and_admit_pillar_vote_bundle(
+            pbft,
+            final_chain,
+            pillar_vote_packet_context(&request),
+            vec![vote_rlp],
+        )?;
+        Ok(NetworkPillarVotePacketReport { outcomes })
+    }
+
+    /// Decodes and admits one complete canonical optimized pillar-votes bundle packet.
+    pub fn ingest_pillar_votes_bundle_packet(
+        &self,
+        pbft: &crate::PbftService,
+        final_chain: &FinalChain,
+        request: NetworkConsensusPacketRequest,
+    ) -> Result<NetworkPillarVotePacketReport> {
+        let bundle_rlp = decode_single_wrapped_packet(&request.packet_rlp)
+            .context("NETWORK_PILLAR_VOTES_BUNDLE_PACKET_MALFORMED")?;
+        let votes = decode_optimized_pillar_votes_bundle_rlp(&bundle_rlp)
+            .context("NETWORK_PILLAR_VOTES_BUNDLE_PACKET_MALFORMED")?
+            .into_iter()
+            .map(|vote| vote.encode_rlp())
+            .collect::<Vec<_>>();
+        let outcomes = self.ingest_and_admit_pillar_vote_bundle(
+            pbft,
+            final_chain,
+            pillar_vote_packet_context(&request),
+            votes,
+        )?;
+        Ok(NetworkPillarVotePacketReport { outcomes })
     }
 
     /// Runs pillar bundle routing with an injected authoritative admission task.
@@ -2961,6 +3164,144 @@ fn decode_dag_sync_packet(packet_rlp: &[u8]) -> Option<(u64, u64, Vec<Vec<u8>>, 
     ))
 }
 
+struct DecodedPbftVotePacket {
+    vote_rlp: Vec<u8>,
+    pbft_block_rlp: Option<Vec<u8>>,
+    peer_pbft_chain_size: Option<u64>,
+}
+
+fn decode_single_wrapped_packet(packet_rlp: &[u8]) -> Result<Vec<u8>> {
+    let packet = Rlp::new(packet_rlp);
+    ensure!(packet.item_count()? == 1);
+    Ok(packet.at(0)?.as_raw().to_vec())
+}
+
+fn decode_pbft_vote_packet(packet_rlp: &[u8]) -> Result<DecodedPbftVotePacket> {
+    let packet = Rlp::new(packet_rlp);
+    ensure!(
+        packet.item_count()? == 2,
+        "NETWORK_PBFT_VOTE_PACKET_MALFORMED"
+    );
+    let vote_rlp = packet.at(0)?.as_raw().to_vec();
+    let optional = packet.at(1)?;
+    if optional.is_empty() {
+        return Ok(DecodedPbftVotePacket {
+            vote_rlp,
+            pbft_block_rlp: None,
+            peer_pbft_chain_size: None,
+        });
+    }
+    ensure!(
+        optional.item_count()? == 2,
+        "NETWORK_PBFT_VOTE_PACKET_OPTIONAL_DATA_MALFORMED"
+    );
+    Ok(DecodedPbftVotePacket {
+        vote_rlp,
+        pbft_block_rlp: Some(optional.at(0)?.as_raw().to_vec()),
+        peer_pbft_chain_size: Some(optional.val_at(1)?),
+    })
+}
+
+fn decode_pbft_votes_bundle_packet(packet_rlp: &[u8]) -> Result<Vec<Vec<u8>>> {
+    let bundle_rlp = decode_single_wrapped_packet(packet_rlp)
+        .context("NETWORK_PBFT_VOTES_BUNDLE_PACKET_MALFORMED")?;
+    let bundle = Rlp::new(&bundle_rlp);
+    ensure!(
+        bundle.item_count()? == 5,
+        "NETWORK_PBFT_VOTES_BUNDLE_PACKET_MALFORMED"
+    );
+    let block_hash: H256 = bundle.val_at(0)?;
+    let period: u64 = bundle.val_at(1)?;
+    let round: u64 = bundle.val_at(2)?;
+    let step: u64 = bundle.val_at(3)?;
+    let votes = bundle.at(4)?;
+    ensure!(
+        votes.is_list(),
+        "NETWORK_PBFT_VOTES_BUNDLE_PACKET_MALFORMED"
+    );
+    let vote_count = votes.item_count()?;
+    ensure!(
+        vote_count > 0 && vote_count <= MAX_VOTES_PER_BUNDLE_PACKET,
+        "NETWORK_PBFT_VOTES_BUNDLE_PACKET_SIZE_INVALID"
+    );
+
+    (0..vote_count)
+        .map(|index| {
+            let optimized = votes.at(index)?;
+            ensure!(
+                optimized.item_count()? == 2,
+                "NETWORK_PBFT_VOTES_BUNDLE_MEMBER_MALFORMED"
+            );
+            let proof = optimized.at(0)?.data()?;
+            let signature = optimized.at(1)?.data()?;
+            let mut sortition = RlpStream::new_list(4);
+            sortition.append(&period);
+            sortition.append(&round);
+            sortition.append(&step);
+            sortition.append(&proof);
+            let sortition_rlp = sortition.out();
+
+            let mut vote = RlpStream::new_list(3);
+            vote.append(&block_hash);
+            vote.append(&sortition_rlp.as_ref());
+            vote.append(&signature);
+            Ok(vote.out().to_vec())
+        })
+        .collect()
+}
+
+fn pbft_vote_ingress_fact(inspection: &crate::PbftCanonicalVoteInspection) -> PbftVoteIngressFact {
+    PbftVoteIngressFact {
+        period: inspection.period,
+        round: inspection.round,
+        step: inspection.step,
+        vote_type: inspection.vote_type,
+    }
+}
+
+fn pbft_vote_packet_context(
+    request: &NetworkConsensusPacketRequest,
+    inspection: &crate::PbftCanonicalVoteInspection,
+    vote_rlp: Vec<u8>,
+) -> NetworkPbftVoteIngressContext {
+    NetworkPbftVoteIngressContext {
+        ingress: PbftVoteIngressContext {
+            current_period: request.current_period,
+            current_round: request.current_round,
+            current_step: request.current_step,
+            max_future_period_delta: request.max_future_period_delta,
+            max_future_round_delta: request.max_future_round_delta,
+            max_future_step_delta: request.max_future_step_delta,
+            validate_max_round_step: request.validate_max_round_step,
+            source_peer_is_voter: request.peer_id == inspection.recovered_public_key,
+            can_request_pbft_sync: request.can_request_pbft_sync,
+            can_request_next_votes_sync: request.can_request_next_votes_sync,
+        },
+        transport_lane: request.transport_lane,
+        peer_id: request.peer_id,
+        peer_pbft_chain_size: request.peer_pbft_chain_size,
+        source_payload_id: request.source_payload_id,
+        enqueue_admission: true,
+        allow_gossip: request.allow_gossip,
+        vote_hash: inspection.vote_hash.to_fixed_bytes(),
+        vote_rlp,
+        pbft_block_rlp: Vec::new(),
+        pbft_block_hash: [0; 32],
+        pbft_block_period: 0,
+    }
+}
+
+fn pillar_vote_packet_context(
+    request: &NetworkConsensusPacketRequest,
+) -> NetworkPillarVoteIngressContext {
+    NetworkPillarVoteIngressContext {
+        transport_lane: request.transport_lane,
+        peer_id: request.peer_id,
+        source_payload_id: request.source_payload_id,
+        allow_gossip: request.allow_gossip,
+    }
+}
+
 /// Rust-owned external network/tarcap API facade.
 ///
 /// The facade owns an ordered network effect queue. It is intentionally small: packet-specific decoding and
@@ -3143,7 +3484,7 @@ impl ConsensusNetworkApi {
                     && let Some(context) = self.pending_vote_admissions.remove(&result.effect_id)
                 {
                     if result.status == NETWORK_EFFECT_RESULT_STATUS_OK {
-                        self.enqueue_vote_admission_follow_ups(context, result);
+                        let _ = self.enqueue_vote_admission_follow_ups(context, result);
                     } else if let Some(bundle) = context.bundle {
                         self.cancel_vote_bundle(bundle.bundle_id);
                     }
@@ -4163,7 +4504,7 @@ impl ConsensusNetworkApi {
         &mut self,
         context: PendingVoteAdmissionContext,
         admission: &crate::PbftVoteAdmissionWithSlashingResult,
-    ) {
+    ) -> Vec<u64> {
         let add = admission.transaction.outcome.add_outcome.as_ref();
         let intents = admission
             .transaction
@@ -4196,20 +4537,21 @@ impl ConsensusNetworkApi {
                     .any(|intent| matches!(intent, PbftVoteProgressIntent::GossipVote { .. })),
             admission_report_slashing: admission.slashing_transaction_effect.is_some(),
         };
-        self.enqueue_vote_admission_follow_ups(context, &result);
+        self.enqueue_vote_admission_follow_ups(context, &result)
     }
 
     fn enqueue_vote_admission_follow_ups(
         &mut self,
         context: PendingVoteAdmissionContext,
         result: &NetworkEffectResult,
-    ) {
+    ) -> Vec<u64> {
+        let mut effect_ids = Vec::new();
         let bundle = context.bundle.clone();
         if result.admission_report_slashing {
             if let Some(member) = bundle {
                 self.cancel_vote_bundle(member.bundle_id);
             }
-            return;
+            return effect_ids;
         }
         let vote_payload = context.vote_rlp;
         let block_payload = context.pbft_block_rlp;
@@ -4218,26 +4560,7 @@ impl ConsensusNetworkApi {
         {
             0
         } else {
-            let block_effect_id = self.enqueue_effect(NetworkEffect {
-                effect_id: 0,
-                source_payload_id: context.source_payload_id,
-                transport_lane: context.transport_lane,
-                kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
-                peer_id: context.peer_id,
-                packet_kind: 0,
-                payload_bytes: block_payload.clone(),
-                related_payload_bytes: Vec::new(),
-                exclude_peers: Vec::new(),
-                object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,
-                object_hash: context.pbft_block_hash,
-                sync_kind: 0,
-                sync_start: 0,
-                reason_code: 0,
-                dependency_id: 0,
-                period: context.pbft_block_period,
-                round: 0,
-            });
-            self.enqueue_effect(NetworkEffect {
+            let effect_id = self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
                 source_payload_id: context.source_payload_id,
                 transport_lane: context.transport_lane,
@@ -4252,15 +4575,16 @@ impl ConsensusNetworkApi {
                 sync_kind: 0,
                 sync_start: 0,
                 reason_code: 0,
-                dependency_id: block_effect_id,
+                dependency_id: 0,
                 period: context.pbft_block_period,
                 round: 0,
             });
-            block_effect_id
+            effect_ids.push(effect_id);
+            0
         };
 
         if result.admission_mark_vote_known || result.admission_already_present {
-            self.enqueue_effect(NetworkEffect {
+            effect_ids.push(self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
                 source_payload_id: context.source_payload_id,
                 transport_lane: context.transport_lane,
@@ -4278,11 +4602,11 @@ impl ConsensusNetworkApi {
                 dependency_id: 0,
                 period: 0,
                 round: 0,
-            });
+            }));
         }
 
         if result.admission_accepted && result.admission_gossip_vote && context.allow_gossip {
-            self.enqueue_effect(NetworkEffect {
+            effect_ids.push(self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
                 source_payload_id: context.source_payload_id,
                 transport_lane: context.transport_lane,
@@ -4300,12 +4624,17 @@ impl ConsensusNetworkApi {
                 dependency_id: block_effect_id,
                 period: 0,
                 round: 0,
-            });
+            }));
         }
 
         if let Some(member) = bundle {
-            self.record_vote_bundle_admission(member, result.admission_accepted);
+            if let Some(effect_id) =
+                self.record_vote_bundle_admission(member, result.admission_accepted)
+            {
+                effect_ids.push(effect_id);
+            }
         }
+        effect_ids
     }
 
     fn enqueue_pillar_vote_admission_effect(
@@ -4474,19 +4803,23 @@ impl ConsensusNetworkApi {
     /// Records one exact-ID-correlated bundle admission result and emits one
     /// accepted-only optimized bundle gossip effect after every member has
     /// completed. Empty accepted sets intentionally produce no effect.
-    fn record_vote_bundle_admission(&mut self, member: PendingVoteBundleMember, accepted: bool) {
+    fn record_vote_bundle_admission(
+        &mut self,
+        member: PendingVoteBundleMember,
+        accepted: bool,
+    ) -> Option<u64> {
         let Some(bundle) = self.pending_vote_bundles.get_mut(&member.bundle_id) else {
-            return;
+            return None;
         };
         if member.index >= bundle.completed.len() || bundle.completed[member.index] {
-            return;
+            return None;
         }
         bundle.completed[member.index] = true;
         if accepted {
             bundle.accepted_votes[member.index] = Some(member.vote);
         }
         if bundle.completed.iter().any(|completed| !completed) {
-            return;
+            return None;
         }
 
         let bundle = self
@@ -4499,10 +4832,10 @@ impl ConsensusNetworkApi {
             .flatten()
             .collect::<Vec<_>>();
         let Some(first) = accepted_votes.first() else {
-            return;
+            return None;
         };
         let Ok(inspection) = inspect_canonical_pbft_vote(&first.vote_rlp) else {
-            return;
+            return None;
         };
         let Ok(payload) = build_optimized_pbft_vote_bundle(
             &accepted_votes,
@@ -4511,9 +4844,9 @@ impl ConsensusNetworkApi {
             inspection.round,
             inspection.step,
         ) else {
-            return;
+            return None;
         };
-        self.enqueue_effect(NetworkEffect {
+        Some(self.enqueue_effect(NetworkEffect {
             effect_id: 0,
             source_payload_id: bundle.source_payload_id,
             transport_lane: bundle.transport_lane,
@@ -4531,7 +4864,15 @@ impl ConsensusNetworkApi {
             dependency_id: 0,
             period: inspection.period,
             round: inspection.round,
-        });
+        }))
+    }
+
+    /// Removes only the operation-owned transport effects identified by an
+    /// application-root composition that failed before source-scoped drain.
+    fn cancel_pending_effects(&mut self, effect_ids: &[u64]) {
+        let effect_ids = effect_ids.iter().copied().collect::<HashSet<_>>();
+        self.pending_effects
+            .retain(|effect| !effect_ids.contains(&effect.effect_id));
     }
 
     /// Cancels one bundle aggregation session and removes admission effects
@@ -6484,6 +6825,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn canonical_vote_packet_decoder_preserves_vote_and_optional_chain_facts() {
+        let vote = canonical_bundle_vote(0x31);
+        let mut packet = RlpStream::new_list(2);
+        packet.append_raw(&vote.vote_rlp, 1);
+        packet.append(&0_u8);
+        let decoded = decode_pbft_vote_packet(&packet.out()).unwrap();
+        assert_eq!(decoded.vote_rlp, vote.vote_rlp);
+        assert!(decoded.pbft_block_rlp.is_none());
+        assert_eq!(decoded.peer_pbft_chain_size, None);
+
+        let block = signed_pbft_block(0x32, 10, 100);
+        let mut optional = RlpStream::new_list(2);
+        optional.append_raw(&block, 1);
+        optional.append(&44_u64);
+        let mut packet = RlpStream::new_list(2);
+        packet.append_raw(&vote.vote_rlp, 1);
+        packet.append_raw(&optional.out(), 1);
+        let decoded = decode_pbft_vote_packet(&packet.out()).unwrap();
+        assert_eq!(decoded.pbft_block_rlp, Some(block));
+        assert_eq!(decoded.peer_pbft_chain_size, Some(44));
+    }
+
+    #[test]
+    fn canonical_optimized_vote_packet_decoder_reconstructs_signed_votes() {
+        let vote = canonical_bundle_vote(0x33);
+        let inspected = inspect_canonical_pbft_vote(&vote.vote_rlp).unwrap();
+        let optimized = build_optimized_pbft_vote_bundle(
+            std::slice::from_ref(&vote),
+            inspected.block_hash,
+            inspected.period,
+            inspected.round,
+            inspected.step,
+        )
+        .unwrap();
+        let mut packet = RlpStream::new_list(1);
+        packet.append_raw(&optimized.bundle_rlp, 1);
+
+        let decoded = decode_pbft_votes_bundle_packet(&packet.out()).unwrap();
+        assert_eq!(decoded, vec![vote.vote_rlp]);
+        assert!(decode_pbft_votes_bundle_packet(&[0xc0]).is_err());
+    }
+
+    #[test]
+    fn canonical_optimized_pillar_packet_wrapper_decodes_without_cpp_objects() {
+        let votes = vec![
+            signed_pillar_vote(0x34, 20, 8),
+            signed_pillar_vote(0x35, 20, 8),
+        ];
+        let optimized = encode_optimized_pillar_votes_bundle_rlp(&votes).unwrap();
+        let mut packet = RlpStream::new_list(1);
+        packet.append_raw(&optimized, 1);
+        let inner = decode_single_wrapped_packet(&packet.out()).unwrap();
+        assert_eq!(
+            decode_optimized_pillar_votes_bundle_rlp(&inner).unwrap(),
+            votes
+        );
+    }
+
     fn signed_pbft_block_with_options(
         seed: u8,
         period: u64,
@@ -8099,10 +8499,46 @@ mod tests {
         let mut api = api.lock().unwrap();
         assert!(api.pending_vote_admissions.is_empty());
         assert!(api.pending_vote_bundles.is_empty());
-        assert!(api.drain_work(6, 10).effects.iter().all(|effect| {
-            effect.kind != NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
-                || effect.object_kind != NETWORK_OBJECT_KIND_PBFT_VOTE
-        }));
+        assert!(api.drain_work(6, 10).effects.is_empty());
+    }
+
+    #[test]
+    fn bundle_failure_cleanup_cancels_accepted_prefix_followups() {
+        let mut api = ConsensusNetworkApi::new();
+        let reference = vote_fact(10, 3, 2, PbftVoteType::Soft);
+        let votes = [canonical_bundle_vote(0x48), canonical_bundle_vote(0x49)];
+        let decisions = api.ingest_pbft_vote_bundle(
+            reference,
+            vec![reference; votes.len()],
+            votes.iter().map(bundle_context).collect(),
+        );
+        let first = api
+            .take_native_vote_admission(decisions[0].application_effect_id)
+            .expect("first bundle admission");
+        let bundle_id = first.bundle.as_ref().expect("bundle member").bundle_id;
+        let result = NetworkEffectResult {
+            effect_id: 0,
+            kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+            peer_id: first.peer_id,
+            packet_kind: 0,
+            object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+            object_hash: first.vote_hash,
+            status: NETWORK_EFFECT_RESULT_STATUS_OK,
+            diagnostic: String::new(),
+            admission_accepted: true,
+            admission_already_present: false,
+            admission_mark_vote_known: true,
+            admission_gossip_vote: true,
+            admission_report_slashing: false,
+        };
+        let follow_up_effect_ids = api.enqueue_vote_admission_follow_ups(first, &result);
+        assert!(!follow_up_effect_ids.is_empty());
+
+        api.cancel_vote_bundle(bundle_id);
+        api.cancel_pending_effects(&follow_up_effect_ids);
+        assert!(api.pending_vote_admissions.is_empty());
+        assert!(api.pending_vote_bundles.is_empty());
+        assert!(api.drain_work(6, 10).effects.is_empty());
     }
 
     #[test]
@@ -8162,7 +8598,7 @@ mod tests {
     }
 
     #[test]
-    fn post_admission_route_orders_block_publication_before_gossip() {
+    fn post_admission_route_emits_transport_follow_ups_after_native_block_publication() {
         let mut api = ConsensusNetworkApi::new();
         let mut context = vote_context();
         context.transport_lane = 6;
@@ -8203,22 +8639,6 @@ mod tests {
         result.admission_gossip_vote = true;
         api.report_effect_results(vec![result]);
 
-        let block_publication = api.drain_work(6, 10);
-        assert_eq!(block_publication.effects.len(), 1);
-        assert_eq!(
-            block_publication.effects[0].kind,
-            NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
-        );
-        assert_eq!(
-            block_publication.effects[0].object_kind,
-            NETWORK_OBJECT_KIND_PBFT_BLOCK
-        );
-        assert_eq!(block_publication.effects[0].dependency_id, 0);
-        api.report_effect_results(vec![effect_result(
-            &block_publication.effects[0],
-            NETWORK_EFFECT_RESULT_STATUS_OK,
-        )]);
-
         let dependents = api.drain_work(6, 10);
         assert_eq!(dependents.effects.len(), 2);
         assert_eq!(
@@ -8229,10 +8649,7 @@ mod tests {
             dependents.effects[0].object_kind,
             NETWORK_OBJECT_KIND_PBFT_BLOCK
         );
-        assert_eq!(
-            dependents.effects[0].dependency_id,
-            block_publication.effects[0].effect_id
-        );
+        assert_eq!(dependents.effects[0].dependency_id, 0);
         assert_eq!(
             dependents.effects[1].kind,
             NETWORK_EFFECT_KIND_GOSSIP_PACKET
@@ -8254,10 +8671,7 @@ mod tests {
             vec![0xc2, 4, 5]
         );
         assert_eq!(dependents.effects[1].source_payload_id, 79);
-        assert_eq!(
-            dependents.effects[1].dependency_id,
-            block_publication.effects[0].effect_id
-        );
+        assert_eq!(dependents.effects[1].dependency_id, 0);
     }
 
     #[test]
@@ -8287,7 +8701,7 @@ mod tests {
         assert_eq!(dependent.effects.len(), 2);
         assert_eq!(
             dependent.effects[0].kind,
-            NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+            NETWORK_EFFECT_KIND_MARK_PEER_KNOWN
         );
         assert_eq!(
             dependent.effects[0].object_kind,
@@ -8327,7 +8741,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_block_publication_cancels_block_known_and_gossip_effects() {
+    fn failed_block_known_ack_does_not_cancel_gossip_after_native_publication() {
         let mut api = ConsensusNetworkApi::new();
         let mut context = vote_context();
         context.enqueue_admission = true;
@@ -8346,19 +8760,20 @@ mod tests {
         admission_result.admission_gossip_vote = true;
         api.report_effect_results(vec![admission_result]);
 
-        let publication = api.drain_work(6, 1);
+        let block_known = api.drain_work(6, 1);
         assert_eq!(
-            publication.effects[0].object_kind,
+            block_known.effects[0].object_kind,
             NETWORK_OBJECT_KIND_PBFT_BLOCK
         );
         api.report_effect_results(vec![effect_result(
-            &publication.effects[0],
+            &block_known.effects[0],
             NETWORK_EFFECT_RESULT_STATUS_FAILED,
         )]);
 
-        let cancelled = api.drain_work(6, 10);
-        assert!(cancelled.effects.is_empty());
-        assert!(!cancelled.more_available);
+        let gossip = api.drain_work(6, 10);
+        assert_eq!(gossip.effects.len(), 1);
+        assert_eq!(gossip.effects[0].kind, NETWORK_EFFECT_KIND_GOSSIP_PACKET);
+        assert_eq!(gossip.effects[0].dependency_id, 0);
     }
 
     #[test]

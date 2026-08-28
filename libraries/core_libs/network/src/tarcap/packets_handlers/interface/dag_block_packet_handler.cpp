@@ -20,17 +20,23 @@ IDagBlockPacketHandler::IDagBlockPacketHandler(const FullNodeConfig &conf, std::
                                                network::ConsensusNetworkApiShared consensus_network_api,
 #endif
                                                const addr_t &node_addr, const std::string &logs_prefix)
-    : ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats),
+    :
+#ifdef RUSTAXA_ENABLE
+      RustConsensusTransportPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_chain),
+                                          std::move(consensus_status), std::move(consensus_network_api), node_addr,
+                                          logs_prefix)
+#else
+      ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats),
 #ifndef RUSTAXA_ENABLE
                               std::move(pbft_syncing_state),
 #endif
                               std::move(pbft_chain),
 #ifndef RUSTAXA_ENABLE
                               std::move(pbft_mgr), std::move(dag_mgr), std::move(db),
-#else
-                              std::move(consensus_status), std::move(consensus_network_api),
 #endif
-                              node_addr, logs_prefix) {
+                              node_addr, logs_prefix)
+#endif
+{
 }
 
 void IDagBlockPacketHandler::onNewBlockVerified(const std::shared_ptr<DagBlock> &block, bool proposed,
@@ -38,9 +44,9 @@ void IDagBlockPacketHandler::onNewBlockVerified(const std::shared_ptr<DagBlock> 
   // If node is pbft syncing and block is not proposed by us, this is an old block that has been verified - no block
   // gossip is needed
 #ifdef RUSTAXA_ENABLE
-  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now().time_since_epoch())
-                          .count();
+  const auto now_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+          .count();
   const bool deep_pbft_syncing = rust_consensus_network_api_->pbftSyncStatus(now_ms).deep_syncing;
 #else
   const bool deep_pbft_syncing = pbft_syncing_state_->isDeepPbftSyncing();
