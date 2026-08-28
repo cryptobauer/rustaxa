@@ -136,21 +136,28 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
 
   const std::shared_ptr<PeersState> &getPeersState();
 
+  /** Sends one initial status packet through the mode-selected status operation. */
+  bool sendStatus(const dev::p2p::NodeID &peer_id, bool initial);
+  /** Sends periodic status packets through the mode-selected status operation. */
+  void sendStatusToPeers();
+  /** Starts PBFT synchronization through the mode-selected lifecycle operation. */
+  void startSyncingPbft();
+
 #ifdef RUSTAXA_ENABLE
   /** Routes one canonical PBFT vote through this capability's exact-target native egress operation. */
   network::ConsensusPacketOutcome gossipCanonicalVote(const std::vector<uint8_t> &vote_rlp,
-                                                       const std::vector<uint8_t> &proposed_block_rlp,
-                                                       bool rebroadcast, uint64_t source_payload_id);
+                                                      const std::vector<uint8_t> &proposed_block_rlp, bool rebroadcast,
+                                                      uint64_t source_payload_id);
   /** Routes one canonical optimized PBFT bundle through exact-target native egress. */
   network::ConsensusPacketOutcome gossipCanonicalVotesBundle(const std::vector<uint8_t> &votes_bundle_rlp,
-                                                              bool rebroadcast, uint64_t source_payload_id);
+                                                             bool rebroadcast, uint64_t source_payload_id);
   /** Routes one canonical pillar vote through exact-target native egress. */
   network::ConsensusPacketOutcome gossipCanonicalPillarVote(const std::vector<uint8_t> &pillar_vote_rlp,
-                                                             bool rebroadcast, uint64_t source_payload_id);
+                                                            bool rebroadcast, uint64_t source_payload_id);
   /** Routes one canonical DAG block through exact-target native egress. */
   network::ConsensusPacketOutcome gossipCanonicalDagBlock(const std::vector<uint8_t> &block_rlp,
-                                                           const std::array<uint8_t, 32> &block_hash,
-                                                           uint64_t source_payload_id);
+                                                          const std::array<uint8_t, 32> &block_hash,
+                                                          uint64_t source_payload_id);
 #endif
 
   /**

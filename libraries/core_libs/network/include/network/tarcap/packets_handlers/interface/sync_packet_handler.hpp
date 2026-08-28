@@ -1,35 +1,16 @@
 #pragma once
 
-#ifdef RUSTAXA_ENABLE
-#include "network/tarcap/packets_handlers/rust/consensus_transport_packet_handler.hpp"
-#else
 #include "network/tarcap/packets_handlers/latest/common/ext_syncing_packet_handler.hpp"
-#endif
 
 namespace taraxa::network::tarcap {
 
-class ISyncPacketHandler : public
-#ifdef RUSTAXA_ENABLE
-                           RustConsensusTransportPacketHandler
-#else
-                           ExtSyncingPacketHandler
-#endif
-{
+class ISyncPacketHandler : public ExtSyncingPacketHandler {
  public:
   ISyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                      std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-#ifndef RUSTAXA_ENABLE
-                     std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-#endif
-                     net::ConsensusQueryClient pbft_chain,
-#ifndef RUSTAXA_ENABLE
+                     std::shared_ptr<PbftSyncingState> pbft_syncing_state, std::shared_ptr<PbftChain> pbft_chain,
                      std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
-                     std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler.
-#else
-                     network::ConsensusLiveStatusProvider consensus_status,
-                     network::ConsensusNetworkApiShared consensus_network_api,
-#endif
-                     const addr_t& node_addr, const std::string& logs_prefix);
+                     std::shared_ptr<DbStorage> db, const addr_t& node_addr, const std::string& logs_prefix);
 
   /**
    * @brief Start syncing pbft if needed

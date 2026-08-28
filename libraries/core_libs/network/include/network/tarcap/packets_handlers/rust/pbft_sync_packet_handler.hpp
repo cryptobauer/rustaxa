@@ -2,7 +2,7 @@
 
 #include "common/thread_pool.hpp"
 #include "network/consensus_network_api.hpp"
-#include "network/tarcap/packets_handlers/interface/sync_packet_handler.hpp"
+#include "network/tarcap/packets_handlers/rust/consensus_transport_packet_handler.hpp"
 
 namespace taraxa::network::tarcap {
 
@@ -14,7 +14,7 @@ namespace taraxa::network::tarcap {
  * This facade retains peer state, slashing-transaction execution, pacing
  * timers, packet sends, and sync lifecycle publication.
  */
-class RustPbftSyncPacketHandler final : public ISyncPacketHandler {
+class RustPbftSyncPacketHandler final : public RustConsensusTransportPacketHandler {
  public:
   RustPbftSyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                             std::shared_ptr<TimePeriodPacketsStats> packets_stats, net::ConsensusQueryClient pbft_chain,

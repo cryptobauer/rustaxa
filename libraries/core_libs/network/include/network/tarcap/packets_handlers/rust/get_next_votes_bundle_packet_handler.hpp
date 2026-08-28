@@ -1,8 +1,6 @@
 #pragma once
 
-#include "network/consensus_network_api.hpp"
-#include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
-#include "network/tarcap/packets_handlers/latest/common/packet_handler.hpp"
+#include "network/tarcap/packets_handlers/rust/consensus_transport_packet_handler.hpp"
 #include "network/tarcap/tarcap_version.hpp"
 
 namespace taraxa::network::tarcap {
@@ -10,16 +8,18 @@ namespace taraxa::network::tarcap {
 /**
  * Rust-mode previous-round next-vote transport adapter.
  *
- * The adapter decodes only the two scalar request fields. The native network
- * service reads the shared manager period/round snapshot and owns eligibility,
+ * The adapter passes exact canonical bytes to native consensus. The native network
+ * service owns strict decoding, the shared manager period/round snapshot, eligibility,
  * vote lookup, canonical bundle validation, chunking, and ordered sends.
  * It deliberately holds no PBFT chain, vote manager, slashing manager, or
  * legacy vote-handler runtime.
  */
-class RustGetNextVotesBundlePacketHandler final : public PacketHandler {
+class RustGetNextVotesBundlePacketHandler final : public RustConsensusTransportPacketHandler {
  public:
   RustGetNextVotesBundlePacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                       std::shared_ptr<TimePeriodPacketsStats> packets_stats,
+                                      net::ConsensusQueryClient consensus_query,
+                                      network::ConsensusLiveStatusProvider consensus_status,
                                       network::ConsensusNetworkApiShared consensus_network_api,
                                       TarcapVersion transport_lane, const addr_t& node_addr,
                                       const std::string& logs_prefix = "");
@@ -30,7 +30,6 @@ class RustGetNextVotesBundlePacketHandler final : public PacketHandler {
  private:
   void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;
 
-  network::ConsensusNetworkApiShared consensus_network_api_;
   const TarcapVersion transport_lane_;
 };
 

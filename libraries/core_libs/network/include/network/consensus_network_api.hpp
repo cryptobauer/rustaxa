@@ -199,76 +199,56 @@ struct PbftSyncStartOutcome {
   bool enable_snapshot_creation = false;
 };
 
-/** Identity and retained-history facts for one initial status admission. */
-struct InitialStatusRequest {
-  uint64_t local_chain_id = 0;
-  uint64_t peer_chain_id = 0;
-  std::array<uint8_t, 32> expected_genesis_hash{};
-  std::array<uint8_t, 32> peer_genesis_hash{};
-  uint64_t local_pbft_synced_period = 0;
-  uint64_t peer_pbft_chain_size = 0;
-  bool peer_is_light_node = false;
-  uint64_t peer_light_node_history = 0;
-};
-
-struct InitialStatusOutcome {
-  uint8_t status = 0;
-  std::string error_code;
-  bool accept_peer = false;
-  bool disconnect_peer = false;
-};
-
-/** Local public facts used to plan one canonical initial or periodic status packet. */
-struct StatusEgressRequest {
-  bool initial = false;
-  uint64_t local_chain_id = 0;
-  std::array<uint8_t, 32> genesis_hash{};
-  uint32_t node_major_version = 0;
-  uint32_t node_minor_version = 0;
-  uint32_t node_patch_version = 0;
-  bool is_light_node = false;
-  uint64_t light_node_history = 0;
-  uint64_t local_pbft_chain_size = 0;
-  uint64_t local_pbft_round = 0;
-  uint64_t local_dag_level = 0;
-};
-
-struct StatusEgressOutcome {
-  uint8_t status = 0;
-  std::string error_code;
-  uint64_t peer_pbft_chain_size = 0;
-  uint64_t peer_pbft_round = 0;
-  uint64_t peer_dag_level = 0;
-  bool peer_syncing = false;
-  bool include_initial_data = false;
-  uint64_t chain_id = 0;
-  std::array<uint8_t, 32> genesis_hash{};
-  uint32_t node_major_version = 0;
-  uint32_t node_minor_version = 0;
-  uint32_t node_patch_version = 0;
-  bool is_light_node = false;
-  uint64_t light_node_history = 0;
-};
-
-/** Accepted periodic status facts used for application-owned sync follow-up selection. */
-struct StatusFollowupRequest {
+/** Canonical status packet plus the coherent local cursor and peer fact needed by native admission. */
+struct StatusPacketRequest {
   std::array<uint8_t, 64> peer_id{};
+  std::vector<uint8_t> packet_rlp;
+  bool source_peer_ready = false;
   uint64_t local_pbft_synced_period = 0;
   uint64_t local_pbft_period = 0;
   uint64_t local_pbft_round = 0;
-  uint64_t peer_pbft_chain_size = 0;
-  uint64_t peer_pbft_period = 0;
-  uint64_t peer_pbft_round = 0;
   bool peer_dag_synced = false;
 };
 
-struct StatusFollowupOutcome {
+/** Typed status admission result; C++ applies only the exact peer and transport leaves selected here. */
+struct StatusPacketReport {
+  uint8_t status = 0;
+  std::string error_code;
+  bool malicious = false;
+  bool initial = false;
+  bool accept_peer = false;
+  bool disconnect_peer = false;
+  uint64_t peer_pbft_chain_size = 0;
+  uint64_t peer_pbft_period = 0;
+  uint64_t peer_pbft_round = 0;
+  uint64_t peer_dag_level = 0;
+  bool peer_syncing = false;
+  bool peer_is_light_node = false;
+  uint64_t peer_light_node_history = 0;
+  uint32_t node_major_version = 0;
+  uint32_t node_minor_version = 0;
+  uint32_t node_patch_version = 0;
   bool request_pbft_sync = false;
   bool request_pending_dag_blocks = false;
   bool request_next_votes = false;
   uint64_t next_votes_period = 0;
   uint64_t next_votes_round = 0;
+  std::vector<uint8_t> next_votes_request_rlp;
   uint64_t sync_generation = 0;
+};
+
+/** Dynamic local facts used with immutable native protocol configuration to build one canonical status packet. */
+struct StatusPacketBuildRequest {
+  bool initial = false;
+  uint64_t local_pbft_chain_size = 0;
+  uint64_t local_pbft_round = 0;
+  uint64_t local_dag_level = 0;
+};
+
+struct StatusPacketBuildReport {
+  uint8_t status = 0;
+  std::string error_code;
+  std::vector<uint8_t> packet_rlp;
 };
 
 /** Physical tarcap leaves for one native pillar-vote bundle response. */
@@ -296,18 +276,6 @@ struct PbftSyncRequestExecutor {
 
 /** Terminal native decision for one Get-PBFT-sync request. */
 struct PbftSyncRequestOutcome {
-  uint8_t status = 0;
-  uint32_t queued_effect_count = 0;
-  std::string error_code;
-};
-
-/** Physical tarcap leaf for one native previous-round next-vote response. */
-struct PbftNextVotesBundleExecutor {
-  std::function<bool(const std::vector<uint8_t>&)> send_bundle;
-};
-
-/** Terminal native decision for one previous-round next-vote request. */
-struct PbftNextVotesBundleRequestOutcome {
   uint8_t status = 0;
   uint32_t queued_effect_count = 0;
   std::string error_code;
@@ -517,18 +485,10 @@ class ConsensusNetworkApi final {
                                               const std::vector<uint8_t>& request_rlp, uint64_t source_payload_id,
                                               const PbftSyncRequestExecutor& executor);
 
-  /**
-   * Routes and executes one previous-round next-vote request on its transport lane.
-   *
-   * Rust owns request eligibility, the live PBFT cursor snapshot, verified-vote
-   * lookup, bundle validation, chunking, and send ordering. The caller supplies
-   * only peer request fields and physical packet transport.
-   */
-  PbftNextVotesBundleRequestOutcome servePbftNextVotesBundleRequest(uint32_t transport_lane,
-                                                                    const std::array<uint8_t, 64>& peer_id,
-                                                                    uint64_t peer_period, uint64_t peer_round,
-                                                                    uint64_t source_payload_id,
-                                                                    const PbftNextVotesBundleExecutor& executor);
+  /** Routes canonical get-next-votes bytes and executes only exact native transport effects. */
+  ConsensusPacketOutcome ingestPbftNextVotesRequest(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
+                                                    uint64_t source_payload_id, const std::vector<uint8_t>& packet_rlp,
+                                                    const ConsensusTransportExecutor& executor);
 
   /**
    * Admits one latest-tarcap proposed-block bundle into native PBFT state.
@@ -591,14 +551,11 @@ class ConsensusNetworkApi final {
   /** Atomically selects a peer and optionally starts one native PBFT-sync generation. */
   PbftSyncStartOutcome beginPbftSync(const PbftSyncStartRequest& request) const;
 
-  /** Admits immutable identity/history facts from one initial status packet. */
-  InitialStatusOutcome admitInitialStatus(const InitialStatusRequest& request) const;
+  /** Strictly decodes one canonical status packet and returns exact peer bookkeeping and sync leaves. */
+  StatusPacketReport ingestStatusPacket(const StatusPacketRequest& request) const;
 
-  /** Plans canonical initial or periodic status payload fields from native lifecycle state. */
-  StatusEgressOutcome planStatusEgress(const StatusEgressRequest& request) const;
-
-  /** Selects exact sync follow-up operations after one accepted periodic status packet. */
-  StatusFollowupOutcome planStatusFollowup(const StatusFollowupRequest& request) const;
+  /** Builds one complete canonical status packet from native configuration and dynamic local facts. */
+  StatusPacketBuildReport buildStatusPacket(const StatusPacketBuildRequest& request) const;
 
   /**
    * Constructs and routes one application-originated consensus packet family.
@@ -614,9 +571,9 @@ class ConsensusNetworkApi final {
 
   /** Routes one complete canonical transaction packet and executes only peer-known and physical gossip leaves. */
   TransactionPacketOutcome ingestTransactionPacket(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
-                                                    uint64_t source_payload_id, const std::vector<uint8_t>& packet_rlp,
-                                                    const FullNodeConfig& config,
-                                                    const ConsensusTransportExecutor& executor);
+                                                   uint64_t source_payload_id, const std::vector<uint8_t>& packet_rlp,
+                                                   const FullNodeConfig& config,
+                                                   const ConsensusTransportExecutor& executor);
 
   /** Serves one canonical get-DAG-sync request from application-owned DAG/transaction bytes. */
   GetDagSyncOutcome serveGetDagSyncRequest(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,
@@ -692,8 +649,7 @@ class ConsensusNetworkApi final {
   };
   std::unique_lock<std::mutex> lockTransportLane(uint32_t transport_lane);
   TransportDrainOutcome drainAndExecuteTransportEffects(uint32_t transport_lane, uint64_t source_payload_id,
-                                                        bool source_scoped,
-                                                        const ConsensusTransportExecutor& executor);
+                                                        bool source_scoped, const ConsensusTransportExecutor& executor);
   bool submitSlashingTransaction(size_t wallet_index, const std::array<uint8_t, 32>& nonce,
                                  const std::array<uint8_t, 20>& contract_address, const std::array<uint8_t, 32>& value,
                                  uint64_t gas_limit, const std::vector<uint8_t>& call_data,

@@ -514,24 +514,42 @@ pub mod rustaxa_ffi {
         outcomes: Vec<NetworkPillarVoteAdmissionOutcome>,
     }
 
-    /// Initial status identity and history facts for native peer admission.
-    struct NetworkInitialStatusRequest {
-        local_chain_id: u64,
-        peer_chain_id: u64,
-        expected_genesis_hash: [u8; 32],
-        peer_genesis_hash: [u8; 32],
+    /// Complete canonical status ingress plus mutable local follow-up facts.
+    struct NetworkStatusPacketRequest {
+        peer_id: [u8; 64],
+        packet_rlp: Vec<u8>,
+        source_peer_ready: bool,
         local_pbft_synced_period: u64,
-        peer_pbft_chain_size: u64,
-        peer_is_light_node: bool,
-        peer_light_node_history: u64,
+        local_pbft_period: u64,
+        local_pbft_round: u64,
+        peer_dag_synced: bool,
     }
 
-    /// Native admission decision for one initial status packet.
-    struct NetworkInitialStatusOutcome {
+    /// Typed peer bookkeeping and exact follow-up transport for one status packet.
+    struct NetworkStatusPacketReport {
         status: u8,
         error_code: String,
+        malicious: bool,
+        initial: bool,
         accept_peer: bool,
         disconnect_peer: bool,
+        peer_pbft_chain_size: u64,
+        peer_pbft_period: u64,
+        peer_pbft_round: u64,
+        peer_dag_level: u64,
+        peer_syncing: bool,
+        peer_is_light_node: bool,
+        peer_light_node_history: u64,
+        node_major_version: u32,
+        node_minor_version: u32,
+        node_patch_version: u32,
+        request_pbft_sync: bool,
+        request_pending_dag_blocks: bool,
+        request_next_votes: bool,
+        next_votes_period: u64,
+        next_votes_round: u64,
+        next_votes_request_rlp: Vec<u8>,
+        sync_generation: u64,
     }
 
     /// Compact peer candidate for PBFT sync-start planning.
@@ -577,60 +595,27 @@ pub mod rustaxa_ffi {
         enable_snapshot_creation: bool,
     }
 
-    /// One accepted periodic status projection for native follow-up decisions.
-    struct NetworkStatusFollowupRequest {
-        peer_id: [u8; 64],
-        local_pbft_synced_period: u64,
-        local_pbft_period: u64,
-        local_pbft_round: u64,
-        peer_pbft_chain_size: u64,
-        peer_pbft_period: u64,
-        peer_pbft_round: u64,
-        peer_dag_synced: bool,
-    }
-
-    /// Application-owned work selected after an accepted periodic status packet.
-    struct NetworkStatusFollowupOutcome {
-        request_pbft_sync: bool,
-        request_pending_dag_blocks: bool,
-        request_next_votes: bool,
-        next_votes_period: u64,
-        next_votes_round: u64,
-        sync_generation: u64,
-    }
-
-    /// Local facts for one canonical status payload; native state supplies the
-    /// active/deep-sync bit, which callers cannot override.
-    struct NetworkStatusEgressRequest {
+    /// Mutable status fields; immutable identity is application-owned.
+    struct NetworkStatusPacketBuildRequest {
         initial: bool,
-        local_chain_id: u64,
-        genesis_hash: [u8; 32],
-        node_major_version: u32,
-        node_minor_version: u32,
-        node_patch_version: u32,
-        is_light_node: bool,
-        light_node_history: u64,
         local_pbft_chain_size: u64,
         local_pbft_round: u64,
         local_dag_level: u64,
     }
 
-    /// Canonical fields selected for one initial or periodic status payload.
-    struct NetworkStatusEgressOutcome {
+    /// Exact canonical legacy status payload ready for packet wrapping.
+    struct NetworkStatusPacketBuildOutcome {
         status: u8,
         error_code: String,
-        peer_pbft_chain_size: u64,
-        peer_pbft_round: u64,
-        peer_dag_level: u64,
-        peer_syncing: bool,
-        include_initial_data: bool,
-        chain_id: u64,
-        genesis_hash: [u8; 32],
-        node_major_version: u32,
-        node_minor_version: u32,
-        node_patch_version: u32,
-        is_light_node: bool,
-        light_node_history: u64,
+        packet_rlp: Vec<u8>,
+    }
+
+    /// Complete canonical get-next-votes request with transport correlation.
+    struct NetworkPbftNextVotesBundlePacketRequest {
+        transport_lane: u32,
+        peer_id: [u8; 64],
+        source_payload_id: u64,
+        packet_rlp: Vec<u8>,
     }
 
     /// Exact native lifecycle command. Kinds 0-4 consume source/time/generation/
@@ -1250,11 +1235,7 @@ pub mod rustaxa_ffi {
         ) -> Result<NetworkPillarVotePacketReport>;
         pub fn consensus_network_ingest_pbft_next_votes_bundle_request(
             self: &BridgeConsensusNetworkApi,
-            transport_lane: u32,
-            peer_id: [u8; 64],
-            peer_period: u64,
-            peer_round: u64,
-            source_payload_id: u64,
+            request: NetworkPbftNextVotesBundlePacketRequest,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_ingest_pillar_votes_bundle_request(
             self: &BridgeConsensusNetworkApi,
@@ -1297,18 +1278,14 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             request: NetworkPbftSyncStartRequest,
         ) -> Result<NetworkPbftSyncStartOutcome>;
-        pub fn consensus_network_process_status_followup(
+        pub fn consensus_network_ingest_status_packet(
             self: &BridgeConsensusNetworkApi,
-            request: NetworkStatusFollowupRequest,
-        ) -> Result<NetworkStatusFollowupOutcome>;
-        pub fn consensus_network_status_egress(
+            request: NetworkStatusPacketRequest,
+        ) -> Result<NetworkStatusPacketReport>;
+        pub fn consensus_network_build_status_packet(
             self: &BridgeConsensusNetworkApi,
-            request: NetworkStatusEgressRequest,
-        ) -> Result<NetworkStatusEgressOutcome>;
-        pub fn consensus_network_admit_initial_status(
-            self: &BridgeConsensusNetworkApi,
-            request: NetworkInitialStatusRequest,
-        ) -> Result<NetworkInitialStatusOutcome>;
+            request: NetworkStatusPacketBuildRequest,
+        ) -> Result<NetworkStatusPacketBuildOutcome>;
         pub fn consensus_network_apply_pbft_sync_command(
             self: &BridgeConsensusNetworkApi,
             request: NetworkPbftSyncCommand,

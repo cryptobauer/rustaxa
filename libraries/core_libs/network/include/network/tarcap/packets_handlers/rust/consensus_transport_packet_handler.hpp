@@ -1,8 +1,5 @@
 #pragma once
 
-#include <chrono>
-#include <mutex>
-
 #include "network/consensus_network_api.hpp"
 #include "network/consensus_query.hpp"
 #include "network/tarcap/packets_handlers/latest/common/packet_handler.hpp"
@@ -29,10 +26,13 @@ class RustConsensusTransportPacketHandler : public PacketHandler {
   RustConsensusTransportPacketHandler& operator=(const RustConsensusTransportPacketHandler&) = delete;
   RustConsensusTransportPacketHandler& operator=(RustConsensusTransportPacketHandler&&) = delete;
 
+  /** Selects and starts one native PBFT-sync generation, then executes its exact initial request. */
+  void startSyncingPbft();
+
  protected:
+  /** Sends one exact PBFT-sync request to the peer selected by the active native generation. */
+  bool syncPeerPbft(PbftPeriod request_period);
   void requestPendingDagBlocks(std::shared_ptr<TaraxaPeer> peer = nullptr);
-  bool requestPbftNextVotesAtPeriodRound(const dev::p2p::NodeID& peer_id, PbftPeriod peer_pbft_period,
-                                         PbftRound peer_pbft_round);
   /** Returns the shared exact-id transport executor used by every native packet family. */
   network::ConsensusTransportExecutor consensusTransportExecutor();
   /** Snapshots immutable socket-owned eligibility/known facts for exact native object probes. */
@@ -43,21 +43,11 @@ class RustConsensusTransportPacketHandler : public PacketHandler {
   /** Builds the plain native request shared by vote and pillar packet adapters. */
   network::ConsensusPacketRequest consensusPacketRequest(const threadpool::PacketData& packet_data,
                                                          const std::shared_ptr<TaraxaPeer>& peer,
-                                                         uint32_t transport_lane,
-                                                         bool validate_max_round_step) const;
+                                                         uint32_t transport_lane, bool validate_max_round_step) const;
 
   net::ConsensusQueryClient pbft_chain_;
   network::ConsensusLiveStatusProvider consensus_status_;
   network::ConsensusNetworkApiShared rust_consensus_network_api_;
-
- private:
-  static constexpr auto kVoteSyncRequestInterval = std::chrono::seconds(10);
-  bool tryReservePbftSyncRequest();
-  bool tryReserveNextVotesSyncRequest();
-
-  mutable std::mutex sync_request_mutex_;
-  std::chrono::steady_clock::time_point last_pbft_sync_request_ = std::chrono::steady_clock::now();
-  std::chrono::steady_clock::time_point last_next_votes_sync_request_ = std::chrono::steady_clock::now();
 };
 
 }  // namespace taraxa::network::tarcap

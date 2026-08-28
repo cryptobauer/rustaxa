@@ -817,7 +817,15 @@ inside the transport-lane lock; native planning then owns known/sync filtering, 
 complete packet construction, exact targets, and dependent known marks. The shared executor no longer wraps vote or
 pillar packets or selects gossip peers. Rust-mode application observers and ingress rebroadcasts use the same prepared
 egress route, while the untouched object hierarchy remains source-selected for pure-C++ mode. The residual audit keeps
-`CRW-N01` active solely for latest-status and get-next-votes scalar ingress decoding; blocked `CRW-E02` is not started.
+The latest `CRW-N01` checkpoint cuts over latest status and get-next-votes. Native operations strictly decode their complete
+canonical request bytes, validate immutable chain/genesis/version/light-node identity injected once at application
+bootstrap, construct complete status and vote-bundle packet bytes, and return typed peer-bookkeeping or exact-target
+transport reports. Rust-mode status, DAG-sync, and PBFT-sync adapters derive only from the physical transport base;
+the legacy `ISyncPacketHandler` and latest status/get-next implementations remain source-selected for pure-C++ mode.
+Network and tarcap no longer recover Rust behavior through compatibility-handler casts, and C++ no longer throttles
+or acknowledges unsent native sync decisions. The all-handler audit leaves one exact Rust-mode residual:
+`GetPillarVotesBundlePacketHandler` still decodes the request period and pillar-block hash in C++ before invoking the
+native response route. `CRW-N01` remains active for that family; blocked `CRW-E02` is not started.
 
 ### 7. Contract DAG and transaction shims
 

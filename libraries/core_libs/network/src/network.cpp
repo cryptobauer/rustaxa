@@ -338,9 +338,7 @@ void Network::registerPeriodicEvents(
   // Send status packet
   auto sendStatus = [this]() {
     for (auto &tarcap : tarcaps_) {
-      auto status_packet_handler = tarcap.second->getSpecificHandler<network::tarcap::ISyncPacketHandler>(
-          network::SubprotocolPacketType::kStatusPacket);
-      status_packet_handler->sendStatusToPeers();
+      tarcap.second->sendStatusToPeers();
     }
   };
   periodic_events_tp_.post_loop({4000}, sendStatus);
@@ -452,8 +450,7 @@ void Network::gossipVoteBytes(const std::vector<uint8_t> &vote_rlp, const std::v
 void Network::gossipVotesBundleBytes(const std::vector<uint8_t> &votes_bundle_rlp, bool rebroadcast,
                                      uint64_t source_payload_id) {
   for (const auto &tarcap : tarcaps_) {
-    const auto outcome =
-        tarcap.second->gossipCanonicalVotesBundle(votes_bundle_rlp, rebroadcast, source_payload_id);
+    const auto outcome = tarcap.second->gossipCanonicalVotesBundle(votes_bundle_rlp, rebroadcast, source_payload_id);
     if (outcome.status != 0) {
       throw std::runtime_error("Native PBFT vote-bundle egress failed: " + outcome.error_code);
     }

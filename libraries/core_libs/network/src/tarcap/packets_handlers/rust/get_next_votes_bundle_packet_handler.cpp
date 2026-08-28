@@ -1,42 +1,35 @@
 #include "network/tarcap/packets_handlers/rust/get_next_votes_bundle_packet_handler.hpp"
 
-#include <stdexcept>
-
 namespace taraxa::network::tarcap {
+namespace {
+
+constexpr uint8_t kMalformedPacket = 11;
+
+}  // namespace
 
 RustGetNextVotesBundlePacketHandler::RustGetNextVotesBundlePacketHandler(
     const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
-    std::shared_ptr<TimePeriodPacketsStats> packets_stats, network::ConsensusNetworkApiShared consensus_network_api,
+    std::shared_ptr<TimePeriodPacketsStats> packets_stats, net::ConsensusQueryClient consensus_query,
+    network::ConsensusLiveStatusProvider consensus_status, network::ConsensusNetworkApiShared consensus_network_api,
     TarcapVersion transport_lane, const addr_t& node_addr, const std::string& logs_prefix)
-    : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr,
-                    logs_prefix + "GET_NEXT_VOTES_BUNDLE_PH"),
-      consensus_network_api_(std::move(consensus_network_api)),
-      transport_lane_(transport_lane) {
-  if (!consensus_network_api_) {
-    throw std::invalid_argument("Rust next-votes handler requires consensus network API");
-  }
-}
+    : RustConsensusTransportPacketHandler(conf, std::move(peers_state), std::move(packets_stats),
+                                          std::move(consensus_query), std::move(consensus_status),
+                                          std::move(consensus_network_api), node_addr,
+                                          logs_prefix + "GET_NEXT_VOTES_BUNDLE_PH"),
+      transport_lane_(transport_lane) {}
 
 RustGetNextVotesBundlePacketHandler::~RustGetNextVotesBundlePacketHandler() = default;
 
 void RustGetNextVotesBundlePacketHandler::process(const threadpool::PacketData& packet_data,
                                                   const std::shared_ptr<TaraxaPeer>& peer) {
-  const auto packet = decodePacketRlp<GetNextVotesBundlePacket>(packet_data.rlp_);
-  const auto peer_id = peer->getId();
-  const auto outcome = consensus_network_api_->servePbftNextVotesBundleRequest(
-      static_cast<uint32_t>(transport_lane_), peer_id.asArray(), packet.peer_pbft_period, packet.peer_pbft_round,
-      packet_data.id_,
-      network::PbftNextVotesBundleExecutor{
-          .send_bundle =
-              [this, peer_id](const std::vector<uint8_t>& payload) {
-                if (!peers_state_->getPeer(peer_id)) {
-                  return false;
-                }
-                dev::RLPStream packet(1);
-                packet.appendRaw(dev::bytes(payload.begin(), payload.end()));
-                return sealAndSend(peer_id, SubprotocolPacketType::kVotesBundlePacket, packet.invalidate());
-              },
-      });
+  const auto outcome = rust_consensus_network_api_->ingestPbftNextVotesRequest(
+      static_cast<uint32_t>(transport_lane_), peer->getId().asArray(), packet_data.id_,
+      packet_data.rlp_.data().toBytes(), consensusTransportExecutor());
+
+  if (outcome.status == kMalformedPacket) {
+    throw PacketProcessingException("Native get-next-votes admission rejected malformed packet: " + outcome.error_code,
+                                    dev::p2p::DisconnectReason::BadProtocol);
+  }
 
   if (outcome.status != 0 && outcome.queued_effect_count == 0) {
     LOG(log_dg_) << "Native next-votes request produced no network work: " << outcome.error_code;

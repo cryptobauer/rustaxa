@@ -3347,7 +3347,7 @@ EVM/`state_db` execution remain leaf C++ boundaries.
 
 | ID | Status | Work | Unblock condition | Complete when |
 | --- | --- | --- | --- | --- |
-| `CRW-N01` | `active` | Implement application-owned network ingress/egress pipelines, finish PBFT gossip effect-drain integration, fix deferred vote duplicate-with-block delivery, and migrate consensus routing/queueing decisions out of tarcap handlers. | Aggressive network consensus cutover is authorized in `PLAN.md`; coordinate with `CRW-12` and `CRW-16`. | Rust owns packet inspection, admission/routing, consensus queues, peer/gossip/send decisions, typed effects, and result validation; C++ tarcap owns only socket/peer mechanics, wrapping, physical transport/disconnect execution, and lane scheduling. |
+| `CRW-N01` | `active` | Implement application-owned network ingress/egress pipelines, finish PBFT gossip effect-drain integration, fix deferred vote duplicate-with-block delivery, and migrate consensus routing/queueing decisions out of tarcap handlers. | Aggressive network consensus cutover is authorized in `PLAN.md`; coordinate with `CRW-12` and `CRW-16`. The exact remaining family is Rust-mode `GetPillarVotesBundlePacketHandler` scalar request decoding/response routing. | Rust owns packet inspection, admission/routing, consensus queues, peer/gossip/send decisions, typed effects, and result validation; C++ tarcap owns only socket/peer mechanics, wrapping, physical transport/disconnect execution, and lane scheduling. |
 | `CRW-E01` | `complete` | Contract the external EVM/StateAPI boundary: move execution orchestration, canonical rewards payloads, result/receipt validation, commit ordering, recovery, and publication into Rust while retaining concrete EVM and `state_db` operations as leaf C++ calls. | Aggressive execution-orchestration cutover is authorized in `PLAN.md`; coordinate with `CRW-17`. Moving concrete EVM execution itself remains out of scope. | Native application/FinalChain tasks own orchestration and publication; StateAPI receives exact typed committed-state preflight, system-fact, ordered-execution, rewards, and state-commit leaves; no C++ execution/session handle or action loop remains. |
 | `CRW-E02` | `blocked` | Define and implement concrete-EVM state catch-up/import across native-only FinalChain periods. | Select a deterministic replay, state import, or unified-executor strategy and its parity oracle before expanding the concrete state boundary. | A concrete-EVM period can safely follow any native-only period with the exact prior state available; restart and mixed-lane parity prove no state fork. |
 
@@ -4336,6 +4336,28 @@ and tarcap runs pass 6 and 7 tests, while the source-selected pure-C++ runs pass
 pass. The unrelated Go CTest leg remains unavailable because the configured static linker cannot resolve `libz` and
 `snappy`; Python integration cannot bootstrap because `virtualenv` and `pytest` are absent from the image. Independent
 review found no commit-blocking correctness, ownership, source-selection, inventory, or residual-audit issues.
+
+The latest `CRW-N01` cut removes C++ scalar decoding and construction for latest status and get-next-votes. One immutable
+network identity is derived from the application bootstrap's chain, exact genesis, semantic version, light-node, and
+history configuration. Native status ingress strictly decodes and canonicalizes the complete packet, rejects checked
+period overflow, validates initial identity/history, and returns exact peer-bookkeeping and sync follow-ups; native
+egress builds the complete initial or periodic status payload. Get-next-votes consumes its complete request bytes and
+emits ordered, chunked, exact-target complete packet effects. Rust status, DAG-sync, and PBFT-sync adapters depend only
+on the physical transport base. The mixed Rust `ISyncPacketHandler` route, compatibility casts, packet-object codecs,
+and handler-local request throttles are absent from the feature-on composition, while the untouched legacy hierarchy is
+source-selected for pure-C++ mode. The checked surface contracts to 5,479 bridge lines, 1,042 shim lines, 95 CXX
+functions, 140 carriers, 10 opaque handles, one shim directory, zero granular flags, zero partial-service factories,
+zero compatibility-constructor calls, and 17 non-test consumers. The all-handler audit records one remaining Rust-mode
+family: `GetPillarVotesBundlePacketHandler` still decodes the scalar period and pillar-block hash and initiates the
+response route in C++. `CRW-N01` therefore remains active for that exact residual.
+
+Closeout validation passes `rewrite-validate-fast`, `rewrite-validate-consensus`, all 1,298 native consensus tests,
+both bridge unit tests, all nine focused CXX bridge tests, the six Rust-enabled live network/startup/sync cases, all
+seven tarcap concurrency cases, the Rust-enabled and fresh all-Rust-disabled `core_libs` builds, the inventory guard and
+self-test, and the storage-boundary guard. Ten of eleven registered CTest entries pass; only the established Go static
+linker leg fails for unavailable `libz`/`snappy`. Python integration remains unavailable because the image lacks
+`virtualenv`/`pytest` and enforces PEP 668. Independent review approves the cut and records an end-to-end future-vote
+sync send-failure rollback test as non-blocking follow-up coverage.
 
 ### DAG
 

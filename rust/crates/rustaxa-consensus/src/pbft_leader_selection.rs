@@ -645,6 +645,7 @@ mod tests {
                 deep_syncing_threshold: 5,
                 is_light_node: false,
                 light_node_history: 0,
+                network_identity: crate::network_api::NetworkNodeIdentity::default(),
                 committee_size: 1,
                 number_of_proposers: 1,
                 dag_blocks_size: 50,

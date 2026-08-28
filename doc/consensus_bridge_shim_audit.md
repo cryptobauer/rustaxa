@@ -46,10 +46,10 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 5535 |
+| `bridge_lines` | 5479 |
 | `shim_lines` | 1042 |
-| `cxx_functions` | 96 |
-| `cxx_carriers` | 141 |
+| `cxx_functions` | 95 |
+| `cxx_carriers` | 140 |
 | `cxx_handles` | 10 |
 | `shim_directories` | 1 |
 | `granular_flags` | 0 |
@@ -166,7 +166,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | Sole application-root bootstrap plus operation-shaped public transaction submission | App bootstrap, RPC, and GraphQL mutations | Bootstrap/public-client adapter | Retain only root bootstrap, public submission/status conversion, and focused ABI coverage; native `ConsensusApplication` owns DAG, transaction, sortition, and proposer behavior and state. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | Root-bound FinalChain public/query conversion | FinalChain shim and public clients | External boundary | Retain only stable public-query conversion and recovery projection; execution orchestration and compatibility tests have moved native. |
-| `rust/crates/rustaxa-bridge/src/network.rs` | Root-bound packet-family adapter for native PBFT, pillar-vote, DAG, DAG-sync, transaction, status, sync lifecycle/response, and prepared exact-target egress pipelines | latest/v5 tarcap handler families and application-root transport leaves | External boundary | Keep only canonical peer/payload requests, bounded preparation probes, immutable peer snapshots, typed network decisions/reports, and exact tarcap transport execution; status/sync lifecycle uses five operation-shaped calls and query snapshots live exclusively in `query.rs`. Remove the remaining scalar ingress decoding as `CRW-N01` completes. |
+| `rust/crates/rustaxa-bridge/src/network.rs` | Root-bound canonical packet-family adapter for native PBFT, pillar-vote, DAG, DAG-sync, transaction, status, sync lifecycle/response, and prepared exact-target egress pipelines | latest/v5 tarcap handler families and application-root transport leaves | External boundary | Keep only canonical peer/payload requests, bounded preparation probes, immutable peer snapshots, typed network decisions/reports, and exact tarcap transport execution; query snapshots live exclusively in `query.rs`. |
 | `rust/crates/rustaxa-bridge/src/network_slashing.rs` | Exact signing and transaction-ingress conversion for network-detected slashing effects | tarcap ingress | External boundary | Delete when the signing and transaction-ingress executors move native; never expand into consensus routing. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, including coherent PBFT, period-indexed finalized pillar data, live DAG, transaction-pool, finalized-history, and public status views | RPC, GraphQL, debug/Test RPC, stats, light plugin | External boundary | Keep a bounded client-oriented read API; never expose private services, locks, queues, cursors, or mutable object graphs. |
 | `rust/crates/rustaxa-bridge/src/storage_admin.rs` | Operation-shaped light-history prune and versioned conformance transcript adapters | application root, light plugin, storage conformance | Admin/conformance boundary | Keep only named root operations; never expose storage handles, query families, or caller-owned batches. |
@@ -177,7 +177,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | Handle | Implementing module | Named consumers | Classification | Delete or narrow when |
 | --- | --- | --- | --- | --- |
 | `BridgeConsensusQueryApi` | `query.rs` | RPC, GraphQL, debug/Test RPC, stats, light plugin | External boundary | Keep only bounded client-oriented public reads. |
-| `BridgeConsensusNetworkApi` | `network.rs` | One `Network` owner shared by latest/v5 tarcap handler families | External boundary | `CRW-N01` leaves canonical packet-family ingress and typed transport execution reports after all handler-local consensus routing moves native. |
+| `BridgeConsensusNetworkApi` | `network.rs` | One `Network` owner shared by latest/v5 tarcap handler families | External boundary | Retain canonical packet-family operations and typed physical transport reports; do not reintroduce handler-local inspection, selection, queueing, or packet construction. |
 | `BridgeConsensusApplication` | `dag_transaction_service.rs` | App bootstrap/process, query/network adapters, and RPC/GraphQL transaction submission | Bootstrap/application boundary | Keep as the sole opaque application root; it exposes operation-shaped tasks but no private consensus service handle. |
 
 ## Consensus Shim Directories

@@ -81,6 +81,8 @@ pub const NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA: u8 = 8;
 pub const NETWORK_INGRESS_STATUS_LOCAL_LOOKUP_FAILED: u8 = 9;
 /// A native sibling returned payloads that violated the network contract.
 pub const NETWORK_INGRESS_STATUS_INVALID_NATIVE_RESULT: u8 = 10;
+/// A peer supplied malformed or non-canonical packet bytes.
+pub const NETWORK_INGRESS_STATUS_MALFORMED_PACKET: u8 = 11;
 
 /// Network status/sync planner accepted the facts.
 pub const NETWORK_STATUS_PLAN_STATUS_OK: u8 = 0;
@@ -100,6 +102,8 @@ pub const NETWORK_STATUS_PLAN_STATUS_CHAIN_ID_MISMATCH: u8 = 6;
 pub const NETWORK_STATUS_PLAN_STATUS_GENESIS_MISMATCH: u8 = 7;
 /// Network status/sync planner found a light node that cannot serve local history.
 pub const NETWORK_STATUS_PLAN_STATUS_LIGHT_NODE_HISTORY_UNAVAILABLE: u8 = 8;
+/// Network status ingress received a periodic update before initial admission completed.
+pub const NETWORK_STATUS_PLAN_STATUS_PENDING_PEER_PERIODIC: u8 = 9;
 
 /// Network work drain completed successfully.
 pub const NETWORK_EFFECT_BATCH_STATUS_OK: u8 = 0;
@@ -799,9 +803,15 @@ struct PillarVoteNetworkChunk {
     payload_bytes: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NextVotesNetworkChunk {
+    vote_hashes: Vec<[u8; 32]>,
+    payload_bytes: Vec<u8>,
+}
+
 /// Compact local and peer facts needed to plan status-triggered sync work.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkStatusSyncFacts {
+struct NetworkStatusSyncFacts {
     /// Whether the local node is already running PBFT sync.
     pub local_pbft_syncing: bool,
     /// Local finalized/synced PBFT period.
@@ -824,7 +834,7 @@ pub struct NetworkStatusSyncFacts {
 
 /// Side-effect-free status sync plan for the network/tarcap executor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkStatusSyncPlan {
+struct NetworkStatusSyncPlan {
     /// Whether tarcap should start PBFT sync with the selected peer.
     pub request_pbft_sync: bool,
     /// Whether tarcap should request pending DAG blocks from the selected peer.
@@ -837,73 +847,9 @@ pub struct NetworkStatusSyncPlan {
     pub next_votes_round: u64,
 }
 
-/// Compact facts needed to shape a local status packet for tarcap egress.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkStatusEgressFacts {
-    /// Whether tarcap is sending the initial status packet.
-    pub initial: bool,
-    /// Locally configured chain id for initial status packets.
-    pub local_chain_id: u64,
-    /// Locally configured genesis hash for initial status packets.
-    pub genesis_hash: [u8; 32],
-    /// Local node major version for initial status packets.
-    pub node_major_version: u32,
-    /// Local node minor version for initial status packets.
-    pub node_minor_version: u32,
-    /// Local node patch version for initial status packets.
-    pub node_patch_version: u32,
-    /// Whether this node is configured as a light node.
-    pub is_light_node: bool,
-    /// Number of recent periods served when this node is a light node.
-    pub light_node_history: u64,
-    /// Local PBFT chain size snapshot.
-    pub local_pbft_chain_size: u64,
-    /// Local PBFT round snapshot.
-    pub local_pbft_round: u64,
-    /// Local DAG max level snapshot.
-    pub local_dag_level: u64,
-    /// Whether local PBFT sync is active.
-    pub pbft_syncing: bool,
-    /// Whether local PBFT sync is deep sync.
-    pub deep_pbft_syncing: bool,
-}
-
-/// Side-effect-free local status packet plan for tarcap egress.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkStatusEgressPlan {
-    /// Stable status for boundary logs and tests.
-    pub status: u8,
-    /// Stable textual status for boundary logs and tests.
-    pub error_code: String,
-    /// PBFT chain size to advertise.
-    pub peer_pbft_chain_size: u64,
-    /// PBFT round to advertise.
-    pub peer_pbft_round: u64,
-    /// DAG max level to advertise.
-    pub peer_dag_level: u64,
-    /// Syncing flag to advertise in the status packet.
-    pub peer_syncing: bool,
-    /// Whether initial status metadata should be included.
-    pub include_initial_data: bool,
-    /// Chain id for initial status metadata.
-    pub chain_id: u64,
-    /// Genesis hash for initial status metadata.
-    pub genesis_hash: [u8; 32],
-    /// Node major version for initial status metadata.
-    pub node_major_version: u32,
-    /// Node minor version for initial status metadata.
-    pub node_minor_version: u32,
-    /// Node patch version for initial status metadata.
-    pub node_patch_version: u32,
-    /// Light-node flag for initial status metadata.
-    pub is_light_node: bool,
-    /// Light-node history for initial status metadata.
-    pub light_node_history: u64,
-}
-
 /// Compact facts needed to validate an initial status packet.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkInitialStatusFacts {
+struct NetworkInitialStatusFacts {
     /// Locally configured chain id.
     pub local_chain_id: u64,
     /// Chain id advertised by the peer.
@@ -924,7 +870,7 @@ pub struct NetworkInitialStatusFacts {
 
 /// Side-effect-free initial-status admission plan for tarcap execution.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkInitialStatusPlan {
+struct NetworkInitialStatusPlan {
     /// Stable status for boundary logs and tests.
     pub status: u8,
     /// Stable textual status for boundary logs and tests.
@@ -1055,6 +1001,91 @@ pub const NETWORK_PBFT_SYNC_STOP_REASON_REPLACED: u8 = 5;
 
 const NETWORK_PBFT_SYNC_INACTIVITY_THRESHOLD_MS: u64 = 60_000;
 
+/// Immutable protocol identity copied into the native network service once at
+/// application bootstrap. Status ingress and egress can therefore neither
+/// spoof nor accidentally drift chain, genesis, version, or history policy.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NetworkNodeIdentity {
+    pub chain_id: u64,
+    pub genesis_hash: [u8; 32],
+    pub node_major_version: u32,
+    pub node_minor_version: u32,
+    pub node_patch_version: u32,
+    pub is_light_node: bool,
+    pub light_node_history: u64,
+}
+
+/// Canonical status-packet ingress plus the local facts needed for native
+/// follow-up policy. The peer payload crosses the bridge exactly once and is
+/// decoded strictly in Rust; immutable node identity is service-owned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkStatusPacketRequest {
+    pub peer_id: [u8; 64],
+    pub packet_rlp: Vec<u8>,
+    pub source_peer_ready: bool,
+    pub local_pbft_synced_period: u64,
+    pub local_pbft_period: u64,
+    pub local_pbft_round: u64,
+    pub peer_dag_synced: bool,
+}
+
+/// Typed peer-bookkeeping and follow-up report for one canonical status packet.
+/// Malformed packets never mutate debounce state and are marked malicious.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkStatusPacketReport {
+    pub status: u8,
+    pub error_code: String,
+    pub malicious: bool,
+    pub initial: bool,
+    pub accept_peer: bool,
+    pub disconnect_peer: bool,
+    pub peer_pbft_chain_size: u64,
+    pub peer_pbft_period: u64,
+    pub peer_pbft_round: u64,
+    pub peer_dag_level: u64,
+    pub peer_syncing: bool,
+    pub peer_is_light_node: bool,
+    pub peer_light_node_history: u64,
+    pub node_major_version: u32,
+    pub node_minor_version: u32,
+    pub node_patch_version: u32,
+    pub request_pbft_sync: bool,
+    pub request_pending_dag_blocks: bool,
+    pub request_next_votes: bool,
+    pub next_votes_period: u64,
+    pub next_votes_round: u64,
+    /// Exact canonical payload for `GetNextVotesSyncPacket`, present only when requested.
+    pub next_votes_request_rlp: Vec<u8>,
+    pub sync_generation: u64,
+}
+
+/// Mutable local status facts used to build one exact canonical wire payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkStatusPacketBuildRequest {
+    pub initial: bool,
+    pub local_pbft_chain_size: u64,
+    pub local_pbft_round: u64,
+    pub local_dag_level: u64,
+}
+
+/// Terminal status-packet build result. Successful output is ready for direct
+/// tarcap packet wrapping and must not be re-encoded by the caller.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkStatusPacketBuildOutcome {
+    pub status: u8,
+    pub error_code: String,
+    pub packet_rlp: Vec<u8>,
+}
+
+/// Canonical get-next-votes packet ingress with exact transport identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftNextVotesBundlePacketRequest {
+    pub transport_lane: u32,
+    pub peer_id: [u8; 64],
+    pub source_payload_id: u64,
+    pub packet_rlp: Vec<u8>,
+}
+
 /// Application-root request to atomically select a peer and begin PBFT sync.
 ///
 /// The caller supplies a canonical snapshot of currently connected peers and
@@ -1095,7 +1126,7 @@ pub struct NetworkPbftSyncStartOutcome {
 /// returned decision is computed and the new advertisement is recorded under
 /// the same network-service lock.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkStatusFollowupRequest {
+struct NetworkStatusFollowupRequest {
     pub peer_id: [u8; 64],
     pub local_pbft_synced_period: u64,
     pub local_pbft_period: u64,
@@ -1108,7 +1139,7 @@ pub struct NetworkStatusFollowupRequest {
 
 /// Application-owned work selected after one accepted periodic status packet.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkStatusFollowupOutcome {
+struct NetworkStatusFollowupOutcome {
     pub request_pbft_sync: bool,
     pub request_pending_dag_blocks: bool,
     pub request_next_votes: bool,
@@ -1393,6 +1424,7 @@ pub struct ConsensusNetworkService {
     sync_level_size: u64,
     is_light_node: bool,
     light_node_history: u64,
+    node_identity: NetworkNodeIdentity,
 }
 
 impl ConsensusNetworkService {
@@ -1418,6 +1450,7 @@ impl ConsensusNetworkService {
         sync_level_size: u64,
         is_light_node: bool,
         light_node_history: u64,
+        node_identity: NetworkNodeIdentity,
     ) -> Result<Self> {
         ensure!(
             ficus_activation_period == u64::MAX || pillar_blocks_interval > 1,
@@ -1441,6 +1474,7 @@ impl ConsensusNetworkService {
             sync_level_size,
             is_light_node,
             light_node_history,
+            node_identity,
         })
     }
 
@@ -1493,12 +1527,123 @@ impl ConsensusNetworkService {
         Ok(self.lock_api()?.begin_pbft_sync(request))
     }
 
-    /// Records one periodic peer status and returns application-owned follow-up work.
-    pub fn process_status_followup(
+    /// Strictly decodes one legacy status payload, validates immutable initial
+    /// identity, and atomically records periodic debounce state with its
+    /// follow-up decision. No network lock is held while decoding.
+    pub fn ingest_status_packet(
         &self,
-        request: NetworkStatusFollowupRequest,
-    ) -> Result<NetworkStatusFollowupOutcome> {
-        Ok(self.lock_api()?.process_status_followup(request))
+        request: NetworkStatusPacketRequest,
+    ) -> Result<NetworkStatusPacketReport> {
+        let packet = match decode_status_packet(&request.packet_rlp) {
+            Ok(packet) => packet,
+            Err(_) => return Ok(malformed_status_packet_report()),
+        };
+        let Some(peer_pbft_period) = packet.peer_pbft_chain_size.checked_add(1) else {
+            return Ok(malformed_status_packet_report());
+        };
+        let mut report = NetworkStatusPacketReport {
+            status: NETWORK_STATUS_PLAN_STATUS_OK,
+            error_code: ERROR_NONE.to_owned(),
+            malicious: false,
+            initial: packet.initial_data.is_some(),
+            accept_peer: true,
+            disconnect_peer: false,
+            peer_pbft_chain_size: packet.peer_pbft_chain_size,
+            peer_pbft_period,
+            peer_pbft_round: packet.peer_pbft_round,
+            peer_dag_level: packet.peer_dag_level,
+            peer_syncing: packet.peer_syncing,
+            peer_is_light_node: false,
+            peer_light_node_history: 0,
+            node_major_version: 0,
+            node_minor_version: 0,
+            node_patch_version: 0,
+            request_pbft_sync: false,
+            request_pending_dag_blocks: false,
+            request_next_votes: false,
+            next_votes_period: 0,
+            next_votes_round: 0,
+            next_votes_request_rlp: Vec::new(),
+            sync_generation: 0,
+        };
+        if let Some(initial) = packet.initial_data {
+            report.peer_is_light_node = initial.is_light_node;
+            report.peer_light_node_history = initial.light_node_history;
+            report.node_major_version = initial.node_major_version;
+            report.node_minor_version = initial.node_minor_version;
+            report.node_patch_version = initial.node_patch_version;
+            let plan = plan_initial_status(NetworkInitialStatusFacts {
+                local_chain_id: self.node_identity.chain_id,
+                peer_chain_id: initial.chain_id,
+                expected_genesis_hash: self.node_identity.genesis_hash,
+                peer_genesis_hash: initial.genesis_hash,
+                local_pbft_synced_period: request.local_pbft_synced_period,
+                peer_pbft_chain_size: packet.peer_pbft_chain_size,
+                peer_is_light_node: initial.is_light_node,
+                peer_light_node_history: initial.light_node_history,
+            });
+            report.status = plan.status;
+            report.error_code = plan.error_code;
+            report.accept_peer = plan.accept_peer;
+            report.disconnect_peer = plan.disconnect_peer;
+            return Ok(report);
+        }
+
+        if !request.source_peer_ready {
+            report.status = NETWORK_STATUS_PLAN_STATUS_PENDING_PEER_PERIODIC;
+            report.error_code = "NETWORK_STATUS_PERIODIC_FROM_PENDING_PEER".to_owned();
+            report.accept_peer = false;
+            report.disconnect_peer = true;
+            return Ok(report);
+        }
+
+        let followup = self
+            .lock_api()?
+            .process_status_followup(NetworkStatusFollowupRequest {
+                peer_id: request.peer_id,
+                local_pbft_synced_period: request.local_pbft_synced_period,
+                local_pbft_period: request.local_pbft_period,
+                local_pbft_round: request.local_pbft_round,
+                peer_pbft_chain_size: packet.peer_pbft_chain_size,
+                peer_pbft_period,
+                peer_pbft_round: packet.peer_pbft_round,
+                peer_dag_synced: request.peer_dag_synced,
+            });
+        report.request_pbft_sync = followup.request_pbft_sync;
+        report.request_pending_dag_blocks = followup.request_pending_dag_blocks;
+        report.request_next_votes = followup.request_next_votes;
+        report.next_votes_period = followup.next_votes_period;
+        report.next_votes_round = followup.next_votes_round;
+        report.next_votes_request_rlp = if followup.request_next_votes {
+            encode_get_next_votes_packet(followup.next_votes_period, followup.next_votes_round)
+        } else {
+            Vec::new()
+        };
+        report.sync_generation = followup.sync_generation;
+        Ok(report)
+    }
+
+    /// Builds one canonical legacy status payload using bootstrap-owned node
+    /// identity and the lock-coherent native sync mode.
+    pub fn build_status_packet(
+        &self,
+        request: NetworkStatusPacketBuildRequest,
+    ) -> Result<NetworkStatusPacketBuildOutcome> {
+        let api = self.lock_api()?;
+        let syncing = if request.initial {
+            api.pbft_sync.active
+        } else {
+            api.pbft_sync.deep_syncing
+        };
+        Ok(NetworkStatusPacketBuildOutcome {
+            status: NETWORK_STATUS_PLAN_STATUS_OK,
+            error_code: ERROR_NONE.to_owned(),
+            packet_rlp: encode_status_packet(
+                request,
+                syncing,
+                request.initial.then_some(&self.node_identity),
+            ),
+        })
     }
 
     /// Correlates one response peer with the active or most-recent sync generation.
@@ -1806,27 +1951,6 @@ impl ConsensusNetworkService {
     /// Returns a side-effect-free snapshot for query, statistics, and egress readers.
     pub fn pbft_sync_status(&self, now_ms: u64) -> Result<NetworkPbftSyncSnapshot> {
         Ok(self.lock_api()?.pbft_sync_status(now_ms))
-    }
-
-    /// Plans status-triggered sync work from caller-owned scalar snapshots.
-    pub fn plan_status_sync(&self, facts: NetworkStatusSyncFacts) -> Result<NetworkStatusSyncPlan> {
-        Ok(self.lock_api()?.plan_status_sync(facts))
-    }
-
-    /// Plans one local status packet from caller-owned scalar snapshots.
-    pub fn plan_status_egress(
-        &self,
-        facts: NetworkStatusEgressFacts,
-    ) -> Result<NetworkStatusEgressPlan> {
-        Ok(self.lock_api()?.status_egress(facts))
-    }
-
-    /// Validates one initial status packet without mutating peer transport state.
-    pub fn admit_initial_status(
-        &self,
-        facts: NetworkInitialStatusFacts,
-    ) -> Result<NetworkInitialStatusPlan> {
-        Ok(self.lock_api()?.plan_initial_status(facts))
     }
 
     /// Selects and plans one PBFT sync start from compact peer facts.
@@ -2342,6 +2466,31 @@ impl ConsensusNetworkService {
             current_round,
             chunks,
         ))
+    }
+
+    /// Strictly decodes and serves one canonical get-next-votes request.
+    /// Malformed peer bytes produce a typed zero-effect decision.
+    pub fn ingest_pbft_next_votes_bundle_packet_request(
+        &self,
+        request: NetworkPbftNextVotesBundlePacketRequest,
+    ) -> Result<NetworkIngressDecision> {
+        let (peer_period, peer_round) = match decode_get_next_votes_packet(&request.packet_rlp) {
+            Ok(decoded) => decoded,
+            Err(_) => {
+                return Ok(local_network_decision(
+                    request.source_payload_id,
+                    NETWORK_INGRESS_STATUS_MALFORMED_PACKET,
+                    "NETWORK_GET_NEXT_VOTES_MALFORMED_RLP",
+                ));
+            }
+        };
+        self.ingest_pbft_next_votes_bundle_request(NetworkPbftNextVotesBundleRequest {
+            transport_lane: request.transport_lane,
+            peer_id: request.peer_id,
+            peer_period,
+            peer_round,
+            source_payload_id: request.source_payload_id,
+        })
     }
 
     /// Serves one schedule-valid pillar-vote bundle request directly.
@@ -3729,7 +3878,7 @@ impl ConsensusNetworkApi {
 
     /// Applies periodic status follow-up policy and advances native debounce state.
     #[must_use]
-    pub fn process_status_followup(
+    fn process_status_followup(
         &mut self,
         request: NetworkStatusFollowupRequest,
     ) -> NetworkStatusFollowupOutcome {
@@ -3924,38 +4073,6 @@ impl ConsensusNetworkApi {
     #[must_use]
     pub fn pbft_sync_status(&self, now_ms: u64) -> NetworkPbftSyncSnapshot {
         self.pbft_sync.snapshot(now_ms)
-    }
-
-    /// Shapes status egress from native lifecycle state and caller-owned public facts.
-    #[must_use]
-    pub fn status_egress(&self, mut facts: NetworkStatusEgressFacts) -> NetworkStatusEgressPlan {
-        facts.pbft_syncing = self.pbft_sync.active;
-        facts.deep_pbft_syncing = self.pbft_sync.deep_syncing;
-        plan_status_egress(facts)
-    }
-
-    /// Plans deterministic sync follow-up for an accepted status packet.
-    ///
-    /// Tarcap supplies compact local and peer status facts, while Rust owns the
-    /// decision to request PBFT sync, pending DAG blocks, or next-vote bundles.
-    /// The returned plan is side-effect free: peer state updates, packet
-    /// encoding, and sends remain network/tarcap executor work.
-    #[must_use]
-    pub fn plan_status_sync(&self, facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
-        plan_status_sync(facts)
-    }
-
-    /// Plans initial status packet admission.
-    ///
-    /// Rust owns deterministic chain-id, genesis, and light-node history
-    /// admission decisions. Tarcap still owns pending-peer lookup, peer-state
-    /// materialization, logging, and disconnect execution.
-    #[must_use]
-    pub fn plan_initial_status(
-        &self,
-        facts: NetworkInitialStatusFacts,
-    ) -> NetworkInitialStatusPlan {
-        plan_initial_status(facts)
     }
 
     /// Plans whether PBFT sync should start and which peer should serve it.
@@ -4884,19 +5001,25 @@ impl ConsensusNetworkApi {
         request: NetworkPbftNextVotesBundleRequest,
         current_period: u64,
         current_round: u64,
-        chunks: Vec<Vec<u8>>,
+        chunks: Vec<NextVotesNetworkChunk>,
     ) -> NetworkIngressDecision {
-        let queued_effect_count = u32::try_from(chunks.len()).unwrap_or(u32::MAX);
+        let queued_effect_count = chunks.iter().fold(0_u32, |count, chunk| {
+            count.saturating_add(
+                1_u32.saturating_add(u32::try_from(chunk.vote_hashes.len()).unwrap_or(u32::MAX)),
+            )
+        });
         let round = current_round - 1;
-        for payload_bytes in chunks {
-            self.enqueue_effect(NetworkEffect {
+        for chunk in chunks {
+            let mut packet = RlpStream::new_list(1);
+            packet.append_raw(&chunk.payload_bytes, 1);
+            let send_id = self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
                 source_payload_id: request.source_payload_id,
                 transport_lane: request.transport_lane,
                 kind: NETWORK_EFFECT_KIND_SEND_PACKET,
                 peer_id: request.peer_id,
                 packet_kind: NETWORK_PACKET_KIND_PBFT_VOTES_BUNDLE,
-                payload_bytes,
+                payload_bytes: packet.out().to_vec(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
                 object_hash: [0; 32],
                 sync_kind: 0,
@@ -4906,6 +5029,25 @@ impl ConsensusNetworkApi {
                 period: current_period,
                 round,
             });
+            for vote_hash in chunk.vote_hashes {
+                self.enqueue_effect(NetworkEffect {
+                    effect_id: 0,
+                    source_payload_id: request.source_payload_id,
+                    transport_lane: request.transport_lane,
+                    kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                    peer_id: request.peer_id,
+                    packet_kind: 0,
+                    payload_bytes: Vec::new(),
+                    object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+                    object_hash: vote_hash,
+                    sync_kind: 0,
+                    sync_start: 0,
+                    reason_code: 0,
+                    dependency_id: send_id,
+                    period: current_period,
+                    round,
+                });
+            }
         }
         NetworkIngressDecision {
             payload_id: request.source_payload_id,
@@ -4980,14 +5122,14 @@ impl ConsensusNetworkApi {
     fn enqueue_vote_plan_effects(
         &mut self,
         plan: PbftVoteIngressPlan,
-        fact: PbftVoteIngressFact,
+        _fact: PbftVoteIngressFact,
         context: &NetworkPbftVoteIngressContext,
     ) {
         if plan.request_pbft_sync {
-            let sync_start = fact
-                .period
-                .saturating_sub(1)
-                .max(context.peer_pbft_chain_size);
+            // Join the application-owned PBFT-sync lifecycle at the next
+            // locally admissible period. The remote chain size is an
+            // eligibility fact, not a safe response cursor.
+            let sync_start = context.ingress.current_period;
             self.enqueue_effect(NetworkEffect {
                 effect_id: 0,
                 source_payload_id: context.source_payload_id,
@@ -4995,7 +5137,7 @@ impl ConsensusNetworkApi {
                 kind: NETWORK_EFFECT_KIND_REQUEST_SYNC,
                 peer_id: context.peer_id,
                 packet_kind: 0,
-                payload_bytes: Vec::new(),
+                payload_bytes: encode_get_pbft_sync_packet(sync_start),
                 object_kind: 0,
                 object_hash: [0; 32],
                 sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
@@ -5014,7 +5156,10 @@ impl ConsensusNetworkApi {
                 kind: NETWORK_EFFECT_KIND_REQUEST_SYNC,
                 peer_id: context.peer_id,
                 packet_kind: 0,
-                payload_bytes: Vec::new(),
+                payload_bytes: encode_get_next_votes_packet(
+                    context.ingress.current_period,
+                    context.ingress.current_round,
+                ),
                 object_kind: 0,
                 object_hash: [0; 32],
                 sync_kind: NETWORK_SYNC_KIND_PBFT_NEXT_VOTES,
@@ -6210,7 +6355,7 @@ fn validate_next_votes_payloads(
     payloads: PbftNextVotesBundleEgressPayloads,
     period: u64,
     round: u64,
-) -> Result<Vec<Vec<u8>>> {
+) -> Result<Vec<NextVotesNetworkChunk>> {
     let next =
         validate_and_chunk_next_votes_bundle(&payloads.next_votes_bundle_rlp, period, round, false)
             .ok_or_else(|| anyhow!("NETWORK_NEXT_VOTES_NATIVE_PAYLOAD_INVALID"))?;
@@ -6229,7 +6374,7 @@ fn validate_and_chunk_next_votes_bundle(
     expected_period: u64,
     expected_round: u64,
     expect_null_block: bool,
-) -> Option<Vec<Vec<u8>>> {
+) -> Option<Vec<NextVotesNetworkChunk>> {
     if payload.is_empty() {
         return Some(Vec::new());
     }
@@ -6286,7 +6431,7 @@ fn validate_and_chunk_next_votes_bundle(
         {
             return None;
         }
-        raw_votes.push(vote.as_raw());
+        raw_votes.push((vote.as_raw(), inspection.vote_hash.to_fixed_bytes()));
     }
 
     Some(
@@ -6299,10 +6444,13 @@ fn validate_and_chunk_next_votes_bundle(
                 stream.append(&round);
                 stream.append(&step);
                 stream.begin_list(chunk.len());
-                for vote in chunk {
+                for (vote, _) in chunk {
                     stream.append_raw(vote, 1);
                 }
-                stream.out().to_vec()
+                NextVotesNetworkChunk {
+                    vote_hashes: chunk.iter().map(|(_, hash)| *hash).collect(),
+                    payload_bytes: stream.out().to_vec(),
+                }
             })
             .collect(),
     )
@@ -6368,6 +6516,167 @@ fn validate_and_chunk_pillar_votes(
     Ok(chunks)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DecodedStatusPacket {
+    peer_pbft_chain_size: u64,
+    peer_pbft_round: u64,
+    peer_dag_level: u64,
+    peer_syncing: bool,
+    initial_data: Option<DecodedStatusInitialData>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DecodedStatusInitialData {
+    chain_id: u64,
+    genesis_hash: [u8; 32],
+    node_major_version: u32,
+    node_minor_version: u32,
+    node_patch_version: u32,
+    is_light_node: bool,
+    light_node_history: u64,
+}
+
+fn decode_status_packet(bytes: &[u8]) -> Result<DecodedStatusPacket> {
+    let rlp = Rlp::new(bytes);
+    ensure!(
+        rlp.item_count()? == 5,
+        "NETWORK_STATUS_PACKET_INVALID_FIELD_COUNT"
+    );
+    let initial = rlp.at(4)?;
+    let initial_data = if initial.is_empty() {
+        ensure!(
+            !initial.is_list(),
+            "NETWORK_STATUS_PACKET_INVALID_INITIAL_DATA"
+        );
+        None
+    } else {
+        ensure!(
+            initial.item_count()? == 7,
+            "NETWORK_STATUS_PACKET_INVALID_INITIAL_FIELD_COUNT"
+        );
+        Some(DecodedStatusInitialData {
+            chain_id: initial.val_at(0)?,
+            genesis_hash: initial.val_at::<H256>(1)?.into(),
+            node_major_version: initial.val_at(2)?,
+            node_minor_version: initial.val_at(3)?,
+            node_patch_version: initial.val_at(4)?,
+            is_light_node: initial.val_at(5)?,
+            light_node_history: initial.val_at(6)?,
+        })
+    };
+    let decoded = DecodedStatusPacket {
+        peer_pbft_chain_size: rlp.val_at(0)?,
+        peer_pbft_round: rlp.val_at(1)?,
+        peer_dag_level: rlp.val_at(2)?,
+        peer_syncing: rlp.val_at(3)?,
+        initial_data,
+    };
+    let request = NetworkStatusPacketBuildRequest {
+        initial: decoded.initial_data.is_some(),
+        local_pbft_chain_size: decoded.peer_pbft_chain_size,
+        local_pbft_round: decoded.peer_pbft_round,
+        local_dag_level: decoded.peer_dag_level,
+    };
+    let identity = decoded
+        .initial_data
+        .as_ref()
+        .map(|initial| NetworkNodeIdentity {
+            chain_id: initial.chain_id,
+            genesis_hash: initial.genesis_hash,
+            node_major_version: initial.node_major_version,
+            node_minor_version: initial.node_minor_version,
+            node_patch_version: initial.node_patch_version,
+            is_light_node: initial.is_light_node,
+            light_node_history: initial.light_node_history,
+        });
+    ensure!(
+        encode_status_packet(request, decoded.peer_syncing, identity.as_ref()) == bytes,
+        "NETWORK_STATUS_PACKET_NON_CANONICAL_RLP"
+    );
+    Ok(decoded)
+}
+
+fn encode_status_packet(
+    request: NetworkStatusPacketBuildRequest,
+    syncing: bool,
+    identity: Option<&NetworkNodeIdentity>,
+) -> Vec<u8> {
+    let mut stream = RlpStream::new_list(5);
+    stream.append(&request.local_pbft_chain_size);
+    stream.append(&request.local_pbft_round);
+    stream.append(&request.local_dag_level);
+    stream.append(&syncing);
+    if let Some(identity) = identity {
+        stream.begin_list(7);
+        stream.append(&identity.chain_id);
+        stream.append(&identity.genesis_hash.as_slice());
+        stream.append(&identity.node_major_version);
+        stream.append(&identity.node_minor_version);
+        stream.append(&identity.node_patch_version);
+        stream.append(&identity.is_light_node);
+        stream.append(&identity.light_node_history);
+    } else {
+        stream.append(&0_u8);
+    }
+    stream.out().to_vec()
+}
+
+fn encode_get_next_votes_packet(period: u64, round: u64) -> Vec<u8> {
+    let mut stream = RlpStream::new_list(2);
+    stream.append(&period);
+    stream.append(&round);
+    stream.out().to_vec()
+}
+
+fn encode_get_pbft_sync_packet(height_to_sync: u64) -> Vec<u8> {
+    let mut stream = RlpStream::new_list(1);
+    stream.append(&height_to_sync);
+    stream.out().to_vec()
+}
+
+fn decode_get_next_votes_packet(bytes: &[u8]) -> Result<(u64, u64)> {
+    let rlp = Rlp::new(bytes);
+    ensure!(
+        rlp.item_count()? == 2,
+        "NETWORK_GET_NEXT_VOTES_INVALID_FIELD_COUNT"
+    );
+    let period = rlp.val_at(0)?;
+    let round = rlp.val_at(1)?;
+    ensure!(
+        encode_get_next_votes_packet(period, round) == bytes,
+        "NETWORK_GET_NEXT_VOTES_NON_CANONICAL_RLP"
+    );
+    Ok((period, round))
+}
+
+fn malformed_status_packet_report() -> NetworkStatusPacketReport {
+    NetworkStatusPacketReport {
+        status: NETWORK_INGRESS_STATUS_MALFORMED_PACKET,
+        error_code: "NETWORK_STATUS_PACKET_MALFORMED_RLP".to_owned(),
+        malicious: true,
+        initial: false,
+        accept_peer: false,
+        disconnect_peer: true,
+        peer_pbft_chain_size: 0,
+        peer_pbft_period: 0,
+        peer_pbft_round: 0,
+        peer_dag_level: 0,
+        peer_syncing: false,
+        peer_is_light_node: false,
+        peer_light_node_history: 0,
+        node_major_version: 0,
+        node_minor_version: 0,
+        node_patch_version: 0,
+        request_pbft_sync: false,
+        request_pending_dag_blocks: false,
+        request_next_votes: false,
+        next_votes_period: 0,
+        next_votes_round: 0,
+        next_votes_request_rlp: Vec::new(),
+        sync_generation: 0,
+    }
+}
+
 fn plan_status_sync(facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
     if facts.local_pbft_syncing {
         return NetworkStatusSyncPlan {
@@ -6399,53 +6708,6 @@ fn plan_status_sync(facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
         },
         next_votes_round: if request_next_votes {
             facts.local_pbft_round
-        } else {
-            0
-        },
-    }
-}
-
-fn plan_status_egress(facts: NetworkStatusEgressFacts) -> NetworkStatusEgressPlan {
-    NetworkStatusEgressPlan {
-        status: NETWORK_STATUS_PLAN_STATUS_OK,
-        error_code: ERROR_NONE.to_owned(),
-        peer_pbft_chain_size: facts.local_pbft_chain_size,
-        peer_pbft_round: facts.local_pbft_round,
-        peer_dag_level: facts.local_dag_level,
-        peer_syncing: if facts.initial {
-            facts.pbft_syncing
-        } else {
-            facts.deep_pbft_syncing
-        },
-        include_initial_data: facts.initial,
-        chain_id: if facts.initial {
-            facts.local_chain_id
-        } else {
-            0
-        },
-        genesis_hash: if facts.initial {
-            facts.genesis_hash
-        } else {
-            [0; 32]
-        },
-        node_major_version: if facts.initial {
-            facts.node_major_version
-        } else {
-            0
-        },
-        node_minor_version: if facts.initial {
-            facts.node_minor_version
-        } else {
-            0
-        },
-        node_patch_version: if facts.initial {
-            facts.node_patch_version
-        } else {
-            0
-        },
-        is_light_node: facts.initial && facts.is_light_node,
-        light_node_history: if facts.initial {
-            facts.light_node_history
         } else {
             0
         },
@@ -6769,24 +7031,6 @@ mod tests {
             peer_pbft_round: 2,
             peer_dag_synced: true,
             peer_last_status_pbft_chain_size: 9,
-        }
-    }
-
-    fn status_egress_facts(initial: bool) -> NetworkStatusEgressFacts {
-        NetworkStatusEgressFacts {
-            initial,
-            local_chain_id: 7,
-            genesis_hash: hash(1),
-            node_major_version: 2,
-            node_minor_version: 3,
-            node_patch_version: 4,
-            is_light_node: true,
-            light_node_history: 8,
-            local_pbft_chain_size: 10,
-            local_pbft_round: 5,
-            local_dag_level: 44,
-            pbft_syncing: true,
-            deep_pbft_syncing: false,
         }
     }
 
@@ -8004,6 +8248,68 @@ mod tests {
     }
 
     #[test]
+    fn status_codec_matches_legacy_optional_none_and_rejects_non_canonical_bytes() {
+        let request = NetworkStatusPacketBuildRequest {
+            initial: false,
+            local_pbft_chain_size: 10,
+            local_pbft_round: 2,
+            local_dag_level: 44,
+        };
+        let encoded = encode_status_packet(request, false, None);
+        assert_eq!(encoded, vec![0xc5, 0x0a, 0x02, 0x2c, 0x80, 0x80]);
+        assert_eq!(
+            decode_status_packet(&encoded).unwrap(),
+            DecodedStatusPacket {
+                peer_pbft_chain_size: 10,
+                peer_pbft_round: 2,
+                peer_dag_level: 44,
+                peer_syncing: false,
+                initial_data: None,
+            }
+        );
+        assert!(decode_status_packet(&[0xc6, 0x81, 0x0a, 0x02, 0x2c, 0x80, 0x80]).is_err());
+    }
+
+    #[test]
+    fn status_codec_preserves_exact_bootstrap_identity() {
+        let identity = NetworkNodeIdentity {
+            chain_id: u64::MAX,
+            genesis_hash: [0x5a; 32],
+            node_major_version: 2,
+            node_minor_version: 4,
+            node_patch_version: 6,
+            is_light_node: true,
+            light_node_history: 99,
+        };
+        let encoded = encode_status_packet(
+            NetworkStatusPacketBuildRequest {
+                initial: true,
+                local_pbft_chain_size: 17,
+                local_pbft_round: 8,
+                local_dag_level: 21,
+            },
+            true,
+            Some(&identity),
+        );
+        let decoded = decode_status_packet(&encoded).unwrap();
+        assert_eq!(
+            decoded.initial_data.unwrap().genesis_hash,
+            identity.genesis_hash
+        );
+        assert_eq!(decoded.peer_pbft_chain_size, 17);
+        assert!(decoded.peer_syncing);
+    }
+
+    #[test]
+    fn get_next_votes_codec_is_canonical_and_exact() {
+        let encoded = encode_get_next_votes_packet(10, 2);
+        assert_eq!(encoded, vec![0xc2, 0x0a, 0x02]);
+        assert_eq!(decode_get_next_votes_packet(&encoded).unwrap(), (10, 2));
+        assert!(decode_get_next_votes_packet(&[0xc3, 0x81, 0x0a, 0x02]).is_err());
+        assert!(decode_get_next_votes_packet(&[0xc1, 0x0a]).is_err());
+    }
+
+    #[test]
     fn next_votes_native_payloads_chunk_and_order_next_before_next_null_sends() {
         let mut api = ConsensusNetworkApi::new();
         let chunks = validate_next_votes_payloads(
@@ -8018,7 +8324,7 @@ mod tests {
         let decision =
             api.enqueue_next_votes_bundle_send_effects(next_votes_request(), 10, 3, chunks);
         assert_eq!(decision.application_effect_id, 0);
-        assert_eq!(decision.queued_effect_count, 3);
+        assert_eq!(decision.queued_effect_count, 1005);
 
         let sends = api.drain_work(6, 8).effects;
         assert_eq!(sends.len(), 3);
@@ -8028,28 +8334,39 @@ mod tests {
                 && effect.peer_id == peer(7)
                 && effect.source_payload_id == 99
         }));
-        let first: H256 = Rlp::new(&sends[0].payload_bytes).val_at(0).unwrap();
-        let second: H256 = Rlp::new(&sends[1].payload_bytes).val_at(0).unwrap();
-        let third: H256 = Rlp::new(&sends[2].payload_bytes).val_at(0).unwrap();
+        let first_packet = Rlp::new(&sends[0].payload_bytes);
+        let second_packet = Rlp::new(&sends[1].payload_bytes);
+        let third_packet = Rlp::new(&sends[2].payload_bytes);
+        assert_eq!(first_packet.item_count().unwrap(), 1);
+        let first_bundle = first_packet.at(0).unwrap();
+        let second_bundle = second_packet.at(0).unwrap();
+        let third_bundle = third_packet.at(0).unwrap();
+        let first: H256 = first_bundle.val_at(0).unwrap();
+        let second: H256 = second_bundle.val_at(0).unwrap();
+        let third: H256 = third_bundle.val_at(0).unwrap();
         assert_eq!(first, H256::from([0x44; 32]));
         assert_eq!(second, first);
         assert!(third.is_zero());
-        assert_eq!(
-            Rlp::new(&sends[0].payload_bytes)
-                .at(4)
-                .unwrap()
-                .item_count()
-                .unwrap(),
-            1000
+        assert_eq!(first_bundle.at(4).unwrap().item_count().unwrap(), 1000);
+        assert_eq!(second_bundle.at(4).unwrap().item_count().unwrap(), 1);
+
+        let send_ids = sends
+            .iter()
+            .map(|send| (send.effect_id, send.peer_id))
+            .collect::<HashSet<_>>();
+        api.report_effect_results(
+            sends
+                .iter()
+                .map(|send| effect_result(send, NETWORK_EFFECT_RESULT_STATUS_OK))
+                .collect(),
         );
-        assert_eq!(
-            Rlp::new(&sends[1].payload_bytes)
-                .at(4)
-                .unwrap()
-                .item_count()
-                .unwrap(),
-            1
-        );
+        let marks = api.drain_work(6, 2_000).effects;
+        assert_eq!(marks.len(), 1002);
+        assert!(marks.iter().all(|mark| {
+            mark.kind == NETWORK_EFFECT_KIND_MARK_PEER_KNOWN
+                && mark.object_kind == NETWORK_OBJECT_KIND_PBFT_VOTE
+                && send_ids.contains(&(mark.dependency_id, mark.peer_id))
+        }));
     }
 
     #[test]
@@ -8285,11 +8602,10 @@ mod tests {
 
     #[test]
     fn plan_status_sync_requests_pbft_sync_when_peer_is_far_ahead() {
-        let api = ConsensusNetworkApi::new();
         let mut facts = status_sync_facts();
         facts.peer_pbft_chain_size = 13;
 
-        let plan = api.plan_status_sync(facts);
+        let plan = plan_status_sync(facts);
 
         assert!(plan.request_pbft_sync);
         assert!(!plan.request_pending_dag_blocks);
@@ -8298,24 +8614,22 @@ mod tests {
 
     #[test]
     fn plan_status_sync_debounces_one_block_pbft_sync() {
-        let api = ConsensusNetworkApi::new();
         let mut facts = status_sync_facts();
         facts.peer_pbft_chain_size = 11;
         facts.peer_last_status_pbft_chain_size = 10;
 
-        assert!(!api.plan_status_sync(facts.clone()).request_pbft_sync);
+        assert!(!plan_status_sync(facts.clone()).request_pbft_sync);
 
         facts.peer_last_status_pbft_chain_size = 11;
-        assert!(api.plan_status_sync(facts).request_pbft_sync);
+        assert!(plan_status_sync(facts).request_pbft_sync);
     }
 
     #[test]
     fn plan_status_sync_requests_pending_dag_blocks_when_periods_match() {
-        let api = ConsensusNetworkApi::new();
         let mut facts = status_sync_facts();
         facts.peer_dag_synced = false;
 
-        let plan = api.plan_status_sync(facts);
+        let plan = plan_status_sync(facts);
 
         assert!(!plan.request_pbft_sync);
         assert!(plan.request_pending_dag_blocks);
@@ -8324,11 +8638,10 @@ mod tests {
 
     #[test]
     fn plan_status_sync_requests_next_votes_when_peer_round_is_ahead() {
-        let api = ConsensusNetworkApi::new();
         let mut facts = status_sync_facts();
         facts.peer_pbft_round = 4;
 
-        let plan = api.plan_status_sync(facts);
+        let plan = plan_status_sync(facts);
 
         assert!(!plan.request_pbft_sync);
         assert!(!plan.request_pending_dag_blocks);
@@ -8339,14 +8652,13 @@ mod tests {
 
     #[test]
     fn plan_status_sync_returns_no_actions_while_local_pbft_syncing() {
-        let api = ConsensusNetworkApi::new();
         let mut facts = status_sync_facts();
         facts.local_pbft_syncing = true;
         facts.peer_pbft_chain_size = 13;
         facts.peer_pbft_round = 4;
         facts.peer_dag_synced = false;
 
-        let plan = api.plan_status_sync(facts);
+        let plan = plan_status_sync(facts);
 
         assert!(!plan.request_pbft_sync);
         assert!(!plan.request_pending_dag_blocks);
@@ -8354,45 +8666,8 @@ mod tests {
     }
 
     #[test]
-    fn plan_status_egress_includes_initial_metadata() {
-        let plan = plan_status_egress(status_egress_facts(true));
-
-        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
-        assert_eq!(plan.peer_pbft_chain_size, 10);
-        assert_eq!(plan.peer_pbft_round, 5);
-        assert_eq!(plan.peer_dag_level, 44);
-        assert!(plan.peer_syncing);
-        assert!(plan.include_initial_data);
-        assert_eq!(plan.chain_id, 7);
-        assert_eq!(plan.genesis_hash, hash(1));
-        assert_eq!(plan.node_major_version, 2);
-        assert_eq!(plan.node_minor_version, 3);
-        assert_eq!(plan.node_patch_version, 4);
-        assert!(plan.is_light_node);
-        assert_eq!(plan.light_node_history, 8);
-    }
-
-    #[test]
-    fn plan_status_egress_uses_deep_sync_flag_for_standard_status() {
-        let mut facts = status_egress_facts(false);
-        facts.pbft_syncing = true;
-        facts.deep_pbft_syncing = false;
-
-        let plan = plan_status_egress(facts);
-
-        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
-        assert!(!plan.peer_syncing);
-        assert!(!plan.include_initial_data);
-        assert_eq!(plan.chain_id, 0);
-        assert_eq!(plan.genesis_hash, [0; 32]);
-        assert_eq!(plan.light_node_history, 0);
-    }
-
-    #[test]
     fn plan_initial_status_accepts_matching_status() {
-        let api = ConsensusNetworkApi::new();
-
-        let plan = api.plan_initial_status(initial_status_facts());
+        let plan = plan_initial_status(initial_status_facts());
 
         assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
         assert!(plan.accept_peer);
@@ -8401,11 +8676,10 @@ mod tests {
 
     #[test]
     fn plan_initial_status_rejects_chain_id_mismatch() {
-        let api = ConsensusNetworkApi::new();
         let mut facts = initial_status_facts();
         facts.peer_chain_id = 8;
 
-        let plan = api.plan_initial_status(facts);
+        let plan = plan_initial_status(facts);
 
         assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_CHAIN_ID_MISMATCH);
         assert!(!plan.accept_peer);
@@ -8414,11 +8688,10 @@ mod tests {
 
     #[test]
     fn plan_initial_status_rejects_genesis_mismatch() {
-        let api = ConsensusNetworkApi::new();
         let mut facts = initial_status_facts();
         facts.peer_genesis_hash = hash(2);
 
-        let plan = api.plan_initial_status(facts);
+        let plan = plan_initial_status(facts);
 
         assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_GENESIS_MISMATCH);
         assert!(!plan.accept_peer);
@@ -8427,13 +8700,12 @@ mod tests {
 
     #[test]
     fn plan_initial_status_rejects_light_node_without_history() {
-        let api = ConsensusNetworkApi::new();
         let mut facts = initial_status_facts();
         facts.peer_is_light_node = true;
         facts.peer_light_node_history = 1;
         facts.peer_pbft_chain_size = 20;
 
-        let plan = api.plan_initial_status(facts);
+        let plan = plan_initial_status(facts);
 
         assert_eq!(
             plan.status,
@@ -8724,7 +8996,8 @@ mod tests {
         assert_eq!(effect.kind, NETWORK_EFFECT_KIND_REQUEST_SYNC);
         assert_eq!(effect.peer_id, peer(7));
         assert_eq!(effect.sync_kind, NETWORK_SYNC_KIND_PBFT_CHAIN);
-        assert_eq!(effect.sync_start, 13);
+        assert_eq!(effect.sync_start, 10);
+        assert_eq!(effect.payload_bytes, vec![0xc1, 0x0a]);
         assert_eq!(effect.source_payload_id, 99);
     }
 
@@ -10266,18 +10539,5 @@ mod tests {
             snapshot.last_stop_reason,
             NETWORK_PBFT_SYNC_STOP_REASON_DISCONNECTED
         );
-    }
-
-    #[test]
-    fn native_status_egress_preserves_initial_active_and_periodic_deep_semantics() {
-        let mut api = ConsensusNetworkApi::new();
-        let _ = api.begin_pbft_sync(sync_start_request(1_000, 7, 20));
-        let _ = api.update_pbft_sync_period(19);
-
-        let initial = api.status_egress(status_egress_facts(true));
-        let periodic = api.status_egress(status_egress_facts(false));
-
-        assert!(initial.peer_syncing);
-        assert!(!periodic.peer_syncing);
     }
 }

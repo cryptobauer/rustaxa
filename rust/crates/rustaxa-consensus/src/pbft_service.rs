@@ -353,6 +353,8 @@ pub struct PbftServiceConfig {
     pub is_light_node: bool,
     /// Number of finalized PBFT periods retained by a light node.
     pub light_node_history: u64,
+    /// Exact immutable identity advertised and validated by the status pipeline.
+    pub network_identity: crate::network_api::NetworkNodeIdentity,
     /// PBFT committee size used by strict sync-certificate validation.
     pub committee_size: u64,
     /// Proposal committee size used by strict sync-certificate validation.
@@ -443,6 +445,15 @@ impl PbftServiceConfig {
             deep_syncing_threshold,
             is_light_node,
             light_node_history,
+            network_identity: crate::network_api::NetworkNodeIdentity {
+                chain_id,
+                genesis_hash: [0; 32],
+                node_major_version: u32::from(node_version.0),
+                node_minor_version: u32::from(node_version.1),
+                node_patch_version: u32::from(node_version.2),
+                is_light_node,
+                light_node_history,
+            },
             committee_size,
             number_of_proposers,
             dag_blocks_size,
@@ -3498,6 +3509,7 @@ impl PbftService {
             config.sync_level_size,
             config.is_light_node,
             config.light_node_history,
+            config.network_identity,
         )?;
 
         Ok(Self {
@@ -6509,6 +6521,7 @@ mod tests {
             deep_syncing_threshold: 5,
             is_light_node: false,
             light_node_history: 0,
+            network_identity: crate::network_api::NetworkNodeIdentity::default(),
             committee_size: 1,
             number_of_proposers: 1,
             dag_blocks_size: 50,
@@ -9135,6 +9148,86 @@ mod tests {
         );
         assert_eq!(next.queued_effect_count, 0);
         assert!(second.drain_work(6, 10).unwrap().effects.is_empty());
+
+        let status_bytes = first
+            .build_status_packet(crate::network_api::NetworkStatusPacketBuildRequest {
+                initial: true,
+                local_pbft_chain_size: 0,
+                local_pbft_round: 1,
+                local_dag_level: 0,
+            })
+            .unwrap()
+            .packet_rlp;
+        let status = second
+            .ingest_status_packet(crate::network_api::NetworkStatusPacketRequest {
+                peer_id: [7; 64],
+                packet_rlp: status_bytes,
+                source_peer_ready: false,
+                local_pbft_synced_period: 0,
+                local_pbft_period: 1,
+                local_pbft_round: 1,
+                peer_dag_synced: false,
+            })
+            .unwrap();
+        assert!(status.initial);
+        assert!(status.accept_peer);
+        assert_eq!(status.peer_pbft_period, 1);
+
+        let periodic_status_bytes = first
+            .build_status_packet(crate::network_api::NetworkStatusPacketBuildRequest {
+                initial: false,
+                local_pbft_chain_size: 0,
+                local_pbft_round: 1,
+                local_dag_level: 0,
+            })
+            .unwrap()
+            .packet_rlp;
+        let pending_periodic = second
+            .ingest_status_packet(crate::network_api::NetworkStatusPacketRequest {
+                peer_id: [8; 64],
+                packet_rlp: periodic_status_bytes.clone(),
+                source_peer_ready: false,
+                local_pbft_synced_period: 0,
+                local_pbft_period: 1,
+                local_pbft_round: 1,
+                peer_dag_synced: false,
+            })
+            .unwrap();
+        assert!(!pending_periodic.malicious);
+        assert!(!pending_periodic.accept_peer);
+        assert!(pending_periodic.disconnect_peer);
+        assert_eq!(
+            pending_periodic.error_code,
+            "NETWORK_STATUS_PERIODIC_FROM_PENDING_PEER"
+        );
+        let ready_periodic = second
+            .ingest_status_packet(crate::network_api::NetworkStatusPacketRequest {
+                peer_id: [7; 64],
+                packet_rlp: periodic_status_bytes,
+                source_peer_ready: true,
+                local_pbft_synced_period: 0,
+                local_pbft_period: 1,
+                local_pbft_round: 1,
+                peer_dag_synced: false,
+            })
+            .unwrap();
+        assert!(ready_periodic.accept_peer);
+
+        let malformed = first
+            .ingest_pbft_next_votes_bundle_packet_request(
+                crate::network_api::NetworkPbftNextVotesBundlePacketRequest {
+                    transport_lane: 6,
+                    peer_id: [7; 64],
+                    source_payload_id: 91,
+                    packet_rlp: vec![0xc1, 0x01],
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            malformed.status,
+            crate::network_api::NETWORK_INGRESS_STATUS_MALFORMED_PACKET
+        );
+        assert_eq!(malformed.queued_effect_count, 0);
 
         service.complete_pillar_bootstrap().unwrap();
         let pillar = second

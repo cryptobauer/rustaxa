@@ -48,8 +48,9 @@ RustPbftSyncPacketHandler::RustPbftSyncPacketHandler(
     std::shared_ptr<TimePeriodPacketsStats> packets_stats, net::ConsensusQueryClient pbft_chain,
     network::ConsensusLiveStatusProvider consensus_status, std::shared_ptr<final_chain::FinalChain> final_chain,
     network::ConsensusNetworkApiShared consensus_network_api, const addr_t& node_addr, const std::string& logs_prefix)
-    : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_chain),
-                         std::move(consensus_status), consensus_network_api, node_addr, logs_prefix + "PBFT_SYNC_PH"),
+    : RustConsensusTransportPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_chain),
+                                          std::move(consensus_status), consensus_network_api, node_addr,
+                                          logs_prefix + "PBFT_SYNC_PH"),
       final_chain_(std::move(final_chain)),
       consensus_network_api_(std::move(consensus_network_api)),
       periodic_events_tp_(1, true) {}

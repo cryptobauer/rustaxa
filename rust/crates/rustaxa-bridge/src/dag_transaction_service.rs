@@ -112,7 +112,7 @@ fn domain_sortition_config(config: SortitionRuntimeConfig) -> DomainSortitionCon
     )
 }
 
-fn domain_pbft_config(config: PbftServiceConfig) -> Result<DomainPbftServiceConfig> {
+fn domain_pbft_config(config: &PbftServiceConfig) -> Result<DomainPbftServiceConfig> {
     DomainPbftServiceConfig::from_runtime_values(
         config.genesis_lambda_ms,
         config.cacti_lambda_max_ms,
@@ -140,7 +140,7 @@ fn domain_pbft_config(config: PbftServiceConfig) -> Result<DomainPbftServiceConf
             config.node_version_patch,
             config.node_version_network,
         ),
-        config.node_version_suffix,
+        config.node_version_suffix.clone(),
         config.default_pbft_gas_limit,
         config.cornus_activation_period,
         config.cornus_pbft_gas_limit,
@@ -189,6 +189,8 @@ pub fn create_consensus_application(
             vrf_public_key: identity.vrf_public_key,
         })
         .collect();
+    let mut native_pbft_config = domain_pbft_config(&pbft_config)?;
+    native_pbft_config.network_identity.genesis_hash = *storage_genesis;
     let root = ConsensusApplicationBootstrap {
         storage_path: storage_path.into(),
         schema_major,
@@ -226,7 +228,7 @@ pub fn create_consensus_application(
                 cornus_dag_gas_limit: dag_proposer.cornus_dag_gas_limit,
                 cornus_pbft_gas_limit: pbft_config.cornus_pbft_gas_limit,
             },
-            pbft: domain_pbft_config(pbft_config)?,
+            pbft: native_pbft_config,
             signing_identities,
             polling_interval_ms,
         },

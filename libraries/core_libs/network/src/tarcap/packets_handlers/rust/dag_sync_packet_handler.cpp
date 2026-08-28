@@ -26,9 +26,9 @@ RustDagSyncPacketHandler::RustDagSyncPacketHandler(const FullNodeConfig& conf, s
                                                    network::ConsensusNetworkApiShared consensus_network_api,
                                                    TarcapVersion transport_lane, const addr_t& node_addr,
                                                    const std::string& logs_prefix)
-    : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(consensus_query),
-                         std::move(consensus_status), consensus_network_api, node_addr,
-                         logs_prefix + "DAG_SYNC_PH"),
+    : RustConsensusTransportPacketHandler(conf, std::move(peers_state), std::move(packets_stats),
+                                          std::move(consensus_query), std::move(consensus_status),
+                                          consensus_network_api, node_addr, logs_prefix + "DAG_SYNC_PH"),
       consensus_network_api_(std::move(consensus_network_api)),
       transport_lane_(transport_lane) {}
 

@@ -1,13 +1,13 @@
 #pragma once
 
 #include "network/consensus_network_api.hpp"
-#include "network/tarcap/packets_handlers/interface/sync_packet_handler.hpp"
+#include "network/tarcap/packets_handlers/rust/consensus_transport_packet_handler.hpp"
 #include "network/tarcap/tarcap_version.hpp"
 
 namespace taraxa::network::tarcap {
 
 /** Rust-mode DAG-sync packet transport adapter over native sequential admission. */
-class RustDagSyncPacketHandler final : public ISyncPacketHandler {
+class RustDagSyncPacketHandler final : public RustConsensusTransportPacketHandler {
  public:
   RustDagSyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                            std::shared_ptr<TimePeriodPacketsStats> packets_stats,

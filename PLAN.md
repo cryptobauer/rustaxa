@@ -863,9 +863,12 @@ Rules:
   periodic transaction fanout helpers. `ConsensusNetworkApi` now prepares bounded one-shot egress operations from
   canonical bytes, exposes only exact known-object probes for an immutable lane-serialized peer snapshot, then owns
   peer eligibility, known/sync filtering, exclusions, bundle chunking, packet construction, target selection, and
-  send-dependent known marks. Tarcap executes only exact-peer packet sends and known-cache writes. `CRW-N01` remains
-  active because latest-status and get-next-votes scalar ingress decoding still resides in C++; blocked `CRW-E02`
-  remains unchanged.
+  send-dependent known marks. Tarcap executes only exact-peer packet sends and known-cache writes. The final
+  latest `CRW-N01` checkpoint moves latest-status and get-next-votes inspection to canonical-byte native operations, injects
+  immutable status identity once at application bootstrap, source-selects the untouched C++ status/sync hierarchy,
+  and removes the last Rust-mode sync-base dependency and handler-local transport throttle. `CRW-N01` remains active
+  for the exact audited residual `GetPillarVotesBundlePacketHandler`, which still decodes its scalar period/block-hash
+  request and constructs its response route in C++; blocked `CRW-E02` remains unchanged.
 - Ignore logging when deciding whether behavior can move to Rust. Logs are boundary observability, not consensus
   ownership. Keep temporary C++ logging only as an executor/reporting detail while moving the underlying decision,
   state transition, or persistence logic into Rust.

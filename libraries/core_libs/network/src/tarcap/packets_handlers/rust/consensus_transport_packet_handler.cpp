@@ -2,7 +2,6 @@
 
 #include <stdexcept>
 
-#include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 #include "network/tarcap/taraxa_peer.hpp"
 
@@ -23,6 +22,14 @@ constexpr uint8_t kObjectPillarVote = 5;
 constexpr uint8_t kSyncPbftChain = 0;
 constexpr uint8_t kSyncPbftNextVotes = 1;
 constexpr uint32_t kPacketDagBlock = 5;
+constexpr uint8_t kNetworkStatusPlanStatusNoEligiblePeer = 2;
+constexpr uint8_t kNetworkStatusPlanStatusSyncNotNeeded = 3;
+constexpr uint8_t kNetworkPbftSyncStopReasonTransportFailed = 4;
+
+uint64_t monotonicMilliseconds() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 network::ConsensusPeerCandidate toPeerCandidate(const std::shared_ptr<TaraxaPeer>& peer) {
   return {peer->getId().asArray(),
@@ -52,6 +59,67 @@ RustConsensusTransportPacketHandler::RustConsensusTransportPacketHandler(
 }
 
 RustConsensusTransportPacketHandler::~RustConsensusTransportPacketHandler() = default;
+
+void RustConsensusTransportPacketHandler::startSyncingPbft() {
+  const auto consensus_status = consensus_status_();
+  network::PbftSyncStartRequest request{};
+  request.start = true;
+  request.now_ms = monotonicMilliseconds();
+  request.local_pbft_synced_period = consensus_status.syncing_period;
+  request.local_pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
+  for (const auto& [peer_id, peer] : peers_state_->getAllPeers()) {
+    auto candidate = toPeerCandidate(peer);
+    candidate.peer_id = peer_id.asArray();
+    request.candidates.push_back(std::move(candidate));
+  }
+
+  const auto outcome = rust_consensus_network_api_->beginPbftSync(request);
+  if (!outcome.started) {
+    if (outcome.status == kNetworkStatusPlanStatusNoEligiblePeer) {
+      LOG(log_nf_) << "Restarting syncing PBFT not possible since no connected peers";
+    } else if (outcome.status == kNetworkStatusPlanStatusSyncNotNeeded) {
+      LOG(log_nf_) << "Restarting syncing PBFT not needed since our pbft chain size: "
+                   << request.local_pbft_synced_period << "(" << request.local_pbft_chain_size
+                   << ") is greater or equal than max node pbft chain size:" << outcome.peer_pbft_chain_size;
+    } else {
+      LOG(log_dg_) << "startSyncingPbft skipped with status " << static_cast<uint32_t>(outcome.status) << ", error "
+                   << outcome.error_code;
+    }
+    return;
+  }
+
+  const auto selected_peer =
+      peers_state_->getPeer(dev::p2p::NodeID(outcome.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer));
+  if (!selected_peer) {
+    rust_consensus_network_api_->stopPbftSync(outcome.generation, outcome.peer_id,
+                                              kNetworkPbftSyncStopReasonTransportFailed);
+    return;
+  }
+  if (selected_peer->dagSyncingAllowed()) {
+    selected_peer->peer_dag_synced_ = false;
+  }
+  if (outcome.request_period <= selected_peer->pbft_chain_size_ && syncPeerPbft(outcome.request_period)) {
+    return;
+  }
+  rust_consensus_network_api_->stopPbftSync(outcome.generation, outcome.peer_id,
+                                            kNetworkPbftSyncStopReasonTransportFailed);
+}
+
+bool RustConsensusTransportPacketHandler::syncPeerPbft(PbftPeriod request_period) {
+  const auto sync = rust_consensus_network_api_->pbftSyncStatus(monotonicMilliseconds());
+  if (!sync.active || !sync.has_peer) {
+    LOG(log_er_) << "Unable to send GetPbftSyncPacket. No syncing peer set.";
+    return false;
+  }
+  const auto syncing_peer =
+      peers_state_->getPeer(dev::p2p::NodeID(sync.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer));
+  if (!syncing_peer || request_period > syncing_peer->pbft_chain_size_) {
+    LOG(log_wr_) << "Unable to send GetPbftSyncPacket for period " << request_period;
+    return false;
+  }
+  return sealAndSend(syncing_peer->getId(), SubprotocolPacketType::kGetPbftSyncPacket,
+                     encodePacketRlp(GetPbftSyncPacket{request_period}));
+}
 
 void RustConsensusTransportPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer> peer) {
   std::vector<network::ConsensusPeerCandidate> candidates;
@@ -90,30 +158,46 @@ void RustConsensusTransportPacketHandler::requestPendingDagBlocks(std::shared_pt
   }
 }
 
-bool RustConsensusTransportPacketHandler::requestPbftNextVotesAtPeriodRound(const dev::p2p::NodeID& peer_id,
-                                                                            PbftPeriod peer_pbft_period,
-                                                                            PbftRound peer_pbft_round) {
-  return sealAndSend(peer_id, SubprotocolPacketType::kGetNextVotesSyncPacket,
-                     encodePacketRlp(GetNextVotesBundlePacket{peer_pbft_period, peer_pbft_round}));
-}
-
 network::ConsensusTransportExecutor RustConsensusTransportPacketHandler::consensusTransportExecutor() {
   return {[this](const network::ConsensusTransportEffect& effect) -> network::ConsensusTransportExecutionResult {
     try {
       const auto peer_id = dev::p2p::NodeID(effect.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
       if (effect.kind == kEffectRequestSync && effect.sync_kind == kSyncPbftChain) {
-        if (!tryReservePbftSyncRequest()) {
-          return {};
+        const auto peer = peers_state_->getPeer(peer_id);
+        if (!peer) {
+          throw std::runtime_error("PBFT sync target peer disconnected");
         }
-        if (!sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
-                         encodePacketRlp(GetPbftSyncPacket{effect.sync_start}))) {
+        const auto consensus_status = consensus_status_();
+        network::PbftSyncStartRequest request{};
+        request.start = true;
+        request.now_ms = monotonicMilliseconds();
+        request.local_pbft_synced_period = consensus_status.syncing_period;
+        request.local_pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
+        request.candidates.push_back(toPeerCandidate(peer));
+        const auto outcome = rust_consensus_network_api_->beginPbftSync(request);
+        if (!outcome.started || outcome.peer_id != effect.peer_id) {
+          throw std::runtime_error("PBFT sync request did not open its exact native generation: " + outcome.error_code);
+        }
+        const auto expected_payload = encodePacketRlp(GetPbftSyncPacket{outcome.request_period});
+        if (effect.sync_start != outcome.request_period || effect.payload_bytes != expected_payload) {
+          rust_consensus_network_api_->stopPbftSync(outcome.generation, outcome.peer_id,
+                                                    kNetworkPbftSyncStopReasonTransportFailed);
+          throw std::runtime_error("PBFT sync effect disagrees with its native generation");
+        }
+        if (peer->dagSyncingAllowed()) {
+          peer->peer_dag_synced_ = false;
+        }
+        if (effect.payload_bytes.empty() ||
+            !sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
+                         dev::bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()))) {
+          rust_consensus_network_api_->stopPbftSync(outcome.generation, outcome.peer_id,
+                                                    kNetworkPbftSyncStopReasonTransportFailed);
           throw std::runtime_error("PBFT sync request transport failed");
         }
       } else if (effect.kind == kEffectRequestSync && effect.sync_kind == kSyncPbftNextVotes) {
-        if (!tryReserveNextVotesSyncRequest()) {
-          return {};
-        }
-        if (!requestPbftNextVotesAtPeriodRound(peer_id, effect.period, effect.round)) {
+        if (effect.payload_bytes.empty() ||
+            !sealAndSend(peer_id, SubprotocolPacketType::kGetNextVotesSyncPacket,
+                         dev::bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()))) {
           throw std::runtime_error("PBFT next-votes sync request transport failed");
         }
       } else if (effect.kind == kEffectMarkPeerKnown) {
@@ -225,26 +309,6 @@ network::ConsensusPacketRequest RustConsensusTransportPacketHandler::consensusPa
           validate_max_round_step,
           true,
           true};
-}
-
-bool RustConsensusTransportPacketHandler::tryReservePbftSyncRequest() {
-  const std::lock_guard lock(sync_request_mutex_);
-  const auto now = std::chrono::steady_clock::now();
-  if (now - last_pbft_sync_request_ <= kVoteSyncRequestInterval) {
-    return false;
-  }
-  last_pbft_sync_request_ = now;
-  return true;
-}
-
-bool RustConsensusTransportPacketHandler::tryReserveNextVotesSyncRequest() {
-  const std::lock_guard lock(sync_request_mutex_);
-  const auto now = std::chrono::steady_clock::now();
-  if (now - last_next_votes_sync_request_ <= kVoteSyncRequestInterval) {
-    return false;
-  }
-  last_next_votes_sync_request_ = now;
-  return true;
 }
 
 }  // namespace taraxa::network::tarcap

@@ -10,10 +10,10 @@
 #include <utility>
 #include <vector>
 
-#include "consensus_application_test.hpp"
 #include "config/config.hpp"
 #include "consensus/consensus_application.hpp"
 #include "consensus/consensus_host_ports.hpp"
+#include "consensus_application_test.hpp"
 #include "pillar_chain/pillar_block.hpp"
 #include "rustaxa-bridge/application_host_ffi.rs.h"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -190,14 +190,14 @@ TEST(ConsensusNetworkApiBridgeTest, statusAndLifecycleCommandsShareApplicationOw
   ASSERT_TRUE(started.started) << std::string(started.error_code);
   EXPECT_EQ(started.peer_id, candidate.peer_id);
 
-  rustaxa::NetworkStatusEgressRequest status{};
+  rustaxa::NetworkStatusPacketBuildRequest status{};
   status.initial = true;
   status.local_pbft_chain_size = 3;
   status.local_pbft_round = 2;
   status.local_dag_level = 7;
-  const auto egress = network_api->consensus_network_status_egress(status);
-  EXPECT_TRUE(egress.peer_syncing);
-  EXPECT_TRUE(egress.include_initial_data);
+  const auto egress = network_api->consensus_network_build_status_packet(status);
+  EXPECT_EQ(egress.status, 0);
+  EXPECT_FALSE(egress.packet_rlp.empty());
 
   rustaxa::NetworkPbftSyncCommand activity{};
   activity.kind = 1;

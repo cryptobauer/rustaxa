@@ -35,7 +35,6 @@ constexpr uint8_t kObjectDagBlock = 3;
 constexpr uint32_t kPacketPillarVotesBundle = 15;
 constexpr uint32_t kPacketPbftSync = 11;
 constexpr uint32_t kPacketPbftBlocksBundle = 16;
-constexpr uint32_t kPacketPbftVotesBundle = 3;
 constexpr uint32_t kPacketDagBlock = 5;
 constexpr uint32_t kPacketDagSync = 6;
 constexpr uint32_t kPacketGetDagSync = 12;
@@ -288,63 +287,53 @@ PbftSyncStartOutcome ConsensusNetworkApi::beginPbftSync(const PbftSyncStartReque
           outcome.deep_syncing,   outcome.enable_snapshot_creation};
 }
 
-InitialStatusOutcome ConsensusNetworkApi::admitInitialStatus(const InitialStatusRequest& request) const {
-  rustaxa::NetworkInitialStatusRequest native{};
-  native.local_chain_id = request.local_chain_id;
-  native.peer_chain_id = request.peer_chain_id;
-  native.expected_genesis_hash = request.expected_genesis_hash;
-  native.peer_genesis_hash = request.peer_genesis_hash;
-  native.local_pbft_synced_period = request.local_pbft_synced_period;
-  native.peer_pbft_chain_size = request.peer_pbft_chain_size;
-  native.peer_is_light_node = request.peer_is_light_node;
-  native.peer_light_node_history = request.peer_light_node_history;
-  const auto outcome = impl_->api->consensus_network_admit_initial_status(native);
-  return {outcome.status, static_cast<std::string>(outcome.error_code), outcome.accept_peer, outcome.disconnect_peer};
-}
-
-StatusEgressOutcome ConsensusNetworkApi::planStatusEgress(const StatusEgressRequest& request) const {
-  rustaxa::NetworkStatusEgressRequest native{};
-  native.initial = request.initial;
-  native.local_chain_id = request.local_chain_id;
-  native.genesis_hash = request.genesis_hash;
-  native.node_major_version = request.node_major_version;
-  native.node_minor_version = request.node_minor_version;
-  native.node_patch_version = request.node_patch_version;
-  native.is_light_node = request.is_light_node;
-  native.light_node_history = request.light_node_history;
-  native.local_pbft_chain_size = request.local_pbft_chain_size;
-  native.local_pbft_round = request.local_pbft_round;
-  native.local_dag_level = request.local_dag_level;
-  const auto outcome = impl_->api->consensus_network_status_egress(native);
-  return {outcome.status,
-          static_cast<std::string>(outcome.error_code),
-          outcome.peer_pbft_chain_size,
-          outcome.peer_pbft_round,
-          outcome.peer_dag_level,
-          outcome.peer_syncing,
-          outcome.include_initial_data,
-          outcome.chain_id,
-          outcome.genesis_hash,
-          outcome.node_major_version,
-          outcome.node_minor_version,
-          outcome.node_patch_version,
-          outcome.is_light_node,
-          outcome.light_node_history};
-}
-
-StatusFollowupOutcome ConsensusNetworkApi::planStatusFollowup(const StatusFollowupRequest& request) const {
-  rustaxa::NetworkStatusFollowupRequest native{};
+StatusPacketReport ConsensusNetworkApi::ingestStatusPacket(const StatusPacketRequest& request) const {
+  rustaxa::NetworkStatusPacketRequest native{};
   native.peer_id = request.peer_id;
+  native.packet_rlp.reserve(request.packet_rlp.size());
+  std::copy(request.packet_rlp.begin(), request.packet_rlp.end(), std::back_inserter(native.packet_rlp));
+  native.source_peer_ready = request.source_peer_ready;
   native.local_pbft_synced_period = request.local_pbft_synced_period;
   native.local_pbft_period = request.local_pbft_period;
   native.local_pbft_round = request.local_pbft_round;
-  native.peer_pbft_chain_size = request.peer_pbft_chain_size;
-  native.peer_pbft_period = request.peer_pbft_period;
-  native.peer_pbft_round = request.peer_pbft_round;
   native.peer_dag_synced = request.peer_dag_synced;
-  const auto outcome = impl_->api->consensus_network_process_status_followup(native);
-  return {outcome.request_pbft_sync, outcome.request_pending_dag_blocks, outcome.request_next_votes,
-          outcome.next_votes_period, outcome.next_votes_round,           outcome.sync_generation};
+  const auto outcome = impl_->api->consensus_network_ingest_status_packet(std::move(native));
+  StatusPacketReport report{};
+  report.status = outcome.status;
+  report.error_code = static_cast<std::string>(outcome.error_code);
+  report.malicious = outcome.malicious;
+  report.initial = outcome.initial;
+  report.accept_peer = outcome.accept_peer;
+  report.disconnect_peer = outcome.disconnect_peer;
+  report.peer_pbft_chain_size = outcome.peer_pbft_chain_size;
+  report.peer_pbft_period = outcome.peer_pbft_period;
+  report.peer_pbft_round = outcome.peer_pbft_round;
+  report.peer_dag_level = outcome.peer_dag_level;
+  report.peer_syncing = outcome.peer_syncing;
+  report.peer_is_light_node = outcome.peer_is_light_node;
+  report.peer_light_node_history = outcome.peer_light_node_history;
+  report.node_major_version = outcome.node_major_version;
+  report.node_minor_version = outcome.node_minor_version;
+  report.node_patch_version = outcome.node_patch_version;
+  report.request_pbft_sync = outcome.request_pbft_sync;
+  report.request_pending_dag_blocks = outcome.request_pending_dag_blocks;
+  report.request_next_votes = outcome.request_next_votes;
+  report.next_votes_period = outcome.next_votes_period;
+  report.next_votes_round = outcome.next_votes_round;
+  report.next_votes_request_rlp.assign(outcome.next_votes_request_rlp.begin(), outcome.next_votes_request_rlp.end());
+  report.sync_generation = outcome.sync_generation;
+  return report;
+}
+
+StatusPacketBuildReport ConsensusNetworkApi::buildStatusPacket(const StatusPacketBuildRequest& request) const {
+  rustaxa::NetworkStatusPacketBuildRequest native{};
+  native.initial = request.initial;
+  native.local_pbft_chain_size = request.local_pbft_chain_size;
+  native.local_pbft_round = request.local_pbft_round;
+  native.local_dag_level = request.local_dag_level;
+  const auto outcome = impl_->api->consensus_network_build_status_packet(native);
+  return {outcome.status, static_cast<std::string>(outcome.error_code),
+          std::vector<uint8_t>(outcome.packet_rlp.begin(), outcome.packet_rlp.end())};
 }
 
 PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
@@ -631,19 +620,9 @@ ConsensusPacketOutcome ConsensusNetworkApi::routeConsensusEgress(
     const auto decision = impl_->api->consensus_network_plan_egress(preparation.token, std::move(plan_peers));
     const auto execution = drainAndExecuteTransportEffects(request.transport_lane, source_payload_id, true, executor);
     const auto status = execution.failed_effect_count == 0 ? decision.status : uint8_t{1};
-    const auto error_code = execution.failed_effect_count == 0
-                                ? static_cast<std::string>(decision.error_code)
-                                : std::string{"NETWORK_EGRESS_TRANSPORT_PARTIAL"};
-    return ConsensusPacketOutcome{status,
-                                  false,
-                                  decision.queued_effect_count,
-                                  0,
-                                  0,
-                                  0,
-                                  false,
-                                  0,
-                                  error_code,
-                                  {}};
+    const auto error_code = execution.failed_effect_count == 0 ? static_cast<std::string>(decision.error_code)
+                                                               : std::string{"NETWORK_EGRESS_TRANSPORT_PARTIAL"};
+    return ConsensusPacketOutcome{status, false, decision.queued_effect_count, 0, 0, 0, false, 0, error_code, {}};
   } catch (...) {
     try {
       impl_->api->consensus_network_cancel_egress(preparation.token);
@@ -654,12 +633,9 @@ ConsensusPacketOutcome ConsensusNetworkApi::routeConsensusEgress(
   }
 }
 
-TransactionPacketOutcome ConsensusNetworkApi::ingestTransactionPacket(uint32_t transport_lane,
-                                                                      const std::array<uint8_t, 64>& peer_id,
-                                                                        uint64_t source_payload_id,
-                                                                        const std::vector<uint8_t>& packet_rlp,
-                                                                        const FullNodeConfig& config,
-                                                                        const ConsensusTransportExecutor& executor) {
+TransactionPacketOutcome ConsensusNetworkApi::ingestTransactionPacket(
+    uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id, uint64_t source_payload_id,
+    const std::vector<uint8_t>& packet_rlp, const FullNodeConfig& config, const ConsensusTransportExecutor& executor) {
   auto lane_lock = lockTransportLane(transport_lane);
   const auto last_block_number = impl_->final_chain->lastBlockNumber();
   rustaxa::NetworkTransactionPacketRequest request{};
@@ -789,8 +765,7 @@ DagBlockPacketOutcome ConsensusNetworkApi::ingestDagBlockPacket(
     egress.object_hash = report.admission.block_hash;
     egress.payload_bytes.assign(report.admission.block_rlp.begin(), report.admission.block_rlp.end());
     const ConsensusEgressPeerSnapshotProvider snapshot_provider{[&executor](const auto& probes) {
-      return executor.gossip_snapshot ? executor.gossip_snapshot(probes)
-                                      : std::vector<ConsensusEgressPeerSnapshot>{};
+      return executor.gossip_snapshot ? executor.gossip_snapshot(probes) : std::vector<ConsensusEgressPeerSnapshot>{};
     }};
     lane_lock.unlock();
     const auto gossip_outcome = routeConsensusEgress(egress, snapshot_provider, transport_executor);
@@ -1120,30 +1095,30 @@ PbftSyncRequestOutcome ConsensusNetworkApi::servePbftSyncRequest(uint32_t tarcap
                                 static_cast<std::string>(decision.error_code)};
 }
 
-PbftNextVotesBundleRequestOutcome ConsensusNetworkApi::servePbftNextVotesBundleRequest(
-    uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id, uint64_t peer_period, uint64_t peer_round,
-    uint64_t source_payload_id, const PbftNextVotesBundleExecutor& executor) {
+ConsensusPacketOutcome ConsensusNetworkApi::ingestPbftNextVotesRequest(uint32_t transport_lane,
+                                                                       const std::array<uint8_t, 64>& peer_id,
+                                                                       uint64_t source_payload_id,
+                                                                       const std::vector<uint8_t>& packet_rlp,
+                                                                       const ConsensusTransportExecutor& executor) {
   auto lane_lock = lockTransportLane(transport_lane);
-  const auto decision = impl_->api->consensus_network_ingest_pbft_next_votes_bundle_request(
-      transport_lane, peer_id, peer_period, peer_round, source_payload_id);
-
-  drainAndExecuteTransportEffects(
-      transport_lane, source_payload_id, true,
-      ConsensusTransportExecutor{[&executor, &peer_id](const ConsensusTransportEffect& effect) {
-        if (effect.peer_id != peer_id) {
-          throw std::runtime_error("Next-votes bundle effect targets a different peer");
-        }
-        if (effect.kind != kEffectSendPacket || effect.packet_kind != kPacketPbftVotesBundle) {
-          throw std::runtime_error("Next-votes bundle executor received an unsupported effect");
-        }
-        if (!executor.send_bundle(effect.payload_bytes)) {
-          throw std::runtime_error("Next-votes bundle transport send failed");
-        }
-        return ConsensusTransportExecutionResult{};
-      }});
-
-  return PbftNextVotesBundleRequestOutcome{decision.status, decision.queued_effect_count,
-                                           static_cast<std::string>(decision.error_code)};
+  rustaxa::NetworkPbftNextVotesBundlePacketRequest request{};
+  request.transport_lane = transport_lane;
+  request.peer_id = peer_id;
+  request.source_payload_id = source_payload_id;
+  request.packet_rlp.reserve(packet_rlp.size());
+  std::copy(packet_rlp.begin(), packet_rlp.end(), std::back_inserter(request.packet_rlp));
+  const auto decision = impl_->api->consensus_network_ingest_pbft_next_votes_bundle_request(std::move(request));
+  const auto execution = drainAndExecuteTransportEffects(transport_lane, source_payload_id, true, executor);
+  return {decision.status,
+          decision.status == 11,
+          decision.queued_effect_count,
+          0,
+          0,
+          execution.failed_effect_count,
+          false,
+          0,
+          static_cast<std::string>(decision.error_code),
+          {}};
 }
 
 PbftBlocksBundleOutcome ConsensusNetworkApi::admitPbftBlocksBundle(const std::vector<uint8_t>& packet_rlp,
