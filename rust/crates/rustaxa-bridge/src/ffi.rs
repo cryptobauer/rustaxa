@@ -405,9 +405,14 @@ pub mod rustaxa_ffi {
     }
 
     struct NetworkEgressPeerSnapshot {
+        transport_lane: u32,
         peer_id: [u8; 64],
         syncing: bool,
         known_probe_ids: Vec<u32>,
+        pbft_chain_size: u64,
+        dag_level: u64,
+        is_light_node: bool,
+        light_node_history: u64,
     }
 
     struct NetworkDagPacketRequest {
@@ -610,8 +615,8 @@ pub mod rustaxa_ffi {
         packet_rlp: Vec<u8>,
     }
 
-    /// Complete canonical get-next-votes request with transport correlation.
-    struct NetworkPbftNextVotesBundlePacketRequest {
+    /// Complete canonical request packet with transport correlation.
+    struct NetworkCanonicalRequestPacket {
         transport_lane: u32,
         peer_id: [u8; 64],
         source_payload_id: u64,
@@ -1235,15 +1240,11 @@ pub mod rustaxa_ffi {
         ) -> Result<NetworkPillarVotePacketReport>;
         pub fn consensus_network_ingest_pbft_next_votes_bundle_request(
             self: &BridgeConsensusNetworkApi,
-            request: NetworkPbftNextVotesBundlePacketRequest,
+            request: NetworkCanonicalRequestPacket,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_ingest_pillar_votes_bundle_request(
             self: &BridgeConsensusNetworkApi,
-            transport_lane: u32,
-            peer_id: [u8; 64],
-            period: u64,
-            pillar_block_hash: [u8; 32],
-            source_payload_id: u64,
+            request: NetworkCanonicalRequestPacket,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_ingest_get_pbft_sync_request(
             self: &BridgeConsensusNetworkApi,

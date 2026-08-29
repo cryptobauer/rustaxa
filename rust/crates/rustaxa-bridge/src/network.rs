@@ -1,5 +1,4 @@
-//! CXX conversion and lock-error mapping for the Rust-owned network/tarcap API; native consensus owns operation-specific
-//! routing, lane-local queue ordering, and effect-result validation while callers execute typed effects.
+//! CXX conversions for native network routing, lane-local effects, and executor acknowledgements.
 
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeApp;
@@ -345,7 +344,7 @@ impl BridgeConsensusNetworkApi {
     /// eligibility, previous-round selection, validation, chunking, and sends.
     pub fn consensus_network_ingest_pbft_next_votes_bundle_request(
         &self,
-        request: rustaxa_ffi::NetworkPbftNextVotesBundlePacketRequest,
+        request: rustaxa_ffi::NetworkCanonicalRequestPacket,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
             self.network.ingest_pbft_next_votes_bundle_packet_request(
@@ -362,20 +361,15 @@ impl BridgeConsensusNetworkApi {
     /// Routes one pillar-vote bundle request through the native PBFT application root.
     pub fn consensus_network_ingest_pillar_votes_bundle_request(
         &self,
-        transport_lane: u32,
-        peer_id: [u8; 64],
-        period: u64,
-        pillar_block_hash: [u8; 32],
-        source_payload_id: u64,
+        request: rustaxa_ffi::NetworkCanonicalRequestPacket,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
             self.network.ingest_get_pillar_votes_bundle_request(
-                rustaxa_consensus::NetworkGetPillarVotesBundleRequest {
-                    transport_lane,
-                    peer_id,
-                    period,
-                    pillar_block_hash,
-                    source_payload_id,
+                rustaxa_consensus::NetworkGetPillarVotesBundlePacketRequest {
+                    transport_lane: request.transport_lane,
+                    peer_id: request.peer_id,
+                    source_payload_id: request.source_payload_id,
+                    packet_rlp: request.packet_rlp,
                 },
             )?,
         ))
@@ -496,9 +490,14 @@ impl BridgeConsensusNetworkApi {
                     peers: peers
                         .into_iter()
                         .map(|peer| rustaxa_consensus::NetworkEgressPeerSnapshot {
+                            transport_lane: peer.transport_lane,
                             peer_id: peer.peer_id,
                             syncing: peer.syncing,
                             known_probe_ids: peer.known_probe_ids,
+                            pbft_chain_size: peer.pbft_chain_size,
+                            dag_level: peer.dag_level,
+                            is_light_node: peer.is_light_node,
+                            light_node_history: peer.light_node_history,
                         })
                         .collect(),
                 })?,

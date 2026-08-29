@@ -189,7 +189,7 @@ pub use network_api::{
     NetworkEffect, NetworkEffectAck, NetworkEffectBatch, NetworkEffectResult,
     NetworkEgressPeerSnapshot, NetworkEgressPlanRequest, NetworkEgressPreparation,
     NetworkEgressPrepareRequest, NetworkEgressProbe, NetworkGetDagSyncContext,
-    NetworkGetPbftSyncRequest, NetworkGetPillarVotesBundleRequest, NetworkIngressDecision,
+    NetworkGetPbftSyncRequest, NetworkGetPillarVotesBundlePacketRequest, NetworkIngressDecision,
     NetworkNodeIdentity, NetworkPbftNextVotesBundlePacketRequest,
     NetworkPbftNextVotesBundleRequest, NetworkPbftSyncActivityOutcome,
     NetworkPbftSyncActivityRequest, NetworkPbftSyncCommandOutcome, NetworkPbftSyncCommandRequest,

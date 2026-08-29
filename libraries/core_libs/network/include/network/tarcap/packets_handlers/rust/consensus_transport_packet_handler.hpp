@@ -6,6 +6,20 @@
 
 namespace taraxa::network::tarcap {
 
+using PbftSyncStopExecutor = std::function<PbftSyncLifecycleOutcome(uint64_t, const std::array<uint8_t, 64>&, uint8_t)>;
+
+/**
+ * Executes one started native PBFT-sync request and rolls its generation back on every physical-send failure.
+ *
+ * The supplied start report and effect must identify the same peer, period, and non-empty canonical packet. The
+ * physical executor performs only the exact send. Failure or an exception stops the generation with the stable
+ * transport-failed reason before returning a typed failure; successful sends leave the generation active.
+ */
+ConsensusTransportExecutionResult executePbftSyncTransportRequest(const ConsensusTransportEffect& effect,
+                                                                  const PbftSyncStartOutcome& started,
+                                                                  const PbftSyncStopExecutor& stop_sync,
+                                                                  const ConsensusTransportExecutor& transport);
+
 /**
  * Rust-mode packet-handler base containing only physical consensus transport leaves.
  *

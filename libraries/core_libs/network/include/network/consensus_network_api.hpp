@@ -143,9 +143,14 @@ struct ConsensusEgressProbe {
 
 /** Immutable physical peer facts for one prepared application-owned egress operation. */
 struct ConsensusEgressPeerSnapshot {
+  uint32_t transport_lane = 0;
   std::array<uint8_t, 64> peer_id{};
   bool syncing = false;
   std::vector<uint32_t> known_probe_ids;
+  uint64_t pbft_chain_size = 0;
+  uint64_t dag_level = 0;
+  bool is_light_node = false;
+  uint64_t light_node_history = 0;
 };
 
 using ConsensusEgressPeerSnapshotProvider =
@@ -249,21 +254,6 @@ struct StatusPacketBuildReport {
   uint8_t status = 0;
   std::string error_code;
   std::vector<uint8_t> packet_rlp;
-};
-
-/** Physical tarcap leaves for one native pillar-vote bundle response. */
-struct PillarVotesBundleExecutor {
-  std::function<bool(const std::vector<uint8_t>&)> send_bundle;
-  std::function<void(const std::array<uint8_t, 32>&)> mark_vote_known;
-  std::function<void(uint8_t)> report_peer;
-  std::function<void()> disconnect_peer;
-};
-
-/** Terminal native decision for one pillar-vote bundle request. */
-struct PillarVotesBundleRequestOutcome {
-  uint8_t status = 0;
-  uint32_t queued_effect_count = 0;
-  std::string error_code;
 };
 
 /** Physical tarcap leaves for one native Get-PBFT-sync response plan. */
@@ -466,11 +456,11 @@ class ConsensusNetworkApi final {
    * packet transport and peer bookkeeping; a failed chunk send suppresses its
    * marks without preventing later independent chunks.
    */
-  PillarVotesBundleRequestOutcome servePillarVotesBundleRequest(uint32_t transport_lane,
-                                                                const std::array<uint8_t, 64>& peer_id, uint64_t period,
-                                                                const std::array<uint8_t, 32>& pillar_block_hash,
-                                                                uint64_t source_payload_id,
-                                                                const PillarVotesBundleExecutor& executor);
+  ConsensusPacketOutcome ingestGetPillarVotesBundleRequest(uint32_t transport_lane,
+                                                           const std::array<uint8_t, 64>& peer_id,
+                                                           uint64_t source_payload_id,
+                                                           const std::vector<uint8_t>& packet_rlp,
+                                                           const ConsensusTransportExecutor& executor);
 
   /**
    * Routes and executes one canonical Get-PBFT-sync request on its transport lane.
@@ -568,6 +558,12 @@ class ConsensusNetworkApi final {
   ConsensusPacketOutcome routeConsensusEgress(const ConsensusEgressRequest& request,
                                               const ConsensusEgressPeerSnapshotProvider& peer_snapshot_provider,
                                               const ConsensusTransportExecutor& executor);
+
+  /** Selects one exact peer and sends a Rust-constructed get-pillar-votes request. */
+  ConsensusPacketOutcome requestPillarVotesBundle(uint64_t local_pbft_syncing_period, uint64_t period,
+                                                  const std::array<uint8_t, 32>& pillar_block_hash,
+                                                  const ConsensusEgressPeerSnapshotProvider& peer_snapshot_provider,
+                                                  const ConsensusTransportExecutor& executor);
 
   /** Routes one complete canonical transaction packet and executes only peer-known and physical gossip leaves. */
   TransactionPacketOutcome ingestTransactionPacket(uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id,

@@ -6436,7 +6436,7 @@ mod tests {
     use crate::gas_pricer::GasPricerConfig;
     use crate::network_api::{
         NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE, NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA,
-        NetworkGetPillarVotesBundleRequest, NetworkPbftNextVotesBundleRequest,
+        NetworkGetPillarVotesBundlePacketRequest, NetworkPbftNextVotesBundleRequest,
     };
     use crate::pbft_chain::{PbftBlockValidation, PbftChainHead};
     use crate::pbft_thresholds::PbftTwoTPlusOneThresholdStatus;
@@ -9231,12 +9231,16 @@ mod tests {
 
         service.complete_pillar_bootstrap().unwrap();
         let pillar = second
-            .ingest_get_pillar_votes_bundle_request(NetworkGetPillarVotesBundleRequest {
+            .ingest_get_pillar_votes_bundle_request(NetworkGetPillarVotesBundlePacketRequest {
                 transport_lane: 6,
                 peer_id: [8; 64],
-                period: 11,
-                pillar_block_hash: H256::from_low_u64_be(91).into(),
                 source_payload_id: 91,
+                packet_rlp: {
+                    let mut packet = RlpStream::new_list(2);
+                    packet.append(&11_u64);
+                    packet.append(&H256::from_low_u64_be(91));
+                    packet.out().to_vec()
+                },
             })
             .unwrap();
         assert_eq!(pillar.status, NETWORK_INGRESS_STATUS_PILLAR_VOTES_NO_DATA);
@@ -9276,12 +9280,16 @@ mod tests {
 
         let decision = service
             .network_service()
-            .ingest_get_pillar_votes_bundle_request(NetworkGetPillarVotesBundleRequest {
+            .ingest_get_pillar_votes_bundle_request(NetworkGetPillarVotesBundlePacketRequest {
                 transport_lane: 6,
                 peer_id: [8; 64],
-                period: 11,
-                pillar_block_hash: H256::from_low_u64_be(91).into(),
                 source_payload_id: 91,
+                packet_rlp: {
+                    let mut packet = RlpStream::new_list(2);
+                    packet.append(&11_u64);
+                    packet.append(&H256::from_low_u64_be(91));
+                    packet.out().to_vec()
+                },
             })
             .expect("disabled Ficus request is rejected without interval arithmetic");
 

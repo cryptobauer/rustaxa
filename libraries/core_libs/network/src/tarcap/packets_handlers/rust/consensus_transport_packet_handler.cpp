@@ -44,6 +44,40 @@ network::ConsensusPeerCandidate toPeerCandidate(const std::shared_ptr<TaraxaPeer
 
 }  // namespace
 
+ConsensusTransportExecutionResult executePbftSyncTransportRequest(const ConsensusTransportEffect& effect,
+                                                                  const PbftSyncStartOutcome& started,
+                                                                  const PbftSyncStopExecutor& stop_sync,
+                                                                  const ConsensusTransportExecutor& transport) {
+  const auto rollback = [&]() {
+    if (started.started && stop_sync) {
+      (void)stop_sync(started.generation, started.peer_id, kNetworkPbftSyncStopReasonTransportFailed);
+    }
+  };
+  const auto expected_payload = encodePacketRlp(GetPbftSyncPacket{started.request_period});
+  if (!started.started || started.peer_id != effect.peer_id || started.request_period != effect.sync_start ||
+      effect.payload_bytes != expected_payload) {
+    rollback();
+    return {false, "PBFT sync effect disagrees with its native generation"};
+  }
+  if (!transport.execute) {
+    rollback();
+    return {false, "PBFT sync transport executor is unavailable"};
+  }
+  try {
+    auto result = transport.execute(effect);
+    if (!result.success) {
+      rollback();
+    }
+    return result;
+  } catch (const std::exception& error) {
+    rollback();
+    return {false, error.what()};
+  } catch (...) {
+    rollback();
+    return {false, "PBFT sync transport executor failed"};
+  }
+}
+
 RustConsensusTransportPacketHandler::RustConsensusTransportPacketHandler(
     const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats, net::ConsensusQueryClient consensus_query,
@@ -175,24 +209,23 @@ network::ConsensusTransportExecutor RustConsensusTransportPacketHandler::consens
         request.local_pbft_chain_size = net::consensusPbftProgress(pbft_chain_).finalized_period;
         request.candidates.push_back(toPeerCandidate(peer));
         const auto outcome = rust_consensus_network_api_->beginPbftSync(request);
-        if (!outcome.started || outcome.peer_id != effect.peer_id) {
-          throw std::runtime_error("PBFT sync request did not open its exact native generation: " + outcome.error_code);
-        }
-        const auto expected_payload = encodePacketRlp(GetPbftSyncPacket{outcome.request_period});
-        if (effect.sync_start != outcome.request_period || effect.payload_bytes != expected_payload) {
-          rust_consensus_network_api_->stopPbftSync(outcome.generation, outcome.peer_id,
-                                                    kNetworkPbftSyncStopReasonTransportFailed);
-          throw std::runtime_error("PBFT sync effect disagrees with its native generation");
-        }
-        if (peer->dagSyncingAllowed()) {
-          peer->peer_dag_synced_ = false;
-        }
-        if (effect.payload_bytes.empty() ||
-            !sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
-                         dev::bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()))) {
-          rust_consensus_network_api_->stopPbftSync(outcome.generation, outcome.peer_id,
-                                                    kNetworkPbftSyncStopReasonTransportFailed);
-          throw std::runtime_error("PBFT sync request transport failed");
+        const auto execution = executePbftSyncTransportRequest(
+            effect, outcome,
+            [this](uint64_t generation, const std::array<uint8_t, 64>& selected_peer, uint8_t reason) {
+              return rust_consensus_network_api_->stopPbftSync(generation, selected_peer, reason);
+            },
+            {[this, peer, peer_id](const network::ConsensusTransportEffect& request_effect) {
+              if (peer->dagSyncingAllowed()) {
+                peer->peer_dag_synced_ = false;
+              }
+              const auto sent =
+                  sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
+                              dev::bytes(request_effect.payload_bytes.begin(), request_effect.payload_bytes.end()));
+              return network::ConsensusTransportExecutionResult{sent, sent ? "" : "PBFT sync request transport failed"};
+            }});
+        if (!execution.success) {
+          throw std::runtime_error(execution.diagnostic.empty() ? "PBFT sync request transport failed"
+                                                                : execution.diagnostic);
         }
       } else if (effect.kind == kEffectRequestSync && effect.sync_kind == kSyncPbftNextVotes) {
         if (effect.payload_bytes.empty() ||

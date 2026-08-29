@@ -3347,7 +3347,7 @@ EVM/`state_db` execution remain leaf C++ boundaries.
 
 | ID | Status | Work | Unblock condition | Complete when |
 | --- | --- | --- | --- | --- |
-| `CRW-N01` | `active` | Implement application-owned network ingress/egress pipelines, finish PBFT gossip effect-drain integration, fix deferred vote duplicate-with-block delivery, and migrate consensus routing/queueing decisions out of tarcap handlers. | Aggressive network consensus cutover is authorized in `PLAN.md`; coordinate with `CRW-12` and `CRW-16`. The exact remaining family is Rust-mode `GetPillarVotesBundlePacketHandler` scalar request decoding/response routing. | Rust owns packet inspection, admission/routing, consensus queues, peer/gossip/send decisions, typed effects, and result validation; C++ tarcap owns only socket/peer mechanics, wrapping, physical transport/disconnect execution, and lane scheduling. |
+| `CRW-N01` | `complete` | Implement application-owned network ingress/egress pipelines, finish PBFT gossip effect-drain integration, fix deferred vote duplicate-with-block delivery, and migrate consensus routing/queueing decisions out of tarcap handlers. | Aggressive network consensus cutover was authorized in `PLAN.md` and coordinated with `CRW-12`/`CRW-16`. | Rust owns packet inspection, admission/routing, consensus queues, peer/gossip/send decisions, typed effects, and result validation; C++ tarcap owns only socket/peer mechanics, packet sealing, physical transport/disconnect execution, known-cache mutation, and lane scheduling. |
 | `CRW-E01` | `complete` | Contract the external EVM/StateAPI boundary: move execution orchestration, canonical rewards payloads, result/receipt validation, commit ordering, recovery, and publication into Rust while retaining concrete EVM and `state_db` operations as leaf C++ calls. | Aggressive execution-orchestration cutover is authorized in `PLAN.md`; coordinate with `CRW-17`. Moving concrete EVM execution itself remains out of scope. | Native application/FinalChain tasks own orchestration and publication; StateAPI receives exact typed committed-state preflight, system-fact, ordered-execution, rewards, and state-commit leaves; no C++ execution/session handle or action loop remains. |
 | `CRW-E02` | `blocked` | Define and implement concrete-EVM state catch-up/import across native-only FinalChain periods. | Select a deterministic replay, state import, or unified-executor strategy and its parity oracle before expanding the concrete state boundary. | A concrete-EVM period can safely follow any native-only period with the exact prior state available; restart and mixed-lane parity prove no state fork. |
 
@@ -4358,6 +4358,25 @@ self-test, and the storage-boundary guard. Ten of eleven registered CTest entrie
 linker leg fails for unavailable `libz`/`snappy`. Python integration remains unavailable because the image lacks
 `virtualenv`/`pytest` and enforces PEP 668. Independent review approves the cut and records an end-to-end future-vote
 sync send-failure rollback test as non-blocking follow-up coverage.
+
+The final `CRW-N01` cut source-selects the untouched legacy get-pillar-votes handler and registers a standalone
+Rust-mode adapter for latest and v5. Canonical request bytes now cross one shared request carrier; native consensus
+strictly decodes and canonicalizes period/hash, enforces the Ficus schedule, performs live-first/storage-fallback vote
+lookup, revalidates native records, chunks at 250, constructs the complete outer response packet, and emits exact sends
+with send-dependent known marks. Outbound pillar-bundle requests reuse the bounded egress operation: Rust filters the
+immutable cross-lane peer snapshot, selects the serviceable max-chain peer, and constructs the complete request packet;
+C++ only re-resolves the selected lane/socket and physically sends it. The special scalar export, callback executor and
+outcome, mixed handler constructor/branch, Rust-mode legacy-interface lookup, and C++ response wrapper are deleted.
+The all-handler audit finds no Rust-mode handler-local consensus inspection, routing, queueing, peer selection, or
+packet-family planning, so `CRW-N01` is complete. Checked budgets remain 5,479/1,042/95/140/10/1/17 with all flag,
+partial-factory, and compatibility-constructor metrics at zero. `CRW-E02` remains blocked and untouched.
+
+Closeout validation passes the 114 focused native network tests, the 11-test CXX consensus bridge suite, the complete
+Rust-enabled six-test live network suite, the seven-test tarcap concurrency suite, the fast and aggregate consensus
+rewrite gates, and both inventory guards with self-tests. An isolated `RUSTAXA_ENABLE=OFF` tree builds and passes the
+legacy network, tarcap concurrency, and pillar-chain suites; five Rust-only pillar cases are skipped by design. CTest
+passes 10 of 11 registered suites, with only the unchanged Go static-link environment failure for unavailable `libz` and
+`snappy`. Python integration remains unavailable because this image lacks `virtualenv`/`pytest` and enforces PEP 668.
 
 ### DAG
 

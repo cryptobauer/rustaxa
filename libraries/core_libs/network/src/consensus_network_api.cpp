@@ -29,15 +29,14 @@ constexpr uint8_t kEffectMarkPeerKnown = 2;
 constexpr uint8_t kEffectReportPeer = 4;
 constexpr uint8_t kEffectDisconnectPeer = 5;
 constexpr uint8_t kEffectClearPeerSyncing = 9;
-constexpr uint8_t kObjectPillarVote = 5;
 constexpr uint8_t kObjectTransaction = 2;
 constexpr uint8_t kObjectDagBlock = 3;
-constexpr uint32_t kPacketPillarVotesBundle = 15;
 constexpr uint32_t kPacketPbftSync = 11;
 constexpr uint32_t kPacketPbftBlocksBundle = 16;
 constexpr uint32_t kPacketDagBlock = 5;
 constexpr uint32_t kPacketDagSync = 6;
 constexpr uint32_t kPacketGetDagSync = 12;
+constexpr uint8_t kEgressFamilyPillarVotesRequest = 5;
 constexpr uint32_t kEffectDrainBudget = 1024;
 constexpr uint8_t kPbftSyncIngressContinue = 0;
 constexpr uint8_t kPbftSyncIngressDuplicate = 1;
@@ -609,8 +608,13 @@ ConsensusPacketOutcome ConsensusNetworkApi::routeConsensusEgress(
     plan_peers.reserve(peers.size());
     for (const auto& peer : peers) {
       rustaxa::NetworkEgressPeerSnapshot native_peer{};
+      native_peer.transport_lane = peer.transport_lane == 0 ? request.transport_lane : peer.transport_lane;
       native_peer.peer_id = peer.peer_id;
       native_peer.syncing = peer.syncing;
+      native_peer.pbft_chain_size = peer.pbft_chain_size;
+      native_peer.dag_level = peer.dag_level;
+      native_peer.is_light_node = peer.is_light_node;
+      native_peer.light_node_history = peer.light_node_history;
       native_peer.known_probe_ids.reserve(peer.known_probe_ids.size());
       for (const auto probe_id : peer.known_probe_ids) {
         native_peer.known_probe_ids.push_back(probe_id);
@@ -628,6 +632,70 @@ ConsensusPacketOutcome ConsensusNetworkApi::routeConsensusEgress(
       impl_->api->consensus_network_cancel_egress(preparation.token);
     } catch (...) {
       // Preserve the original snapshot, planning, or transport failure.
+    }
+    throw;
+  }
+}
+
+ConsensusPacketOutcome ConsensusNetworkApi::requestPillarVotesBundle(
+    uint64_t local_pbft_syncing_period, uint64_t period, const std::array<uint8_t, 32>& pillar_block_hash,
+    const ConsensusEgressPeerSnapshotProvider& peer_snapshot_provider, const ConsensusTransportExecutor& executor) {
+  if (!peer_snapshot_provider) {
+    throw std::invalid_argument("Pillar-vote request requires an immutable peer snapshot provider");
+  }
+  const auto source_payload_id = impl_->next_egress_payload_id.fetch_add(1, std::memory_order_relaxed);
+  rustaxa::NetworkEgressPrepareRequest request{};
+  request.family = kEgressFamilyPillarVotesRequest;
+  request.source_payload_id = source_payload_id;
+  request.object_hash = pillar_block_hash;
+  for (int shift = 56; shift >= 0; shift -= 8) {
+    request.payload_bytes.push_back(static_cast<uint8_t>(period >> shift));
+    request.related_payload_bytes.push_back(static_cast<uint8_t>(local_pbft_syncing_period >> shift));
+  }
+  const auto preparation =
+      impl_->api->consensus_network_prepare_egress(impl_->consensus_application->service(), std::move(request));
+  try {
+    const auto peers = peer_snapshot_provider({});
+    rust::Vec<rustaxa::NetworkEgressPeerSnapshot> native_peers;
+    native_peers.reserve(peers.size());
+    std::vector<uint32_t> lanes;
+    for (const auto& peer : peers) {
+      rustaxa::NetworkEgressPeerSnapshot native_peer{};
+      native_peer.transport_lane = peer.transport_lane;
+      native_peer.peer_id = peer.peer_id;
+      native_peer.syncing = peer.syncing;
+      native_peer.pbft_chain_size = peer.pbft_chain_size;
+      native_peer.dag_level = peer.dag_level;
+      native_peer.is_light_node = peer.is_light_node;
+      native_peer.light_node_history = peer.light_node_history;
+      native_peers.push_back(std::move(native_peer));
+      if (std::find(lanes.begin(), lanes.end(), peer.transport_lane) == lanes.end()) {
+        lanes.push_back(peer.transport_lane);
+      }
+    }
+    const auto decision = impl_->api->consensus_network_plan_egress(preparation.token, std::move(native_peers));
+    uint32_t failed_effect_count = 0;
+    for (const auto lane : lanes) {
+      auto lane_lock = lockTransportLane(lane);
+      failed_effect_count +=
+          drainAndExecuteTransportEffects(lane, source_payload_id, true, executor).failed_effect_count;
+    }
+    return ConsensusPacketOutcome{
+        failed_effect_count == 0 ? decision.status : uint8_t{1},
+        false,
+        decision.queued_effect_count,
+        0,
+        0,
+        0,
+        false,
+        0,
+        failed_effect_count == 0 ? static_cast<std::string>(decision.error_code) : "NETWORK_EGRESS_TRANSPORT_PARTIAL",
+        {}};
+  } catch (...) {
+    try {
+      impl_->api->consensus_network_cancel_egress(preparation.token);
+    } catch (...) {
+      // Preserve the original planning or transport failure.
     }
     throw;
   }
@@ -1018,38 +1086,28 @@ std::unique_lock<std::mutex> ConsensusNetworkApi::lockTransportLane(uint32_t tra
   return std::unique_lock(*lane_mutex);
 }
 
-PillarVotesBundleRequestOutcome ConsensusNetworkApi::servePillarVotesBundleRequest(
-    uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id, uint64_t period,
-    const std::array<uint8_t, 32>& pillar_block_hash, uint64_t source_payload_id,
-    const PillarVotesBundleExecutor& executor) {
+ConsensusPacketOutcome ConsensusNetworkApi::ingestGetPillarVotesBundleRequest(
+    uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id, uint64_t source_payload_id,
+    const std::vector<uint8_t>& packet_rlp, const ConsensusTransportExecutor& executor) {
   auto lane_lock = lockTransportLane(transport_lane);
-  const auto decision = impl_->api->consensus_network_ingest_pillar_votes_bundle_request(
-      transport_lane, peer_id, period, pillar_block_hash, source_payload_id);
-
-  drainAndExecuteTransportEffects(
-      transport_lane, source_payload_id, true,
-      ConsensusTransportExecutor{[&executor, &peer_id](const ConsensusTransportEffect& effect) {
-        if (effect.peer_id != peer_id) {
-          throw std::runtime_error("Pillar-vote bundle effect targets a different peer");
-        }
-        if (effect.kind == kEffectSendPacket && effect.packet_kind == kPacketPillarVotesBundle) {
-          if (!executor.send_bundle(effect.payload_bytes)) {
-            throw std::runtime_error("Pillar-vote bundle transport send failed");
-          }
-        } else if (effect.kind == kEffectMarkPeerKnown && effect.object_kind == kObjectPillarVote) {
-          executor.mark_vote_known(effect.object_hash);
-        } else if (effect.kind == kEffectReportPeer) {
-          executor.report_peer(effect.reason_code);
-        } else if (effect.kind == kEffectDisconnectPeer) {
-          executor.disconnect_peer();
-        } else {
-          throw std::runtime_error("Pillar-vote bundle executor received an unsupported effect");
-        }
-        return ConsensusTransportExecutionResult{};
-      }});
-
-  return PillarVotesBundleRequestOutcome{decision.status, decision.queued_effect_count,
-                                         static_cast<std::string>(decision.error_code)};
+  rustaxa::NetworkCanonicalRequestPacket request{};
+  request.transport_lane = transport_lane;
+  request.peer_id = peer_id;
+  request.source_payload_id = source_payload_id;
+  request.packet_rlp.reserve(packet_rlp.size());
+  std::copy(packet_rlp.begin(), packet_rlp.end(), std::back_inserter(request.packet_rlp));
+  const auto decision = impl_->api->consensus_network_ingest_pillar_votes_bundle_request(std::move(request));
+  drainAndExecuteTransportEffects(transport_lane, source_payload_id, true, executor);
+  return ConsensusPacketOutcome{decision.status,
+                                false,
+                                decision.queued_effect_count,
+                                0,
+                                0,
+                                0,
+                                false,
+                                0,
+                                static_cast<std::string>(decision.error_code),
+                                {}};
 }
 
 PbftSyncRequestOutcome ConsensusNetworkApi::servePbftSyncRequest(uint32_t tarcap_version,
@@ -1101,7 +1159,7 @@ ConsensusPacketOutcome ConsensusNetworkApi::ingestPbftNextVotesRequest(uint32_t 
                                                                        const std::vector<uint8_t>& packet_rlp,
                                                                        const ConsensusTransportExecutor& executor) {
   auto lane_lock = lockTransportLane(transport_lane);
-  rustaxa::NetworkPbftNextVotesBundlePacketRequest request{};
+  rustaxa::NetworkCanonicalRequestPacket request{};
   request.transport_lane = transport_lane;
   request.peer_id = peer_id;
   request.source_payload_id = source_payload_id;

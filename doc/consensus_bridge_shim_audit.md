@@ -22,7 +22,7 @@ must migrate or disappear; they may not be promoted into this table merely to pr
 
 | Client class | Named C++ clients | Retained boundary | C++ ownership | Narrowing or deletion condition |
 | --- | --- | --- | --- | --- |
-| Tarcap transport | `network::tarcap` packet handlers and `TaraxaCapability` | `BridgeConsensusNetworkApi` | Canonical peer snapshots, peer/socket mechanics, packet wrapping, send/gossip/disconnect execution, physical lane scheduling | Keep operation-shaped ingress/egress and transport execution calls; delete each remaining handler-local consensus decision relay as `CRW-N01` lands. Status/sync lifecycle state and decisions are already native-owned. |
+| Tarcap transport | `network::tarcap` packet handlers and `TaraxaCapability` | `BridgeConsensusNetworkApi` | Canonical peer snapshots, peer/socket mechanics, packet sealing, send/disconnect execution, known-cache mutation, physical lane scheduling | Keep only operation-shaped canonical ingress/egress and exact transport execution. `CRW-N01` is complete and the Rust composition has no handler-local consensus planner. |
 | Concrete EVM/StateAPI executor | `FinalChain` overlay calling `StateAPI` and `state_db/` | Exact system-fact, ordered-transaction, rewards, and state-commit requests/reports | Concrete EVM calls, staged `state_db/` mutation, tracing, and raw executor operations | Keep only exact typed leaves until concrete EVM and `state_db` move native; no executor or session handle may reappear. |
 | Application process host | `App`'s single Rust-mode consensus process shell | Exact timer/process and best-effort public-observer ports | Monotonic/Unix clocks, interruptible wait/stop mechanics, worker joining, and public event dispatch | Delete each leaf when the native runtime can own that physical operation; never expand it into manager orchestration. |
 | Signing executor | App-owned node-wallet adapter | Exact digest-signing and VRF-proof requests/reports; no manager handle | Secret-key custody and signature execution | Keep only operation-shaped signing reports; native vote, pillar, slashing, and DAG-proposer tasks own selection and sequencing. |
@@ -104,6 +104,14 @@ publication leaf are deleted. Typed malformed-packet reports preserve peer-black
 bridge errors. This lowers the checked surface to 5,535 bridge lines, 1,042 shim lines, 96 functions,
 141 carriers, 10 handles, one shim directory, and 17 non-test C++ bridge consumers; all flag/factory/constructor metrics
 remain zero.
+
+The final network-handler cut keeps the 5,479/1,042/95/140/10/1/17 checked surface unchanged by reusing the bounded
+egress operation and one shared canonical-request carrier. It deletes the scalar pillar-bundle ingress signature,
+special callback executor/outcome, mixed Rust constructor and handler branch, and Rust-mode legacy-interface lookup.
+Native policy now owns request decoding, Ficus validation, lookup/result verification, response wrapping/chunking,
+exact-target dependencies, outbound peer selection, and complete request construction. The source-selected C++
+handler is byte-identical to `upstream-main`; retained C++ work is limited to peer/socket snapshots, packet sealing,
+physical send/disconnect and known-cache leaves, and lane scheduling. The complete handler audit closes `CRW-N01`.
 
 The pillar cut lowers the 12,100/4,075/211/170/14/3/28 DAG checkpoint by 764 bridge lines, 1,216 shim lines,
 16 CXX functions, 16 carriers, zero opaque handles, one shim directory, and two non-test C++ consumers. Granular flags,

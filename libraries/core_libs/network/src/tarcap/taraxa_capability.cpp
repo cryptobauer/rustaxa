@@ -31,7 +31,11 @@
 #else
 #include "network/tarcap/packets_handlers/rust/get_pbft_sync_packet_handler.hpp"
 #endif
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/latest/get_pillar_votes_bundle_packet_handler.hpp"
+#else
+#include "network/tarcap/packets_handlers/rust/get_pillar_votes_bundle_packet_handler.hpp"
+#endif
 #include "network/tarcap/packets_handlers/latest/pbft_blocks_bundle_packet_handler.hpp"
 #ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/latest/pbft_sync_packet_handler.hpp"
@@ -401,6 +405,37 @@ void TaraxaCapability::startSyncingPbft() {
 }
 
 #ifdef RUSTAXA_ENABLE
+bool TaraxaCapability::sendCanonicalPillarVotesBundleRequest(const dev::p2p::NodeID &peer_id,
+                                                             const std::vector<uint8_t> &packet_rlp) {
+  auto host = peers_state_->host_.lock();
+  if (!host) {
+    LOG(log_er_) << "Unable to send native pillar-vote request: host is unavailable";
+    return false;
+  }
+  constexpr auto packet_type = SubprotocolPacketType::kGetPillarVotesBundlePacket;
+  if (const auto sender = peers_state_->getPacketSenderPeer(peer_id, packet_type); !sender.first) {
+    LOG(log_wr_) << "Unable to send native pillar-vote request. Reason: " << sender.second;
+    host->disconnect(peer_id, dev::p2p::UserReason);
+    return false;
+  }
+  const auto begin = std::chrono::steady_clock::now();
+  const auto packet_size = packet_rlp.size();
+  host->send(peer_id, TARAXA_CAPABILITY_NAME, packet_type, dev::bytes(packet_rlp.begin(), packet_rlp.end()),
+             [this, begin, packet_size, peer_id]() {
+               if (!kConf.network.ddos_protection.log_packets_stats) {
+                 return;
+               }
+               const PacketStats packet_stats{
+                   1, packet_size,
+                   std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin),
+                   std::chrono::microseconds{0}};
+               all_packets_stats_->addSentPacket(convertPacketTypeToString(packet_type), peer_id, packet_stats);
+             });
+  return true;
+}
+#endif
+
+#ifdef RUSTAXA_ENABLE
 network::ConsensusPacketOutcome TaraxaCapability::gossipCanonicalVote(const std::vector<uint8_t> &vote_rlp,
                                                                       const std::vector<uint8_t> &proposed_block_rlp,
                                                                       bool rebroadcast, uint64_t source_payload_id) {
@@ -594,13 +629,19 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
             consensus_network_api, version,
 #endif
             node_addr, logs_prefix);
-      packets_handlers->registerHandler<GetPillarVotesBundlePacketHandler>(config, peers_state, packets_stats,
-#ifndef RUSTAXA_ENABLE
-                                                                           pillar_chain_mgr,
+      packets_handlers->registerHandler<
+#ifdef RUSTAXA_ENABLE
+          RustGetPillarVotesBundlePacketHandler
 #else
-                                                                           consensus_network_api, version,
+          GetPillarVotesBundlePacketHandler
 #endif
-                                                                           node_addr, logs_prefix);
+          >(config, peers_state, packets_stats,
+#ifdef RUSTAXA_ENABLE
+            pbft_chain, consensus_status, consensus_network_api, version,
+#else
+            pillar_chain_mgr,
+#endif
+            node_addr, logs_prefix);
       packets_handlers->registerHandler<
 #ifdef RUSTAXA_ENABLE
           RustPillarVotesBundlePacketHandler
@@ -786,13 +827,19 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
             consensus_network_api, version,
 #endif
             node_addr, logs_prefix);
-      packets_handlers->registerHandler<GetPillarVotesBundlePacketHandler>(config, peers_state, packets_stats,
-#ifndef RUSTAXA_ENABLE
-                                                                           pillar_chain_mgr,
+      packets_handlers->registerHandler<
+#ifdef RUSTAXA_ENABLE
+          RustGetPillarVotesBundlePacketHandler
 #else
-                                                                           consensus_network_api, version,
+          GetPillarVotesBundlePacketHandler
 #endif
-                                                                           node_addr, logs_prefix);
+          >(config, peers_state, packets_stats,
+#ifdef RUSTAXA_ENABLE
+            pbft_chain, consensus_status, consensus_network_api, version,
+#else
+            pillar_chain_mgr,
+#endif
+            node_addr, logs_prefix);
       packets_handlers->registerHandler<
 #ifdef RUSTAXA_ENABLE
           RustPillarVotesBundlePacketHandler

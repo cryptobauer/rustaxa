@@ -10,7 +10,9 @@
 
 #include "config/version.hpp"
 #include "network/tarcap/packets_handlers/interface/dag_block_packet_handler.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "network/tarcap/packets_handlers/interface/get_pillar_votes_bundle_packet_handler.hpp"
+#endif
 #include "network/tarcap/packets_handlers/interface/pillar_vote_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/interface/sync_packet_handler.hpp"
 #include "network/tarcap/packets_handlers/interface/transaction_packet_handler.hpp"
@@ -568,29 +570,52 @@ std::shared_ptr<network::tarcap::TaraxaPeer> Network::getMaxChainPeer() const {
 }
 
 void Network::requestPillarBlockVotesBundle(taraxa::PbftPeriod period, const taraxa::blk_hash_t &pillar_block_hash) {
-  // Max peer among all tarcaps
-  const auto max_peer = getMaxChainPeer();
 #ifdef RUSTAXA_ENABLE
-  if (!max_peer) {
-    return;
-  }
-
-  for (const auto &tarcap : tarcaps_) {
-    const auto peer = tarcap.second->getPeersState()->getPeer(max_peer->getId());
-    if (!peer) {
-      continue;
-    }
-
-    auto get_pillar_votes_bundle_packet_handler =
-        tarcap.second->getSpecificHandler<network::tarcap::IGetPillarVotesBundlePacketHandler>(
-            network::SubprotocolPacketType::kGetPillarVotesBundlePacket);
-    get_pillar_votes_bundle_packet_handler->requestPillarVotesBundle(period, pillar_block_hash, peer);
-    return;
+  const auto outcome = rust_consensus_network_api_->requestPillarVotesBundle(
+      consensus_status_().syncing_period, period, pillar_block_hash.asArray(),
+      [this](const auto &) {
+        std::vector<network::ConsensusEgressPeerSnapshot> snapshots;
+        for (const auto &[lane, tarcap] : tarcaps_) {
+          for (const auto &peer_entry : tarcap->getPeersState()->getAllPeers()) {
+            const auto candidate = toNetworkSyncPeerCandidate(peer_entry.second);
+            snapshots.push_back(network::ConsensusEgressPeerSnapshot{static_cast<uint32_t>(lane),
+                                                                     candidate.peer_id,
+                                                                     peer_entry.second->syncing_.load(),
+                                                                     {},
+                                                                     candidate.pbft_chain_size,
+                                                                     candidate.dag_level,
+                                                                     candidate.is_light_node,
+                                                                     candidate.light_node_history});
+          }
+        }
+        return snapshots;
+      },
+      network::ConsensusTransportExecutor{[this](const network::ConsensusTransportEffect &effect) {
+        constexpr uint8_t kSendPacketEffect = 0;
+        if (effect.kind != kSendPacketEffect ||
+            effect.packet_kind != static_cast<uint32_t>(network::SubprotocolPacketType::kGetPillarVotesBundlePacket)) {
+          return network::ConsensusTransportExecutionResult{false, "Unexpected native pillar-vote transport effect"};
+        }
+        const auto tarcap = tarcaps_.find(static_cast<network::tarcap::TarcapVersion>(effect.transport_lane));
+        if (tarcap == tarcaps_.end()) {
+          return network::ConsensusTransportExecutionResult{false, "Selected transport lane is unavailable"};
+        }
+        const auto peer_id = dev::p2p::NodeID(effect.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
+        if (!tarcap->second->getPeersState()->getPeer(peer_id) ||
+            !tarcap->second->sendCanonicalPillarVotesBundleRequest(peer_id, effect.payload_bytes)) {
+          return network::ConsensusTransportExecutionResult{false, "Selected pillar-vote peer send failed"};
+        }
+        return network::ConsensusTransportExecutionResult{};
+      }});
+  if (outcome.status != 0) {
+    LOG(log_dg_) << "Native pillar-vote request produced no successful transport work: " << outcome.error_code;
   }
   return;
 #endif
 
 #ifndef RUSTAXA_ENABLE
+  // Max peer among all tarcaps
+  const auto max_peer = getMaxChainPeer();
   for (const auto &tarcap : tarcaps_) {
     // Try to get most up-to-date peer
     const auto peer = tarcap.second->getPeersState()->getMaxChainPeer(pbft_mgr_);

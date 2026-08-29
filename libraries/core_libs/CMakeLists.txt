@@ -119,6 +119,14 @@ if(RUSTAXA_ENABLE)
          "/network/src/tarcap/packets_handlers/v4/get_pbft_sync_packet_handler\\.cpp$")
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
          "/network/src/tarcap/packets_handlers/latest/get_next_votes_bundle_packet_handler\\.cpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/interface/get_pillar_votes_bundle_packet_handler\\.cpp$")
+    list(FILTER NETWORK_HEADERS EXCLUDE REGEX
+         "/network/include/network/tarcap/packets_handlers/interface/get_pillar_votes_bundle_packet_handler\\.hpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/latest/get_pillar_votes_bundle_packet_handler\\.cpp$")
+    list(FILTER NETWORK_HEADERS EXCLUDE REGEX
+         "/network/include/network/tarcap/packets_handlers/latest/get_pillar_votes_bundle_packet_handler\\.hpp$")
     # Status and sync coordination are standalone native adapters in Rust mode.
     # Keep the untouched interface/latest status implementations pure-C++ only.
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
@@ -167,6 +175,10 @@ else()
          "/network/include/network/tarcap/packets_handlers/rust/get_next_votes_bundle_packet_handler\\.hpp$")
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX
          "/network/src/tarcap/packets_handlers/rust/get_next_votes_bundle_packet_handler\\.cpp$")
+    list(FILTER NETWORK_HEADERS EXCLUDE REGEX
+         "/network/include/network/tarcap/packets_handlers/rust/get_pillar_votes_bundle_packet_handler\\.hpp$")
+    list(FILTER NETWORK_SOURCES EXCLUDE REGEX
+         "/network/src/tarcap/packets_handlers/rust/get_pillar_votes_bundle_packet_handler\\.cpp$")
     list(FILTER NETWORK_HEADERS EXCLUDE REGEX
          "/network/include/network/tarcap/packets_handlers/rust/status_packet_handler\\.hpp$")
     list(FILTER NETWORK_SOURCES EXCLUDE REGEX

@@ -817,15 +817,18 @@ inside the transport-lane lock; native planning then owns known/sync filtering, 
 complete packet construction, exact targets, and dependent known marks. The shared executor no longer wraps vote or
 pillar packets or selects gossip peers. Rust-mode application observers and ingress rebroadcasts use the same prepared
 egress route, while the untouched object hierarchy remains source-selected for pure-C++ mode. The residual audit keeps
-The latest `CRW-N01` checkpoint cuts over latest status and get-next-votes. Native operations strictly decode their complete
+The latest status/get-next checkpoint cuts over those packet families. Native operations strictly decode their complete
 canonical request bytes, validate immutable chain/genesis/version/light-node identity injected once at application
 bootstrap, construct complete status and vote-bundle packet bytes, and return typed peer-bookkeeping or exact-target
 transport reports. Rust-mode status, DAG-sync, and PBFT-sync adapters derive only from the physical transport base;
 the legacy `ISyncPacketHandler` and latest status/get-next implementations remain source-selected for pure-C++ mode.
 Network and tarcap no longer recover Rust behavior through compatibility-handler casts, and C++ no longer throttles
-or acknowledges unsent native sync decisions. The all-handler audit leaves one exact Rust-mode residual:
-`GetPillarVotesBundlePacketHandler` still decodes the request period and pillar-block hash in C++ before invoking the
-native response route. `CRW-N01` remains active for that family; blocked `CRW-E02` is not started.
+or acknowledges unsent native sync decisions. The final `CRW-N01` cut replaces the mixed pillar-bundle handler with a
+standalone raw-byte adapter. Rust now owns strict request decoding, Ficus scheduling, vote lookup/validation, bounded
+chunking, complete response bytes, exact-target sends and dependent marks. Outbound selection and request construction
+reuse the bounded native egress operation over immutable cross-lane peer snapshots; C++ only re-resolves sockets and
+sends the selected bytes. The all-handler audit finds no handler-local consensus inspection, routing, queueing, target
+selection, or packet-family planning in the Rust composition. `CRW-N01` is complete; blocked `CRW-E02` is not started.
 
 ### 7. Contract DAG and transaction shims
 
@@ -853,7 +856,8 @@ getters; proposer and transaction-manager bridge modules; manager-shaped exports
 `transaction_manager_shim_test` are deleted. Native runtime, query, submission, network, duplicate/restart,
 partial-DAG-sync, and fake-host-port tests replace compatibility behavior. Untouched original manager/proposer classes
 remain available only in the all-Rust-disabled pure-C++ source selection. Global `CRW-12`/`CRW-14`/`CRW-15`/`CRW-16`
-and `CRW-N01` statuses remain active for their other families and completion conditions.
+statuses remained active for their other families and completion conditions at that checkpoint; the later network
+cuts below complete `CRW-N01`.
 
 ### 8. Reduce storage to bootstrap/admin/query boundaries
 

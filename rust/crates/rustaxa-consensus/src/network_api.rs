@@ -332,6 +332,7 @@ pub const NETWORK_EGRESS_FAMILY_PBFT_VOTES_BUNDLE: u8 = 1;
 pub const NETWORK_EGRESS_FAMILY_PILLAR_VOTE: u8 = 2;
 pub const NETWORK_EGRESS_FAMILY_DAG_BLOCK: u8 = 3;
 pub const NETWORK_EGRESS_FAMILY_TRANSACTION_GOSSIP: u8 = 4;
+pub const NETWORK_EGRESS_FAMILY_PILLAR_VOTES_REQUEST: u8 = 5;
 
 /// Canonical application egress input retained only until one snapshot is committed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -364,9 +365,37 @@ pub struct NetworkEgressPreparation {
 /// Immutable transport facts for one authenticated peer and exact native probes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkEgressPeerSnapshot {
+    /// Tarcap lane that owns the peer's physical socket.
+    pub transport_lane: u32,
+    /// Canonical 512-bit peer identity.
     pub peer_id: [u8; 64],
+    /// Whether the peer is currently syncing and therefore ineligible for egress.
     pub syncing: bool,
+    /// Prepared object probes already known by this peer.
     pub known_probe_ids: Vec<u32>,
+    /// Peer-advertised PBFT chain size used by native target selection.
+    pub pbft_chain_size: u64,
+    /// Peer-advertised DAG level used as the target-selection tie breaker.
+    pub dag_level: u64,
+    /// Whether the peer serves only a bounded PBFT history.
+    pub is_light_node: bool,
+    /// Number of historical PBFT periods retained by a light node.
+    pub light_node_history: u64,
+}
+
+impl Default for NetworkEgressPeerSnapshot {
+    fn default() -> Self {
+        Self {
+            transport_lane: 0,
+            peer_id: [0; 64],
+            syncing: false,
+            known_probe_ids: Vec::new(),
+            pbft_chain_size: 0,
+            dag_level: 0,
+            is_light_node: false,
+            light_node_history: 0,
+        }
+    }
 }
 
 /// Commit input for a previously prepared native egress operation.
@@ -446,6 +475,11 @@ enum PendingNetworkEgressPayload {
     },
     TransactionGossip {
         accounts: Vec<TransactionGossipAccount>,
+    },
+    PillarVotesRequest {
+        period: u64,
+        pillar_block_hash: [u8; 32],
+        local_pbft_syncing_period: u64,
     },
 }
 
@@ -647,24 +681,26 @@ pub struct NetworkPbftNextVotesBundleRequest {
     pub source_payload_id: u64,
 }
 
-/// Scalar request facts for one get-pillar-votes-bundle packet.
+/// Canonical get-pillar-votes-bundle packet and transport identity.
 ///
-/// The request carries only transport identity and the exact native pillar
-/// vote lookup coordinates. Schedule policy comes from the restored PBFT
-/// service configuration; callers cannot override activation or interval
-/// checks per packet.
+/// Rust strictly decodes the complete two-field packet. Schedule policy comes
+/// from application bootstrap; callers cannot inject decoded consensus facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NetworkGetPillarVotesBundleRequest {
+pub struct NetworkGetPillarVotesBundlePacketRequest {
     /// Tarcap version/lane that owns physical packet sends.
     pub transport_lane: u32,
     /// Peer that requested the pillar votes.
     pub peer_id: [u8; 64],
-    /// Requested PBFT period containing the pillar block hash.
-    pub period: u64,
-    /// Pillar block hash whose votes should be served.
-    pub pillar_block_hash: [u8; 32],
     /// Optional network-owned packet identity for effect correlation.
     pub source_payload_id: u64,
+    /// Complete canonical request payload `[period, pillar_block_hash]`.
+    pub packet_rlp: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GetPillarVotesBundleQuery {
+    period: u64,
+    pillar_block_hash: [u8; 32],
 }
 
 /// Canonical get-PBFT-sync ingress request owned by the native network service.
@@ -2505,18 +2541,28 @@ impl ConsensusNetworkService {
     /// propagates as an error.
     pub fn ingest_get_pillar_votes_bundle_request(
         &self,
-        request: NetworkGetPillarVotesBundleRequest,
+        request: NetworkGetPillarVotesBundlePacketRequest,
     ) -> Result<NetworkIngressDecision> {
+        let query = match decode_get_pillar_votes_bundle_packet(&request.packet_rlp) {
+            Ok(query) => query,
+            Err(_) => {
+                return Ok(local_network_decision(
+                    request.source_payload_id,
+                    NETWORK_INGRESS_STATUS_MALFORMED_PACKET,
+                    "NETWORK_GET_PILLAR_VOTES_BUNDLE_MALFORMED_RLP",
+                ));
+            }
+        };
         {
             let mut api = self.lock_api()?;
-            if let Some(decision) = api.reject_invalid_pillar_votes_request(&request) {
+            if let Some(decision) = api.reject_invalid_pillar_votes_request(&request, &query) {
                 return Ok(decision);
             }
         }
 
         let records = match self.pillar.pbft_service_pillar_get_verified_vote_payloads(
-            request.period,
-            &request.pillar_block_hash,
+            query.period,
+            &query.pillar_block_hash,
             false,
         ) {
             Ok(lookup) => lookup.votes,
@@ -2536,23 +2582,20 @@ impl ConsensusNetworkService {
                 ERROR_PILLAR_VOTES_NO_DATA,
             ));
         }
-        let chunks = match validate_and_chunk_pillar_votes(
-            records,
-            request.period,
-            request.pillar_block_hash,
-        ) {
-            Ok(chunks) => chunks,
-            Err(_) => {
-                return Ok(local_network_decision(
-                    request.source_payload_id,
-                    NETWORK_INGRESS_STATUS_INVALID_NATIVE_RESULT,
-                    ERROR_PILLAR_VOTES_INVALID_NATIVE_RESULT,
-                ));
-            }
-        };
+        let chunks =
+            match validate_and_chunk_pillar_votes(records, query.period, query.pillar_block_hash) {
+                Ok(chunks) => chunks,
+                Err(_) => {
+                    return Ok(local_network_decision(
+                        request.source_payload_id,
+                        NETWORK_INGRESS_STATUS_INVALID_NATIVE_RESULT,
+                        ERROR_PILLAR_VOTES_INVALID_NATIVE_RESULT,
+                    ));
+                }
+            };
         Ok(self
             .lock_api()?
-            .enqueue_pillar_vote_bundle_send_effects(request, chunks))
+            .enqueue_pillar_vote_bundle_send_effects(request, query, chunks))
     }
 
     /// Serves one canonical get-PBFT-sync request from native snapshots.
@@ -4380,18 +4423,19 @@ impl ConsensusNetworkApi {
 
     fn reject_invalid_pillar_votes_request(
         &mut self,
-        request: &NetworkGetPillarVotesBundleRequest,
+        request: &NetworkGetPillarVotesBundlePacketRequest,
+        query: &GetPillarVotesBundleQuery,
     ) -> Option<NetworkIngressDecision> {
-        let inactive = self.ficus_activation_period == u64::MAX
-            || request.period < self.ficus_activation_period;
+        let inactive =
+            self.ficus_activation_period == u64::MAX || query.period < self.ficus_activation_period;
         let first_pillar_period = if self.ficus_activation_period == 0 {
             self.pillar_blocks_interval
         } else {
             self.ficus_activation_period
         };
         let wrong_period = !inactive
-            && (request.period < first_pillar_period
-                || request.period % self.pillar_blocks_interval != 1);
+            && (query.period < first_pillar_period
+                || query.period % self.pillar_blocks_interval != 1);
         let (status, error_code) = if inactive {
             (
                 NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE,
@@ -4415,12 +4459,12 @@ impl ConsensusNetworkApi {
             packet_kind: 0,
             payload_bytes: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
-            object_hash: request.pillar_block_hash,
+            object_hash: query.pillar_block_hash,
             sync_kind: 0,
             sync_start: 0,
             reason_code: NETWORK_REASON_INVALID_PILLAR_VOTES_REQUEST,
             dependency_id: 0,
-            period: request.period,
+            period: query.period,
             round: 0,
         });
         self.enqueue_effect(NetworkEffect {
@@ -4432,12 +4476,12 @@ impl ConsensusNetworkApi {
             packet_kind: 0,
             payload_bytes: Vec::new(),
             object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
-            object_hash: request.pillar_block_hash,
+            object_hash: query.pillar_block_hash,
             sync_kind: 0,
             sync_start: 0,
             reason_code: NETWORK_REASON_INVALID_PILLAR_VOTES_REQUEST,
             dependency_id: report_id,
-            period: request.period,
+            period: query.period,
             round: 0,
         });
         Some(NetworkIngressDecision {
@@ -5062,7 +5106,8 @@ impl ConsensusNetworkApi {
 
     fn enqueue_pillar_vote_bundle_send_effects(
         &mut self,
-        request: NetworkGetPillarVotesBundleRequest,
+        request: NetworkGetPillarVotesBundlePacketRequest,
+        query: GetPillarVotesBundleQuery,
         chunks: Vec<PillarVoteNetworkChunk>,
     ) -> NetworkIngressDecision {
         let queued_effect_count = chunks.iter().fold(0_u32, |count, chunk| {
@@ -5080,12 +5125,12 @@ impl ConsensusNetworkApi {
                 packet_kind: NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE,
                 payload_bytes: chunk.payload_bytes,
                 object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
-                object_hash: request.pillar_block_hash,
+                object_hash: query.pillar_block_hash,
                 sync_kind: 0,
                 sync_start: 0,
                 reason_code: 0,
                 dependency_id: 0,
-                period: request.period,
+                period: query.period,
                 round: 0,
             });
             for vote_hash in chunk.vote_hashes {
@@ -5103,7 +5148,7 @@ impl ConsensusNetworkApi {
                     sync_start: 0,
                     reason_code: 0,
                     dependency_id: send_id,
-                    period: request.period,
+                    period: query.period,
                     round: 0,
                 });
             }
@@ -5642,6 +5687,40 @@ impl ConsensusNetworkApi {
                     probes,
                 )
             }
+            NETWORK_EGRESS_FAMILY_PILLAR_VOTES_REQUEST => {
+                ensure!(
+                    request.payload_bytes.len() == 8,
+                    "NETWORK_PILLAR_VOTES_REQUEST_PERIOD_MALFORMED"
+                );
+                ensure!(
+                    request.related_payload_bytes.len() == 8,
+                    "NETWORK_PILLAR_VOTES_REQUEST_CURSOR_MALFORMED"
+                );
+                let period = u64::from_be_bytes(request.payload_bytes.as_slice().try_into()?);
+                let local_pbft_syncing_period =
+                    u64::from_be_bytes(request.related_payload_bytes.as_slice().try_into()?);
+                let inactive = self.ficus_activation_period == u64::MAX
+                    || period < self.ficus_activation_period;
+                let first_pillar_period = if self.ficus_activation_period == 0 {
+                    self.pillar_blocks_interval
+                } else {
+                    self.ficus_activation_period
+                };
+                ensure!(
+                    !inactive
+                        && period >= first_pillar_period
+                        && period % self.pillar_blocks_interval == 1,
+                    "NETWORK_PILLAR_VOTES_OUTBOUND_INVALID_PERIOD"
+                );
+                (
+                    PendingNetworkEgressPayload::PillarVotesRequest {
+                        period,
+                        pillar_block_hash: request.object_hash,
+                        local_pbft_syncing_period,
+                    },
+                    Vec::new(),
+                )
+            }
             _ => return Err(anyhow!("NETWORK_EGRESS_FAMILY_UNSUPPORTED")),
         };
         let token = self.next_egress_token;
@@ -5919,6 +5998,51 @@ impl ConsensusNetworkApi {
                     peers,
                     accounts,
                 );
+            }
+            PendingNetworkEgressPayload::PillarVotesRequest {
+                period,
+                pillar_block_hash,
+                local_pbft_syncing_period,
+            } => {
+                if let Some(peer) = request
+                    .peers
+                    .into_iter()
+                    .filter(|peer| {
+                        !peer.syncing
+                            && (!peer.is_light_node
+                                || local_pbft_syncing_period
+                                    .saturating_add(peer.light_node_history)
+                                    >= peer.pbft_chain_size)
+                    })
+                    .max_by(|left, right| {
+                        left.pbft_chain_size
+                            .cmp(&right.pbft_chain_size)
+                            .then_with(|| left.dag_level.cmp(&right.dag_level))
+                            .then_with(|| right.peer_id.cmp(&left.peer_id))
+                            .then_with(|| right.transport_lane.cmp(&left.transport_lane))
+                    })
+                {
+                    self.enqueue_effect(NetworkEffect {
+                        effect_id: 0,
+                        source_payload_id: pending.source_payload_id,
+                        transport_lane: peer.transport_lane,
+                        kind: NETWORK_EFFECT_KIND_SEND_PACKET,
+                        peer_id: peer.peer_id,
+                        packet_kind: NETWORK_PACKET_KIND_GET_PILLAR_VOTES_BUNDLE,
+                        payload_bytes: encode_get_pillar_votes_bundle_packet(
+                            period,
+                            pillar_block_hash,
+                        ),
+                        object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE,
+                        object_hash: pillar_block_hash,
+                        sync_kind: 0,
+                        sync_start: 0,
+                        reason_code: 0,
+                        dependency_id: 0,
+                        period,
+                        round: 0,
+                    });
+                }
             }
         }
         Ok(NetworkIngressDecision {
@@ -6500,17 +6624,19 @@ fn validate_and_chunk_pillar_votes(
             .iter()
             .map(|(vote, _)| vote.clone())
             .collect::<Vec<_>>();
-        let payload_bytes = encode_optimized_pillar_votes_bundle_rlp(&votes)
+        let bundle_bytes = encode_optimized_pillar_votes_bundle_rlp(&votes)
             .context("NETWORK_PILLAR_VOTE_NATIVE_BUNDLE_ENCODING_FAILED")?;
-        let decoded = rustaxa_types::decode_optimized_pillar_votes_bundle_rlp(&payload_bytes)
+        let decoded = rustaxa_types::decode_optimized_pillar_votes_bundle_rlp(&bundle_bytes)
             .context("NETWORK_PILLAR_VOTE_NATIVE_BUNDLE_REVALIDATION_FAILED")?;
         ensure!(
             decoded == votes,
             "NETWORK_PILLAR_VOTE_NATIVE_BUNDLE_ORDER_MISMATCH"
         );
+        let mut packet = RlpStream::new_list(1);
+        packet.append_raw(&bundle_bytes, 1);
         chunks.push(PillarVoteNetworkChunk {
             vote_hashes: entries.iter().map(|(_, hash)| *hash).collect(),
-            payload_bytes,
+            payload_bytes: packet.out().to_vec(),
         });
     }
     Ok(chunks)
@@ -6647,6 +6773,37 @@ fn decode_get_next_votes_packet(bytes: &[u8]) -> Result<(u64, u64)> {
         "NETWORK_GET_NEXT_VOTES_NON_CANONICAL_RLP"
     );
     Ok((period, round))
+}
+
+fn encode_get_pillar_votes_bundle_packet(period: u64, pillar_block_hash: [u8; 32]) -> Vec<u8> {
+    let mut stream = RlpStream::new_list(2);
+    stream.append(&period);
+    stream.append(&pillar_block_hash.as_slice());
+    stream.out().to_vec()
+}
+
+fn decode_get_pillar_votes_bundle_packet(bytes: &[u8]) -> Result<GetPillarVotesBundleQuery> {
+    let rlp = Rlp::new(bytes);
+    ensure!(
+        rlp.item_count()? == 2,
+        "NETWORK_GET_PILLAR_VOTES_BUNDLE_INVALID_FIELD_COUNT"
+    );
+    let period = rlp.val_at(0)?;
+    let hash_bytes: Vec<u8> = rlp.val_at(1)?;
+    ensure!(
+        hash_bytes.len() == 32,
+        "NETWORK_GET_PILLAR_VOTES_BUNDLE_INVALID_HASH_LENGTH"
+    );
+    let mut pillar_block_hash = [0_u8; 32];
+    pillar_block_hash.copy_from_slice(&hash_bytes);
+    ensure!(
+        encode_get_pillar_votes_bundle_packet(period, pillar_block_hash) == bytes,
+        "NETWORK_GET_PILLAR_VOTES_BUNDLE_NON_CANONICAL_RLP"
+    );
+    Ok(GetPillarVotesBundleQuery {
+        period,
+        pillar_block_hash,
+    })
 }
 
 fn malformed_status_packet_report() -> NetworkStatusPacketReport {
@@ -7134,13 +7291,12 @@ mod tests {
         }
     }
 
-    fn pillar_request(period: u64, block_hash: H256) -> NetworkGetPillarVotesBundleRequest {
-        NetworkGetPillarVotesBundleRequest {
+    fn pillar_request(period: u64, block_hash: H256) -> NetworkGetPillarVotesBundlePacketRequest {
+        NetworkGetPillarVotesBundlePacketRequest {
             transport_lane: 6,
             peer_id: peer(8),
-            period,
-            pillar_block_hash: block_hash.into(),
             source_payload_id: 102,
+            packet_rlp: encode_get_pillar_votes_bundle_packet(period, block_hash.into()),
         }
     }
 
@@ -8077,7 +8233,10 @@ mod tests {
     fn invalid_pillar_request_reports_before_dependent_disconnect() {
         let mut api = ConsensusNetworkApi::with_pillar_schedule(10, 10);
         let request = pillar_request(9, H256::from_low_u64_be(90));
-        let decision = api.reject_invalid_pillar_votes_request(&request).unwrap();
+        let query = decode_get_pillar_votes_bundle_packet(&request.packet_rlp).unwrap();
+        let decision = api
+            .reject_invalid_pillar_votes_request(&request, &query)
+            .unwrap();
         assert_eq!(
             decision.status,
             NETWORK_INGRESS_STATUS_PILLAR_VOTES_INACTIVE
@@ -8112,12 +8271,16 @@ mod tests {
     #[test]
     fn pillar_request_requires_exact_pbft_with_pillar_period() {
         let mut api = ConsensusNetworkApi::with_pillar_schedule(10, 10);
+        let valid = pillar_request(11, H256::from_low_u64_be(90));
+        let valid_query = decode_get_pillar_votes_bundle_packet(&valid.packet_rlp).unwrap();
         assert!(
-            api.reject_invalid_pillar_votes_request(&pillar_request(11, H256::from_low_u64_be(90)))
+            api.reject_invalid_pillar_votes_request(&valid, &valid_query)
                 .is_none()
         );
+        let invalid = pillar_request(12, H256::from_low_u64_be(90));
+        let invalid_query = decode_get_pillar_votes_bundle_packet(&invalid.packet_rlp).unwrap();
         let decision = api
-            .reject_invalid_pillar_votes_request(&pillar_request(12, H256::from_low_u64_be(90)))
+            .reject_invalid_pillar_votes_request(&invalid, &invalid_query)
             .unwrap();
         assert_eq!(
             decision.status,
@@ -8139,8 +8302,9 @@ mod tests {
         assert_eq!(chunks.len(), 1);
 
         let mut api = ConsensusNetworkApi::with_pillar_schedule(10, 10);
-        let decision =
-            api.enqueue_pillar_vote_bundle_send_effects(pillar_request(11, block_hash), chunks);
+        let request = pillar_request(11, block_hash);
+        let query = decode_get_pillar_votes_bundle_packet(&request.packet_rlp).unwrap();
+        let decision = api.enqueue_pillar_vote_bundle_send_effects(request, query, chunks);
         assert_eq!(decision.queued_effect_count, 3);
         let send = api.drain_work(6, 10);
         assert_eq!(send.effects.len(), 1);
@@ -8150,8 +8314,13 @@ mod tests {
             NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE
         );
         assert_eq!(
-            rustaxa_types::decode_optimized_pillar_votes_bundle_rlp(&send.effects[0].payload_bytes)
-                .unwrap(),
+            rustaxa_types::decode_optimized_pillar_votes_bundle_rlp(
+                Rlp::new(&send.effects[0].payload_bytes)
+                    .at(0)
+                    .unwrap()
+                    .as_raw()
+            )
+            .unwrap(),
             vec![first.clone(), second.clone()]
         );
         api.report_effect_results(vec![effect_result(
@@ -8166,6 +8335,45 @@ mod tests {
             effect.kind == NETWORK_EFFECT_KIND_MARK_PEER_KNOWN
                 && effect.dependency_id == send.effects[0].effect_id
         }));
+    }
+
+    #[test]
+    fn failed_pillar_bundle_send_suppresses_dependent_known_marks() {
+        let block_hash = H256::from_low_u64_be(91);
+        let vote = signed_pillar_vote(0x48, 11, 91);
+        let chunks =
+            validate_and_chunk_pillar_votes(vec![pillar_record(&vote)], 11, block_hash.into())
+                .unwrap();
+        let mut api = ConsensusNetworkApi::with_pillar_schedule(10, 10);
+        let request = pillar_request(11, block_hash);
+        let query = decode_get_pillar_votes_bundle_packet(&request.packet_rlp).unwrap();
+        api.enqueue_pillar_vote_bundle_send_effects(request, query, chunks);
+        let send = api.drain_work(6, 10).effects;
+        assert_eq!(send.len(), 1);
+        api.report_effect_results(vec![effect_result(
+            &send[0],
+            NETWORK_EFFECT_RESULT_STATUS_FAILED,
+        )]);
+        assert!(api.drain_work(6, 10).effects.is_empty());
+    }
+
+    #[test]
+    fn pillar_bundle_chunking_wraps_complete_packets_at_two_hundred_fifty_votes() {
+        let block_hash = H256::from_low_u64_be(91);
+        let records = (1_u16..=251)
+            .map(|index| pillar_record(&signed_pillar_vote(index as u8, 11, 91)))
+            .collect();
+        let chunks = validate_and_chunk_pillar_votes(records, 11, block_hash.into()).unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].vote_hashes.len(), 250);
+        assert_eq!(chunks[1].vote_hashes.len(), 1);
+        for (chunk, expected) in chunks.iter().zip([250, 1]) {
+            let packet = Rlp::new(&chunk.payload_bytes);
+            assert_eq!(packet.item_count().unwrap(), 1);
+            let votes =
+                decode_optimized_pillar_votes_bundle_rlp(packet.at(0).unwrap().as_raw()).unwrap();
+            assert_eq!(votes.len(), expected);
+        }
     }
 
     #[test]
@@ -8307,6 +8515,105 @@ mod tests {
         assert_eq!(decode_get_next_votes_packet(&encoded).unwrap(), (10, 2));
         assert!(decode_get_next_votes_packet(&[0xc3, 0x81, 0x0a, 0x02]).is_err());
         assert!(decode_get_next_votes_packet(&[0xc1, 0x0a]).is_err());
+    }
+
+    #[test]
+    fn get_pillar_votes_codec_is_canonical_and_exact() {
+        let hash = H256::from_low_u64_be(91);
+        let encoded = encode_get_pillar_votes_bundle_packet(11, hash.into());
+        let decoded = decode_get_pillar_votes_bundle_packet(&encoded).unwrap();
+        assert_eq!(decoded.period, 11);
+        assert_eq!(decoded.pillar_block_hash, hash.to_fixed_bytes());
+        assert!(decode_get_pillar_votes_bundle_packet(&[0xc1, 0x0b]).is_err());
+        let mut noncanonical = RlpStream::new_list(2);
+        noncanonical.append_raw(&[0x81, 0x0b], 1);
+        noncanonical.append(&hash);
+        assert!(decode_get_pillar_votes_bundle_packet(&noncanonical.out()).is_err());
+        let mut short_hash = RlpStream::new_list(2);
+        short_hash.append(&11_u64);
+        short_hash.append(&[7_u8; 31].as_slice());
+        assert!(decode_get_pillar_votes_bundle_packet(&short_hash.out()).is_err());
+    }
+
+    #[test]
+    fn outbound_pillar_request_selects_exact_lane_and_builds_complete_packet() {
+        let mut api = ConsensusNetworkApi::with_pillar_schedule(10, 10);
+        let hash = H256::from_low_u64_be(91);
+        let preparation = api
+            .prepare_egress(
+                NetworkEgressPrepareRequest {
+                    family: NETWORK_EGRESS_FAMILY_PILLAR_VOTES_REQUEST,
+                    transport_lane: 0,
+                    source_payload_id: 104,
+                    source_peer_id: [0; 64],
+                    rebroadcast: false,
+                    object_hash: hash.into(),
+                    payload_bytes: 11_u64.to_be_bytes().to_vec(),
+                    related_payload_bytes: 10_u64.to_be_bytes().to_vec(),
+                },
+                Vec::new(),
+                Vec::new(),
+                0,
+            )
+            .unwrap();
+        assert!(preparation.probes.is_empty());
+        let decision = api
+            .plan_egress(NetworkEgressPlanRequest {
+                token: preparation.token,
+                peers: vec![
+                    NetworkEgressPeerSnapshot {
+                        transport_lane: 5,
+                        peer_id: peer(1),
+                        pbft_chain_size: 12,
+                        dag_level: 2,
+                        ..Default::default()
+                    },
+                    NetworkEgressPeerSnapshot {
+                        transport_lane: 6,
+                        peer_id: peer(2),
+                        pbft_chain_size: 13,
+                        dag_level: 1,
+                        ..Default::default()
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(decision.queued_effect_count, 1);
+        let effect = api.drain_work(6, 10).effects.pop().unwrap();
+        assert_eq!(effect.peer_id, peer(2));
+        assert_eq!(
+            effect.packet_kind,
+            NETWORK_PACKET_KIND_GET_PILLAR_VOTES_BUNDLE
+        );
+        assert_eq!(
+            decode_get_pillar_votes_bundle_packet(&effect.payload_bytes).unwrap(),
+            GetPillarVotesBundleQuery {
+                period: 11,
+                pillar_block_hash: hash.into(),
+            }
+        );
+    }
+
+    #[test]
+    fn failed_next_vote_send_suppresses_its_known_mark() {
+        let mut api = ConsensusNetworkApi::new();
+        let chunks = validate_next_votes_payloads(
+            PbftNextVotesBundleEgressPayloads {
+                next_votes_bundle_rlp: optimized_bundle([0x44; 32], 10, 2, 1, 1),
+                next_null_votes_bundle_rlp: Vec::new(),
+            },
+            10,
+            2,
+        )
+        .unwrap();
+        api.enqueue_next_votes_bundle_send_effects(next_votes_request(), 10, 3, chunks);
+        let send = api.drain_work(6, 10).effects;
+        assert_eq!(send.len(), 1);
+        api.report_effect_results(vec![effect_result(
+            &send[0],
+            NETWORK_EFFECT_RESULT_STATUS_FAILED,
+        )]);
+        assert!(api.drain_work(6, 10).effects.is_empty());
     }
 
     #[test]
@@ -8999,6 +9306,32 @@ mod tests {
         assert_eq!(effect.sync_start, 10);
         assert_eq!(effect.payload_bytes, vec![0xc1, 0x0a]);
         assert_eq!(effect.source_payload_id, 99);
+
+        let started = api.begin_pbft_sync(NetworkPbftSyncStartRequest {
+            start: true,
+            now_ms: 1_000,
+            local_pbft_synced_period: effect.sync_start - 1,
+            local_pbft_chain_size: effect.sync_start - 1,
+            candidates: vec![sync_candidate(7, 20, 20)],
+        });
+        assert!(started.started);
+        assert_eq!(started.peer_id, effect.peer_id);
+        assert_eq!(started.request_period, effect.sync_start);
+        assert_eq!(
+            encode_get_pbft_sync_packet(started.request_period),
+            effect.payload_bytes
+        );
+        let stopped = api.stop_pbft_sync(NetworkPbftSyncStopRequest {
+            generation: started.generation,
+            peer_id: started.peer_id,
+            reason: NETWORK_PBFT_SYNC_STOP_REASON_TRANSPORT_FAILED,
+        });
+        assert!(stopped.stopped);
+        assert!(!api.pbft_sync_status(1_001).active);
+        assert_eq!(
+            api.pbft_sync_status(1_001).last_stop_reason,
+            NETWORK_PBFT_SYNC_STOP_REASON_TRANSPORT_FAILED
+        );
     }
 
     #[test]
@@ -9781,21 +10114,25 @@ mod tests {
                         peer_id: peer(1),
                         syncing: false,
                         known_probe_ids: Vec::new(),
+                        ..Default::default()
                     },
                     NetworkEgressPeerSnapshot {
                         peer_id: peer(2),
                         syncing: true,
                         known_probe_ids: Vec::new(),
+                        ..Default::default()
                     },
                     NetworkEgressPeerSnapshot {
                         peer_id: peer(3),
                         syncing: false,
                         known_probe_ids: vec![0],
+                        ..Default::default()
                     },
                     NetworkEgressPeerSnapshot {
                         peer_id: peer(4),
                         syncing: false,
                         known_probe_ids: Vec::new(),
+                        ..Default::default()
                     },
                 ],
             })
@@ -9862,6 +10199,7 @@ mod tests {
                 peer_id: peer(5),
                 syncing: false,
                 known_probe_ids: vec![0],
+                ..Default::default()
             }],
         })
         .unwrap();
@@ -9909,6 +10247,7 @@ mod tests {
                 peer_id: peer(5),
                 syncing: false,
                 known_probe_ids: Vec::new(),
+                ..Default::default()
             }],
         })
         .unwrap();
@@ -9960,6 +10299,7 @@ mod tests {
                 peer_id: peer(id),
                 syncing: false,
                 known_probe_ids: Vec::new(),
+                ..Default::default()
             })
             .collect();
         let error = api
@@ -10001,11 +10341,13 @@ mod tests {
                     peer_id: peer(5),
                     syncing: false,
                     known_probe_ids: vec![1],
+                    ..Default::default()
                 },
                 NetworkEgressPeerSnapshot {
                     peer_id: peer(6),
                     syncing: false,
                     known_probe_ids: Vec::new(),
+                    ..Default::default()
                 },
             ],
         })

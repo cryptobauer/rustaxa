@@ -52,7 +52,9 @@ namespace taraxa::network::tarcap {
 class ISyncPacketHandler;
 class IVotePacketHandler;
 class IPillarVotePacketHandler;
+#ifndef RUSTAXA_ENABLE
 class IGetPillarVotesBundlePacketHandler;
+#endif
 class ITransactionPacketHandler;
 class IDagBlockPacketHandler;
 
@@ -158,6 +160,8 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
   network::ConsensusPacketOutcome gossipCanonicalDagBlock(const std::vector<uint8_t> &block_rlp,
                                                           const std::array<uint8_t, 32> &block_hash,
                                                           uint64_t source_payload_id);
+  /** Physically sends one already-canonical pillar-vote request to an exact peer. */
+  bool sendCanonicalPillarVotesBundleRequest(const dev::p2p::NodeID &peer_id, const std::vector<uint8_t> &packet_rlp);
 #endif
 
   /**
@@ -243,11 +247,13 @@ std::shared_ptr<PacketHandlerType> TaraxaCapability::getSpecificHandler(Subproto
       }
       break;
 
+#ifndef RUSTAXA_ENABLE
     case SubprotocolPacketType::kGetPillarVotesBundlePacket:
       if (!std::is_same<IGetPillarVotesBundlePacketHandler, PacketHandlerType>::value) {
         assert(false);
       }
       break;
+#endif
 
     case SubprotocolPacketType::kDagBlockPacket:
       if (!std::is_same<IDagBlockPacketHandler, PacketHandlerType>::value) {
