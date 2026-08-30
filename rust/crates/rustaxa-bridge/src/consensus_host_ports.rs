@@ -697,16 +697,22 @@ pub fn consensus_application_finalize(
     })
 }
 
-/// Submits canonical bytes through one validated account-fact request and
-/// returns native admission; no manager or decoded transaction crosses CXX.
-pub fn consensus_application_submit_transaction_with_execution(
-    application: &BridgeConsensusApplication,
+/// Returns the adaptive gas bid from the application-bound network API.
+pub fn consensus_network_transaction_gas_price_bid(
+    network: &BridgeConsensusNetworkApi,
+) -> Result<[u8; 32]> {
+    network.0.transaction_gas_price_bid()
+}
+
+/// Submits one host-signed network transaction without escaping to the root.
+pub fn consensus_network_submit_transaction_with_execution(
+    network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::PublicTransactionSubmissionRequest,
     external_evm: &ExternalEvmPort,
 ) -> Result<rustaxa_ffi::PublicTransactionSubmissionReport> {
     let external_evm = ExternalEvmPortAdapter(external_evm);
     Ok(public_transaction_report_to_ffi(
-        application.0.submit_public_transaction_with_execution(
+        network.0.submit_transaction_with_execution(
             public_transaction_request_to_native(request),
             &external_evm,
         )?,
@@ -716,7 +722,6 @@ pub fn consensus_application_submit_transaction_with_execution(
 /// Routes one canonical packet through native limits, admission, facts, and effects.
 pub fn consensus_network_ingest_transaction_packet(
     network: &BridgeConsensusNetworkApi,
-    application: &BridgeConsensusApplication,
     request: rustaxa_ffi::NetworkTransactionPacketRequest,
     external_evm: &ExternalEvmPort,
 ) -> Result<rustaxa_ffi::NetworkTransactionPacketReport> {
@@ -734,21 +739,10 @@ pub fn consensus_network_ingest_transaction_packet(
         last_block_number: request.last_block_number,
         cornus_active: request.cornus_active,
     };
-    let report = network.network.ingest_transaction_packet(
-        context,
-        &request.packet_rlp,
-        |transaction_rlp| {
-            let mut submission = policy.clone();
-            submission.transaction_rlp = transaction_rlp;
-            application.0.ingest_transaction_packet(
-                rustaxa_consensus::TransactionPacketIngressRequest {
-                    submission,
-                    peer_id: request.peer_id,
-                },
-                &external_evm,
-            )
-        },
-    )?;
+    let report =
+        network
+            .0
+            .ingest_transaction_packet(context, &request.packet_rlp, policy, &external_evm)?;
     Ok(rustaxa_ffi::NetworkTransactionPacketReport {
         decision: to_bridge_network_ingress_decision(report.decision),
         transactions: report
@@ -823,26 +817,14 @@ fn dag_packet_policy(
 /// Routes one canonical DAG-block packet through native verification/admission.
 pub fn consensus_network_ingest_dag_block_packet(
     network: &BridgeConsensusNetworkApi,
-    application: &BridgeConsensusApplication,
     request: rustaxa_ffi::NetworkDagPacketRequest,
     external_evm: &ExternalEvmPort,
 ) -> Result<rustaxa_ffi::NetworkDagBlockIngressReport> {
     let external_evm = ExternalEvmPortAdapter(external_evm);
     let context = dag_ingress_context(&request, request.rebroadcast);
-    let report = network.network.ingest_dag_block_packet(
-        context,
-        &request.packet_rlp,
-        |block_rlp, transaction_rlps| {
-            application.0.ingest_dag_block_packet(
-                rustaxa_consensus::DagBlockIngressRequest {
-                    block_rlp,
-                    transaction_rlps,
-                    proposed: false,
-                },
-                &external_evm,
-            )
-        },
-    )?;
+    let report = network
+        .0
+        .ingest_dag_block_packet(context, &request.packet_rlp, &external_evm)?;
     let admission_found = report.admission.is_some();
     Ok(rustaxa_ffi::NetworkDagBlockIngressReport {
         decision: to_bridge_network_ingress_decision(report.decision),
@@ -858,39 +840,16 @@ pub fn consensus_network_ingest_dag_block_packet(
 /// Routes one canonical DAG-sync packet with native sequential partial commits.
 pub fn consensus_network_ingest_dag_sync_packet(
     network: &BridgeConsensusNetworkApi,
-    application: &BridgeConsensusApplication,
     request: rustaxa_ffi::NetworkDagPacketRequest,
     external_evm: &ExternalEvmPort,
 ) -> Result<rustaxa_ffi::NetworkDagSyncIngressReport> {
     let external_evm = ExternalEvmPortAdapter(external_evm);
     let context = dag_ingress_context(&request, false);
-    let report = network.network.ingest_dag_sync_packet(
+    let report = network.0.ingest_dag_sync_packet(
         context,
         &request.packet_rlp,
-        |transactions, blocks| {
-            application.0.ingest_dag_sync_packet(
-                rustaxa_consensus::DagSyncIngressRequest {
-                    transactions: transactions
-                        .into_iter()
-                        .map(
-                            |transaction_rlp| rustaxa_consensus::TransactionPacketIngressRequest {
-                                submission: dag_packet_policy(&request, transaction_rlp),
-                                peer_id: request.peer_id,
-                            },
-                        )
-                        .collect(),
-                    blocks: blocks
-                        .into_iter()
-                        .map(|block_rlp| rustaxa_consensus::DagBlockIngressRequest {
-                            block_rlp,
-                            transaction_rlps: Vec::new(),
-                            proposed: false,
-                        })
-                        .collect(),
-                },
-                &external_evm,
-            )
-        },
+        dag_packet_policy(&request, Vec::new()),
+        &external_evm,
     )?;
     Ok(rustaxa_ffi::NetworkDagSyncIngressReport {
         decision: to_bridge_network_ingress_decision(report.decision),

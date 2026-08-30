@@ -1,6 +1,7 @@
 pub mod consensus_application;
 pub mod consensus_application_runtime;
 pub mod consensus_application_startup;
+pub mod consensus_network_api;
 pub mod consensus_pipeline;
 pub mod consensus_query_api;
 pub mod consensus_state_actions;
@@ -72,6 +73,7 @@ pub use consensus_application_runtime::{
     GossipVoteBundleRequest, GossipVoteRequest, PillarAnchorStateReport, PillarAnchorStateRequest,
     ReportMaliciousPeerRequest, SigningIdentity,
 };
+pub use consensus_network_api::ConsensusNetworkApi;
 pub use consensus_pipeline::{
     Address20, ConsensusEffect, ConsensusEvent, ConsensusPlan, DagBlockEvent, DagSyncEvent,
     EventOrigin, Hash32, IngressPayloadRef, PbftSyncEvent, PbftVoteEvent, PbftVoteFacts,

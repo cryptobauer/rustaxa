@@ -3,7 +3,6 @@ pub(crate) use crate::dag_transaction_service::BridgeApp;
 pub use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::dag_transaction_service::*;
 use crate::network::*;
-use crate::network_slashing::*;
 use crate::query::*;
 use crate::storage_admin::*;
 use crate::vdf::*;
@@ -23,11 +22,7 @@ pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
 /// Cloning the service shares the root's ordered effect queue and sibling
 /// protocol owners; this bridge owns no mutex, configuration, or standalone
 /// consensus runtime.
-pub struct BridgeConsensusNetworkApi {
-    pub(crate) network: rustaxa_consensus::ConsensusNetworkService,
-    pub(crate) pbft: Arc<rustaxa_consensus::PbftService>,
-    pub(crate) final_chain: Arc<rustaxa_consensus::FinalChain>,
-}
+pub struct BridgeConsensusNetworkApi(pub(crate) Arc<rustaxa_consensus::ConsensusNetworkApi>);
 
 /// Thin CXX adapter over the CXX-free native PBFT application root.
 ///
@@ -1272,18 +1267,15 @@ pub mod rustaxa_ffi {
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_ingest_pbft_blocks_bundle(
             self: &BridgeConsensusNetworkApi,
-            runtime: &BridgeConsensusApplication,
             packet_rlp: Vec<u8>,
             source_payload_id: u64,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_ingest_get_dag_sync_request(
             self: &BridgeConsensusNetworkApi,
-            application: &BridgeConsensusApplication,
             request: NetworkGetDagSyncRequest,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_prepare_egress(
             self: &BridgeConsensusNetworkApi,
-            application: &BridgeConsensusApplication,
             request: NetworkEgressPrepareRequest,
         ) -> Result<NetworkEgressPreparation>;
         pub fn consensus_network_plan_egress(
@@ -1313,11 +1305,27 @@ pub mod rustaxa_ffi {
         ) -> Result<NetworkPbftSyncCommandOutcome>;
         pub fn consensus_network_request_pending_dag_blocks(
             self: &BridgeConsensusNetworkApi,
-            application: &BridgeConsensusApplication,
             transport_lane: u32,
             source_payload_id: u64,
             facts: NetworkPendingDagBlocksRequestFacts,
         ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_begin_pbft_sync_ingress(
+            self: &BridgeConsensusNetworkApi,
+            packet_rlp: &[u8],
+            source_payload_id: u64,
+            source_peer_id: [u8; 64],
+            slashing_submitters: Vec<SlashingSubmitterIdentity>,
+        ) -> Result<PbftSyncIngressStep>;
+        pub fn consensus_network_report_pbft_sync_ingress_slashing(
+            self: &BridgeConsensusNetworkApi,
+            proof_hash: [u8; 32],
+            transaction_inserted: bool,
+        ) -> Result<PbftSyncIngressStep>;
+        pub fn consensus_network_report_verified_vote_slashing_submission(
+            self: &BridgeConsensusNetworkApi,
+            proof_hash: &[u8; 32],
+            transaction_inserted: bool,
+        ) -> Result<bool>;
 
         type WesolowskiVdf;
         type CancellationToken;
@@ -1397,36 +1405,11 @@ pub mod rustaxa_ffi {
             request: PublicTransactionSubmissionRequest,
             final_chain: PublicTransactionFinalChainFacts,
         ) -> Result<PublicTransactionSubmissionReport>;
-        /// Returns the adaptive native transaction bid needed before the host
-        /// signs an operation-specific system or slashing transaction.
-        pub fn consensus_application_transaction_gas_price_bid(
-            application: &BridgeConsensusApplication,
-        ) -> Result<[u8; 32]>;
         /// Prunes native FinalChain lookup indexes below the retained block.
         pub fn prune_final_chain_before(
             self: &BridgeConsensusApplication,
             first_to_keep: u64,
         ) -> Result<u64>;
-        // Network-owned PBFT ingress leaves retained for tarcap clients.
-        pub fn pbft_service_begin_pbft_sync_ingress(
-            service: &BridgeConsensusApplication,
-            packet_rlp: &[u8],
-            source_payload_id: u64,
-            source_peer_id: [u8; 64],
-            slashing_submitters: Vec<SlashingSubmitterIdentity>,
-        ) -> Result<PbftSyncIngressStep>;
-        pub fn pbft_service_report_pbft_sync_ingress_slashing(
-            service: &BridgeConsensusApplication,
-            proof_hash: [u8; 32],
-            transaction_inserted: bool,
-        ) -> Result<PbftSyncIngressStep>;
-
-        // Network-owned verified-vote slashing acknowledgement leaf.
-        pub fn pbft_service_verified_votes_report_slashing_transaction_submission(
-            self: &BridgeConsensusApplication,
-            proof_hash: &[u8; 32],
-            transaction_inserted: bool,
-        ) -> Result<bool>;
         pub fn recover_external_evm_pending_publication(
             self: &BridgeConsensusApplication,
             committed_period: u64,

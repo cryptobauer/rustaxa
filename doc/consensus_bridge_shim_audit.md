@@ -46,7 +46,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 5333 |
+| `bridge_lines` | 5196 |
 | `shim_lines` | 831 |
 | `cxx_functions` | 85 |
 | `cxx_carriers` | 139 |
@@ -87,13 +87,24 @@ The private native session state machine is no longer re-exported: action/status
 transition functions cannot bypass the application coordinator.
 
 The public FinalChain cut lowers the preceding 5,479/1,042/95/140/10/1/17 checkpoint by 146 bridge lines, 211 shim
-lines, ten CXX functions, and one carrier, yielding the current 5,333/831/85/139/10/1/17 surface.
+lines, ten CXX functions, and one carrier, yielding the 5,333/831/85/139/10/1/17 checkpoint.
 Rust-mode public block/header/hash/head, transaction/location/count/receipt, bloom-index, and DPoS reads now use bounded
 `ConsensusQueryApi` DTOs; their duplicate application-root exports, `TxRlp` carrier, facade materializers, and shim
 methods are deleted. Pillar projection materializes header/state-root and validator facts inside the native application,
 so the host leaf returns only bridge root and epoch. The remaining overlay surface is limited to named account/storage/
 code, call/trace, pruning/recovery, bridge-root/epoch, and concrete EVM/`state_db` executor clients. The complete legacy
 FinalChain API and behavioral suite compile only in all-Rust-disabled pure-C++ mode.
+
+The native network-root cut lowers bridge lines by 137 to the current 5,196 while keeping shim lines, CXX functions,
+carriers, handles, shim directories, flags, partial factories, compatibility constructors, and non-test consumers at
+831/85/139/10/1/0/0/0/17. `ConsensusApplication` constructs one `ConsensusNetworkApi`; the CXX wrapper retains only an
+opaque `Arc` to that API and performs plain conversion. Twelve production routes no longer accept the application root
+or duplicated PBFT/FinalChain/DAG/query siblings. The deleted `network_slashing.rs` family is absorbed by operation-
+shaped network methods; slashing submitter identities remain a client-specific concrete-EVM fact carrier and never
+grant bridge state or revalidation authority. The complete bridge audit finds no protocol sibling state, behavioral
+runtime, mutable consensus object graph, sidecar, compatibility mutex, or revalidation protocol. Exact FinalChain/
+`state_db`, public query/admin/conformance, signing, VDF, observer, transaction-submission, and physical tarcap leaves
+remain named external clients.
 
 The status-and-sync cut deletes six direct planner functions, their compatibility carriers/tests, and the
 network-specific sync snapshot. Five operation-shaped calls replace them: one start-or-select bootstrap, periodic
@@ -184,7 +195,6 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | Application-bootstrap conversion plus exact native-account/native-call, prune, and pending-publication projection | FinalChain concrete-EVM/public-state adapter and application root | Bootstrap/external boundary | Contains no general block, transaction, receipt, bloom, or DPoS public-query route; delete each exact leaf when the corresponding concrete executor, state client, admin task, or recovery client moves. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | Root-bound canonical packet-family adapter for native PBFT, pillar-vote, DAG, DAG-sync, transaction, status, sync lifecycle/response, and prepared exact-target egress pipelines | latest/v5 tarcap handler families and application-root transport leaves | External boundary | Keep only canonical peer/payload requests, bounded preparation probes, immutable peer snapshots, typed network decisions/reports, and exact tarcap transport execution; query snapshots live exclusively in `query.rs`. |
-| `rust/crates/rustaxa-bridge/src/network_slashing.rs` | Exact signing and transaction-ingress conversion for network-detected slashing effects | tarcap ingress | External boundary | Delete when the signing and transaction-ingress executors move native; never expand into consensus routing. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, including coherent PBFT, period-indexed finalized pillar data, live DAG, transaction-pool, finalized-history, DPoS, and public status views | RPC, GraphQL, debug/Test RPC, stats, light plugin, Rust-mode query fixtures | External boundary | Keep a bounded client-oriented read API; never expose private services, locks, queues, cursors, or mutable object graphs. |
 | `rust/crates/rustaxa-bridge/src/storage_admin.rs` | Operation-shaped light-history prune and versioned conformance transcript adapters | application root, light plugin, storage conformance | Admin/conformance boundary | Keep only named root operations; never expose storage handles, query families, or caller-owned batches. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | Low-level VDF operations and cancellation used by the App-owned asynchronous VDF executor | VDF library adapter and application process host | External boundary | Keep the dedicated proof executor; do not recreate proposer scheduling or compatibility payload construction here. |

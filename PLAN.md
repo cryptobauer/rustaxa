@@ -850,8 +850,8 @@ Rules:
 - Temporary Rust-mode gaps must be explicit shim-local defaults, no-ops, or tracked unimplemented paths.
 - Temporary guarded touches to upstream-owned C++ files should be removed once a complete native route can own
   Rust-mode behavior. The PBFT application runtime now owns the former manager pillar-vote sync hook; original
-  `pbft_manager.cpp` stays clean versus `upstream-main`, and remaining private executor debt is tracked under
-  `CRW-15`/`CRW-16`.
+  `pbft_manager.cpp` stays clean versus `upstream-main`; the manager/materialization work under `CRW-15`/`CRW-16` is
+  complete, and the remaining private FinalChain/external-EVM executor contraction is tracked under `CRW-17`.
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep only physical network and OS-thread mechanics in C++; consensus callbacks, queues, routing, and orchestration move
   to the Rust application service.

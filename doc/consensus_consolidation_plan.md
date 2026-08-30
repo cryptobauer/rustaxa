@@ -274,8 +274,9 @@ size, decodes canonical period data, checks pivot/null-anchor consistency,
 appends the exact storage stage, and retains the native DAG commit request
 without bridge-side reconstruction. The bridge keeps only an
 operation-specific delegate plus the finalization executor's conversion and
-error mapping. Replacing the expected-change/at-most-once contract with a
-portable full-state preview fingerprint remains explicit CRW-12 debt.
+error mapping. The native expected-change/at-most-once contract is the completed ownership boundary; a portable
+full-state preview fingerprint would be an optional robustness enhancement rather than remaining `CRW-12`
+bridge-ownership debt.
 The post-storage sortition commit workflow is native as well. The lock-held
 PBFT manager task owns current-step, cursor, and action validation; retained
 plan/request consistency; manager-before-sortition commit; stable fatal error
@@ -727,8 +728,8 @@ continuation, proposals, votes, and finalization; the App-owned process shell su
 signing/VRF, tarcap, FinalChain account facts, pillar-anchor-state facts, concrete EVM execution, and post-ack observer
 leaves. Pillar public reads use `ConsensusQueryApi` without a compatibility facade. `App::close` stops and joins that
 shell before configuration and process services are destroyed; ordinary `stopConsensus` remains restartable. Network
-status and sync planning each consume one coherent root snapshot. Remaining work in `CRW-12`/`CRW-15` concerns bridge
-runtime/tests and named executor/public materialization, not PBFT/vote/pillar manager compatibility.
+status and sync planning each consume one coherent root snapshot. `CRW-12` and `CRW-15` are complete; the remaining
+named FinalChain/executor surface is tracked only by `CRW-17`.
 
 The pillar follow-on completes `CRW-14` and `CRW-16`. Native application state owns pillar restoration/readiness,
 vote admission/duplicates, weighted threshold state, block construction/linkage, finalization persistence/cleanup,
@@ -738,8 +739,9 @@ tarcap, FinalChain pillar-anchor facts, and best-effort observer delivery. The R
 pillar bridge modules, manager-shaped CXX exports/carriers/materializers, App/Network/RPC ownership, and compatibility
 tests are deleted; pure-C++ source selection retains the untouched original manager and codecs.
 
-Current network-root progress: native `PbftService` constructs and owns the single `ConsensusNetworkService`; App gives
-`Network` only a thin CXX adapter cloned from that root and injects it through both tarcap capabilities into the vote,
+Current network-root state: `ConsensusApplication` constructs one `ConsensusNetworkApi` over the single
+`ConsensusNetworkService` and private PBFT, FinalChain, DAG/transaction, query, and ingress siblings; App gives
+`Network` only a thin CXX adapter cloned from that API and injects it through both tarcap capabilities into the vote,
 sync, DAG-status, and pillar-vote handler families. The bridge owns no network mutex, configuration, or parallel runtime.
 The shared queue is
 transport-lane aware, preventing latest/v5 cross-drain while preserving queue order among dependency-ready effects, and
@@ -829,6 +831,15 @@ chunking, complete response bytes, exact-target sends and dependent marks. Outbo
 reuse the bounded native egress operation over immutable cross-lane peer snapshots; C++ only re-resolves sockets and
 sends the selected bytes. The all-handler audit finds no handler-local consensus inspection, routing, queueing, target
 selection, or packet-family planning in the Rust composition. `CRW-N01` is complete; blocked `CRW-E02` is not started.
+
+The final application-root contraction removes every later network escape back to `BridgeConsensusApplication`.
+Transaction/DAG admission, proposed-block and pending-DAG work, egress preparation, PBFT-sync/slashing continuation,
+and host-signed transaction submission all dispatch through the opaque native API. Its CXX wrapper contains one `Arc`
+field plus conversion only; C++ retains no application root, sibling service, protocol mutex, object graph, sidecar, or
+revalidation step after construction. `network_slashing.rs`, network-only sibling accessors, duplicated root/sibling
+parameters, and callerless root exports are deleted. Native consensus tests own protocol behavior; the two bridge tests
+cover ABI conversion. This closes `CRW-12` and `CRW-15` without starting `CRW-E02`, the residual `CRW-17` executor cut,
+or `CRW-18`.
 
 ### 7. Contract DAG and transaction shims
 

@@ -41,7 +41,6 @@ fn main() {
     println!("cargo:rerun-if-changed=src/final_chain.rs");
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/network.rs");
-    println!("cargo:rerun-if-changed=src/network_slashing.rs");
     println!("cargo:rerun-if-changed=src/transaction_manager.rs");
     println!("cargo:rerun-if-changed=src/vdf.rs");
     println!("cargo:rerun-if-changed=src/storage.rs");

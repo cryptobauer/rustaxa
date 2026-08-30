@@ -1,13 +1,13 @@
 //! CXX conversions for native network routing, lane-local effects, and executor acknowledgements.
 
 use crate::ffi::rustaxa_ffi;
-use crate::ffi::BridgeApp;
 use crate::ffi::BridgeConsensusNetworkApi;
-use crate::network_slashing::{
-    empty_slashing_transaction_effect, slashing_submitter_identity_to_domain,
-    slashing_transaction_effect_to_ffi,
-};
+use ethereum_types::{H256, U256};
 use rustaxa_consensus::pbft_vote_progress::PbftVoteProgressIntent;
+use rustaxa_consensus::{
+    PbftSyncIngressStep, SlashingSubmitterIdentity as DomainSlashingSubmitterIdentity,
+    SlashingTransactionEffect as DomainSlashingTransactionEffect,
+};
 
 fn consensus_packet_request_to_domain(
     value: rustaxa_ffi::NetworkConsensusPacketRequest,
@@ -38,11 +38,9 @@ fn consensus_packet_request_to_domain(
 pub fn create_consensus_network_api(
     service: &crate::ffi::BridgeApp,
 ) -> Box<BridgeConsensusNetworkApi> {
-    Box::new(BridgeConsensusNetworkApi {
-        network: service.0.network_service(),
-        pbft: service.0.pbft_arc_for_bridge(),
-        final_chain: service.0.final_chain_arc_for_bridge(),
-    })
+    Box::new(BridgeConsensusNetworkApi(
+        service.0.consensus_network_api_for_bridge(),
+    ))
 }
 
 impl BridgeConsensusNetworkApi {
@@ -54,12 +52,9 @@ impl BridgeConsensusNetworkApi {
         source_scoped: bool,
         budget: u32,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEffectBatch> {
-        let batch = if source_scoped {
-            self.network
-                .drain_work_for_source(transport_lane, source_payload_id, budget)?
-        } else {
-            self.network.drain_work(transport_lane, budget)?
-        };
+        let batch = self
+            .0
+            .drain_work(transport_lane, source_payload_id, source_scoped, budget)?;
         Ok(rustaxa_ffi::NetworkEffectBatch {
             status: batch.status,
             effects: batch
@@ -80,7 +75,7 @@ impl BridgeConsensusNetworkApi {
         results: Vec<rustaxa_ffi::NetworkEffectResult>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEffectAck> {
         let ack = self
-            .network
+            .0
             .report_effect_results(results.into_iter().map(from_bridge_effect_result).collect())?;
         Ok(rustaxa_ffi::NetworkEffectAck {
             status: ack.status,
@@ -95,19 +90,19 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkPbftSyncStartRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPbftSyncStartOutcome> {
-        let outcome =
-            self.network
-                .begin_pbft_sync(rustaxa_consensus::NetworkPbftSyncStartRequest {
-                    start: request.start,
-                    now_ms: request.now_ms,
-                    local_pbft_synced_period: request.local_pbft_synced_period,
-                    local_pbft_chain_size: request.local_pbft_chain_size,
-                    candidates: request
-                        .candidates
-                        .into_iter()
-                        .map(to_domain_network_pbft_sync_peer_candidate)
-                        .collect(),
-                })?;
+        let outcome = self
+            .0
+            .begin_pbft_sync(rustaxa_consensus::NetworkPbftSyncStartRequest {
+                start: request.start,
+                now_ms: request.now_ms,
+                local_pbft_synced_period: request.local_pbft_synced_period,
+                local_pbft_chain_size: request.local_pbft_chain_size,
+                candidates: request
+                    .candidates
+                    .into_iter()
+                    .map(to_domain_network_pbft_sync_peer_candidate)
+                    .collect(),
+            })?;
         Ok(rustaxa_ffi::NetworkPbftSyncStartOutcome {
             status: outcome.status,
             error_code: outcome.error_code,
@@ -128,7 +123,7 @@ impl BridgeConsensusNetworkApi {
         request: rustaxa_ffi::NetworkStatusPacketRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkStatusPacketReport> {
         let outcome =
-            self.network
+            self.0
                 .ingest_status_packet(rustaxa_consensus::NetworkStatusPacketRequest {
                     peer_id: request.peer_id,
                     packet_rlp: request.packet_rlp,
@@ -170,14 +165,14 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkStatusPacketBuildRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkStatusPacketBuildOutcome> {
-        let outcome = self.network.build_status_packet(
-            rustaxa_consensus::NetworkStatusPacketBuildRequest {
-                initial: request.initial,
-                local_pbft_chain_size: request.local_pbft_chain_size,
-                local_pbft_round: request.local_pbft_round,
-                local_dag_level: request.local_dag_level,
-            },
-        )?;
+        let outcome =
+            self.0
+                .build_status_packet(rustaxa_consensus::NetworkStatusPacketBuildRequest {
+                    initial: request.initial,
+                    local_pbft_chain_size: request.local_pbft_chain_size,
+                    local_pbft_round: request.local_pbft_round,
+                    local_dag_level: request.local_dag_level,
+                })?;
         Ok(rustaxa_ffi::NetworkStatusPacketBuildOutcome {
             status: outcome.status,
             error_code: outcome.error_code,
@@ -191,23 +186,23 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkPbftSyncCommand,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPbftSyncCommandOutcome> {
-        let outcome = self.network.apply_pbft_sync_command(
-            rustaxa_consensus::NetworkPbftSyncCommandRequest {
-                kind: request.kind,
-                now_ms: request.now_ms,
-                generation: request.generation,
-                peer_id: request.peer_id,
-                source: request.source,
-                reason: request.reason,
-                sync_queue_size: request.sync_queue_size,
-                syncing_period: request.syncing_period,
-                finalized_period: request.finalized_period,
-                remote_period: request.remote_period,
-                sync_level_size: request.sync_level_size,
-                retry_count: request.retry_count,
-                retry_delay_ms: request.retry_delay_ms,
-            },
-        )?;
+        let outcome =
+            self.0
+                .apply_pbft_sync_command(rustaxa_consensus::NetworkPbftSyncCommandRequest {
+                    kind: request.kind,
+                    now_ms: request.now_ms,
+                    generation: request.generation,
+                    peer_id: request.peer_id,
+                    source: request.source,
+                    reason: request.reason,
+                    sync_queue_size: request.sync_queue_size,
+                    syncing_period: request.syncing_period,
+                    finalized_period: request.finalized_period,
+                    remote_period: request.remote_period,
+                    sync_level_size: request.sync_level_size,
+                    retry_count: request.retry_count,
+                    retry_delay_ms: request.retry_delay_ms,
+                })?;
         Ok(rustaxa_ffi::NetworkPbftSyncCommandOutcome {
             accepted: outcome.accepted,
             active: outcome.active,
@@ -226,25 +221,15 @@ impl BridgeConsensusNetworkApi {
     /// Selects the pending-DAG peer and queues canonical non-finalized hashes.
     pub fn consensus_network_request_pending_dag_blocks(
         &self,
-        application: &BridgeApp,
         transport_lane: u32,
         source_payload_id: u64,
         facts: rustaxa_ffi::NetworkPendingDagBlocksRequestFacts,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
-        let hashes = application
-            .0
-            .consensus_query_api_for_bridge()
-            .dag_live_non_finalized_index()?
-            .levels
-            .into_iter()
-            .flat_map(|level| level.hashes)
-            .collect();
         Ok(to_bridge_network_ingress_decision(
-            self.network.request_pending_dag_blocks(
+            self.0.request_pending_dag_blocks(
                 transport_lane,
                 source_payload_id,
                 to_domain_network_pending_dag_blocks_request_facts(facts),
-                hashes,
             )?,
         ))
     }
@@ -255,9 +240,7 @@ impl BridgeConsensusNetworkApi {
         request: rustaxa_ffi::NetworkConsensusPacketRequest,
         slashing_submitters: Vec<rustaxa_ffi::SlashingSubmitterIdentity>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPbftVotePacketReport> {
-        let report = self.network.ingest_pbft_vote_packet(
-            self.pbft.as_ref(),
-            self.final_chain.as_ref(),
+        let report = self.0.ingest_pbft_vote_packet(
             consensus_packet_request_to_domain(request),
             &slashing_submitters
                 .into_iter()
@@ -279,9 +262,7 @@ impl BridgeConsensusNetworkApi {
         request: rustaxa_ffi::NetworkConsensusPacketRequest,
         slashing_submitters: Vec<rustaxa_ffi::SlashingSubmitterIdentity>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPbftVotePacketReport> {
-        let report = self.network.ingest_pbft_votes_bundle_packet(
-            self.pbft.as_ref(),
-            self.final_chain.as_ref(),
+        let report = self.0.ingest_pbft_votes_bundle_packet(
             consensus_packet_request_to_domain(request),
             &slashing_submitters
                 .into_iter()
@@ -302,11 +283,9 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkConsensusPacketRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPillarVotePacketReport> {
-        let report = self.network.ingest_pillar_vote_packet(
-            self.pbft.as_ref(),
-            self.final_chain.as_ref(),
-            consensus_packet_request_to_domain(request),
-        );
+        let report = self
+            .0
+            .ingest_pillar_vote_packet(consensus_packet_request_to_domain(request));
         match report {
             Ok(report) => Ok(to_bridge_pillar_vote_packet_report(report)),
             Err(error) => match peer_packet_error_code(&error, &["NETWORK_PILLAR_VOTE_PACKET_"]) {
@@ -321,11 +300,9 @@ impl BridgeConsensusNetworkApi {
         &self,
         request: rustaxa_ffi::NetworkConsensusPacketRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkPillarVotePacketReport> {
-        let report = self.network.ingest_pillar_votes_bundle_packet(
-            self.pbft.as_ref(),
-            self.final_chain.as_ref(),
-            consensus_packet_request_to_domain(request),
-        );
+        let report = self
+            .0
+            .ingest_pillar_votes_bundle_packet(consensus_packet_request_to_domain(request));
         match report {
             Ok(report) => Ok(to_bridge_pillar_vote_packet_report(report)),
             Err(error) => {
@@ -347,7 +324,7 @@ impl BridgeConsensusNetworkApi {
         request: rustaxa_ffi::NetworkCanonicalRequestPacket,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.network.ingest_pbft_next_votes_bundle_packet_request(
+            self.0.ingest_pbft_next_votes_bundle_request(
                 rustaxa_consensus::NetworkPbftNextVotesBundlePacketRequest {
                     transport_lane: request.transport_lane,
                     peer_id: request.peer_id,
@@ -364,7 +341,7 @@ impl BridgeConsensusNetworkApi {
         request: rustaxa_ffi::NetworkCanonicalRequestPacket,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.network.ingest_get_pillar_votes_bundle_request(
+            self.0.ingest_pillar_votes_bundle_request(
                 rustaxa_consensus::NetworkGetPillarVotesBundlePacketRequest {
                     transport_lane: request.transport_lane,
                     peer_id: request.peer_id,
@@ -382,14 +359,13 @@ impl BridgeConsensusNetworkApi {
         request: rustaxa_ffi::NetworkGetPbftSyncRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.network.ingest_get_pbft_sync_request(
-                rustaxa_consensus::NetworkGetPbftSyncRequest {
+            self.0
+                .ingest_get_pbft_sync_request(rustaxa_consensus::NetworkGetPbftSyncRequest {
                     tarcap_version: request.tarcap_version,
                     peer_id: request.peer_id,
                     request_rlp: request.request_rlp,
                     source_payload_id: request.source_payload_id,
-                },
-            )?,
+                })?,
         ))
     }
 
@@ -400,27 +376,22 @@ impl BridgeConsensusNetworkApi {
     /// uniqueness, DPoS queries, and storage-first proposal publication.
     pub fn consensus_network_ingest_pbft_blocks_bundle(
         &self,
-        runtime: &BridgeApp,
         packet_rlp: Vec<u8>,
         source_payload_id: u64,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.network.ingest_pbft_blocks_bundle(
-                runtime.0.final_chain_for_bridge(),
-                &packet_rlp,
-                source_payload_id,
-            )?,
+            self.0
+                .ingest_pbft_blocks_bundle(&packet_rlp, source_payload_id)?,
         ))
     }
 
     /// Serves one canonical get-DAG-sync request from application-owned bytes.
     pub fn consensus_network_ingest_get_dag_sync_request(
         &self,
-        application: &BridgeApp,
         request: rustaxa_ffi::NetworkGetDagSyncRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.network.ingest_get_dag_sync_request(
+            self.0.ingest_get_dag_sync_request(
                 rustaxa_consensus::NetworkGetDagSyncContext {
                     transport_lane: request.transport_lane,
                     peer_id: request.peer_id,
@@ -428,7 +399,6 @@ impl BridgeConsensusNetworkApi {
                     request_allowed: request.request_allowed,
                 },
                 &request.request_rlp,
-                |hashes| application.0.prepare_dag_sync_egress(hashes),
             )?,
         ))
     }
@@ -439,30 +409,21 @@ impl BridgeConsensusNetworkApi {
     /// transaction sidecar crosses this boundary.
     pub fn consensus_network_prepare_egress(
         &self,
-        application: &BridgeApp,
         request: rustaxa_ffi::NetworkEgressPrepareRequest,
     ) -> anyhow::Result<rustaxa_ffi::NetworkEgressPreparation> {
-        let (transaction_accounts, dag_transactions) =
-            application.0.prepare_network_egress_inputs(
-                request.family,
-                request.object_hash,
-                &request.payload_bytes,
-            )?;
         let payload_bytes = request.payload_bytes;
-        let preparation = self.network.prepare_egress(
-            rustaxa_consensus::NetworkEgressPrepareRequest {
-                family: request.family,
-                transport_lane: request.transport_lane,
-                source_payload_id: request.source_payload_id,
-                source_peer_id: request.source_peer_id,
-                rebroadcast: request.rebroadcast,
-                object_hash: request.object_hash,
-                payload_bytes,
-                related_payload_bytes: request.related_payload_bytes,
-            },
-            transaction_accounts,
-            dag_transactions,
-        )?;
+        let preparation =
+            self.0
+                .prepare_egress(rustaxa_consensus::NetworkEgressPrepareRequest {
+                    family: request.family,
+                    transport_lane: request.transport_lane,
+                    source_payload_id: request.source_payload_id,
+                    source_peer_id: request.source_peer_id,
+                    rebroadcast: request.rebroadcast,
+                    object_hash: request.object_hash,
+                    payload_bytes,
+                    related_payload_bytes: request.related_payload_bytes,
+                })?;
         Ok(rustaxa_ffi::NetworkEgressPreparation {
             token: preparation.token,
             probes: preparation
@@ -484,7 +445,7 @@ impl BridgeConsensusNetworkApi {
         peers: Vec<rustaxa_ffi::NetworkEgressPeerSnapshot>,
     ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
         Ok(to_bridge_network_ingress_decision(
-            self.network
+            self.0
                 .plan_egress(rustaxa_consensus::NetworkEgressPlanRequest {
                     token,
                     peers: peers
@@ -506,7 +467,113 @@ impl BridgeConsensusNetworkApi {
 
     /// Cancels one preparation during C++ lane-operation unwinding.
     pub fn consensus_network_cancel_egress(&self, token: u64) -> anyhow::Result<bool> {
-        self.network.cancel_egress(token)
+        self.0.cancel_egress(token)
+    }
+
+    /// Starts one native PBFT-sync ingress operation for the network adapter.
+    pub fn consensus_network_begin_pbft_sync_ingress(
+        &self,
+        packet_rlp: &[u8],
+        source_payload_id: u64,
+        source_peer_id: [u8; 64],
+        slashing_submitters: Vec<rustaxa_ffi::SlashingSubmitterIdentity>,
+    ) -> anyhow::Result<rustaxa_ffi::PbftSyncIngressStep> {
+        self.0
+            .begin_pbft_sync_ingress(
+                packet_rlp,
+                source_payload_id,
+                source_peer_id,
+                slashing_submitters
+                    .into_iter()
+                    .map(slashing_submitter_identity_to_domain)
+                    .collect(),
+            )
+            .map(pbft_sync_ingress_step_to_ffi)
+    }
+
+    /// Resumes PBFT-sync ingress after one external slashing submission.
+    pub fn consensus_network_report_pbft_sync_ingress_slashing(
+        &self,
+        proof_hash: [u8; 32],
+        transaction_inserted: bool,
+    ) -> anyhow::Result<rustaxa_ffi::PbftSyncIngressStep> {
+        self.0
+            .report_pbft_sync_ingress_slashing(proof_hash.into(), transaction_inserted)
+            .map(pbft_sync_ingress_step_to_ffi)
+    }
+
+    /// Correlates one verified-vote slashing submission with its native proof.
+    pub fn consensus_network_report_verified_vote_slashing_submission(
+        &self,
+        proof_hash: &[u8; 32],
+        transaction_inserted: bool,
+    ) -> anyhow::Result<bool> {
+        self.0.report_verified_vote_slashing_transaction_submission(
+            H256::from(*proof_hash),
+            transaction_inserted,
+        )
+    }
+}
+
+fn pbft_sync_ingress_step_to_ffi(value: PbftSyncIngressStep) -> rustaxa_ffi::PbftSyncIngressStep {
+    let has_effect = value.slashing_transaction_effect.is_some();
+    rustaxa_ffi::PbftSyncIngressStep {
+        action: value.action.as_u8(),
+        error_code: value.error_code,
+        source_payload_id: value.source_payload_id,
+        block_hash: value.block_hash.0,
+        period: value.period,
+        max_dag_level: value.max_dag_level,
+        last_block: value.last_block,
+        current_cert_present: value.current_cert_present,
+        has_slashing_transaction_effect: has_effect,
+        slashing_transaction_effect: value
+            .slashing_transaction_effect
+            .map(slashing_transaction_effect_to_ffi)
+            .unwrap_or_else(empty_slashing_transaction_effect),
+    }
+}
+
+fn slashing_submitter_identity_to_domain(
+    value: rustaxa_ffi::SlashingSubmitterIdentity,
+) -> DomainSlashingSubmitterIdentity {
+    DomainSlashingSubmitterIdentity {
+        wallet_index: value.wallet_index,
+        address: value.address,
+        nonce: U256::from_big_endian(&value.nonce),
+        balance: U256::from_big_endian(&value.balance),
+    }
+}
+
+fn u256_to_bytes(value: U256) -> [u8; 32] {
+    value.to_big_endian()
+}
+
+fn slashing_transaction_effect_to_ffi(
+    value: DomainSlashingTransactionEffect,
+) -> rustaxa_ffi::SlashingTransactionEffect {
+    rustaxa_ffi::SlashingTransactionEffect {
+        status: value.status.as_u8(),
+        proof_hash: value.proof_hash.0,
+        wallet_index: value.wallet_index,
+        nonce: u256_to_bytes(value.nonce),
+        contract_address: value.contract_address,
+        value: u256_to_bytes(value.value),
+        gas_limit: value.gas_limit,
+        call_data: value.call_data,
+    }
+}
+
+fn empty_slashing_transaction_effect() -> rustaxa_ffi::SlashingTransactionEffect {
+    rustaxa_ffi::SlashingTransactionEffect {
+        status: 0,
+        proof_hash: [0; 32],
+        wallet_index: 0,
+        nonce: [0; 32],
+        contract_address: [0; 20],
+        value: [0; 32],
+        gas_limit: 0,
+        call_data: Vec::new(),
     }
 }
 

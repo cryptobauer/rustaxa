@@ -134,14 +134,21 @@ class ConsensusNetworkApi::Impl final {
  public:
   Impl(SharedConsensusApplication consensus_application, std::shared_ptr<final_chain::FinalChain> final_chain,
        ConsensusNetworkObservers observers)
-      : consensus_application(requireConsensusApplication(std::move(consensus_application))),
-        final_chain(std::move(final_chain)),
+      : Impl(requireConsensusApplication(std::move(consensus_application)), std::move(final_chain),
+             std::move(observers), BoundRoot{}) {}
+
+ private:
+  struct BoundRoot {};
+
+  Impl(SharedConsensusApplication consensus_application, std::shared_ptr<final_chain::FinalChain> final_chain,
+       ConsensusNetworkObservers observers, BoundRoot)
+      : final_chain(std::move(final_chain)),
         external_evm(this->final_chain),
-        api(rustaxa::create_consensus_network_api(this->consensus_application->service())),
-        query(this->consensus_application->queryClient()),
+        api(rustaxa::create_consensus_network_api(consensus_application->service())),
+        query(consensus_application->queryClient()),
         observers(std::move(observers)) {}
 
-  SharedConsensusApplication consensus_application;
+ public:
   std::shared_ptr<final_chain::FinalChain> final_chain;
   ExternalEvmPort external_evm;
   rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
@@ -347,9 +354,9 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
     native.balance = submitter.balance;
     native_submitters.push_back(std::move(native));
   }
-  auto step = rustaxa::pbft_service_begin_pbft_sync_ingress(
-      impl_->consensus_application->service(), rust::Slice<const uint8_t>(packet_rlp.data(), packet_rlp.size()),
-      source_payload_id, source_peer_id, std::move(native_submitters));
+  auto step = impl_->api->consensus_network_begin_pbft_sync_ingress(
+      rust::Slice<const uint8_t>(packet_rlp.data(), packet_rlp.size()), source_payload_id, source_peer_id,
+      std::move(native_submitters));
   while (step.action == kPbftSyncIngressAwaitingSlashing) {
     if (!step.has_slashing_transaction_effect || !executor.submit_slashing_transaction) {
       throw std::runtime_error("Native PBFT-sync ingress paused without an executable slashing boundary");
@@ -364,8 +371,8 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
         native_effect.gas_limit,
         std::vector<uint8_t>(native_effect.call_data.begin(), native_effect.call_data.end())};
     const auto transaction_inserted = executor.submit_slashing_transaction(transaction);
-    step = rustaxa::pbft_service_report_pbft_sync_ingress_slashing(
-        impl_->consensus_application->service(), step.slashing_transaction_effect.proof_hash, transaction_inserted);
+    step = impl_->api->consensus_network_report_pbft_sync_ingress_slashing(step.slashing_transaction_effect.proof_hash,
+                                                                           transaction_inserted);
   }
 
   PbftSyncIngressAction action;
@@ -405,8 +412,7 @@ PbftSyncIngressOutcome ConsensusNetworkApi::admitPbftSyncPacket(
 
 bool ConsensusNetworkApi::reportPbftVoteSlashingSubmission(const std::array<uint8_t, 32>& proof_hash,
                                                            bool transaction_inserted) {
-  return impl_->consensus_application->service().pbft_service_verified_votes_report_slashing_transaction_submission(
-      proof_hash, transaction_inserted);
+  return impl_->api->consensus_network_report_verified_vote_slashing_submission(proof_hash, transaction_inserted);
 }
 
 bool ConsensusNetworkApi::executePbftVoteSlashingTransaction(const PbftVoteSlashingTransaction& effect,
@@ -595,8 +601,7 @@ ConsensusPacketOutcome ConsensusNetworkApi::routeConsensusEgress(
     native_request.related_payload_bytes.push_back(byte);
   }
 
-  const auto preparation =
-      impl_->api->consensus_network_prepare_egress(impl_->consensus_application->service(), std::move(native_request));
+  const auto preparation = impl_->api->consensus_network_prepare_egress(std::move(native_request));
   try {
     std::vector<ConsensusEgressProbe> probes;
     probes.reserve(preparation.probes.size());
@@ -652,8 +657,7 @@ ConsensusPacketOutcome ConsensusNetworkApi::requestPillarVotesBundle(
     request.payload_bytes.push_back(static_cast<uint8_t>(period >> shift));
     request.related_payload_bytes.push_back(static_cast<uint8_t>(local_pbft_syncing_period >> shift));
   }
-  const auto preparation =
-      impl_->api->consensus_network_prepare_egress(impl_->consensus_application->service(), std::move(request));
+  const auto preparation = impl_->api->consensus_network_prepare_egress(std::move(request));
   try {
     const auto peers = peer_snapshot_provider({});
     rust::Vec<rustaxa::NetworkEgressPeerSnapshot> native_peers;
@@ -719,8 +723,8 @@ TransactionPacketOutcome ConsensusNetworkApi::ingestTransactionPacket(
   request.minimum_gas_price = toBridgeU256(val_t(config.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
   request.last_block_number = last_block_number;
   request.cornus_active = config.genesis.state.hardforks.isOnCornusHardfork(last_block_number);
-  const auto report = rustaxa::consensus_network_ingest_transaction_packet(
-      *impl_->api, impl_->consensus_application->service(), std::move(request), impl_->external_evm);
+  const auto report =
+      rustaxa::consensus_network_ingest_transaction_packet(*impl_->api, std::move(request), impl_->external_evm);
 
   for (const auto& member : report.transactions) {
     if (member.observe_transaction && impl_->observers.transaction_observed) {
@@ -755,8 +759,7 @@ GetDagSyncOutcome ConsensusNetworkApi::serveGetDagSyncRequest(uint32_t transport
   for (const auto byte : request_rlp) {
     request.request_rlp.push_back(byte);
   }
-  const auto decision = impl_->api->consensus_network_ingest_get_dag_sync_request(
-      impl_->consensus_application->service(), std::move(request));
+  const auto decision = impl_->api->consensus_network_ingest_get_dag_sync_request(std::move(request));
   drainAndExecuteTransportEffects(
       transport_lane, source_payload_id, true,
       ConsensusTransportExecutor{[&executor, &peer_id](const ConsensusTransportEffect& effect) {
@@ -797,8 +800,8 @@ DagBlockPacketOutcome ConsensusNetworkApi::ingestDagBlockPacket(
   request.transactions_dropped = peer_facts.transactions_dropped;
   request.pending_dag_request = peer_facts.pending_dag_request;
   request.local_pbft_syncing = peer_facts.local_pbft_syncing;
-  const auto report = rustaxa::consensus_network_ingest_dag_block_packet(
-      *impl_->api, impl_->consensus_application->service(), std::move(request), impl_->external_evm);
+  const auto report =
+      rustaxa::consensus_network_ingest_dag_block_packet(*impl_->api, std::move(request), impl_->external_evm);
 
   if (report.admission_found && report.admission.observe_block && impl_->observers.dag_block_observed) {
     try {
@@ -871,8 +874,8 @@ DagSyncPacketOutcome ConsensusNetworkApi::ingestDagSyncPacket(
   request.cornus_active = config.genesis.state.hardforks.isOnCornusHardfork(last_block_number);
   request.rebroadcast = false;
   request.local_pbft_syncing = false;
-  const auto report = rustaxa::consensus_network_ingest_dag_sync_packet(
-      *impl_->api, impl_->consensus_application->service(), std::move(request), impl_->external_evm);
+  const auto report =
+      rustaxa::consensus_network_ingest_dag_sync_packet(*impl_->api, std::move(request), impl_->external_evm);
 
   for (const auto& transaction : report.transactions) {
     if (transaction.observe_transaction && impl_->observers.transaction_observed) {
@@ -939,8 +942,8 @@ PendingDagBlocksOutcome ConsensusNetworkApi::requestPendingDagBlocks(
     bridge_candidate.dag_sync_allowed = candidate.dag_sync_allowed;
     facts.candidates.push_back(std::move(bridge_candidate));
   }
-  const auto decision = impl_->api->consensus_network_request_pending_dag_blocks(
-      impl_->consensus_application->service(), transport_lane, source_payload_id, std::move(facts));
+  const auto decision =
+      impl_->api->consensus_network_request_pending_dag_blocks(transport_lane, source_payload_id, std::move(facts));
 
   drainAndExecuteTransportEffects(
       transport_lane, source_payload_id, true,
@@ -968,8 +971,7 @@ bool ConsensusNetworkApi::submitSlashingTransaction(size_t wallet_index, const s
   const auto nonce = dev::fromBigEndian<u256>(dev::bytes(nonce_bytes.begin(), nonce_bytes.end()));
   const auto value = dev::fromBigEndian<u256>(dev::bytes(value_bytes.begin(), value_bytes.end()));
   const addr_t contract(contract_address.data(), addr_t::ConstructFromPointer);
-  const auto gas_price_bytes =
-      rustaxa::consensus_application_transaction_gas_price_bid(impl_->consensus_application->service());
+  const auto gas_price_bytes = rustaxa::consensus_network_transaction_gas_price_bid(*impl_->api);
   const auto gas_price = dev::fromBigEndian<u256>(dev::bytes(gas_price_bytes.begin(), gas_price_bytes.end()));
   const auto transaction = std::make_shared<Transaction>(nonce, value, gas_price, gas_limit, call_data,
                                                          wallet.node_secret, contract, config.genesis.chain_id);
@@ -981,8 +983,8 @@ bool ConsensusNetworkApi::submitSlashingTransaction(size_t wallet_index, const s
   request.minimum_gas_price = toBridgeU256(val_t(config.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
   request.last_block_number = last_block_number;
   request.cornus_active = config.genesis.state.hardforks.isOnCornusHardfork(last_block_number);
-  const auto submission = rustaxa::consensus_application_submit_transaction_with_execution(
-      impl_->consensus_application->service(), std::move(request), impl_->external_evm);
+  const auto submission = rustaxa::consensus_network_submit_transaction_with_execution(*impl_->api, std::move(request),
+                                                                                       impl_->external_evm);
   return submission.accepted;
 }
 
@@ -1184,8 +1186,8 @@ PbftBlocksBundleOutcome ConsensusNetworkApi::admitPbftBlocksBundle(const std::ve
   rust::Vec<uint8_t> bridge_packet;
   bridge_packet.reserve(packet_rlp.size());
   std::copy(packet_rlp.begin(), packet_rlp.end(), std::back_inserter(bridge_packet));
-  const auto decision = impl_->api->consensus_network_ingest_pbft_blocks_bundle(
-      impl_->consensus_application->service(), std::move(bridge_packet), source_payload_id);
+  const auto decision =
+      impl_->api->consensus_network_ingest_pbft_blocks_bundle(std::move(bridge_packet), source_payload_id);
   return PbftBlocksBundleOutcome{decision.status, static_cast<std::string>(decision.error_code)};
 }
 

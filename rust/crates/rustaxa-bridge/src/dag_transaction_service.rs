@@ -76,17 +76,6 @@ pub fn consensus_application_submit_transaction(
     Ok(public_transaction_report_to_ffi(report))
 }
 
-/// Returns the current native transaction gas-price bid for a signing leaf.
-pub fn consensus_application_transaction_gas_price_bid(
-    application: &BridgeConsensusApplication,
-) -> Result<[u8; 32]> {
-    Ok(application
-        .0
-        .consensus_query_api_for_bridge()
-        .transaction_pool_status()?
-        .gas_price_bid)
-}
-
 fn domain_gas_pricer_config(config: GasPricerConfig) -> DomainGasPricerConfig {
     DomainGasPricerConfig {
         percentile: config.percentile,

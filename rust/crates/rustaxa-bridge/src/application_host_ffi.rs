@@ -5,9 +5,10 @@
 
 use crate::consensus_host_ports::{
     consensus_application_finalize, consensus_application_run,
-    consensus_application_submit_transaction_with_execution,
     consensus_network_ingest_dag_block_packet, consensus_network_ingest_dag_sync_packet,
     consensus_network_ingest_transaction_packet,
+    consensus_network_submit_transaction_with_execution,
+    consensus_network_transaction_gas_price_bid,
 };
 use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::ffi::BridgeConsensusNetworkApi;
@@ -523,32 +524,32 @@ pub mod application_host_ffi {
             external_evm: &ExternalEvmPort,
             task: HostFinalChainFinalizeTask,
         ) -> Result<HostFinalChainFinalizeReport>;
-        /// Submits one canonical transaction through a borrowed external-EVM
-        /// account-fact leaf without retaining either CXX object.
-        pub fn consensus_application_submit_transaction_with_execution(
-            application: &BridgeConsensusApplication,
-            request: PublicTransactionSubmissionRequest,
-            external_evm: &ExternalEvmPort,
-        ) -> Result<PublicTransactionSubmissionReport>;
         /// Routes one canonical transaction packet through native network and
         /// application owners while borrowing only the external-EVM leaf.
         pub fn consensus_network_ingest_transaction_packet(
             network: &BridgeConsensusNetworkApi,
-            application: &BridgeConsensusApplication,
             request: NetworkTransactionPacketRequest,
             external_evm: &ExternalEvmPort,
         ) -> Result<NetworkTransactionPacketReport>;
         pub fn consensus_network_ingest_dag_block_packet(
             network: &BridgeConsensusNetworkApi,
-            application: &BridgeConsensusApplication,
             request: NetworkDagPacketRequest,
             external_evm: &ExternalEvmPort,
         ) -> Result<NetworkDagBlockIngressReport>;
         pub fn consensus_network_ingest_dag_sync_packet(
             network: &BridgeConsensusNetworkApi,
-            application: &BridgeConsensusApplication,
             request: NetworkDagPacketRequest,
             external_evm: &ExternalEvmPort,
         ) -> Result<NetworkDagSyncIngressReport>;
+        /// Returns the native bid for one host-signed network transaction.
+        pub fn consensus_network_transaction_gas_price_bid(
+            network: &BridgeConsensusNetworkApi,
+        ) -> Result<[u8; 32]>;
+        /// Submits one host-signed network transaction through the bound native API.
+        pub fn consensus_network_submit_transaction_with_execution(
+            network: &BridgeConsensusNetworkApi,
+            request: PublicTransactionSubmissionRequest,
+            external_evm: &ExternalEvmPort,
+        ) -> Result<PublicTransactionSubmissionReport>;
     }
 }

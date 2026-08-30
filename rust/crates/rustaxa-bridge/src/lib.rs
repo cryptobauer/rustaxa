@@ -4,7 +4,6 @@ mod dag_transaction_service;
 mod ffi;
 mod final_chain;
 mod network;
-mod network_slashing;
 mod query;
 mod storage_admin;
 mod vdf;

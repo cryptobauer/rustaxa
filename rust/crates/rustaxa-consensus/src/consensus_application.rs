@@ -9,10 +9,7 @@ use crate::consensus_application_runtime::{
     ConsensusApplicationRuntime, ConsensusExecutionPort, ConsensusProcessPort, ConsensusRunExit,
     ConsensusSigningPort, ConsensusTransportPort, SigningIdentity,
 };
-use crate::dag_service::{
-    DagRuntimeNonFinalizedSyncPayload, DagServiceConfig, DagVerifyBlockGasReport,
-    DagVerifyBlockSessionInput,
-};
+use crate::dag_service::{DagServiceConfig, DagVerifyBlockGasReport, DagVerifyBlockSessionInput};
 use crate::dag_transaction_service::{
     DagAddBlockAccountNonceFact, DagAddBlockCompletion, DagAddBlockPrepareRequest,
     DagAddBlockTransactionPayload, DagTransactionService, DagTransactionServiceConfig,
@@ -271,7 +268,21 @@ pub struct ConsensusApplication {
     final_chain: Arc<FinalChain>,
     pbft: Arc<PbftService>,
     dag_transaction: Arc<DagTransactionService>,
-    runtime: ConsensusApplicationRuntime,
+    runtime: Arc<ConsensusApplicationRuntime>,
+    ingress: Arc<ConsensusIngressService>,
+    network_api: Arc<crate::ConsensusNetworkApi>,
+}
+
+/// Shared native owner for DAG/transaction admission that requires runtime,
+/// FinalChain, and DAG siblings together.
+///
+/// The application root and its network API retain this one service. It owns
+/// no transport state and exposes only canonical admission operations with an
+/// exact execution leaf borrowed for the duration of each call.
+pub(crate) struct ConsensusIngressService {
+    final_chain: Arc<FinalChain>,
+    dag_transaction: Arc<DagTransactionService>,
+    runtime: Arc<ConsensusApplicationRuntime>,
 }
 
 /// Coherent hot PBFT status returned without exposing manager state or guards.
@@ -756,6 +767,55 @@ impl ConsensusApplication {
         self.storage.prune_light_history(request)
     }
 
+    /// Admits one canonical network transaction through the shared ingress owner.
+    pub fn ingest_transaction_packet<E: ConsensusExecutionPort>(
+        &self,
+        request: TransactionPacketIngressRequest,
+        execution: &E,
+    ) -> Result<TransactionPacketIngressReport> {
+        self.ingress.ingest_transaction_packet(request, execution)
+    }
+
+    /// Verifies and publishes one canonical network DAG block.
+    pub fn ingest_dag_block_packet<E: ConsensusExecutionPort>(
+        &self,
+        request: DagBlockIngressRequest,
+        execution: &E,
+    ) -> Result<DagBlockIngressReport> {
+        self.ingress.ingest_dag_block_packet(request, execution)
+    }
+
+    /// Admits one canonical DAG-sync packet with sequential partial commits.
+    pub fn ingest_dag_sync_packet<E: ConsensusExecutionPort>(
+        &self,
+        request: DagSyncIngressRequest,
+        execution: &E,
+    ) -> Result<DagSyncIngressReport> {
+        self.ingress.ingest_dag_sync_packet(request, execution)
+    }
+
+    /// Submits canonical public bytes using explicit FinalChain facts.
+    pub fn submit_public_transaction(
+        &self,
+        request: PublicTransactionSubmissionRequest,
+        final_chain_facts: PublicTransactionFinalChainFacts,
+    ) -> Result<PublicTransactionSubmissionReport> {
+        self.ingress
+            .submit_public_transaction(request, final_chain_facts)
+    }
+
+    /// Submits canonical public bytes through one borrowed execution leaf.
+    pub fn submit_public_transaction_with_execution<E: ConsensusExecutionPort>(
+        &self,
+        request: PublicTransactionSubmissionRequest,
+        execution: &E,
+    ) -> Result<PublicTransactionSubmissionReport> {
+        self.ingress
+            .submit_public_transaction_with_execution(request, execution)
+    }
+}
+
+impl ConsensusIngressService {
     /// Validates one DAG-sync transaction without publishing it to the live
     /// queue. Known transactions preserve the legacy verification fast path;
     /// new transactions run canonical envelope policy only and become durable
@@ -1085,114 +1145,6 @@ impl ConsensusApplication {
         })
     }
 
-    /// Returns canonical non-finalized DAG sync bytes from one native snapshot.
-    ///
-    /// Known hashes are excluded natively; blocks and first-seen transactions
-    /// preserve deterministic DAG order. No manager or storage handle crosses
-    /// the transport boundary.
-    pub fn prepare_dag_sync_egress(
-        &self,
-        known_hashes: Vec<H256>,
-    ) -> Result<DagRuntimeNonFinalizedSyncPayload> {
-        self.dag_transaction.dag_non_finalized_sync(known_hashes)
-    }
-
-    /// Resolves exact native transaction bytes for one canonical DAG-block egress operation.
-    pub fn prepare_dag_block_egress(
-        &self,
-        block_hash: H256,
-        block_rlp: &[u8],
-    ) -> Result<Vec<crate::TransactionGossipEntry>> {
-        self.dag_transaction
-            .dag_block_egress_transactions(block_hash, block_rlp)
-    }
-
-    /// Returns the bounded canonical transaction-gossip snapshot.
-    pub fn prepare_transaction_gossip(
-        &self,
-        max_count: u64,
-    ) -> Result<Vec<crate::TransactionGossipAccount>> {
-        self.dag_transaction.transaction_gossip_snapshot(max_count)
-    }
-
-    /// Resolves the application-owned state required by one network egress preparation.
-    ///
-    /// Transaction gossip receives a bounded canonical account snapshot and DAG-block
-    /// egress receives the exact referenced transactions. Other families require no
-    /// application materialization. Invalid DAG inputs fail before a preparation token
-    /// is created, while an explicit transaction payload suppresses periodic selection.
-    pub fn prepare_network_egress_inputs(
-        &self,
-        family: u8,
-        object_hash: [u8; 32],
-        payload_bytes: &[u8],
-    ) -> Result<(
-        Vec<crate::TransactionGossipAccount>,
-        Vec<crate::TransactionGossipEntry>,
-    )> {
-        let transactions = match family {
-            crate::NETWORK_EGRESS_FAMILY_TRANSACTION_GOSSIP if payload_bytes.is_empty() => {
-                self.prepare_transaction_gossip(5500)?
-            }
-            _ => Vec::new(),
-        };
-        let dag_transactions = match family {
-            crate::NETWORK_EGRESS_FAMILY_DAG_BLOCK => {
-                self.prepare_dag_block_egress(H256::from(object_hash), payload_bytes)?
-            }
-            _ => Vec::new(),
-        };
-        Ok((transactions, dag_transactions))
-    }
-
-    /// Loads slashing submitter nonce/balance facts through one exact external
-    /// account operation without exposing FinalChain or manager handles.
-    pub fn slashing_submitters_with_execution<E: ConsensusExecutionPort>(
-        &self,
-        execution: &E,
-    ) -> Result<Vec<crate::SlashingSubmitterIdentity>> {
-        let addresses = self
-            .runtime
-            .signing_identities()
-            .iter()
-            .map(|identity| identity.address)
-            .collect::<Vec<_>>();
-        let effect_id = self.runtime.next_operation_effect()?;
-        let report = execution.load_final_chain_account_facts(
-            &crate::consensus_application_runtime::FinalChainAccountFactsRequest {
-                effect_id,
-                addresses: addresses.clone(),
-            },
-        )?;
-        self.runtime
-            .validate_operation_report(effect_id, report.effect_id)?;
-        if !report.succeeded || report.accounts.len() != addresses.len() {
-            bail!("CONSENSUS_SLASHING_SUBMITTER_FACTS_FAILED");
-        }
-        report
-            .accounts
-            .iter()
-            .zip(addresses)
-            .enumerate()
-            .map(|(wallet_index, (account, address))| {
-                if account.address != address {
-                    bail!("CONSENSUS_SLASHING_SUBMITTER_FACTS_ORDER_MISMATCH");
-                }
-                Ok(crate::SlashingSubmitterIdentity {
-                    wallet_index,
-                    address,
-                    nonce: account
-                        .found
-                        .then(|| U256::from_big_endian(&account.nonce))
-                        .unwrap_or_default(),
-                    balance: account
-                        .found
-                        .then(|| U256::from_big_endian(&account.balance))
-                        .unwrap_or_default(),
-                })
-            })
-            .collect()
-    }
     /// Submits canonical public transaction bytes through the native owner.
     ///
     /// The caller supplies only exact external-EVM account facts; Rust owns
@@ -1254,6 +1206,9 @@ impl ConsensusApplication {
             },
         )
     }
+}
+
+impl ConsensusApplication {
     /// Returns one coherent application-root PBFT/queue status snapshot.
     pub fn consensus_live_status(&self) -> Result<ConsensusLiveStatus> {
         let status = self.pbft.application_status_snapshot()?;
@@ -1318,20 +1273,45 @@ impl ConsensusApplication {
         let pbft = PbftService::restore(storage.clone(), config.pbft)?;
         dag_transaction.complete_restore_mapping(max_levels_per_period)?;
         let dag_proposers = dag_proposer_inputs(&config.signing_identities, config.dag_proposer);
-        let runtime = ConsensusApplicationRuntime::new_with_proposers_and_execution(
-            config.signing_identities,
-            config.polling_interval_ms,
-            dag_proposers,
-            config.dag_proposer,
-            bridge_contract_address,
-            max_levels_per_period,
-        )?;
+        let runtime = Arc::new(
+            ConsensusApplicationRuntime::new_with_proposers_and_execution(
+                config.signing_identities,
+                config.polling_interval_ms,
+                dag_proposers,
+                config.dag_proposer,
+                bridge_contract_address,
+                max_levels_per_period,
+            )?,
+        );
+        let pbft = Arc::new(pbft);
+        let dag_transaction = Arc::new(dag_transaction);
+        let query = crate::ConsensusQueryApi::new_live(
+            Arc::clone(&storage),
+            Arc::clone(&pbft),
+            Arc::clone(&final_chain),
+            Arc::clone(&dag_transaction),
+        );
+        let ingress = Arc::new(ConsensusIngressService {
+            final_chain: Arc::clone(&final_chain),
+            dag_transaction: Arc::clone(&dag_transaction),
+            runtime: Arc::clone(&runtime),
+        });
+        let network_api = Arc::new(crate::ConsensusNetworkApi::new(
+            pbft.network_service(),
+            Arc::clone(&pbft),
+            Arc::clone(&final_chain),
+            Arc::clone(&dag_transaction),
+            Arc::clone(&ingress),
+            query,
+        ));
         Ok(Self {
             storage,
             final_chain,
-            pbft: Arc::new(pbft),
-            dag_transaction: Arc::new(dag_transaction),
+            pbft,
+            dag_transaction,
             runtime,
+            ingress,
+            network_api,
         })
     }
 
@@ -1394,33 +1374,14 @@ impl ConsensusApplication {
         self.final_chain.as_ref()
     }
 
-    /// Clones the private FinalChain owner for a root-bound Rust adapter.
+    /// Returns the sole application-constructed network client for thin CXX dispatch.
     ///
-    /// The clone remains inside Rust and cannot construct a competing runtime;
-    /// it only extends the lifetime of the root's existing FinalChain sibling.
+    /// The clone shares one bound native API and exposes no private sibling or
+    /// service getter. It exists only to extend the application client's
+    /// lifetime across the opaque CXX transport adapter.
     #[doc(hidden)]
-    pub fn final_chain_arc_for_bridge(&self) -> Arc<FinalChain> {
-        Arc::clone(&self.final_chain)
-    }
-
-    /// Borrows PBFT ownership for thin Rust bridge task dispatch.
-    ///
-    /// This Rust-only migration seam is intentionally not exported through
-    /// CXX. It must disappear as operation-shaped application tasks absorb the
-    /// remaining manager facade calls.
-    #[doc(hidden)]
-    pub fn pbft_for_bridge(&self) -> &PbftService {
-        self.pbft.as_ref()
-    }
-
-    /// Clones the private PBFT owner for a root-bound Rust adapter.
-    ///
-    /// The clone never crosses CXX and cannot construct a competing runtime;
-    /// it lets the network bridge compose packet ingress with the exact vote
-    /// service owned by this application root.
-    #[doc(hidden)]
-    pub fn pbft_arc_for_bridge(&self) -> Arc<PbftService> {
-        Arc::clone(&self.pbft)
+    pub fn consensus_network_api_for_bridge(&self) -> Arc<crate::ConsensusNetworkApi> {
+        Arc::clone(&self.network_api)
     }
 }
 
@@ -1821,14 +1782,23 @@ mod tests {
             Some(vec![1; 32])
         );
         assert_eq!(root.dag_transaction.transaction_count().unwrap(), 0);
-        let final_chain = root.final_chain_arc_for_bridge();
-        assert!(Arc::ptr_eq(&final_chain, &root.final_chain));
         assert!(std::ptr::eq(
             root.final_chain_for_bridge(),
-            final_chain.as_ref()
+            root.final_chain.as_ref()
         ));
+        let network_api = root.consensus_network_api_for_bridge();
+        let second_network_api = root.consensus_network_api_for_bridge();
+        assert!(Arc::ptr_eq(&network_api, &second_network_api));
 
         drop(root);
+        network_api
+            .build_status_packet(crate::NetworkStatusPacketBuildRequest {
+                initial: true,
+                local_pbft_chain_size: 1,
+                local_pbft_round: 1,
+                local_dag_level: 0,
+            })
+            .expect("bound network API retains the application siblings");
         let _ = fs::remove_dir_all(path);
     }
 

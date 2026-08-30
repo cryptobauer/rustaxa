@@ -6177,7 +6177,7 @@ impl PbftService {
     /// the external transport boundary; sibling queries never execute while
     /// the network queue mutex is held. No independent network composition or
     /// configuration is created by this accessor.
-    pub fn network_service(&self) -> ConsensusNetworkService {
+    pub(crate) fn network_service(&self) -> ConsensusNetworkService {
         self.network.clone()
     }
 
