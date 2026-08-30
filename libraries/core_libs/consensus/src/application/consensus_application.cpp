@@ -148,7 +148,8 @@ PublicTransactionSubmissionResult ConsensusApplication::submitTransaction(
     throw std::invalid_argument("PUBLIC_TRANSACTION_MISSING");
   }
 
-  const auto last_block_number = final_chain.lastBlockNumber();
+  const auto query = queryClient();
+  const auto last_block_number = (*query)->consensus_query_final_chain_last_block_number();
   rustaxa::PublicTransactionSubmissionRequest request;
   request.transaction_rlp = toBridgeBytes(transaction->rlp());
   request.expected_chain_id = config.genesis.chain_id;
@@ -159,14 +160,14 @@ PublicTransactionSubmissionResult ConsensusApplication::submitTransaction(
 
   const auto sender = transaction->getSender();
   const auto account = final_chain.getAccount(sender);
-  const auto location = final_chain.transactionLocation(transaction->getHash());
+  const auto location = (*query)->consensus_query_transaction_by_hash(transaction->getHash().asArray());
   rustaxa::PublicTransactionFinalChainFacts final_chain_facts;
   final_chain_facts.sender = sender.asArray();
   final_chain_facts.account_found = account.has_value();
   final_chain_facts.account_nonce = toBridgeU256(account.value_or(state_api::ZeroAccount).nonce);
   final_chain_facts.account_balance = toBridgeU256(account.value_or(state_api::ZeroAccount).balance);
-  final_chain_facts.finalized_period_found = location.has_value();
-  final_chain_facts.finalized_period = location ? location->period : 0;
+  final_chain_facts.finalized_period_found = location.found && location.location_found;
+  final_chain_facts.finalized_period = final_chain_facts.finalized_period_found ? location.block_number : 0;
 
   auto report = rustaxa::consensus_application_submit_transaction(service(), std::move(request), final_chain_facts);
   auto result =

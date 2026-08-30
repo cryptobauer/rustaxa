@@ -35,7 +35,9 @@ struct LogFilter {
       const std::function<std::vector<std::pair<ExtendedTransactionLocation, TransactionReceipt>>(EthBlockNumber)>&
           block_receipts) const;
   std::vector<LocalisedLogEntry> match_all(const LogReplayReader& reader) const;
+#ifndef RUSTAXA_ENABLE
   std::vector<LocalisedLogEntry> match_all(const final_chain::FinalChain& final_chain) const;
+#endif
 };
 
 // LogReplayReader is the minimal finalized-log replay boundary used by ETH log

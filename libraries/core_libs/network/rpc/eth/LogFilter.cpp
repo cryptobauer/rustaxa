@@ -165,6 +165,7 @@ std::vector<LocalisedLogEntry> LogFilter::match_all(const LogReplayReader& reade
   return match_all(reader.latest_finalized_block_number(), reader.blocks_with_bloom, reader.block_receipts_by_number);
 }
 
+#ifndef RUSTAXA_ENABLE
 std::vector<LocalisedLogEntry> LogFilter::match_all(const final_chain::FinalChain& final_chain) const {
   std::vector<LocalisedLogEntry> ret;
   auto action = [&, this](EthBlockNumber blk_n) {
@@ -219,6 +220,7 @@ std::vector<LocalisedLogEntry> LogFilter::match_all(const final_chain::FinalChai
   }
   return ret;
 }
+#endif
 
 AddressSet parse_addresses(const Json::Value& json) {
   AddressSet addresses;

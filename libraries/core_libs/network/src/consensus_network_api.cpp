@@ -705,7 +705,7 @@ TransactionPacketOutcome ConsensusNetworkApi::ingestTransactionPacket(
     uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id, uint64_t source_payload_id,
     const std::vector<uint8_t>& packet_rlp, const FullNodeConfig& config, const ConsensusTransportExecutor& executor) {
   auto lane_lock = lockTransportLane(transport_lane);
-  const auto last_block_number = impl_->final_chain->lastBlockNumber();
+  const auto last_block_number = (*impl_->query)->consensus_query_final_chain_last_block_number();
   rustaxa::NetworkTransactionPacketRequest request{};
   request.transport_lane = transport_lane;
   request.peer_id = peer_id;
@@ -777,7 +777,7 @@ DagBlockPacketOutcome ConsensusNetworkApi::ingestDagBlockPacket(
     const std::vector<uint8_t>& packet_rlp, bool rebroadcast, const DagBlockPeerFacts& peer_facts,
     const FullNodeConfig& config, const DagPacketExecutor& executor) {
   auto lane_lock = lockTransportLane(transport_lane);
-  const auto last_block_number = impl_->final_chain->lastBlockNumber();
+  const auto last_block_number = (*impl_->query)->consensus_query_final_chain_last_block_number();
   rustaxa::NetworkDagPacketRequest request{};
   request.transport_lane = transport_lane;
   request.peer_id = peer_id;
@@ -855,7 +855,7 @@ DagSyncPacketOutcome ConsensusNetworkApi::ingestDagSyncPacket(
     uint32_t transport_lane, const std::array<uint8_t, 64>& peer_id, uint64_t source_payload_id,
     const std::vector<uint8_t>& packet_rlp, const FullNodeConfig& config, const DagPacketExecutor& executor) {
   auto lane_lock = lockTransportLane(transport_lane);
-  const auto last_block_number = impl_->final_chain->lastBlockNumber();
+  const auto last_block_number = (*impl_->query)->consensus_query_final_chain_last_block_number();
   rustaxa::NetworkDagPacketRequest request{};
   request.transport_lane = transport_lane;
   request.peer_id = peer_id;
@@ -973,7 +973,7 @@ bool ConsensusNetworkApi::submitSlashingTransaction(size_t wallet_index, const s
   const auto gas_price = dev::fromBigEndian<u256>(dev::bytes(gas_price_bytes.begin(), gas_price_bytes.end()));
   const auto transaction = std::make_shared<Transaction>(nonce, value, gas_price, gas_limit, call_data,
                                                          wallet.node_secret, contract, config.genesis.chain_id);
-  const auto last_block_number = impl_->final_chain->lastBlockNumber();
+  const auto last_block_number = (*impl_->query)->consensus_query_final_chain_last_block_number();
   rustaxa::PublicTransactionSubmissionRequest request{};
   request.transaction_rlp = toRustBytes(transaction->rlp());
   request.expected_chain_id = config.genesis.chain_id;

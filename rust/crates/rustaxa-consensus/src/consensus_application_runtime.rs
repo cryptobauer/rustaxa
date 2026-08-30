@@ -60,6 +60,7 @@ use crate::transaction_packing_service::TransactionPackingEstimate;
 use crate::verified_votes::PbftVoteType;
 use crate::verified_votes::TwoTPlusOneVotedBlockType;
 use anyhow::{Context, Result, bail, ensure};
+use rlp::Rlp;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -441,6 +442,30 @@ fn startup_persisted_pillar_vote_facts(
         validator_vote_count: report.signer_vote_counts[0],
         total_eligible_vote_count: report.total_eligible_vote_count,
     })
+}
+
+/// Classifies one persisted-vote anchor attempt without weakening effect
+/// correlation. Concrete-EVM or native-state unavailability is retryable
+/// during startup, while a stale effect report is an application invariant
+/// violation and must fail the run instead of entering an infinite retry.
+fn startup_persisted_pillar_vote_report(
+    report: Result<PillarAnchorStateReport>,
+) -> Result<StartupPersistedPillarVoteFacts> {
+    match report {
+        Ok(report) => startup_persisted_pillar_vote_facts(&report),
+        Err(error)
+            if error.chain().any(|cause| {
+                matches!(
+                    cause.to_string().as_str(),
+                    "CONSENSUS_RUNTIME_STALE_EFFECT_REPORT"
+                        | "CONSENSUS_RUNTIME_STALE_EFFECT_GENERATION"
+                )
+            }) =>
+        {
+            Err(error)
+        }
+        Err(_) => Ok(StartupPersistedPillarVoteFacts::Retry),
+    }
 }
 
 /// Interruptible process/timer mechanics used by the blocking runner.
@@ -1046,6 +1071,59 @@ impl ConsensusApplicationRuntime {
         Ok(report)
     }
 
+    /// Composes one pillar anchor from native FinalChain state and the exact
+    /// bridge-contract facts supplied by the concrete EVM leaf.
+    ///
+    /// Header/state-root and DPoS snapshots never cross CXX. The host observes
+    /// only `period` and returns bridge root/epoch; missing native rows, corrupt
+    /// RLP, or report identity mismatches fail before protocol state advances.
+    fn load_pillar_anchor_state<E: ConsensusExecutionPort>(
+        &self,
+        effect_id: ConsensusEffectId,
+        period: u64,
+        pillar_block_period: u64,
+        signer_addresses: Vec<[u8; 20]>,
+        final_chain: &FinalChain,
+        evm: &E,
+    ) -> Result<PillarAnchorStateReport> {
+        let mut report = evm.load_pillar_anchor_state(&PillarAnchorStateRequest {
+            effect_id,
+            period,
+            pillar_block_period,
+            signer_addresses: signer_addresses.clone(),
+        })?;
+        self.validate_report(effect_id, report.effect_id)?;
+        if !report.succeeded {
+            return Ok(report);
+        }
+
+        let block_header_rlp = final_chain
+            .block_header(period.into())?
+            .context("PILLAR_ANCHOR_HEADER_MISSING")?;
+        let state_root = Rlp::new(&block_header_rlp)
+            .val_at::<ethereum_types::H256>(3)
+            .context("PILLAR_ANCHOR_STATE_ROOT_DECODE")?;
+        report.block_header_rlp = block_header_rlp;
+        report.state_root = state_root.into();
+        report.validator_vote_counts = final_chain
+            .dpos_validators_eligible_vote_counts(pillar_block_period.into())?
+            .into_iter()
+            .map(|count| PillarAnchorValidatorVoteCount {
+                address: count.address,
+                vote_count: count.vote_count,
+            })
+            .collect();
+        report.signer_vote_counts = signer_addresses
+            .into_iter()
+            .map(|address| {
+                final_chain.dpos_eligible_vote_count(pillar_block_period.into(), address)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        report.total_eligible_vote_count =
+            final_chain.dpos_eligible_total_vote_count(pillar_block_period.into())?;
+        Ok(report)
+    }
+
     /// Publishes one already-committed pillar block to the public observer.
     ///
     /// Persistence and native finalized state have already been acknowledged
@@ -1486,13 +1564,14 @@ impl ConsensusApplicationRuntime {
                         .iter()
                         .map(|identity| identity.address)
                         .collect();
-                    let report = evm.load_pillar_anchor_state(&PillarAnchorStateRequest {
-                        effect_id: id,
-                        period: effect.period,
-                        pillar_block_period: effect.pillar_block_period,
+                    let report = self.load_pillar_anchor_state(
+                        id,
+                        effect.period,
+                        effect.pillar_block_period,
                         signer_addresses,
-                    })?;
-                    self.validate_report(id, report.effect_id)?;
+                        final_chain,
+                        evm,
+                    )?;
                     let succeeded = report.succeeded;
                     let failure = report.error_code.clone();
                     let identities = self
@@ -1809,19 +1888,15 @@ impl ConsensusApplicationRuntime {
                         });
                     }
                     let effect_id = self.next_effect(generation)?;
-                    let report = evm.load_pillar_anchor_state(&PillarAnchorStateRequest {
+                    let report = self.load_pillar_anchor_state(
                         effect_id,
-                        period: persisted.dpos_period,
-                        pillar_block_period: persisted.dpos_period,
-                        signer_addresses: vec![persisted.voter],
-                    });
-                    let facts = match report {
-                        Ok(report) => {
-                            self.validate_report(effect_id, report.effect_id)?;
-                            startup_persisted_pillar_vote_facts(&report)?
-                        }
-                        Err(_) => StartupPersistedPillarVoteFacts::Retry,
-                    };
+                        persisted.dpos_period,
+                        persisted.dpos_period,
+                        vec![persisted.voter],
+                        final_chain,
+                        evm,
+                    );
+                    let facts = startup_persisted_pillar_vote_report(report)?;
                     match facts {
                         StartupPersistedPillarVoteFacts::Ready {
                             validator_vote_count,
@@ -1855,13 +1930,14 @@ impl ConsensusApplicationRuntime {
                     .iter()
                     .map(|identity| identity.address)
                     .collect();
-                let report = evm.load_pillar_anchor_state(&PillarAnchorStateRequest {
+                let report = self.load_pillar_anchor_state(
                     effect_id,
                     period,
-                    pillar_block_period: startup.current_period,
+                    startup.current_period,
                     signer_addresses,
-                })?;
-                self.validate_report(effect_id, report.effect_id)?;
+                    final_chain,
+                    evm,
+                )?;
                 ensure!(
                     report.succeeded,
                     "CONSENSUS_RUNTIME_PILLAR_ANCHOR_STATE_FAILED: {}",
@@ -2757,6 +2833,31 @@ mod tests {
 
         ready.signer_vote_counts.push(8);
         assert!(startup_persisted_pillar_vote_facts(&ready).is_err());
+    }
+
+    #[test]
+    fn persisted_pillar_startup_propagates_stale_effect_reports() {
+        for code in [
+            "CONSENSUS_RUNTIME_STALE_EFFECT_REPORT",
+            "CONSENSUS_RUNTIME_STALE_EFFECT_GENERATION",
+        ] {
+            let error = anyhow::anyhow!(code).context("PERSISTED_PILLAR_STARTUP");
+            assert_eq!(
+                startup_persisted_pillar_vote_report(Err(error))
+                    .unwrap_err()
+                    .root_cause()
+                    .to_string(),
+                code
+            );
+        }
+
+        assert_eq!(
+            startup_persisted_pillar_vote_report(Err(anyhow::anyhow!(
+                "PILLAR_ANCHOR_STATE_READ_FAILED"
+            )))
+            .unwrap(),
+            StartupPersistedPillarVoteFacts::Retry
+        );
     }
     impl ConsensusProcessPort for FakeProcess {
         fn now_millis(&self) -> u64 {

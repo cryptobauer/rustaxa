@@ -6,7 +6,12 @@ using namespace std::literals;
 
 namespace graphql::taraxa {
 
-AccountStateReader makeAccountStateReader(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain) {
+AccountStateReader makeAccountStateReader(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain
+#ifdef RUSTAXA_ENABLE
+                                          ,
+                                          ::taraxa::net::ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   AccountStateReader reader;
   reader.account_at = [final_chain](const dev::Address& address, std::optional<::taraxa::EthBlockNumber> block_number) {
     return final_chain->getAccount(address, block_number);
@@ -18,7 +23,21 @@ AccountStateReader makeAccountStateReader(std::shared_ptr<::taraxa::final_chain:
   reader.code_at = [final_chain](const dev::Address& address, std::optional<::taraxa::EthBlockNumber> block_number) {
     return final_chain->getCode(address, block_number);
   };
-  reader.latest_finalized_block_number = [final_chain] { return final_chain->lastBlockNumber(); };
+  reader.latest_finalized_block_number = [final_chain
+#ifdef RUSTAXA_ENABLE
+                                          ,
+                                          consensus_query_api
+#endif
+  ] {
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      throw std::runtime_error("GRAPHQL_ACCOUNT_QUERY_UNAVAILABLE");
+    }
+    return (*consensus_query_api)->consensus_query_final_chain_last_block_number();
+#else
+    return final_chain->lastBlockNumber();
+#endif
+  };
   return reader;
 }
 

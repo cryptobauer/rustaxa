@@ -1,6 +1,7 @@
 include(GoogleTest)
 
 add_executable(rust_consensus_tests
+    test_external_evm_port.cpp
     test_final_chain.cpp
     test_network_api.cpp
 )

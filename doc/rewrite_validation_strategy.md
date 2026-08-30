@@ -90,8 +90,9 @@ FinalChain:
 make rewrite-validate-final-chain
 ```
 
-This runs the fast Rust gate, builds targeted FinalChain/runtime tests, runs `final_chain_test`, `state_api_test`, and
-`rpc_test` when available, then runs the Rust-enabled binary link/CLI smoke target. Before treating this as Rust
+This runs the fast Rust gate, builds targeted native FinalChain/runtime tests, runs `rust_consensus_tests`,
+`state_api_test`, and `rpc_test` when available, then runs the Rust-enabled binary link/CLI smoke target. The legacy
+`final_chain_test` is pure-C++ reference coverage and is exercised by the parity gate. Before treating this as Rust
 FinalChain evidence, require `RUSTAXA_ENABLE` to be `ON`.
 
 As with the consensus target, a skipped test required by the changed boundary is a validation gap. The target must not
@@ -126,8 +127,9 @@ Network and transport:
 
 Execution orchestration:
 
-- For FinalChain/EVM request planning, canonical payloads, result validation, commit ordering, recovery, or publication,
-  run Rust unit tests, `make rewrite-validate-final-chain`, and focused `state_api_test`/`final_chain_test` coverage.
+- For FinalChain/EVM request planning, canonical payloads, result validation, commit ordering, recovery, publication,
+  or public query routing, run Rust unit tests, `make rewrite-validate-final-chain`, focused `state_api_test`/`rpc_test`
+  coverage, and the pure-C++ `final_chain_test` parity gate when legacy behavior is claimed.
 - Preserve concrete EVM and `state_db/` execution as a leaf boundary unless the roadmap explicitly changes it. Validate
   CXX request/result conversion and error mapping separately from native orchestration behavior.
 - Treat an execution-authority cutover as Tier 3. Use current-source parity where deterministic legacy behavior is

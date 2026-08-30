@@ -216,11 +216,6 @@ pub mod rustaxa_ffi {
     }
 
     /// Previous-block cert-vote fact for rewards-stat planning.
-    struct TxRlp {
-        data: Vec<u8>,
-        is_system: bool,
-    }
-
     /// TransactionQueue construction limits.
     struct TransactionQueueConfig {
         max_size: usize,
@@ -1101,6 +1096,31 @@ pub mod rustaxa_ffi {
         pub fn consensus_query_final_chain_last_block_number(
             self: &BridgeConsensusQueryApi,
         ) -> Result<u64>;
+        pub fn consensus_query_final_chain_dpos_eligible_vote_count(
+            self: &BridgeConsensusQueryApi,
+            block_number: u64,
+            address: &[u8; 20],
+        ) -> Result<u64>;
+        pub fn consensus_query_final_chain_dpos_eligible_total_vote_count(
+            self: &BridgeConsensusQueryApi,
+            block_number: u64,
+        ) -> Result<u64>;
+        pub fn consensus_query_final_chain_dpos_validators_total_stakes(
+            self: &BridgeConsensusQueryApi,
+            block_number: u64,
+        ) -> Result<Vec<DposValidatorStake>>;
+        pub fn consensus_query_final_chain_dpos_total_amount_delegated(
+            self: &BridgeConsensusQueryApi,
+            block_number: u64,
+        ) -> Result<Vec<u8>>;
+        pub fn consensus_query_final_chain_dpos_yield(
+            self: &BridgeConsensusQueryApi,
+            block_number: u64,
+        ) -> Result<u64>;
+        pub fn consensus_query_final_chain_dpos_total_supply(
+            self: &BridgeConsensusQueryApi,
+            block_number: u64,
+        ) -> Result<Vec<u8>>;
         pub fn consensus_query_period_lambda_by_period(
             self: &BridgeConsensusQueryApi,
             period: u64,
@@ -1407,75 +1427,21 @@ pub mod rustaxa_ffi {
             proof_hash: &[u8; 32],
             transaction_inserted: bool,
         ) -> Result<bool>;
-        // FinalChain
-
-        pub fn get_last_block_number(self: &BridgeConsensusApplication) -> Result<u64>;
-        pub fn get_block_number(
-            self: &BridgeConsensusApplication,
-            hash: &[u8; 32],
-        ) -> Result<FinalChainBlockNumberLookup>;
-        pub fn get_block_hash(self: &BridgeConsensusApplication, num: u64) -> Result<Vec<u8>>;
-        pub fn get_block_header(self: &BridgeConsensusApplication, num: u64) -> Result<Vec<u8>>;
-        pub fn get_transaction_location(
-            self: &BridgeConsensusApplication,
-            hash: &[u8; 32],
-        ) -> Result<Vec<u8>>;
-        pub fn get_transaction_count(self: &BridgeConsensusApplication, period: u64)
-            -> Result<u64>;
-        pub fn get_blocks_with_bloom(
-            self: &BridgeConsensusApplication,
-            bloom: &[u8; 256],
-            from: u64,
-            to: u64,
-        ) -> Result<Vec<u64>>;
-        pub fn get_account_at_block(
-            self: &BridgeConsensusApplication,
-            block_number: u64,
-            address: &[u8; 20],
-        ) -> Result<AccountLookup>;
-        pub fn get_dpos_eligible_vote_count(
-            self: &BridgeConsensusApplication,
-            block_number: u64,
-            address: &[u8; 20],
-        ) -> Result<u64>;
-        pub fn get_dpos_eligible_total_vote_count(
-            self: &BridgeConsensusApplication,
-            block_number: u64,
-        ) -> Result<u64>;
-        pub fn get_dpos_validators_eligible_vote_counts(
-            self: &BridgeConsensusApplication,
-            block_number: u64,
-        ) -> Result<Vec<HostValidatorVoteCount>>;
-        pub fn get_dpos_validators_total_stakes(
-            self: &BridgeConsensusApplication,
-            block_number: u64,
-        ) -> Result<Vec<DposValidatorStake>>;
-        pub fn get_dpos_total_amount_delegated(
-            self: &BridgeConsensusApplication,
-            block_number: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn get_dpos_yield(self: &BridgeConsensusApplication, block_number: u64) -> Result<u64>;
-        pub fn get_dpos_total_supply(
-            self: &BridgeConsensusApplication,
-            block_number: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn call(
-            self: &BridgeConsensusApplication,
-            request: FinalChainCall,
-        ) -> Result<FinalChainCallOutcome>;
         pub fn recover_external_evm_pending_publication(
             self: &BridgeConsensusApplication,
             committed_period: u64,
             committed_state_root: &[u8; 32],
         ) -> Result<FinalChainExternalEvmPublicationReport>;
-        pub fn get_transaction_rlps(
+        /// Exact native-account leaf retained by the hybrid public-state adapter.
+        pub fn get_account_at_block(
             self: &BridgeConsensusApplication,
-            period: u64,
-        ) -> Result<Vec<TxRlp>>;
-        pub fn get_transaction_receipt(
+            block_number: u64,
+            address: &[u8; 20],
+        ) -> Result<AccountLookup>;
+        /// Exact native-call leaf retained by the hybrid concrete-EVM adapter.
+        pub fn call(
             self: &BridgeConsensusApplication,
-            period: u64,
-            position: u64,
-        ) -> Result<Vec<u8>>;
+            request: FinalChainCall,
+        ) -> Result<FinalChainCallOutcome>;
     }
 }

@@ -36,35 +36,90 @@ namespace {
 Json::Value pbftScheduleBlockViewToJson(const rustaxa::PbftScheduleBlockView& view);
 #endif
 
-TaraxaDposReader makeTaraxaDposReader(std::weak_ptr<taraxa::AppBase> app) {
+TaraxaDposReader makeTaraxaDposReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                      ,
+                                      ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   TaraxaDposReader reader;
-  reader.eligible_total_vote_count = [app](EthBlockNumber block_number) {
+  reader.eligible_total_vote_count = [app
+#ifdef RUSTAXA_ENABLE
+                                      ,
+                                      consensus_query_api
+#endif
+  ](EthBlockNumber block_number) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_DPOS_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_DPOS_QUERY_UNAVAILABLE");
+    }
+    return (*consensus_query_api)->consensus_query_final_chain_dpos_eligible_total_vote_count(block_number);
+#else
     return node->getFinalChain()->dposEligibleTotalVoteCount(block_number);
+#endif
   };
-  reader.eligible_vote_count = [app](EthBlockNumber block_number, const addr_t& address) {
+  reader.eligible_vote_count = [app
+#ifdef RUSTAXA_ENABLE
+                                ,
+                                consensus_query_api
+#endif
+  ](EthBlockNumber block_number, const addr_t& address) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_DPOS_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_DPOS_QUERY_UNAVAILABLE");
+    }
+    return (*consensus_query_api)
+        ->consensus_query_final_chain_dpos_eligible_vote_count(block_number, address.asArray());
+#else
     return node->getFinalChain()->dposEligibleVoteCount(block_number, address);
+#endif
   };
-  reader.dpos_yield = [app](EthBlockNumber block_number) {
+  reader.dpos_yield = [app
+#ifdef RUSTAXA_ENABLE
+                       ,
+                       consensus_query_api
+#endif
+  ](EthBlockNumber block_number) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_DPOS_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_DPOS_QUERY_UNAVAILABLE");
+    }
+    return (*consensus_query_api)->consensus_query_final_chain_dpos_yield(block_number);
+#else
     return node->getFinalChain()->dposYield(block_number);
+#endif
   };
-  reader.total_supply = [app](EthBlockNumber block_number) {
+  reader.total_supply = [app
+#ifdef RUSTAXA_ENABLE
+                         ,
+                         consensus_query_api
+#endif
+  ](EthBlockNumber block_number) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_DPOS_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_DPOS_QUERY_UNAVAILABLE");
+    }
+    const auto supply = (*consensus_query_api)->consensus_query_final_chain_dpos_total_supply(block_number);
+    return dev::fromBigEndian<dev::u256>(dev::bytes(supply.begin(), supply.end()));
+#else
     return node->getFinalChain()->dposTotalSupply(block_number);
+#endif
   };
   return reader;
 }
@@ -367,11 +422,13 @@ TaraxaNodeVersionReader makeTaraxaNodeVersionReader(std::weak_ptr<taraxa::AppBas
       throw std::runtime_error("TARAXA_NODE_VERSION_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    if (consensus_query_api) {
-      return (*consensus_query_api)->consensus_query_final_chain_last_block_number();
+    if (!consensus_query_api) {
+      throw std::runtime_error("TARAXA_NODE_VERSION_QUERY_UNAVAILABLE");
     }
-#endif
+    return (*consensus_query_api)->consensus_query_final_chain_last_block_number();
+#else
     return node->getFinalChain()->lastBlockNumber();
+#endif
   };
   reader.node_version_by_period = [app
 #ifdef RUSTAXA_ENABLE
@@ -409,8 +466,18 @@ TaraxaNodeVersionReader makeTaraxaNodeVersionReader(std::weak_ptr<taraxa::AppBas
   return reader;
 }
 
-void fillMissingTaraxaDposReaderCallbacks(TaraxaDposReader& reader, std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeTaraxaDposReader(std::move(app));
+void fillMissingTaraxaDposReaderCallbacks(TaraxaDposReader& reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                          ,
+                                          ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeTaraxaDposReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                           ,
+                                       std::move(consensus_query_api)
+#endif
+  );
   if (!reader.eligible_total_vote_count) {
     reader.eligible_total_vote_count = std::move(defaults.eligible_total_vote_count);
   }
@@ -795,7 +862,12 @@ Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader, Tarax
     consensus_query_api_ = app->getConsensusApplication()->queryClient();
   }
 #endif
-  fillMissingTaraxaDposReaderCallbacks(dpos_reader_, app_);
+  fillMissingTaraxaDposReaderCallbacks(dpos_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                       ,
+                                       consensus_query_api_
+#endif
+  );
   fillMissingTaraxaDagStatusReaderCallbacks(dag_status_reader_, app_
 #ifdef RUSTAXA_ENABLE
                                             ,

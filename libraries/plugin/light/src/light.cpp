@@ -140,12 +140,24 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
     const auto kPruneBlocksToKeep = kDagExpiryLevelLimit + kMaxLevelsPerPeriod + 1;
     // prune state db only if we have more than 2*kPruneBlocksToKeep blocks
     const uint64_t kPruneStateDbThreshold = 1.5 * kPruneBlocksToKeep;
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = node->getConsensusApplication()->queryClient();
+    if (!query_api) {
+      throw std::runtime_error("LIGHT_HISTORY_API_QUERY_UNAVAILABLE");
+    }
+    const auto last_blk_num = (*query_api)->consensus_query_final_chain_last_block_number();
+#else
     auto final_chain = node->getFinalChain();
     auto last_blk_num = final_chain->lastBlockNumber();
+#endif
     if (last_blk_num > kPruneStateDbThreshold) {
       auto prune_block_num = last_blk_num - kPruneStateDbThreshold;
+#ifdef RUSTAXA_ENABLE
+      if (!(*query_api)->consensus_query_final_chain_block_by_number(prune_block_num).found) {
+#else
       auto prune_block = final_chain->blockHeader(prune_block_num);
       if (!prune_block) {
+#endif
         return std::optional<uint64_t>{};
       }
       return std::optional<uint64_t>(prune_block_num);

@@ -11,8 +11,12 @@ using namespace std::literals;
 namespace graphql::taraxa {
 namespace {
 TransactionReceiptReader makeTransactionReceiptReader(
-    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
+    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
   TransactionReceiptReader reader;
+#ifdef RUSTAXA_ENABLE
+  reader.location = [](const auto&) { return std::optional<::taraxa::TransactionLocation>{}; };
+  reader.receipt = [](auto, auto, const auto&) { return std::optional<::taraxa::TransactionReceipt>{}; };
+#else
   reader.location = [final_chain](const ::taraxa::trx_hash_t& hash) {
     if (!final_chain) {
       return std::optional<::taraxa::TransactionLocation>{};
@@ -25,6 +29,7 @@ TransactionReceiptReader makeTransactionReceiptReader(
     }
     return final_chain->transactionReceipt(period, position, hash);
   };
+#endif
   return reader;
 }
 }  // namespace

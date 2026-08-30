@@ -207,24 +207,12 @@ rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const taraxa::FullN
 
 namespace {
 
-h256 into_h256(const rust::Vec<uint8_t>& bytes, const char* api_name) {
-  if (bytes.size() != 32) {
-    throw DbException("FinalChain::" + std::string(api_name) + " returned invalid hash size: expected 32, got " +
-                      std::to_string(bytes.size()));
-  }
-  return h256(dev::bytes(bytes.begin(), bytes.end()));
-}
-
 h256 into_h256(const dev::bytes& bytes, const char* api_name) {
   if (bytes.size() != 32) {
     throw DbException("FinalChain::" + std::string(api_name) + " returned invalid hash size: expected 32, got " +
                       std::to_string(bytes.size()));
   }
   return h256(bytes);
-}
-
-std::string into_string(const rust::Vec<uint8_t>& bytes) {
-  return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
 dev::bytes into_bytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
@@ -246,7 +234,6 @@ FinalChain::FinalChain(const fs::path& state_db_path, const taraxa::FullNodeConf
     throw std::invalid_argument("FinalChain requires the native consensus application root");
   }
   recoverExternalEvmPendingPublication();
-  delegation_delay_ = config.genesis.state.dpos.delegation_delay;
 }
 
 FinalChain::ExternalEvmStateApiClient::ExternalEvmStateApiClient(StateAPI& state_api, std::mutex& state_api_mutex)
@@ -407,13 +394,6 @@ state_api::StateDescriptor FinalChain::ExternalEvmStateApiClient::lastCommittedS
   return state_api_.get_last_committed_state_descriptor();
 }
 
-void FinalChain::ExternalEvmStateApiClient::updateStateConfig(const state_api::Config& new_config,
-                                                              EthBlockNumber& delegation_delay) {
-  std::lock_guard lock(state_api_mutex_);
-  delegation_delay = new_config.dpos.delegation_delay;
-  state_api_.update_state_config(new_config);
-}
-
 std::optional<state_api::Account> FinalChain::ExternalEvmStateApiClient::account(EthBlockNumber block_number,
                                                                                  const addr_t& address) const {
   try {
@@ -481,121 +461,27 @@ void FinalChain::recoverExternalEvmPendingPublication() {
   }
 }
 
-void FinalChain::stop() {}
-
-EthBlockNumber FinalChain::delegationDelay() const { return delegation_delay_; }
-
 std::shared_ptr<const BlockHeader> FinalChain::blockHeader(std::optional<EthBlockNumber> n) const {
   auto const block_number = n.value_or(lastBlockNumber());
-  auto rust_header = consensus_application_->service().get_block_header(static_cast<uint64_t>(block_number));
-  if (rust_header.empty()) {
+  const auto view = (*consensus_application_->queryClient())->consensus_query_final_chain_block_by_number(block_number);
+  if (!view.found) {
     return nullptr;
   }
-
-  auto header_data = into_string(rust_header);
-  return BlockHeader::fromRLP(dev::RLP(header_data));
+  const auto header_rlp = dev::bytes(view.header_rlp.begin(), view.header_rlp.end());
+  return BlockHeader::fromRLP(dev::RLP(header_rlp));
 }
 
-EthBlockNumber FinalChain::lastBlockNumber() const { return consensus_application_->service().get_last_block_number(); }
-
-std::optional<EthBlockNumber> FinalChain::blockNumber(h256 const& h) const {
-  auto rust_lookup = consensus_application_->service().get_block_number(into_bytes_array(h));
-  if (!rust_lookup.found) {
-    return std::nullopt;
-  }
-  return rust_lookup.value;
+EthBlockNumber FinalChain::lastBlockNumber() const {
+  return (*consensus_application_->queryClient())->consensus_query_final_chain_last_block_number();
 }
 
 std::optional<h256> FinalChain::blockHash(std::optional<EthBlockNumber> n) const {
   auto const block_number = n.value_or(lastBlockNumber());
-  auto rust_hash = consensus_application_->service().get_block_hash(static_cast<uint64_t>(block_number));
-  if (rust_hash.empty()) {
+  const auto view = (*consensus_application_->queryClient())->consensus_query_final_chain_block_by_number(block_number);
+  if (!view.found) {
     return std::nullopt;
   }
-  return into_h256(rust_hash, "blockHash");
-}
-
-std::optional<h256> FinalChain::finalChainHash(EthBlockNumber n) const {
-  auto delay = delegationDelay();
-  if (n <= delay) {
-    return ZeroHash();
-  }
-  auto header = blockHeader(n - delay);
-  if (!header) {
-    return std::nullopt;
-  }
-  return header->hash;
-}
-
-void FinalChain::updateStateConfig(const state_api::Config& new_config) {
-  external_evm_state_api_.updateStateConfig(new_config, delegation_delay_);
-}
-
-std::shared_ptr<const TransactionHashes> FinalChain::transactionHashes(std::optional<EthBlockNumber> n) const {
-  auto ret = std::make_shared<TransactionHashes>();
-  for (auto const& transaction : transactions(n)) {
-    ret->push_back(transaction->getHash());
-  }
-  return ret;
-}
-
-const SharedTransactions FinalChain::transactions(std::optional<EthBlockNumber> n) const {
-  SharedTransactions ret;
-  auto const block_number = n.value_or(lastBlockNumber());
-  auto rust_transactions = consensus_application_->service().get_transaction_rlps(block_number);
-  ret.reserve(rust_transactions.size());
-  for (auto const& transaction : rust_transactions) {
-    if (transaction.is_system) {
-      ret.push_back(std::make_shared<SystemTransaction>(into_bytes(transaction.data)));
-    } else {
-      ret.push_back(std::make_shared<Transaction>(into_bytes(transaction.data), false));
-    }
-  }
-  return ret;
-}
-
-std::optional<TransactionLocation> FinalChain::transactionLocation(h256 const& trx_hash) const {
-  auto rust_location = consensus_application_->service().get_transaction_location(into_bytes_array(trx_hash));
-  if (rust_location.empty()) {
-    return std::nullopt;
-  }
-  auto location_data = into_string(rust_location);
-  return TransactionLocation::fromRlp(dev::RLP(location_data));
-}
-
-std::optional<TransactionReceipt> FinalChain::transactionReceipt(EthBlockNumber blk_n, uint64_t position,
-                                                                 std::optional<trx_hash_t>) const {
-  auto receipt = consensus_application_->service().get_transaction_receipt(blk_n, position);
-  if (receipt.empty()) {
-    return std::nullopt;
-  }
-  auto receipt_data = into_string(receipt);
-  return util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_data));
-}
-
-std::shared_ptr<Transaction> FinalChain::transaction(EthBlockNumber blk_n, uint32_t position) const {
-  auto block_transactions = transactions(blk_n);
-  if (position >= block_transactions.size()) {
-    return nullptr;
-  }
-  return block_transactions[position];
-}
-
-uint64_t FinalChain::transactionCount(std::optional<EthBlockNumber> n) const {
-  return consensus_application_->service().get_transaction_count(static_cast<uint64_t>(n.value_or(lastBlockNumber())));
-}
-
-std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const& b, EthBlockNumber from,
-                                                       EthBlockNumber to) const {
-  std::array<uint8_t, 256> bloom{};
-  std::memcpy(bloom.data(), b.data(), bloom.size());
-  auto rust_blocks = consensus_application_->service().get_blocks_with_bloom(bloom, from, to);
-  std::vector<EthBlockNumber> blocks;
-  blocks.reserve(rust_blocks.size());
-  for (auto const block : rust_blocks) {
-    blocks.push_back(block);
-  }
-  return blocks;
+  return h256(view.hash.data(), h256::ConstructFromPointer);
 }
 
 std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
@@ -727,58 +613,6 @@ std::string FinalChain::trace(std::vector<state_api::EVMTransaction> state_trxs,
   throw_unimplemented_final_chain_api("trace");
 }
 
-uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber blk_num) const {
-  return consensus_application_->service().get_dpos_eligible_total_vote_count(blk_num);
-}
-
-uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const {
-  return consensus_application_->service().get_dpos_eligible_vote_count(blk_num, into_address_array(addr));
-}
-
-std::vector<state_api::ValidatorVoteCount> FinalChain::dposValidatorsEligibleVoteCounts(EthBlockNumber blk_num) const {
-  auto rust_vote_counts = consensus_application_->service().get_dpos_validators_eligible_vote_counts(blk_num);
-  std::vector<state_api::ValidatorVoteCount> vote_counts;
-  vote_counts.reserve(rust_vote_counts.size());
-  for (const auto& rust_vote_count : rust_vote_counts) {
-    vote_counts.push_back(
-        state_api::ValidatorVoteCount{into_address(rust_vote_count.address), rust_vote_count.vote_count});
-  }
-  return vote_counts;
-}
-
-bool FinalChain::dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) const {
-  return dposEligibleVoteCount(blk_num, addr) > 0;
-}
-
-void FinalChain::waitForFinalized() { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
-
-std::vector<state_api::ValidatorStake> FinalChain::dposValidatorsTotalStakes(EthBlockNumber blk_num) const {
-  auto rust_stakes = consensus_application_->service().get_dpos_validators_total_stakes(blk_num);
-  std::vector<state_api::ValidatorStake> stakes;
-  stakes.reserve(rust_stakes.size());
-  for (const auto& rust_stake : rust_stakes) {
-    stakes.push_back(state_api::ValidatorStake{
-        into_address(rust_stake.address),
-        dev::fromBigEndian<u256>(dev::bytes(rust_stake.stake.begin(), rust_stake.stake.end())),
-    });
-  }
-  return stakes;
-}
-
-uint256_t FinalChain::dposTotalAmountDelegated(EthBlockNumber blk_num) const {
-  auto delegated = consensus_application_->service().get_dpos_total_amount_delegated(blk_num);
-  return dev::fromBigEndian<u256>(dev::bytes(delegated.begin(), delegated.end()));
-}
-
-uint64_t FinalChain::dposYield(EthBlockNumber blk_num) const {
-  return consensus_application_->service().get_dpos_yield(blk_num);
-}
-
-u256 FinalChain::dposTotalSupply(EthBlockNumber blk_num) const {
-  auto supply = consensus_application_->service().get_dpos_total_supply(blk_num);
-  return dev::fromBigEndian<u256>(dev::bytes(supply.begin(), supply.end()));
-}
-
 h256 FinalChain::getBridgeRoot(EthBlockNumber blk_num) const {
   const static auto get_bridge_root_method = util::EncodingSolidity::packFunctionCall("getBridgeRoot()");
   return readBridgeContractHash(blk_num, get_bridge_root_method, "getBridgeRoot");
@@ -812,26 +646,6 @@ h256 FinalChain::readBridgeContractHash(EthBlockNumber block_number, const bytes
     return ZeroHash();
   }
   return into_h256(result.code_retval, api_name);
-}
-
-std::pair<val_t, bool> FinalChain::getBalance(addr_t const& addr) const {
-  if (auto account = getAccount(addr)) {
-    return {account->balance, true};
-  }
-  return {0, false};
-}
-
-SharedTransactionReceipts FinalChain::blockReceipts(std::optional<EthBlockNumber> n) const {
-  auto const block_number = n.value_or(lastBlockNumber());
-  auto count = transactionCount(block_number);
-  auto receipts = std::make_shared<std::vector<TransactionReceipt>>();
-  receipts->reserve(count);
-  for (uint64_t position = 0; position < count; ++position) {
-    if (auto receipt = transactionReceipt(block_number, position)) {
-      receipts->push_back(*receipt);
-    }
-  }
-  return receipts;
 }
 
 }  // namespace taraxa::final_chain

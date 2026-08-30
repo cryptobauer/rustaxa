@@ -98,14 +98,41 @@ bool hasConsensusQueryReader(const ConsensusQueryReader& reader) {
 }
 #endif
 
-QueryBlockReader makeQueryBlockReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
-                                      const std::shared_ptr<::taraxa::DbStorage>& db
+QueryBlockReader makeQueryBlockReader(
+    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
+    const std::shared_ptr<::taraxa::DbStorage>& db
 #ifdef RUSTAXA_ENABLE
-                                      ,
-                                      ::taraxa::net::ConsensusQueryApiPtr consensus_query_api
+    ,
+    ::taraxa::net::ConsensusQueryApiPtr consensus_query_api
 #endif
 ) {
   QueryBlockReader reader;
+#ifdef RUSTAXA_ENABLE
+  reader.latest_block_number = [consensus_query_api] {
+    if (!consensus_query_api) {
+      throw std::runtime_error("CONSENSUS_QUERY_GRAPHQL_FINAL_CHAIN_UNAVAILABLE");
+    }
+    return (*consensus_query_api)->consensus_query_final_chain_last_block_number();
+  };
+  reader.block_number_by_hash = [consensus_query_api](const dev::h256& hash) {
+    if (!consensus_query_api) {
+      throw std::runtime_error("CONSENSUS_QUERY_GRAPHQL_FINAL_CHAIN_UNAVAILABLE");
+    }
+    const auto lookup = (*consensus_query_api)->consensus_query_final_chain_block_number_by_hash(hash.asArray());
+    return lookup.found ? std::optional<::taraxa::EthBlockNumber>{lookup.value} : std::nullopt;
+  };
+  reader.block_header = [consensus_query_api](std::optional<::taraxa::EthBlockNumber> block_number) {
+    if (!consensus_query_api) {
+      throw std::runtime_error("CONSENSUS_QUERY_GRAPHQL_FINAL_CHAIN_UNAVAILABLE");
+    }
+    const auto number = block_number.value_or((*consensus_query_api)->consensus_query_final_chain_last_block_number());
+    const auto view = (*consensus_query_api)->consensus_query_final_chain_block_by_number(number);
+    if (!view.found) return std::shared_ptr<const ::taraxa::final_chain::BlockHeader>{};
+    const auto bytes = dev::bytes(view.header_rlp.begin(), view.header_rlp.end());
+    return std::shared_ptr<const ::taraxa::final_chain::BlockHeader>{
+        ::taraxa::final_chain::BlockHeader::fromRLP(dev::RLP(bytes))};
+  };
+#else
   reader.latest_block_number = [final_chain] { return final_chain ? final_chain->lastBlockNumber() : uint64_t(0); };
   reader.block_number_by_hash = [final_chain](const dev::h256& hash) {
     if (!final_chain) {
@@ -119,6 +146,7 @@ QueryBlockReader makeQueryBlockReader(const std::shared_ptr<::taraxa::final_chai
     }
     return final_chain->blockHeader(block_number);
   };
+#endif
   reader.pbft_hash_by_period = [db
 #ifdef RUSTAXA_ENABLE
                                 ,
@@ -174,8 +202,12 @@ void fillMissingQueryBlockReaderCallbacks(QueryBlockReader& reader,
 }
 
 BlockTransactionReader makeQueryBlockTransactionReader(
-    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
+    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
   BlockTransactionReader reader;
+#ifdef RUSTAXA_ENABLE
+  reader.transaction_count = [](auto) { return uint64_t(0); };
+  reader.transactions = [](auto) { return std::vector<std::shared_ptr<::taraxa::Transaction>>{}; };
+#else
   reader.transaction_count = [final_chain](::taraxa::EthBlockNumber block_number) {
     return final_chain ? final_chain->transactionCount(block_number) : 0;
   };
@@ -185,6 +217,7 @@ BlockTransactionReader makeQueryBlockTransactionReader(
     }
     return final_chain->transactions(block_number);
   };
+#endif
   return reader;
 }
 
@@ -233,8 +266,12 @@ void fillMissingQueryTransactionReaderCallbacks(QueryTransactionReader& reader
 }
 
 TransactionReceiptReader makeQueryTransactionReceiptReader(
-    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
+    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
   TransactionReceiptReader reader;
+#ifdef RUSTAXA_ENABLE
+  reader.location = [](const auto&) { return std::optional<::taraxa::TransactionLocation>{}; };
+  reader.receipt = [](auto, auto, const auto&) { return std::optional<::taraxa::TransactionReceipt>{}; };
+#else
   reader.location = [final_chain](const ::taraxa::trx_hash_t& hash) {
     if (!final_chain) {
       return std::optional<::taraxa::TransactionLocation>{};
@@ -247,6 +284,7 @@ TransactionReceiptReader makeQueryTransactionReceiptReader(
     }
     return final_chain->transactionReceipt(period, position, hash);
   };
+#endif
   return reader;
 }
 
@@ -291,14 +329,15 @@ void fillMissingQueryGasPriceReaderCallbacks(QueryGasPriceReader& reader,
 }
 #endif
 
-QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
+QueryDagBlockReader makeQueryDagBlockReader(
+    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
 #ifndef RUSTAXA_ENABLE
-                                            const std::shared_ptr<::taraxa::DagManager>& dag_manager,
+    const std::shared_ptr<::taraxa::DagManager>& dag_manager,
 #endif
-                                            const std::shared_ptr<::taraxa::DbStorage>& db
+    const std::shared_ptr<::taraxa::DbStorage>& db
 #ifdef RUSTAXA_ENABLE
-                                            ,
-                                            ::taraxa::net::ConsensusQueryApiPtr consensus_query_api
+    ,
+    ::taraxa::net::ConsensusQueryApiPtr consensus_query_api
 #endif
 ) {
   QueryDagBlockReader reader;
@@ -318,7 +357,13 @@ QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::fina
   };
   reader.latest_level = [dag_manager] { return dag_manager ? dag_manager->getMaxLevel() : ::taraxa::level_t(0); };
 #endif
+#ifdef RUSTAXA_ENABLE
+  reader.latest_finalized_period = [consensus_query_api] {
+    return consensus_query_api ? (*consensus_query_api)->consensus_query_final_chain_last_block_number() : uint64_t(0);
+  };
+#else
   reader.latest_finalized_period = [final_chain] { return final_chain ? final_chain->lastBlockNumber() : uint64_t(0); };
+#endif
   reader.blocks_by_level = [db
 #ifdef RUSTAXA_ENABLE
                             ,
@@ -495,15 +540,20 @@ void fillMissingDagBlockPeriodReaderCallbacks(DagBlockPeriodReader& reader,
   }
 }
 
-CurrentStateReader makeQueryCurrentStateReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain
+CurrentStateReader makeQueryCurrentStateReader(
+    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain
 #ifndef RUSTAXA_ENABLE
-                                               ,
-                                               const std::shared_ptr<::taraxa::DagManager>& dag_manager) {
+    ,
+    const std::shared_ptr<::taraxa::DagManager>& dag_manager) {
 #else
 ) {
 #endif
   CurrentStateReader reader;
+#ifdef RUSTAXA_ENABLE
+  reader.final_block = [] { return uint64_t(0); };
+#else
   reader.final_block = [final_chain] { return final_chain ? final_chain->lastBlockNumber() : uint64_t(0); };
+#endif
 #ifdef RUSTAXA_ENABLE
   reader.dag_block_level = [] { return uint64_t(0); };
   reader.dag_block_period = [] { return uint64_t(0); };
@@ -539,11 +589,22 @@ void fillMissingCurrentStateReaderCallbacks(CurrentStateReader& reader,
   }
 }
 
-SyncStateReader makeQuerySyncStateReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
-                                         std::weak_ptr<::taraxa::Network> network,
-                                         ::taraxa::net::LiveStatusReader live_status) {
+SyncStateReader makeQuerySyncStateReader(
+    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
+    std::weak_ptr<::taraxa::Network> network, ::taraxa::net::LiveStatusReader live_status
+#ifdef RUSTAXA_ENABLE
+    ,
+    ::taraxa::net::ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   SyncStateReader reader;
+#ifdef RUSTAXA_ENABLE
+  reader.current_block = [consensus_query_api] {
+    return consensus_query_api ? (*consensus_query_api)->consensus_query_final_chain_last_block_number() : uint64_t(0);
+  };
+#else
   reader.current_block = [final_chain] { return final_chain ? final_chain->lastBlockNumber() : uint64_t(0); };
+#endif
   reader.highest_block = [network = std::move(network),
                           live_status = std::move(live_status)]() -> std::optional<uint64_t> {
     if (live_status) {
@@ -565,8 +626,18 @@ SyncStateReader makeQuerySyncStateReader(const std::shared_ptr<::taraxa::final_c
 void fillMissingSyncStateReaderCallbacks(SyncStateReader& reader,
                                          const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
                                          std::weak_ptr<::taraxa::Network> network,
-                                         ::taraxa::net::LiveStatusReader live_status) {
-  auto defaults = makeQuerySyncStateReader(final_chain, std::move(network), std::move(live_status));
+                                         ::taraxa::net::LiveStatusReader live_status
+#ifdef RUSTAXA_ENABLE
+                                         ,
+                                         ::taraxa::net::ConsensusQueryApiPtr consensus_query_api = {}
+#endif
+) {
+  auto defaults = makeQuerySyncStateReader(final_chain, std::move(network), std::move(live_status)
+#ifdef RUSTAXA_ENABLE
+                                                                                ,
+                                           std::move(consensus_query_api)
+#endif
+  );
   if (!reader.current_block) {
     reader.current_block = std::move(defaults.current_block);
   }
@@ -773,7 +844,7 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, Que
              ::taraxa::net::ConsensusQueryApiPtr consensus_query_api) noexcept
     : Query(
           QueryReaders{
-              makeAccountStateReader(final_chain),
+              makeAccountStateReader(final_chain, consensus_query_api),
               {},
               {},
               {},
@@ -796,7 +867,7 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, Que
                                    const auto status = (*query)->consensus_query_status();
                                    return status.latest_dag_period_found ? status.latest_dag_period : uint64_t(0);
                                  }},
-              makeQuerySyncStateReader(final_chain, std::move(network), std::move(live_status)),
+              makeQuerySyncStateReader(final_chain, std::move(network), std::move(live_status), consensus_query_api),
               makeConsensusQueryReader(std::move(consensus_query_api)),
           },
           chain_id) {}

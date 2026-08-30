@@ -599,30 +599,9 @@ rustaxa::HostPillarAnchorStateReport ExternalEvmPort::consensusLoadPillarAnchorS
   rustaxa::HostPillarAnchorStateReport report{};
   report.effect_id = request.effect_id;
   try {
-    const auto header = impl_->final_chain->blockHeader(request.period);
-    if (!header) {
-      return failedReport<rustaxa::HostPillarAnchorStateReport>(request.effect_id, "PILLAR_ANCHOR_HEADER_MISSING");
-    }
     report.succeeded = true;
-    report.block_header_rlp = toRustBytes(util::rlp_enc(*header));
-    report.state_root = header->state_root.asArray();
     report.bridge_root = impl_->final_chain->getBridgeRoot(request.period).asArray();
     report.bridge_epoch = impl_->final_chain->getBridgeEpoch(request.period).asArray();
-    const auto validator_vote_counts =
-        impl_->final_chain->dposValidatorsEligibleVoteCounts(request.pillar_block_period);
-    report.validator_vote_counts.reserve(validator_vote_counts.size());
-    for (const auto& validator : validator_vote_counts) {
-      rustaxa::HostValidatorVoteCount fact{};
-      fact.address = validator.addr.asArray();
-      fact.vote_count = validator.vote_count;
-      report.validator_vote_counts.push_back(std::move(fact));
-    }
-    report.signer_vote_counts.reserve(request.signer_addresses.size());
-    for (const auto& signer : request.signer_addresses) {
-      report.signer_vote_counts.push_back(
-          impl_->final_chain->dposEligibleVoteCount(request.pillar_block_period, fromHostAddress(signer.bytes)));
-    }
-    report.total_eligible_vote_count = impl_->final_chain->dposEligibleTotalVoteCount(request.pillar_block_period);
   } catch (const std::exception& error) {
     const auto error_code = std::string("PILLAR_ANCHOR_STATE_READ_FAILED: ") + error.what();
     return failedReport<rustaxa::HostPillarAnchorStateReport>(request.effect_id, error_code.c_str());

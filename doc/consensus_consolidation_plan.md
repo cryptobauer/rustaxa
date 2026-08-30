@@ -871,14 +871,17 @@ selection retains the untouched legacy storage implementation.
 
 ### 9. Contract FinalChain and execution
 
-Current state: execution orchestration is complete. Native application/FinalChain tasks own planning, sequencing,
-validation, recovery ordering, and publication. The broad execution API, bridge session, C++ action loop,
-manager-shaped carriers, and consensus materializers are deleted. `final_chain_shim` retains only stable public-state
-and tracing behavior plus exact committed-state preflight, system-fact, concrete ordered-EVM, rewards, and state-commit
+Current state: execution orchestration and the native public/query contraction are complete for the selected family.
+Native application/FinalChain tasks own planning, sequencing, validation, recovery ordering, publication, pillar
+header/state-root lookup, and pillar DPoS fact composition. Block, transaction, receipt, bloom, and public DPoS readers
+use `ConsensusQueryApi`; the duplicate application-root exports and Rust-mode FinalChain object materializers are
+deleted. The broad execution API, bridge session, C++ action loop, manager-shaped carriers, and consensus
+materializers are deleted. `final_chain_shim` retains only hybrid public-state and tracing behavior plus exact
+bridge-contract, committed-state preflight, system-fact, concrete ordered-EVM, rewards, state-commit, prune, and recovery
 leaves. Native-to-external period gaps fail before concrete mutation pending the explicit `CRW-E02` catch-up/import
-design. Rust-mode fixtures call the exact application-root finalization task, and public query expansion preserves
-regular-then-system transaction and receipt order. Continue moving
-public readers to `ConsensusQueryApi`; delete the shim when those clients and the concrete executor migrate.
+design. Rust-mode fixtures call the query client or exact application-root finalization/state leaf, and query expansion
+preserves regular-then-system transaction and receipt order. Delete the shim when those named state clients and the
+concrete executor migrate.
 
 ### 10. Final deletion and documentation closeout
 

@@ -66,23 +66,6 @@ class FinalChain {
   FinalChain& operator=(const FinalChain&) = delete;
   FinalChain& operator=(FinalChain&&) = delete;
 
-  void stop();
-  EthBlockNumber delegationDelay() const;
-
-  std::shared_ptr<const BlockHeader> blockHeader(std::optional<EthBlockNumber> n = {}) const;
-  EthBlockNumber lastBlockNumber() const;
-  std::optional<EthBlockNumber> blockNumber(h256 const& h) const;
-  std::optional<h256> blockHash(std::optional<EthBlockNumber> n = {}) const;
-  std::optional<h256> finalChainHash(EthBlockNumber n) const;
-  void updateStateConfig(const state_api::Config& new_config);
-  std::shared_ptr<const TransactionHashes> transactionHashes(std::optional<EthBlockNumber> n = {}) const;
-  const SharedTransactions transactions(std::optional<EthBlockNumber> n = {}) const;
-  std::optional<TransactionLocation> transactionLocation(h256 const& trx_hash) const;
-  std::optional<TransactionReceipt> transactionReceipt(EthBlockNumber blk_n, uint64_t position,
-                                                       std::optional<trx_hash_t> trx_hash = {}) const;
-  std::shared_ptr<Transaction> transaction(EthBlockNumber blk_n, uint32_t position) const;
-  uint64_t transactionCount(std::optional<EthBlockNumber> n = {}) const;
-  std::vector<EthBlockNumber> withBlockBloom(LogBloom const& b, EthBlockNumber from, EthBlockNumber to) const;
   /**
    * Looks up account state at a finalized block.
    *
@@ -120,26 +103,20 @@ class FinalChain {
   state_api::ExecutionResult call(state_api::EVMTransaction const& trx, std::optional<EthBlockNumber> blk_n = {}) const;
   std::string trace(std::vector<state_api::EVMTransaction> state_trxs, std::vector<state_api::EVMTransaction> trxs,
                     EthBlockNumber blk_n, std::optional<state_api::Tracing> params = {}) const;
-  uint64_t dposEligibleTotalVoteCount(EthBlockNumber blk_num) const;
-  uint64_t dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const;
-  std::vector<state_api::ValidatorVoteCount> dposValidatorsEligibleVoteCounts(EthBlockNumber blk_num) const;
-  bool dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) const;
   /** Prunes finalized indexes and available external-EVM history before `blk_n`.
    * Missing or not-yet-executed EVM blocks retain external state; StateAPI and
    * storage failures propagate while Rust remains authoritative for indexes. */
   void prune(EthBlockNumber blk_n);
-  void waitForFinalized();
-  std::vector<state_api::ValidatorStake> dposValidatorsTotalStakes(EthBlockNumber blk_num) const;
-  uint256_t dposTotalAmountDelegated(EthBlockNumber blk_num) const;
-  uint64_t dposYield(EthBlockNumber blk_num) const;
-  u256 dposTotalSupply(EthBlockNumber blk_num) const;
+ private:
+  /** Internal concrete-EVM header lookup; public readers use `ConsensusQueryApi`. */
+  std::shared_ptr<const BlockHeader> blockHeader(std::optional<EthBlockNumber> n = {}) const;
+  /** Internal concrete-EVM head lookup; public readers use `ConsensusQueryApi`. */
+  EthBlockNumber lastBlockNumber() const;
+  /** Internal StateAPI hash callback; public readers use `ConsensusQueryApi`. */
+  std::optional<h256> blockHash(std::optional<EthBlockNumber> n = {}) const;
+  /** Exact bridge-contract roots consumed only by the application execution port. */
   h256 getBridgeRoot(EthBlockNumber blk_num) const;
   h256 getBridgeEpoch(EthBlockNumber blk_num) const;
-
-  std::pair<val_t, bool> getBalance(addr_t const& addr) const;
-  SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
-
- private:
   /**
    * Thin adapter for the external EVM `StateAPI` client used by Rust-enabled FinalChain publication.
    *
@@ -163,7 +140,6 @@ class FinalChain {
     rustaxa::HostFinalChainStateCommitReport commitState(const rustaxa::HostFinalChainStateCommitRequest& request);
 
     state_api::StateDescriptor lastCommittedStateDescriptor() const;
-    void updateStateConfig(const state_api::Config& new_config, EthBlockNumber& delegation_delay);
     std::optional<state_api::Account> account(EthBlockNumber block_number, const addr_t& address) const;
     h256 accountStorageOrZero(EthBlockNumber block_number, const addr_t& address, const u256& key) const;
     bytes codeOrEmpty(EthBlockNumber block_number, const addr_t& address) const;
@@ -192,7 +168,6 @@ class FinalChain {
   void recoverExternalEvmPendingPublication();
 
   SharedConsensusApplication consensus_application_;
-  EthBlockNumber delegation_delay_ = 0;
   mutable std::mutex state_api_mutex_;
   StateAPI state_api_;
   ExternalEvmStateApiClient external_evm_state_api_;

@@ -11,7 +11,7 @@ use crate::network::to_bridge_network_ingress_decision;
 use anyhow::{bail, ensure, Result};
 use rustaxa_consensus::consensus_application_runtime::{
     FinalChainAccountFact, FinalChainAccountFactsReport, FinalChainAccountFactsRequest,
-    PillarAnchorStateReport, PillarAnchorStateRequest, PillarAnchorValidatorVoteCount,
+    PillarAnchorStateReport, PillarAnchorStateRequest,
 };
 use rustaxa_consensus::{
     ConsensusEffectId, ConsensusProcessPort as NativeProcessPort, ConsensusRunReason,
@@ -406,31 +406,17 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
             .consensus_load_pillar_anchor_state(&HostPillarAnchorStateRequest {
                 effect_id: to_ffi_effect_id(request.effect_id),
                 period: request.period,
-                pillar_block_period: request.pillar_block_period,
-                signer_addresses: request
-                    .signer_addresses
-                    .iter()
-                    .copied()
-                    .map(|bytes| HostAddress20 { bytes })
-                    .collect(),
             })?;
         Ok(PillarAnchorStateReport {
             effect_id: to_native_effect_id(report.effect_id),
             succeeded: report.succeeded,
-            block_header_rlp: report.block_header_rlp,
-            state_root: report.state_root,
+            block_header_rlp: Vec::new(),
+            state_root: [0; 32],
             bridge_root: report.bridge_root,
             bridge_epoch: report.bridge_epoch,
-            validator_vote_counts: report
-                .validator_vote_counts
-                .into_iter()
-                .map(|fact| PillarAnchorValidatorVoteCount {
-                    address: fact.address,
-                    vote_count: fact.vote_count,
-                })
-                .collect(),
-            signer_vote_counts: report.signer_vote_counts,
-            total_eligible_vote_count: report.total_eligible_vote_count,
+            validator_vote_counts: Vec::new(),
+            signer_vote_counts: Vec::new(),
+            total_eligible_vote_count: 0,
             error_code: report.error_code,
         })
     }

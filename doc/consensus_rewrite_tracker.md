@@ -387,11 +387,21 @@ The surface is now 8,285 bridge lines, 1,444 shim lines, 107 CXX functions, 152 
 opaque handles, one shim directory, and 26 non-test bridge consumers. Pure-C++ source selection retains the untouched
 legacy storage path.
 
+The public FinalChain cut completes the public/query half of the FinalChain portion of `CRW-17`. Rust-mode App,
+network, RPC/debug, Ethereum log filtering, GraphQL, light-plugin, observer, and fixture readers use bounded
+`ConsensusQueryApi` DTOs and canonical bytes. Public block/header/hash/head, transaction/location/count/receipt,
+bloom-index, and DPoS exports no longer exist on the application root or `final_chain.rs`; pillar anchor projection
+loads header/state-root and validator facts inside the native application after the host returns only bridge root and
+epoch. The overlay retains only exact account/storage/code, call/trace, pruning, recovery, bridge-root/epoch, and
+concrete EVM/`state_db` execution leaves for named clients. Legacy public materializers and Rust-mode facade tests are
+not compiled; pure-C++ source selection retains the complete upstream FinalChain API. `CRW-17` remains active only for
+the exact concrete-EVM/public-state leaves that cannot contract before the blocked `CRW-E02` boundary moves.
+
 | Cluster | Native-owner prerequisite | Same-checkpoint deletion scope | Manager closeout |
 | --- | --- | --- | --- |
 | PBFT, vote, pillar | Implemented: family private under `CRW-12` root | Implemented: PBFT/vote/pillar facades, bridge modules/materializers, App ownership, and compatibility tests deleted | Implemented PBFT/pillar portion of `CRW-16`; only named process/signing/network/FinalChain-fact/public-client leaves remain |
 | DAG, transaction, proposer | Implemented: family private under `CRW-12` root | Implemented: three Rust-mode facades, bridge modules/materializers, App ownership, and compatibility test deleted | Implemented DAG portion of `CRW-16`; only named process/VDF/signing/network/EVM-gas/public-client leaves remain |
-| Storage and FinalChain | Implemented for storage and execution orchestration; remaining FinalChain clients use application/query/exact leaf APIs | Storage handle/query/batch/shim family and execution API/session handles deleted; only public-state and concrete EVM/`state_db` leaves remain | Continue public facade/query contraction under `CRW-17` |
+| Storage and FinalChain | Implemented for storage, execution orchestration, native pillar projection, and public queries | Storage handle/query/batch/shim family, execution API/session handles, and public FinalChain query/materializer surface deleted; only exact public-state and concrete EVM/`state_db` leaves remain | Contract the remaining exact executor/state leaves under `CRW-17` after their named clients move |
 
 `CRW-11` is complete. The task-owner contract now retains only named tarcap transport, concrete EVM/StateAPI,
 operation-specific signing, VDF execution, public-read, and pure-C++ reference clients. The checked starting budgets are
@@ -4402,7 +4412,7 @@ passes 10 of 11 registered suites, with only the unchanged Go static-link enviro
 | --- | --- | --- | --- | --- |
 | `VerifiedVotes` | Pure-C++ reference API only; Rust mode uses native vote insertion, unique voter tracking, step/round/period lookup, 2t+1 voted blocks, and cleanup directly | `PbftVote` at retained executor boundaries | Native verified-vote tests, `vote_test`, `pbft_manager_test` | Deleted Rust-mode facade; continue contracting VoteManager materialization around the native service |
 | `VoteManager` | Pure-C++ reference vote validation, generation, rewards, thresholds, and VRF sortition | legacy C++ dependencies in all-Rust-disabled mode only | pure-C++ `vote_test`; native Rust vote/network tests and Rust-mode PBFT/network integration | Deleted in Rust mode; application-root tasks own vote behavior, `ConsensusNetworkApi` owns ingress routing/admission, `ConsensusQueryApi` owns client reads, and only signing, tarcap transport, slashing insertion, and finalization byte materialization remain named leaves |
-| FinalChain DPoS ports | eligibility, vote/stake totals, supply/yield, validator/delegator/reward/undelegation and slashing reads plus all current-ABI mutations | Rust FinalChain snapshots and the external StateAPI/EVM leaf executor | `rust_consensus_tests`, `final_chain_test`, `rpc_test`, `pbft_manager_test`, `state_api_test`, proposer tests | Complete for current-ABI DPoS/slashing behavior, typed state, receipts, logs, rewards, supply, persistence, restart, and composed consensus fact reads. Historical databases without complete Rust snapshots remain an explicit fail-closed replay/rebuild boundary. `CRW-E01` subsequently contracted orchestration around exact concrete-executor leaves without altering the completed CRW-10 evidence. |
+| FinalChain DPoS ports | eligibility, vote/stake totals, supply/yield, validator/delegator/reward/undelegation and slashing reads plus all current-ABI mutations | Rust FinalChain snapshots and the external StateAPI/EVM leaf executor | native FinalChain/query tests, `rust_consensus_tests`, `rpc_test`, `state_api_test`, and pure-C++ `final_chain_test` parity | Complete for current-ABI DPoS/slashing behavior, typed state, receipts, logs, rewards, supply, persistence, restart, and composed consensus fact reads. Rust-mode public reads use `ConsensusQueryApi`; the legacy facade suite remains reference-only. Historical databases without complete Rust snapshots remain an explicit fail-closed replay/rebuild boundary. `CRW-E01` subsequently contracted orchestration around exact concrete-executor leaves without altering the completed CRW-10 evidence. |
 
 ### Transactions
 

@@ -247,8 +247,10 @@ class EthImpl : public Eth, EthParams {
     if (query_final_chain_last_block_number) {
       return toJS(query_final_chain_last_block_number());
     }
-#endif
+    throw std::runtime_error("Consensus final-chain query is unavailable");
+#else
     return toJS(final_chain->lastBlockNumber());
+#endif
   }
 
   string eth_getBalance(const string& _address, const Json::Value& _json) override {
@@ -291,7 +293,7 @@ class EthImpl : public Eth, EthParams {
     if (!blockNumber.empty()) {
       blk_n = parse_blk_num(blockNumber);
     } else {
-      blk_n = final_chain->lastBlockNumber();
+      blk_n = parse_blk_num("latest");
     }
     prepare_transaction_for_call(t, blk_n);
 
@@ -343,8 +345,10 @@ class EthImpl : public Eth, EthParams {
     if (query_transaction_count_by_block_number) {
       return toJS(query_transaction_count_by_block_number(parse_blk_num(_blockNumber)));
     }
-#endif
+    throw std::runtime_error("Consensus transaction-count query is unavailable");
+#else
     return toJS(final_chain->transactionCount(parse_blk_num(_blockNumber)));
+#endif
   }
 
   Json::Value eth_getUncleCountByBlockHash(const string&) override { return toJS(0); }
@@ -366,11 +370,13 @@ class EthImpl : public Eth, EthParams {
       }
       return get_block_by_number(lookup.value, _includeTransactions);
     }
-#endif
+    throw std::runtime_error("Consensus final-chain block query is unavailable");
+#else
     if (auto blk_n = final_chain->blockNumber(jsToFixed<32>(_blockHash)); blk_n) {
       return get_block_by_number(*blk_n, _includeTransactions);
     }
     return Json::Value();
+#endif
   }
 
   Json::Value eth_getBlockByNumber(const string& _blockNumber, bool _includeTransactions) override {
@@ -421,7 +427,8 @@ class EthImpl : public Eth, EthParams {
       }
       return result;
     }
-#endif
+    throw std::runtime_error("Consensus transaction-receipt query is unavailable");
+#else
     auto block_hash = final_chain->blockHash(blk_n);
     if (!block_hash) {
       return Json::Value(Json::arrayValue);
@@ -449,6 +456,7 @@ class EthImpl : public Eth, EthParams {
               trx->getReceiver(),
           });
         });
+#endif
   }
 
   Json::Value eth_getUncleByBlockHashAndIndex(const string&, const string&) override { return Json::Value(); }
@@ -481,8 +489,10 @@ class EthImpl : public Eth, EthParams {
       if (auto rust_logs = get_logs_with_query(*filter)) {
         return *rust_logs;
       }
-#endif
+      throw std::runtime_error("Consensus log-replay query is unavailable");
+#else
       return toJsonArray(filter->match_all(*final_chain));
+#endif
     }
     return Json::Value(Json::arrayValue);
   }
@@ -492,8 +502,10 @@ class EthImpl : public Eth, EthParams {
     if (auto rust_logs = get_logs_with_query(parse_log_filter(_json))) {
       return *rust_logs;
     }
-#endif
+    throw std::runtime_error("Consensus log-replay query is unavailable");
+#else
     return toJsonArray(parse_log_filter(_json).match_all(*final_chain));
+#endif
   }
 
   Json::Value eth_syncing() override {
@@ -561,7 +573,8 @@ class EthImpl : public Eth, EthParams {
       }
       return ret;
     }
-#endif
+    throw std::runtime_error("Consensus final-chain block query is unavailable");
+#else
     auto blk_header = final_chain->blockHeader(blk_n);
     if (!blk_header) {
       return Json::Value();
@@ -581,6 +594,7 @@ class EthImpl : public Eth, EthParams {
       trxs_json = toJsonArray(*hashes);
     }
     return ret;
+#endif
   }
 
   optional<LocalisedTransaction> get_transaction(const h256& h) const {
@@ -593,7 +607,8 @@ class EthImpl : public Eth, EthParams {
       }
       return LocalisedTransaction{trx, locationFromTransactionView(view)};
     }
-#endif
+    throw std::runtime_error("Consensus transaction query is unavailable");
+#else
     auto trx = get_trx(h);
     if (!trx) {
       return {};
@@ -606,6 +621,7 @@ class EthImpl : public Eth, EthParams {
             *final_chain->blockHash(loc->period),
         },
     };
+#endif
   }
 
   optional<LocalisedTransaction> get_transaction(EthBlockNumber blk_n, uint32_t trx_pos) const {
@@ -618,7 +634,8 @@ class EthImpl : public Eth, EthParams {
       }
       return LocalisedTransaction{trx, locationFromTransactionView(view)};
     }
-#endif
+    throw std::runtime_error("Consensus transaction query is unavailable");
+#else
     const auto& trxs = final_chain->transactions(blk_n);
     if (trxs.size() <= trx_pos) {
       return {};
@@ -630,6 +647,7 @@ class EthImpl : public Eth, EthParams {
             *final_chain->blockHash(blk_n),
         },
     };
+#endif
   }
 
   optional<LocalisedTransaction> get_transaction(const h256& blk_h, uint64_t _i) const {
@@ -642,12 +660,14 @@ class EthImpl : public Eth, EthParams {
       }
       return LocalisedTransaction{trx, locationFromTransactionView(view)};
     }
-#endif
+    throw std::runtime_error("Consensus transaction query is unavailable");
+#else
     auto blk_n = final_chain->blockNumber(blk_h);
     if (!blk_n) {
       return {};
     }
     return get_transaction(*blk_n, _i);
+#endif
   }
 
   optional<LocalisedTransactionReceipt> get_transaction_receipt(const h256& trx_h) const {
@@ -666,7 +686,8 @@ class EthImpl : public Eth, EthParams {
           trx->getReceiver(),
       };
     }
-#endif
+    throw std::runtime_error("Consensus transaction-receipt query is unavailable");
+#else
     auto location = final_chain->transactionLocation(trx_h);
     if (!location) {
       return {};
@@ -683,6 +704,7 @@ class EthImpl : public Eth, EthParams {
         trx->getSender(),
         trx->getReceiver(),
     };
+#endif
   }
 
   uint64_t transactionCount(const h256& block_hash) const {
@@ -690,9 +712,11 @@ class EthImpl : public Eth, EthParams {
     if (query_transaction_count_by_block_hash) {
       return query_transaction_count_by_block_hash(block_hash);
     }
-#endif
+    throw std::runtime_error("Consensus transaction-count query is unavailable");
+#else
     auto n = final_chain->blockNumber(block_hash);
     return n ? final_chain->transactionCount(n) : 0;
+#endif
   }
 
 #ifdef RUSTAXA_ENABLE
@@ -823,11 +847,16 @@ class EthImpl : public Eth, EthParams {
   EthBlockNumber parse_blk_num(const string& blk_num_str) {
     auto ret = parse_blk_num_specific(blk_num_str);
 #ifdef RUSTAXA_ENABLE
-    if (!ret && query_final_chain_last_block_number) {
+    if (ret) {
+      return *ret;
+    }
+    if (query_final_chain_last_block_number) {
       return query_final_chain_last_block_number();
     }
-#endif
+    throw std::runtime_error("Consensus final-chain query is unavailable");
+#else
     return ret ? *ret : final_chain->lastBlockNumber();
+#endif
   }
 
 #ifdef RUSTAXA_ENABLE
@@ -851,11 +880,13 @@ class EthImpl : public Eth, EthParams {
           }
           throw std::runtime_error("Resource not found");
         }
-#endif
+        throw std::runtime_error("Consensus final-chain query is unavailable");
+#else
         if (auto ret = final_chain->blockNumber(jsToFixed<32>(json["blockHash"].asString()))) {
           return *ret;
         }
         throw std::runtime_error("Resource not found");
+#endif
       }
     }
     return parse_blk_num(json.asString());
@@ -870,9 +901,12 @@ class EthImpl : public Eth, EthParams {
 #ifdef RUSTAXA_ENABLE
       if (query_log_replay) {
         from_block = query_log_replay->latest_finalized_block_number();
-      } else
+      } else {
+        throw std::runtime_error("Consensus log-replay query is unavailable");
+      }
+#else
+      from_block = final_chain->lastBlockNumber();
 #endif
-        from_block = final_chain->lastBlockNumber();
     }
     if (const auto& toBlock = json["toBlock"]; !toBlock.empty()) {
       to_block = parse_blk_num_specific(toBlock.asString());

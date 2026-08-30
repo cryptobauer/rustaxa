@@ -14,13 +14,13 @@ use rustaxa_storage::{
     FINAL_CHAIN_BLOOM_INDEX_LEVELS, FINAL_CHAIN_BLOOM_INDEX_SIZE, FinalChainLogBloom, StatusField,
     Storage, decode_final_chain_log_bloom_chunk, final_chain_log_bloom_chunk_id,
 };
-use rustaxa_types::PbftBlockMetadata;
 use rustaxa_types::codec::rlp::dag::{DagBlockRlp, FinalizedDagBlockBundleRlp};
 use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp;
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::dag::DagBlock;
 use rustaxa_types::final_chain::StoredFinalChainBlockHeader;
 use rustaxa_types::pillar::{PillarBlockData, RawPillarBlockData};
+use rustaxa_types::{DposValidatorStake, PbftBlockMetadata};
 use rustaxa_vdf::vdf_sortition::decode_vdf_sortition_payload;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
@@ -696,6 +696,61 @@ impl ConsensusQueryApi {
             return Ok(0);
         };
         decode_u64_le(&raw, "CONSENSUS_QUERY_FINAL_CHAIN_LAST_NUMBER")
+    }
+
+    /// Returns one validator's eligible DPoS vote count at an exact finalized block.
+    pub fn final_chain_dpos_eligible_vote_count(
+        &self,
+        block_number: u64,
+        address: [u8; 20],
+    ) -> Result<u64> {
+        self.live_final_chain
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_FINAL_CHAIN_UNAVAILABLE")?
+            .dpos_eligible_vote_count(block_number.into(), address)
+    }
+
+    /// Returns the total eligible DPoS vote count at an exact finalized block.
+    pub fn final_chain_dpos_eligible_total_vote_count(&self, block_number: u64) -> Result<u64> {
+        self.live_final_chain
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_FINAL_CHAIN_UNAVAILABLE")?
+            .dpos_eligible_total_vote_count(block_number.into())
+    }
+
+    /// Returns validator stakes in canonical address order.
+    pub fn final_chain_dpos_validators_total_stakes(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<DposValidatorStake>> {
+        self.live_final_chain
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_FINAL_CHAIN_UNAVAILABLE")?
+            .dpos_validators_total_stakes(block_number.into())
+    }
+
+    /// Returns the total delegated amount as canonical unsigned big-endian bytes.
+    pub fn final_chain_dpos_total_amount_delegated(&self, block_number: u64) -> Result<Vec<u8>> {
+        self.live_final_chain
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_FINAL_CHAIN_UNAVAILABLE")?
+            .dpos_total_amount_delegated(block_number.into())
+    }
+
+    /// Returns the native DPoS yield active at the requested finalized block.
+    pub fn final_chain_dpos_yield(&self, block_number: u64) -> Result<u64> {
+        self.live_final_chain
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_FINAL_CHAIN_UNAVAILABLE")?
+            .dpos_yield(block_number.into())
+    }
+
+    /// Returns total supply as canonical unsigned big-endian bytes.
+    pub fn final_chain_dpos_total_supply(&self, block_number: u64) -> Result<Vec<u8>> {
+        self.live_final_chain
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_FINAL_CHAIN_UNAVAILABLE")?
+            .dpos_total_supply(block_number.into())
     }
 
     /// Returns the exact persisted dynamic lambda for a finalized period.
@@ -2197,6 +2252,32 @@ mod tests {
             total_reward: rustaxa_types::DposTokenAmount::from(U256::from(66u64)),
         })
         .into_vec()
+    }
+
+    #[test]
+    fn storage_only_query_rejects_live_final_chain_dpos_reads() {
+        let (path, storage) = test_storage("dpos_requires_live_root");
+        let api = ConsensusQueryApi::new(storage);
+
+        let error = api
+            .final_chain_dpos_eligible_total_vote_count(0)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("CONSENSUS_QUERY_LIVE_FINAL_CHAIN_UNAVAILABLE")
+        );
+        assert!(
+            api.final_chain_dpos_eligible_vote_count(0, [0; 20])
+                .is_err()
+        );
+        assert!(api.final_chain_dpos_validators_total_stakes(0).is_err());
+        assert!(api.final_chain_dpos_total_amount_delegated(0).is_err());
+        assert!(api.final_chain_dpos_yield(0).is_err());
+        assert!(api.final_chain_dpos_total_supply(0).is_err());
+
+        drop(api);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]

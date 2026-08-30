@@ -434,6 +434,65 @@ impl BridgeConsensusQueryApi {
         self.0.final_chain_last_block_number()
     }
 
+    /// Returns one validator's eligible vote count from native FinalChain state.
+    pub fn consensus_query_final_chain_dpos_eligible_vote_count(
+        &self,
+        block_number: u64,
+        address: &[u8; 20],
+    ) -> Result<u64, anyhow::Error> {
+        self.0
+            .final_chain_dpos_eligible_vote_count(block_number, *address)
+    }
+
+    /// Returns the total eligible vote count from native FinalChain state.
+    pub fn consensus_query_final_chain_dpos_eligible_total_vote_count(
+        &self,
+        block_number: u64,
+    ) -> Result<u64, anyhow::Error> {
+        self.0
+            .final_chain_dpos_eligible_total_vote_count(block_number)
+    }
+
+    /// Returns validator stakes in canonical address order.
+    pub fn consensus_query_final_chain_dpos_validators_total_stakes(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<rustaxa_ffi::DposValidatorStake>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain_dpos_validators_total_stakes(block_number)?
+            .into_iter()
+            .map(|stake| rustaxa_ffi::DposValidatorStake {
+                address: stake.address,
+                stake: stake.stake,
+            })
+            .collect())
+    }
+
+    /// Returns total delegated stake as canonical unsigned big-endian bytes.
+    pub fn consensus_query_final_chain_dpos_total_amount_delegated(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.final_chain_dpos_total_amount_delegated(block_number)
+    }
+
+    /// Returns the DPoS yield active at the requested finalized block.
+    pub fn consensus_query_final_chain_dpos_yield(
+        &self,
+        block_number: u64,
+    ) -> Result<u64, anyhow::Error> {
+        self.0.final_chain_dpos_yield(block_number)
+    }
+
+    /// Returns total supply as canonical unsigned big-endian bytes.
+    pub fn consensus_query_final_chain_dpos_total_supply(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.final_chain_dpos_total_supply(block_number)
+    }
+
     /// Returns the exact persisted dynamic lambda for a finalized period.
     pub fn consensus_query_period_lambda_by_period(
         &self,

@@ -18,7 +18,7 @@ CPP_INTERSECTION_EXCLUDES?=':(exclude)rust/**' ':(exclude).devcontainer/**' ':(e
 CPP_INTERSECTION_PATCH?=$(BUILD_OUTPUT_DIR)/cpp-reference-intersection.patch
 RUST_MANIFEST?=rust/Cargo.toml
 REWRITE_CONSENSUS_TESTS?=rust_consensus_tests rpc_test network_test
-REWRITE_FINAL_CHAIN_TESTS?=final_chain_test state_api_test rpc_test
+REWRITE_FINAL_CHAIN_TESTS?=rust_consensus_tests state_api_test rpc_test
 FINAL_CHAIN_CPP_BUILD_ROOT?=/tmp/rustaxa-final-chain-pure-cpp
 
 define require_cmake_build

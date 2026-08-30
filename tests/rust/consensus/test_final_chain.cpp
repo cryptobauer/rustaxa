@@ -325,20 +325,21 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
   const auto validator_address = address(0x10);
   const auto unknown_address = address(0x20);
   auto final_chain = create_final_chain_for_test(genesis_validators(validator_address));
+  auto query = create_consensus_query_api(*final_chain);
 
-  EXPECT_EQ(final_chain->get_dpos_eligible_total_vote_count(0), 10u);
-  EXPECT_EQ(final_chain->get_dpos_eligible_vote_count(0, validator_address), 10u);
-  EXPECT_GT(final_chain->get_dpos_eligible_vote_count(0, validator_address), 0);
-  EXPECT_EQ(final_chain->get_dpos_eligible_vote_count(0, unknown_address), 0u);
-  EXPECT_EQ(final_chain->get_dpos_eligible_vote_count(0, unknown_address), 0);
+  EXPECT_EQ(query->consensus_query_final_chain_dpos_eligible_total_vote_count(0), 10u);
+  EXPECT_EQ(query->consensus_query_final_chain_dpos_eligible_vote_count(0, validator_address), 10u);
+  EXPECT_GT(query->consensus_query_final_chain_dpos_eligible_vote_count(0, validator_address), 0);
+  EXPECT_EQ(query->consensus_query_final_chain_dpos_eligible_vote_count(0, unknown_address), 0u);
+  EXPECT_EQ(query->consensus_query_final_chain_dpos_eligible_vote_count(0, unknown_address), 0);
 
-  const auto stakes = final_chain->get_dpos_validators_total_stakes(0);
+  const auto stakes = query->consensus_query_final_chain_dpos_validators_total_stakes(0);
   ASSERT_EQ(stakes.size(), 1u);
   EXPECT_EQ(stakes[0].address, validator_address);
   EXPECT_EQ(bytes(stakes[0].stake), bytes(u64_be(10000)));
-  EXPECT_EQ(bytes(final_chain->get_dpos_total_amount_delegated(0)), bytes(u64_be(10000)));
-  EXPECT_EQ(final_chain->get_dpos_yield(0), 0u);
-  EXPECT_TRUE(final_chain->get_dpos_total_supply(0).empty());
+  EXPECT_EQ(bytes(query->consensus_query_final_chain_dpos_total_amount_delegated(0)), bytes(u64_be(10000)));
+  EXPECT_EQ(query->consensus_query_final_chain_dpos_yield(0), 0u);
+  EXPECT_TRUE(query->consensus_query_final_chain_dpos_total_supply(0).empty());
 
   auto total_delegation = final_chain->call(dpos_call(0, get_total_delegation_input(validator_address)));
   ASSERT_EQ(std::string(total_delegation.code_err), "");
@@ -362,11 +363,12 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
 TEST_F(RustFinalChainTest, DposQueriesRejectMissingNonGenesisSnapshot) {
   const auto validator_address = address(0x10);
   auto final_chain = create_final_chain_for_test(genesis_validators(validator_address));
+  auto query = create_consensus_query_api(*final_chain);
 
-  EXPECT_THROW(final_chain->get_dpos_eligible_total_vote_count(1), std::exception);
-  EXPECT_THROW(final_chain->get_dpos_eligible_vote_count(1, validator_address), std::exception);
-  EXPECT_THROW(final_chain->get_dpos_eligible_vote_count(1, validator_address), std::exception);
-  EXPECT_THROW(final_chain->get_dpos_validators_total_stakes(1), std::exception);
+  EXPECT_THROW(query->consensus_query_final_chain_dpos_eligible_total_vote_count(1), std::exception);
+  EXPECT_THROW(query->consensus_query_final_chain_dpos_eligible_vote_count(1, validator_address), std::exception);
+  EXPECT_THROW(query->consensus_query_final_chain_dpos_eligible_vote_count(1, validator_address), std::exception);
+  EXPECT_THROW(query->consensus_query_final_chain_dpos_validators_total_stakes(1), std::exception);
 }
 
 TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorMetadata) {

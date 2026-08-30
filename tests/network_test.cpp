@@ -666,9 +666,11 @@ TEST_F(NetworkTest, rust_mode_transaction_proposal_and_peer_sync_use_native_appl
   const auto submitted = client.coinTransfer(addr(), 1, true);
   ASSERT_EQ(submitted.stage, TransactionClient::TransactionStage::executed);
   const auto transaction_hash = submitted.trx->getHash();
+  const auto peer_query = nodes[1]->getConsensusApplication()->queryClient();
 
   EXPECT_HAPPENS({60s, 100ms}, [&](auto& ctx) {
-    WAIT_EXPECT_TRUE(ctx, nodes[1]->getFinalChain()->transactionLocation(transaction_hash).has_value())
+    const auto transaction = (*peer_query)->consensus_query_transaction_by_hash(transaction_hash.asArray());
+    WAIT_EXPECT_TRUE(ctx, transaction.found && transaction.location_found)
   });
 }
 

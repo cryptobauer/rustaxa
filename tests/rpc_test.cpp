@@ -62,6 +62,61 @@ struct RPCTest : NodesTest {
   }
 };
 
+#ifdef RUSTAXA_ENABLE
+// Wires a directly constructed ETH RPC fixture to the same bounded query and
+// exact account-state leaves used by the production RPC plugin.
+void bindFinalChainReaders(net::rpc::eth::EthParams& params, const std::shared_ptr<AppBase>& node) {
+  const auto query = node->getConsensusApplication()->queryClient();
+  params.query_transaction = [query](const auto& hash) {
+    return (*query)->consensus_query_transaction_by_hash(hash.asArray());
+  };
+  params.query_transaction_by_block_number_and_index = [query](auto block_number, auto index) {
+    return (*query)->consensus_query_transaction_by_block_number_and_index(block_number, index);
+  };
+  params.query_transaction_by_block_hash_and_index = [query](const auto& hash, auto index) {
+    return (*query)->consensus_query_transaction_by_block_hash_and_index(hash.asArray(), index);
+  };
+  params.query_transaction_count_by_block_number = [query](auto block_number) {
+    return (*query)->consensus_query_transaction_count_by_block_number(block_number);
+  };
+  params.query_transaction_count_by_block_hash = [query](const auto& hash) {
+    return (*query)->consensus_query_transaction_count_by_block_hash(hash.asArray());
+  };
+  params.query_transaction_receipt = [query](const auto& hash) {
+    return (*query)->consensus_query_transaction_receipt_by_hash(hash.asArray());
+  };
+  params.query_transaction_receipts_by_block_number = [query](auto block_number) {
+    return (*query)->consensus_query_transaction_receipts_by_block_number(block_number);
+  };
+  params.query_final_chain_block_by_number = [query](auto block_number) {
+    return (*query)->consensus_query_final_chain_block_by_number(block_number);
+  };
+  params.query_final_chain_block_number_by_hash = [query](const auto& hash) {
+    return (*query)->consensus_query_final_chain_block_number_by_hash(hash.asArray());
+  };
+  params.query_final_chain_last_block_number = [query] {
+    return (*query)->consensus_query_final_chain_last_block_number();
+  };
+  net::rpc::eth::FinalizedLogReplayApi log_replay;
+  log_replay.latest_finalized_block_number = params.query_final_chain_last_block_number;
+  log_replay.blocks_with_bloom = [query](const auto& bloom, auto from, auto to) {
+    return (*query)->consensus_query_final_chain_blocks_with_bloom(bloom, from, to);
+  };
+  log_replay.transaction_receipts_by_block_number = params.query_transaction_receipts_by_block_number;
+  params.query_log_replay = std::move(log_replay);
+  const auto final_chain = node->getFinalChain();
+  params.query_account = [final_chain](const auto& address, auto block_number) {
+    return final_chain->getAccount(address, block_number);
+  };
+  params.query_account_storage = [final_chain](const auto& address, const auto& key, auto block_number) {
+    return final_chain->getAccountStorage(address, key, block_number);
+  };
+  params.query_account_code = [final_chain](const auto& address, auto block_number) {
+    return final_chain->getCode(address, block_number);
+  };
+}
+#endif
+
 TEST_F(RPCTest, eth_syncing_uses_live_status_reader) {
   auto eth_json_rpc = net::rpc::eth::NewEth(net::rpc::eth::EthParams{});
   EXPECT_FALSE(eth_json_rpc->eth_syncing().asBool());
@@ -1063,6 +1118,9 @@ TEST_F(RPCTest, eth_estimateGas) {
   eth_rpc_params.chain_id = node_cfg.front().genesis.chain_id;
   eth_rpc_params.gas_limit = node_cfg.front().genesis.dag.gas_limit;
   eth_rpc_params.final_chain = nodes.front()->getFinalChain();
+#ifdef RUSTAXA_ENABLE
+  bindFinalChainReaders(eth_rpc_params, nodes.front());
+#endif
   auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
 
   const auto from = dev::toHex(dev::toAddress(node_cfg.front().getFirstWallet().node_secret));
@@ -1119,10 +1177,19 @@ TEST_F(RPCTest, eth_call) {
   eth_rpc_params.chain_id = node_cfg.front().genesis.chain_id;
   eth_rpc_params.gas_limit = node_cfg.front().genesis.dag.gas_limit;
   eth_rpc_params.final_chain = final_chain;
+#ifdef RUSTAXA_ENABLE
+  bindFinalChainReaders(eth_rpc_params, nodes.front());
+#endif
   auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
 
+#ifdef RUSTAXA_ENABLE
+  const auto query = nodes.front()->getConsensusApplication()->queryClient();
+  const auto last_block_num = (*query)->consensus_query_final_chain_last_block_number();
+  const u256 total_eligible = (*query)->consensus_query_final_chain_dpos_eligible_total_vote_count(last_block_num);
+#else
   const auto last_block_num = final_chain->lastBlockNumber();
   const u256 total_eligible = final_chain->dposEligibleTotalVoteCount(last_block_num);
+#endif
   const auto total_eligible_str = dev::toHexPrefixed(dev::toBigEndian(total_eligible));
 
   const auto empty_address = dev::KeyPair::create().address().toString();
@@ -1271,9 +1338,19 @@ TEST_F(RPCTest, eth_getBlock) {
   eth_rpc_params.chain_id = node_cfg.front().genesis.chain_id;
   eth_rpc_params.gas_limit = node_cfg.front().genesis.dag.gas_limit;
   eth_rpc_params.final_chain = nodes.front()->getFinalChain();
+#ifdef RUSTAXA_ENABLE
+  bindFinalChainReaders(eth_rpc_params, nodes.front());
+#endif
   auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
 
-  wait({10s, 500ms}, [&](auto& ctx) { WAIT_EXPECT_EQ(ctx, 5, nodes[0]->getFinalChain()->lastBlockNumber()); });
+  wait({10s, 500ms}, [&](auto& ctx) {
+#ifdef RUSTAXA_ENABLE
+    WAIT_EXPECT_EQ(ctx, 5,
+                   (*nodes[0]->getConsensusApplication()->queryClient())->consensus_query_final_chain_last_block_number());
+#else
+    WAIT_EXPECT_EQ(ctx, 5, nodes[0]->getFinalChain()->lastBlockNumber());
+#endif
+  });
   auto block = eth_json_rpc->eth_getBlockByNumber("0x4", false);
 
   EXPECT_EQ(4, dev::jsToU256(block["number"].asString()));
@@ -1287,6 +1364,9 @@ TEST_F(RPCTest, eip_1898) {
   eth_rpc_params.chain_id = node_cfg.front().genesis.chain_id;
   eth_rpc_params.gas_limit = node_cfg.front().genesis.dag.gas_limit;
   eth_rpc_params.final_chain = nodes.front()->getFinalChain();
+#ifdef RUSTAXA_ENABLE
+  bindFinalChainReaders(eth_rpc_params, nodes.front());
+#endif
   auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
 
   const auto from = dev::toHex(dev::toAddress(node_cfg.front().getFirstWallet().node_secret));
@@ -1296,7 +1376,14 @@ TEST_F(RPCTest, eip_1898) {
   EXPECT_EQ(eth_json_rpc->eth_getBalance(from, "0x0"), eth_json_rpc->eth_getBalance(from, zero_block));
 
   Json::Value genesis_block(Json::objectValue);
+#ifdef RUSTAXA_ENABLE
+  const auto genesis_view =
+      (*nodes.front()->getConsensusApplication()->queryClient())->consensus_query_final_chain_block_by_number(0);
+  ASSERT_TRUE(genesis_view.found);
+  genesis_block["blockHash"] = dev::toJS(h256(genesis_view.hash.data(), h256::ConstructFromPointer));
+#else
   genesis_block["blockHash"] = dev::toJS(*nodes.front()->getFinalChain()->blockHash(0));
+#endif
   EXPECT_EQ(eth_json_rpc->eth_getBalance(from, "0x0"), eth_json_rpc->eth_getBalance(from, genesis_block));
 }
 

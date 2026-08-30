@@ -143,20 +143,13 @@ pub mod application_host_ffi {
     struct HostPillarAnchorStateRequest {
         effect_id: HostEffectId,
         period: u64,
-        pillar_block_period: u64,
-        signer_addresses: Vec<HostAddress20>,
     }
-    /// FinalChain header and bridge facts for one persisted pillar anchor.
+    /// Exact bridge-contract facts returned by the concrete EVM leaf.
     struct HostPillarAnchorStateReport {
         effect_id: HostEffectId,
         succeeded: bool,
-        block_header_rlp: Vec<u8>,
-        state_root: [u8; 32],
         bridge_root: [u8; 32],
         bridge_epoch: [u8; 32],
-        validator_vote_counts: Vec<HostValidatorVoteCount>,
-        signer_vote_counts: Vec<u64>,
-        total_eligible_vote_count: u64,
         error_code: String,
     }
     /// Exact StateAPI facts needed by native system-transaction planning.

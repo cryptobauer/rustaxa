@@ -3,7 +3,7 @@ use crate::ffi::BridgeApp;
 use rustaxa_consensus::Account;
 use rustaxa_consensus::ConsensusFinalChainConfig;
 
-fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
+pub(crate) fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
     match account {
         Some(account) => rustaxa_ffi::AccountLookup {
             found: true,
@@ -33,7 +33,7 @@ fn genesis_account_from_ffi(
     })
 }
 
-fn final_chain_call_request_from_ffi(
+pub(crate) fn final_chain_call_request_from_ffi(
     request: rustaxa_ffi::FinalChainCall,
 ) -> Result<rustaxa_consensus::FinalChainCallRequest, anyhow::Error> {
     Ok(rustaxa_consensus::FinalChainCallRequest {
@@ -49,11 +49,28 @@ fn final_chain_call_request_from_ffi(
     })
 }
 
-fn transaction_receipt_position_from_ffi(
-    position: u64,
-) -> Result<rustaxa_types::FinalChainTransactionPosition, anyhow::Error> {
-    rustaxa_types::FinalChainTransactionPosition::try_from(position)
-        .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_TRANSACTION_POSITION_EXCEEDS_U32"))
+pub(crate) fn final_chain_call_outcome_to_ffi(
+    outcome: rustaxa_types::FinalChainCallOutcome,
+) -> rustaxa_ffi::FinalChainCallOutcome {
+    rustaxa_ffi::FinalChainCallOutcome {
+        code_retval: outcome.code_retval,
+        logs: outcome
+            .logs
+            .into_iter()
+            .map(|log| rustaxa_ffi::FinalChainEvmLog {
+                address: log.address,
+                topics: log
+                    .topics
+                    .into_iter()
+                    .map(|topic| rustaxa_ffi::FinalChainEvmLogTopic { topic })
+                    .collect(),
+                data: log.data,
+            })
+            .collect(),
+        gas_used: outcome.gas_used.as_u64(),
+        code_err: outcome.code_err,
+        consensus_err: outcome.consensus_err,
+    }
 }
 
 fn external_evm_publication_report_to_ffi(
@@ -246,65 +263,6 @@ impl BridgeApp {
             .prune_block_indexes_before(first_to_keep)
     }
 
-    pub fn get_last_block_number(self: &BridgeApp) -> Result<u64, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        final_chain.last_block_number()
-    }
-
-    pub fn get_block_number(
-        self: &BridgeApp,
-        hash: &[u8; 32],
-    ) -> Result<rustaxa_ffi::FinalChainBlockNumberLookup, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        Ok(match final_chain.block_number(*hash)? {
-            Some(value) => rustaxa_ffi::FinalChainBlockNumberLookup { found: true, value },
-            None => rustaxa_ffi::FinalChainBlockNumberLookup {
-                found: false,
-                value: 0,
-            },
-        })
-    }
-
-    pub fn get_block_hash(self: &BridgeApp, num: u64) -> Result<Vec<u8>, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        Ok(final_chain
-            .block_hash(num.into())
-            .map_err(|e| anyhow::anyhow!(e))?
-            .unwrap_or_default())
-    }
-
-    pub fn get_block_header(self: &BridgeApp, num: u64) -> Result<Vec<u8>, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        Ok(final_chain.block_header(num.into())?.unwrap_or_default())
-    }
-
-    pub fn get_transaction_location(
-        self: &BridgeApp,
-        hash: &[u8; 32],
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        Ok(final_chain.transaction_location(*hash)?.unwrap_or_default())
-    }
-
-    pub fn get_transaction_count(self: &BridgeApp, period: u64) -> Result<u64, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        final_chain.transaction_count(period.into())
-    }
-
-    /// Returns finalized block numbers whose Rust FinalChain bloom index
-    /// contains the supplied query bloom over the inclusive block range.
-    pub fn get_blocks_with_bloom(
-        self: &BridgeApp,
-        bloom: &[u8; 256],
-        from: u64,
-        to: u64,
-    ) -> Result<Vec<u64>, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        final_chain
-            .with_block_bloom(&(*bloom).into(), from.into(), to.into())
-            .map(|blocks| blocks.into_iter().map(Into::into).collect())
-    }
-
     pub fn recover_external_evm_pending_publication(
         self: &BridgeApp,
         committed_period: u64,
@@ -319,143 +277,35 @@ impl BridgeApp {
         ))
     }
 
+    /// Reads an exact native account snapshot for the retained public-state adapter.
+    ///
+    /// This operation remains application-root bound because the C++ adapter
+    /// composes it with the concrete `state_db` head. It is not part of the
+    /// general public consensus query facade and exposes no FinalChain handle.
     pub fn get_account_at_block(
         self: &BridgeApp,
         block_number: u64,
         address: &[u8; 20],
     ) -> Result<rustaxa_ffi::AccountLookup, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
         Ok(account_to_lookup(
-            final_chain.account_at_block(block_number.into(), *address)?,
+            self.0
+                .final_chain_for_bridge()
+                .account_at_block(block_number.into(), *address)?,
         ))
     }
 
-    pub fn get_dpos_eligible_vote_count(
-        self: &BridgeApp,
-        block_number: u64,
-        address: &[u8; 20],
-    ) -> Result<u64, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        final_chain.dpos_eligible_vote_count(block_number.into(), *address)
-    }
-
-    pub fn get_dpos_eligible_total_vote_count(
-        self: &BridgeApp,
-        block_number: u64,
-    ) -> Result<u64, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        final_chain.dpos_eligible_total_vote_count(block_number.into())
-    }
-
-    /// Returns every validator with nonzero eligible votes from the exact
-    /// finalized native DPoS snapshot, in canonical address order.
+    /// Executes the native read-only call subset for the retained hybrid EVM adapter.
     ///
-    /// Missing or corrupt snapshots remain bridge errors; the adapter does not
-    /// fall back to the external EVM head or substitute a neighboring period.
-    pub fn get_dpos_validators_eligible_vote_counts(
-        self: &BridgeApp,
-        block_number: u64,
-    ) -> Result<Vec<rustaxa_ffi::HostValidatorVoteCount>, anyhow::Error> {
-        self.0
-            .final_chain_for_bridge()
-            .dpos_validators_eligible_vote_counts(block_number.into())
-            .map(|counts| {
-                counts
-                    .into_iter()
-                    .map(|count| rustaxa_ffi::HostValidatorVoteCount {
-                        address: count.address,
-                        vote_count: count.vote_count,
-                    })
-                    .collect()
-            })
-    }
-
-    pub fn get_dpos_validators_total_stakes(
-        self: &BridgeApp,
-        block_number: u64,
-    ) -> Result<Vec<rustaxa_ffi::DposValidatorStake>, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        Ok(final_chain
-            .dpos_validators_total_stakes(block_number.into())?
-            .into_iter()
-            .map(|stake| rustaxa_ffi::DposValidatorStake {
-                address: stake.address,
-                stake: stake.stake,
-            })
-            .collect())
-    }
-
-    pub fn get_dpos_total_amount_delegated(
-        self: &BridgeApp,
-        block_number: u64,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        final_chain.dpos_total_amount_delegated(block_number.into())
-    }
-
-    pub fn get_dpos_yield(self: &BridgeApp, block_number: u64) -> Result<u64, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        final_chain.dpos_yield(block_number.into())
-    }
-
-    pub fn get_dpos_total_supply(
-        self: &BridgeApp,
-        block_number: u64,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        final_chain.dpos_total_supply(block_number.into())
-    }
-
+    /// Arbitrary EVM calls remain in C++ `StateAPI`; this exact leaf handles
+    /// only native FinalChain calls selected by that adapter.
     pub fn call(
         self: &BridgeApp,
         request: rustaxa_ffi::FinalChainCall,
     ) -> Result<rustaxa_ffi::FinalChainCallOutcome, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        let outcome = final_chain.call(final_chain_call_request_from_ffi(request)?)?;
-        Ok(rustaxa_ffi::FinalChainCallOutcome {
-            code_retval: outcome.code_retval,
-            logs: outcome
-                .logs
-                .into_iter()
-                .map(|log| rustaxa_ffi::FinalChainEvmLog {
-                    address: log.address,
-                    topics: log
-                        .topics
-                        .into_iter()
-                        .map(|topic| rustaxa_ffi::FinalChainEvmLogTopic { topic })
-                        .collect(),
-                    data: log.data,
-                })
-                .collect(),
-            gas_used: outcome.gas_used.as_u64(),
-            code_err: outcome.code_err,
-            consensus_err: outcome.consensus_err,
-        })
-    }
-
-    pub fn get_transaction_rlps(
-        self: &BridgeApp,
-        period: u64,
-    ) -> Result<Vec<rustaxa_ffi::TxRlp>, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        Ok(final_chain
-            .transaction_rlps_with_system_marker(period.into())?
-            .into_iter()
-            .map(|(data, is_system)| rustaxa_ffi::TxRlp { data, is_system })
-            .collect())
-    }
-
-    pub fn get_transaction_receipt(
-        self: &BridgeApp,
-        period: u64,
-        position: u64,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        Ok(final_chain
-            .transaction_receipt_rlp(
-                period.into(),
-                transaction_receipt_position_from_ffi(position)?,
-            )?
-            .unwrap_or_default())
+        let outcome = self
+            .0
+            .final_chain_for_bridge()
+            .call(final_chain_call_request_from_ffi(request)?)?;
+        Ok(final_chain_call_outcome_to_ffi(outcome))
     }
 }

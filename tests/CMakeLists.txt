@@ -42,14 +42,12 @@ add_executable(encoding_test encoding_test.cpp)
 target_link_libraries(encoding_test test_util)
 add_test(encoding_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/encoding_test)
 
-add_executable(final_chain_test final_chain_test.cpp)
-target_link_libraries(final_chain_test test_util)
-if(RUSTAXA_ENABLE)
-    # The legacy suite seeds FinalChain through standalone DbStorage and remains a pure-C++ reference suite.
-    # Rust mode retains only the concrete EVM leaf-port checks; native FinalChain behavior lives in Rust tests.
-    add_test(NAME final_chain_test COMMAND ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/final_chain_test
-        --gtest_filter=FinalChainTest.rustModeExternalEvmAccountFactsPreserveOrderAndMissingRows:FinalChainTest.rustModeExternalEvmDagGasEstimatePreservesIdentityAndCanonicalResult)
-else()
+if(NOT RUSTAXA_ENABLE)
+    # The legacy suite drives the retired FinalChain facade and remains an
+    # untouched pure-C++ parity suite. Rust mode covers native FinalChain and
+    # exact concrete-EVM leaves in rust_consensus_tests and state_api_test.
+    add_executable(final_chain_test final_chain_test.cpp)
+    target_link_libraries(final_chain_test test_util)
     add_test(final_chain_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/final_chain_test)
 endif()
 

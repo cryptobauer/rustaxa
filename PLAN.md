@@ -363,7 +363,11 @@ Validation:
 
 ### Scope
 
-Goal: keep `final_chain::FinalChain` public API stable while moving implementation behind an additive shim and Rust-backed components.
+Goal: preserve protocol, RPC, GraphQL, and pure-C++ FinalChain behavior while
+moving Rust-mode public reads to `ConsensusQueryApi` and contracting the C++
+`final_chain::FinalChain` overlay to exact concrete-EVM/`state_db`, tracing,
+public-state, recovery, and state-lifecycle leaves. The historical Rust-mode
+C++ class surface is not itself a compatibility contract.
 
 The FinalChain shim uses a header overlay pattern and is enabled by the single
 Rust production composition switch:
@@ -378,22 +382,20 @@ retain the untouched legacy RewardsStats header, source, and focused test.
 
 ### Current Implementation Status
 
-- Rust-backed chain index reads:
-  - `lastBlockNumber`
-  - `blockNumber`
-  - `blockHash`
-- Rust-backed block, transaction, receipt, and bloom reads:
-  - `blockHeader`
-  - `transactionLocation`
-  - `transactionCount`
-  - transaction RLPs, transaction receipts, block receipts, and `withBlockBloom`
-- DPoS query boundary is partially Rust-backed:
+- Rust-mode chain-index, block, transaction, receipt, bloom, and public DPoS
+  reads are client-oriented `ConsensusQueryApi` operations. RPC, GraphQL,
+  debug/Test RPC, log replay, light clients, observers, and Rust-mode fixtures
+  do not retrieve those values through the FinalChain overlay or the opaque
+  application root.
+- DPoS query boundary is Rust-backed:
   - genesis vote-count snapshot is derived in Rust from genesis validator stake.
-  - `dposEligibleTotalVoteCount`, `dposEligibleVoteCount`, and `dposIsEligible` now preserve the `EthBlockNumber`
-    argument through the C++ shim and Rust bridge.
-  - `dposValidatorsTotalStakes` is Rust-backed and returns address-sorted vectors for available Rust DPoS snapshots.
-    Validator eligible-vote-count sets stay native for PBFT pillar construction and are no longer materialized through
-    a Rust-mode C++ FinalChain method; the untouched pure-C++ method remains on the reference path.
+  - public vote-count, stake, delegated-amount, yield, and supply operations
+    preserve the requested `EthBlockNumber` through `ConsensusQueryApi`.
+  - validator eligible-vote-count sets and pillar header/state-root facts stay
+    native for PBFT pillar construction. The concrete EVM host receives only
+    the requested period and returns bridge root/epoch; it no longer
+    materializes native headers, validators, signer weights, or total votes in
+    C++.
   - DagManager verification now receives DPoS authorization facts whose VDF sortition denominator is selected in Rust
     from genesis DPoS config plus the configured Magnolia boundary, instead of passing per-block hardfork or
     validator-max policy through the C++ shim.

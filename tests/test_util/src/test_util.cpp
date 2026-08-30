@@ -75,8 +75,16 @@ TransactionClient::Context TransactionClient::process(const std::shared_ptr<Tran
   ctx.stage = TransactionStage::inserted;
   auto trx_hash = ctx.trx->getHash();
   if (wait_executed) {
+#ifdef RUSTAXA_ENABLE
+    const auto query = node_->getConsensusApplication()->queryClient();
+    auto success = wait(wait_opts_, [&](auto& wait_ctx) {
+      const auto view = (*query)->consensus_query_transaction_by_hash(trx_hash.asArray());
+      wait_ctx.fail_if(!view.found || !view.location_found);
+    });
+#else
     auto success =
         wait(wait_opts_, [&, this](auto& ctx) { ctx.fail_if(!node_->getFinalChain()->transactionLocation(trx_hash)); });
+#endif
     if (success) {
       ctx.stage = TransactionStage::executed;
     }
@@ -135,7 +143,8 @@ SharedTransaction make_redelegate_tx(const FullNodeConfig& sender_node_cfg, cons
 }
 
 u256 own_balance(const std::shared_ptr<AppBase>& node) {
-  return node->getFinalChain()->getBalance(node->getAddress()).first;
+  const auto account = node->getFinalChain()->getAccount(node->getAddress());
+  return account ? account->balance : 0;
 }
 
 state_api::BalanceMap effective_initial_balances(const state_api::Config& cfg) {
@@ -182,10 +191,12 @@ void wait_for_balances(const std::vector<std::shared_ptr<AppBase>>& nodes, const
   wait(to_wait, [&](auto& ctx) {
     for (const auto& node : nodes) {
       for (const auto& b : balances) {
-        if (node->getFinalChain()->getBalance(b.first).first != b.second) {
+        const auto account = node->getFinalChain()->getAccount(b.first);
+        if ((account ? account->balance : 0) != b.second) {
           auto trx_client = TransactionClient(node);
           trx_client.coinTransfer(KeyPair::create().address(), 0, false);
-          WAIT_EXPECT_EQ(ctx, node->getFinalChain()->getBalance(b.first).first, b.second);
+          const auto updated_account = node->getFinalChain()->getAccount(b.first);
+          WAIT_EXPECT_EQ(ctx, updated_account ? updated_account->balance : 0, b.second);
         }
       }
       // wait for the same chain size on all nodes

@@ -13,8 +13,12 @@ namespace graphql::taraxa {
 
 namespace {
 BlockTransactionReader makeBlockTransactionReader(
-    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
+    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
   BlockTransactionReader reader;
+#ifdef RUSTAXA_ENABLE
+  reader.transaction_count = [](auto) { return uint64_t(0); };
+  reader.transactions = [](auto) { return std::vector<std::shared_ptr<::taraxa::Transaction>>{}; };
+#else
   reader.transaction_count = [final_chain](::taraxa::EthBlockNumber block_number) {
     return final_chain ? final_chain->transactionCount(block_number) : 0;
   };
@@ -24,6 +28,7 @@ BlockTransactionReader makeBlockTransactionReader(
     }
     return final_chain->transactions(block_number);
   };
+#endif
   return reader;
 }
 }  // namespace
