@@ -838,6 +838,22 @@ impl DposRewardGraph {
             })
     }
 
+    /// Returns the canonical live reward-state rows needed to bind the native
+    /// DPoS snapshot to the concrete precompile storage projection.
+    ///
+    /// The returned keys and nodes are ordered exactly as the graph's internal
+    /// maps. Incomplete legacy provenance is rejected because it cannot prove
+    /// which historical reward-state rows remain live. Callers must encode the
+    /// rows using the legacy DPoS storage-key and RLP contracts.
+    pub(crate) fn live_nodes(&self) -> Result<Vec<(NodeKey, Node)>, DposRewardGraphError> {
+        self.ensure_complete()?;
+        Ok(self
+            .nodes
+            .iter()
+            .map(|(key, node)| (*key, node.clone()))
+            .collect())
+    }
+
     /// Removes a cursor and decrements its node, deleting the node at count one.
     /// All failures leave the graph unchanged.
     pub fn delete_cursor(

@@ -15,32 +15,25 @@
 #include "rewards/block_stats.hpp"
 #include "transaction/receipt.hpp"
 #include "transaction/system_transaction.hpp"
-
 namespace taraxa::final_chain {
 namespace {
-
-constexpr uint8_t kFinalChainEvmReportStatusSuccess = 0;
-constexpr uint8_t kFinalChainEvmRewardsReportStatusSuccess = 0;
 constexpr uint8_t kFinalChainEvmLifecycleStatusCommitted = 0;
 constexpr uint8_t kFinalChainEvmLifecycleStatusRejected = 2;
-constexpr uint8_t kFinalChainEvmPublicationStatusRejected = 1;
-
+constexpr uint8_t kFinalChainEvmPublicationStatusApplied = 0;
+constexpr uint8_t kFinalChainEvmPublicationStatusAlreadyApplied = 2;
 std::array<uint8_t, 32> into_bytes_array(const h256& hash) {
   std::array<uint8_t, 32> bytes{};
   std::memcpy(bytes.data(), hash.data(), bytes.size());
   return bytes;
 }
-
 std::array<uint8_t, 20> into_address_array(const addr_t& address) {
   std::array<uint8_t, 20> bytes{};
   std::memcpy(bytes.data(), address.data(), bytes.size());
   return bytes;
 }
-
 addr_t into_address(const std::array<uint8_t, 20>& address) {
   return addr_t(dev::bytes(address.begin(), address.end()));
 }
-
 rust::Vec<uint8_t> into_rust_vec(const dev::bytes& bytes) {
   rust::Vec<uint8_t> vec;
   vec.reserve(bytes.size());
@@ -49,7 +42,6 @@ rust::Vec<uint8_t> into_rust_vec(const dev::bytes& bytes) {
   }
   return vec;
 }
-
 rust::Vec<uint8_t> into_big_endian_vec(const u256& value) {
   rust::Vec<uint8_t> vec;
   auto bytes = dev::toBigEndian(value);
@@ -59,10 +51,8 @@ rust::Vec<uint8_t> into_big_endian_vec(const u256& value) {
   }
   return vec;
 }
-
-// Nonces cross the Rust boundary as canonical minimal big-endian bytes. Keep
-// the legacy C++ API's u256 surface intact, but never truncate a value that
-// cannot be represented by that API.
+// Nonces cross the Rust boundary as canonical minimal big-endian bytes; keep the legacy C++ u256 API intact.
+// Never truncate a value that cannot be represented by that API.
 rust::Vec<uint8_t> into_canonical_nonce_vec(const u256& value) {
   auto encoded = into_big_endian_vec(value);
   size_t first_nonzero = 0;
@@ -76,7 +66,6 @@ rust::Vec<uint8_t> into_canonical_nonce_vec(const u256& value) {
   }
   return canonical;
 }
-
 u256 nonce_from_canonical_vec(const rust::Vec<uint8_t>& nonce) {
   if (nonce.size() > 32) {
     throw std::runtime_error("FINAL_CHAIN_NONCE_EXCEEDS_CPP_U256");
@@ -91,9 +80,7 @@ u256 nonce_from_canonical_vec(const rust::Vec<uint8_t>& nonce) {
   }
   return dev::fromBigEndian<u256>(bytes);
 }
-
 }  // namespace
-
 rust::Vec<rustaxa::GenesisAccount> makeGenesisAccounts(const state_api::Config& config) {
   auto effective_balances = config.initial_balances;
   for (const auto& validator : config.dpos.initial_validators) {
@@ -101,7 +88,6 @@ rust::Vec<rustaxa::GenesisAccount> makeGenesisAccounts(const state_api::Config& 
       effective_balances[delegator] -= amount;
     }
   }
-
   rust::Vec<rustaxa::GenesisAccount> accounts;
   accounts.reserve(effective_balances.size());
   for (const auto& [address, balance] : effective_balances) {
@@ -116,7 +102,6 @@ rust::Vec<rustaxa::GenesisAccount> makeGenesisAccounts(const state_api::Config& 
   }
   return accounts;
 }
-
 rust::Vec<rustaxa::GenesisValidator> makeGenesisValidators(const state_api::Config& config) {
   rust::Vec<rustaxa::GenesisValidator> validators;
   validators.reserve(config.dpos.initial_validators.size());
@@ -144,7 +129,6 @@ rust::Vec<rustaxa::GenesisValidator> makeGenesisValidators(const state_api::Conf
   }
   return validators;
 }
-
 rustaxa::GenesisDposConfig makeGenesisDposConfig(const state_api::DPOSConfig& config,
                                                  uint64_t dag_vdf_sortition_total_vote_count_until_period) {
   rustaxa::GenesisDposConfig dpos_config;
@@ -158,7 +142,6 @@ rustaxa::GenesisDposConfig makeGenesisDposConfig(const state_api::DPOSConfig& co
   dpos_config.dag_vdf_sortition_total_vote_count_until_period = dag_vdf_sortition_total_vote_count_until_period;
   return dpos_config;
 }
-
 rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const taraxa::FullNodeConfig& config) {
   rustaxa::FinalChainRewardsConfig rewards_config;
   rewards_config.committee_size = config.genesis.pbft.committee_size;
@@ -204,9 +187,7 @@ rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const taraxa::FullN
   }
   return rewards_config;
 }
-
 namespace {
-
 h256 into_h256(const dev::bytes& bytes, const char* api_name) {
   if (bytes.size() != 32) {
     throw DbException("FinalChain::" + std::string(api_name) + " returned invalid hash size: expected 32, got " +
@@ -214,15 +195,11 @@ h256 into_h256(const dev::bytes& bytes, const char* api_name) {
   }
   return h256(bytes);
 }
-
 dev::bytes into_bytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
-
 [[noreturn]] void throw_unimplemented_final_chain_api(const char* api_name) {
   throw DbException("FinalChain::" + std::string(api_name) + " is not implemented in Rust shim mode");
 }
-
 }  // namespace
-
 FinalChain::FinalChain(const fs::path& state_db_path, const taraxa::FullNodeConfig& config,
                        [[maybe_unused]] const addr_t& node_addr, SharedConsensusApplication consensus_application)
     : consensus_application_(std::move(consensus_application)),
@@ -235,16 +212,24 @@ FinalChain::FinalChain(const fs::path& state_db_path, const taraxa::FullNodeConf
   }
   recoverExternalEvmPendingPublication();
 }
-
 FinalChain::ExternalEvmStateApiClient::ExternalEvmStateApiClient(StateAPI& state_api, std::mutex& state_api_mutex)
     : state_api_(state_api), state_api_mutex_(state_api_mutex) {}
-
+void FinalChain::ExternalEvmStateApiClient::ensureReadableLocked() const {
+  if (state_api_.get_pending_concrete_execution()) {
+    throw DbException("FINAL_CHAIN_CONCRETE_STATE_STAGED");
+  }
+}
 rustaxa::HostFinalChainPreflightReport FinalChain::ExternalEvmStateApiClient::loadCommittedState(
     const rustaxa::HostFinalChainPreflightRequest& request) const {
   rustaxa::HostFinalChainPreflightReport report{};
   report.request_id = request.request_id;
   try {
     std::lock_guard lock(state_api_mutex_);
+    report.concrete_provenance_rlp = into_rust_vec(state_api_.activate_concrete_root_policy(
+        h256(request.concrete_chain_identity.data(), h256::ConstructFromPointer)));
+    if (const auto pending = state_api_.get_pending_concrete_execution()) {
+      report.pending_concrete_marker_rlp = into_rust_vec(*pending);
+    }
     const auto descriptor = state_api_.get_last_committed_state_descriptor();
     report.committed_period = descriptor.blk_num;
     report.committed_state_root = into_bytes_array(descriptor.state_root);
@@ -254,7 +239,6 @@ rustaxa::HostFinalChainPreflightReport FinalChain::ExternalEvmStateApiClient::lo
   }
   return report;
 }
-
 rustaxa::HostFinalChainSystemFactsReport FinalChain::ExternalEvmStateApiClient::loadSystemTransactionFacts(
     const rustaxa::HostFinalChainSystemFactsRequest& request) {
   rustaxa::HostFinalChainSystemFactsReport report{};
@@ -262,6 +246,7 @@ rustaxa::HostFinalChainSystemFactsReport FinalChain::ExternalEvmStateApiClient::
   report.period = request.period;
   const auto bridge_contract_address = into_address(request.bridge_contract_address);
   std::lock_guard lock(state_api_mutex_);
+  ensureReadableLocked();
   const auto descriptor = state_api_.get_last_committed_state_descriptor();
   const auto bridge_contract = state_api_.get_account(descriptor.blk_num, bridge_contract_address);
   report.bridge_contract_found = bridge_contract.has_value();
@@ -285,7 +270,6 @@ rustaxa::HostFinalChainSystemFactsReport FinalChain::ExternalEvmStateApiClient::
   report.succeeded = true;
   return report;
 }
-
 rustaxa::HostFinalChainExecutionReport FinalChain::ExternalEvmStateApiClient::executeTransactions(
     const rustaxa::HostFinalChainExecutionRequest& request) {
   std::vector<state_api::EVMTransaction> transactions;
@@ -298,27 +282,27 @@ rustaxa::HostFinalChainExecutionReport FinalChain::ExternalEvmStateApiClient::ex
         transaction.gas_limit, into_bytes(transaction.data)});
   }
   std::vector<state_api::ExecutionResult> execution_results;
+  h256 post_transaction_state_root;
   {
     std::lock_guard lock(state_api_mutex_);
-    execution_results = state_api_
-                            .execute_transactions({into_address(request.block_author), request.block_gas_limit,
-                                                   request.timestamp, BlockHeader::difficulty()},
-                                                  transactions)
-                            .execution_results;
+    ensureReadableLocked();
+    state_api_.stage_concrete_execution(into_bytes(request.concrete_marker_rlp));
+    const auto& execution = state_api_.execute_transactions(
+        {into_address(request.block_author), request.block_gas_limit, request.timestamp, BlockHeader::difficulty()},
+        transactions);
+    execution_results = execution.execution_results;
+    post_transaction_state_root = state_api_.post_transaction_state_root();
   }
   if (execution_results.size() != request.transactions.size()) {
     throw DbException("FINAL_CHAIN_EXECUTION_RESULT_COUNT_MISMATCH");
   }
   rustaxa::HostFinalChainExecutionReport report{};
-  report.request_id = request.request_id;
-  report.status = kFinalChainEvmReportStatusSuccess;
+  report.post_transaction_state_root = into_bytes_array(post_transaction_state_root);
   gas_t cumulative_gas_used = 0;
   report.results.reserve(execution_results.size());
   for (size_t index = 0; index < execution_results.size(); ++index) {
     const auto& execution = execution_results[index];
     rustaxa::HostFinalChainTransactionResult result{};
-    result.position = request.transactions[index].position;
-    result.hash = request.transactions[index].hash;
     result.status = static_cast<uint8_t>(execution.code_err.empty() && execution.consensus_err.empty());
     result.gas_used = execution.gas_used;
     result.cumulative_gas_used = cumulative_gas_used += execution.gas_used;
@@ -341,6 +325,7 @@ rustaxa::HostFinalChainExecutionReport FinalChain::ExternalEvmStateApiClient::ex
         result.status, execution.gas_used, result.cumulative_gas_used, std::move(receipt_logs), new_contract}));
     result.new_contract_address_found = new_contract.has_value();
     result.new_contract_address = new_contract ? into_address_array(*new_contract) : std::array<uint8_t, 20>{};
+    result.output = into_rust_vec(execution.code_retval);
     result.code_error = rust::String(execution.code_err);
     result.consensus_error = rust::String(execution.consensus_err);
     report.results.push_back(std::move(result));
@@ -348,12 +333,9 @@ rustaxa::HostFinalChainExecutionReport FinalChain::ExternalEvmStateApiClient::ex
   report.cumulative_gas_used = cumulative_gas_used;
   return report;
 }
-
 rustaxa::HostFinalChainRewardsReport FinalChain::ExternalEvmStateApiClient::distributeRewards(
     const rustaxa::HostFinalChainRewardsRequest& request) {
   rustaxa::HostFinalChainRewardsReport report{};
-  report.request_id = request.request_id;
-  report.period = request.period;
   std::vector<rewards::BlockStats> rewards_stats;
   rewards_stats.reserve(request.distribution_stats.size());
   for (const auto& encoded_stats : request.distribution_stats) {
@@ -361,27 +343,36 @@ rustaxa::HostFinalChainRewardsReport FinalChain::ExternalEvmStateApiClient::dist
     rewards_stats.push_back(util::rlp_dec<rewards::BlockStats>(dev::RLP(bytes)));
   }
   std::lock_guard lock(state_api_mutex_);
+  const auto pending_marker = state_api_.get_pending_concrete_execution();
+  if (!pending_marker || *pending_marker != into_bytes(request.concrete_marker_rlp)) {
+    throw DbException("FINAL_CHAIN_CONCRETE_REWARDS_MARKER_MISMATCH");
+  }
   const auto& result = state_api_.distribute_rewards(rewards_stats);
-  report.status = kFinalChainEvmRewardsReportStatusSuccess;
-  report.state_root = into_bytes_array(result.state_root);
+  report.post_rewards_state_root = into_bytes_array(result.state_root);
   report.total_reward = into_big_endian_vec(result.total_reward);
+  const auto projection = state_api_.get_concrete_state_projection();
+  report.concrete_projection_rlp = into_rust_vec(projection);
+  report.concrete_projection_hash = into_bytes_array(dev::sha3(projection));
   return report;
 }
-
 rustaxa::HostFinalChainStateCommitReport FinalChain::ExternalEvmStateApiClient::commitState(
     const rustaxa::HostFinalChainStateCommitRequest& request) {
   rustaxa::HostFinalChainStateCommitReport report{};
   report.status = kFinalChainEvmLifecycleStatusCommitted;
   try {
     std::lock_guard lock(state_api_mutex_);
-    state_api_.transition_state_commit();
+    const auto pending_marker = state_api_.get_pending_concrete_execution();
+    if (!pending_marker || *pending_marker != into_bytes(request.concrete_marker_rlp) ||
+        state_api_.get_concrete_state_projection() != into_bytes(request.concrete_projection_rlp)) {
+      throw DbException("FINAL_CHAIN_CONCRETE_COMMIT_IDENTITY_MISMATCH");
+    }
+    state_api_.concrete_commit(h256(request.concrete_projection_hash.data(), h256::ConstructFromPointer),
+                               into_bytes(request.concrete_provenance_rlp));
     const auto descriptor = state_api_.get_last_committed_state_descriptor();
     report.committed_period = descriptor.blk_num;
     report.committed_state_root = into_bytes_array(descriptor.state_root);
-    if (report.committed_period != request.period || report.committed_state_root != request.expected_state_root) {
-      report.status = kFinalChainEvmLifecycleStatusRejected;
-      report.error_code = rust::String("FINAL_CHAIN_STATE_DB_COMMITTED_DESCRIPTOR_MISMATCH");
-    }
+    report.committed_state_found = true;
+    report.concrete_provenance_rlp = into_rust_vec(state_api_.get_concrete_state_provenance());
   } catch (const std::exception& error) {
     report.status = kFinalChainEvmLifecycleStatusRejected;
     report.error_code = rust::String(std::string("STATE_API_COMMIT_FAILED: ") + error.what());
@@ -389,78 +380,95 @@ rustaxa::HostFinalChainStateCommitReport FinalChain::ExternalEvmStateApiClient::
   return report;
 }
 
+rustaxa::HostFinalChainPreflightReport FinalChain::ExternalEvmStateApiClient::discardState(
+    const rustaxa::CanonicalBytes& concrete_marker) {
+  rustaxa::HostFinalChainPreflightReport report{};
+  try {
+    std::lock_guard lock(state_api_mutex_);
+    state_api_.discard_concrete_execution(into_bytes(concrete_marker.data));
+    const auto descriptor = state_api_.get_last_committed_state_descriptor();
+    report.committed_period = descriptor.blk_num;
+    report.committed_state_root = into_bytes_array(descriptor.state_root);
+    report.concrete_provenance_rlp = into_rust_vec(state_api_.get_concrete_state_provenance());
+    if (const auto pending = state_api_.get_pending_concrete_execution()) {
+      report.pending_concrete_marker_rlp = into_rust_vec(*pending);
+    }
+    report.succeeded = report.pending_concrete_marker_rlp.empty();
+    if (!report.succeeded) report.error_code = rust::String("FINAL_CHAIN_CONCRETE_DISCARD_REOPEN_MISMATCH");
+  } catch (const std::exception& error) {
+    report.error_code = rust::String(std::string("FINAL_CHAIN_CONCRETE_DISCARD_FAILED: ") + error.what());
+  }
+  return report;
+}
 state_api::StateDescriptor FinalChain::ExternalEvmStateApiClient::lastCommittedStateDescriptor() const {
   std::lock_guard lock(state_api_mutex_);
+  ensureReadableLocked();
   return state_api_.get_last_committed_state_descriptor();
 }
-
 std::optional<state_api::Account> FinalChain::ExternalEvmStateApiClient::account(EthBlockNumber block_number,
                                                                                  const addr_t& address) const {
   try {
     std::lock_guard lock(state_api_mutex_);
+    ensureReadableLocked();
     return state_api_.get_account(block_number, address);
   } catch (const state_api::ErrFutureBlock&) {
     return std::nullopt;
   }
 }
-
 h256 FinalChain::ExternalEvmStateApiClient::accountStorageOrZero(EthBlockNumber block_number, const addr_t& address,
                                                                  const u256& key) const {
   try {
     std::lock_guard lock(state_api_mutex_);
+    ensureReadableLocked();
     return state_api_.get_account_storage(block_number, address, key);
   } catch (const state_api::ErrFutureBlock&) {
     return ZeroHash();
   }
 }
-
 bytes FinalChain::ExternalEvmStateApiClient::codeOrEmpty(EthBlockNumber block_number, const addr_t& address) const {
   try {
     std::lock_guard lock(state_api_mutex_);
+    ensureReadableLocked();
     return state_api_.get_code_by_address(block_number, address);
   } catch (const state_api::ErrFutureBlock&) {
     return {};
   }
 }
-
 state_api::ExecutionResult FinalChain::ExternalEvmStateApiClient::dryRunTransaction(
-    const BlockHeader& block_header, const state_api::EVMTransaction& transaction, bool lock_client) const {
-  std::unique_lock lock(state_api_mutex_, std::defer_lock);
-  if (lock_client) {
-    lock.lock();
-  }
+    const BlockHeader& block_header, const state_api::EVMTransaction& transaction) const {
+  std::lock_guard lock(state_api_mutex_);
+  ensureReadableLocked();
   return state_api_.dry_run_transaction(
       block_header.number,
       {block_header.author, block_header.gas_limit, block_header.timestamp, BlockHeader::difficulty()}, transaction);
 }
-
 bytes FinalChain::ExternalEvmStateApiClient::traceTransactions(const BlockHeader& block_header,
                                                                const std::vector<state_api::EVMTransaction>& state_trxs,
                                                                const std::vector<state_api::EVMTransaction>& trxs,
                                                                std::optional<state_api::Tracing> params) const {
   std::lock_guard lock(state_api_mutex_);
+  ensureReadableLocked();
   return state_api_.trace(
       block_header.number,
       {block_header.author, block_header.gas_limit, block_header.timestamp, BlockHeader::difficulty()}, state_trxs,
       trxs, params);
 }
-
 bool FinalChain::ExternalEvmStateApiClient::accountHasCode(EthBlockNumber block_number, const addr_t& address) const {
   std::lock_guard lock(state_api_mutex_);
+  ensureReadableLocked();
   const auto account = state_api_.get_account(block_number, address);
   return account && account->code_size;
 }
-
 void FinalChain::recoverExternalEvmPendingPublication() {
-  const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
-  auto recovery_report = consensus_application_->service().recover_external_evm_pending_publication(
-      state_descriptor.blk_num, into_bytes_array(state_descriptor.state_root));
-  if (recovery_report.status == kFinalChainEvmPublicationStatusRejected) {
-    throw DbException("FinalChain startup rejected Rust external EVM publication recovery: " +
+  ExternalEvmPort external_evm(*this);
+  const auto recovery_report =
+      rustaxa::consensus_application_recover_final_chain(consensus_application_->service(), external_evm);
+  if (recovery_report.status != kFinalChainEvmPublicationStatusApplied &&
+      recovery_report.status != kFinalChainEvmPublicationStatusAlreadyApplied) {
+    throw DbException("FinalChain startup rejected native external EVM publication recovery: " +
                       std::string(recovery_report.error_code));
   }
 }
-
 std::shared_ptr<const BlockHeader> FinalChain::blockHeader(std::optional<EthBlockNumber> n) const {
   auto const block_number = n.value_or(lastBlockNumber());
   const auto view = (*consensus_application_->queryClient())->consensus_query_final_chain_block_by_number(block_number);
@@ -470,11 +478,9 @@ std::shared_ptr<const BlockHeader> FinalChain::blockHeader(std::optional<EthBloc
   const auto header_rlp = dev::bytes(view.header_rlp.begin(), view.header_rlp.end());
   return BlockHeader::fromRLP(dev::RLP(header_rlp));
 }
-
 EthBlockNumber FinalChain::lastBlockNumber() const {
   return (*consensus_application_->queryClient())->consensus_query_final_chain_last_block_number();
 }
-
 std::optional<h256> FinalChain::blockHash(std::optional<EthBlockNumber> n) const {
   auto const block_number = n.value_or(lastBlockNumber());
   const auto view = (*consensus_application_->queryClient())->consensus_query_final_chain_block_by_number(block_number);
@@ -483,7 +489,6 @@ std::optional<h256> FinalChain::blockHash(std::optional<EthBlockNumber> n) const
   }
   return h256(view.hash.data(), h256::ConstructFromPointer);
 }
-
 std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
                                                          std::optional<EthBlockNumber> blk_n) const {
   const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
@@ -491,7 +496,6 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
   if (requested_block <= state_descriptor.blk_num) {
     return external_evm_state_api_.account(requested_block, addr);
   }
-
   rustaxa::AccountLookup rust_account;
   try {
     rust_account = consensus_application_->service().get_account_at_block(requested_block, into_address_array(addr));
@@ -507,7 +511,6 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
   if (!rust_account.found) {
     return std::nullopt;
   }
-
   state_api::Account account;
   account.nonce = nonce_from_canonical_vec(rust_account.nonce);
   account.balance = dev::fromBigEndian<u256>(dev::bytes(rust_account.balance.begin(), rust_account.balance.end()));
@@ -517,7 +520,6 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
   account.code_size = rust_account.code_size;
   return account;
 }
-
 h256 FinalChain::getAccountStorage(addr_t const& addr, u256 const& key, std::optional<EthBlockNumber> blk_n) const {
   const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
   const auto requested_block = blk_n.value_or(state_descriptor.blk_num);
@@ -526,7 +528,6 @@ h256 FinalChain::getAccountStorage(addr_t const& addr, u256 const& key, std::opt
   }
   return ZeroHash();
 }
-
 bytes FinalChain::getCode(addr_t const& addr, std::optional<EthBlockNumber> blk_n) const {
   const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
   const auto requested_block = blk_n.value_or(state_descriptor.blk_num);
@@ -535,7 +536,6 @@ bytes FinalChain::getCode(addr_t const& addr, std::optional<EthBlockNumber> blk_
   }
   return {};
 }
-
 state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx,
                                             std::optional<EthBlockNumber> blk_n) const {
   const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
@@ -556,7 +556,6 @@ state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx
     request.gas_limit = trx.gas;
     request.input = into_rust_vec(trx.input);
     auto outcome = consensus_application_->service().call(std::move(request));
-
     state_api::ExecutionResult result;
     result.code_retval = into_bytes(outcome.code_retval);
     result.logs.reserve(outcome.logs.size());
@@ -575,12 +574,10 @@ state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx
     result.consensus_err = std::string(outcome.consensus_err);
     return result;
   };
-
   const auto dpos_contract_address = addr_t("0x00000000000000000000000000000000000000FE");
   if (trx.to && *trx.to == dpos_contract_address) {
     return call_rust_final_chain();
   }
-
   if (requested_block <= state_descriptor.blk_num || state_descriptor.blk_num < lastBlockNumber()) {
     const auto evm_block = std::min(requested_block, state_descriptor.blk_num);
     const auto blk_header = blockHeader(evm_block);
@@ -588,17 +585,15 @@ state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx
       throw std::runtime_error("Future block");
     }
     try {
-      return external_evm_state_api_.dryRunTransaction(*blk_header, trx, !blk_n.has_value());
+      return external_evm_state_api_.dryRunTransaction(*blk_header, trx);
     } catch (const state_api::ErrFutureBlock& e) {
       state_api::ExecutionResult result;
       result.consensus_err = e.what();
       return result;
     }
   }
-
   return call_rust_final_chain();
 }
-
 std::string FinalChain::trace(std::vector<state_api::EVMTransaction> state_trxs,
                               std::vector<state_api::EVMTransaction> trxs, EthBlockNumber blk_n,
                               std::optional<state_api::Tracing> params) const {
@@ -612,17 +607,14 @@ std::string FinalChain::trace(std::vector<state_api::EVMTransaction> state_trxs,
   }
   throw_unimplemented_final_chain_api("trace");
 }
-
 h256 FinalChain::getBridgeRoot(EthBlockNumber blk_num) const {
   const static auto get_bridge_root_method = util::EncodingSolidity::packFunctionCall("getBridgeRoot()");
   return readBridgeContractHash(blk_num, get_bridge_root_method, "getBridgeRoot");
 }
-
 h256 FinalChain::getBridgeEpoch(EthBlockNumber blk_num) const {
   const static auto get_bridge_epoch_method = util::EncodingSolidity::packFunctionCall("finalizedEpoch()");
   return readBridgeContractHash(blk_num, get_bridge_epoch_method, "getBridgeEpoch");
 }
-
 h256 FinalChain::readBridgeContractHash(EthBlockNumber block_number, const bytes& method, const char* api_name) const {
   const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
   const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
@@ -638,14 +630,11 @@ h256 FinalChain::readBridgeContractHash(EthBlockNumber block_number, const bytes
                       std::to_string(evm_block));
   }
   const auto result = external_evm_state_api_.dryRunTransaction(
-      *block_header,
-      state_api::EVMTransaction{dev::ZeroAddress, 1, bridge_contract_address, state_api::ZeroAccount.nonce, 0, 10000000,
-                                method},
-      true);
+      *block_header, state_api::EVMTransaction{dev::ZeroAddress, 1, bridge_contract_address,
+                                               state_api::ZeroAccount.nonce, 0, 10000000, method});
   if (result.code_retval.empty()) {
     return ZeroHash();
   }
   return into_h256(result.code_retval, api_name);
 }
-
 }  // namespace taraxa::final_chain

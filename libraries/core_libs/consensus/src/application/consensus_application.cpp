@@ -12,6 +12,7 @@
 #include "config/config.hpp"
 #include "config/version.hpp"
 #include "final_chain/final_chain.hpp"
+#include "final_chain/state_api.hpp"
 
 namespace taraxa {
 namespace {
@@ -65,6 +66,14 @@ rustaxa::GasPricerConfig gasPricerConfigFromNodeConfig(const FullNodeConfig& con
 }  // namespace
 
 SharedConsensusApplication createConsensusApplication(const FullNodeConfig& config) {
+  std::error_code directory_error;
+  fs::create_directories(config.db_path, directory_error);
+  if (directory_error) {
+    throw std::runtime_error("FINAL_CHAIN_STATE_DB_PARENT_CREATE_FAILED: " + directory_error.message());
+  }
+  StateAPI state_api_descriptor_reader([](EthBlockNumber) { return ZeroHash(); }, config.genesis.state,
+                                       config.opts_final_chain, {(config.db_path / "state_db").string()});
+  const auto state_api_descriptor = state_api_descriptor_reader.get_last_committed_state_descriptor();
   rustaxa::PbftServiceConfig pbft_config{};
   pbft_config.genesis_lambda_ms = config.genesis.pbft.lambda_ms;
   pbft_config.cacti_lambda_max_ms = config.genesis.state.hardforks.cacti_hf.lambda_max;
@@ -126,7 +135,8 @@ SharedConsensusApplication createConsensusApplication(const FullNodeConfig& conf
       sortitionRuntimeConfigFromNodeConfig(config), rustaxa::TransactionQueueConfig{config.transactions_pool_size},
       gasPricerConfigFromNodeConfig(config), config.propose_dag_gas_limit, std::move(pbft_config),
       std::move(signing_identities), std::move(dag_proposer_config), config.genesis.pbft.gas_limit,
-      config.genesis.dag_genesis_block.getTimestamp(),
+      config.genesis.dag_genesis_block.getTimestamp(), state_api_descriptor.blk_num,
+      state_api_descriptor.state_root.asArray(),
       config.genesis.state.hardforks.ficus_hf.bridge_contract_address.asArray(),
       final_chain::makeGenesisAccounts(config.genesis.state), final_chain::makeGenesisValidators(config.genesis.state),
       final_chain::makeGenesisDposConfig(config.genesis.state.dpos,

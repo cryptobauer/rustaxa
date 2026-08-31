@@ -971,9 +971,8 @@ pub struct FinalChainRewardsConfig {
     pub fix_redelegate_block_num: FinalChainBlockNumber,
     /// First period where Aspen part-two dynamic-yield rewards are active.
     ///
-    /// Rust native finalization currently distributes fixed-yield rewards only.
-    /// A zero value keeps the part-two path disabled for rewrite tests and
-    /// local configurations that do not provide the hardfork boundary.
+    /// Period zero activates the rule at genesis. `u64::MAX` disables it for
+    /// rewrite tests and local configurations without a hardfork boundary.
     pub aspen_part_two_period: FinalChainBlockNumber,
     /// Ordered redelegation stake corrections applied when
     /// `fix_redelegate_block_num` is reached.
@@ -1008,6 +1007,7 @@ pub struct FinalChainRewardsConfig {
     /// the genesis balance sum and the pre-migration minted-token counter.
     pub aspen_generated_rewards: DposTokenAmount,
     /// First period where Cacti reward stats provide dynamic blocks-per-year.
+    /// Period zero activates the rule at genesis; `u64::MAX` disables it.
     pub cacti_period: FinalChainBlockNumber,
     /// DPoS undelegation locking period after Cacti.
     pub cacti_delegation_locking_period: u64,
@@ -1028,7 +1028,7 @@ impl Default for FinalChainRewardsConfig {
             aspen_part_one_period: FinalChainBlockNumber::GENESIS,
             fix_claim_all_block_num: FinalChainBlockNumber::MAX,
             fix_redelegate_block_num: FinalChainBlockNumber::MAX,
-            aspen_part_two_period: FinalChainBlockNumber::GENESIS,
+            aspen_part_two_period: FinalChainBlockNumber::MAX,
             max_block_author_reward_percent: 0,
             dag_proposers_reward_percent: 0,
             yield_percentage: 0,
@@ -1039,7 +1039,7 @@ impl Default for FinalChainRewardsConfig {
             genesis_balance_sum: None,
             aspen_max_supply: DposTokenAmount::zero(),
             aspen_generated_rewards: DposTokenAmount::zero(),
-            cacti_period: FinalChainBlockNumber::GENESIS,
+            cacti_period: FinalChainBlockNumber::MAX,
             cacti_delegation_locking_period: 0,
             magnolia_jail_time: 0,
             cacti_jail_time: 0,

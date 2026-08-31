@@ -295,7 +295,8 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-17` | `active` | Reduce storage and FinalChain bridge surfaces per migrated subsystem to native application bootstrap ownership, public query/admin clients, storage conformance, and a narrow external-EVM executor contract. | The selected subsystem owner from `CRW-12`; coordinate concrete execution leaves with `CRW-E01` | Broad storage/query-family handles and consensus use of `BridgeFinalChain` are deleted; retained query, admin, conformance, and EVM surfaces are client-specific and minimal. |
 | `CRW-18` | `blocked` | Final bridge/shim reduction closeout and documentation deletion. | `CRW-11` through `CRW-17`; `CRW-N01`/`CRW-E01` only where explicitly activated | Required validation passes; budgets demonstrate the intended contraction; no unclassified or unnamed compatibility surface remains; this reduction plan is deleted and only stable strategy, live inventory, and remaining tracker items survive. |
 
-`CRW-17` is the only active part of the coordinated vertical campaign; completed `CRW-12`, `CRW-14`, `CRW-15`, and
+`CRW-17` and explicitly activated `CRW-E02` are the active parts of the coordinated vertical campaign; completed
+`CRW-12`, `CRW-14`, `CRW-15`, and
 `CRW-16` record the native ownership, materialization, facade, and manager-shim deletion results rather than a new
 global waterfall.
 Once one subsystem has its native owner, a single checkpoint may complete its ownership move, facade deletion,
@@ -3379,7 +3380,7 @@ EVM/`state_db` execution remain leaf C++ boundaries.
 | --- | --- | --- | --- | --- |
 | `CRW-N01` | `complete` | Implement application-owned network ingress/egress pipelines, finish PBFT gossip effect-drain integration, fix deferred vote duplicate-with-block delivery, and migrate consensus routing/queueing decisions out of tarcap handlers. | Aggressive network consensus cutover was authorized in `PLAN.md` and coordinated with `CRW-12`/`CRW-16`. | Rust owns packet inspection, admission/routing, consensus queues, peer/gossip/send decisions, typed effects, and result validation; C++ tarcap owns only socket/peer mechanics, packet sealing, physical transport/disconnect execution, known-cache mutation, and lane scheduling. |
 | `CRW-E01` | `complete` | Contract the external EVM/StateAPI boundary: move execution orchestration, canonical rewards payloads, result/receipt validation, commit ordering, recovery, and publication into Rust while retaining concrete EVM and `state_db` operations as leaf C++ calls. | Aggressive execution-orchestration cutover is authorized in `PLAN.md`; coordinate with `CRW-17`. Moving concrete EVM execution itself remains out of scope. | Native application/FinalChain tasks own orchestration and publication; StateAPI receives exact typed committed-state preflight, system-fact, ordered-execution, rewards, and state-commit leaves; no C++ execution/session handle or action loop remains. |
-| `CRW-E02` | `blocked` | Define and implement concrete-EVM state catch-up/import across native-only FinalChain periods. | Select a deterministic replay, state import, or unified-executor strategy and its parity oracle before expanding the concrete state boundary. | A concrete-EVM period can safely follow any native-only period with the exact prior state available; restart and mixed-lane parity prove no state fork. |
+| `CRW-E02` | `active` | Define and implement concrete-EVM state catch-up/import across native-only FinalChain periods. | Authorized: use eager concrete StateAPI execution for every Rust-mode period, make the committed post-rewards root canonical, and reject synthetic-root databases with an explicit rebuild/resync requirement. | A concrete-EVM period can safely follow any Rust-supported period with the exact prior state available; restart, rebuild/resync, and mixed-lane parity prove no state fork. |
 
 `CRW-E01` is complete. `ConsensusApplication` drives a private FinalChain execution coordinator for live, startup, and
 fixture finalization. Rust validates canonical PBFT/DAG/transaction inputs, plans bridge system transactions and
@@ -3392,20 +3393,55 @@ application-root task and query APIs. Public indexed transaction/count/receipt q
 transactions after regular period-data order. Exact checked-next validation runs before PeriodData persistence and is
 repeated at the coordinator boundary before any concrete leaf. Session/action types and transitions are private rather
 than re-exported as an alternate API. `final_chain_shim` remains only for stable public-state/tracing methods
-and exact concrete EVM, rewards, and
-`state_db` calls; the native-only DPoS/slashing lane remains native rather than being rerouted through legacy EVM.
-Until `CRW-E02` defines deterministic catch-up/import, a later external-EVM period fails before concrete mutation when
-StateAPI's committed period or post-genesis root does not match the native FinalChain head.
+and exact concrete EVM, rewards, and `state_db` calls. The authorized `CRW-E02` checkpoint replaces split
+native/external state-root history with eager StateAPI execution for every finalized period. The concrete post-rewards
+descriptor supplies the header root; Rust validates ordered receipts/gas/logs/blooms/roots, independently replays
+Rust-supported transfers and the complete nested DPoS/slashing transcript against per-transaction concrete effects,
+requires StateAPI's minted-reward total to equal its native plan, validates the final DPoS contract balance after minted
+and fee rewards, persists synchronized account/DPoS snapshots, and owns commit approval, crash recovery, and publication.
+The version-one concrete execution/provenance contract and version-three pending-publication marker correlate exact
+chain/config identity, generation, plan, period, prior root, payload digests, and prior, post-transaction, post-rewards,
+and committed descriptors. Staged rewards are idempotent for the exact request and reject conflicting retries; their
+projection catalogs the reward-only minted-supply/yield DPoS rows. Concrete validation treats an absent trie row and
+the canonical zero value as equivalent, while preserving tombstones and rejecting every other value mismatch. Period
+zero means genesis activation for Aspen part two and Cacti; `u64::MAX` is the explicit disabled sentinel. A configured
+zero yield disables both fixed and Aspen dynamic reward planning, matching StateAPI.
+Concrete-root policy version one rejects markerless or synthetic history with
+`FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED`; the supported rebuild path preserves the old database pair under a
+timestamped backup and starts clean full resync. `CRW-E02` stays active until mixed-lane, restart-boundary,
+rebuild/resync, Python/full-node, and multi-node agreement gates are demonstrated. `CRW-17` remains
+active and `CRW-18` remains blocked.
 
-Closeout validation passed `make rewrite-validate-fast`, `make rewrite-validate-consensus`,
-`make rewrite-validate-final-chain` (including startup smoke), Tier 3
-`make rewrite-validate-final-chain-parity`, `make rewrite-validate-storage`, and Tier 3
-`make rewrite-validate-storage-conformance`. The explicit Rust-enabled `taraxad`, `final_chain_test`, and
-`rust_storage_tests` builds passed; `final_chain_test` passed all 59 cases and `rust_storage_tests` passed all four.
-The bridge inventory guard and its self-test passed at 5,547/1,042/96/144/10/1 with zero granular flags, partial
-factories, or compatibility constructor calls. The repo-wide `check-static` target remains non-green on its existing
-cppcheck baseline; every finding in a changed file is unchanged from the pre-slice commit, and no new correctness
-finding was introduced by this cut.
+This enabling checkpoint lowers the checked surface from 5,196 to 5,139 bridge lines, from 831 to 811 shim lines, and
+from 139 to 138 carriers; CXX functions remain 85. Opaque handles, shim directories, granular flags, partial factories,
+compatibility constructors, and non-test C++ consumers remain 10/1/0/0/0/17. Startup recovery is one native
+application-root operation over the borrowed concrete-EVM port; C++ owns no recovery action loop or duplicate staged
+state. StateAPI reports contain only independently observed physical facts, while Rust retains request identity and
+validates the canonical marker/projection/provenance. No StateAPI handle, range session, service locator, or C++
+publication authority was introduced.
+
+Closeout evidence includes the fast, consensus (1,334 native tests), FinalChain, storage, Rust-enabled startup-smoke,
+storage-conformance differential, and FinalChain differential/pure-C++ parity gates. Focused StateAPI coverage proves
+two same-sender transactions produce ordered distinct intermediate roots before rewards, the final projection carries
+the second root and post-rewards root, exact rewards retries are idempotent, exact discard reopens the prior descriptor,
+and a missing account cannot enter the concrete projection. Focused pruning coverage proves staged execution rejects
+pruning under the shared StateAPI lock, preserves its marker, discards exactly, and succeeds on retry. The configured
+StateAPI restart test proves fresh genesis writes seed a nonempty monotonic storage catalog and preserve its exact hash
+across reopen. Concrete projection/provenance pair validation also binds the committed descriptor to the expected
+post-rewards period and root. The configured
+CTest tree passes 9/10 targets; its aggregate `go_test` target remains blocked
+by the container's pre-existing static-link environment (`-lz` and `-lsnappy`, plus libc/cgo symbols). The Python/full-
+node runner cannot bootstrap because system Python is PEP-668 managed and `python3.13-venv`/`ensurepip` is absent.
+`check-static` reaches the repository's existing cppcheck baseline, including legacy moved-vote and style findings.
+`CRW-E02` remains active because a live backup-to-full-resync rebuild, Python/full-node coverage, and multi-node
+root/hash agreement have not yet been demonstrated. `CRW-17` remains active and `CRW-18` remains
+blocked.
+
+This checkpoint deliberately touches the upstream-owned StateAPI declaration/implementation to add the exact staged
+marker, projection, commit, discard, and descriptor reports required by the existing concrete EVM lifetime boundary;
+the Rust-only methods are guarded by `RUSTAXA_ENABLE`. The guarded `App` startup change implements the authorized
+timestamped-backup/full-resync rebuild policy. No bridge include or Rust-only behavior is added to the pure-C++ path;
+the pure-C++ FinalChain parity build and native DPoS suite remain the source-selected reference proof.
 
 Current `CRW-N01` progress includes the complete DAG/transaction/proposer caller family. Transaction, DAG-block,
 DAG-sync, and get-DAG-sync packet handlers submit canonical payloads to the application-owned network API, and periodic

@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <exception>
 #include <future>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -707,34 +708,22 @@ rustaxa::HostFinalChainPreflightReport ExternalEvmPort::consensusLoadFinalChainC
 
 rustaxa::HostFinalChainExecutionReport ExternalEvmPort::consensusExecuteFinalChainTransactions(
     const rustaxa::HostFinalChainExecutionRequest& request) const {
-  try {
-    return impl_->final_chain->external_evm_state_api_.executeTransactions(request);
-  } catch (const std::exception& error) {
-    rustaxa::HostFinalChainExecutionReport report{};
-    report.request_id = request.request_id;
-    report.status = 1;
-    report.error_code = rust::String(std::string("FINAL_CHAIN_EXECUTION_FAILED: ") + error.what());
-    return report;
-  }
+  return impl_->final_chain->external_evm_state_api_.executeTransactions(request);
 }
 
 rustaxa::HostFinalChainRewardsReport ExternalEvmPort::consensusDistributeFinalChainRewards(
     const rustaxa::HostFinalChainRewardsRequest& request) const {
-  try {
-    return impl_->final_chain->external_evm_state_api_.distributeRewards(request);
-  } catch (const std::exception& error) {
-    rustaxa::HostFinalChainRewardsReport report{};
-    report.request_id = request.request_id;
-    report.period = request.period;
-    report.status = 1;
-    report.error_code = rust::String(std::string("FINAL_CHAIN_REWARDS_FAILED: ") + error.what());
-    return report;
-  }
+  return impl_->final_chain->external_evm_state_api_.distributeRewards(request);
 }
 
 rustaxa::HostFinalChainStateCommitReport ExternalEvmPort::consensusCommitFinalChainState(
     const rustaxa::HostFinalChainStateCommitRequest& request) const {
   return impl_->final_chain->external_evm_state_api_.commitState(request);
+}
+
+rustaxa::HostFinalChainPreflightReport ExternalEvmPort::consensusDiscardFinalChainState(
+    const rustaxa::CanonicalBytes& concrete_marker) const {
+  return impl_->final_chain->external_evm_state_api_.discardState(concrete_marker);
 }
 
 class ConsensusProcess::Impl final {

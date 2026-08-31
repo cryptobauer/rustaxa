@@ -73,23 +73,6 @@ pub(crate) fn final_chain_call_outcome_to_ffi(
     }
 }
 
-fn external_evm_publication_report_to_ffi(
-    report: rustaxa_consensus::FinalChainExternalEvmPublicationReport,
-) -> rustaxa_ffi::FinalChainExternalEvmPublicationReport {
-    rustaxa_ffi::FinalChainExternalEvmPublicationReport {
-        request_id: report.request_id,
-        plan_id: report.plan_id,
-        period: report.period.as_u64(),
-        block_hash: report.block_hash,
-        executed_dag_block_count: report.executed_dag_block_count,
-        executed_transaction_count: report.executed_transaction_count,
-        dpos_snapshot_status: report.dpos_snapshot_status,
-        account_snapshot_status: report.account_snapshot_status,
-        status: report.status,
-        error_code: report.error_code,
-    }
-}
-
 pub(crate) fn genesis_dpos_config_from_ffi(
     config: rustaxa_ffi::GenesisDposConfig,
 ) -> Result<rustaxa_consensus::GenesisDposConfig, anyhow::Error> {
@@ -153,6 +136,8 @@ pub(crate) fn redelegation_corrections_from_ffi(
 pub(crate) fn consensus_final_chain_config_from_ffi(
     block_gas_limit: u64,
     genesis_timestamp: u64,
+    state_api_committed_period: u64,
+    state_api_committed_root: [u8; 32],
     bridge_contract_address: [u8; 20],
     genesis_accounts: Vec<rustaxa_ffi::GenesisAccount>,
     genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
@@ -167,6 +152,8 @@ pub(crate) fn consensus_final_chain_config_from_ffi(
     Ok(ConsensusFinalChainConfig {
         block_gas_limit: block_gas_limit.into(),
         genesis_timestamp,
+        state_api_committed_period,
+        state_api_committed_root: state_api_committed_root.into(),
         bridge_contract_address,
         genesis_accounts,
         genesis_validators,
@@ -252,8 +239,7 @@ pub(crate) fn genesis_validators_from_ffi(
 }
 
 impl BridgeApp {
-    /// Prunes native FinalChain lookup indexes below the retained block number.
-    /// This exact storage leaf exposes neither a batch nor a repository handle.
+    /// Prunes native FinalChain lookup indexes without exposing a batch or repository handle.
     pub fn prune_final_chain_before(
         self: &BridgeApp,
         first_to_keep: u64,
@@ -261,20 +247,6 @@ impl BridgeApp {
         self.0
             .final_chain_for_bridge()
             .prune_block_indexes_before(first_to_keep)
-    }
-
-    pub fn recover_external_evm_pending_publication(
-        self: &BridgeApp,
-        committed_period: u64,
-        committed_state_root: &[u8; 32],
-    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
-        let final_chain = self.0.final_chain_for_bridge();
-        Ok(external_evm_publication_report_to_ffi(
-            final_chain.recover_external_evm_pending_publication(
-                committed_period,
-                *committed_state_root,
-            )?,
-        ))
     }
 
     /// Reads an exact native account snapshot for the retained public-state adapter.
@@ -296,8 +268,7 @@ impl BridgeApp {
 
     /// Executes the native read-only call subset for the retained hybrid EVM adapter.
     ///
-    /// Arbitrary EVM calls remain in C++ `StateAPI`; this exact leaf handles
-    /// only native FinalChain calls selected by that adapter.
+    /// Arbitrary EVM calls remain in C++ `StateAPI`; this leaf handles only native FinalChain calls.
     pub fn call(
         self: &BridgeApp,
         request: rustaxa_ffi::FinalChainCall,

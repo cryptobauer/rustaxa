@@ -22,9 +22,26 @@ void from_rlp(taraxa_evm_Bytes b, Result& result) {
   util::rlp(dev::RLP(map_bytes(b), 0), result);
 }
 
+struct TransactionsExecutionReport {
+  TransactionsExecutionResult& result;
+  h256& post_transaction_state_root;
+};
+
+void execution_report_from_rlp(taraxa_evm_Bytes bytes, TransactionsExecutionReport& report) {
+  const dev::RLP encoded(map_bytes(bytes), 0);
+  util::rlp(encoded[0], report.result.execution_results);
+  util::rlp(encoded[1], report.post_transaction_state_root);
+}
+
 void to_str(taraxa_evm_Bytes b, std::string& result) { result = {reinterpret_cast<char*>(b.Data), b.Len}; }
 
-void to_bytes(taraxa_evm_Bytes b, bytes& result) { result.assign(b.Data, b.Data + b.Len); }
+void to_bytes(taraxa_evm_Bytes b, bytes& result) {
+  if (b.Len == 0) {
+    result.clear();
+    return;
+  }
+  result.assign(b.Data, b.Data + b.Len);
+}
 
 void to_u256(taraxa_evm_Bytes b, u256& result) { result = fromBigEndian<u256>(map_bytes(b)); }
 
@@ -179,12 +196,75 @@ StateDescriptor StateAPI::get_last_committed_state_descriptor() const {
   return ret;
 }
 
+#ifdef RUSTAXA_ENABLE
+bytes StateAPI::activate_concrete_root_policy(const h256& chain_identity) {
+  dev::RLPStream encoding;
+  util::rlp(encoding, chain_identity);
+  bytes provenance;
+  ErrorHandler err_h;
+  taraxa_evm_state_api_activate_concrete_root_policy(this_c_, map_bytes(encoding.out()),
+                                                     decoder_cb_c<bytes, to_bytes>(provenance), err_h.cgo_part_);
+  err_h.check();
+  return provenance;
+}
+
+bytes StateAPI::get_concrete_state_provenance() const {
+  bytes provenance;
+  ErrorHandler err_h;
+  taraxa_evm_state_api_get_concrete_state_provenance(this_c_, decoder_cb_c<bytes, to_bytes>(provenance),
+                                                     err_h.cgo_part_);
+  err_h.check();
+  return provenance;
+}
+
+std::optional<bytes> StateAPI::get_pending_concrete_execution() const {
+  bytes marker;
+  ErrorHandler err_h;
+  taraxa_evm_state_api_get_pending_concrete_execution(this_c_, decoder_cb_c<bytes, to_bytes>(marker), err_h.cgo_part_);
+  err_h.check();
+  if (marker.empty()) {
+    return std::nullopt;
+  }
+  return marker;
+}
+
+void StateAPI::stage_concrete_execution(const bytes& marker_rlp) {
+  ErrorHandler err_h;
+  taraxa_evm_state_api_stage_concrete_execution(this_c_, map_bytes(marker_rlp), err_h.cgo_part_);
+  err_h.check();
+}
+
+bytes StateAPI::get_concrete_state_projection() const {
+  bytes projection;
+  ErrorHandler err_h;
+  taraxa_evm_state_api_get_concrete_state_projection(this_c_, decoder_cb_c<bytes, to_bytes>(projection),
+                                                     err_h.cgo_part_);
+  err_h.check();
+  return projection;
+}
+
+void StateAPI::concrete_commit(const h256& expected_projection_hash, const bytes& committed_provenance_rlp) {
+  dev::RLPStream encoding;
+  util::rlp_tuple(encoding, expected_projection_hash, committed_provenance_rlp);
+  ErrorHandler err_h;
+  taraxa_evm_state_api_concrete_commit(this_c_, map_bytes(encoding.out()), err_h.cgo_part_);
+  err_h.check();
+}
+
+void StateAPI::discard_concrete_execution(const bytes& exact_marker_rlp) {
+  ErrorHandler err_h;
+  taraxa_evm_state_api_discard_concrete_execution(this_c_, map_bytes(exact_marker_rlp), err_h.cgo_part_);
+  err_h.check();
+}
+#endif
+
 const TransactionsExecutionResult& StateAPI::execute_transactions(const EVMBlock& block,
                                                                   const std::vector<EVMTransaction>& transactions) {
   result_buf_execution_result_.execution_results.clear();
   rlp_enc_execution_result_.clear();
-  c_method_args_rlp<TransactionsExecutionResult, from_rlp, taraxa_evm_state_api_execute_transactions>(
-      this_c_, rlp_enc_execution_result_, result_buf_execution_result_, block, transactions);
+  TransactionsExecutionReport report{result_buf_execution_result_, post_transaction_state_root_};
+  c_method_args_rlp<TransactionsExecutionReport, execution_report_from_rlp, taraxa_evm_state_api_execute_transactions>(
+      this_c_, rlp_enc_execution_result_, report, block, transactions);
   return result_buf_execution_result_;
 }
 

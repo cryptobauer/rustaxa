@@ -265,6 +265,8 @@ pub enum StatusField {
     DagEdgeCount,
     DbMajorVersion,
     DbMinorVersion,
+    /// Version of the consensus-visible FinalChain concrete state-root policy.
+    FinalChainRootPolicy,
 }
 
 #[cfg(test)]

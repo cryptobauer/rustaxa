@@ -120,9 +120,27 @@ void App::init(const cli::Config &cli_conf) {
     assert(false);
   }
 #ifdef RUSTAXA_ENABLE
-  if (conf_.db_config.rebuild_db || conf_.db_config.migrate_only || conf_.db_config.migrate_receipts_by_period ||
+  if (conf_.db_config.migrate_only || conf_.db_config.migrate_receipts_by_period ||
       conf_.db_config.db_revert_to_period != 0 || conf_.db_config.rebuild_db_period != 0) {
-    throw std::runtime_error("Rust consensus mode does not support rebuild, revert, or legacy migration startup modes");
+    throw std::runtime_error("Rust consensus mode does not support revert or legacy migration startup modes");
+  }
+  if (conf_.db_config.rebuild_db) {
+    const auto rebuild_id = std::chrono::system_clock::now().time_since_epoch().count();
+    const auto backup_path = conf_.db_path.string() + ".concrete-root-rebuild-backup-" + std::to_string(rebuild_id);
+    std::error_code rebuild_error;
+    if (std::filesystem::exists(conf_.db_path)) {
+      std::filesystem::rename(conf_.db_path, backup_path, rebuild_error);
+      if (rebuild_error) {
+        throw std::runtime_error("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_BACKUP_FAILED: " + rebuild_error.message());
+      }
+      LOG(log_si_) << "Moved the incompatible Rust consensus/state database to " << backup_path;
+    }
+    std::filesystem::create_directories(conf_.db_path, rebuild_error);
+    if (rebuild_error) {
+      throw std::runtime_error("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_CREATE_FAILED: " + rebuild_error.message());
+    }
+    // Rust rebuild is a clean full resynchronization, not legacy in-place replay.
+    conf_.db_config.rebuild_db = false;
   }
   consensus_application_ = createConsensusApplication(conf_);
 #endif
@@ -421,9 +439,9 @@ void App::setupMetricsUpdaters() {
   network_metrics->setSyncingDurationUpdater([network = network_]() { return network->syncTimeSeconds(); });
 #else
   network_metrics->setSyncingDurationUpdater([query = consensus_application_->queryClient()]() {
-    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::steady_clock::now().time_since_epoch())
-                         .count();
+    const auto now =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
     return (*query)->consensus_query_pbft_sync_status(now).elapsed_ms / 1000;
   });
 #endif

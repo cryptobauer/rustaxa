@@ -280,6 +280,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                     next_period: request.next_period.as_u64(),
                     expected_prior_period: request.expected_prior.period.as_u64(),
                     expected_prior_state_root: request.expected_prior.state_root,
+                    concrete_chain_identity: request.concrete_chain_identity,
                 })?;
         Ok(rustaxa_consensus::FinalChainExternalEvmPreflightReport {
             request_id: report.request_id,
@@ -287,6 +288,8 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                 period: report.committed_period.into(),
                 state_root: report.committed_state_root,
             },
+            concrete_provenance_rlp: report.concrete_provenance_rlp,
+            pending_concrete_marker_rlp: report.pending_concrete_marker_rlp,
             succeeded: report.succeeded,
             error_code: report.error_code,
         })
@@ -463,8 +466,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         let report =
             self.0
                 .consensus_execute_final_chain_transactions(&HostFinalChainExecutionRequest {
-                    request_id: request.request_id,
-                    period: request.period.as_u64(),
+                    concrete_marker_rlp: request.concrete_marker_rlp.clone(),
                     block_author: request.block_author,
                     timestamp: request.timestamp,
                     block_gas_limit: request.block_gas_limit.as_u64(),
@@ -472,8 +474,6 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                         .transactions
                         .iter()
                         .map(|transaction| HostFinalChainTransactionInput {
-                            position: transaction.position.as_u32(),
-                            hash: transaction.hash,
                             sender: transaction.sender,
                             receiver_found: transaction.receiver.is_some(),
                             receiver: transaction.receiver.unwrap_or_default(),
@@ -482,30 +482,31 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                             gas_price: transaction.gas_price.to_fixed_be_bytes().to_vec(),
                             gas_limit: transaction.gas_limit.as_u64(),
                             data: transaction.data.clone(),
-                            rlp: transaction.rlp.clone(),
-                            kind: transaction.kind,
-                            is_system: transaction.is_system,
                         })
                         .collect(),
                 })?;
         ensure!(
-            report.request_id == request.request_id,
-            "FINAL_CHAIN_EXECUTION_REQUEST_ID_MISMATCH"
+            report.results.len() == request.transactions.len(),
+            "FINAL_CHAIN_EXECUTION_RESULT_COUNT_MISMATCH"
         );
         Ok(rustaxa_consensus::FinalChainEvmExecutionReport {
-            request_id: report.request_id,
-            status: report.status,
-            // StateAPI exposes no post-transaction root. The actual
-            // post-rewards root is validated before publication/recovery.
-            state_root: None,
+            request_id: request.request_id,
+            status: rustaxa_consensus::FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+            prior_state: request.prior_state,
+            concrete_marker_rlp: request.concrete_marker_rlp.clone(),
+            concrete_plan_hash: request.concrete_plan_hash,
+            transactions_hash: request.transactions_hash,
+            rewards_hash: request.rewards_hash,
+            post_transaction_state_root: report.post_transaction_state_root,
             cumulative_gas_used: report.cumulative_gas_used.into(),
             results: report
                 .results
                 .into_iter()
-                .map(|result| {
+                .zip(request.transactions.iter())
+                .map(|(result, transaction)| {
                     Ok(rustaxa_consensus::FinalChainEvmTransactionResult {
-                        position: result.position.into(),
-                        hash: result.hash,
+                        position: transaction.position,
+                        hash: transaction.hash,
                         status: result.status,
                         gas_used: result.gas_used.into(),
                         cumulative_gas_used: result.cumulative_gas_used.into(),
@@ -528,6 +529,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                         new_contract_address: result
                             .new_contract_address_found
                             .then_some(result.new_contract_address),
+                        output: result.output,
                         code_error: result.code_error,
                         consensus_error: result.consensus_error,
                     })
@@ -543,22 +545,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         let report =
             self.0
                 .consensus_distribute_final_chain_rewards(&HostFinalChainRewardsRequest {
-                    request_id: request.request_id,
-                    period: request.period.as_u64(),
-                    block_author: request.block_author,
-                    block_gas_used: request.block_gas_used.as_u64(),
-                    transaction_gas_used: request
-                        .transaction_gas_used
-                        .iter()
-                        .map(|gas| gas.as_u64())
-                        .collect(),
-                    transaction_fees: request
-                        .transaction_fees
-                        .iter()
-                        .cloned()
-                        .map(|data| CanonicalBytes { data })
-                        .collect(),
-                    finalized_dag_block_count: request.finalized_dag_block_count,
+                    concrete_marker_rlp: request.concrete_marker_rlp.clone(),
                     distribution_stats: request
                         .distribution_stats
                         .iter()
@@ -568,15 +555,20 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                         })
                         .collect(),
                 })?;
-        ensure!(
-            report.request_id == request.request_id && report.period == request.period.as_u64(),
-            "FINAL_CHAIN_REWARDS_IDENTITY_MISMATCH"
-        );
         Ok(rustaxa_consensus::FinalChainEvmRewardsReport {
-            request_id: report.request_id,
-            period: report.period.into(),
-            status: report.status,
-            state_root: report.state_root,
+            request_id: request.request_id,
+            period: request.period,
+            status: rustaxa_consensus::FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
+            prior_state: request.prior_state,
+            post_transaction_state_root: request.post_transaction_state_root,
+            post_rewards_state_root: report.post_rewards_state_root,
+            concrete_marker_rlp: request.concrete_marker_rlp.clone(),
+            concrete_plan_hash: request.concrete_plan_hash,
+            transactions_hash: request.transactions_hash,
+            rewards_hash: request.rewards_hash,
+            concrete_projection_rlp: report.concrete_projection_rlp,
+            concrete_projection_hash: report.concrete_projection_hash,
+            concrete_provenance_rlp: Vec::new(),
             total_reward: report.total_reward,
         })
     }
@@ -588,20 +580,60 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         let report =
             self.0
                 .consensus_commit_final_chain_state(&HostFinalChainStateCommitRequest {
-                    request_id: request.request_id,
-                    plan_id: request.plan_id,
-                    period: request.period.as_u64(),
-                    publication_block_hash: request.publication_block_hash,
-                    expected_state_root: request.expected_state_root,
+                    concrete_marker_rlp: request.concrete_marker_rlp.clone(),
+                    concrete_projection_rlp: request.concrete_projection_rlp.clone(),
+                    concrete_projection_hash: request.concrete_projection_hash,
+                    concrete_provenance_rlp: request.concrete_provenance_rlp.clone(),
                 })?;
         ensure!(
             report.status != rustaxa_consensus::FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED
                 || (report.committed_period == request.period.as_u64()
-                    && report.committed_state_root == request.expected_state_root),
+                    && report.committed_state_root == request.post_rewards_state_root),
             "FINAL_CHAIN_STATE_COMMIT_DESCRIPTOR_MISMATCH"
         );
         Ok(rustaxa_consensus::FinalChainExternalEvmStateCommitResult {
+            request_id: request.request_id,
+            plan_id: request.plan_id,
+            period: request.period,
+            publication_block_hash: request.publication_block_hash,
+            prior_state: request.prior_state,
+            post_transaction_state_root: request.post_transaction_state_root,
+            post_rewards_state_root: request.post_rewards_state_root,
+            concrete_marker_rlp: request.concrete_marker_rlp.clone(),
+            concrete_projection_rlp: request.concrete_projection_rlp.clone(),
+            concrete_projection_hash: request.concrete_projection_hash,
+            concrete_provenance_rlp: report.concrete_provenance_rlp,
+            committed_state: report.committed_state_found.then_some(
+                rustaxa_consensus::FinalChainExternalEvmCommittedStateDescriptor {
+                    period: report.committed_period.into(),
+                    state_root: report.committed_state_root,
+                },
+            ),
             status: report.status,
+            error_code: report.error_code,
+        })
+    }
+
+    fn discard_final_chain_state(
+        &self,
+        request: &rustaxa_consensus::FinalChainExternalEvmDiscardRequest,
+    ) -> Result<rustaxa_consensus::FinalChainExternalEvmDiscardReport> {
+        let report = self
+            .0
+            .consensus_discard_final_chain_state(&CanonicalBytes {
+                data: request.concrete_marker_rlp.clone(),
+            })?;
+        Ok(rustaxa_consensus::FinalChainExternalEvmDiscardReport {
+            request_id: request.request_id,
+            period: request.period,
+            concrete_marker_rlp: request.concrete_marker_rlp.clone(),
+            marker_hash: request.marker_hash,
+            prior_state: request.prior_state,
+            committed_state: rustaxa_consensus::FinalChainExternalEvmCommittedStateDescriptor {
+                period: report.committed_period.into(),
+                state_root: report.committed_state_root,
+            },
+            succeeded: report.succeeded,
             error_code: report.error_code,
         })
     }
@@ -692,6 +724,27 @@ pub fn consensus_application_finalize(
         block_hash: report.block_hash,
         executed_dag_blocks: report.executed_dag_blocks,
         executed_transactions: report.executed_transactions,
+        status: report.status,
+        error_code: report.error_code,
+    })
+}
+
+/// Recovers paired concrete state and native publication without exposing a
+/// chain identity or a C++-driven recovery action loop.
+pub fn consensus_application_recover_final_chain(
+    application: &BridgeConsensusApplication,
+    external_evm: &ExternalEvmPort,
+) -> Result<HostFinalChainFinalizeReport> {
+    let external_evm = ExternalEvmPortAdapter(external_evm);
+    let report = rustaxa_consensus::recover_final_chain_application_state(
+        application.0.final_chain_for_bridge(),
+        &external_evm,
+    )?;
+    Ok(HostFinalChainFinalizeReport {
+        period: report.period.as_u64(),
+        block_hash: report.block_hash,
+        executed_dag_blocks: report.executed_dag_block_count,
+        executed_transactions: report.executed_transaction_count,
         status: report.status,
         error_code: report.error_code,
     })

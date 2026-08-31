@@ -912,19 +912,6 @@ pub mod rustaxa_ffi {
         data: Vec<u8>,
     }
 
-    struct FinalChainExternalEvmPublicationReport {
-        request_id: [u8; 32],
-        plan_id: [u8; 32],
-        period: u64,
-        block_hash: [u8; 32],
-        executed_dag_block_count: u64,
-        executed_transaction_count: u64,
-        dpos_snapshot_status: u8,
-        account_snapshot_status: u8,
-        status: u8,
-        error_code: String,
-    }
-
     struct DagHash {
         hash: [u8; 32],
     }
@@ -1387,6 +1374,8 @@ pub mod rustaxa_ffi {
             dag_proposer: DagProposerConfig,
             final_chain_block_gas_limit: u64,
             final_chain_genesis_timestamp: u64,
+            final_chain_state_api_committed_period: u64,
+            final_chain_state_api_committed_root: [u8; 32],
             final_chain_bridge_contract_address: [u8; 20],
             final_chain_genesis_accounts: Vec<GenesisAccount>,
             final_chain_genesis_validators: Vec<GenesisValidator>,
@@ -1410,11 +1399,6 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusApplication,
             first_to_keep: u64,
         ) -> Result<u64>;
-        pub fn recover_external_evm_pending_publication(
-            self: &BridgeConsensusApplication,
-            committed_period: u64,
-            committed_state_root: &[u8; 32],
-        ) -> Result<FinalChainExternalEvmPublicationReport>;
         /// Exact native-account leaf retained by the hybrid public-state adapter.
         pub fn get_account_at_block(
             self: &BridgeConsensusApplication,

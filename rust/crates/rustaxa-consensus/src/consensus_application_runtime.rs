@@ -559,6 +559,13 @@ pub trait ConsensusExecutionPort {
         bail!("CONSENSUS_FINAL_CHAIN_STATE_COMMIT_PORT_UNAVAILABLE")
     }
 
+    fn discard_final_chain_state(
+        &self,
+        _request: &crate::FinalChainExternalEvmDiscardRequest,
+    ) -> Result<crate::FinalChainExternalEvmDiscardReport> {
+        bail!("CONSENSUS_FINAL_CHAIN_STATE_DISCARD_PORT_UNAVAILABLE")
+    }
+
     /// Loads the exact finalized state needed for restart pillar construction.
     fn load_pillar_anchor_state(
         &self,
@@ -614,6 +621,13 @@ impl<T: ConsensusExecutionPort> crate::FinalChainExecutionLeaf for T {
         request: &crate::FinalChainExternalEvmStateCommitIntent,
     ) -> Result<crate::FinalChainExternalEvmStateCommitResult> {
         self.commit_final_chain_state(request)
+    }
+
+    fn discard_staged_state(
+        &self,
+        request: &crate::FinalChainExternalEvmDiscardRequest,
+    ) -> Result<crate::FinalChainExternalEvmDiscardReport> {
+        self.discard_final_chain_state(request)
     }
 }
 

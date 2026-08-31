@@ -39,6 +39,8 @@ inline GenesisDposConfig genesisDposConfig() {
 inline FinalChainRewardsConfig finalChainRewardsConfig() {
   FinalChainRewardsConfig config{};
   config.aspen_part_one_period = UINT64_MAX;
+  config.aspen_part_two_period = UINT64_MAX;
+  config.cacti_period = UINT64_MAX;
   config.fix_claim_all_block_num = UINT64_MAX;
   return config;
 }
@@ -91,11 +93,13 @@ inline rust::Box<BridgeConsensusApplication> createConsensusApplication(
   storage_genesis[31] = 1;
   std::array<uint8_t, 32> dag_genesis{};
   dag_genesis[31] = 2;
+  std::array<uint8_t, 32> concrete_genesis_root{};
+  concrete_genesis_root[31] = 3;
   return create_consensus_application(storage_path.string(), 1, 0, storage_genesis, dag_genesis, dag_expiry_limit, 100,
                                       sortition, TransactionQueueConfig{16}, gas_pricer, 1'000'000,
                                       std::move(pbft_config), {}, DagProposerConfig{1, 1'000'000, 1'000'000, 1'000'000},
-                                      1'000'000, 0, {}, std::move(genesis_accounts), std::move(genesis_validators),
-                                      std::move(dpos_config), std::move(rewards_config));
+                                      1'000'000, 0, 0, concrete_genesis_root, {}, std::move(genesis_accounts),
+                                      std::move(genesis_validators), std::move(dpos_config), std::move(rewards_config));
 }
 
 }  // namespace rustaxa::test

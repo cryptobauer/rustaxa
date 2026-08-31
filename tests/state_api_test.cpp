@@ -39,6 +39,45 @@ struct TestBlock {
   RLP_FIELDS_DEFINE_INPLACE(hash, state_root, evm_block, transactions)
 };
 
+#ifdef RUSTAXA_ENABLE
+/** Test-only decoder for the stable concrete-state identity carried inside opaque StateAPI provenance RLP. */
+struct TestConcreteStateIdentity {
+  uint64_t policy_version = 0;
+  h256 database_identity;
+  h256 chain_identity;
+
+  RLP_FIELDS_DEFINE_INPLACE(policy_version, database_identity, chain_identity)
+};
+
+/** Test-only canonical marker used to exercise the opaque stage/discard boundary. */
+struct TestConcreteExecutionMarker {
+  TestConcreteStateIdentity identity;
+  uint64_t generation = 0;
+  h256 plan_hash;
+  EthBlockNumber period = 0;
+  StateDescriptor prior_state;
+  h256 transactions_hash;
+  h256 rewards_hash;
+
+  RLP_FIELDS_DEFINE_INPLACE(identity, generation, plan_hash, period, prior_state, transactions_hash, rewards_hash)
+};
+
+/** Test-only decoder for the committed fields required to construct the next exact marker. */
+struct TestConcreteStateProvenance {
+  TestConcreteStateIdentity identity;
+  uint64_t generation = 0;
+  h256 plan_hash;
+  StateDescriptor committed_state;
+  h256 transactions_hash;
+  h256 rewards_hash;
+  h256 projection_hash;
+  h256 catalog_hash;
+
+  RLP_FIELDS_DEFINE_INPLACE(identity, generation, plan_hash, committed_state, transactions_hash, rewards_hash,
+                            projection_hash, catalog_hash)
+};
+#endif
+
 template <typename T>
 T parse_rlp_file(path const& p) {
   ifstream strm(p.string());
@@ -217,6 +256,167 @@ TEST_F(StateAPITest, DISABLED_eth_mainnet_smoke) {
     SUT.transition_state_commit();
   }
 }
+
+#ifdef RUSTAXA_ENABLE
+TEST_F(StateAPITest, staged_multi_transaction_roots_precede_rewards_and_commit) {
+  auto node_configs = make_node_cfgs(1, 1, 5);
+  const auto& chain_config = node_configs.front().genesis.state;
+  Opts opts;
+  opts.expected_max_trx_per_block = 2;
+  StateAPI state_api([](EthBlockNumber) { return ZeroHash(); }, chain_config, opts,
+                     {(data_dir / "intermediate_root_state").string()});
+
+  TestConcreteStateProvenance activated;
+  const auto activated_rlp = state_api.activate_concrete_root_policy(h256::random());
+  util::rlp(dev::RLP(activated_rlp), activated);
+  TestConcreteExecutionMarker marker{
+      .identity = activated.identity,
+      .generation = activated.generation + 1,
+      .plan_hash = h256::random(),
+      .period = activated.committed_state.blk_num + 1,
+      .prior_state = activated.committed_state,
+      .transactions_hash = h256::random(),
+      .rewards_hash = h256::random(),
+  };
+  const auto marker_rlp = util::rlp_enc(marker);
+  state_api.stage_concrete_execution(marker_rlp);
+
+  const auto balances = effective_initial_balances(chain_config);
+  ASSERT_FALSE(balances.empty());
+  const auto sender = balances.begin()->first;
+  const addr_t recipient("00000000000000000000000000000000000000c9");
+  const std::vector<EVMTransaction> transactions{
+      EVMTransaction{sender, 1, recipient, 0, 1, 21'000, {}},
+      EVMTransaction{sender, 1, recipient, 1, 1, 21'000, {}},
+  };
+  const auto& execution = state_api.execute_transactions(EVMBlock{sender, 1'000'000, marker.period, 1}, transactions);
+  ASSERT_EQ(execution.execution_results.size(), transactions.size());
+  EXPECT_NE(state_api.post_transaction_state_root(), ZeroHash());
+  EXPECT_EQ(state_api.get_last_committed_state_descriptor().state_root, marker.prior_state.state_root);
+
+  const auto& rewards = state_api.distribute_rewards({});
+  const auto projection_rlp = state_api.get_concrete_state_projection();
+  const dev::RLP projection(projection_rlp);
+  ASSERT_EQ(projection[7].itemCount(), transactions.size());
+  const auto first_root = projection[7][0][3][1].toHash<h256>();
+  const auto second_root = projection[7][1][3][1].toHash<h256>();
+  EXPECT_NE(first_root, ZeroHash());
+  EXPECT_NE(second_root, first_root);
+  EXPECT_EQ(second_root, state_api.post_transaction_state_root());
+  EXPECT_EQ(projection[6][1].toHash<h256>(), rewards.state_root);
+
+  const auto rewards_root = rewards.state_root;
+  const auto total_reward = rewards.total_reward;
+  const auto& retry = state_api.distribute_rewards({});
+  EXPECT_EQ(retry.state_root, rewards_root);
+  EXPECT_EQ(retry.total_reward, total_reward);
+  EXPECT_EQ(state_api.get_concrete_state_projection(), projection_rlp);
+
+  state_api.discard_concrete_execution(marker_rlp);
+  EXPECT_EQ(state_api.get_last_committed_state_descriptor().state_root, marker.prior_state.state_root);
+}
+
+TEST_F(StateAPITest, concrete_projection_discard_reopens_exact_committed_state) {
+  auto node_configs = make_node_cfgs(1, 1, 5);
+  const auto& chain_config = node_configs.front().genesis.state;
+  Opts opts;
+  opts.expected_max_trx_per_block = 1;
+  StateAPI state_api([](EthBlockNumber) { return ZeroHash(); }, chain_config, opts,
+                     {(data_dir / "concrete_projection_discard_state").string()});
+
+  const auto chain_identity = h256::random();
+  const auto activated_rlp = state_api.activate_concrete_root_policy(chain_identity);
+  TestConcreteStateProvenance activated;
+  util::rlp(dev::RLP(activated_rlp), activated);
+  EXPECT_EQ(activated.identity.policy_version, 1);
+  EXPECT_EQ(activated.identity.chain_identity, chain_identity);
+  EXPECT_NE(activated.catalog_hash, dev::sha3(bytes{0xc0}));
+  EXPECT_EQ(state_api.get_concrete_state_provenance(), activated_rlp);
+  EXPECT_FALSE(state_api.get_pending_concrete_execution());
+
+  TestConcreteExecutionMarker marker{
+      .identity = activated.identity,
+      .generation = activated.generation + 1,
+      .plan_hash = h256::random(),
+      .period = activated.committed_state.blk_num + 1,
+      .prior_state = activated.committed_state,
+      .transactions_hash = h256::random(),
+      .rewards_hash = h256::random(),
+  };
+  const auto marker_rlp = util::rlp_enc(marker);
+  state_api.stage_concrete_execution(marker_rlp);
+  ASSERT_TRUE(state_api.get_pending_concrete_execution());
+  EXPECT_EQ(*state_api.get_pending_concrete_execution(), marker_rlp);
+
+  state_api.execute_transactions(EVMBlock{dev::ZeroAddress, 1'000'000, 1, 1}, {});
+  state_api.distribute_rewards({});
+  EXPECT_FALSE(state_api.get_concrete_state_projection().empty());
+  state_api.discard_concrete_execution(marker_rlp);
+  EXPECT_FALSE(state_api.get_pending_concrete_execution());
+  const auto reopened = state_api.get_last_committed_state_descriptor();
+  EXPECT_EQ(reopened.blk_num, activated.committed_state.blk_num);
+  EXPECT_EQ(reopened.state_root, activated.committed_state.state_root);
+
+  state_api.stage_concrete_execution(marker_rlp);
+  state_api.execute_transactions(EVMBlock{dev::ZeroAddress, 1'000'000, 1, 1}, {});
+  const auto& rewards = state_api.distribute_rewards({});
+  const auto projection_rlp = state_api.get_concrete_state_projection();
+  EXPECT_GT(dev::RLP(projection_rlp)[9].itemCount(), 0);
+  const auto projection_hash = dev::sha3(projection_rlp);
+  const auto catalog_hash = dev::RLP(projection_rlp)[12].toHash<h256>();
+  const auto expected_provenance_rlp = util::rlp_enc(TestConcreteStateProvenance{
+      .identity = marker.identity,
+      .generation = marker.generation,
+      .plan_hash = marker.plan_hash,
+      .committed_state = StateDescriptor{marker.period, rewards.state_root},
+      .transactions_hash = marker.transactions_hash,
+      .rewards_hash = marker.rewards_hash,
+      .projection_hash = projection_hash,
+      .catalog_hash = catalog_hash,
+  });
+  state_api.concrete_commit(projection_hash, expected_provenance_rlp);
+
+  const auto committed = state_api.get_last_committed_state_descriptor();
+  EXPECT_EQ(committed.blk_num, marker.period);
+  EXPECT_EQ(committed.state_root, rewards.state_root);
+  EXPECT_FALSE(state_api.get_pending_concrete_execution());
+  TestConcreteStateProvenance provenance;
+  const auto committed_provenance_rlp = state_api.get_concrete_state_provenance();
+  util::rlp(dev::RLP(committed_provenance_rlp), provenance);
+  EXPECT_EQ(provenance.generation, marker.generation);
+  EXPECT_EQ(provenance.plan_hash, marker.plan_hash);
+  EXPECT_EQ(provenance.projection_hash, projection_hash);
+  EXPECT_THROW(state_api.activate_concrete_root_policy(h256::random()), TaraxaEVMError);
+  EXPECT_EQ(state_api.get_last_committed_state_descriptor().state_root, committed.state_root);
+}
+
+TEST_F(StateAPITest, concrete_root_policy_persists_nonempty_genesis_catalog_on_restart) {
+  auto node_configs = make_node_cfgs(1, 1, 5);
+  const auto& chain_config = node_configs.front().genesis.state;
+  Opts opts;
+  opts.expected_max_trx_per_block = 1;
+  const auto state_path = (data_dir / "concrete_genesis_catalog_restart_state").string();
+  const auto chain_identity = h256::random();
+  h256 genesis_catalog_hash;
+
+  {
+    StateAPI state_api([](EthBlockNumber) { return ZeroHash(); }, chain_config, opts, {state_path});
+    TestConcreteStateProvenance activated;
+    const auto activated_rlp = state_api.activate_concrete_root_policy(chain_identity);
+    util::rlp(dev::RLP(activated_rlp), activated);
+    genesis_catalog_hash = activated.catalog_hash;
+    EXPECT_NE(genesis_catalog_hash, dev::sha3(bytes{0xc0}));
+  }
+
+  {
+    StateAPI reopened([](EthBlockNumber) { return ZeroHash(); }, chain_config, opts, {state_path});
+    TestConcreteStateProvenance activated;
+    const auto activated_rlp = reopened.activate_concrete_root_policy(chain_identity);
+    util::rlp(dev::RLP(activated_rlp), activated);
+    EXPECT_EQ(activated.catalog_hash, genesis_catalog_hash);
+  }
+}
+#endif
 
 #ifndef RUSTAXA_ENABLE
 TEST_F(StateAPITest, slashing) {

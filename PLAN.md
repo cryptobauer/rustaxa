@@ -517,11 +517,20 @@ retain the untouched legacy RewardsStats header, source, and focused test.
     owns system-transaction/rewards planning, concrete-EVM sequencing, result/receipt/root validation, durable pending
     recovery ordering, state-commit approval, and FinalChain publication. C++ retains exact typed StateAPI leaves only;
     the broad execution API/session handles, factories, C++ action loop, and consensus materializers are deleted.
-    A read-only committed-state preflight rejects concrete-EVM execution before mutation when StateAPI lags the native
-    FinalChain head. Mixed native-only then external-EVM periods remain fail-closed until `CRW-E02` supplies an explicit
-    concrete-state catch-up/import design; no root is fabricated when the concrete executor cannot report one.
-    Native-only DPoS/slashing execution remains Rust-owned, while stable public-state/tracing calls remain temporary
-    `final_chain_shim` leaves. The following paragraph records the superseded pre-`CRW-E01` checkpoint for history.
+    `CRW-E02` now uses one eager concrete-state policy: StateAPI executes every Rust-mode finalized period and its
+    committed post-rewards root is the canonical header root, including genesis. Rust binds prior, post-transaction,
+    post-rewards, and committed descriptors through the version-one concrete execution/provenance contract and the
+    version-three pending-publication marker. It independently replays Rust-supported transfers, DPoS, and slashing
+    against ordered per-transaction concrete effects, including native actions after arbitrary EVM work. Exact rewards
+    retries are idempotent; Rust checks the reported minted total and final DPoS contract balance after minted/fee
+    credits. Reward-only DPoS rows are projected, zero configured yield disables rewards, and period zero
+    is an explicit genesis activation while `u64::MAX` disables Aspen part two or Cacti in local fixtures. Concrete-root
+    policy version one is paired across Rust storage and `state_db`. Markerless/synthetic history fails with
+    `FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED`; `--rebuild-db` preserves the old pair in a timestamped backup and
+    starts a clean full-resync database instead of rewriting finalized hashes or falling back. `CRW-E02` remains active
+    until mixed-lane, crash/restart, rebuild/resync, and multi-node parity complete the required evidence. Stable
+    public-state/tracing calls remain temporary `final_chain_shim` leaves. The following paragraph records the
+    superseded pre-`CRW-E01` checkpoint for history.
   - Historical checkpoint: FinalChain native execution was behind a Rust-owned `FinalChainExecutionRuntime` session boundary. The
     C++ FinalChain shim now builds the session request directly, asks Rust for the next execution step, and commits only
     when Rust returns a native commit action. Native value transfers plus the supported DPoS/slashing precompile subset

@@ -1,3 +1,9 @@
+use crate::concrete_state_projection::{
+    FinalChainConcreteExecutionMarker, FinalChainConcreteState, FinalChainConcreteStateProvenance,
+    concrete_state_bytes_digest, decode_concrete_execution_marker,
+    decode_concrete_state_projection, decode_concrete_state_provenance,
+    encode_concrete_execution_marker, encode_concrete_state_provenance,
+};
 use crate::final_chain::{
     DPOS_CONTRACT_ADDRESS, FinalChain, SLASHING_CONTRACT_ADDRESS,
     external_evm_pending_publication_marker,
@@ -22,12 +28,13 @@ use rustaxa_types::{
 };
 use triehash::ordered_trie_root;
 
-/// Native-only execution mode used by the current C++ `FinalChain::finalize`
-/// shim while arbitrary EVM execution remains outside Rust FinalChain.
+/// Explicit native-reference execution mode retained for focused Rust unit and
+/// pure-reference coverage. Production finalization uses the concrete-enabled
+/// mode so every period receives an exact concrete state root.
 pub const FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY: u8 = 0;
-/// Mode that permits external-EVM execution when arbitrary or system
-/// transactions require it, while retaining the native commit fast path for an
-/// otherwise empty period.
+/// Production mode that transitions every finalized period through the
+/// concrete EVM/state-db leaf, including empty, native-transfer, DPoS, and
+/// slashing-only periods.
 pub const FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED: u8 = 1;
 
 /// Session is ready to expose the next execution step.
@@ -139,6 +146,19 @@ pub const FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MATCHED: u8 = 0;
 /// External EVM publication audit found a missing or mismatched persisted row.
 pub const FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MISMATCH: u8 = 1;
 
+/// Recovery may publish the durable marker because concrete state committed
+/// the exact planned period and post-rewards root.
+pub const FINAL_CHAIN_EVM_RECOVERY_DECISION_READY_TO_PUBLISH: u8 = 0;
+/// Recovery found the exact FinalChain block already durable and may clear the
+/// duplicate marker without publishing it again.
+pub const FINAL_CHAIN_EVM_RECOVERY_DECISION_ALREADY_PUBLISHED: u8 = 1;
+/// Recovery proved concrete state never advanced beyond the exact prior
+/// descriptor, so the abandoned marker may be cleared without publication.
+pub const FINAL_CHAIN_EVM_RECOVERY_DECISION_CLEAR_UNCOMMITTED: u8 = 2;
+/// Recovery facts are missing, stale, conflicting, ahead, or otherwise
+/// ambiguous; the durable marker must remain for operator-visible recovery.
+pub const FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED: u8 = 3;
+
 /// Complete FinalChain execution request owned by a runtime session.
 ///
 /// The payload preserves the existing bridge facts: signed PBFT block RLP,
@@ -240,14 +260,27 @@ pub struct FinalChainSystemTransactionPlan {
 
 /// External EVM execution request emitted by a FinalChain runtime session.
 ///
-/// `request_id` is deterministic for this request and must be echoed by the
-/// executor report. Phase 1 does not provide a state-trie handle yet; it exposes
-/// PBFT period, author, timestamp, gas limit, and the complete ordered
-/// bridge-provided transaction stream needed by the future executor bridge.
+/// `request_id` is deterministic over the exact concrete prior descriptor and
+/// ordered transaction stream and must be echoed by the executor report. The
+/// request exposes no state-trie handle; the concrete leaf receives only the
+/// period, prior root, block facts, and canonical transactions it must execute.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainEvmExecutionRequest {
     pub request_id: [u8; 32],
     pub period: FinalChainBlockNumber,
+    /// Exact concrete descriptor from which this transition must start.
+    ///
+    /// It is bound into `request_id`; a plan prepared against another root is
+    /// a different operation even when the PBFT block and transactions match.
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    /// Exact StateAPI marker that must be durably staged before `BeginBlock`.
+    pub concrete_marker_rlp: Vec<u8>,
+    /// Rust-owned plan identity echoed by every later concrete leaf.
+    pub concrete_plan_hash: [u8; 32],
+    /// Digest of the exact canonical ordered transaction stream.
+    pub transactions_hash: [u8; 32],
+    /// Digest of the deterministic rewards inputs known before execution.
+    pub rewards_hash: [u8; 32],
     pub block_author: [u8; 20],
     pub timestamp: u64,
     pub block_gas_limit: FinalChainGas,
@@ -276,9 +309,10 @@ pub struct FinalChainEvmLog {
 
 /// One transaction result reported by an external EVM executor.
 ///
-/// The current runtime validates identity, ordering, cumulative gas, and basic
-/// receipt RLP shape. Receipt and state-root data are retained for the future
-/// commit path and deliberately do not alter storage until EVM parity is wired.
+/// The runtime validates identity, ordering, cumulative gas, typed receipt
+/// agreement, and exact concrete transition roots. Reports do not alter
+/// storage; only a later committed lifecycle descriptor can authorize the
+/// Rust-owned publication path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalChainEvmTransactionResult {
     pub position: FinalChainTransactionPosition,
@@ -289,6 +323,10 @@ pub struct FinalChainEvmTransactionResult {
     pub receipt_rlp: Vec<u8>,
     pub logs: Vec<FinalChainEvmLog>,
     pub new_contract_address: Option<[u8; 20]>,
+    /// Exact EVM return bytes (`ExecutionResult::CodeRetval`) reported by the
+    /// concrete executor. These bytes are not part of the receipt, so they must
+    /// remain explicit to bind the host report to StateAPI's durable projection.
+    pub output: Vec<u8>,
     pub code_error: String,
     pub consensus_error: String,
 }
@@ -298,16 +336,20 @@ pub struct FinalChainEvmTransactionResult {
 /// Reports are validated against the exact request emitted by the session.
 /// Successful reports are still rejected for commit until EVM state-root and
 /// receipt parity are wired and covered by differential tests.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainEvmExecutionReport {
     pub request_id: [u8; 32],
     pub status: u8,
-    /// Post-transaction root when the concrete executor can observe it.
-    ///
-    /// The current StateAPI ABI does not expose this intermediate root, so its
-    /// adapter returns `None`. The post-rewards root remains mandatory and is
-    /// verified against the committed state descriptor before publication.
-    pub state_root: Option<[u8; 32]>,
+    /// Concrete descriptor actually used by the executor. It must match the
+    /// request exactly; reporting only a successful status is insufficient.
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub concrete_marker_rlp: Vec<u8>,
+    pub concrete_plan_hash: [u8; 32],
+    pub transactions_hash: [u8; 32],
+    pub rewards_hash: [u8; 32],
+    /// Exact concrete root after the ordered transaction stream and before
+    /// rewards. Synthetic or unavailable roots are rejected.
+    pub post_transaction_state_root: [u8; 32],
     pub cumulative_gas_used: FinalChainGas,
     pub results: Vec<FinalChainEvmTransactionResult>,
 }
@@ -321,6 +363,12 @@ pub struct FinalChainEvmExecutionReport {
 pub struct FinalChainEvmRewardsRequest {
     pub request_id: [u8; 32],
     pub period: FinalChainBlockNumber,
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub post_transaction_state_root: [u8; 32],
+    pub concrete_marker_rlp: Vec<u8>,
+    pub concrete_plan_hash: [u8; 32],
+    pub transactions_hash: [u8; 32],
+    pub rewards_hash: [u8; 32],
     pub block_author: [u8; 20],
     pub block_gas_used: FinalChainGas,
     pub transaction_gas_used: Vec<FinalChainGas>,
@@ -356,23 +404,40 @@ pub struct FinalChainEvmRewardsReport {
     pub request_id: [u8; 32],
     pub period: FinalChainBlockNumber,
     pub status: u8,
-    pub state_root: [u8; 32],
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub post_transaction_state_root: [u8; 32],
+    pub post_rewards_state_root: [u8; 32],
+    pub concrete_marker_rlp: Vec<u8>,
+    pub concrete_plan_hash: [u8; 32],
+    pub transactions_hash: [u8; 32],
+    pub rewards_hash: [u8; 32],
+    /// Canonical 13-field StateAPI projection after rewards preparation.
+    pub concrete_projection_rlp: Vec<u8>,
+    pub concrete_projection_hash: [u8; 32],
+    pub concrete_provenance_rlp: Vec<u8>,
     pub total_reward: Vec<u8>,
 }
 
-/// Non-mutating Rust plan for a future external-EVM FinalChain commit.
+/// Non-mutating Rust plan for one concrete-EVM FinalChain commit.
 ///
-/// The plan proves Rust can derive the header/storage publication facts from
-/// typed EVM and rewards reports without touching `StateAPI`, `state_db/`, or
-/// FinalChain storage. Production commit remains disabled until this plan is
-/// connected to differential parity tests and an executor lifecycle that can
-/// safely commit or discard staged EVM state.
+/// Rust derives header and storage-publication facts from typed EVM and rewards
+/// reports without touching `StateAPI`, `state_db/`, or FinalChain storage. The
+/// exact prior, post-transaction, and post-rewards roots remain attached until
+/// the concrete committed descriptor is validated.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmCommitPlan {
     pub request_id: [u8; 32],
     pub period: FinalChainBlockNumber,
-    pub post_execution_state_root: Option<[u8; 32]>,
-    pub state_root: [u8; 32],
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub post_transaction_state_root: [u8; 32],
+    pub post_rewards_state_root: [u8; 32],
+    pub concrete_marker_rlp: Vec<u8>,
+    pub concrete_plan_hash: [u8; 32],
+    pub transactions_hash: [u8; 32],
+    pub rewards_hash: [u8; 32],
+    pub concrete_projection_rlp: Vec<u8>,
+    pub concrete_projection_hash: [u8; 32],
+    pub concrete_provenance_rlp: Vec<u8>,
     pub total_reward: Vec<u8>,
     pub transactions_root: [u8; 32],
     pub receipts_root: [u8; 32],
@@ -456,6 +521,16 @@ pub struct FinalChainExternalEvmPublicationPlan {
     pub executed_transactions: u64,
     pub proposal_period_dag_level_update: FinalChainProposalPeriodDagLevelUpdate,
     pub rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
+    /// Rust-derived consensus projection validated against the native prefix
+    /// of the concrete StateAPI receipt transcript.
+    pub dpos_snapshot_rlp: Vec<u8>,
+    /// Full synchronized native account snapshot derived from exact concrete
+    /// per-transaction/final deltas. This must publish atomically with the block.
+    pub account_snapshot_rlp: Vec<u8>,
+    pub concrete_marker_rlp: Vec<u8>,
+    pub concrete_projection_rlp: Vec<u8>,
+    pub concrete_projection_hash: [u8; 32],
+    pub concrete_provenance_rlp: Vec<u8>,
     pub error_code: String,
 }
 
@@ -470,9 +545,14 @@ pub struct FinalChainExternalEvmStateCommitRequest {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
     pub period: FinalChainBlockNumber,
-    pub post_execution_state_root: Option<[u8; 32]>,
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub post_transaction_state_root: [u8; 32],
     pub post_rewards_state_root: [u8; 32],
     pub publication_block_hash: [u8; 32],
+    pub concrete_marker_rlp: Vec<u8>,
+    pub concrete_projection_rlp: Vec<u8>,
+    pub concrete_projection_hash: [u8; 32],
+    pub concrete_provenance_rlp: Vec<u8>,
 }
 
 /// Rust decision that an external EVM state commit is safe to attempt.
@@ -486,8 +566,17 @@ pub struct FinalChainExternalEvmStateCommitIntent {
     pub plan_id: [u8; 32],
     pub period: FinalChainBlockNumber,
     pub publication_block_hash: [u8; 32],
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub post_transaction_state_root: [u8; 32],
     /// Exact root that the concrete state-db commit must make durable.
+    pub post_rewards_state_root: [u8; 32],
+    /// Compatibility alias for the marker codec while its durable version is
+    /// upgraded to encode the complete lifecycle facts.
     pub expected_state_root: [u8; 32],
+    pub concrete_marker_rlp: Vec<u8>,
+    pub concrete_projection_rlp: Vec<u8>,
+    pub concrete_projection_hash: [u8; 32],
+    pub concrete_provenance_rlp: Vec<u8>,
     pub status: u8,
     pub error_code: String,
 }
@@ -495,13 +584,28 @@ pub struct FinalChainExternalEvmStateCommitIntent {
 /// External EVM state-commit result reported by the executor boundary.
 ///
 /// This is the narrow production boundary after Rust has already accepted a
-/// [`FinalChainExternalEvmStateCommitIntent`]. C++ or a future executor adapter
-/// reports only whether its staged-state commit was committed, explicitly
-/// discarded, or rejected/ambiguous, plus an optional diagnostic. Rust derives
-/// request id, plan id, roots, and publication block hash from the session so
-/// deterministic lifecycle facts are not rematerialized outside consensus.
+/// [`FinalChainExternalEvmStateCommitIntent`]. The executor echoes the exact
+/// identity and lifecycle roots plus the descriptor it observes after the
+/// commit/discard attempt. Rust rejects missing or mismatched facts; a status
+/// alone never authorizes publication or marker deletion.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmStateCommitResult {
+    pub request_id: [u8; 32],
+    pub plan_id: [u8; 32],
+    pub period: FinalChainBlockNumber,
+    pub publication_block_hash: [u8; 32],
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub post_transaction_state_root: [u8; 32],
+    pub post_rewards_state_root: [u8; 32],
+    pub concrete_marker_rlp: Vec<u8>,
+    pub concrete_projection_rlp: Vec<u8>,
+    pub concrete_projection_hash: [u8; 32],
+    /// Provenance atomically committed by StateAPI with the descriptor.
+    pub concrete_provenance_rlp: Vec<u8>,
+    /// Descriptor observed after the commit/discard call. Committed outcomes
+    /// require the planned period/root; discarded outcomes require the exact
+    /// prior descriptor. `None` is always ambiguous and never publish-safe.
+    pub committed_state: Option<FinalChainExternalEvmCommittedStateDescriptor>,
     pub status: u8,
     pub error_code: String,
 }
@@ -509,18 +613,21 @@ pub struct FinalChainExternalEvmStateCommitResult {
 /// External EVM staged-state lifecycle report.
 ///
 /// The external executor owns `StateAPI`, `state_db/`, staged commit/discard,
-/// and any reward-state mutation. Rust validates only stable identity facts:
-/// request id, period, post-execution root, post-rewards root, publication
-/// block hash, lifecycle status, and error code. It never receives EVM handles
-/// or state diffs.
+/// and any reward-state mutation. Rust validates only stable identity and
+/// descriptor facts: request id, period, prior root, post-transaction root,
+/// post-rewards root, observed committed descriptor, publication block hash,
+/// lifecycle status, and error code. It never receives EVM handles or state
+/// diffs.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmLifecycleReport {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
     pub period: FinalChainBlockNumber,
-    pub post_execution_state_root: Option<[u8; 32]>,
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub post_transaction_state_root: [u8; 32],
     pub post_rewards_state_root: [u8; 32],
     pub publication_block_hash: [u8; 32],
+    pub committed_state: Option<FinalChainExternalEvmCommittedStateDescriptor>,
     pub status: u8,
     pub error_code: String,
 }
@@ -567,6 +674,16 @@ pub struct FinalChainExternalEvmPublicationReport {
     pub account_snapshot_status: u8,
     pub status: u8,
     pub error_code: String,
+    /// Startup recovery requires the executor to discard exactly the staged
+    /// StateAPI marker described by the following fields before retrying the
+    /// same Rust recovery operation. False for every other report.
+    pub recovery_discard_required: bool,
+    pub recovery_request_id: [u8; 32],
+    pub recovery_period: FinalChainBlockNumber,
+    pub recovery_concrete_marker_rlp: Vec<u8>,
+    pub recovery_marker_hash: [u8; 32],
+    pub recovery_prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub recovery_concrete_chain_identity: [u8; 32],
 }
 
 /// External state descriptor observed at the StateAPI/state-db boundary.
@@ -581,6 +698,53 @@ pub struct FinalChainExternalEvmCommittedStateDescriptor {
     pub state_root: [u8; 32],
 }
 
+/// Durable facts used to arbitrate one pending concrete-state publication.
+///
+/// This is deliberately a read-only planning input. The caller loads the
+/// marker, FinalChain rows, and concrete committed descriptor; Rust validates
+/// their exact identity and returns a decision without clearing a marker or
+/// publishing storage.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmRecoveryFact {
+    pub lifecycle_id: [u8; 32],
+    pub request_id: [u8; 32],
+    pub plan_id: [u8; 32],
+    pub period: FinalChainBlockNumber,
+    pub publication_block_hash: [u8; 32],
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub post_transaction_state_root: [u8; 32],
+    pub post_rewards_state_root: [u8; 32],
+    pub finalized_head: FinalChainExternalEvmCommittedStateDescriptor,
+    pub finalized_block_hash: Option<[u8; 32]>,
+    pub finalized_block_state: Option<FinalChainExternalEvmCommittedStateDescriptor>,
+    pub committed_state: Option<FinalChainExternalEvmCommittedStateDescriptor>,
+    /// Exact StateAPI marker authored by Rust and embedded in the durable
+    /// pending-publication plan before concrete commit.
+    pub expected_concrete_marker_rlp: Vec<u8>,
+    /// Exact provenance bytes authored by Rust for the planned committed
+    /// descriptor. A committed or already-published recovery is valid only
+    /// when StateAPI returns these identical bytes.
+    pub expected_concrete_provenance_rlp: Vec<u8>,
+    /// Provenance bytes observed from the reopened StateAPI database.
+    pub observed_concrete_provenance_rlp: Vec<u8>,
+    /// Pending StateAPI execution marker observed on reopen. Committed recovery
+    /// requires this to be empty; an uncommitted staged transition must echo
+    /// `expected_concrete_marker_rlp` exactly before it can be discarded.
+    pub pending_concrete_marker_rlp: Vec<u8>,
+}
+
+/// Non-mutating recovery decision for one durable lifecycle marker.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmRecoveryDecision {
+    pub lifecycle_id: [u8; 32],
+    pub request_id: [u8; 32],
+    pub plan_id: [u8; 32],
+    pub period: FinalChainBlockNumber,
+    pub publication_block_hash: [u8; 32],
+    pub status: u8,
+    pub error_code: String,
+}
+
 /// Exact read-only preflight for a concrete external-EVM execution.
 ///
 /// Rust supplies the expected prior FinalChain descriptor. The state-db leaf
@@ -593,6 +757,8 @@ pub struct FinalChainExternalEvmPreflightRequest {
     pub request_id: [u8; 32],
     pub next_period: FinalChainBlockNumber,
     pub expected_prior: FinalChainExternalEvmCommittedStateDescriptor,
+    /// Rust-owned stable chain identity used to activate/verify StateAPI policy.
+    pub concrete_chain_identity: [u8; 32],
 }
 
 /// Observed concrete state-db descriptor for one preflight request.
@@ -600,6 +766,34 @@ pub struct FinalChainExternalEvmPreflightRequest {
 pub struct FinalChainExternalEvmPreflightReport {
     pub request_id: [u8; 32],
     pub committed: FinalChainExternalEvmCommittedStateDescriptor,
+    /// Current durable StateAPI provenance. Empty is invalid once concrete-root
+    /// policy is active.
+    pub concrete_provenance_rlp: Vec<u8>,
+    /// Exact pending StateAPI marker on reopen, or empty when no staged work exists.
+    pub pending_concrete_marker_rlp: Vec<u8>,
+    pub succeeded: bool,
+    pub error_code: String,
+}
+
+/// Exact request to discard one StateAPI staged transition and reopen at its prior root.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmDiscardRequest {
+    pub request_id: [u8; 32],
+    pub period: FinalChainBlockNumber,
+    pub concrete_marker_rlp: Vec<u8>,
+    pub marker_hash: [u8; 32],
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+}
+
+/// Echoed discard result. Success requires the exact prior committed descriptor.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmDiscardReport {
+    pub request_id: [u8; 32],
+    pub period: FinalChainBlockNumber,
+    pub concrete_marker_rlp: Vec<u8>,
+    pub marker_hash: [u8; 32],
+    pub prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    pub committed_state: FinalChainExternalEvmCommittedStateDescriptor,
     pub succeeded: bool,
     pub error_code: String,
 }
@@ -659,9 +853,11 @@ pub struct FinalChainExecutionCommitReport {
 
 /// Rust-owned runtime session for one FinalChain finalization request.
 ///
-/// The session classifies the transaction set once, exposes either a native
-/// commit step or an external EVM request, validates reports for that request,
-/// and commits only native-supported execution in Phase 1.
+/// The session classifies the transaction set once. Explicit reference-mode
+/// requests may retain the native commit path, while production
+/// external-enabled requests always expose a concrete transition, including
+/// empty or native-supported periods. The session validates every descriptor
+/// and report before publication may proceed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalChainExecutionSession {
     request: FinalChainExecutionRequest,
@@ -972,22 +1168,20 @@ fn final_chain_execution_session_report_system_transactions_with_count(
         };
     let mut all_transactions = regular_transactions;
     all_transactions.extend(system_transactions.clone());
-    if count_external_evm_transactions(&all_transactions) == 0 && system_transactions.is_empty() {
-        session.system_transaction_request = None;
-        session.system_transactions.clear();
-        session.evm_request = None;
-        session.status = FINAL_CHAIN_EXECUTION_STATUS_READY;
-        session.error_code.clear();
-        return final_chain_execution_session_next(session);
-    }
     let evm_request = FinalChainEvmExecutionRequest {
         request_id: execution_request_id(
             session.block_number,
             &session.metadata,
             session.request.block_gas_limit,
+            FinalChainExternalEvmCommittedStateDescriptor::default(),
             &all_transactions,
         ),
         period: session.block_number,
+        prior_state: FinalChainExternalEvmCommittedStateDescriptor::default(),
+        concrete_marker_rlp: Vec::new(),
+        concrete_plan_hash: [0; 32],
+        transactions_hash: [0; 32],
+        rewards_hash: [0; 32],
         block_author: session.metadata.author.into(),
         timestamp: session.metadata.timestamp,
         block_gas_limit: session.request.block_gas_limit,
@@ -998,6 +1192,40 @@ fn final_chain_execution_session_report_system_transactions_with_count(
     session.status = FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM;
     session.error_code.clear();
     final_chain_execution_session_next(session)
+}
+
+/// Binds the exact concrete prior descriptor into the execution request.
+///
+/// System-transaction planning is read-only and may happen before this call,
+/// but no transaction execution may begin until the request is rebound. The
+/// concrete descriptor is part of the deterministic request identity, which
+/// prevents an otherwise identical period plan from being replayed on another
+/// state root.
+fn final_chain_execution_session_bind_external_evm_prior_state(
+    session: &mut FinalChainExecutionSession,
+    prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+) -> Result<FinalChainEvmExecutionRequest, anyhow::Error> {
+    ensure!(
+        session.status == FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM,
+        "FINAL_CHAIN_EVM_PRIOR_STATE_UNEXPECTED"
+    );
+    ensure!(
+        prior_state.state_root != [0; 32],
+        "FINAL_CHAIN_EVM_PRIOR_STATE_ROOT_MISSING"
+    );
+    let request = session
+        .evm_request
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_EVM_PRIOR_STATE_WITHOUT_REQUEST"))?;
+    request.prior_state = prior_state;
+    request.request_id = execution_request_id(
+        session.block_number,
+        &session.metadata,
+        session.request.block_gas_limit,
+        prior_state,
+        &request.transactions,
+    );
+    Ok(request.clone())
 }
 
 /// Validates an external EVM report against the session's pending request.
@@ -1034,6 +1262,32 @@ fn final_chain_execution_session_report_evm_inner(
     if request.request_id != report.request_id {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REPORT_REQUEST_ID_MISMATCH".to_string();
+        return final_chain_execution_session_next(session);
+    }
+    if report.prior_state != request.prior_state {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REPORT_PRIOR_STATE_MISMATCH".to_string();
+        return final_chain_execution_session_next(session);
+    }
+    if report.concrete_marker_rlp != request.concrete_marker_rlp
+        || report.concrete_plan_hash != request.concrete_plan_hash
+        || report.transactions_hash != request.transactions_hash
+        || report.rewards_hash != request.rewards_hash
+    {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REPORT_CONCRETE_IDENTITY_MISMATCH".to_string();
+        return final_chain_execution_session_next(session);
+    }
+    if decode_concrete_execution_marker(&report.concrete_marker_rlp).is_err()
+        || concrete_state_bytes_digest(&report.concrete_marker_rlp) == [0; 32]
+    {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REPORT_CONCRETE_MARKER_INVALID".to_string();
+        return final_chain_execution_session_next(session);
+    }
+    if report.post_transaction_state_root == [0; 32] {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REPORT_POST_TRANSACTION_ROOT_MISSING".to_string();
         return final_chain_execution_session_next(session);
     }
     if request.transactions.len() != report.results.len() {
@@ -1135,10 +1389,10 @@ fn final_chain_execution_session_report_evm_inner(
 /// Validates external EVM rewards/state-root facts and builds a Rust commit
 /// plan without mutating FinalChain storage.
 ///
-/// The returned plan contains the header roots, blooms, receipt payloads, gas,
-/// and execution counters that a future storage commit path will publish in one
-/// Rust-owned batch. The function intentionally does not call `StateAPI`, write
-/// `DbStorage`, or mark the session complete.
+/// The returned plan contains exact lifecycle roots, header roots, blooms,
+/// receipt payloads, gas, and execution counters for the later Rust-owned
+/// publication batch. The function intentionally does not call `StateAPI`,
+/// write storage, or mark the session complete.
 pub fn final_chain_execution_session_plan_external_evm_commit(
     session: &mut FinalChainExecutionSession,
     rewards_report: FinalChainEvmRewardsReport,
@@ -1197,9 +1451,74 @@ pub fn final_chain_execution_session_plan_external_evm_commit(
             session.error_code.clone(),
         );
     }
+    if rewards_report.prior_state != evm_request.prior_state {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_PRIOR_STATE_MISMATCH".to_string();
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if rewards_report.post_transaction_state_root != evm_report.post_transaction_state_root {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code =
+            "FINAL_CHAIN_EVM_REWARDS_REPORT_POST_TRANSACTION_ROOT_MISMATCH".to_string();
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if rewards_report.concrete_marker_rlp != evm_request.concrete_marker_rlp
+        || rewards_report.concrete_plan_hash != evm_request.concrete_plan_hash
+        || rewards_report.transactions_hash != evm_request.transactions_hash
+        || rewards_report.rewards_hash != evm_request.rewards_hash
+    {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code =
+            "FINAL_CHAIN_EVM_REWARDS_REPORT_CONCRETE_IDENTITY_MISMATCH".to_string();
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if rewards_report.concrete_projection_hash
+        != concrete_state_bytes_digest(&rewards_report.concrete_projection_rlp)
+    {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_PROJECTION_HASH_MISMATCH".to_string();
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if rewards_report.post_rewards_state_root == [0; 32] {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_POST_REWARDS_ROOT_MISSING".to_string();
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
     if rewards_report.total_reward.len() > 32 {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_TOTAL_REWARD_OVERSIZED".to_string();
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if let Err(error) = validate_concrete_execution_results(
+        &rewards_report.concrete_projection_rlp,
+        &evm_report.results,
+    ) {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = format!("FINAL_CHAIN_EVM_CONCRETE_RESULT_MISMATCH: {error:#}");
         return rejected_external_evm_commit_plan(
             session.block_number,
             &session.metadata,
@@ -1332,7 +1651,14 @@ pub fn final_chain_execution_session_request_external_evm_state_commit(
         plan_id: request.plan_id,
         period: request.period,
         publication_block_hash: request.publication_block_hash,
+        prior_state: request.prior_state,
+        post_transaction_state_root: request.post_transaction_state_root,
+        post_rewards_state_root: request.post_rewards_state_root,
         expected_state_root: request.post_rewards_state_root,
+        concrete_marker_rlp: request.concrete_marker_rlp,
+        concrete_projection_rlp: request.concrete_projection_rlp,
+        concrete_projection_hash: request.concrete_projection_hash,
+        concrete_provenance_rlp: request.concrete_provenance_rlp,
         status: FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT,
         error_code: String::new(),
     };
@@ -1353,9 +1679,9 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit(
     session: &mut FinalChainExecutionSession,
     proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
 ) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
-    let prepared_rewards_stats_plan = session_external_evm_rewards_stats_plan(session)?;
+    let prepared_rewards_stats_plan = session_external_evm_rewards_stats_plan(session)?.clone();
     let rewards_stats_update = final_chain
-        .validate_external_evm_rewards_stats_plan(prepared_rewards_stats_plan)
+        .validate_external_evm_rewards_stats_plan(&prepared_rewards_stats_plan)
         .map_err(|error| anyhow::anyhow!("FINAL_CHAIN_EVM_REWARDS_STATS_STALE: {error:#}"))?;
     let publication_plan =
         final_chain_execution_session_plan_external_evm_publication(final_chain, session);
@@ -1389,6 +1715,86 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit(
         ));
     }
 
+    let evm_request = session
+        .evm_request
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_PROJECTION_WITHOUT_REQUEST"))?;
+    let marker = decode_concrete_execution_marker(&evm_request.concrete_marker_rlp)
+        .context("FINAL_CHAIN_CONCRETE_MARKER_INVALID")?;
+    let projection = decode_concrete_state_projection(&publication_plan.concrete_projection_rlp)
+        .context("FINAL_CHAIN_CONCRETE_PROJECTION_INVALID")?;
+    ensure!(
+        publication_plan.concrete_projection_hash
+            == concrete_state_bytes_digest(&publication_plan.concrete_projection_rlp),
+        "FINAL_CHAIN_CONCRETE_PROJECTION_HASH_MISMATCH"
+    );
+    ensure!(
+        projection.identity == marker.identity
+            && projection.generation == marker.generation
+            && projection.plan_hash == marker.plan_hash
+            && projection.prior_state == marker.prior_state
+            && projection.post_transaction_state.period == marker.period
+            && projection.post_transaction_state.root
+                == commit_plan_post_transaction_root(session)?
+            && projection.post_rewards_state.period == marker.period
+            && projection.post_rewards_state.root == commit_plan_post_rewards_root(session)?,
+        "FINAL_CHAIN_CONCRETE_PROJECTION_LINEAGE_MISMATCH"
+    );
+    ensure!(
+        projection.transaction_effects.len() == evm_request.transactions.len(),
+        "FINAL_CHAIN_CONCRETE_PROJECTION_TRANSACTION_COUNT_MISMATCH"
+    );
+    ensure!(
+        projection
+            .transaction_effects
+            .last()
+            .is_none_or(|effect| effect.intermediate_state == projection.post_transaction_state),
+        "FINAL_CHAIN_CONCRETE_PROJECTION_FINAL_TRANSACTION_ROOT_MISMATCH"
+    );
+    let expected_rewards_input =
+        encode_concrete_rewards_input(&prepared_rewards_stats_plan.distribution_stats);
+    ensure!(
+        projection.rewards_input == expected_rewards_input,
+        "FINAL_CHAIN_CONCRETE_PROJECTION_REWARDS_INPUT_MISMATCH"
+    );
+    let reported_total_reward = session
+        .external_evm_commit_plan
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_PROJECTION_WITHOUT_COMMIT_PLAN"))?
+        .total_reward
+        .clone();
+    let (dpos_snapshot_rlp, account_snapshot_rlp) = final_chain.external_evm_concrete_projection(
+        session.block_number,
+        evm_request.block_author,
+        &evm_request.transactions,
+        &projection,
+        &prepared_rewards_stats_plan,
+        &reported_total_reward,
+    )?;
+    let concrete_provenance_rlp =
+        encode_concrete_state_provenance(&FinalChainConcreteStateProvenance {
+            identity: projection.identity,
+            generation: projection.generation,
+            plan_hash: projection.plan_hash,
+            committed_state: projection.post_rewards_state,
+            transactions_hash: marker.transactions_hash,
+            rewards_hash: marker.rewards_hash,
+            projection_hash: publication_plan.concrete_projection_hash,
+            catalog_hash: projection.catalog_hash,
+        });
+    let publication_plan = session
+        .external_evm_publication_plan
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_EVM_DPOS_PROJECTION_WITHOUT_PUBLICATION"))?;
+    publication_plan.dpos_snapshot_rlp = dpos_snapshot_rlp;
+    publication_plan.account_snapshot_rlp = account_snapshot_rlp;
+    publication_plan.concrete_provenance_rlp = concrete_provenance_rlp.clone();
+    publication_plan.plan_id = final_chain_external_evm_publication_plan_id(publication_plan);
+    if let Some(commit_plan) = session.external_evm_commit_plan.as_mut() {
+        commit_plan.concrete_provenance_rlp = concrete_provenance_rlp;
+    }
+    let publication_plan = publication_plan.clone();
+
     let state_commit_request_step = final_chain_execution_session_next(session);
     if state_commit_request_step.action
         != FINAL_CHAIN_EXECUTION_ACTION_REQUEST_EXTERNAL_EVM_STATE_COMMIT
@@ -1408,9 +1814,14 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit(
         request_id: publication_plan.request_id,
         plan_id: publication_plan.plan_id,
         period: publication_plan.period,
-        post_execution_state_root: commit_plan.post_execution_state_root,
-        post_rewards_state_root: commit_plan.state_root,
+        prior_state: commit_plan.prior_state,
+        post_transaction_state_root: commit_plan.post_transaction_state_root,
+        post_rewards_state_root: commit_plan.post_rewards_state_root,
         publication_block_hash: publication_plan.block_hash,
+        concrete_marker_rlp: publication_plan.concrete_marker_rlp.clone(),
+        concrete_projection_rlp: publication_plan.concrete_projection_rlp.clone(),
+        concrete_projection_hash: publication_plan.concrete_projection_hash,
+        concrete_provenance_rlp: publication_plan.concrete_provenance_rlp.clone(),
     };
 
     let intent = final_chain_execution_session_request_external_evm_state_commit(
@@ -1528,9 +1939,14 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         request_id: report.request_id,
         plan_id: report.plan_id,
         period: report.period,
-        post_execution_state_root: report.post_execution_state_root,
+        prior_state: report.prior_state,
+        post_transaction_state_root: report.post_transaction_state_root,
         post_rewards_state_root: report.post_rewards_state_root,
         publication_block_hash: report.publication_block_hash,
+        concrete_marker_rlp: intent.concrete_marker_rlp.clone(),
+        concrete_projection_rlp: intent.concrete_projection_rlp.clone(),
+        concrete_projection_hash: intent.concrete_projection_hash,
+        concrete_provenance_rlp: intent.concrete_provenance_rlp.clone(),
     };
     if let Err(error_code) = validate_external_evm_state_commit_facts(
         session,
@@ -1544,6 +1960,35 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
             &session.metadata,
             session.error_code.clone(),
         );
+    }
+    let expected_committed_state = FinalChainExternalEvmCommittedStateDescriptor {
+        period: intent.period,
+        state_root: intent.post_rewards_state_root,
+    };
+    match report.status {
+        FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED
+            if report.committed_state != Some(expected_committed_state) =>
+        {
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+            session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_COMMITTED_DESCRIPTOR_MISMATCH".into();
+            return rejected_external_evm_commit_decision(
+                session.block_number,
+                &session.metadata,
+                session.error_code.clone(),
+            );
+        }
+        FINAL_CHAIN_EVM_LIFECYCLE_STATUS_DISCARDED
+            if report.committed_state != Some(intent.prior_state) =>
+        {
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+            session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_DISCARDED_DESCRIPTOR_MISMATCH".into();
+            return rejected_external_evm_commit_decision(
+                session.block_number,
+                &session.metadata,
+                session.error_code.clone(),
+            );
+        }
+        _ => {}
     }
     let has_error = !report.error_code.is_empty();
     if report.status == FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED && has_error {
@@ -1606,14 +2051,12 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
 /// Reports the external EVM state-commit result through a Rust-owned lifecycle
 /// adapter.
 ///
-/// The caller supplies only the executor boundary outcome. Rust reconstructs
-/// the full lifecycle report from the session-owned state-commit intent and
-/// commit plan, validates it through the same lifecycle path as compatibility
-/// tests, and advances to storage publication only for committed outcomes. An
-/// explicit discarded outcome clears the pending publication marker because the
-/// external owner has confirmed staged state did not commit. Rejected outcomes
-/// keep the marker intact so startup recovery can arbitrate ambiguous
-/// post-commit failures using the durable `StateAPI` descriptor.
+/// The caller echoes the accepted identity/transition facts and supplies the
+/// observed committed descriptor. Rust compares them with the session-owned
+/// intent and commit plan, then advances only an exactly committed outcome to
+/// publication. An exactly correlated discarded outcome clears the marker;
+/// mismatched or rejected outcomes keep it durable so restart recovery can
+/// arbitrate the ambiguous boundary.
 pub fn final_chain_execution_session_report_external_evm_state_commit_result(
     final_chain: &FinalChain,
     session: &mut FinalChainExecutionSession,
@@ -1649,22 +2092,33 @@ pub fn final_chain_execution_session_report_external_evm_state_commit_result(
     };
 
     let status = result.status;
+    let validation = validate_external_evm_state_commit_result_facts(&intent, commit_plan, &result);
+    if let Err(error_code) = validation {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = error_code.to_string();
+        return Ok(rejected_external_evm_commit_decision(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        ));
+    }
+    let correlated_discard = status == FINAL_CHAIN_EVM_LIFECYCLE_STATUS_DISCARDED;
     let decision = final_chain_execution_session_report_external_evm_lifecycle(
         session,
         FinalChainExternalEvmLifecycleReport {
-            request_id: intent.request_id,
-            plan_id: intent.plan_id,
-            period: intent.period,
-            post_execution_state_root: commit_plan.post_execution_state_root,
-            post_rewards_state_root: commit_plan.state_root,
-            publication_block_hash: intent.publication_block_hash,
+            request_id: result.request_id,
+            plan_id: result.plan_id,
+            period: result.period,
+            prior_state: result.prior_state,
+            post_transaction_state_root: result.post_transaction_state_root,
+            post_rewards_state_root: result.post_rewards_state_root,
+            publication_block_hash: result.publication_block_hash,
+            committed_state: result.committed_state,
             status,
             error_code: result.error_code,
         },
     );
-    if status == FINAL_CHAIN_EVM_LIFECYCLE_STATUS_DISCARDED
-        && decision.status == FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED
-    {
+    if correlated_discard && decision.status == FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED {
         final_chain.clear_external_evm_pending_publication_marker()?;
     }
     Ok(decision)
@@ -1794,11 +2248,8 @@ pub fn final_chain_execution_session_persist_external_evm_pending_publication(
         external_evm_pending_publication_marker(
             publication_plan,
             intent,
-            // Marker v1 retained this fixed-width slot. Zero is a codec
-            // sentinel when StateAPI cannot observe the intermediate root;
-            // it is never treated as an execution fact or commit condition.
-            commit_plan.post_execution_state_root.unwrap_or_default(),
-            commit_plan.state_root,
+            commit_plan.post_transaction_state_root,
+            commit_plan.post_rewards_state_root,
         ),
     )?;
     if report.status == FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED && report.error_code.is_empty() {
@@ -1903,9 +2354,9 @@ pub fn final_chain_execution_session_attach_external_evm_proposal_period_dag_lev
 
 /// Commits a completed native FinalChain execution session.
 ///
-/// Only sessions whose next step is `COMMIT_NATIVE` are allowed to publish
-/// FinalChain storage. External EVM sessions must stay rejected until a real
-/// executor report commit path is implemented and parity-tested.
+/// Only explicit native-reference sessions whose next step is `COMMIT_NATIVE`
+/// use this path. Production external-enabled sessions publish only after the
+/// concrete lifecycle and durable-marker protocol succeeds.
 pub fn commit_final_chain_execution_session(
     final_chain: &FinalChain,
     mut session: FinalChainExecutionSession,
@@ -1989,30 +2440,50 @@ pub struct FinalChainApplicationExecutionReport {
 /// after staged EVM execution are fail-closed because the current StateAPI has
 /// no safe in-process discard primitive.
 pub trait FinalChainExecutionLeaf {
+    /// Loads the concrete committed descriptor without opening or mutating a
+    /// staged transition. The report must echo the request identity.
     fn load_committed_state_descriptor(
         &self,
         request: &FinalChainExternalEvmPreflightRequest,
     ) -> Result<FinalChainExternalEvmPreflightReport, anyhow::Error>;
 
+    /// Loads read-only bridge-contract facts for Rust system-transaction
+    /// planning. Implementations must not select or encode transactions.
     fn load_system_transaction_facts(
         &self,
         request: &FinalChainSystemTransactionFactsRequest,
     ) -> Result<FinalChainSystemTransactionPlanFact, anyhow::Error>;
 
+    /// Executes the complete ordered transaction stream from `prior_state` and
+    /// returns exact receipt facts and the post-transaction root without
+    /// committing state.
     fn execute_transactions(
         &self,
         request: &FinalChainEvmExecutionRequest,
     ) -> Result<FinalChainEvmExecutionReport, anyhow::Error>;
 
+    /// Applies the Rust-planned rewards boundary to the same staged transition
+    /// and returns the exact post-rewards root without committing state.
     fn distribute_rewards(
         &self,
         request: &FinalChainEvmRewardsRequest,
     ) -> Result<FinalChainEvmRewardsReport, anyhow::Error>;
 
+    /// Attempts the already-approved concrete commit and reports the exact
+    /// descriptor observed afterward. It must not publish FinalChain storage.
     fn commit_staged_state(
         &self,
         request: &FinalChainExternalEvmStateCommitIntent,
     ) -> Result<FinalChainExternalEvmStateCommitResult, anyhow::Error>;
+
+    /// Discards the exact staged marker and reopens concrete execution at the
+    /// marker's prior committed descriptor.
+    fn discard_staged_state(
+        &self,
+        _request: &FinalChainExternalEvmDiscardRequest,
+    ) -> Result<FinalChainExternalEvmDiscardReport, anyhow::Error> {
+        anyhow::bail!("FINAL_CHAIN_CONCRETE_DISCARD_LEAF_UNAVAILABLE")
+    }
 }
 
 fn committed_application_report(
@@ -2032,6 +2503,344 @@ fn committed_application_report(
         status: commit.status,
         error_code: commit.error_code,
     })
+}
+
+fn discard_concrete_after_failure<E: FinalChainExecutionLeaf>(
+    final_chain: &FinalChain,
+    leaf: &E,
+    request: &FinalChainEvmExecutionRequest,
+    cause: anyhow::Error,
+) -> anyhow::Error {
+    if let Err(marker_error) = decode_concrete_execution_marker(&request.concrete_marker_rlp) {
+        return anyhow::anyhow!(
+            "{cause:#}; FINAL_CHAIN_CONCRETE_DISCARD_MARKER_INVALID: {marker_error:#}"
+        );
+    }
+    let marker_hash = concrete_state_bytes_digest(&request.concrete_marker_rlp);
+    let discard_request = FinalChainExternalEvmDiscardRequest {
+        request_id: request.request_id,
+        period: request.period,
+        concrete_marker_rlp: request.concrete_marker_rlp.clone(),
+        marker_hash,
+        prior_state: request.prior_state,
+    };
+    let discard = match leaf.discard_staged_state(&discard_request) {
+        Ok(report) => report,
+        Err(discard_error) => {
+            return anyhow::anyhow!(
+                "{cause:#}; FINAL_CHAIN_CONCRETE_DISCARD_FAILED: {discard_error:#}"
+            );
+        }
+    };
+    if !discard.succeeded
+        || discard.request_id != discard_request.request_id
+        || discard.period != discard_request.period
+        || discard.concrete_marker_rlp != discard_request.concrete_marker_rlp
+        || discard.marker_hash != marker_hash
+        || discard.prior_state != request.prior_state
+        || discard.committed_state != request.prior_state
+    {
+        return anyhow::anyhow!(
+            "{cause:#}; FINAL_CHAIN_CONCRETE_DISCARD_REPORT_MISMATCH: {}",
+            discard.error_code
+        );
+    }
+    if let Err(clear_error) = final_chain.clear_external_evm_pending_publication_marker() {
+        return anyhow::anyhow!(
+            "{cause:#}; FINAL_CHAIN_CONCRETE_PENDING_PUBLICATION_CLEAR_AFTER_DISCARD_FAILED: {clear_error:#}"
+        );
+    }
+    cause
+}
+
+/// Reopens StateAPI after an ambiguous concrete commit call and classifies the
+/// only two safe outcomes. An exact prior descriptor is discarded/cleared; an
+/// exact planned descriptor is accepted only with byte-identical Rust-authored
+/// provenance and no staged marker. Every other observation leaves the durable
+/// pending-publication marker intact for startup recovery.
+fn classify_ambiguous_concrete_commit<E: FinalChainExecutionLeaf>(
+    final_chain: &FinalChain,
+    leaf: &E,
+    request: &FinalChainEvmExecutionRequest,
+    intent: &FinalChainExternalEvmStateCommitIntent,
+    cause: anyhow::Error,
+) -> Result<FinalChainExternalEvmStateCommitResult, anyhow::Error> {
+    let marker = decode_concrete_execution_marker(&request.concrete_marker_rlp)
+        .context("FINAL_CHAIN_CONCRETE_AMBIGUOUS_COMMIT_MARKER_INVALID")?;
+    let observed = leaf
+        .load_committed_state_descriptor(&FinalChainExternalEvmPreflightRequest {
+            request_id: request.request_id,
+            next_period: request.period,
+            expected_prior: request.prior_state,
+            concrete_chain_identity: marker.identity.chain_id,
+        })
+        .with_context(|| format!("{cause:#}; FINAL_CHAIN_CONCRETE_COMMIT_REOPEN_FAILED"))?;
+    ensure!(
+        observed.succeeded && observed.request_id == request.request_id,
+        "{cause:#}; FINAL_CHAIN_CONCRETE_COMMIT_REOPEN_IDENTITY_MISMATCH: {}",
+        observed.error_code
+    );
+    let observed_provenance = decode_concrete_state_provenance(&observed.concrete_provenance_rlp)
+        .context("FINAL_CHAIN_CONCRETE_COMMIT_REOPEN_PROVENANCE_INVALID")?;
+    final_chain.verify_or_initialize_concrete_state_pairing(observed_provenance.identity)?;
+
+    let expected_committed = FinalChainExternalEvmCommittedStateDescriptor {
+        period: intent.period,
+        state_root: intent.post_rewards_state_root,
+    };
+    if observed.committed == expected_committed {
+        ensure!(
+            observed.pending_concrete_marker_rlp.is_empty(),
+            "{cause:#}; FINAL_CHAIN_CONCRETE_COMMIT_REOPEN_COMMITTED_WITH_PENDING_MARKER"
+        );
+        ensure!(
+            observed.concrete_provenance_rlp == intent.concrete_provenance_rlp,
+            "{cause:#}; FINAL_CHAIN_CONCRETE_COMMIT_REOPEN_PROVENANCE_MISMATCH"
+        );
+        return Ok(FinalChainExternalEvmStateCommitResult {
+            request_id: intent.request_id,
+            plan_id: intent.plan_id,
+            period: intent.period,
+            publication_block_hash: intent.publication_block_hash,
+            prior_state: intent.prior_state,
+            post_transaction_state_root: intent.post_transaction_state_root,
+            post_rewards_state_root: intent.post_rewards_state_root,
+            concrete_marker_rlp: intent.concrete_marker_rlp.clone(),
+            concrete_projection_rlp: intent.concrete_projection_rlp.clone(),
+            concrete_projection_hash: intent.concrete_projection_hash,
+            concrete_provenance_rlp: intent.concrete_provenance_rlp.clone(),
+            committed_state: Some(expected_committed),
+            status: FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED,
+            error_code: String::new(),
+        });
+    }
+    if observed.committed == request.prior_state {
+        if observed.pending_concrete_marker_rlp == request.concrete_marker_rlp {
+            return Err(discard_concrete_after_failure(
+                final_chain,
+                leaf,
+                request,
+                cause,
+            ));
+        }
+        ensure!(
+            observed.pending_concrete_marker_rlp.is_empty(),
+            "{cause:#}; FINAL_CHAIN_CONCRETE_COMMIT_REOPEN_PRIOR_WITH_FOREIGN_MARKER"
+        );
+        final_chain
+            .clear_external_evm_pending_publication_marker()
+            .with_context(|| {
+                format!("{cause:#}; FINAL_CHAIN_CONCRETE_PENDING_PUBLICATION_CLEAR_FAILED")
+            })?;
+        return Err(cause);
+    }
+    anyhow::bail!(
+        "{cause:#}; FINAL_CHAIN_CONCRETE_COMMIT_REOPEN_AMBIGUOUS_DESCRIPTOR: period {} root {:02x?}",
+        observed.committed.period.as_u64(),
+        observed.committed.state_root
+    )
+}
+
+/// Authorizes cleanup of a StateAPI transition staged before Rust could
+/// persist its publication marker.
+///
+/// All crash points from immediately after physical staging through rewards
+/// planning are externally equivalent: StateAPI still reports the exact prior
+/// committed descriptor plus one next-generation marker, while native
+/// FinalChain has no pending publication. Such state is safe only to discard;
+/// a foreign identity, generation, prior descriptor, or non-consecutive period
+/// is never treated as retryable work.
+fn orphaned_concrete_discard_request(
+    expected_prior: FinalChainExternalEvmCommittedStateDescriptor,
+    provenance: &FinalChainConcreteStateProvenance,
+    pending_marker_rlp: &[u8],
+) -> Result<FinalChainExternalEvmDiscardRequest, anyhow::Error> {
+    let marker = decode_concrete_execution_marker(pending_marker_rlp)
+        .context("FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_MARKER_INVALID")?;
+    ensure!(
+        marker.identity == provenance.identity,
+        "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_IDENTITY_MISMATCH"
+    );
+    ensure!(
+        marker.generation
+            == provenance
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_GENERATION_OVERFLOW"
+                ))?,
+        "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_GENERATION_MISMATCH"
+    );
+    ensure!(
+        marker.prior_state.period == expected_prior.period.as_u64()
+            && marker.prior_state.root == expected_prior.state_root
+            && provenance.committed_state.period == expected_prior.period.as_u64()
+            && provenance.committed_state.root == expected_prior.state_root,
+        "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_PRIOR_MISMATCH"
+    );
+    let expected_period = expected_prior
+        .period
+        .checked_next()
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_RECOVERY_PERIOD_OVERFLOW"))?;
+    ensure!(
+        marker.period == expected_period.as_u64(),
+        "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_PERIOD_MISMATCH"
+    );
+    Ok(FinalChainExternalEvmDiscardRequest {
+        request_id: concrete_state_bytes_digest(pending_marker_rlp),
+        period: expected_period,
+        concrete_marker_rlp: pending_marker_rlp.to_vec(),
+        marker_hash: concrete_state_bytes_digest(pending_marker_rlp),
+        prior_state: expected_prior,
+    })
+}
+
+/// Recovers the paired concrete-state and native FinalChain lifecycle through
+/// one application-owned operation.
+///
+/// The concrete leaf only opens state, reports durable facts, and executes an
+/// exact marker discard authorized by Rust. Rust derives the chain identity,
+/// validates every observed descriptor/provenance transition, and owns the
+/// retry and FinalChain publication decision.
+pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
+    final_chain: &FinalChain,
+    leaf: &E,
+) -> Result<FinalChainExternalEvmPublicationReport, anyhow::Error> {
+    let expected_prior = final_chain.committed_state_descriptor()?;
+    let concrete_chain_identity = final_chain.concrete_chain_identity()?;
+    let request_id = [0; 32];
+    let load = || {
+        leaf.load_committed_state_descriptor(&FinalChainExternalEvmPreflightRequest {
+            request_id,
+            next_period: expected_prior
+                .period
+                .checked_next()
+                .unwrap_or(expected_prior.period),
+            expected_prior,
+            concrete_chain_identity,
+        })
+    };
+    let mut observed = load()?;
+    ensure!(
+        observed.succeeded && observed.request_id == request_id,
+        "FINAL_CHAIN_CONCRETE_RECOVERY_PREFLIGHT_FAILED: {}",
+        observed.error_code
+    );
+    let provenance = decode_concrete_state_provenance(&observed.concrete_provenance_rlp)
+        .context("FINAL_CHAIN_CONCRETE_RECOVERY_PROVENANCE_INVALID")?;
+    final_chain.verify_or_initialize_concrete_state_pairing(provenance.identity)?;
+    ensure!(
+        provenance.identity.chain_id == concrete_chain_identity
+            && provenance.committed_state.period == observed.committed.period.as_u64()
+            && provenance.committed_state.root == observed.committed.state_root,
+        "FINAL_CHAIN_CONCRETE_RECOVERY_PROVENANCE_MISMATCH"
+    );
+    let has_pending_publication = final_chain.has_external_evm_pending_publication()?;
+    if !has_pending_publication {
+        ensure!(
+            observed.committed == expected_prior,
+            "FINAL_CHAIN_CONCRETE_RECOVERY_UNPLANNED_DESCRIPTOR"
+        );
+        if !observed.pending_concrete_marker_rlp.is_empty() {
+            let discard = orphaned_concrete_discard_request(
+                expected_prior,
+                &provenance,
+                &observed.pending_concrete_marker_rlp,
+            )?;
+            let discarded = leaf.discard_staged_state(&discard)?;
+            ensure!(
+                discarded.succeeded
+                    && discarded.request_id == discard.request_id
+                    && discarded.period == discard.period
+                    && discarded.concrete_marker_rlp == discard.concrete_marker_rlp
+                    && discarded.marker_hash == discard.marker_hash
+                    && discarded.prior_state == discard.prior_state
+                    && discarded.committed_state == discard.prior_state,
+                "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_DISCARD_MISMATCH: {}",
+                discarded.error_code
+            );
+            let reopened = load()?;
+            ensure!(
+                reopened.succeeded
+                    && reopened.request_id == request_id
+                    && reopened.committed == expected_prior
+                    && reopened.pending_concrete_marker_rlp.is_empty()
+                    && reopened.concrete_provenance_rlp == observed.concrete_provenance_rlp,
+                "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_REOPEN_MISMATCH: {}",
+                reopened.error_code
+            );
+            observed = reopened;
+        }
+    } else {
+        let expected_next = expected_prior
+            .period
+            .checked_next()
+            .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_RECOVERY_PERIOD_OVERFLOW"))?;
+        ensure!(
+            observed.committed == expected_prior || observed.committed.period == expected_next,
+            "FINAL_CHAIN_CONCRETE_RECOVERY_DESCRIPTOR_GAP"
+        );
+    }
+    let mut report = final_chain.recover_external_evm_pending_publication(
+        observed.committed.period.as_u64(),
+        observed.committed.state_root,
+        observed.concrete_provenance_rlp,
+        observed.pending_concrete_marker_rlp,
+    )?;
+    if !report.recovery_discard_required {
+        return Ok(report);
+    }
+    ensure!(
+        report.status == FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED
+            && report.error_code == "FINAL_CHAIN_EVM_RECOVERY_EXACT_DISCARD_REQUIRED"
+            && report.recovery_concrete_chain_identity == concrete_chain_identity,
+        "FINAL_CHAIN_CONCRETE_RECOVERY_DISCARD_NOT_AUTHORIZED"
+    );
+    let discard = FinalChainExternalEvmDiscardRequest {
+        request_id: report.recovery_request_id,
+        period: report.recovery_period,
+        concrete_marker_rlp: report.recovery_concrete_marker_rlp.clone(),
+        marker_hash: report.recovery_marker_hash,
+        prior_state: report.recovery_prior_state,
+    };
+    let discarded = leaf.discard_staged_state(&discard)?;
+    ensure!(
+        discarded.succeeded
+            && discarded.request_id == discard.request_id
+            && discarded.period == discard.period
+            && discarded.concrete_marker_rlp == discard.concrete_marker_rlp
+            && discarded.marker_hash == discard.marker_hash
+            && discarded.prior_state == discard.prior_state
+            && discarded.committed_state == discard.prior_state,
+        "FINAL_CHAIN_CONCRETE_RECOVERY_DISCARD_MISMATCH: {}",
+        discarded.error_code
+    );
+    let reopened = load()?;
+    ensure!(
+        reopened.succeeded
+            && reopened.request_id == request_id
+            && reopened.committed == discard.prior_state
+            && reopened.pending_concrete_marker_rlp.is_empty(),
+        "FINAL_CHAIN_CONCRETE_RECOVERY_REOPEN_MISMATCH: {}",
+        reopened.error_code
+    );
+    report = final_chain.recover_external_evm_pending_publication(
+        reopened.committed.period.as_u64(),
+        reopened.committed.state_root,
+        reopened.concrete_provenance_rlp,
+        reopened.pending_concrete_marker_rlp,
+    )?;
+    ensure!(
+        !report.recovery_discard_required
+            && matches!(
+                report.status,
+                FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+                    | FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
+            ),
+        "FINAL_CHAIN_CONCRETE_RECOVERY_RETRY_REJECTED: {}",
+        report.error_code
+    );
+    Ok(report)
 }
 
 /// Executes one complete FinalChain task behind the application root.
@@ -2105,11 +2914,15 @@ pub fn execute_final_chain_application_task<E: FinalChainExecutionLeaf>(
             step.error_code
         );
     }
+    let mut bound_evm_request =
+        final_chain_execution_session_bind_external_evm_prior_state(&mut session, expected_prior)?;
+    let concrete_chain_identity = final_chain.concrete_chain_identity()?;
     let preflight =
         leaf.load_committed_state_descriptor(&FinalChainExternalEvmPreflightRequest {
-            request_id: step.evm_request.request_id,
+            request_id: bound_evm_request.request_id,
             next_period: session.block_number,
             expected_prior,
+            concrete_chain_identity,
         })?;
     ensure!(
         preflight.succeeded,
@@ -2117,66 +2930,187 @@ pub fn execute_final_chain_application_task<E: FinalChainExecutionLeaf>(
         preflight.error_code
     );
     ensure!(
-        preflight.request_id == step.evm_request.request_id,
+        preflight.request_id == bound_evm_request.request_id,
         "FINAL_CHAIN_EXTERNAL_EVM_PREFLIGHT_REQUEST_ID_MISMATCH"
     );
     ensure!(
         preflight.committed.period == expected_prior.period
-            && (expected_prior.period.is_genesis()
-                || preflight.committed.state_root == expected_prior.state_root),
+            && preflight.committed.state_root == expected_prior.state_root,
         "FINAL_CHAIN_EXTERNAL_EVM_PRIOR_DESCRIPTOR_MISMATCH: expected period {} root {:02x?}, observed period {} root {:02x?}",
         expected_prior.period.as_u64(),
         expected_prior.state_root,
         preflight.committed.period.as_u64(),
         preflight.committed.state_root
     );
-    let execution_report = leaf.execute_transactions(&step.evm_request)?;
+    let provenance = decode_concrete_state_provenance(&preflight.concrete_provenance_rlp)
+        .context("FINAL_CHAIN_CONCRETE_PREFLIGHT_PROVENANCE_INVALID")?;
+    final_chain.verify_or_initialize_concrete_state_pairing(provenance.identity)?;
+    ensure!(
+        provenance.committed_state.period == expected_prior.period.as_u64()
+            && provenance.committed_state.root == expected_prior.state_root,
+        "FINAL_CHAIN_CONCRETE_PREFLIGHT_PROVENANCE_DESCRIPTOR_MISMATCH"
+    );
+    ensure!(
+        preflight.pending_concrete_marker_rlp.is_empty(),
+        "FINAL_CHAIN_CONCRETE_PENDING_EXECUTION_REQUIRES_RECOVERY"
+    );
+    let transactions_hash = concrete_transactions_hash(&bound_evm_request.transactions);
+    let rewards_hash = concrete_rewards_plan_hash(&session.request, &bound_evm_request);
+    let concrete_plan_hash = concrete_execution_plan_hash(
+        bound_evm_request.request_id,
+        bound_evm_request.period,
+        bound_evm_request.prior_state,
+        transactions_hash,
+        rewards_hash,
+    );
+    let marker = FinalChainConcreteExecutionMarker {
+        identity: provenance.identity,
+        generation: provenance
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_GENERATION_OVERFLOW"))?,
+        plan_hash: concrete_plan_hash,
+        period: bound_evm_request.period.as_u64(),
+        prior_state: FinalChainConcreteState {
+            period: expected_prior.period.as_u64(),
+            root: expected_prior.state_root,
+        },
+        transactions_hash,
+        rewards_hash,
+    };
+    bound_evm_request.concrete_marker_rlp = encode_concrete_execution_marker(&marker);
+    bound_evm_request.concrete_plan_hash = concrete_plan_hash;
+    bound_evm_request.transactions_hash = transactions_hash;
+    bound_evm_request.rewards_hash = rewards_hash;
+    session.evm_request = Some(bound_evm_request.clone());
+    let execution_report = match leaf.execute_transactions(&bound_evm_request) {
+        Ok(report) => report,
+        Err(error) => {
+            return Err(discard_concrete_after_failure(
+                final_chain,
+                leaf,
+                &bound_evm_request,
+                error,
+            ));
+        }
+    };
     step = final_chain_execution_session_report_evm_with_final_chain(
         final_chain,
         &mut session,
         execution_report,
     );
     if step.action != FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS {
-        anyhow::bail!(
+        let error = anyhow::anyhow!(
             "FINAL_CHAIN_APPLICATION_EXPECTED_REWARDS: {}: {}",
             step.action,
             step.error_code
         );
+        return Err(discard_concrete_after_failure(
+            final_chain,
+            leaf,
+            &bound_evm_request,
+            error,
+        ));
     }
-    let rewards_report = leaf.distribute_rewards(&step.evm_rewards_request)?;
+    let rewards_report = match leaf.distribute_rewards(&step.evm_rewards_request) {
+        Ok(report) => report,
+        Err(error) => {
+            return Err(discard_concrete_after_failure(
+                final_chain,
+                leaf,
+                &bound_evm_request,
+                error,
+            ));
+        }
+    };
     let commit_plan =
         final_chain_execution_session_plan_external_evm_commit(&mut session, rewards_report);
-    ensure!(
-        commit_plan.error_code.is_empty(),
-        "FINAL_CHAIN_APPLICATION_COMMIT_PLAN_REJECTED: {}",
-        commit_plan.error_code
-    );
-    let intent = final_chain_execution_session_prepare_external_evm_state_commit(
+    if !commit_plan.error_code.is_empty() {
+        return Err(discard_concrete_after_failure(
+            final_chain,
+            leaf,
+            &bound_evm_request,
+            anyhow::anyhow!(
+                "FINAL_CHAIN_APPLICATION_COMMIT_PLAN_REJECTED: {}",
+                commit_plan.error_code
+            ),
+        ));
+    }
+    let intent = match final_chain_execution_session_prepare_external_evm_state_commit(
         final_chain,
         &mut session,
         proposal_period_update,
-    )?;
-    ensure!(
-        intent.status == FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT
-            && intent.error_code.is_empty(),
-        "FINAL_CHAIN_APPLICATION_STATE_COMMIT_NOT_READY: {}",
-        intent.error_code
-    );
+    ) {
+        Ok(intent) => intent,
+        Err(error) => {
+            return Err(discard_concrete_after_failure(
+                final_chain,
+                leaf,
+                &bound_evm_request,
+                error,
+            ));
+        }
+    };
+    if intent.status != FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT
+        || !intent.error_code.is_empty()
+    {
+        return Err(discard_concrete_after_failure(
+            final_chain,
+            leaf,
+            &bound_evm_request,
+            anyhow::anyhow!(
+                "FINAL_CHAIN_APPLICATION_STATE_COMMIT_NOT_READY: {}",
+                intent.error_code
+            ),
+        ));
+    }
 
     // The pending-publication marker is persisted by the preparation call
     // before this concrete state-db commit is attempted.
-    let state_commit = leaf.commit_staged_state(&intent)?;
+    let mut state_commit = match leaf.commit_staged_state(&intent) {
+        Ok(result) => result,
+        Err(error) => classify_ambiguous_concrete_commit(
+            final_chain,
+            leaf,
+            &bound_evm_request,
+            &intent,
+            error,
+        )?,
+    };
+    let commit_plan = session
+        .external_evm_commit_plan
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_APPLICATION_COMMIT_PLAN_MISSING"))?;
+    if state_commit.status != FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED
+        || !state_commit.error_code.is_empty()
+        || validate_external_evm_state_commit_result_facts(&intent, commit_plan, &state_commit)
+            .is_err()
+    {
+        state_commit = classify_ambiguous_concrete_commit(
+            final_chain,
+            leaf,
+            &bound_evm_request,
+            &intent,
+            anyhow::anyhow!(
+                "FINAL_CHAIN_APPLICATION_STATE_COMMIT_REPORT_AMBIGUOUS: {}",
+                state_commit.error_code
+            ),
+        )?;
+    }
     let decision = final_chain_execution_session_report_external_evm_state_commit_result(
         final_chain,
         &mut session,
         state_commit,
     )?;
-    ensure!(
-        decision.status == FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH
-            && decision.error_code.is_empty(),
-        "FINAL_CHAIN_APPLICATION_STATE_COMMIT_REJECTED: {}",
-        decision.error_code
-    );
+    if decision.status != FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH
+        || !decision.error_code.is_empty()
+    {
+        let error = anyhow::anyhow!(
+            "FINAL_CHAIN_APPLICATION_STATE_COMMIT_REJECTED: {}",
+            decision.error_code
+        );
+        return Err(error);
+    }
     let publication =
         final_chain_execution_session_publish_external_evm_publication(final_chain, &mut session)?;
     ensure!(
@@ -2395,6 +3329,12 @@ fn build_external_evm_rewards_request(
     Ok(FinalChainEvmRewardsRequest {
         request_id: request.request_id,
         period: request.period,
+        prior_state: request.prior_state,
+        post_transaction_state_root: report.post_transaction_state_root,
+        concrete_marker_rlp: request.concrete_marker_rlp.clone(),
+        concrete_plan_hash: request.concrete_plan_hash,
+        transactions_hash: request.transactions_hash,
+        rewards_hash: request.rewards_hash,
         block_author: request.block_author,
         block_gas_used: report.cumulative_gas_used,
         transaction_gas_used,
@@ -2476,8 +3416,16 @@ fn build_external_evm_commit_plan(
     Ok(FinalChainExternalEvmCommitPlan {
         request_id: evm_request.request_id,
         period: block_number,
-        post_execution_state_root: evm_report.state_root,
-        state_root: rewards_report.state_root,
+        prior_state: evm_request.prior_state,
+        post_transaction_state_root: evm_report.post_transaction_state_root,
+        post_rewards_state_root: rewards_report.post_rewards_state_root,
+        concrete_marker_rlp: rewards_report.concrete_marker_rlp.clone(),
+        concrete_plan_hash: rewards_report.concrete_plan_hash,
+        transactions_hash: rewards_report.transactions_hash,
+        rewards_hash: rewards_report.rewards_hash,
+        concrete_projection_rlp: rewards_report.concrete_projection_rlp.clone(),
+        concrete_projection_hash: rewards_report.concrete_projection_hash,
+        concrete_provenance_rlp: rewards_report.concrete_provenance_rlp.clone(),
         total_reward: rewards_report.total_reward.clone(),
         transactions_root: ordered_root(
             request
@@ -2536,7 +3484,7 @@ fn build_external_evm_publication_plan(
         .unwrap_or_default();
     let stored_header = StoredFinalChainBlockHeader {
         parent_hash,
-        state_root: H256::from(commit_plan.state_root),
+        state_root: H256::from(commit_plan.post_rewards_state_root),
         transactions_root: H256::from(commit_plan.transactions_root),
         receipts_root: H256::from(commit_plan.receipts_root),
         log_bloom: commit_plan.header_log_bloom,
@@ -2591,6 +3539,12 @@ fn build_external_evm_publication_plan(
         executed_transactions: commit_plan.executed_transactions,
         proposal_period_dag_level_update: FinalChainProposalPeriodDagLevelUpdate::default(),
         rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate::default(),
+        dpos_snapshot_rlp: Vec::new(),
+        account_snapshot_rlp: Vec::new(),
+        concrete_marker_rlp: commit_plan.concrete_marker_rlp.clone(),
+        concrete_projection_rlp: commit_plan.concrete_projection_rlp.clone(),
+        concrete_projection_hash: commit_plan.concrete_projection_hash,
+        concrete_provenance_rlp: commit_plan.concrete_provenance_rlp.clone(),
         error_code: String::new(),
     };
     publication.plan_id = final_chain_external_evm_publication_plan_id(&publication);
@@ -2669,14 +3623,94 @@ fn validate_external_evm_state_commit_facts(
     if request.period != session.block_number {
         return Err(format!("{error_prefix}_PERIOD_MISMATCH"));
     }
-    if request.post_execution_state_root != commit_plan.post_execution_state_root {
-        return Err(format!("{error_prefix}_POST_EXECUTION_ROOT_MISMATCH"));
+    if request.prior_state != commit_plan.prior_state {
+        return Err(format!("{error_prefix}_PRIOR_STATE_MISMATCH"));
     }
-    if request.post_rewards_state_root != commit_plan.state_root {
+    if request.post_transaction_state_root != commit_plan.post_transaction_state_root {
+        return Err(format!("{error_prefix}_POST_TRANSACTION_ROOT_MISMATCH"));
+    }
+    if request.post_rewards_state_root != commit_plan.post_rewards_state_root {
         return Err(format!("{error_prefix}_POST_REWARDS_ROOT_MISMATCH"));
     }
     if request.publication_block_hash != publication_plan.block_hash {
         return Err(format!("{error_prefix}_BLOCK_HASH_MISMATCH"));
+    }
+    if request.concrete_marker_rlp != commit_plan.concrete_marker_rlp
+        || request.concrete_marker_rlp != publication_plan.concrete_marker_rlp
+    {
+        return Err(format!("{error_prefix}_CONCRETE_MARKER_MISMATCH"));
+    }
+    if request.concrete_projection_rlp != commit_plan.concrete_projection_rlp
+        || request.concrete_projection_rlp != publication_plan.concrete_projection_rlp
+        || request.concrete_projection_hash != commit_plan.concrete_projection_hash
+        || request.concrete_projection_hash != publication_plan.concrete_projection_hash
+        || request.concrete_projection_hash
+            != concrete_state_bytes_digest(&request.concrete_projection_rlp)
+    {
+        return Err(format!("{error_prefix}_CONCRETE_PROJECTION_MISMATCH"));
+    }
+    if request.concrete_provenance_rlp != commit_plan.concrete_provenance_rlp
+        || request.concrete_provenance_rlp != publication_plan.concrete_provenance_rlp
+    {
+        return Err(format!("{error_prefix}_CONCRETE_PROVENANCE_MISMATCH"));
+    }
+    let marker = decode_concrete_execution_marker(&request.concrete_marker_rlp)
+        .map_err(|_| format!("{error_prefix}_CONCRETE_MARKER_INVALID"))?;
+    let provenance = decode_concrete_state_provenance(&request.concrete_provenance_rlp)
+        .map_err(|_| format!("{error_prefix}_CONCRETE_PROVENANCE_INVALID"))?;
+    if provenance.identity != marker.identity
+        || provenance.generation != marker.generation
+        || provenance.plan_hash != marker.plan_hash
+        || provenance.committed_state.period != request.period.as_u64()
+        || provenance.committed_state.root != request.post_rewards_state_root
+        || provenance.projection_hash != request.concrete_projection_hash
+    {
+        return Err(format!("{error_prefix}_CONCRETE_LINEAGE_MISMATCH"));
+    }
+    Ok(())
+}
+
+fn validate_external_evm_state_commit_result_facts(
+    intent: &FinalChainExternalEvmStateCommitIntent,
+    commit_plan: &FinalChainExternalEvmCommitPlan,
+    result: &FinalChainExternalEvmStateCommitResult,
+) -> Result<(), &'static str> {
+    if result.request_id != intent.request_id {
+        return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_REQUEST_ID_MISMATCH");
+    }
+    if result.plan_id != intent.plan_id {
+        return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_PLAN_ID_MISMATCH");
+    }
+    if result.period != intent.period {
+        return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_PERIOD_MISMATCH");
+    }
+    if result.publication_block_hash != intent.publication_block_hash {
+        return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_BLOCK_HASH_MISMATCH");
+    }
+    if result.prior_state != commit_plan.prior_state {
+        return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_PRIOR_STATE_MISMATCH");
+    }
+    if result.post_transaction_state_root != commit_plan.post_transaction_state_root {
+        return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_POST_TRANSACTION_ROOT_MISMATCH");
+    }
+    if result.post_rewards_state_root != commit_plan.post_rewards_state_root {
+        return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_POST_REWARDS_ROOT_MISMATCH");
+    }
+    if result.concrete_marker_rlp != intent.concrete_marker_rlp
+        || result.concrete_projection_rlp != intent.concrete_projection_rlp
+        || result.concrete_projection_hash != intent.concrete_projection_hash
+        || result.concrete_provenance_rlp != intent.concrete_provenance_rlp
+    {
+        return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_CONCRETE_IDENTITY_MISMATCH");
+    }
+    let Ok(provenance) = decode_concrete_state_provenance(&result.concrete_provenance_rlp) else {
+        return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_PROVENANCE_INVALID");
+    };
+    if provenance.projection_hash != result.concrete_projection_hash
+        || provenance.committed_state.period != result.period.as_u64()
+        || provenance.committed_state.root != result.post_rewards_state_root
+    {
+        return Err("FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_PROVENANCE_MISMATCH");
     }
     Ok(())
 }
@@ -2689,6 +3723,127 @@ fn validate_and_clone_external_evm_receipt(
         anyhow::bail!("external EVM typed receipt fields do not match receipt RLP");
     }
     Ok(result.receipt_rlp.clone())
+}
+
+/// Binds every output-only host execution result to StateAPI's canonical
+/// six-field `vm.ExecutionResult` projection before receipt/header planning.
+///
+/// StateAPI is authoritative for concrete execution while the host report is
+/// the source used to build receipts and the block header. This comparison
+/// therefore covers every transaction kind, including arbitrary EVM calls and
+/// system transactions that Rust does not execute natively. Malformed RLP,
+/// missing effects, and any semantic disagreement fail closed.
+fn validate_concrete_execution_results(
+    concrete_projection_rlp: &[u8],
+    reported_results: &[FinalChainEvmTransactionResult],
+) -> Result<(), anyhow::Error> {
+    let projection = decode_concrete_state_projection(concrete_projection_rlp)
+        .context("FINAL_CHAIN_CONCRETE_RESULT_PROJECTION_INVALID")?;
+    ensure!(
+        projection.transaction_effects.len() == reported_results.len(),
+        "FINAL_CHAIN_CONCRETE_RESULT_COUNT_MISMATCH"
+    );
+    for (effect, reported) in projection.transaction_effects.iter().zip(reported_results) {
+        let result = rlp::Rlp::new(&effect.execution_result_rlp);
+        ensure!(
+            result.is_list() && result.item_count()? == 6,
+            "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_FIELD_COUNT_MISMATCH"
+        );
+        let output: Vec<u8> = result.val_at(0)?;
+        let new_contract_bytes = result.at(1)?.data()?;
+        ensure!(
+            new_contract_bytes.len() == 20,
+            "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_CONTRACT_ADDRESS_SIZE_MISMATCH"
+        );
+        let mut new_contract_address = [0u8; 20];
+        new_contract_address.copy_from_slice(new_contract_bytes);
+        let new_contract_address =
+            (new_contract_address != [0; 20]).then_some(new_contract_address);
+        let mut logs = Vec::new();
+        for encoded_log in result.at(2)?.iter() {
+            ensure!(
+                encoded_log.item_count()? == 3,
+                "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_LOG_FIELD_COUNT_MISMATCH"
+            );
+            let address_bytes = encoded_log.at(0)?.data()?;
+            ensure!(
+                address_bytes.len() == 20,
+                "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_LOG_ADDRESS_SIZE_MISMATCH"
+            );
+            let mut address = [0u8; 20];
+            address.copy_from_slice(address_bytes);
+            let mut topics = Vec::new();
+            for encoded_topic in encoded_log.at(1)?.iter() {
+                let topic_bytes = encoded_topic.data()?;
+                ensure!(
+                    topic_bytes.len() == 32,
+                    "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_LOG_TOPIC_SIZE_MISMATCH"
+                );
+                let mut topic = [0u8; 32];
+                topic.copy_from_slice(topic_bytes);
+                topics.push(FinalChainEvmLogTopic { topic });
+            }
+            logs.push(FinalChainEvmLog {
+                address,
+                topics,
+                data: encoded_log.val_at(2)?,
+            });
+        }
+        let gas_used: u64 = result.val_at(3)?;
+        let code_error: String = result.val_at(4)?;
+        let consensus_error: String = result.val_at(5)?;
+        let status = u8::from(code_error.is_empty() && consensus_error.is_empty());
+        let mut canonical = rlp::RlpStream::new_list(6);
+        canonical.append(&output);
+        canonical.append(&new_contract_bytes);
+        canonical.begin_list(logs.len());
+        for log in &logs {
+            canonical.begin_list(3);
+            canonical.append(&log.address.as_slice());
+            canonical.begin_list(log.topics.len());
+            for topic in &log.topics {
+                canonical.append(&topic.topic.as_slice());
+            }
+            canonical.append(&log.data);
+        }
+        canonical.append(&gas_used);
+        canonical.append(&code_error);
+        canonical.append(&consensus_error);
+        ensure!(
+            canonical.out().as_ref() == effect.execution_result_rlp,
+            "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_NON_CANONICAL"
+        );
+
+        ensure!(
+            status == reported.status,
+            "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_STATUS_MISMATCH"
+        );
+        ensure!(
+            gas_used == reported.gas_used.as_u64(),
+            "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_GAS_MISMATCH"
+        );
+        ensure!(
+            logs == reported.logs,
+            "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_LOGS_MISMATCH"
+        );
+        ensure!(
+            new_contract_address == reported.new_contract_address,
+            "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_CONTRACT_ADDRESS_MISMATCH"
+        );
+        ensure!(
+            output == reported.output,
+            "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_OUTPUT_MISMATCH"
+        );
+        ensure!(
+            code_error == reported.code_error,
+            "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_CODE_ERROR_MISMATCH"
+        );
+        ensure!(
+            consensus_error == reported.consensus_error,
+            "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_CONSENSUS_ERROR_MISMATCH"
+        );
+    }
+    Ok(())
 }
 
 fn encode_external_evm_receipt(result: &FinalChainEvmTransactionResult) -> Vec<u8> {
@@ -2798,7 +3953,7 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
     use tiny_keccak::{Hasher, Keccak};
 
     let mut hasher = Keccak::v256();
-    hasher.update(b"rustaxa-final-chain-external-evm-publication-plan-v1");
+    hasher.update(b"rustaxa-final-chain-external-evm-publication-plan-v3");
     hasher.update(&plan.request_id);
     hasher.update(&plan.period.as_u64().to_be_bytes());
     hasher.update(&plan.block_hash);
@@ -2836,6 +3991,12 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
         &mut hasher,
         &plan.rewards_stats_update.current_block_stats_rlp,
     );
+    hash_bytes_with_len(&mut hasher, &plan.dpos_snapshot_rlp);
+    hash_bytes_with_len(&mut hasher, &plan.account_snapshot_rlp);
+    hash_bytes_with_len(&mut hasher, &plan.concrete_marker_rlp);
+    hash_bytes_with_len(&mut hasher, &plan.concrete_projection_rlp);
+    hasher.update(&plan.concrete_projection_hash);
+    hash_bytes_with_len(&mut hasher, &plan.concrete_provenance_rlp);
 
     let mut plan_id = [0u8; 32];
     hasher.finalize(&mut plan_id);
@@ -2862,9 +4023,416 @@ pub(crate) fn final_chain_external_evm_commit_decision_id(
     decision_id
 }
 
+/// Derives the durable identity for one exact concrete-state lifecycle.
+///
+/// Unlike a publication plan id, this identity also covers the prior,
+/// post-transaction, and post-rewards roots. It is therefore suitable for
+/// correlating a pending marker with restart recovery observations.
+pub(crate) fn final_chain_external_evm_lifecycle_id(
+    request_id: [u8; 32],
+    plan_id: [u8; 32],
+    period: FinalChainBlockNumber,
+    publication_block_hash: [u8; 32],
+    prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    post_transaction_state_root: [u8; 32],
+    post_rewards_state_root: [u8; 32],
+) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut hasher = Keccak::v256();
+    hasher.update(b"rustaxa-final-chain-external-evm-lifecycle-v1");
+    hasher.update(&request_id);
+    hasher.update(&plan_id);
+    hasher.update(&period.as_u64().to_be_bytes());
+    hasher.update(&publication_block_hash);
+    hasher.update(&prior_state.period.as_u64().to_be_bytes());
+    hasher.update(&prior_state.state_root);
+    hasher.update(&post_transaction_state_root);
+    hasher.update(&post_rewards_state_root);
+    let mut lifecycle_id = [0; 32];
+    hasher.finalize(&mut lifecycle_id);
+    lifecycle_id
+}
+
+/// Validates durable marker, FinalChain, and concrete-state facts without
+/// mutating either persistence owner.
+///
+/// Normal live recovery returns `READY_TO_PUBLISH`. An exact duplicate block
+/// returns `ALREADY_PUBLISHED`, while a concrete descriptor still equal to the
+/// exact prior state proves the staged commit was not durable and returns
+/// `CLEAR_UNCOMMITTED`. Every gap, ahead descriptor, root mismatch, stale
+/// identity, missing observation, or ambiguous outcome is rejected and must
+/// leave the marker intact.
+pub fn validate_external_evm_recovery_fact(
+    fact: &FinalChainExternalEvmRecoveryFact,
+) -> FinalChainExternalEvmRecoveryDecision {
+    let decision = |status, error_code: &str| FinalChainExternalEvmRecoveryDecision {
+        lifecycle_id: fact.lifecycle_id,
+        request_id: fact.request_id,
+        plan_id: fact.plan_id,
+        period: fact.period,
+        publication_block_hash: fact.publication_block_hash,
+        status,
+        error_code: error_code.to_string(),
+    };
+    if fact.request_id == [0; 32]
+        || fact.plan_id == [0; 32]
+        || fact.publication_block_hash == [0; 32]
+        || fact.post_transaction_state_root == [0; 32]
+        || fact.post_rewards_state_root == [0; 32]
+        || fact.prior_state.state_root == [0; 32]
+    {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_IDENTITY_OR_ROOT_MISSING",
+        );
+    }
+    let Some(expected_period) = fact.prior_state.period.checked_next() else {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_PRIOR_PERIOD_OVERFLOW",
+        );
+    };
+    if fact.period != expected_period {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_PERIOD_GAP",
+        );
+    }
+    let expected_marker = match decode_concrete_execution_marker(&fact.expected_concrete_marker_rlp)
+    {
+        Ok(marker) => marker,
+        Err(_) => {
+            return decision(
+                FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+                "FINAL_CHAIN_EVM_RECOVERY_CONCRETE_MARKER_INVALID",
+            );
+        }
+    };
+    let expected_provenance =
+        match decode_concrete_state_provenance(&fact.expected_concrete_provenance_rlp) {
+            Ok(provenance) => provenance,
+            Err(_) => {
+                return decision(
+                    FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+                    "FINAL_CHAIN_EVM_RECOVERY_EXPECTED_PROVENANCE_INVALID",
+                );
+            }
+        };
+    let observed_provenance =
+        match decode_concrete_state_provenance(&fact.observed_concrete_provenance_rlp) {
+            Ok(provenance) => provenance,
+            Err(_) => {
+                return decision(
+                    FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+                    "FINAL_CHAIN_EVM_RECOVERY_OBSERVED_PROVENANCE_INVALID",
+                );
+            }
+        };
+    if expected_marker.period != fact.period.as_u64()
+        || expected_marker.prior_state.period != fact.prior_state.period.as_u64()
+        || expected_marker.prior_state.root != fact.prior_state.state_root
+        || expected_provenance.identity != expected_marker.identity
+        || expected_provenance.generation != expected_marker.generation
+        || expected_provenance.plan_hash != expected_marker.plan_hash
+        || expected_provenance.committed_state.period != fact.period.as_u64()
+        || expected_provenance.committed_state.root != fact.post_rewards_state_root
+    {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_CONCRETE_PLAN_MISMATCH",
+        );
+    }
+    if observed_provenance.identity != expected_provenance.identity {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_PROVENANCE_IDENTITY_MISMATCH",
+        );
+    }
+    if !fact.pending_concrete_marker_rlp.is_empty()
+        && fact.pending_concrete_marker_rlp != fact.expected_concrete_marker_rlp
+    {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_PENDING_CONCRETE_MARKER_MISMATCH",
+        );
+    }
+    let expected_lifecycle_id = final_chain_external_evm_lifecycle_id(
+        fact.request_id,
+        fact.plan_id,
+        fact.period,
+        fact.publication_block_hash,
+        fact.prior_state,
+        fact.post_transaction_state_root,
+        fact.post_rewards_state_root,
+    );
+    if fact.lifecycle_id != expected_lifecycle_id {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_LIFECYCLE_ID_MISMATCH",
+        );
+    }
+
+    if let Some(finalized_block_hash) = fact.finalized_block_hash {
+        if finalized_block_hash != fact.publication_block_hash {
+            return decision(
+                FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+                "FINAL_CHAIN_EVM_RECOVERY_EXISTING_BLOCK_HASH_MISMATCH",
+            );
+        }
+        let expected_published_state = FinalChainExternalEvmCommittedStateDescriptor {
+            period: fact.period,
+            state_root: fact.post_rewards_state_root,
+        };
+        if fact.finalized_block_state != Some(expected_published_state) {
+            return decision(
+                FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+                "FINAL_CHAIN_EVM_RECOVERY_EXISTING_BLOCK_ROOT_MISMATCH",
+            );
+        }
+        if fact.finalized_head.period < fact.period {
+            return decision(
+                FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+                "FINAL_CHAIN_EVM_RECOVERY_EXISTING_BLOCK_AHEAD_OF_HEAD",
+            );
+        }
+        if fact.committed_state != Some(expected_published_state) {
+            return decision(
+                FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+                "FINAL_CHAIN_EVM_RECOVERY_DUPLICATE_COMMITTED_DESCRIPTOR_MISMATCH",
+            );
+        }
+        if !fact.pending_concrete_marker_rlp.is_empty() {
+            return decision(
+                FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+                "FINAL_CHAIN_EVM_RECOVERY_PUBLISHED_WITH_PENDING_CONCRETE_MARKER",
+            );
+        }
+        if fact.observed_concrete_provenance_rlp != fact.expected_concrete_provenance_rlp {
+            return decision(
+                FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+                "FINAL_CHAIN_EVM_RECOVERY_PUBLISHED_PROVENANCE_MISMATCH",
+            );
+        }
+        return decision(FINAL_CHAIN_EVM_RECOVERY_DECISION_ALREADY_PUBLISHED, "");
+    }
+    if fact.finalized_block_state.is_some() {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_BLOCK_STATE_WITHOUT_HASH",
+        );
+    }
+    if fact.finalized_head.period != fact.prior_state.period {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            if fact.finalized_head.period > fact.prior_state.period {
+                "FINAL_CHAIN_EVM_RECOVERY_STALE_MARKER_OR_HEAD_AHEAD"
+            } else {
+                "FINAL_CHAIN_EVM_RECOVERY_FINALIZED_HEAD_BEHIND"
+            },
+        );
+    }
+    if fact.finalized_head.state_root != fact.prior_state.state_root {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_FINALIZED_PRIOR_ROOT_MISMATCH",
+        );
+    }
+    let Some(committed_state) = fact.committed_state else {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_DESCRIPTOR_MISSING",
+        );
+    };
+    if committed_state == fact.prior_state {
+        if observed_provenance.committed_state.period != fact.prior_state.period.as_u64()
+            || observed_provenance.committed_state.root != fact.prior_state.state_root
+            || observed_provenance.generation.checked_add(1) != Some(expected_provenance.generation)
+        {
+            return decision(
+                FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+                "FINAL_CHAIN_EVM_RECOVERY_PRIOR_PROVENANCE_MISMATCH",
+            );
+        }
+        return decision(FINAL_CHAIN_EVM_RECOVERY_DECISION_CLEAR_UNCOMMITTED, "");
+    }
+    if committed_state.period < fact.prior_state.period {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_STATE_BEHIND",
+        );
+    }
+    if committed_state.period == fact.prior_state.period {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_PRIOR_ROOT_MISMATCH",
+        );
+    }
+    if committed_state.period > fact.period {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_STATE_AHEAD",
+        );
+    }
+    if committed_state.period != fact.period {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_PERIOD_GAP",
+        );
+    }
+    if committed_state.state_root != fact.post_rewards_state_root {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_ROOT_MISMATCH",
+        );
+    }
+    if !fact.pending_concrete_marker_rlp.is_empty() {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_WITH_PENDING_CONCRETE_MARKER",
+        );
+    }
+    if fact.observed_concrete_provenance_rlp != fact.expected_concrete_provenance_rlp {
+        return decision(
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_PROVENANCE_MISMATCH",
+        );
+    }
+    decision(FINAL_CHAIN_EVM_RECOVERY_DECISION_READY_TO_PUBLISH, "")
+}
+
+/// Materializes the exact StateAPI discard instruction for a validated
+/// uncommitted recovery fact.
+///
+/// The executor must treat every field as opaque/correlated input, execute the
+/// marker discard once, verify reopen at `prior_state`, and retry recovery with
+/// a fresh provenance/pending-marker snapshot. C++ must not decode or derive
+/// any part of this instruction.
+pub fn external_evm_recovery_discard_request(
+    fact: &FinalChainExternalEvmRecoveryFact,
+    decision: &FinalChainExternalEvmRecoveryDecision,
+) -> Result<FinalChainExternalEvmDiscardRequest, anyhow::Error> {
+    ensure!(
+        decision.status == FINAL_CHAIN_EVM_RECOVERY_DECISION_CLEAR_UNCOMMITTED
+            && decision.lifecycle_id == fact.lifecycle_id
+            && decision.request_id == fact.request_id
+            && decision.plan_id == fact.plan_id
+            && decision.period == fact.period
+            && decision.publication_block_hash == fact.publication_block_hash
+            && decision.error_code.is_empty(),
+        "FINAL_CHAIN_EVM_RECOVERY_DISCARD_DECISION_MISMATCH"
+    );
+    ensure!(
+        !fact.pending_concrete_marker_rlp.is_empty()
+            && fact.pending_concrete_marker_rlp == fact.expected_concrete_marker_rlp,
+        "FINAL_CHAIN_EVM_RECOVERY_DISCARD_MARKER_MISSING"
+    );
+    let marker = decode_concrete_execution_marker(&fact.pending_concrete_marker_rlp)
+        .context("FINAL_CHAIN_EVM_RECOVERY_DISCARD_MARKER_INVALID")?;
+    ensure!(
+        marker.period == fact.period.as_u64()
+            && marker.prior_state.period == fact.prior_state.period.as_u64()
+            && marker.prior_state.root == fact.prior_state.state_root,
+        "FINAL_CHAIN_EVM_RECOVERY_DISCARD_MARKER_LINEAGE_MISMATCH"
+    );
+    Ok(FinalChainExternalEvmDiscardRequest {
+        request_id: fact.request_id,
+        period: fact.period,
+        concrete_marker_rlp: fact.pending_concrete_marker_rlp.clone(),
+        marker_hash: concrete_state_bytes_digest(&fact.pending_concrete_marker_rlp),
+        prior_state: fact.prior_state,
+    })
+}
+
 fn hash_bytes_with_len(hasher: &mut impl tiny_keccak::Hasher, bytes: &[u8]) {
     hasher.update(&(bytes.len() as u64).to_be_bytes());
     hasher.update(bytes);
+}
+
+fn concrete_transactions_hash(transactions: &[FinalChainEvmTransactionInput]) -> [u8; 32] {
+    let mut stream = rlp::RlpStream::new_list(transactions.len());
+    for transaction in transactions {
+        stream.append(&transaction.rlp);
+    }
+    concrete_state_bytes_digest(&stream.out())
+}
+
+fn concrete_rewards_plan_hash(
+    request: &FinalChainExecutionRequest,
+    evm_request: &FinalChainEvmExecutionRequest,
+) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut hasher = Keccak::v256();
+    hasher.update(b"rustaxa-final-chain-concrete-rewards-plan-v1");
+    hasher.update(&evm_request.request_id);
+    hasher.update(&request.blocks_per_year.to_be_bytes());
+    hasher.update(&(request.finalized_dag_blocks.len() as u64).to_be_bytes());
+    for block in &request.finalized_dag_blocks {
+        hasher.update(&block.author);
+        hasher.update(&block.difficulty.to_be_bytes());
+        for transaction_hash in &block.transaction_hashes {
+            hasher.update(transaction_hash);
+        }
+    }
+    for vote in &request.cert_votes {
+        hasher.update(&vote.period.to_be_bytes());
+        hasher.update(vote.voter.as_bytes());
+        hasher.update(&vote.weight.to_be_bytes());
+    }
+    let mut hash = [0; 32];
+    hasher.finalize(&mut hash);
+    hash
+}
+
+fn concrete_execution_plan_hash(
+    request_id: [u8; 32],
+    period: FinalChainBlockNumber,
+    prior_state: FinalChainExternalEvmCommittedStateDescriptor,
+    transactions_hash: [u8; 32],
+    rewards_hash: [u8; 32],
+) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut hasher = Keccak::v256();
+    hasher.update(b"rustaxa-final-chain-concrete-execution-plan-v1");
+    hasher.update(&request_id);
+    hasher.update(&period.as_u64().to_be_bytes());
+    hasher.update(&prior_state.period.as_u64().to_be_bytes());
+    hasher.update(&prior_state.state_root);
+    hasher.update(&transactions_hash);
+    hasher.update(&rewards_hash);
+    let mut hash = [0; 32];
+    hasher.finalize(&mut hash);
+    hash
+}
+
+fn commit_plan_post_transaction_root(
+    session: &FinalChainExecutionSession,
+) -> Result<[u8; 32], anyhow::Error> {
+    session
+        .external_evm_commit_plan
+        .as_ref()
+        .map(|plan| plan.post_transaction_state_root)
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_COMMIT_PLAN_MISSING"))
+}
+
+fn commit_plan_post_rewards_root(
+    session: &FinalChainExecutionSession,
+) -> Result<[u8; 32], anyhow::Error> {
+    session
+        .external_evm_commit_plan
+        .as_ref()
+        .map(|plan| plan.post_rewards_state_root)
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_COMMIT_PLAN_MISSING"))
+}
+
+fn encode_concrete_rewards_input(stats: &[RewardsStatsPeriodRlp]) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(stats.len());
+    for stat in stats {
+        stream.append_raw(&stat.data, 1);
+    }
+    stream.out().to_vec()
 }
 
 fn validate_regular_transaction_count(count: usize) -> Result<(), &'static str> {
@@ -2968,15 +4536,18 @@ fn execution_request_id(
     block_number: FinalChainBlockNumber,
     metadata: &rustaxa_types::PbftBlockMetadata,
     block_gas_limit: FinalChainGas,
+    prior_state: FinalChainExternalEvmCommittedStateDescriptor,
     transactions: &[FinalChainEvmTransactionInput],
 ) -> [u8; 32] {
     use tiny_keccak::{Hasher, Keccak};
 
     let mut hasher = Keccak::v256();
-    // Version the identity domain because nonce encoding changed from fixed
-    // eight-byte integers to length-prefixed canonical arbitrary-width bytes.
-    hasher.update(b"rustaxa-final-chain-evm-execution-v2");
+    // Version the identity domain because the exact concrete prior descriptor
+    // is now consensus-critical and prevents cross-root replay.
+    hasher.update(b"rustaxa-final-chain-evm-execution-v3");
     hasher.update(&block_number.as_u64().to_be_bytes());
+    hasher.update(&prior_state.period.as_u64().to_be_bytes());
+    hasher.update(&prior_state.state_root);
     hasher.update(metadata.author.as_bytes());
     hasher.update(&metadata.timestamp.to_be_bytes());
     hasher.update(&block_gas_limit.as_u64().to_be_bytes());
@@ -3018,6 +4589,11 @@ fn execution_request_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::concrete_state_projection::{
+        FinalChainConcreteIdentity, FinalChainConcreteStateProjection,
+        FinalChainConcreteTransactionEffect, concrete_storage_catalog_hash,
+        encode_concrete_state_projection,
+    };
     use ethereum_types::H256;
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
@@ -3084,6 +4660,7 @@ mod tests {
                 data: vec![0x66],
             }],
             new_contract_address: None,
+            output: Vec::new(),
             code_error: String::new(),
             consensus_error: String::new(),
         }
@@ -3100,6 +4677,89 @@ mod tests {
         result
     }
 
+    fn encode_concrete_execution_result(result: &FinalChainEvmTransactionResult) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(6);
+        stream.append(&result.output);
+        stream.append(&result.new_contract_address.unwrap_or_default().as_slice());
+        stream.begin_list(result.logs.len());
+        for log in &result.logs {
+            stream.begin_list(3);
+            stream.append(&log.address.as_slice());
+            stream.begin_list(log.topics.len());
+            for topic in &log.topics {
+                stream.append(&topic.topic.as_slice());
+            }
+            stream.append(&log.data);
+        }
+        stream.append(&result.gas_used.as_u64());
+        stream.append(&result.code_error);
+        stream.append(&result.consensus_error);
+        stream.out().to_vec()
+    }
+
+    fn concrete_projection_for_report(
+        request: &FinalChainEvmExecutionRequest,
+        report: &FinalChainEvmExecutionReport,
+        projected_results: &[FinalChainEvmTransactionResult],
+        post_rewards_state_root: [u8; 32],
+    ) -> Vec<u8> {
+        let marker = decode_concrete_execution_marker(&request.concrete_marker_rlp).unwrap();
+        let storage = Vec::new();
+        encode_concrete_state_projection(&FinalChainConcreteStateProjection {
+            identity: marker.identity,
+            generation: marker.generation,
+            plan_hash: marker.plan_hash,
+            prior_state: marker.prior_state,
+            post_transaction_state: FinalChainConcreteState {
+                period: request.period.as_u64(),
+                root: report.post_transaction_state_root,
+            },
+            post_rewards_state: FinalChainConcreteState {
+                period: request.period.as_u64(),
+                root: post_rewards_state_root,
+            },
+            transaction_effects: request
+                .transactions
+                .iter()
+                .zip(projected_results)
+                .enumerate()
+                .map(
+                    |(index, (transaction, result))| FinalChainConcreteTransactionEffect {
+                        index: index as u64,
+                        transaction_rlp: transaction.rlp.clone(),
+                        execution_result_rlp: encode_concrete_execution_result(result),
+                        intermediate_state: FinalChainConcreteState {
+                            period: request.period.as_u64(),
+                            root: report.post_transaction_state_root,
+                        },
+                        accounts: Vec::new(),
+                        storage: Vec::new(),
+                        invocations: Vec::new(),
+                    },
+                )
+                .collect(),
+            accounts: Vec::new(),
+            storage,
+            invocations: Vec::new(),
+            rewards_input: Vec::new(),
+            catalog_hash: concrete_storage_catalog_hash(&[]),
+        })
+    }
+
+    fn concrete_evm_report_identity(
+        request: &FinalChainEvmExecutionRequest,
+    ) -> FinalChainEvmExecutionReport {
+        FinalChainEvmExecutionReport {
+            request_id: request.request_id,
+            prior_state: request.prior_state,
+            concrete_marker_rlp: request.concrete_marker_rlp.clone(),
+            concrete_plan_hash: request.concrete_plan_hash,
+            transactions_hash: request.transactions_hash,
+            rewards_hash: request.rewards_hash,
+            ..Default::default()
+        }
+    }
+
     fn provide_system_transactions(
         session: &mut FinalChainExecutionSession,
         transactions: Vec<Vec<u8>>,
@@ -3109,14 +4769,52 @@ mod tests {
             request.action,
             FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS
         );
-        final_chain_execution_session_report_system_transactions(
+        let step = final_chain_execution_session_report_system_transactions(
             session,
             FinalChainSystemTransactionReport {
                 request_id: request.system_transaction_request.request_id,
                 period: request.period,
                 transactions,
             },
-        )
+        );
+        if step.action == FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM {
+            let mut bound = final_chain_execution_session_bind_external_evm_prior_state(
+                session,
+                test_prior_state(),
+            )
+            .unwrap();
+            let marker = FinalChainConcreteExecutionMarker {
+                identity: FinalChainConcreteIdentity {
+                    policy_version: 1,
+                    database_id: [0x31; 32],
+                    chain_id: [0x32; 32],
+                },
+                generation: 1,
+                plan_hash: [0x33; 32],
+                period: bound.period.as_u64(),
+                prior_state: FinalChainConcreteState {
+                    period: bound.prior_state.period.as_u64(),
+                    root: bound.prior_state.state_root,
+                },
+                transactions_hash: [0x34; 32],
+                rewards_hash: [0x35; 32],
+            };
+            bound.concrete_marker_rlp = encode_concrete_execution_marker(&marker);
+            bound.concrete_plan_hash = marker.plan_hash;
+            bound.transactions_hash = marker.transactions_hash;
+            bound.rewards_hash = marker.rewards_hash;
+            session.evm_request = Some(bound);
+            final_chain_execution_session_next(session)
+        } else {
+            step
+        }
+    }
+
+    fn test_prior_state() -> FinalChainExternalEvmCommittedStateDescriptor {
+        FinalChainExternalEvmCommittedStateDescriptor {
+            period: 6.into(),
+            state_root: [0x99; 32],
+        }
     }
 
     fn system_transaction_rlp(nonce: u64) -> Vec<u8> {
@@ -3157,11 +4855,50 @@ mod tests {
             Vec::new(),
             FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY,
         ));
+        let identity = FinalChainConcreteIdentity {
+            policy_version: 1,
+            database_id: [0x61; 32],
+            chain_id: [0x62; 32],
+        };
+        let marker = FinalChainConcreteExecutionMarker {
+            identity,
+            generation: 4,
+            plan_hash: [0x63; 32],
+            period: 7,
+            prior_state: FinalChainConcreteState {
+                period: 6,
+                root: test_prior_state().state_root,
+            },
+            transactions_hash: [0x64; 32],
+            rewards_hash: [0x65; 32],
+        };
+        let concrete_marker_rlp = encode_concrete_execution_marker(&marker);
+        let concrete_projection_rlp = Vec::new();
+        let concrete_projection_hash = concrete_state_bytes_digest(&concrete_projection_rlp);
+        let concrete_provenance_rlp =
+            encode_concrete_state_provenance(&FinalChainConcreteStateProvenance {
+                identity,
+                generation: marker.generation,
+                plan_hash: marker.plan_hash,
+                committed_state: FinalChainConcreteState {
+                    period: 7,
+                    root: [0x33; 32],
+                },
+                transactions_hash: marker.transactions_hash,
+                rewards_hash: marker.rewards_hash,
+                projection_hash: concrete_projection_hash,
+                catalog_hash: [0x66; 32],
+            });
         let commit_plan = FinalChainExternalEvmCommitPlan {
             request_id: [0x11; 32],
             period: 7.into(),
-            post_execution_state_root: Some([0x22; 32]),
-            state_root: [0x33; 32],
+            prior_state: test_prior_state(),
+            post_transaction_state_root: [0x22; 32],
+            post_rewards_state_root: [0x33; 32],
+            concrete_marker_rlp: concrete_marker_rlp.clone(),
+            concrete_projection_rlp: concrete_projection_rlp.clone(),
+            concrete_projection_hash,
+            concrete_provenance_rlp: concrete_provenance_rlp.clone(),
             error_code: String::new(),
             ..Default::default()
         };
@@ -3170,6 +4907,10 @@ mod tests {
             plan_id: [0x44; 32],
             period: 7.into(),
             block_hash: [0x55; 32],
+            concrete_marker_rlp,
+            concrete_projection_rlp,
+            concrete_projection_hash,
+            concrete_provenance_rlp,
             error_code: String::new(),
             ..Default::default()
         };
@@ -3185,8 +4926,8 @@ mod tests {
         assert_eq!(
             final_chain_external_evm_publication_plan_id(&publication_plan),
             [
-                18, 236, 103, 98, 108, 95, 176, 9, 221, 61, 118, 64, 74, 213, 156, 213, 236, 177,
-                126, 165, 0, 183, 163, 157, 189, 136, 62, 110, 114, 218, 93, 207,
+                71, 13, 54, 177, 27, 148, 170, 187, 63, 4, 38, 175, 50, 50, 174, 252, 61, 25, 189,
+                147, 237, 60, 96, 145, 90, 126, 38, 159, 89, 33, 125, 225,
             ]
         );
     }
@@ -3199,9 +4940,14 @@ mod tests {
             request_id: publication_plan.request_id,
             plan_id: publication_plan.plan_id,
             period: publication_plan.period,
-            post_execution_state_root: commit_plan.post_execution_state_root,
-            post_rewards_state_root: commit_plan.state_root,
+            prior_state: commit_plan.prior_state,
+            post_transaction_state_root: commit_plan.post_transaction_state_root,
+            post_rewards_state_root: commit_plan.post_rewards_state_root,
             publication_block_hash: publication_plan.block_hash,
+            concrete_marker_rlp: commit_plan.concrete_marker_rlp.clone(),
+            concrete_projection_rlp: commit_plan.concrete_projection_rlp.clone(),
+            concrete_projection_hash: commit_plan.concrete_projection_hash,
+            concrete_provenance_rlp: commit_plan.concrete_provenance_rlp.clone(),
         }
     }
 
@@ -3215,9 +4961,20 @@ mod tests {
             request_id: publication_plan.request_id,
             plan_id: publication_plan.plan_id,
             period: publication_plan.period,
-            post_execution_state_root: commit_plan.post_execution_state_root,
-            post_rewards_state_root: commit_plan.state_root,
+            prior_state: commit_plan.prior_state,
+            post_transaction_state_root: commit_plan.post_transaction_state_root,
+            post_rewards_state_root: commit_plan.post_rewards_state_root,
             publication_block_hash: publication_plan.block_hash,
+            committed_state: match status {
+                FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED => {
+                    Some(FinalChainExternalEvmCommittedStateDescriptor {
+                        period: publication_plan.period,
+                        state_root: commit_plan.post_rewards_state_root,
+                    })
+                }
+                FINAL_CHAIN_EVM_LIFECYCLE_STATUS_DISCARDED => Some(commit_plan.prior_state),
+                _ => None,
+            },
             status,
             error_code,
         }
@@ -3327,14 +5084,8 @@ mod tests {
             FinalChainBlockNumber::new(metadata.period),
             &metadata,
             1_000_000.into(),
+            test_prior_state(),
             &[transaction.clone()],
-        );
-        assert_eq!(
-            legacy_width_id,
-            [
-                74, 153, 100, 167, 85, 120, 13, 212, 97, 101, 51, 7, 95, 140, 95, 38, 36, 154, 52,
-                176, 63, 21, 193, 30, 106, 26, 206, 102, 240, 251, 79, 35,
-            ]
         );
         let mut fixed_width = transaction.clone();
         let mut fixed_bytes = [0; 32];
@@ -3349,7 +5100,8 @@ mod tests {
                 FinalChainBlockNumber::new(metadata.period),
                 &metadata,
                 1_000_000.into(),
-                &[fixed_width],
+                test_prior_state(),
+                &[fixed_width.clone()],
             )
         );
         transaction.nonce = transaction.nonce.next();
@@ -3357,9 +5109,22 @@ mod tests {
             FinalChainBlockNumber::new(metadata.period),
             &metadata,
             1_000_000.into(),
+            test_prior_state(),
             &[transaction],
         );
         assert_ne!(legacy_width_id, widened_id);
+        let mut other_prior = test_prior_state();
+        other_prior.state_root[0] ^= 0xff;
+        assert_ne!(
+            legacy_width_id,
+            execution_request_id(
+                FinalChainBlockNumber::new(metadata.period),
+                &metadata,
+                1_000_000.into(),
+                other_prior,
+                &[fixed_width],
+            )
+        );
     }
 
     #[test]
@@ -3384,18 +5149,14 @@ mod tests {
             kind: FINAL_CHAIN_EXECUTION_TX_KIND_SYSTEM,
             is_system: true,
         };
-        assert_eq!(
-            execution_request_id(
-                FinalChainBlockNumber::new(metadata.period),
-                &metadata,
-                1_000_000.into(),
-                &[transaction],
-            ),
-            [
-                90, 76, 93, 113, 145, 192, 173, 31, 4, 216, 240, 230, 23, 235, 240, 15, 84, 116,
-                68, 209, 160, 185, 34, 246, 15, 54, 235, 249, 218, 168, 223, 153,
-            ]
+        let request_id = execution_request_id(
+            FinalChainBlockNumber::new(metadata.period),
+            &metadata,
+            1_000_000.into(),
+            test_prior_state(),
+            &[transaction],
         );
+        assert_ne!(request_id, [0; 32]);
     }
 
     #[test]
@@ -3545,7 +5306,7 @@ mod tests {
     }
 
     #[test]
-    fn external_evm_mode_checks_system_transactions_before_empty_native_commit() {
+    fn external_evm_mode_transitions_even_an_empty_period_through_concrete_state() {
         let mut session = create_final_chain_execution_session(valid_request(
             Vec::new(),
             FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
@@ -3559,9 +5320,49 @@ mod tests {
         assert_eq!(system_step.system_transaction_request.period, 7.into());
 
         let step = provide_system_transactions(&mut session, Vec::new());
-        assert_eq!(step.status, FINAL_CHAIN_EXECUTION_STATUS_READY);
-        assert_eq!(step.action, FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE);
+        assert_eq!(
+            step.status,
+            FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM
+        );
+        assert_eq!(
+            step.action,
+            FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM
+        );
+        assert_eq!(step.evm_request.prior_state, test_prior_state());
         assert!(step.evm_request.transactions.is_empty());
+    }
+
+    #[test]
+    fn external_evm_mode_transitions_native_dpos_and_slashing_in_exact_order() {
+        let transactions = vec![
+            transaction(1, Some([9; 20]), Vec::new()),
+            transaction(2, Some(DPOS_CONTRACT_ADDRESS), vec![1, 2, 3, 4]),
+            transaction(3, Some(SLASHING_CONTRACT_ADDRESS), vec![5, 6, 7, 8]),
+        ];
+        let mut session = create_final_chain_execution_session(valid_request(
+            transactions,
+            FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+        ));
+        let step = provide_system_transactions(&mut session, Vec::new());
+
+        assert_eq!(
+            step.action,
+            FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM
+        );
+        assert_eq!(step.evm_request.prior_state, test_prior_state());
+        assert_eq!(
+            step.evm_request
+                .transactions
+                .iter()
+                .map(|transaction| transaction.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER,
+                FINAL_CHAIN_EXECUTION_TX_KIND_DPOS_CONTRACT,
+                FINAL_CHAIN_EXECUTION_TX_KIND_SLASHING_CONTRACT,
+            ]
+        );
+        assert_eq!(step.external_evm_transaction_count, 0);
     }
 
     #[test]
@@ -3644,7 +5445,12 @@ mod tests {
         let report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-            state_root: Some([0x11; 32]),
+            prior_state: step.evm_request.prior_state,
+            concrete_marker_rlp: step.evm_request.concrete_marker_rlp.clone(),
+            concrete_plan_hash: step.evm_request.concrete_plan_hash,
+            transactions_hash: step.evm_request.transactions_hash,
+            rewards_hash: step.evm_request.rewards_hash,
+            post_transaction_state_root: [0x11; 32],
             cumulative_gas_used: 1.into(),
             results: vec![evm_result(&tx, 1, 1, 1, vec![0xc0])],
         };
@@ -3672,9 +5478,11 @@ mod tests {
         let mut report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-            state_root: Some([0x11; 32]),
+            prior_state: step.evm_request.prior_state,
+            post_transaction_state_root: [0x11; 32],
             cumulative_gas_used: 1.into(),
             results: vec![mismatched_result],
+            ..concrete_evm_report_identity(&step.evm_request)
         };
 
         let rejected = final_chain_execution_session_report_evm(&mut session, report.clone());
@@ -3701,9 +5509,11 @@ mod tests {
         let report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-            state_root: Some([0x11; 32]),
+            prior_state: step.evm_request.prior_state,
+            post_transaction_state_root: [0x11; 32],
             cumulative_gas_used: 1.into(),
             results: vec![evm_result_with_encoded_receipt(&tx, 1, 1, 1)],
+            ..concrete_evm_report_identity(&step.evm_request)
         };
 
         let rewards = final_chain_execution_session_report_evm(&mut session, report);
@@ -3732,6 +5542,48 @@ mod tests {
             vec![1]
         );
         assert_eq!(rewards.evm_rewards_request.transaction_fees, vec![vec![0]]);
+        assert_eq!(
+            rewards.evm_rewards_request.prior_state,
+            step.evm_request.prior_state
+        );
+        assert_eq!(
+            rewards.evm_rewards_request.post_transaction_state_root,
+            [0x11; 32]
+        );
+    }
+
+    #[test]
+    fn evm_report_requires_exact_prior_and_post_transaction_roots() {
+        for expected_error in [
+            "FINAL_CHAIN_EVM_REPORT_PRIOR_STATE_MISMATCH",
+            "FINAL_CHAIN_EVM_REPORT_POST_TRANSACTION_ROOT_MISSING",
+        ] {
+            let transactions = vec![transaction(2, Some([8; 20]), vec![0xaa])];
+            let mut session = create_final_chain_execution_session(valid_request(
+                transactions,
+                FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+            ));
+            let step = provide_system_transactions(&mut session, Vec::new());
+            let tx = step.evm_request.transactions[0].clone();
+            let mut report = FinalChainEvmExecutionReport {
+                request_id: step.evm_request.request_id,
+                status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+                prior_state: step.evm_request.prior_state,
+                post_transaction_state_root: [0x11; 32],
+                cumulative_gas_used: 1.into(),
+                results: vec![evm_result_with_encoded_receipt(&tx, 1, 1, 1)],
+                ..concrete_evm_report_identity(&step.evm_request)
+            };
+            if expected_error.ends_with("PRIOR_STATE_MISMATCH") {
+                report.prior_state.state_root[0] ^= 0xff;
+            } else {
+                report.post_transaction_state_root = [0; 32];
+            }
+
+            let rejected = final_chain_execution_session_report_evm(&mut session, report);
+            assert_eq!(rejected.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
+            assert_eq!(rejected.error_code, expected_error);
+        }
     }
 
     #[test]
@@ -3748,9 +5600,11 @@ mod tests {
             FinalChainEvmExecutionReport {
                 request_id: step.evm_request.request_id,
                 status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-                state_root: Some([0x11; 32]),
+                prior_state: step.evm_request.prior_state,
+                post_transaction_state_root: [0x11; 32],
                 cumulative_gas_used: 1.into(),
                 results: vec![evm_result_with_encoded_receipt(&tx, 1, 1, 1)],
+                ..concrete_evm_report_identity(&step.evm_request)
             },
         );
         session.prepared_rewards_stats_plan = Some(FinalChainPreparedExternalEvmRewardsStatsPlan {
@@ -3787,16 +5641,22 @@ mod tests {
         let step = provide_system_transactions(&mut session, Vec::new());
         let first = evm_result_with_encoded_receipt(&step.evm_request.transactions[0], 1, 2, 2);
         let second = evm_result_with_encoded_receipt(&step.evm_request.transactions[1], 1, 3, 5);
-        let rewards = final_chain_execution_session_report_evm(
-            &mut session,
-            FinalChainEvmExecutionReport {
-                request_id: step.evm_request.request_id,
-                status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-                state_root: Some([0x10; 32]),
-                cumulative_gas_used: 5.into(),
-                results: vec![first.clone(), second.clone()],
-            },
+        let evm_report = FinalChainEvmExecutionReport {
+            request_id: step.evm_request.request_id,
+            status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+            prior_state: step.evm_request.prior_state,
+            post_transaction_state_root: [0x10; 32],
+            cumulative_gas_used: 5.into(),
+            results: vec![first.clone(), second.clone()],
+            ..concrete_evm_report_identity(&step.evm_request)
+        };
+        let concrete_projection_rlp = concrete_projection_for_report(
+            &step.evm_request,
+            &evm_report,
+            &evm_report.results,
+            [0x22; 32],
         );
+        let rewards = final_chain_execution_session_report_evm(&mut session, evm_report);
         assert_eq!(
             rewards.action,
             FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS
@@ -3808,7 +5668,16 @@ mod tests {
                 request_id: step.evm_request.request_id,
                 period: 7.into(),
                 status: FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
-                state_root: [0x22; 32],
+                prior_state: step.evm_request.prior_state,
+                post_transaction_state_root: [0x10; 32],
+                post_rewards_state_root: [0x22; 32],
+                concrete_marker_rlp: step.evm_request.concrete_marker_rlp.clone(),
+                concrete_plan_hash: step.evm_request.concrete_plan_hash,
+                transactions_hash: step.evm_request.transactions_hash,
+                rewards_hash: step.evm_request.rewards_hash,
+                concrete_projection_hash: concrete_state_bytes_digest(&concrete_projection_rlp),
+                concrete_projection_rlp,
+                concrete_provenance_rlp: Vec::new(),
                 total_reward: vec![0x33],
             },
         );
@@ -3816,8 +5685,9 @@ mod tests {
         assert!(plan.error_code.is_empty());
         assert_eq!(plan.period, 7.into());
         assert_eq!(plan.request_id, step.evm_request.request_id);
-        assert_eq!(plan.post_execution_state_root, Some([0x10; 32]));
-        assert_eq!(plan.state_root, [0x22; 32]);
+        assert_eq!(plan.prior_state, test_prior_state());
+        assert_eq!(plan.post_transaction_state_root, [0x10; 32]);
+        assert_eq!(plan.post_rewards_state_root, [0x22; 32]);
         assert_eq!(plan.total_reward, vec![0x33]);
         assert_eq!(plan.gas_used.as_u64(), 5);
         assert_eq!(plan.executed_dag_blocks, 0);
@@ -3850,6 +5720,72 @@ mod tests {
             FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_PUBLICATION
         );
         assert!(session.error_code.is_empty());
+    }
+
+    #[test]
+    fn arbitrary_evm_projection_result_must_match_host_report_before_header_planning() {
+        let mut session = create_final_chain_execution_session(valid_request(
+            vec![transaction(2, Some([8; 20]), vec![0xaa])],
+            FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+        ));
+        let step = provide_system_transactions(&mut session, Vec::new());
+        assert_eq!(
+            step.evm_request.transactions[0].kind,
+            FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CALL
+        );
+        let host_result =
+            evm_result_with_encoded_receipt(&step.evm_request.transactions[0], 1, 3, 3);
+        let evm_report = FinalChainEvmExecutionReport {
+            request_id: step.evm_request.request_id,
+            status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+            prior_state: step.evm_request.prior_state,
+            post_transaction_state_root: [0x10; 32],
+            cumulative_gas_used: 3.into(),
+            results: vec![host_result.clone()],
+            ..concrete_evm_report_identity(&step.evm_request)
+        };
+        let mut projected_result = host_result;
+        projected_result.output = vec![0xde, 0xad];
+        let concrete_projection_rlp = concrete_projection_for_report(
+            &step.evm_request,
+            &evm_report,
+            &[projected_result],
+            [0x22; 32],
+        );
+        let rewards = final_chain_execution_session_report_evm(&mut session, evm_report);
+        assert_eq!(
+            rewards.action,
+            FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS
+        );
+
+        let plan = final_chain_execution_session_plan_external_evm_commit(
+            &mut session,
+            FinalChainEvmRewardsReport {
+                request_id: step.evm_request.request_id,
+                period: step.evm_request.period,
+                status: FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
+                prior_state: step.evm_request.prior_state,
+                post_transaction_state_root: [0x10; 32],
+                post_rewards_state_root: [0x22; 32],
+                concrete_marker_rlp: step.evm_request.concrete_marker_rlp.clone(),
+                concrete_plan_hash: step.evm_request.concrete_plan_hash,
+                transactions_hash: step.evm_request.transactions_hash,
+                rewards_hash: step.evm_request.rewards_hash,
+                concrete_projection_hash: concrete_state_bytes_digest(&concrete_projection_rlp),
+                concrete_projection_rlp,
+                concrete_provenance_rlp: Vec::new(),
+                total_reward: Vec::new(),
+            },
+        );
+
+        assert_eq!(session.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
+        assert!(
+            plan.error_code
+                .contains("FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_OUTPUT_MISMATCH"),
+            "{}",
+            plan.error_code
+        );
+        assert!(session.external_evm_commit_plan.is_none());
     }
 
     #[test]
@@ -4054,6 +5990,333 @@ mod tests {
     }
 
     #[test]
+    fn external_evm_lifecycle_rejects_wrong_committed_descriptor() {
+        let (mut session, commit_plan, publication_plan) = external_evm_state_commit_session();
+        let intent = final_chain_execution_session_request_external_evm_state_commit(
+            &mut session,
+            state_commit_request(&commit_plan, &publication_plan),
+        );
+        assert_eq!(
+            intent.status,
+            FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT
+        );
+        let mut report = lifecycle_report(
+            &commit_plan,
+            &publication_plan,
+            FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED,
+            String::new(),
+        );
+        report.committed_state.as_mut().unwrap().state_root[0] ^= 0xff;
+
+        let decision =
+            final_chain_execution_session_report_external_evm_lifecycle(&mut session, report);
+
+        assert_eq!(decision.status, FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED);
+        assert_eq!(
+            decision.error_code,
+            "FINAL_CHAIN_EVM_LIFECYCLE_COMMITTED_DESCRIPTOR_MISMATCH"
+        );
+    }
+
+    fn recovery_fact() -> FinalChainExternalEvmRecoveryFact {
+        let prior_state = test_prior_state();
+        let request_id = [0x11; 32];
+        let plan_id = [0x22; 32];
+        let period = FinalChainBlockNumber::new(7);
+        let publication_block_hash = [0x33; 32];
+        let post_transaction_state_root = [0x44; 32];
+        let post_rewards_state_root = [0x55; 32];
+        let identity = FinalChainConcreteIdentity {
+            policy_version: 1,
+            database_id: [0x66; 32],
+            chain_id: [0x77; 32],
+        };
+        let concrete_marker = FinalChainConcreteExecutionMarker {
+            identity,
+            generation: 7,
+            plan_hash: [0x88; 32],
+            period: period.as_u64(),
+            prior_state: FinalChainConcreteState {
+                period: prior_state.period.as_u64(),
+                root: prior_state.state_root,
+            },
+            transactions_hash: [0x99; 32],
+            rewards_hash: [0xaa; 32],
+        };
+        let expected_concrete_marker_rlp = encode_concrete_execution_marker(&concrete_marker);
+        let expected_concrete_provenance_rlp =
+            encode_concrete_state_provenance(&FinalChainConcreteStateProvenance {
+                identity,
+                generation: concrete_marker.generation,
+                plan_hash: concrete_marker.plan_hash,
+                committed_state: FinalChainConcreteState {
+                    period: period.as_u64(),
+                    root: post_rewards_state_root,
+                },
+                transactions_hash: concrete_marker.transactions_hash,
+                rewards_hash: concrete_marker.rewards_hash,
+                projection_hash: [0xbb; 32],
+                catalog_hash: [0xcc; 32],
+            });
+        FinalChainExternalEvmRecoveryFact {
+            lifecycle_id: final_chain_external_evm_lifecycle_id(
+                request_id,
+                plan_id,
+                period,
+                publication_block_hash,
+                prior_state,
+                post_transaction_state_root,
+                post_rewards_state_root,
+            ),
+            request_id,
+            plan_id,
+            period,
+            publication_block_hash,
+            prior_state,
+            post_transaction_state_root,
+            post_rewards_state_root,
+            finalized_head: prior_state,
+            finalized_block_hash: None,
+            finalized_block_state: None,
+            committed_state: Some(FinalChainExternalEvmCommittedStateDescriptor {
+                period,
+                state_root: post_rewards_state_root,
+            }),
+            expected_concrete_marker_rlp,
+            observed_concrete_provenance_rlp: expected_concrete_provenance_rlp.clone(),
+            expected_concrete_provenance_rlp,
+            pending_concrete_marker_rlp: Vec::new(),
+        }
+    }
+
+    fn orphaned_recovery_state() -> (
+        FinalChainExternalEvmCommittedStateDescriptor,
+        FinalChainConcreteStateProvenance,
+        FinalChainConcreteExecutionMarker,
+    ) {
+        let fact = recovery_fact();
+        let marker = decode_concrete_execution_marker(&fact.expected_concrete_marker_rlp).unwrap();
+        let committed = FinalChainConcreteState {
+            period: fact.prior_state.period.as_u64(),
+            root: fact.prior_state.state_root,
+        };
+        let provenance = FinalChainConcreteStateProvenance {
+            identity: marker.identity,
+            generation: marker.generation - 1,
+            plan_hash: [0x42; 32],
+            committed_state: committed,
+            transactions_hash: [0x43; 32],
+            rewards_hash: [0x44; 32],
+            projection_hash: [0x45; 32],
+            catalog_hash: [0x46; 32],
+        };
+        (fact.prior_state, provenance, marker)
+    }
+
+    #[test]
+    fn orphaned_concrete_stage_authorizes_only_exact_next_generation_discard() {
+        let (prior, provenance, marker) = orphaned_recovery_state();
+        let encoded = encode_concrete_execution_marker(&marker);
+        let discard = orphaned_concrete_discard_request(prior, &provenance, &encoded).unwrap();
+        assert_eq!(discard.period, marker.period.into());
+        assert_eq!(discard.prior_state, prior);
+        assert_eq!(discard.concrete_marker_rlp, encoded);
+        assert_eq!(discard.marker_hash, concrete_state_bytes_digest(&encoded));
+    }
+
+    #[test]
+    fn orphaned_concrete_stage_rejects_foreign_ahead_and_stale_markers() {
+        let (prior, provenance, marker) = orphaned_recovery_state();
+        let mut cases = Vec::new();
+
+        let mut foreign = marker.clone();
+        foreign.identity.database_id[0] ^= 0xff;
+        cases.push((
+            foreign,
+            "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_IDENTITY_MISMATCH",
+        ));
+
+        let mut stale = marker.clone();
+        stale.generation -= 1;
+        cases.push((
+            stale,
+            "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_GENERATION_MISMATCH",
+        ));
+
+        let mut wrong_prior = marker.clone();
+        wrong_prior.prior_state.root[0] ^= 0xff;
+        cases.push((
+            wrong_prior,
+            "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_PRIOR_MISMATCH",
+        ));
+
+        let mut ahead = marker;
+        ahead.period += 1;
+        cases.push((ahead, "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_MARKER_INVALID"));
+
+        for (candidate, expected) in cases {
+            let error = orphaned_concrete_discard_request(
+                prior,
+                &provenance,
+                &encode_concrete_execution_marker(&candidate),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn external_evm_recovery_decides_each_crash_boundary_without_mutation() {
+        let after_state_commit = recovery_fact();
+        assert_eq!(
+            validate_external_evm_recovery_fact(&after_state_commit).status,
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_READY_TO_PUBLISH
+        );
+
+        let mut before_state_commit = recovery_fact();
+        before_state_commit.committed_state = Some(before_state_commit.prior_state);
+        let expected =
+            decode_concrete_state_provenance(&before_state_commit.expected_concrete_provenance_rlp)
+                .unwrap();
+        before_state_commit.observed_concrete_provenance_rlp =
+            encode_concrete_state_provenance(&FinalChainConcreteStateProvenance {
+                generation: expected.generation - 1,
+                committed_state: FinalChainConcreteState {
+                    period: before_state_commit.prior_state.period.as_u64(),
+                    root: before_state_commit.prior_state.state_root,
+                },
+                ..expected
+            });
+        before_state_commit.pending_concrete_marker_rlp =
+            before_state_commit.expected_concrete_marker_rlp.clone();
+        assert_eq!(
+            validate_external_evm_recovery_fact(&before_state_commit).status,
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_CLEAR_UNCOMMITTED
+        );
+        let before_decision = validate_external_evm_recovery_fact(&before_state_commit);
+        let discard =
+            external_evm_recovery_discard_request(&before_state_commit, &before_decision).unwrap();
+        assert_eq!(discard.request_id, before_state_commit.request_id);
+        assert_eq!(discard.period, before_state_commit.period);
+        assert_eq!(discard.prior_state, before_state_commit.prior_state);
+        assert_eq!(
+            discard.concrete_marker_rlp,
+            before_state_commit.expected_concrete_marker_rlp
+        );
+        assert_eq!(
+            discard.marker_hash,
+            concrete_state_bytes_digest(&discard.concrete_marker_rlp)
+        );
+
+        let mut after_publication = recovery_fact();
+        after_publication.finalized_head = FinalChainExternalEvmCommittedStateDescriptor {
+            period: after_publication.period,
+            state_root: after_publication.post_rewards_state_root,
+        };
+        after_publication.finalized_block_hash = Some(after_publication.publication_block_hash);
+        after_publication.finalized_block_state = Some(after_publication.finalized_head);
+        assert_eq!(
+            validate_external_evm_recovery_fact(&after_publication).status,
+            FINAL_CHAIN_EVM_RECOVERY_DECISION_ALREADY_PUBLISHED
+        );
+    }
+
+    #[test]
+    fn external_evm_recovery_fails_closed_on_gap_ahead_root_stale_and_ambiguous_facts() {
+        let mut cases = Vec::new();
+
+        let mut gap = recovery_fact();
+        gap.period = 8.into();
+        cases.push((gap, "FINAL_CHAIN_EVM_RECOVERY_PERIOD_GAP"));
+
+        let mut ahead = recovery_fact();
+        ahead.committed_state = Some(FinalChainExternalEvmCommittedStateDescriptor {
+            period: 8.into(),
+            state_root: [0x66; 32],
+        });
+        cases.push((ahead, "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_STATE_AHEAD"));
+
+        let mut wrong_root = recovery_fact();
+        wrong_root.committed_state.as_mut().unwrap().state_root[0] ^= 0xff;
+        cases.push((
+            wrong_root,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_ROOT_MISMATCH",
+        ));
+
+        let mut stale = recovery_fact();
+        stale.finalized_head.period = stale.period;
+        stale.finalized_head.state_root = stale.post_rewards_state_root;
+        cases.push((stale, "FINAL_CHAIN_EVM_RECOVERY_STALE_MARKER_OR_HEAD_AHEAD"));
+
+        let mut ambiguous = recovery_fact();
+        ambiguous.committed_state = None;
+        cases.push((
+            ambiguous,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_DESCRIPTOR_MISSING",
+        ));
+
+        let mut wrong_identity = recovery_fact();
+        wrong_identity.lifecycle_id[0] ^= 0xff;
+        cases.push((
+            wrong_identity,
+            "FINAL_CHAIN_EVM_RECOVERY_LIFECYCLE_ID_MISMATCH",
+        ));
+
+        for (fact, error_code) in cases {
+            let decision = validate_external_evm_recovery_fact(&fact);
+            assert_eq!(decision.status, FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED);
+            assert_eq!(decision.error_code, error_code);
+        }
+    }
+
+    #[test]
+    fn external_evm_recovery_rejects_duplicate_block_mismatch() {
+        let mut fact = recovery_fact();
+        fact.finalized_head = FinalChainExternalEvmCommittedStateDescriptor {
+            period: fact.period,
+            state_root: fact.post_rewards_state_root,
+        };
+        fact.finalized_block_hash = Some([0xee; 32]);
+        fact.finalized_block_state = Some(fact.finalized_head);
+        let decision = validate_external_evm_recovery_fact(&fact);
+        assert_eq!(decision.status, FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED);
+        assert_eq!(
+            decision.error_code,
+            "FINAL_CHAIN_EVM_RECOVERY_EXISTING_BLOCK_HASH_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn external_evm_recovery_requires_identical_committed_provenance() {
+        let mut fact = recovery_fact();
+        let mut observed =
+            decode_concrete_state_provenance(&fact.observed_concrete_provenance_rlp).unwrap();
+        observed.projection_hash[0] ^= 0xff;
+        fact.observed_concrete_provenance_rlp = encode_concrete_state_provenance(&observed);
+
+        let decision = validate_external_evm_recovery_fact(&fact);
+        assert_eq!(decision.status, FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED);
+        assert_eq!(
+            decision.error_code,
+            "FINAL_CHAIN_EVM_RECOVERY_COMMITTED_PROVENANCE_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn external_evm_recovery_rejects_foreign_pending_concrete_marker() {
+        let mut fact = recovery_fact();
+        fact.pending_concrete_marker_rlp = fact.expected_concrete_marker_rlp.clone();
+        fact.pending_concrete_marker_rlp[0] ^= 0x01;
+
+        let decision = validate_external_evm_recovery_fact(&fact);
+        assert_eq!(decision.status, FINAL_CHAIN_EVM_RECOVERY_DECISION_REJECTED);
+        assert_eq!(
+            decision.error_code,
+            "FINAL_CHAIN_EVM_RECOVERY_PENDING_CONCRETE_MARKER_MISMATCH"
+        );
+    }
+
+    #[test]
     fn evm_report_rejects_bad_cumulative_gas() {
         let transactions = vec![transaction(2, Some([8; 20]), vec![0xaa])];
         let mut session = create_final_chain_execution_session(valid_request(
@@ -4065,9 +6328,11 @@ mod tests {
         let report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-            state_root: Some([0x11; 32]),
+            prior_state: step.evm_request.prior_state,
+            post_transaction_state_root: [0x11; 32],
             cumulative_gas_used: 2.into(),
             results: vec![evm_result(&tx, 1, 1, 2, vec![0xc0])],
+            ..concrete_evm_report_identity(&step.evm_request)
         };
 
         let rejected = final_chain_execution_session_report_evm(&mut session, report);
@@ -4091,9 +6356,11 @@ mod tests {
         let report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
-            state_root: Some([0x11; 32]),
+            prior_state: step.evm_request.prior_state,
+            post_transaction_state_root: [0x11; 32],
             cumulative_gas_used: 1.into(),
             results: vec![evm_result(&tx, 2, 1, 1, vec![0xc0])],
+            ..concrete_evm_report_identity(&step.evm_request)
         };
 
         let rejected = final_chain_execution_session_report_evm(&mut session, report);

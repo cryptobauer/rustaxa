@@ -1,3 +1,4 @@
+pub mod concrete_state_projection;
 pub mod consensus_application;
 pub mod consensus_application_runtime;
 pub mod consensus_application_startup;
@@ -53,6 +54,18 @@ pub mod verified_votes;
 mod final_chain;
 pub mod final_chain_execution;
 
+pub use concrete_state_projection::{
+    FINAL_CHAIN_CONCRETE_INVOCATION_NORMAL, FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
+    FINAL_CHAIN_CONCRETE_INVOCATION_PARENT_FRAME_REVERTED, FINAL_CHAIN_CONCRETE_PROJECTION_VERSION,
+    FinalChainConcreteAccountProjection, FinalChainConcreteExecutionMarker,
+    FinalChainConcreteIdentity, FinalChainConcreteInvocation, FinalChainConcreteState,
+    FinalChainConcreteStateProjection, FinalChainConcreteStateProvenance,
+    FinalChainConcreteStorageProjection, FinalChainConcreteTransactionEffect,
+    concrete_state_bytes_digest, concrete_storage_catalog_hash, decode_concrete_execution_marker,
+    decode_concrete_state_projection, decode_concrete_state_provenance,
+    encode_concrete_execution_marker, encode_concrete_state_projection,
+    encode_concrete_state_provenance, validate_concrete_state_pair,
+};
 pub use consensus_application::{
     ConsensusApplication, ConsensusApplicationBootstrap, ConsensusApplicationConfig,
     ConsensusFinalChainConfig, ConsensusLiveStatus, ConsensusVoteStatus, DagBlockIngressReport,
@@ -126,6 +139,7 @@ pub use final_chain_execution::{
     FinalChainEvmRewardsReport, FinalChainEvmRewardsRequest, FinalChainEvmTransactionInput,
     FinalChainEvmTransactionResult, FinalChainExternalEvmCommitDecision,
     FinalChainExternalEvmCommitPlan, FinalChainExternalEvmCommittedStateDescriptor,
+    FinalChainExternalEvmDiscardReport, FinalChainExternalEvmDiscardRequest,
     FinalChainExternalEvmLifecycleReport, FinalChainExternalEvmPreflightReport,
     FinalChainExternalEvmPreflightRequest, FinalChainExternalEvmPublicationAuditReport,
     FinalChainExternalEvmPublicationPlan, FinalChainExternalEvmPublicationReport,
@@ -134,6 +148,7 @@ pub use final_chain_execution::{
     FinalChainExternalEvmTransactionPublication, FinalChainSystemTransactionFactsRequest,
     FinalChainSystemTransactionPlan, FinalChainSystemTransactionPlanFact,
     FinalChainSystemTransactionReport, FinalChainSystemTransactionRequest,
+    recover_final_chain_application_state,
 };
 pub(crate) use final_chain_execution::{
     FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED, FinalChainExecutionLeaf,

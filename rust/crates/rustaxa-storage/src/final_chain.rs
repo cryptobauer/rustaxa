@@ -193,6 +193,7 @@ impl<D: DbReader> FinalChainRepository<D> {
     const ACCOUNT_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:account_snapshot:";
     const EXTERNAL_EVM_PENDING_PUBLICATION_KEY: &'static [u8] =
         b"rustaxa:external_evm_pending_publication";
+    const CONCRETE_STATE_PAIRING_KEY: &'static [u8] = b"rustaxa:concrete_state_pairing:v1";
 
     /// Creates a final-chain repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
@@ -290,6 +291,15 @@ impl<D: DbReader> FinalChainRepository<D> {
                 Column::FinalChainMeta,
                 Self::EXTERNAL_EVM_PENDING_PUBLICATION_KEY,
             )?
+            .map(|value| value.as_ref().to_vec()))
+    }
+
+    /// Returns the opaque application-authored pairing between this Rust
+    /// database and its concrete StateAPI database.
+    pub fn concrete_state_pairing_raw(&self) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .db
+            .get(Column::FinalChainMeta, Self::CONCRETE_STATE_PAIRING_KEY)?
             .map(|value| value.as_ref().to_vec()))
     }
 
@@ -623,6 +633,19 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             Column::FinalChainMeta,
             Self::EXTERNAL_EVM_PENDING_PUBLICATION_KEY,
         )
+    }
+
+    /// Durably records the exact concrete database pairing before execution
+    /// may stage a publication marker.
+    pub fn write_concrete_state_pairing(&self, payload: &[u8]) -> Result<()> {
+        let mut batch = self.db.create_batch();
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainMeta,
+            Self::CONCRETE_STATE_PAIRING_KEY,
+            payload,
+        )?;
+        self.db.commit_batch_with_sync(batch, true)
     }
 
     fn write_log_bloom_index_update(

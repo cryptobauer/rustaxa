@@ -179,15 +179,20 @@ rust::Box<rustaxa::BridgeConsensusApplication> createConformanceApplication(cons
   dpos.validator_maximum_stake = u64Be(30'000);
 
   rustaxa::FinalChainRewardsConfig rewards{};
+  rewards.phalaenopsis_period = UINT64_MAX;
   rewards.aspen_part_one_period = UINT64_MAX;
   rewards.fix_claim_all_block_num = UINT64_MAX;
   rewards.fix_redelegate_block_num = UINT64_MAX;
+  rewards.aspen_part_two_period = UINT64_MAX;
+  rewards.cacti_period = UINT64_MAX;
 
   auto genesis = h256Array(0xAB);
   auto dag_genesis = h256Array(0xAC);
-  return rustaxa::create_consensus_application(
-      path.string(), 1, 0, genesis, dag_genesis, 32, 1'000'000, sortition, rustaxa::TransactionQueueConfig{16},
-      gas_pricer, 1'000'000, std::move(pbft), {}, {}, 1'000'000, 0, {}, {}, std::move(dpos), std::move(rewards));
+  auto concrete_genesis_root = h256Array(0xAD);
+  return rustaxa::create_consensus_application(path.string(), 1, 0, genesis, dag_genesis, 32, 1'000'000, sortition,
+                                               rustaxa::TransactionQueueConfig{16}, gas_pricer, 1'000'000,
+                                               std::move(pbft), {}, {}, 1'000'000, 0, 0, concrete_genesis_root, {}, {},
+                                               {}, std::move(dpos), std::move(rewards));
 }
 
 void runConformance(const fs::path& db_path, Transcript& transcript) {

@@ -1,3 +1,9 @@
+use crate::concrete_state_projection::{
+    FINAL_CHAIN_CONCRETE_INVOCATION_NORMAL, FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
+    FinalChainConcreteAccountProjection, FinalChainConcreteIdentity, FinalChainConcreteInvocation,
+    FinalChainConcreteStateProjection, FinalChainConcreteStorageProjection,
+    decode_concrete_execution_marker,
+};
 use crate::dag::{
     DAG_VERIFY_DPOS_STATUS_ELIGIBLE, DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
     DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE, DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
@@ -13,14 +19,21 @@ use crate::final_chain_execution::{
     FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MISMATCH,
     FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
     FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
-    FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY,
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED, FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
-    FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED, FinalChainExternalEvmCommitDecision,
-    FinalChainExternalEvmCommittedStateDescriptor, FinalChainExternalEvmPublicationAuditReport,
-    FinalChainExternalEvmPublicationPlan, FinalChainExternalEvmPublicationReport,
+    FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED,
+    FINAL_CHAIN_EVM_RECOVERY_DECISION_ALREADY_PUBLISHED,
+    FINAL_CHAIN_EVM_RECOVERY_DECISION_CLEAR_UNCOMMITTED,
+    FINAL_CHAIN_EVM_RECOVERY_DECISION_READY_TO_PUBLISH,
+    FINAL_CHAIN_EXECUTION_TX_KIND_DPOS_CONTRACT,
+    FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER,
+    FINAL_CHAIN_EXECUTION_TX_KIND_SLASHING_CONTRACT, FinalChainEvmTransactionInput,
+    FinalChainExternalEvmCommitDecision, FinalChainExternalEvmCommittedStateDescriptor,
+    FinalChainExternalEvmPublicationAuditReport, FinalChainExternalEvmPublicationPlan,
+    FinalChainExternalEvmPublicationReport, FinalChainExternalEvmRecoveryFact,
     FinalChainExternalEvmRewardsStatsUpdate, FinalChainExternalEvmStateCommitIntent,
-    FinalChainPreparedExternalEvmRewardsStatsPlan, final_chain_external_evm_commit_decision_id,
-    final_chain_external_evm_publication_plan_id,
+    FinalChainPreparedExternalEvmRewardsStatsPlan, external_evm_recovery_discard_request,
+    final_chain_external_evm_commit_decision_id, final_chain_external_evm_lifecycle_id,
+    final_chain_external_evm_publication_plan_id, validate_external_evm_recovery_fact,
 };
 use crate::rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
@@ -31,7 +44,7 @@ use crate::slashing::{
     LegacyDoubleVotingProofDecodeError, VerifiedLegacyDoubleVotingProof,
     verify_legacy_double_voting_proof_call_data,
 };
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use ethereum_types::{H256, U256};
 use k256::ecdsa::VerifyingKey;
 use k256::elliptic_curve::{Group, PrimeField, sec1::ToEncodedPoint};
@@ -68,6 +81,572 @@ use triehash::ordered_trie_root;
 enum StoredDposTokenAmountEncoding {
     Fixed32,
     Minimal,
+}
+
+#[cfg(test)]
+mod concrete_projection_tests {
+    use super::*;
+    use rlp::RlpStream;
+    use rustaxa_storage::Config;
+    use rustaxa_types::GenesisValidatorMetadata;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rustaxa-consensus-concrete-{test_name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    fn genesis_account(address: [u8; 20], balance: U256) -> GenesisAccount {
+        GenesisAccount {
+            address,
+            balance: rustaxa_types::FinalChainAccountBalance::from_cpp_genesis_bytes(
+                &balance.to_big_endian(),
+            )
+            .unwrap(),
+        }
+    }
+
+    fn test_transaction(
+        hash_byte: u8,
+        sender: [u8; 20],
+        receiver: Option<[u8; 20]>,
+        nonce: u64,
+        value: U256,
+        gas_price: U256,
+        gas_limit: u64,
+        data: Vec<u8>,
+        rlp: Vec<u8>,
+    ) -> FinalizationTransaction {
+        FinalizationTransaction {
+            hash: [hash_byte; 32],
+            sender,
+            receiver,
+            nonce: nonce.into(),
+            value: value.into(),
+            gas_price: gas_price.into(),
+            gas_limit: gas_limit.into(),
+            data,
+            rlp,
+        }
+    }
+
+    fn genesis_validator(address: [u8; 20], stake: U256) -> GenesisValidator {
+        GenesisValidator {
+            address,
+            vrf_key: [address[0]; 32],
+            total_stake: stake.to_big_endian().to_vec(),
+            delegations: vec![(address, stake.to_big_endian().to_vec())],
+            metadata: GenesisValidatorMetadata::default(),
+        }
+    }
+
+    fn new_final_chain_with_dpos(
+        storage: Arc<Storage>,
+        validators: Vec<GenesisValidator>,
+        threshold: U256,
+        vote_step: U256,
+        maximum_stake: U256,
+    ) -> FinalChain {
+        FinalChain::new(
+            storage,
+            1_000_000.into(),
+            0,
+            vec![],
+            validators,
+            GenesisDposConfig {
+                eligibility_balance_threshold: threshold.into(),
+                vote_eligibility_balance_step: vote_step.into(),
+                validator_maximum_stake: maximum_stake.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn concrete_rows(storage: &ConcreteRawStorageMap) -> Vec<FinalChainConcreteStorageProjection> {
+        storage
+            .iter()
+            .map(
+                |((contract, key), values)| FinalChainConcreteStorageProjection {
+                    contract: *contract,
+                    key: *key,
+                    value: values.first().cloned().unwrap(),
+                },
+            )
+            .collect()
+    }
+
+    #[test]
+    fn concrete_storage_treats_absent_and_zero_rows_as_equivalent() {
+        let zero = vec![Vec::new()];
+        let nonzero = vec![vec![1]];
+
+        assert!(concrete_storage_values_equivalent(Some(&zero), None));
+        assert!(concrete_storage_values_equivalent(None, Some(&zero)));
+        assert!(!concrete_storage_values_equivalent(Some(&nonzero), None));
+    }
+
+    #[test]
+    fn concrete_scalar_storage_keys_are_distinct() {
+        let keys = (4_u8..=8)
+            .map(|field| concrete_storage_key(&[&[field]]))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(keys.len(), 5);
+        let observed = [
+            0xd3, 0x3e, 0x25, 0x80, 0x9f, 0xca, 0xa2, 0xb6, 0x90, 0x05, 0x67, 0x81, 0x28, 0x52,
+            0x53, 0x9d, 0xa8, 0x55, 0x9d, 0xc8, 0xb7, 0x6a, 0x7c, 0xe3, 0xfc, 0x5d, 0xdd, 0x77,
+            0xe8, 0xd1, 0x9a, 0x69,
+        ];
+        let field = (0_u8..=u8::MAX).find(|field| concrete_storage_key(&[&[*field]]) == observed);
+        assert_eq!(field, Some(8));
+    }
+
+    #[test]
+    fn concrete_final_storage_rejects_mutated_active_dpos_value() {
+        let path = temp_db_path("mutated-active-dpos-storage");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator([0x31; 20], U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        let canonical = canonical_concrete_precompile_storage(&snapshot, true).unwrap();
+        let mut rows = concrete_rows(&canonical);
+        let vote_count_key = concrete_storage_key(&[&[4]]);
+        rows.iter_mut()
+            .find(|row| row.contract == DPOS_CONTRACT_ADDRESS && row.key == vote_count_key)
+            .unwrap()
+            .value = vec![0xff];
+
+        let error = validate_concrete_precompile_final_storage(&snapshot, &snapshot, true, &rows)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_CONCRETE_FINAL_STORAGE_VALUE_MISMATCH")
+        );
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn concrete_storage_transition_rejects_mutated_tombstone() {
+        let path = temp_db_path("mutated-dpos-tombstone");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![],
+            U256::one(),
+            U256::one(),
+            U256::one(),
+        );
+        let before = final_chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        let mut after = before.clone();
+        after.aspen_supply_state = AspenSupplyState::Migrated {
+            total_supply: StoredDposTokenAmount::canonical_after_mutation(DposTokenAmount::from(
+                U256::from(100u64),
+            )),
+            current_yield: AspenYield(7),
+        };
+        let before_storage = canonical_concrete_precompile_storage(&before, true).unwrap();
+        let after_storage = canonical_concrete_precompile_storage(&after, true).unwrap();
+        let keys = before_storage
+            .keys()
+            .chain(after_storage.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut rows = keys
+            .into_iter()
+            .filter_map(|(contract, key)| {
+                let changed =
+                    before_storage.get(&(contract, key)) != after_storage.get(&(contract, key));
+                changed.then(|| FinalChainConcreteStorageProjection {
+                    contract,
+                    key,
+                    value: after_storage
+                        .get(&(contract, key))
+                        .and_then(|values| values.first())
+                        .cloned()
+                        .unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let minted_key = concrete_storage_key(&[&[6]]);
+        rows.iter_mut()
+            .find(|row| row.contract == DPOS_CONTRACT_ADDRESS && row.key == minted_key)
+            .unwrap()
+            .value = vec![1];
+
+        let error =
+            validate_concrete_precompile_storage_transition(&before, &after, true, &rows, "TEST")
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_CONCRETE_STORAGE_TOMBSTONE_MISMATCH")
+        );
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn concrete_transaction_storage_rejects_untouched_row_drift() {
+        let path = temp_db_path("untouched-storage-drift");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![],
+            U256::one(),
+            U256::one(),
+            U256::one(),
+        );
+        let snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        let rows = vec![FinalChainConcreteStorageProjection {
+            contract: DPOS_CONTRACT_ADDRESS,
+            key: [0xa5; 32],
+            value: vec![0x01],
+        }];
+
+        let error = validate_concrete_precompile_storage_transition(
+            &snapshot, &snapshot, true, &rows, "TEST",
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_CONCRETE_STORAGE_TOMBSTONE_MISMATCH")
+        );
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn concrete_native_account_effect_rejects_unverified_nonce_or_balance() {
+        let address = [0x41; 20];
+        let mut before = HashMap::from([(address, empty_account())]);
+        before
+            .get_mut(&address)
+            .unwrap()
+            .balance
+            .replace_after_mutation(U256::from(100u64));
+        let mut expected = before.clone();
+        expected.get_mut(&address).unwrap().nonce = 1.into();
+        expected
+            .get_mut(&address)
+            .unwrap()
+            .balance
+            .replace_after_mutation(U256::from(90u64));
+
+        let missing = validate_concrete_native_account_effect(&before, &expected, &[]).unwrap_err();
+        assert!(missing.to_string().contains("ACCOUNT_EFFECT_MISSING"));
+
+        let mut account = RlpStream::new_list(5);
+        account.append(&1u64);
+        account.append(&U256::from(89u64));
+        account.append_empty_data();
+        account.append_empty_data();
+        account.append(&0u64);
+        let mismatch = validate_concrete_native_account_effect(
+            &before,
+            &expected,
+            &[FinalChainConcreteAccountProjection {
+                address,
+                raw_account_rlp: account.out().to_vec(),
+            }],
+        )
+        .unwrap_err();
+        assert!(mismatch.to_string().contains("ACCOUNT_EFFECT_MISMATCH"));
+    }
+
+    #[test]
+    fn concrete_rewards_reject_minted_total_and_dpos_balance_mismatches() {
+        let expected_reward = DposTokenAmount::from(U256::from(10u64));
+        let reward_error = validate_concrete_total_reward(&[9], expected_reward).unwrap_err();
+        assert!(
+            reward_error
+                .to_string()
+                .contains("FINAL_CHAIN_CONCRETE_TOTAL_REWARD_MISMATCH")
+        );
+
+        let mut before = HashMap::from([(DPOS_CONTRACT_ADDRESS, empty_account())]);
+        before
+            .get_mut(&DPOS_CONTRACT_ADDRESS)
+            .unwrap()
+            .balance
+            .replace_after_mutation(U256::from(100u64));
+        let mut expected = before.clone();
+        expected
+            .get_mut(&DPOS_CONTRACT_ADDRESS)
+            .unwrap()
+            .balance
+            .replace_after_mutation(U256::from(110u64));
+
+        let mut wrong_account = RlpStream::new_list(5);
+        wrong_account.append(&0u64);
+        wrong_account.append(&U256::from(109u64));
+        wrong_account.append_empty_data();
+        wrong_account.append_empty_data();
+        wrong_account.append(&0u64);
+        let error = validate_concrete_native_account_effect(
+            &before,
+            &expected,
+            &[FinalChainConcreteAccountProjection {
+                address: DPOS_CONTRACT_ADDRESS,
+                raw_account_rlp: wrong_account.out().to_vec(),
+            }],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_CONCRETE_NATIVE_ACCOUNT_EFFECT_MISMATCH")
+        );
+    }
+
+    #[test]
+    fn concrete_fee_rewards_skip_absent_delayed_eligibility_validator() {
+        let path = temp_db_path("concrete-absent-validator-fee-reward");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let present = [0x42; 20];
+        let absent = [0x43; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(present, U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        let mut rewards = BTreeMap::from([
+            (present, DposTokenAmount::from(U256::from(3u64))),
+            (absent, DposTokenAmount::from(U256::from(5u64))),
+        ]);
+        retain_existing_validator_fee_rewards(&mut rewards, &snapshot);
+        assert_eq!(
+            rewards,
+            BTreeMap::from([(present, DposTokenAmount::from(U256::from(3u64)))])
+        );
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn concrete_mixed_lane_uses_arbitrary_effect_for_next_native_sender() {
+        let path = temp_db_path("concrete-mixed-next-sender");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let sender = [0x51; 20];
+        let recipient = [0x52; 20];
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000.into(),
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig::default(),
+        )
+        .unwrap();
+        let mut accounts = final_chain.current_account_snapshot().unwrap();
+        let mut concrete_sender = RlpStream::new_list(5);
+        concrete_sender.append(&1u64);
+        concrete_sender.append(&U256::from(100_000u64));
+        concrete_sender.append_empty_data();
+        concrete_sender.append_empty_data();
+        concrete_sender.append(&0u64);
+        apply_concrete_account_projection(
+            &mut accounts,
+            &[FinalChainConcreteAccountProjection {
+                address: sender,
+                raw_account_rlp: concrete_sender.out().to_vec(),
+            }],
+        )
+        .unwrap();
+        let mut dpos = final_chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        final_chain
+            .advance_reward_reference_graph_block(&mut dpos, 1.into())
+            .unwrap();
+        let gas = intrinsic_gas(&[], false).unwrap();
+        let execution = final_chain
+            .execute_native_transactions_from_state(
+                1.into(),
+                &[test_transaction(
+                    0x53,
+                    sender,
+                    Some(recipient),
+                    1,
+                    U256::from(5_000u64),
+                    U256::one(),
+                    gas,
+                    vec![],
+                    vec![0xc0],
+                )],
+                accounts,
+                dpos,
+                false,
+            )
+            .unwrap();
+        let sender_after = execution.accounts.get(&sender).unwrap();
+        assert_eq!(sender_after.nonce, 2);
+        assert_eq!(
+            sender_after.balance.as_u256(),
+            &U256::from(100_000u64 - 5_000u64 - gas)
+        );
+        assert_eq!(
+            execution
+                .accounts
+                .get(&recipient)
+                .unwrap()
+                .balance
+                .as_u256(),
+            &U256::from(5_000u64)
+        );
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn concrete_nested_parent_reverted_eligibility_read_uses_frozen_snapshot() {
+        let path = temp_db_path("concrete-nested-eligibility-read");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x61; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let mut accounts = final_chain.current_account_snapshot().unwrap();
+        let mut dpos = final_chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        final_chain
+            .advance_reward_reference_graph_block(&mut dpos, 1.into())
+            .unwrap();
+        let mut gas_snapshot = dpos.clone();
+        let mut eligibility_snapshot = None;
+        let mut slashing_read_snapshot = None;
+        final_chain
+            .replay_concrete_precompile_invocation(
+                1.into(),
+                &FinalChainConcreteInvocation {
+                    transaction_index: 0,
+                    sequence: 0,
+                    depth: 2,
+                    call_type: 0,
+                    caller: [0x62; 20],
+                    contract: DPOS_CONTRACT_ADDRESS,
+                    input: DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR.to_vec(),
+                    output: abi_word_from_u64(10).to_vec(),
+                    supplied_gas: DPOS_DEFAULT_METHOD_GAS,
+                    required_gas: DPOS_DEFAULT_METHOD_GAS,
+                    gas_used: DPOS_DEFAULT_METHOD_GAS,
+                    disposition: crate::concrete_state_projection::FINAL_CHAIN_CONCRETE_INVOCATION_PARENT_FRAME_REVERTED,
+                    ..Default::default()
+                },
+                &mut dpos,
+                &mut gas_snapshot,
+                &mut accounts,
+                FinalChainBlockNumber::GENESIS,
+                &mut eligibility_snapshot,
+                None,
+                &mut slashing_read_snapshot,
+            )
+            .unwrap();
+        assert!(eligibility_snapshot.is_some());
+
+        let dpos_before_oog = dpos.clone();
+        let mut no_eligibility_snapshot = None;
+        final_chain
+            .replay_concrete_precompile_invocation(
+                1.into(),
+                &FinalChainConcreteInvocation {
+                    transaction_index: 1,
+                    sequence: 1,
+                    depth: 3,
+                    call_type: 3,
+                    caller: [0x63; 20],
+                    contract: DPOS_CONTRACT_ADDRESS,
+                    input: DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR.to_vec(),
+                    supplied_gas: DPOS_DEFAULT_METHOD_GAS - 1,
+                    required_gas: DPOS_DEFAULT_METHOD_GAS,
+                    gas_used: 0,
+                    error: "out of gas".to_string(),
+                    disposition: FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
+                    ..Default::default()
+                },
+                &mut dpos,
+                &mut gas_snapshot,
+                &mut accounts,
+                FinalChainBlockNumber::GENESIS,
+                &mut no_eligibility_snapshot,
+                None,
+                &mut slashing_read_snapshot,
+            )
+            .unwrap();
+        assert_eq!(dpos, dpos_before_oog);
+        assert!(no_eligibility_snapshot.is_none());
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn concrete_native_result_requires_exact_status_gas_logs_and_output() {
+        let mut result = RlpStream::new_list(6);
+        result.append(&Vec::<u8>::new());
+        result.append(&[0u8; 20].as_slice());
+        result.begin_list(0);
+        result.append(&21_000u64);
+        result.append(&String::new());
+        result.append(&String::new());
+        let effect = crate::concrete_state_projection::FinalChainConcreteTransactionEffect {
+            execution_result_rlp: result.out().to_vec(),
+            ..Default::default()
+        };
+        let receipt = NativeReceipt {
+            status_code: 1,
+            gas_used: 21_000.into(),
+            cumulative_gas_used: 21_000.into(),
+            logs: vec![],
+            new_contract_address: None,
+        };
+        validate_concrete_native_execution_result(&effect, &receipt).unwrap();
+
+        let mut wrong_gas = receipt;
+        wrong_gas.gas_used = 20_999.into();
+        assert!(
+            validate_concrete_native_execution_result(&effect, &wrong_gas)
+                .unwrap_err()
+                .to_string()
+                .contains("NATIVE_GAS_MISMATCH")
+        );
+    }
 }
 
 /// A persisted fungible DPoS token amount with its snapshot byte provenance.
@@ -328,6 +907,7 @@ type DposDelegationRewardCursors = BTreeMap<[u8; 20], BTreeMap<[u8; 20], StoredD
 type DposDelegatorValidators = BTreeMap<[u8; 20], Vec<[u8; 20]>>;
 type DposUndelegationsV2 = BTreeMap<[u8; 20], Vec<DposValidatorUndelegationsV2>>;
 type DposUndelegations = BTreeMap<[u8; 20], Vec<DposUndelegation>>;
+type ConcreteRawStorageMap = BTreeMap<([u8; 20], [u8; 32]), Vec<Vec<u8>>>;
 
 /// FinalChain policy for the one historical reward-index regression transcript.
 ///
@@ -390,7 +970,7 @@ const DPOS_GET_VALIDATOR_SELECTOR: [u8; 4] = [0x19, 0x04, 0xbb, 0x2e];
 const DPOS_GET_DELEGATIONS_SELECTOR: [u8; 4] = [0x8b, 0x49, 0xd3, 0x94];
 const DPOS_GET_UNDELEGATIONS_SELECTOR: [u8; 4] = [0x4e, 0xdd, 0x99, 0x43];
 const DPOS_GET_UNDELEGATIONS_V2_SELECTOR: [u8; 4] = [0x78, 0xdf, 0x66, 0xe3];
-const EXTERNAL_EVM_PENDING_PUBLICATION_MARKER_VERSION: u64 = 1;
+const EXTERNAL_EVM_PENDING_PUBLICATION_MARKER_VERSION: u64 = 3;
 const DPOS_GET_UNDELEGATION_V2_SELECTOR: [u8; 4] = [0xc1, 0x10, 0x7e, 0x27];
 const DPOS_GET_TOTAL_DELEGATION_SELECTOR: [u8; 4] = [0xfc, 0x5e, 0x7e, 0x09];
 const DPOS_DELEGATE_SELECTOR: [u8; 4] = [0x5c, 0x19, 0xa9, 0x5c];
@@ -496,6 +1076,10 @@ pub struct FinalChain {
     storage: Arc<Storage>,
     block_gas_limit: rustaxa_types::FinalChainGas,
     genesis_timestamp: u64,
+    /// Canonical concrete StateAPI root committed for period zero.
+    genesis_state_root: ethereum_types::H256,
+    /// Whether bootstrap must enforce the configured concrete genesis root.
+    enforce_genesis_state_root: bool,
     accounts: Mutex<HashMap<[u8; 20], Account>>,
     genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]>,
     dpos_eligibility_balance_threshold: DposTokenAmount,
@@ -685,6 +1269,86 @@ pub(crate) struct ExternalEvmPendingPublicationMarker {
 }
 
 impl FinalChain {
+    /// Derives the concrete-state chain/config identity from the persisted
+    /// full-genesis configuration hash.
+    ///
+    /// StateAPI and Rust storage persist this value as one paired provenance
+    /// identity. A database created for another full configuration therefore
+    /// cannot be substituted merely because it has the same genesis header.
+    pub fn concrete_chain_identity(&self) -> Result<[u8; 32], anyhow::Error> {
+        use tiny_keccak::{Hasher, Keccak};
+
+        let genesis = self
+            .storage
+            .metadata()
+            .genesis_hash()?
+            .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_STORAGE_GENESIS_MISSING"))?;
+        ensure!(
+            genesis.len() == 32,
+            "FINAL_CHAIN_CONCRETE_STORAGE_GENESIS_INVALID_LENGTH"
+        );
+        let mut hasher = Keccak::v256();
+        hasher.update(b"rustaxa-final-chain-concrete-chain-identity-v1");
+        hasher.update(&genesis);
+        let mut identity = [0; 32];
+        hasher.finalize(&mut identity);
+        Ok(identity)
+    }
+
+    /// Verifies or initializes the durable pairing between native storage and
+    /// the exact concrete StateAPI database observed during preflight.
+    pub(crate) fn verify_or_initialize_concrete_state_pairing(
+        &self,
+        identity: FinalChainConcreteIdentity,
+    ) -> Result<(), anyhow::Error> {
+        use rlp::RlpStream;
+
+        ensure!(
+            identity.policy_version == 1,
+            "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: unsupported paired policy"
+        );
+        ensure!(
+            identity.database_id != [0; 32],
+            "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: zero concrete database identity"
+        );
+        let chain_id = self.concrete_chain_identity()?;
+        ensure!(
+            identity.chain_id == chain_id,
+            "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: concrete chain/config identity mismatch"
+        );
+        let storage_genesis = self
+            .storage
+            .metadata()
+            .genesis_hash()?
+            .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_STORAGE_GENESIS_MISSING"))?;
+        ensure!(
+            storage_genesis.len() == 32,
+            "FINAL_CHAIN_CONCRETE_STORAGE_GENESIS_INVALID_LENGTH"
+        );
+
+        let mut encoded = RlpStream::new_list(4);
+        encoded.append(&identity.policy_version);
+        encoded.append(&storage_genesis.as_slice());
+        encoded.append(&identity.database_id.as_slice());
+        encoded.append(&identity.chain_id.as_slice());
+        let encoded = encoded.out().to_vec();
+        if let Some(stored) = self.storage.final_chain().concrete_state_pairing_raw()? {
+            ensure!(
+                stored == encoded,
+                "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: paired state database mismatch"
+            );
+            return Ok(());
+        }
+        ensure!(
+            !self.has_external_evm_pending_publication()? && self.last_block_number()? == 0,
+            "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: missing paired state database marker"
+        );
+        self.storage
+            .final_chain()
+            .write_concrete_state_pairing(&encoded)
+            .context("FINAL_CHAIN_CONCRETE_PAIRING_WRITE_FAILED")
+    }
+
     /// Storage key for the latest finalized block-number metadata row.
     pub(crate) const DB_META_LAST_NUMBER: u32 = 1;
     const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
@@ -749,6 +1413,36 @@ impl FinalChain {
         storage: Arc<Storage>,
         block_gas_limit: FinalChainGas,
         genesis_timestamp: u64,
+        genesis_accounts: Vec<GenesisAccount>,
+        genesis_validators: Vec<GenesisValidator>,
+        genesis_dpos_config: GenesisDposConfig,
+        rewards_config: FinalChainRewardsConfig,
+    ) -> Result<Self> {
+        Self::new_with_genesis_state_root(
+            storage,
+            block_gas_limit,
+            genesis_timestamp,
+            synthetic_state_root(0),
+            false,
+            genesis_accounts,
+            genesis_validators,
+            genesis_dpos_config,
+            rewards_config,
+        )
+    }
+
+    /// Constructs FinalChain with the concrete StateAPI root for period zero.
+    ///
+    /// Production bootstrap uses this constructor so the genesis header and
+    /// every later finalized header share one concrete-root policy. The root is
+    /// verified against an existing genesis header and is never rewritten.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_genesis_state_root(
+        storage: Arc<Storage>,
+        block_gas_limit: FinalChainGas,
+        genesis_timestamp: u64,
+        genesis_state_root: ethereum_types::H256,
+        enforce_genesis_state_root: bool,
         genesis_accounts: Vec<GenesisAccount>,
         genesis_validators: Vec<GenesisValidator>,
         genesis_dpos_config: GenesisDposConfig,
@@ -926,14 +1620,12 @@ impl FinalChain {
                     Some(DposTokenAmount::from(genesis_account_balance_sum));
             } else {
                 anyhow::ensure!(
-                    rewards_config.aspen_part_two_period == 0.into(),
+                    rewards_config.aspen_part_two_period == FinalChainBlockNumber::MAX,
                     "genesis account balance sum overflow"
                 );
             }
         }
-        if !rewards_config.aspen_part_two_period.is_genesis()
-            && rewards_config.aspen_part_two_period.as_u64() != u64::MAX
-        {
+        if rewards_config.aspen_part_two_period != FinalChainBlockNumber::MAX {
             anyhow::ensure!(
                 rewards_config.aspen_part_two_period >= rewards_config.aspen_part_one_period,
                 "FINAL_CHAIN_DPOS_ASPEN_PART_TWO_BEFORE_PART_ONE"
@@ -963,6 +1655,8 @@ impl FinalChain {
             storage,
             block_gas_limit,
             genesis_timestamp,
+            genesis_state_root,
+            enforce_genesis_state_root,
             accounts: Mutex::new(genesis_accounts.clone()),
             genesis_vrf_keys: genesis_vrf_keys.clone(),
             dpos_eligibility_balance_threshold: genesis_dpos_config.eligibility_balance_threshold,
@@ -2351,6 +3045,16 @@ impl FinalChain {
             .delete_external_evm_pending_publication()
     }
 
+    /// Reports whether native storage has a durable concrete-state publication
+    /// to arbitrate during application-root recovery.
+    pub(crate) fn has_external_evm_pending_publication(&self) -> Result<bool, anyhow::Error> {
+        Ok(self
+            .storage
+            .final_chain()
+            .external_evm_pending_publication_raw()?
+            .is_some())
+    }
+
     /// Recovers a pending external-EVM FinalChain publication after restart.
     ///
     /// Rust only publishes when the durable marker matches the external
@@ -2364,6 +3068,8 @@ impl FinalChain {
         &self,
         committed_period: u64,
         committed_state_root: [u8; 32],
+        observed_concrete_provenance_rlp: Vec<u8>,
+        pending_concrete_marker_rlp: Vec<u8>,
     ) -> Result<FinalChainExternalEvmPublicationReport, anyhow::Error> {
         let Some(raw) = self
             .storage
@@ -2388,59 +3094,125 @@ impl FinalChain {
                 });
             }
         };
-        if let Some(existing_hash) = self.block_hash(marker.plan.period)? {
-            let existing_hash =
-                h256_from_slice(&existing_hash, "external EVM recovery existing block hash")?;
-            if existing_hash == H256::from(marker.plan.block_hash)
-                && self.block_number(marker.plan.block_hash)? == Some(marker.plan.period.as_u64())
-            {
-                if !self
-                    .verify_external_evm_rewards_stats_update(&marker.plan.rewards_stats_update)?
-                {
-                    return Ok(rejected_external_evm_publication_report(
-                        &marker.plan,
-                        "FINAL_CHAIN_EVM_PENDING_PUBLICATION_REWARDS_STATS_MISMATCH",
-                    ));
-                }
-                let execution_status = self.execution_status()?;
-                self.storage
-                    .final_chain()
-                    .delete_external_evm_pending_publication()?;
-                self.reload_rewards_stats_runtime_after_publication()?;
+        let finalized_head = self.committed_state_descriptor()?;
+        let finalized_block_hash = self
+            .block_hash(marker.plan.period)?
+            .map(|hash| h256_from_slice(&hash, "external EVM recovery existing block hash"))
+            .transpose()?
+            .map(Into::into);
+        let finalized_block_state = self
+            .storage
+            .final_chain()
+            .block_header_raw(marker.plan.period.as_u64())?
+            .map(|raw| {
+                let header =
+                    StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&raw))?;
+                Ok::<_, anyhow::Error>(FinalChainExternalEvmCommittedStateDescriptor {
+                    period: marker.plan.period,
+                    state_root: header.state_root.into(),
+                })
+            })
+            .transpose()?;
+        let intent = &marker.state_commit_intent;
+        let lifecycle_id = final_chain_external_evm_lifecycle_id(
+            intent.request_id,
+            intent.plan_id,
+            intent.period,
+            intent.publication_block_hash,
+            intent.prior_state,
+            intent.post_transaction_state_root,
+            intent.post_rewards_state_root,
+        );
+        let recovery_fact = FinalChainExternalEvmRecoveryFact {
+            lifecycle_id,
+            request_id: intent.request_id,
+            plan_id: intent.plan_id,
+            period: intent.period,
+            publication_block_hash: intent.publication_block_hash,
+            prior_state: intent.prior_state,
+            post_transaction_state_root: intent.post_transaction_state_root,
+            post_rewards_state_root: intent.post_rewards_state_root,
+            finalized_head,
+            finalized_block_hash,
+            finalized_block_state,
+            committed_state: Some(FinalChainExternalEvmCommittedStateDescriptor {
+                period: committed_period.into(),
+                state_root: committed_state_root,
+            }),
+            expected_concrete_marker_rlp: intent.concrete_marker_rlp.clone(),
+            expected_concrete_provenance_rlp: intent.concrete_provenance_rlp.clone(),
+            observed_concrete_provenance_rlp,
+            pending_concrete_marker_rlp: pending_concrete_marker_rlp.clone(),
+        };
+        let recovery = validate_external_evm_recovery_fact(&recovery_fact);
+        if recovery.status == FINAL_CHAIN_EVM_RECOVERY_DECISION_CLEAR_UNCOMMITTED {
+            if !pending_concrete_marker_rlp.is_empty() {
+                let discard = external_evm_recovery_discard_request(&recovery_fact, &recovery)?;
+                let concrete_chain_identity =
+                    decode_concrete_execution_marker(&discard.concrete_marker_rlp)?
+                        .identity
+                        .chain_id;
                 return Ok(FinalChainExternalEvmPublicationReport {
                     request_id: marker.plan.request_id,
                     plan_id: marker.plan.plan_id,
                     period: marker.plan.period,
                     block_hash: marker.plan.block_hash,
-                    executed_dag_block_count: execution_status.executed_dag_block_count,
-                    executed_transaction_count: execution_status.executed_transaction_count,
-                    dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
                     account_snapshot_status: marker.account_snapshot_status,
-                    status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
-                    error_code: String::new(),
+                    status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED,
+                    error_code: "FINAL_CHAIN_EVM_RECOVERY_EXACT_DISCARD_REQUIRED".to_string(),
+                    recovery_discard_required: true,
+                    recovery_request_id: discard.request_id,
+                    recovery_period: discard.period,
+                    recovery_concrete_marker_rlp: discard.concrete_marker_rlp,
+                    recovery_marker_hash: discard.marker_hash,
+                    recovery_prior_state: discard.prior_state,
+                    recovery_concrete_chain_identity: concrete_chain_identity,
+                    ..Default::default()
                 });
             }
-            return Ok(rejected_external_evm_publication_report(
-                &marker.plan,
-                "FINAL_CHAIN_EVM_PENDING_PUBLICATION_EXISTING_BLOCK_CONFLICT",
-            ));
+            self.storage
+                .final_chain()
+                .delete_external_evm_pending_publication()?;
+            return Ok(FinalChainExternalEvmPublicationReport {
+                request_id: marker.plan.request_id,
+                plan_id: marker.plan.plan_id,
+                period: marker.plan.period,
+                block_hash: marker.plan.block_hash,
+                account_snapshot_status: marker.account_snapshot_status,
+                status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
+                ..Default::default()
+            });
         }
-        if committed_period < marker.plan.period.as_u64() {
-            return Ok(rejected_external_evm_publication_report(
-                &marker.plan,
-                "FINAL_CHAIN_EVM_PENDING_PUBLICATION_STATE_PERIOD_BEHIND",
-            ));
+        if recovery.status == FINAL_CHAIN_EVM_RECOVERY_DECISION_ALREADY_PUBLISHED {
+            if !self.verify_external_evm_rewards_stats_update(&marker.plan.rewards_stats_update)? {
+                return Ok(rejected_external_evm_publication_report(
+                    &marker.plan,
+                    "FINAL_CHAIN_EVM_PENDING_PUBLICATION_REWARDS_STATS_MISMATCH",
+                ));
+            }
+            let execution_status = self.execution_status()?;
+            self.storage
+                .final_chain()
+                .delete_external_evm_pending_publication()?;
+            self.reload_rewards_stats_runtime_after_publication()?;
+            return Ok(FinalChainExternalEvmPublicationReport {
+                request_id: marker.plan.request_id,
+                plan_id: marker.plan.plan_id,
+                period: marker.plan.period,
+                block_hash: marker.plan.block_hash,
+                executed_dag_block_count: execution_status.executed_dag_block_count,
+                executed_transaction_count: execution_status.executed_transaction_count,
+                dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
+                account_snapshot_status: marker.account_snapshot_status,
+                status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
+                error_code: String::new(),
+                ..Default::default()
+            });
         }
-        if committed_period != marker.plan.period.as_u64() {
+        if recovery.status != FINAL_CHAIN_EVM_RECOVERY_DECISION_READY_TO_PUBLISH {
             return Ok(rejected_external_evm_publication_report(
                 &marker.plan,
-                "FINAL_CHAIN_EVM_PENDING_PUBLICATION_STATE_PERIOD_AHEAD",
-            ));
-        }
-        if committed_state_root != marker.post_rewards_state_root {
-            return Ok(rejected_external_evm_publication_report(
-                &marker.plan,
-                "FINAL_CHAIN_EVM_PENDING_PUBLICATION_STATE_ROOT_MISMATCH",
+                recovery.error_code,
             ));
         }
 
@@ -2572,10 +3344,10 @@ impl FinalChain {
                     executed_dag_block_count: execution_status.executed_dag_block_count,
                     executed_transaction_count: execution_status.executed_transaction_count,
                     dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
-                    account_snapshot_status:
-                        FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY,
+                    account_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
                     status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
                     error_code: String::new(),
+                    ..Default::default()
                 });
             }
             return Ok(rejected_external_evm_publication_report(
@@ -2600,8 +3372,17 @@ impl FinalChain {
                 "FINAL_CHAIN_EVM_PUBLICATION_HEAD_MISMATCH",
             ));
         }
-        let dpos_snapshot = self.dpos_snapshot_at_finalized_block(last_block)?;
-        let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot)?;
+        anyhow::ensure!(
+            !plan.dpos_snapshot_rlp.is_empty(),
+            "FINAL_CHAIN_EVM_PUBLICATION_DPOS_PROJECTION_MISSING"
+        );
+        let dpos_snapshot = decode_dpos_snapshot_rlp(&plan.dpos_snapshot_rlp)?;
+        let dpos_snapshot_rlp = plan.dpos_snapshot_rlp.clone();
+        anyhow::ensure!(
+            !plan.account_snapshot_rlp.is_empty(),
+            "FINAL_CHAIN_EVM_PUBLICATION_ACCOUNT_PROJECTION_MISSING"
+        );
+        let account_snapshot = decode_account_snapshot_rlp(&plan.account_snapshot_rlp)?;
 
         for publication in &plan.transaction_publications {
             if publication.is_system {
@@ -2652,7 +3433,7 @@ impl FinalChain {
                 plan.stored_header_rlp.as_slice(),
                 plan.receipts_rlp.as_slice(),
                 Some(&dpos_snapshot_rlp),
-                None,
+                Some(&plan.account_snapshot_rlp),
                 Some(execution_status),
                 rewards_stats_update,
                 Some(FinalChainLogBloomIndexUpdate {
@@ -2668,6 +3449,7 @@ impl FinalChain {
                 true,
             )?;
         self.insert_dpos_snapshot(plan.period, dpos_snapshot)?;
+        self.insert_account_snapshot(plan.period, account_snapshot)?;
         self.reload_rewards_stats_runtime_after_publication()?;
 
         Ok(FinalChainExternalEvmPublicationReport {
@@ -2678,10 +3460,10 @@ impl FinalChain {
             executed_dag_block_count: execution_status.executed_dag_block_count,
             executed_transaction_count: execution_status.executed_transaction_count,
             dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
-            account_snapshot_status:
-                FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY,
+            account_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
             status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
             error_code: String::new(),
+            ..Default::default()
         })
     }
 
@@ -2974,11 +3756,12 @@ impl FinalChain {
             blocks_per_year,
             cert_votes,
         )?;
-        let dpos_fee_rewards = if pre_magnolia_fee_reward_period {
+        let mut dpos_fee_rewards = if pre_magnolia_fee_reward_period {
             BTreeMap::new()
         } else {
             rewards_stats_plan.fee_rewards_by_validator.clone()
         };
+        retain_existing_validator_fee_rewards(&mut dpos_fee_rewards, &dpos_snapshot);
         let MintedRewardPlan {
             dpos_rewards: mut dpos_reward_deltas,
             total_minted_reward,
@@ -3212,6 +3995,11 @@ impl FinalChain {
             total_minted_reward: DposTokenAmount::zero(),
             supply_after: snapshot.aspen_supply_state.clone(),
         };
+        // StateAPI's protocol gate disables both fixed and Aspen dynamic
+        // rewards when the configured legacy yield percentage is zero.
+        if self.rewards_config.yield_percentage == 0 {
+            return Ok(plan);
+        }
         let mut dynamic_total_supply = snapshot
             .aspen_supply_state
             .total_supply()
@@ -3511,9 +4299,7 @@ impl FinalChain {
         current_block_number: FinalChainBlockNumber,
         stats: &RewardsBlockDistribution,
     ) -> Result<u32, anyhow::Error> {
-        let blocks_per_year = if !self.rewards_config.cacti_period.is_genesis()
-            && current_block_number >= self.rewards_config.cacti_period
-        {
+        let blocks_per_year = if current_block_number >= self.rewards_config.cacti_period {
             anyhow::ensure!(
                 stats.blocks_per_year != 0,
                 "Cacti reward distribution requires runtime blocks per year"
@@ -3530,8 +4316,7 @@ impl FinalChain {
     }
 
     fn aspen_part_two_active(&self, block_number: FinalChainBlockNumber) -> bool {
-        !self.rewards_config.aspen_part_two_period.is_genesis()
-            && block_number >= self.rewards_config.aspen_part_two_period
+        block_number >= self.rewards_config.aspen_part_two_period
     }
 
     fn add_minted_validator_reward(
@@ -3767,6 +4552,16 @@ impl FinalChain {
     }
 
     fn ensure_genesis_header(&self) -> Result<(), anyhow::Error> {
+        if let Some(existing) = self.storage.final_chain().block_header_raw(0)? {
+            let existing =
+                StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&existing))?;
+            if self.enforce_genesis_state_root && existing.state_root != self.genesis_state_root {
+                anyhow::bail!(
+                    "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: genesis state root mismatch"
+                );
+            }
+            return Ok(());
+        }
         if self
             .storage
             .final_chain()
@@ -3775,13 +4570,10 @@ impl FinalChain {
         {
             return Ok(());
         }
-        if self.storage.final_chain().block_header_raw(0)?.is_some() {
-            return Ok(());
-        }
 
         let stored_header = StoredFinalChainBlockHeader {
             parent_hash: ethereum_types::H256::zero(),
-            state_root: synthetic_state_root(0),
+            state_root: self.genesis_state_root,
             transactions_root: empty_trie_root(),
             receipts_root: empty_trie_root(),
             log_bloom: FinalChainLogBloom::ZERO,
@@ -3807,13 +4599,36 @@ impl FinalChain {
         block_number: FinalChainBlockNumber,
         transactions: &[FinalizationTransaction],
     ) -> Result<NativeExecution, anyhow::Error> {
-        let mut accounts = self.current_account_snapshot()?;
+        let accounts = self.current_account_snapshot()?;
+        let head_block_number = self.last_block_number_typed()?;
+        let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head_block_number)?;
+        self.advance_reward_reference_graph_block(&mut dpos_snapshot, block_number)?;
+        self.execute_native_transactions_from_state(
+            block_number,
+            transactions,
+            accounts,
+            dpos_snapshot,
+            true,
+        )
+    }
+
+    /// Executes the complete legacy-compatible native envelope kernel from an
+    /// explicit account/DPoS state. Concrete-EVM validation uses this entry
+    /// point one transaction at a time so arbitrary-EVM effects can be applied
+    /// between Rust-supported transactions without changing nonce, gas,
+    /// hardfork, read-snapshot, or receipt semantics.
+    fn execute_native_transactions_from_state(
+        &self,
+        block_number: FinalChainBlockNumber,
+        transactions: &[FinalizationTransaction],
+        mut accounts: HashMap<[u8; 20], Account>,
+        mut dpos_snapshot: DposSnapshot,
+        cleanup_slashing: bool,
+    ) -> Result<NativeExecution, anyhow::Error> {
         let mut receipts = Vec::with_capacity(transactions.len());
         let mut transaction_fees = Vec::with_capacity(transactions.len());
         let mut cumulative_gas_used = FinalChainGas::ZERO;
         let head_block_number = self.last_block_number_typed()?;
-        let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head_block_number)?;
-        self.advance_reward_reference_graph_block(&mut dpos_snapshot, block_number)?;
         // Legacy RequiredGas counts live delegator membership. Delegation delay
         // applies to eligibility reads, not to DPoS mutation gas accounting.
         let mut dpos_gas_snapshot = dpos_snapshot.clone();
@@ -4290,7 +5105,9 @@ impl FinalChain {
             }
             transaction_fees.push((transaction.hash, DposTokenAmount::from(gas_cost)));
         }
-        cleanup_slashing_jailed_validators(&mut dpos_snapshot, block_number);
+        if cleanup_slashing {
+            cleanup_slashing_jailed_validators(&mut dpos_snapshot, block_number);
+        }
 
         Ok(NativeExecution {
             accounts,
@@ -4299,6 +5116,379 @@ impl FinalChain {
             transaction_fees,
             dpos_snapshot,
         })
+    }
+
+    /// Independently replays a root-bound StateAPI projection into native
+    /// DPoS/slashing state and an exact account snapshot.
+    ///
+    /// Every invocation is replayed in concrete sequence, including writes the
+    /// legacy precompile intentionally leaves irreversible when its own or an
+    /// enclosing EVM frame reverts. Per-transaction account deltas are applied
+    /// only after the corresponding semantic replay, so a later invocation sees
+    /// the exact concrete balances/nonces produced by earlier arbitrary EVM.
+    pub(crate) fn external_evm_concrete_projection(
+        &self,
+        block_number: FinalChainBlockNumber,
+        block_author: [u8; 20],
+        transactions: &[FinalChainEvmTransactionInput],
+        projection: &FinalChainConcreteStateProjection,
+        rewards_plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
+        reported_total_reward: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), anyhow::Error> {
+        anyhow::ensure!(
+            projection.transaction_effects.len() == transactions.len(),
+            "FINAL_CHAIN_CONCRETE_TRANSACTION_EFFECT_COUNT_MISMATCH"
+        );
+        let head = self.last_block_number_typed()?;
+        let mut accounts = self.current_account_snapshot()?;
+        let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head)?;
+        self.advance_reward_reference_graph_block(&mut dpos_snapshot, block_number)?;
+        let mut dpos_gas_snapshot = dpos_snapshot.clone();
+        let mut dpos_eligibility_read_snapshot = None;
+        let mut slashing_read_snapshot = None;
+        let delayed_snapshot_block = FinalChainBlockNumber::new(
+            block_number
+                .as_u64()
+                .saturating_sub(self.dpos_delegation_delay),
+        );
+        let slashing_validator_snapshot = {
+            let snapshots = self
+                .dpos_snapshots
+                .lock()
+                .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
+            if delayed_snapshot_block == block_number {
+                None
+            } else {
+                snapshots.get(&delayed_snapshot_block).cloned()
+            }
+        };
+
+        for (transaction, effect) in transactions.iter().zip(&projection.transaction_effects) {
+            let dpos_before_effect = dpos_snapshot.clone();
+            anyhow::ensure!(
+                transaction.position.as_u32() as u64 == effect.index
+                    && encode_concrete_evm_transaction(transaction) == effect.transaction_rlp,
+                "FINAL_CHAIN_CONCRETE_TRANSACTION_EFFECT_IDENTITY_MISMATCH"
+            );
+            let is_native_envelope = matches!(
+                transaction.kind,
+                FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER
+                    | FINAL_CHAIN_EXECUTION_TX_KIND_DPOS_CONTRACT
+                    | FINAL_CHAIN_EXECUTION_TX_KIND_SLASHING_CONTRACT
+            );
+            if is_native_envelope {
+                let accounts_before = accounts.clone();
+                let dpos_before = dpos_snapshot.clone();
+                let native_transaction = FinalizationTransaction {
+                    hash: transaction.hash,
+                    sender: transaction.sender,
+                    receiver: transaction.receiver,
+                    nonce: transaction.nonce.clone(),
+                    value: transaction.value,
+                    gas_price: transaction.gas_price,
+                    gas_limit: transaction.gas_limit,
+                    data: transaction.data.clone(),
+                    rlp: transaction.rlp.clone(),
+                };
+                let execution = self.execute_native_transactions_from_state(
+                    block_number,
+                    std::slice::from_ref(&native_transaction),
+                    accounts_before.clone(),
+                    dpos_before.clone(),
+                    false,
+                )?;
+                let mut expected_accounts = execution.accounts.clone();
+                if self.pre_magnolia_fee_reward_period(block_number) {
+                    self.credit_pre_magnolia_pbft_fee_reward(
+                        &mut expected_accounts,
+                        block_author,
+                        total_transaction_fees(&execution.transaction_fees)?,
+                    )?;
+                }
+                let receipt = execution.receipts.first().ok_or_else(|| {
+                    anyhow::anyhow!("FINAL_CHAIN_CONCRETE_NATIVE_RECEIPT_MISSING")
+                })?;
+                validate_concrete_native_execution_result(effect, receipt)?;
+                validate_concrete_native_account_effect(
+                    &accounts_before,
+                    &expected_accounts,
+                    &effect.accounts,
+                )?;
+
+                // The invocation transcript is an independent semantic witness
+                // for top-level precompile output/error/gas. Replay it from the
+                // same pre-transaction state and require it to reach the same
+                // native DPoS state as the full envelope kernel.
+                let mut replay_accounts = accounts_before;
+                let mut replay_dpos = dpos_before;
+                let mut replay_gas_snapshot = dpos_gas_snapshot.clone();
+                for invocation in &effect.invocations {
+                    self.replay_concrete_precompile_invocation(
+                        block_number,
+                        invocation,
+                        &mut replay_dpos,
+                        &mut replay_gas_snapshot,
+                        &mut replay_accounts,
+                        head,
+                        &mut dpos_eligibility_read_snapshot,
+                        slashing_validator_snapshot.as_ref(),
+                        &mut slashing_read_snapshot,
+                    )?;
+                }
+                anyhow::ensure!(
+                    replay_dpos == execution.dpos_snapshot,
+                    "FINAL_CHAIN_CONCRETE_NATIVE_DPOS_EFFECT_MISMATCH"
+                );
+
+                dpos_snapshot = execution.dpos_snapshot;
+                dpos_gas_snapshot = replay_gas_snapshot;
+                accounts = expected_accounts;
+                // Concrete account rows additionally carry exact code/storage
+                // roots, which Rust does not synthesize. They may update only
+                // after nonce/balance parity has been established above.
+                apply_concrete_account_projection(&mut accounts, &effect.accounts)?;
+            } else {
+                for invocation in &effect.invocations {
+                    self.replay_concrete_precompile_invocation(
+                        block_number,
+                        invocation,
+                        &mut dpos_snapshot,
+                        &mut dpos_gas_snapshot,
+                        &mut accounts,
+                        head,
+                        &mut dpos_eligibility_read_snapshot,
+                        slashing_validator_snapshot.as_ref(),
+                        &mut slashing_read_snapshot,
+                    )?;
+                }
+                apply_concrete_account_projection(&mut accounts, &effect.accounts)?;
+            }
+            validate_concrete_precompile_storage_transition(
+                &dpos_before_effect,
+                &dpos_snapshot,
+                self.is_on_cornus(block_number),
+                &effect.storage,
+                "TRANSACTION",
+            )?;
+        }
+        let dpos_before_rewards = dpos_snapshot.clone();
+        cleanup_slashing_jailed_validators(&mut dpos_snapshot, block_number);
+
+        let distribution_stats =
+            decode_rewards_block_distributions(&rewards_plan.distribution_stats)?;
+        let mut fee_rewards = if self.pre_magnolia_fee_reward_period(block_number) {
+            BTreeMap::new()
+        } else {
+            fee_rewards_from_distribution_stats(&distribution_stats)?
+        };
+        retain_existing_validator_fee_rewards(&mut fee_rewards, &dpos_snapshot);
+        let MintedRewardPlan {
+            dpos_rewards: mut reward_deltas,
+            total_minted_reward,
+            supply_after,
+        } = self.plan_minted_rewards(block_number, &distribution_stats, &dpos_snapshot)?;
+        validate_concrete_total_reward(reported_total_reward, total_minted_reward)?;
+        merge_reward_map(&mut reward_deltas.commission_rewards, &fee_rewards)?;
+        self.apply_dpos_reward_deltas(&mut dpos_snapshot, reward_deltas, supply_after)?;
+        self.apply_redelegate_hardfork_corrections(&mut dpos_snapshot, block_number)?;
+        validate_concrete_precompile_final_storage(
+            &dpos_before_rewards,
+            &dpos_snapshot,
+            self.is_on_cornus(block_number),
+            &projection.storage,
+        )?;
+        let accounts_before_rewards = accounts.clone();
+        self.credit_post_magnolia_dpos_fee_rewards(&mut accounts, &fee_rewards)?;
+        self.credit_dpos_contract_minted_rewards(&mut accounts, total_minted_reward)?;
+        validate_concrete_native_account_effect(
+            &accounts_before_rewards,
+            &accounts,
+            &projection.accounts,
+        )?;
+        apply_concrete_account_projection(&mut accounts, &projection.accounts)?;
+
+        Ok((
+            encode_dpos_snapshot_rlp(&dpos_snapshot)?,
+            encode_account_snapshot_rlp(&accounts),
+        ))
+    }
+
+    fn replay_concrete_precompile_invocation(
+        &self,
+        block_number: FinalChainBlockNumber,
+        invocation: &FinalChainConcreteInvocation,
+        dpos_snapshot: &mut DposSnapshot,
+        dpos_gas_snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        head_block_number: FinalChainBlockNumber,
+        dpos_eligibility_read_snapshot: &mut Option<(DposSnapshot, FinalChainBlockNumber)>,
+        slashing_validator_snapshot: Option<&DposSnapshot>,
+        slashing_read_snapshot: &mut Option<DposSnapshot>,
+    ) -> Result<(), anyhow::Error> {
+        anyhow::ensure!(
+            invocation.call_type <= 3,
+            "FINAL_CHAIN_CONCRETE_INVOCATION_CALL_TYPE_INVALID"
+        );
+        anyhow::ensure!(
+            (invocation.disposition == FINAL_CHAIN_CONCRETE_INVOCATION_NORMAL
+                && invocation.error.is_empty())
+                || (invocation.disposition
+                    == FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED
+                    && !invocation.error.is_empty())
+                || invocation.disposition
+                    == crate::concrete_state_projection::FINAL_CHAIN_CONCRETE_INVOCATION_PARENT_FRAME_REVERTED,
+            "FINAL_CHAIN_CONCRETE_INVOCATION_DISPOSITION_ERROR_MISMATCH"
+        );
+        let expected_logs = invocation
+            .logs
+            .iter()
+            .map(|log| ReceiptLog {
+                address: log.address,
+                topics: log.topics.iter().map(|topic| topic.topic).collect(),
+                data: log.data.clone(),
+            })
+            .collect::<Vec<_>>();
+        let outcome = if invocation.contract == DPOS_CONTRACT_ADDRESS {
+            let mut transaction = decode_dpos_transaction_for_execution(
+                &invocation.input,
+                invocation.caller,
+                block_number,
+                self.rewards_config.fix_claim_all_block_num,
+                self.dpos_cornus_period,
+                self.dpos_phalaenopsis_period,
+            );
+            Self::inject_dpos_transaction_value(
+                &mut transaction,
+                rustaxa_types::FinalChainTransactionValue::try_from_be_slice(&invocation.value)?,
+            );
+            let required = dpos_transaction_required_gas(
+                &transaction,
+                block_number,
+                self.rewards_config.fix_claim_all_block_num,
+                self.dpos_cornus_period,
+                if matches!(transaction, DposTransaction::ClaimAllRewards { .. }) {
+                    Some(&*dpos_gas_snapshot)
+                } else {
+                    Some(&*dpos_snapshot)
+                },
+            )?;
+            anyhow::ensure!(
+                invocation.required_gas == required.as_u64(),
+                "FINAL_CHAIN_CONCRETE_INVOCATION_REQUIRED_GAS_MISMATCH"
+            );
+            let transaction_for_gas = transaction.clone();
+            let outcome = if invocation.supplied_gas < invocation.required_gas {
+                DposApplyOutcome::contract_failure()
+            } else if Self::is_dpos_mutation_transaction(&transaction) {
+                self.apply_dpos_mutation_transaction(
+                    block_number,
+                    transaction,
+                    dpos_snapshot,
+                    accounts,
+                )?
+            } else {
+                match transaction {
+                    DposTransaction::GetTotalDelegation(read) => {
+                        self.apply_dpos_total_delegation_read(dpos_snapshot, read)?
+                    }
+                    page @ DposTransaction::GetDelegations(_) => {
+                        self.apply_dpos_delegation_page_read(dpos_snapshot, page)?
+                    }
+                    singleton @ (DposTransaction::GetValidator(_)
+                    | DposTransaction::GetUndelegationV2(_)) => self
+                        .apply_dpos_fixed_singleton_read(dpos_snapshot, block_number, singleton)?,
+                    page @ (DposTransaction::GetValidators(_)
+                    | DposTransaction::GetValidatorsFor(_)) => {
+                        self.apply_dpos_validator_page_read(dpos_snapshot, block_number, page)?
+                    }
+                    page @ (DposTransaction::GetUndelegations(_)
+                    | DposTransaction::GetUndelegationsV2(_)) => {
+                        self.apply_dpos_undelegation_page_read(dpos_snapshot, block_number, page)?
+                    }
+                    DposTransaction::IsValidatorEligible(Err(_))
+                    | DposTransaction::GetValidatorEligibleVotesCount(Err(_)) => {
+                        DposApplyOutcome::contract_failure()
+                    }
+                    eligibility @ (DposTransaction::IsValidatorEligible(Ok(_))
+                    | DposTransaction::GetTotalEligibleVotesCount
+                    | DposTransaction::GetValidatorEligibleVotesCount(Ok(_))) => {
+                        if dpos_eligibility_read_snapshot.is_none() {
+                            let effective_block = head_block_number
+                                .saturating_sub_distance(self.dpos_delegation_delay);
+                            *dpos_eligibility_read_snapshot =
+                                Some((self.dpos_snapshot(head_block_number)?, effective_block));
+                        }
+                        let (snapshot, effective_block) =
+                            dpos_eligibility_read_snapshot.as_ref().ok_or_else(|| {
+                                anyhow::anyhow!("DPoS eligibility snapshot is missing")
+                            })?;
+                        self.apply_dpos_eligibility_read(snapshot, *effective_block, eligibility)?
+                    }
+                    _ => anyhow::bail!("FINAL_CHAIN_CONCRETE_DPOS_INVOCATION_CLASS_INVALID"),
+                }
+            };
+            if outcome.status_code == 1 && Self::is_dpos_mutation_transaction(&transaction_for_gas)
+            {
+                update_dpos_claim_gas_snapshot(dpos_gas_snapshot, &transaction_for_gas)?;
+            }
+            outcome
+        } else {
+            let transaction = decode_slashing_transaction(&invocation.input)?;
+            let required_gas = match transaction {
+                SlashingTransaction::CommitDoubleVotingProof(_) => {
+                    SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS
+                }
+                SlashingTransaction::GetJailBlock(_) | SlashingTransaction::GetJailedValidators => {
+                    SLASHING_GET_METHOD_GAS
+                }
+                SlashingTransaction::MethodNotSupported => 0,
+            };
+            anyhow::ensure!(
+                invocation.required_gas == required_gas,
+                "FINAL_CHAIN_CONCRETE_INVOCATION_REQUIRED_GAS_MISMATCH"
+            );
+            if invocation.supplied_gas < invocation.required_gas {
+                DposApplyOutcome::contract_failure()
+            } else {
+                let needs_read_snapshot = matches!(
+                    &transaction,
+                    SlashingTransaction::GetJailBlock(Ok(_))
+                        | SlashingTransaction::GetJailedValidators
+                );
+                if needs_read_snapshot && slashing_read_snapshot.is_none() {
+                    *slashing_read_snapshot = Some(self.dpos_snapshot(head_block_number)?);
+                }
+                self.apply_slashing_transaction(
+                    dpos_snapshot,
+                    slashing_validator_snapshot,
+                    slashing_read_snapshot.as_ref(),
+                    block_number,
+                    transaction,
+                )?
+            }
+        };
+        anyhow::ensure!(
+            outcome.status_code == u8::from(invocation.error.is_empty()),
+            "FINAL_CHAIN_CONCRETE_INVOCATION_STATUS_MISMATCH"
+        );
+        anyhow::ensure!(
+            outcome.code_retval == invocation.output,
+            "FINAL_CHAIN_CONCRETE_INVOCATION_OUTPUT_MISMATCH"
+        );
+        anyhow::ensure!(
+            outcome.logs == expected_logs,
+            "FINAL_CHAIN_CONCRETE_INVOCATION_LOG_MISMATCH"
+        );
+        anyhow::ensure!(
+            invocation.gas_used
+                == if invocation.required_gas <= invocation.supplied_gas {
+                    invocation.required_gas
+                } else {
+                    0
+                },
+            "FINAL_CHAIN_CONCRETE_INVOCATION_GAS_USED_MISMATCH"
+        );
+        Ok(())
     }
 
     /// Returns a cloned DPoS snapshot for a finalized block number.
@@ -7824,7 +9014,7 @@ fn external_evm_pending_publication_marker_id(
     use tiny_keccak::{Hasher, Keccak};
 
     let mut hasher = Keccak::v256();
-    hasher.update(b"rustaxa-final-chain-external-evm-pending-publication-v1");
+    hasher.update(b"rustaxa-final-chain-external-evm-pending-publication-v2");
     hasher.update(&plan.request_id);
     hasher.update(&plan.plan_id);
     hasher.update(&plan.period.as_u64().to_be_bytes());
@@ -7833,34 +9023,13 @@ fn external_evm_pending_publication_marker_id(
     hasher.update(&intent.plan_id);
     hasher.update(&intent.period.as_u64().to_be_bytes());
     hasher.update(&intent.publication_block_hash);
+    hasher.update(&intent.prior_state.period.as_u64().to_be_bytes());
+    hasher.update(&intent.prior_state.state_root);
+    hasher.update(&intent.post_transaction_state_root);
+    hasher.update(&intent.post_rewards_state_root);
     hasher.update(&post_execution_state_root);
     hasher.update(&post_rewards_state_root);
     hasher.update(&[account_snapshot_status]);
-    let mut marker_id = [0u8; 32];
-    hasher.finalize(&mut marker_id);
-    marker_id
-}
-
-fn legacy_external_evm_pending_publication_marker_id(
-    plan: &FinalChainExternalEvmPublicationPlan,
-    intent: &FinalChainExternalEvmStateCommitIntent,
-    post_execution_state_root: [u8; 32],
-    post_rewards_state_root: [u8; 32],
-) -> [u8; 32] {
-    use tiny_keccak::{Hasher, Keccak};
-
-    let mut hasher = Keccak::v256();
-    hasher.update(b"rustaxa-final-chain-external-evm-pending-publication-v1");
-    hasher.update(&plan.request_id);
-    hasher.update(&plan.plan_id);
-    hasher.update(&plan.period.as_u64().to_be_bytes());
-    hasher.update(&plan.block_hash);
-    hasher.update(&intent.request_id);
-    hasher.update(&intent.plan_id);
-    hasher.update(&intent.period.as_u64().to_be_bytes());
-    hasher.update(&intent.publication_block_hash);
-    hasher.update(&post_execution_state_root);
-    hasher.update(&post_rewards_state_root);
     let mut marker_id = [0u8; 32];
     hasher.finalize(&mut marker_id);
     marker_id
@@ -7872,8 +9041,7 @@ pub(crate) fn external_evm_pending_publication_marker(
     post_execution_state_root: [u8; 32],
     post_rewards_state_root: [u8; 32],
 ) -> ExternalEvmPendingPublicationMarker {
-    let account_snapshot_status =
-        FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY;
+    let account_snapshot_status = FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE;
     ExternalEvmPendingPublicationMarker {
         marker_id: external_evm_pending_publication_marker_id(
             &plan,
@@ -7912,8 +9080,8 @@ fn decode_external_evm_pending_publication_marker(
 ) -> Result<ExternalEvmPendingPublicationMarker, anyhow::Error> {
     let rlp = Rlp::new(raw);
     let item_count = rlp.item_count()?;
-    if item_count != 6 && item_count != 7 {
-        anyhow::bail!("external EVM pending publication marker must contain six or seven fields");
+    if item_count != 7 {
+        anyhow::bail!("external EVM pending publication marker must contain seven fields");
     }
     let version: u64 = rlp.val_at(0)?;
     if version != EXTERNAL_EVM_PENDING_PUBLICATION_MARKER_VERSION {
@@ -7926,36 +9094,27 @@ fn decode_external_evm_pending_publication_marker(
         decode_fixed_hash(&rlp.at(4)?, "external EVM pending post-execution root")?;
     let post_rewards_state_root =
         decode_fixed_hash(&rlp.at(5)?, "external EVM pending post-rewards root")?;
-    let account_snapshot_status = if item_count == 7 {
-        let status = rlp.val_at(6)?;
-        if status != FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY {
-            anyhow::bail!(
-                "external EVM pending publication account snapshot status {status} is unsupported"
-            );
-        }
-        let expected_marker_id = external_evm_pending_publication_marker_id(
-            &plan,
-            &intent,
-            post_execution_state_root,
-            post_rewards_state_root,
-            status,
+    if intent.post_transaction_state_root != post_execution_state_root
+        || intent.post_rewards_state_root != post_rewards_state_root
+    {
+        anyhow::bail!("external EVM pending publication lifecycle roots mismatch");
+    }
+    let account_snapshot_status = rlp.val_at(6)?;
+    if account_snapshot_status != FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE {
+        anyhow::bail!(
+            "external EVM pending publication account snapshot status {account_snapshot_status} is unsupported"
         );
-        if marker_id != expected_marker_id {
-            anyhow::bail!("external EVM pending publication marker id mismatch");
-        }
-        status
-    } else {
-        let expected_marker_id = legacy_external_evm_pending_publication_marker_id(
-            &plan,
-            &intent,
-            post_execution_state_root,
-            post_rewards_state_root,
-        );
-        if marker_id != expected_marker_id {
-            anyhow::bail!("external EVM pending publication marker id mismatch");
-        }
-        FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
-    };
+    }
+    let expected_marker_id = external_evm_pending_publication_marker_id(
+        &plan,
+        &intent,
+        post_execution_state_root,
+        post_rewards_state_root,
+        account_snapshot_status,
+    );
+    if marker_id != expected_marker_id {
+        anyhow::bail!("external EVM pending publication marker id mismatch");
+    }
     Ok(ExternalEvmPendingPublicationMarker {
         marker_id,
         plan,
@@ -7967,7 +9126,7 @@ fn decode_external_evm_pending_publication_marker(
 }
 
 fn encode_external_evm_publication_plan(plan: &FinalChainExternalEvmPublicationPlan) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(15);
+    let mut stream = rlp::RlpStream::new_list(21);
     stream.append(&plan.request_id.as_slice());
     stream.append(&plan.plan_id.as_slice());
     stream.append(&plan.period.as_u64());
@@ -7995,6 +9154,12 @@ fn encode_external_evm_publication_plan(plan: &FinalChainExternalEvmPublicationP
         &encode_external_evm_rewards_stats_update(&plan.rewards_stats_update),
         1,
     );
+    stream.append(&plan.dpos_snapshot_rlp);
+    stream.append(&plan.account_snapshot_rlp);
+    stream.append(&plan.concrete_marker_rlp);
+    stream.append(&plan.concrete_projection_rlp);
+    stream.append(&plan.concrete_projection_hash.as_slice());
+    stream.append(&plan.concrete_provenance_rlp);
     stream.append(&plan.error_code);
     stream.out().to_vec()
 }
@@ -8003,9 +9168,9 @@ fn decode_external_evm_publication_plan(
     rlp: &Rlp<'_>,
 ) -> Result<FinalChainExternalEvmPublicationPlan, anyhow::Error> {
     let item_count = rlp.item_count()?;
-    if item_count != 14 && item_count != 15 {
+    if item_count != 21 {
         anyhow::bail!(
-            "external EVM publication plan marker payload must contain fourteen or fifteen fields"
+            "external EVM publication plan marker payload must contain twenty-one fields"
         );
     }
     let publications = rlp.at(9)?;
@@ -8041,28 +9206,17 @@ fn decode_external_evm_publication_plan(
             },
         );
     }
-    let (proposal_period_dag_level_update, rewards_index, error_index) = if item_count == 15 {
-        let update = rlp.at(12)?;
-        if update.item_count()? != 2 {
-            anyhow::bail!(
-                "external EVM proposal-period DAG-level marker payload must contain two fields"
-            );
-        }
-        (
-            crate::final_chain_execution::FinalChainProposalPeriodDagLevelUpdate {
-                has_update: update.val_at(0)?,
-                level: update.val_at(1)?,
-            },
-            13,
-            14,
-        )
-    } else {
-        (
-            crate::final_chain_execution::FinalChainProposalPeriodDagLevelUpdate::default(),
-            12,
-            13,
-        )
-    };
+    let update = rlp.at(12)?;
+    if update.item_count()? != 2 {
+        anyhow::bail!(
+            "external EVM proposal-period DAG-level marker payload must contain two fields"
+        );
+    }
+    let proposal_period_dag_level_update =
+        crate::final_chain_execution::FinalChainProposalPeriodDagLevelUpdate {
+            has_update: update.val_at(0)?,
+            level: update.val_at(1)?,
+        };
     Ok(FinalChainExternalEvmPublicationPlan {
         request_id: decode_fixed_hash(&rlp.at(0)?, "external EVM publication request id")?,
         plan_id: decode_fixed_hash(&rlp.at(1)?, "external EVM publication plan id")?,
@@ -8079,8 +9233,17 @@ fn decode_external_evm_publication_plan(
         executed_dag_blocks: rlp.val_at(10)?,
         executed_transactions: rlp.val_at(11)?,
         proposal_period_dag_level_update,
-        rewards_stats_update: decode_external_evm_rewards_stats_update(&rlp.at(rewards_index)?)?,
-        error_code: rlp.val_at(error_index)?,
+        rewards_stats_update: decode_external_evm_rewards_stats_update(&rlp.at(13)?)?,
+        dpos_snapshot_rlp: rlp.val_at(14)?,
+        account_snapshot_rlp: rlp.val_at(15)?,
+        concrete_marker_rlp: rlp.val_at(16)?,
+        concrete_projection_rlp: rlp.val_at(17)?,
+        concrete_projection_hash: decode_fixed_hash(
+            &rlp.at(18)?,
+            "external EVM concrete projection hash",
+        )?,
+        concrete_provenance_rlp: rlp.val_at(19)?,
+        error_code: rlp.val_at(20)?,
     })
 }
 
@@ -8112,12 +9275,19 @@ fn decode_external_evm_rewards_stats_update(
 fn encode_external_evm_state_commit_intent(
     intent: &FinalChainExternalEvmStateCommitIntent,
 ) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(7);
+    let mut stream = rlp::RlpStream::new_list(14);
     stream.append(&intent.request_id.as_slice());
     stream.append(&intent.plan_id.as_slice());
     stream.append(&intent.period.as_u64());
     stream.append(&intent.publication_block_hash.as_slice());
-    stream.append(&intent.expected_state_root.as_slice());
+    stream.append(&intent.prior_state.period.as_u64());
+    stream.append(&intent.prior_state.state_root.as_slice());
+    stream.append(&intent.post_transaction_state_root.as_slice());
+    stream.append(&intent.post_rewards_state_root.as_slice());
+    stream.append(&intent.concrete_marker_rlp);
+    stream.append(&intent.concrete_projection_rlp);
+    stream.append(&intent.concrete_projection_hash.as_slice());
+    stream.append(&intent.concrete_provenance_rlp);
     stream.append(&intent.status);
     stream.append(&intent.error_code);
     stream.out().to_vec()
@@ -8126,21 +9296,13 @@ fn encode_external_evm_state_commit_intent(
 fn decode_external_evm_state_commit_intent(
     rlp: &Rlp<'_>,
 ) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
-    let item_count = rlp.item_count()?;
-    if item_count != 6 && item_count != 7 {
+    if rlp.item_count()? != 14 {
         anyhow::bail!(
-            "external EVM state commit intent marker payload must contain six or seven fields"
+            "external EVM state commit intent marker payload must contain fourteen fields"
         );
     }
-    let (expected_state_root, status_index, error_index) = if item_count == 7 {
-        (
-            decode_fixed_hash(&rlp.at(4)?, "external EVM state commit expected state root")?,
-            5,
-            6,
-        )
-    } else {
-        ([0; 32], 4, 5)
-    };
+    let post_rewards_state_root =
+        decode_fixed_hash(&rlp.at(7)?, "external EVM state commit post-rewards root")?;
     Ok(FinalChainExternalEvmStateCommitIntent {
         request_id: decode_fixed_hash(&rlp.at(0)?, "external EVM state commit request id")?,
         plan_id: decode_fixed_hash(&rlp.at(1)?, "external EVM state commit plan id")?,
@@ -8149,9 +9311,25 @@ fn decode_external_evm_state_commit_intent(
             &rlp.at(3)?,
             "external EVM state commit publication block hash",
         )?,
-        expected_state_root,
-        status: rlp.val_at(status_index)?,
-        error_code: rlp.val_at(error_index)?,
+        prior_state: FinalChainExternalEvmCommittedStateDescriptor {
+            period: FinalChainBlockNumber::from(rlp.val_at::<u64>(4)?),
+            state_root: decode_fixed_hash(&rlp.at(5)?, "external EVM state commit prior root")?,
+        },
+        post_transaction_state_root: decode_fixed_hash(
+            &rlp.at(6)?,
+            "external EVM state commit post-transaction root",
+        )?,
+        post_rewards_state_root,
+        expected_state_root: post_rewards_state_root,
+        concrete_marker_rlp: rlp.val_at(8)?,
+        concrete_projection_rlp: rlp.val_at(9)?,
+        concrete_projection_hash: decode_fixed_hash(
+            &rlp.at(10)?,
+            "external EVM state commit concrete projection hash",
+        )?,
+        concrete_provenance_rlp: rlp.val_at(11)?,
+        status: rlp.val_at(12)?,
+        error_code: rlp.val_at(13)?,
     })
 }
 
@@ -8292,6 +9470,510 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
         anyhow::bail!("invalid {field} size: expected 32, got {}", raw.len());
     }
     Ok(ethereum_types::H256::from_slice(raw))
+}
+
+fn concrete_storage_key(parts: &[&[u8]]) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut hasher = Keccak::v256();
+    for part in parts {
+        hasher.update(part);
+    }
+    let mut key = [0_u8; 32];
+    hasher.finalize(&mut key);
+    key
+}
+
+fn concrete_u256_bytes(value: U256) -> Vec<u8> {
+    if value.is_zero() {
+        return Vec::new();
+    }
+    let bytes = value.to_big_endian();
+    let first = bytes.iter().position(|byte| *byte != 0).unwrap_or(32);
+    bytes[first..].to_vec()
+}
+
+fn concrete_compact_u64(value: u64) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    let first = bytes.iter().position(|byte| *byte != 0).unwrap_or(7);
+    bytes[first..].to_vec()
+}
+
+fn concrete_bigint_u64_bytes(value: u64) -> Vec<u8> {
+    if value == 0 {
+        Vec::new()
+    } else {
+        concrete_compact_u64(value)
+    }
+}
+
+fn concrete_rlp_u64(value: u64) -> Vec<u8> {
+    rlp::encode(&value).to_vec()
+}
+
+fn insert_concrete_storage_value(
+    storage: &mut ConcreteRawStorageMap,
+    contract: [u8; 20],
+    key: [u8; 32],
+    value: Vec<u8>,
+) {
+    let values = storage.entry((contract, key)).or_default();
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+/// Compares canonical storage candidates while treating an absent trie row as
+/// equivalent to a zero value. StateAPI omits zero-valued storage rows, whereas
+/// the native snapshot intentionally retains zero candidates for validation.
+fn concrete_storage_values_equivalent(
+    left: Option<&Vec<Vec<u8>>>,
+    right: Option<&Vec<Vec<u8>>>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left.iter().any(|value| right.contains(value)),
+        (Some(values), None) | (None, Some(values)) => values.iter().any(Vec::is_empty),
+        (None, None) => true,
+    }
+}
+
+fn insert_concrete_iterable_map(
+    storage: &mut ConcreteRawStorageMap,
+    prefix: &[u8],
+    items: &[Vec<u8>],
+) {
+    let count = u32::try_from(items.len()).expect("DPoS iterable map length fits u32");
+    insert_concrete_storage_value(
+        storage,
+        DPOS_CONTRACT_ADDRESS,
+        concrete_storage_key(&[prefix, &[1]]),
+        count.to_le_bytes().to_vec(),
+    );
+    for (index, item) in items.iter().enumerate() {
+        let position = u32::try_from(index + 1).expect("DPoS iterable position fits u32");
+        insert_concrete_storage_value(
+            storage,
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[prefix, &[0], &position.to_le_bytes()]),
+            item.clone(),
+        );
+        insert_concrete_storage_value(
+            storage,
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[prefix, &[2], item]),
+            position.to_le_bytes().to_vec(),
+        );
+    }
+}
+
+/// Reconstructs every live DPoS/slashing raw row represented by a native
+/// snapshot. Historical removed iterable-map prefixes are intentionally not
+/// synthesized: their preimages are absent from the compact snapshot and the
+/// paired prior concrete root remains their byte-exact committed baseline.
+/// Current-period transition validation below nevertheless binds every create,
+/// update, and deletion (including empty tombstones) before publication.
+fn canonical_concrete_precompile_storage(
+    snapshot: &DposSnapshot,
+    cornus_active: bool,
+) -> Result<ConcreteRawStorageMap, anyhow::Error> {
+    let mut storage = ConcreteRawStorageMap::new();
+
+    insert_concrete_iterable_map(
+        &mut storage,
+        &[0, 5],
+        &snapshot
+            .validator_order
+            .iter()
+            .map(|address| address.to_vec())
+            .collect::<Vec<_>>(),
+    );
+
+    for validator in &snapshot.validator_order {
+        let stake = snapshot
+            .total_stakes
+            .get(validator)
+            .map(StoredDposTokenAmount::as_u256)
+            .unwrap_or_default();
+        let metadata = snapshot.validator_metadata.get(validator).ok_or_else(|| {
+            anyhow::anyhow!("FINAL_CHAIN_CONCRETE_DPOS_VALIDATOR_METADATA_MISSING")
+        })?;
+        let last_updated = snapshot
+            .reward_reference_graph
+            .read_validator_head(validator)?;
+        let undelegations_count = snapshot
+            .undelegations
+            .values()
+            .flat_map(|entries| entries.iter())
+            .filter(|entry| entry.validator == *validator)
+            .count()
+            .checked_add(
+                snapshot
+                    .undelegations_v2
+                    .values()
+                    .flat_map(|entries| entries.iter())
+                    .filter(|entry| entry.validator == *validator)
+                    .map(|entry| entry.entries.len())
+                    .sum::<usize>(),
+            )
+            .ok_or_else(|| anyhow::anyhow!("DPoS undelegation count overflow"))?;
+        let undelegations_count = u16::try_from(undelegations_count)
+            .map_err(|_| anyhow::anyhow!("DPoS undelegation count exceeds uint16"))?;
+
+        let encode_validator = |extended: bool| {
+            let mut stream = rlp::RlpStream::new_list(if extended { 5 } else { 4 });
+            stream.append(&stake);
+            stream.append(&metadata.commission);
+            stream.append(&metadata.last_commission_change);
+            stream.append(&last_updated);
+            if extended {
+                stream.append(&undelegations_count);
+            }
+            stream.out().to_vec()
+        };
+        let validator_key = concrete_storage_key(&[&[0, 0], validator]);
+        insert_concrete_storage_value(
+            &mut storage,
+            DPOS_CONTRACT_ADDRESS,
+            validator_key,
+            encode_validator(cornus_active),
+        );
+        // A validator untouched since before Cornus may legitimately retain
+        // the four-field representation when its extended count is zero.
+        if cornus_active && undelegations_count == 0 {
+            insert_concrete_storage_value(
+                &mut storage,
+                DPOS_CONTRACT_ADDRESS,
+                validator_key,
+                encode_validator(false),
+            );
+        }
+
+        let mut info = rlp::RlpStream::new_list(2);
+        info.append(&metadata.description.as_slice());
+        info.append(&metadata.endpoint.as_slice());
+        insert_concrete_storage_value(
+            &mut storage,
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[0, 1], validator]),
+            info.out().to_vec(),
+        );
+
+        let mut rewards = rlp::RlpStream::new_list(2);
+        rewards.append(
+            &snapshot
+                .delegator_rewards
+                .get(validator)
+                .map(StoredDposTokenAmount::as_u256)
+                .unwrap_or_default(),
+        );
+        rewards.append(
+            &snapshot
+                .commission_rewards
+                .get(validator)
+                .map(StoredDposTokenAmount::as_u256)
+                .unwrap_or_default(),
+        );
+        insert_concrete_storage_value(
+            &mut storage,
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[0, 2], validator]),
+            rewards.out().to_vec(),
+        );
+        insert_concrete_storage_value(
+            &mut storage,
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[0, 3], validator]),
+            metadata.owner.to_vec(),
+        );
+        insert_concrete_storage_value(
+            &mut storage,
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[0, 4], validator]),
+            snapshot
+                .vrf_keys
+                .get(validator)
+                .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_DPOS_VRF_KEY_MISSING"))?
+                .to_vec(),
+        );
+    }
+
+    for (validator, delegations) in &snapshot.delegations {
+        for (delegator, stake) in delegations {
+            let last_updated = snapshot
+                .reward_reference_graph
+                .read_cursor(validator, delegator)?;
+            let mut delegation = rlp::RlpStream::new_list(2);
+            delegation.append(&stake.as_u256());
+            delegation.append(&last_updated);
+            insert_concrete_storage_value(
+                &mut storage,
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[2, 0], validator, delegator]),
+                delegation.out().to_vec(),
+            );
+        }
+    }
+    for (delegator, validators) in &snapshot.delegator_validators {
+        let mut prefix = vec![2, 1];
+        prefix.extend_from_slice(delegator);
+        insert_concrete_iterable_map(
+            &mut storage,
+            &prefix,
+            &validators
+                .iter()
+                .map(|validator| validator.to_vec())
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    for (delegator, entries) in &snapshot.undelegations {
+        let mut validators = Vec::with_capacity(entries.len());
+        for entry in entries {
+            validators.push(entry.validator.to_vec());
+            let mut undelegation = rlp::RlpStream::new_list(2);
+            undelegation.append(&entry.amount.as_u256());
+            undelegation.append(&entry.block);
+            insert_concrete_storage_value(
+                &mut storage,
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[3, 0], &entry.validator, delegator]),
+                undelegation.out().to_vec(),
+            );
+        }
+        let mut prefix = vec![3, 1];
+        prefix.extend_from_slice(delegator);
+        insert_concrete_iterable_map(&mut storage, &prefix, &validators);
+    }
+
+    for (delegator, validators) in &snapshot.undelegations_v2 {
+        let mut validator_items = Vec::with_capacity(validators.len());
+        for validator_entries in validators {
+            validator_items.push(validator_entries.validator.to_vec());
+            let mut id_items = Vec::with_capacity(validator_entries.entries.len());
+            for entry in &validator_entries.entries {
+                let id = entry.id.to_le_bytes();
+                id_items.push(id.to_vec());
+                let mut undelegation = rlp::RlpStream::new_list(3);
+                undelegation.append(&entry.amount.as_u256());
+                undelegation.append(&entry.block);
+                undelegation.append(&entry.id);
+                insert_concrete_storage_value(
+                    &mut storage,
+                    DPOS_CONTRACT_ADDRESS,
+                    concrete_storage_key(&[&[3, 0], delegator, &validator_entries.validator, &id]),
+                    undelegation.out().to_vec(),
+                );
+            }
+            let mut ids_prefix = vec![3, 3];
+            ids_prefix.extend_from_slice(delegator);
+            ids_prefix.extend_from_slice(&validator_entries.validator);
+            insert_concrete_iterable_map(&mut storage, &ids_prefix, &id_items);
+        }
+        let mut validators_prefix = vec![3, 2];
+        validators_prefix.extend_from_slice(delegator);
+        insert_concrete_iterable_map(&mut storage, &validators_prefix, &validator_items);
+    }
+    for (delegator, id) in &snapshot.undelegation_v2_last_ids {
+        insert_concrete_storage_value(
+            &mut storage,
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[3, 4], delegator]),
+            id.to_le_bytes().to_vec(),
+        );
+    }
+
+    for (key, node) in snapshot.reward_reference_graph.live_nodes()? {
+        let mut state = rlp::RlpStream::new_list(2);
+        state.append(&node.reward_per_stake.to_canonical_bytes().as_slice());
+        state.append(&node.count);
+        let block = concrete_bigint_u64_bytes(key.block);
+        insert_concrete_storage_value(
+            &mut storage,
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[1], &key.validator, &block]),
+            state.out().to_vec(),
+        );
+    }
+
+    insert_concrete_storage_value(
+        &mut storage,
+        DPOS_CONTRACT_ADDRESS,
+        concrete_storage_key(&[&[4]]),
+        concrete_compact_u64(snapshot.total_vote_count),
+    );
+    insert_concrete_storage_value(
+        &mut storage,
+        DPOS_CONTRACT_ADDRESS,
+        concrete_storage_key(&[&[5]]),
+        concrete_u256_bytes(total_staked_amount(snapshot)?),
+    );
+    match &snapshot.aspen_supply_state {
+        AspenSupplyState::Unmigrated { minted_tokens } => {
+            insert_concrete_storage_value(
+                &mut storage,
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[6]]),
+                concrete_u256_bytes(minted_tokens.as_u256()),
+            );
+        }
+        AspenSupplyState::Migrated {
+            total_supply,
+            current_yield,
+        } => {
+            insert_concrete_storage_value(
+                &mut storage,
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[7]]),
+                concrete_u256_bytes(total_supply.as_u256()),
+            );
+            insert_concrete_storage_value(
+                &mut storage,
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[8]]),
+                concrete_rlp_u64(current_yield.as_u64()),
+            );
+        }
+    }
+
+    for (validator, jail_block) in &snapshot.slashing_jail_blocks {
+        insert_concrete_storage_value(
+            &mut storage,
+            SLASHING_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[0], validator]),
+            concrete_rlp_u64(*jail_block),
+        );
+    }
+    let mut jailed = rlp::RlpStream::new_list(snapshot.slashing_jailed_validators.len());
+    for validator in &snapshot.slashing_jailed_validators {
+        jailed.append(&validator.as_slice());
+    }
+    let mut jailed_key = [0_u8; 32];
+    jailed_key[31] = 2;
+    insert_concrete_storage_value(
+        &mut storage,
+        SLASHING_CONTRACT_ADDRESS,
+        jailed_key,
+        jailed.out().to_vec(),
+    );
+    for proof_key in &snapshot.slashing_double_voting_proofs {
+        insert_concrete_storage_value(&mut storage, SLASHING_CONTRACT_ADDRESS, *proof_key, vec![1]);
+    }
+
+    Ok(storage)
+}
+
+fn validate_concrete_precompile_storage_transition(
+    before: &DposSnapshot,
+    after: &DposSnapshot,
+    cornus_active: bool,
+    rows: &[FinalChainConcreteStorageProjection],
+    boundary: &str,
+) -> Result<(), anyhow::Error> {
+    let before = canonical_concrete_precompile_storage(before, cornus_active)?;
+    let after = canonical_concrete_precompile_storage(after, cornus_active)?;
+    let actual = rows
+        .iter()
+        .map(|row| ((row.contract, row.key), row.value.as_slice()))
+        .collect::<BTreeMap<_, _>>();
+
+    for (key, value) in &actual {
+        anyhow::ensure!(
+            key.0 == DPOS_CONTRACT_ADDRESS || key.0 == SLASHING_CONTRACT_ADDRESS,
+            "FINAL_CHAIN_CONCRETE_STORAGE_CONTRACT_UNSUPPORTED:{boundary}"
+        );
+        if let Some(expected) = after.get(key) {
+            anyhow::ensure!(
+                expected
+                    .iter()
+                    .any(|candidate| candidate.as_slice() == *value),
+                "FINAL_CHAIN_CONCRETE_STORAGE_VALUE_MISMATCH:{boundary}"
+            );
+        } else {
+            anyhow::ensure!(
+                before.contains_key(key) && value.is_empty(),
+                "FINAL_CHAIN_CONCRETE_STORAGE_TOMBSTONE_MISMATCH:{boundary}"
+            );
+        }
+    }
+
+    for key in before.keys().chain(after.keys()).collect::<BTreeSet<_>>() {
+        let changed = !concrete_storage_values_equivalent(before.get(key), after.get(key));
+        anyhow::ensure!(
+            !changed || actual.contains_key(key),
+            "FINAL_CHAIN_CONCRETE_STORAGE_ROW_MISSING:{boundary}"
+        );
+    }
+    Ok(())
+}
+
+fn validate_concrete_precompile_final_storage(
+    before_rewards: &DposSnapshot,
+    after_rewards: &DposSnapshot,
+    cornus_active: bool,
+    rows: &[FinalChainConcreteStorageProjection],
+) -> Result<(), anyhow::Error> {
+    let before = canonical_concrete_precompile_storage(before_rewards, cornus_active)?;
+    let final_storage = canonical_concrete_precompile_storage(after_rewards, cornus_active)?;
+    let actual = rows
+        .iter()
+        .map(|row| ((row.contract, row.key), row.value.as_slice()))
+        .collect::<BTreeMap<_, _>>();
+    for row in rows {
+        if let Some(expected) = final_storage.get(&(row.contract, row.key)) {
+            anyhow::ensure!(
+                expected.iter().any(|candidate| candidate == &row.value),
+                "FINAL_CHAIN_CONCRETE_FINAL_STORAGE_VALUE_MISMATCH: contract={:?} key={:?} before={:?} expected={expected:?} actual={:?}",
+                row.contract,
+                row.key,
+                before.get(&(row.contract, row.key)),
+                row.value
+            );
+        }
+    }
+    // The monotonic catalog was seeded at the paired concrete genesis root.
+    // Some zero-valued live fields (for example pre-Aspen minted supply) are
+    // indistinguishable in the compact Rust snapshot from never-written rows.
+    // Existing final rows are checked above; only current-period transitions
+    // are required below. Untouched historical rows cannot drift without
+    // entering a per-transaction touched catalog, which is rejected unless it
+    // is a canonical Rust transition.
+    for key in before
+        .keys()
+        .chain(final_storage.keys())
+        .collect::<BTreeSet<_>>()
+    {
+        let changed = !concrete_storage_values_equivalent(before.get(key), final_storage.get(key));
+        if !changed {
+            continue;
+        }
+        let value = actual
+            .get(key)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "FINAL_CHAIN_CONCRETE_FINAL_STORAGE_ROW_MISSING: contract={:?} key={:?} before={:?} expected={:?}",
+                    key.0,
+                    key.1,
+                    before.get(key),
+                    final_storage.get(key)
+                )
+            })?;
+        if let Some(expected) = final_storage.get(key) {
+            anyhow::ensure!(
+                expected
+                    .iter()
+                    .any(|candidate| candidate.as_slice() == *value),
+                "FINAL_CHAIN_CONCRETE_FINAL_STORAGE_VALUE_MISMATCH: contract={:?} key={:?} expected={expected:?} actual={value:?}",
+                key.0,
+                key.1
+            );
+        } else {
+            anyhow::ensure!(
+                value.is_empty(),
+                "FINAL_CHAIN_CONCRETE_FINAL_STORAGE_TOMBSTONE_MISMATCH"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Result<Vec<u8>, anyhow::Error> {
@@ -8637,6 +10319,183 @@ fn encode_account_snapshot_rlp(accounts: &HashMap<[u8; 20], Account>) -> Vec<u8>
         stream.append(&account.code_size);
     }
     stream.out().to_vec()
+}
+
+fn apply_concrete_account_projection(
+    accounts: &mut HashMap<[u8; 20], Account>,
+    projection: &[FinalChainConcreteAccountProjection],
+) -> Result<(), anyhow::Error> {
+    for row in projection {
+        if row.raw_account_rlp.is_empty() {
+            accounts.remove(&row.address);
+            continue;
+        }
+        let account = Rlp::new(&row.raw_account_rlp);
+        anyhow::ensure!(
+            account.item_count()? == 5,
+            "FINAL_CHAIN_CONCRETE_ACCOUNT_RLP_FIELD_COUNT_MISMATCH"
+        );
+        let optional_hash = |field: usize, name: &str| -> Result<[u8; 32], anyhow::Error> {
+            let bytes = account.at(field)?.data()?;
+            if bytes.is_empty() {
+                Ok([0; 32])
+            } else {
+                decode_fixed_hash(&account.at(field)?, name)
+            }
+        };
+        accounts.insert(
+            row.address,
+            Account {
+                nonce: FinalChainNonce::from_bytes(account.at(0)?.data()?)?,
+                balance: rustaxa_types::FinalChainAccountBalance::from_snapshot_bytes(
+                    account.at(1)?.data()?,
+                )?,
+                storage_root_hash: optional_hash(2, "concrete account storage root")?,
+                code_hash: optional_hash(3, "concrete account code hash")?,
+                code_size: account.val_at(4)?,
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Encodes the StateAPI `vm.Transaction` value independently from the signed
+/// canonical transaction envelope. StateAPI records this seven-field execution
+/// input in each concrete per-transaction effect.
+fn encode_concrete_evm_transaction(transaction: &FinalChainEvmTransactionInput) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(7);
+    stream.append(&transaction.sender.as_slice());
+    stream.append(&transaction.gas_price.as_u256());
+    if let Some(receiver) = transaction.receiver {
+        stream.append(&receiver.as_slice());
+    } else {
+        stream.append_empty_data();
+    }
+    stream.append(&transaction.nonce.to_bytes());
+    stream.append(&transaction.value.as_u256());
+    stream.append(&transaction.gas_limit.as_u64());
+    stream.append(&transaction.data);
+    stream.out().to_vec()
+}
+
+/// Validates the StateAPI execution result for a Rust-supported top-level
+/// envelope against the full native executor's receipt. Return bytes are tied
+/// to the sole direct precompile invocation when present; nested invocations
+/// are forbidden for a transaction whose receiver is itself a native leaf.
+fn validate_concrete_native_execution_result(
+    effect: &crate::concrete_state_projection::FinalChainConcreteTransactionEffect,
+    receipt: &NativeReceipt,
+) -> Result<(), anyhow::Error> {
+    let result = Rlp::new(&effect.execution_result_rlp);
+    anyhow::ensure!(
+        result.item_count()? == 6,
+        "FINAL_CHAIN_CONCRETE_EXECUTION_RESULT_FIELD_COUNT_MISMATCH"
+    );
+    let code_retval: Vec<u8> = result.val_at(0)?;
+    let new_contract = decode_address(&result.at(1)?, "concrete execution new contract")?;
+    let mut logs = Vec::new();
+    for raw_log in result.at(2)?.iter() {
+        anyhow::ensure!(
+            raw_log.item_count()? == 3,
+            "FINAL_CHAIN_CONCRETE_EXECUTION_LOG_FIELD_COUNT_MISMATCH"
+        );
+        let mut topics = Vec::new();
+        for topic in raw_log.at(1)?.iter() {
+            topics.push(decode_fixed_hash(&topic, "concrete execution log topic")?);
+        }
+        logs.push(ReceiptLog {
+            address: decode_address(&raw_log.at(0)?, "concrete execution log address")?,
+            topics,
+            data: raw_log.val_at(2)?,
+        });
+    }
+    let gas_used: u64 = result.val_at(3)?;
+    let execution_error: String = result.val_at(4)?;
+    let consensus_error: String = result.val_at(5)?;
+    let status = u8::from(execution_error.is_empty() && consensus_error.is_empty());
+    anyhow::ensure!(
+        status == receipt.status_code,
+        "FINAL_CHAIN_CONCRETE_NATIVE_STATUS_MISMATCH"
+    );
+    anyhow::ensure!(
+        gas_used == receipt.gas_used.as_u64(),
+        "FINAL_CHAIN_CONCRETE_NATIVE_GAS_MISMATCH"
+    );
+    anyhow::ensure!(
+        logs == receipt.logs,
+        "FINAL_CHAIN_CONCRETE_NATIVE_LOG_MISMATCH"
+    );
+    anyhow::ensure!(
+        new_contract == [0; 20] && receipt.new_contract_address.is_none(),
+        "FINAL_CHAIN_CONCRETE_NATIVE_CONTRACT_ADDRESS_MISMATCH"
+    );
+    anyhow::ensure!(
+        effect.invocations.len() <= 1,
+        "FINAL_CHAIN_CONCRETE_NATIVE_INVOCATION_COUNT_MISMATCH"
+    );
+    let expected_output = effect
+        .invocations
+        .first()
+        .map(|invocation| invocation.output.as_slice())
+        .unwrap_or_default();
+    anyhow::ensure!(
+        code_retval == expected_output,
+        "FINAL_CHAIN_CONCRETE_NATIVE_OUTPUT_MISMATCH"
+    );
+    Ok(())
+}
+
+/// Requires every nonce/balance mutation claimed by StateAPI for a native
+/// envelope to equal Rust's independently executed result. Code and storage
+/// roots remain concrete-leaf facts and are applied only after this check.
+fn validate_concrete_native_account_effect(
+    before: &HashMap<[u8; 20], Account>,
+    expected: &HashMap<[u8; 20], Account>,
+    projection: &[FinalChainConcreteAccountProjection],
+) -> Result<(), anyhow::Error> {
+    let projected_addresses = projection
+        .iter()
+        .map(|row| row.address)
+        .collect::<BTreeSet<_>>();
+    let mut projected = before.clone();
+    apply_concrete_account_projection(&mut projected, projection)?;
+    let addresses = before
+        .keys()
+        .chain(expected.keys())
+        .chain(projected.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    for address in addresses {
+        let before_account = before.get(&address);
+        let expected_account = expected.get(&address);
+        let projected_account = projected.get(&address);
+        let native_changed = before_account.map(|account| (&account.nonce, &account.balance))
+            != expected_account.map(|account| (&account.nonce, &account.balance));
+        anyhow::ensure!(
+            !native_changed || projected_addresses.contains(&address),
+            "FINAL_CHAIN_CONCRETE_NATIVE_ACCOUNT_EFFECT_MISSING"
+        );
+        anyhow::ensure!(
+            expected_account.map(|account| (&account.nonce, &account.balance))
+                == projected_account.map(|account| (&account.nonce, &account.balance)),
+            "FINAL_CHAIN_CONCRETE_NATIVE_ACCOUNT_EFFECT_MISMATCH"
+        );
+    }
+    Ok(())
+}
+
+/// Requires the concrete rewards leaf to report the exact minted amount Rust
+/// independently planned. Transaction-fee rewards are deliberately excluded
+/// because the legacy header field contains minted rewards only.
+fn validate_concrete_total_reward(
+    reported: &[u8],
+    expected: DposTokenAmount,
+) -> Result<(), anyhow::Error> {
+    anyhow::ensure!(
+        DposTokenAmount::try_from_be_slice(reported)? == expected,
+        "FINAL_CHAIN_CONCRETE_TOTAL_REWARD_MISMATCH"
+    );
+    Ok(())
 }
 
 /// Decodes a persisted account snapshot payload.
@@ -9949,6 +11808,15 @@ fn fee_rewards_from_distribution_stats(
         }
     }
     Ok(rewards)
+}
+
+/// Matches StateAPI reward distribution by dropping fee rewards for validators
+/// that disappeared during the delayed consensus-eligibility window.
+fn retain_existing_validator_fee_rewards(
+    rewards: &mut BTreeMap<[u8; 20], DposTokenAmount>,
+    snapshot: &DposSnapshot,
+) {
+    rewards.retain(|validator, _| snapshot.total_stakes.contains_key(validator));
 }
 
 fn merge_reward_map(
@@ -12996,15 +14864,22 @@ mod tests {
             indexed_log_bloom: FinalChainLogBloom::ZERO,
             ..Default::default()
         };
+        let post_execution_state_root = [0x44; 32];
+        let post_rewards_state_root = [0x55; 32];
         let intent = FinalChainExternalEvmStateCommitIntent {
             request_id: plan.request_id,
             plan_id: plan.plan_id,
             period: plan.period,
             publication_block_hash: plan.block_hash,
+            prior_state: FinalChainExternalEvmCommittedStateDescriptor {
+                period: FinalChainBlockNumber::GENESIS,
+                state_root: [0x33; 32],
+            },
+            post_transaction_state_root: post_execution_state_root,
+            post_rewards_state_root,
+            expected_state_root: post_rewards_state_root,
             ..Default::default()
         };
-        let post_execution_state_root = [0x44; 32];
-        let post_rewards_state_root = [0x55; 32];
         let marker = external_evm_pending_publication_marker(
             plan.clone(),
             intent.clone(),
@@ -13013,7 +14888,7 @@ mod tests {
         );
         assert_eq!(
             marker.account_snapshot_status,
-            FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+            FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE
         );
 
         let encoded = encode_external_evm_pending_publication_marker(&marker);
@@ -13022,28 +14897,20 @@ mod tests {
         let decoded = decode_external_evm_pending_publication_marker(&encoded).unwrap();
         assert_eq!(
             decoded.account_snapshot_status,
-            FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+            FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE
         );
 
-        let legacy_marker_id = legacy_external_evm_pending_publication_marker_id(
-            &plan,
-            &intent,
-            post_execution_state_root,
-            post_rewards_state_root,
-        );
         let mut legacy_stream = RlpStream::new_list(6);
-        legacy_stream.append(&EXTERNAL_EVM_PENDING_PUBLICATION_MARKER_VERSION);
-        legacy_stream.append(&legacy_marker_id.as_slice());
+        legacy_stream.append(&1u64);
+        legacy_stream.append(&marker.marker_id.as_slice());
         legacy_stream.append_raw(&encode_external_evm_publication_plan(&plan), 1);
         legacy_stream.append_raw(&encode_external_evm_state_commit_intent(&intent), 1);
         legacy_stream.append(&post_execution_state_root.as_slice());
         legacy_stream.append(&post_rewards_state_root.as_slice());
-        let legacy_decoded =
-            decode_external_evm_pending_publication_marker(&legacy_stream.out()).unwrap();
-        assert_eq!(
-            legacy_decoded.account_snapshot_status,
-            FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
-        );
+        let error = decode_external_evm_pending_publication_marker(&legacy_stream.out())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must contain seven fields"));
     }
 
     fn header_data_rlp(gas_used: u64, total_reward: U256) -> Vec<u8> {
@@ -22128,7 +23995,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -22261,7 +24128,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -22353,7 +24220,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -24392,7 +26259,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -24527,7 +26394,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -24683,7 +26550,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -24798,7 +26665,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -24936,7 +26803,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -25053,7 +26920,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -25178,7 +27045,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -25334,7 +27201,7 @@ mod tests {
                 committee_size: 100,
                 magnolia_period: 0.into(),
                 aspen_part_one_period: u64::MAX.into(),
-                aspen_part_two_period: 0.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
@@ -25597,6 +27464,7 @@ mod tests {
             DposTokenAmount::from(U256::from(100u64));
         final_chain.rewards_config.aspen_max_supply = DposTokenAmount::from(U256::from(2_000u64));
         final_chain.rewards_config.dpos_blocks_per_year = 10;
+        final_chain.rewards_config.yield_percentage = 1;
 
         let mut snapshot = final_chain
             .dpos_snapshot_at_finalized_block(0.into())
@@ -25663,6 +27531,7 @@ mod tests {
         final_chain.rewards_config.aspen_max_supply = DposTokenAmount::from(U256::from(1_200u64));
         final_chain.rewards_config.dpos_blocks_per_year = 1;
         final_chain.rewards_config.dag_proposers_reward_percent = 100;
+        final_chain.rewards_config.yield_percentage = 1;
 
         let mut snapshot = final_chain
             .dpos_snapshot_at_finalized_block(0.into())
@@ -25750,6 +27619,7 @@ mod tests {
             aspen_part_two_period: 1.into(),
             max_block_author_reward_percent: 0,
             dag_proposers_reward_percent: 100,
+            yield_percentage: 1,
             dpos_blocks_per_year: 10,
             genesis_balance_sum: Some(DposTokenAmount::from(U256::from(1_000_000u64))),
             aspen_max_supply: DposTokenAmount::from(U256::from(2_000_000u64)),
@@ -25867,6 +27737,88 @@ mod tests {
         );
         drop(restarted);
         drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn genesis_hardfork_boundaries_activate_aspen_and_cacti() {
+        let path = temp_db_path("genesis-aspen-cacti-activation");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let mut final_chain = new_final_chain_with_dpos(
+            storage,
+            vec![genesis_validator([0x69; 20], U256::from(10_000u64))],
+            U256::zero(),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        final_chain.rewards_config.aspen_part_two_period = 0.into();
+        final_chain.rewards_config.cacti_period = 0.into();
+        final_chain.rewards_config.dpos_blocks_per_year = 11;
+        let stats = RewardsBlockDistribution {
+            period: 0,
+            block_author: H160::zero(),
+            blocks_per_year: 7,
+            validators_stats: BTreeMap::new(),
+            total_dag_blocks_count: 0,
+            total_votes_weight: 0,
+            max_votes_weight: 0,
+        };
+
+        assert!(final_chain.aspen_part_two_active(0.into()));
+        assert_eq!(
+            final_chain
+                .reward_blocks_per_year(0.into(), &stats)
+                .unwrap(),
+            7
+        );
+
+        drop(final_chain);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn zero_configured_yield_disables_aspen_dynamic_rewards() {
+        let path = temp_db_path("zero-yield-disables-aspen-rewards");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x6a; 20];
+        let mut final_chain = new_final_chain_with_dpos(
+            storage,
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::zero(),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        final_chain.rewards_config.aspen_part_two_period = 0.into();
+        final_chain.rewards_config.genesis_balance_sum =
+            Some(DposTokenAmount::from(U256::from(10_000u64)));
+        final_chain.rewards_config.aspen_max_supply = DposTokenAmount::from(U256::from(20_000u64));
+        final_chain.rewards_config.yield_percentage = 0;
+        let snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        let stats = RewardsBlockDistribution {
+            period: 1,
+            block_author: H160(validator),
+            blocks_per_year: 10,
+            validators_stats: BTreeMap::from([(
+                validator,
+                crate::RewardsValidatorDistribution {
+                    vote_weight: 1,
+                    ..Default::default()
+                },
+            )]),
+            total_dag_blocks_count: 0,
+            total_votes_weight: 1,
+            max_votes_weight: 1,
+        };
+
+        let plan = final_chain
+            .plan_minted_rewards(1.into(), &[stats], &snapshot)
+            .unwrap();
+        assert_eq!(plan.total_minted_reward, DposTokenAmount::zero());
+        assert_eq!(plan.supply_after, snapshot.aspen_supply_state);
+
+        drop(final_chain);
         let _ = std::fs::remove_dir_all(path);
     }
 

@@ -27,13 +27,15 @@ use crate::transaction_manager::{
 };
 use crate::transaction_queue::TransactionQueueInsertStatus;
 use crate::transaction_service::TransactionServiceConfig;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use ethereum_types::{H256, U256};
-use rlp::Rlp;
+use rlp::{Rlp, RlpStream};
 use rustaxa_storage::{Config, StatusField, Storage};
 use rustaxa_types::LegacyTransactionEnvelope;
+use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp;
 use rustaxa_types::{
     FinalChainGas, FinalChainRewardsConfig, GenesisAccount, GenesisDposConfig, GenesisValidator,
+    StoredFinalChainBlockHeader,
 };
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -116,6 +118,10 @@ pub struct ConsensusFinalChainConfig {
     pub block_gas_limit: FinalChainGas,
     /// Timestamp used when materializing the genesis FinalChain header.
     pub genesis_timestamp: u64,
+    /// Period in the StateAPI descriptor observed at application bootstrap.
+    pub state_api_committed_period: u64,
+    /// Root in the StateAPI descriptor observed at application bootstrap.
+    pub state_api_committed_root: H256,
     /// Configured bridge contract consulted by native system-transaction policy.
     pub bridge_contract_address: [u8; 20],
     /// Effective genesis account balances after configured delegations.
@@ -172,13 +178,31 @@ impl ConsensusApplicationBootstrap {
         );
         initialize_schema_version(&storage, self.schema_major, self.schema_minor)?;
         initialize_and_verify_genesis(&storage, self.storage_genesis_hash)?;
+        initialize_concrete_root_policy(&storage, self.storage_genesis_hash)?;
 
         let bridge_contract_address = self.final_chain.bridge_contract_address;
+        let genesis_state_root = match storage.final_chain().block_header_raw(0)? {
+            Some(header) => {
+                StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&header))?
+                    .state_root
+            }
+            None if self.final_chain.state_api_committed_period == 0 => {
+                self.final_chain.state_api_committed_root
+            }
+            None => {
+                bail!(
+                    "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: empty FinalChain with StateAPI at period {}",
+                    self.final_chain.state_api_committed_period
+                )
+            }
+        };
         let final_chain = Arc::new(
-            FinalChain::new_with_rewards_config(
+            FinalChain::new_with_genesis_state_root(
                 storage.clone(),
                 self.final_chain.block_gas_limit,
                 self.final_chain.genesis_timestamp,
+                genesis_state_root,
+                true,
                 self.final_chain.genesis_accounts,
                 self.final_chain.genesis_validators,
                 self.final_chain.genesis_dpos,
@@ -194,6 +218,95 @@ impl ConsensusApplicationBootstrap {
             bridge_contract_address,
         )
     }
+}
+
+/// Current durable policy for FinalChain headers backed by concrete StateAPI roots.
+const FINAL_CHAIN_CONCRETE_ROOT_POLICY_V1: u64 = 1;
+
+/// Initializes the concrete-root marker only for an empty FinalChain.
+///
+/// Markerless databases that already contain finalized headers predate the
+/// concrete-root policy and are rejected. Their consensus-visible hashes must
+/// be rebuilt or resynchronized as a pair with `state_db`; they are never
+/// rewritten in place.
+fn initialize_concrete_root_policy(storage: &Storage, storage_genesis_hash: H256) -> Result<()> {
+    let stored = storage
+        .metadata()
+        .status_field(StatusField::FinalChainRootPolicy as u8)
+        .context("FINAL_CHAIN_CONCRETE_ROOT_POLICY_READ_FAILED")?;
+    if stored != 0 && stored != FINAL_CHAIN_CONCRETE_ROOT_POLICY_V1 {
+        bail!(
+            "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: unsupported concrete-root policy {stored}"
+        );
+    }
+    if stored == 0 {
+        if storage.final_chain().block_header_raw(0)?.is_some()
+            || storage
+                .final_chain()
+                .meta_value(FinalChain::DB_META_LAST_NUMBER)?
+                .is_some()
+        {
+            bail!("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: markerless FinalChain history");
+        }
+        storage
+            .metadata()
+            .write_status_field(
+                StatusField::FinalChainRootPolicy as u8,
+                FINAL_CHAIN_CONCRETE_ROOT_POLICY_V1,
+            )
+            .context("FINAL_CHAIN_CONCRETE_ROOT_POLICY_WRITE_FAILED")?;
+    }
+
+    let Some(pairing) = storage.final_chain().concrete_state_pairing_raw()? else {
+        if let Some(raw_last) = storage
+            .final_chain()
+            .meta_value(FinalChain::DB_META_LAST_NUMBER)?
+        {
+            ensure!(
+                raw_last.len() == 8 && u64::from_le_bytes(raw_last.try_into().unwrap()) == 0,
+                "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: missing paired state database marker"
+            );
+        }
+        return Ok(());
+    };
+    let rlp = Rlp::new(&pairing);
+    ensure!(
+        rlp.is_list() && rlp.item_count()? == 4,
+        "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: malformed paired state database marker"
+    );
+    let policy_version: u64 = rlp.val_at(0)?;
+    let paired_genesis: Vec<u8> = rlp.val_at(1)?;
+    let database_id: Vec<u8> = rlp.val_at(2)?;
+    let chain_id: Vec<u8> = rlp.val_at(3)?;
+    ensure!(
+        policy_version == FINAL_CHAIN_CONCRETE_ROOT_POLICY_V1
+            && paired_genesis == storage_genesis_hash.as_bytes()
+            && database_id.len() == 32
+            && database_id.iter().any(|byte| *byte != 0)
+            && chain_id == concrete_chain_config_identity(storage_genesis_hash),
+        "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: paired state database identity mismatch"
+    );
+    let mut canonical = RlpStream::new_list(4);
+    canonical.append(&policy_version);
+    canonical.append(&paired_genesis.as_slice());
+    canonical.append(&database_id.as_slice());
+    canonical.append(&chain_id.as_slice());
+    ensure!(
+        canonical.out().as_ref() == pairing,
+        "FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED: non-canonical paired state database marker"
+    );
+    Ok(())
+}
+
+fn concrete_chain_config_identity(storage_genesis_hash: H256) -> Vec<u8> {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut hasher = Keccak::v256();
+    hasher.update(b"rustaxa-final-chain-concrete-chain-identity-v1");
+    hasher.update(storage_genesis_hash.as_bytes());
+    let mut identity = vec![0; 32];
+    hasher.finalize(&mut identity);
+    identity
 }
 
 fn initialize_schema_version(
@@ -1478,6 +1591,8 @@ pub fn consensus_application_test_bootstrap(
         final_chain: ConsensusFinalChainConfig {
             block_gas_limit: FinalChainGas::ZERO,
             genesis_timestamp: 0,
+            state_api_committed_period: 0,
+            state_api_committed_root: H256::repeat_byte(3),
             bridge_contract_address: [0; 20],
             genesis_accounts: Vec::new(),
             genesis_validators,
@@ -1670,6 +1785,8 @@ mod tests {
             final_chain: ConsensusFinalChainConfig {
                 block_gas_limit: 1_000_000.into(),
                 genesis_timestamp: 42,
+                state_api_committed_period: 0,
+                state_api_committed_root: H256::repeat_byte(3),
                 bridge_contract_address: [0; 20],
                 genesis_accounts: Vec::new(),
                 genesis_validators: Vec::new(),
@@ -1776,6 +1893,20 @@ mod tests {
                 .status_field(StatusField::DbMinorVersion as u8)
                 .unwrap(),
             3
+        );
+        assert_eq!(
+            root.storage
+                .metadata()
+                .status_field(StatusField::FinalChainRootPolicy as u8)
+                .unwrap(),
+            FINAL_CHAIN_CONCRETE_ROOT_POLICY_V1
+        );
+        assert_eq!(
+            root.final_chain
+                .committed_state_descriptor()
+                .unwrap()
+                .state_root,
+            [3; 32]
         );
         assert_eq!(
             root.storage.metadata().genesis_hash().unwrap(),
@@ -1973,6 +2104,127 @@ mod tests {
             Some(vec![1; 32])
         );
         drop(storage);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn native_bootstrap_rejects_markerless_synthetic_final_chain_history() {
+        let path = temp_path("consensus_application_synthetic_root_rebuild");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).expect("storage"));
+        FinalChain::new(
+            storage.clone(),
+            FinalChainGas::ZERO,
+            0,
+            Vec::new(),
+            Vec::new(),
+            GenesisDposConfig::default(),
+        )
+        .expect("legacy synthetic fixture");
+        drop(storage);
+
+        let error = match bootstrap(path.clone()).bootstrap() {
+            Ok(_) => panic!("markerless history must require rebuild"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
+        );
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn native_bootstrap_rejects_ahead_state_api_for_empty_final_chain() {
+        let path = temp_path("consensus_application_ahead_state_api");
+        let mut config = bootstrap(path.clone());
+        config.final_chain.state_api_committed_period = 1;
+        let error = match config.bootstrap() {
+            Ok(_) => panic!("ahead concrete state without FinalChain is ambiguous"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
+        );
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn native_bootstrap_pairs_and_rejects_swapped_concrete_database() {
+        let path = temp_path("consensus_application_concrete_database_pairing");
+        let root = bootstrap(path.clone())
+            .bootstrap()
+            .expect("fresh bootstrap");
+        let chain_id = root.final_chain.concrete_chain_identity().unwrap();
+        root.final_chain
+            .verify_or_initialize_concrete_state_pairing(
+                crate::concrete_state_projection::FinalChainConcreteIdentity {
+                    policy_version: 1,
+                    database_id: [7; 32],
+                    chain_id,
+                },
+            )
+            .expect("first concrete database pairs");
+        drop(root);
+
+        let restarted = bootstrap(path.clone()).bootstrap().expect("paired restart");
+        let error = restarted
+            .final_chain
+            .verify_or_initialize_concrete_state_pairing(
+                crate::concrete_state_projection::FinalChainConcreteIdentity {
+                    policy_version: 1,
+                    database_id: [8; 32],
+                    chain_id,
+                },
+            )
+            .expect_err("swapped concrete database must reject");
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
+        );
+        drop(restarted);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn native_bootstrap_rejects_tampered_concrete_pairing_identity() {
+        let path = temp_path("consensus_application_concrete_pairing_tamper");
+        let root = bootstrap(path.clone())
+            .bootstrap()
+            .expect("fresh bootstrap");
+        let chain_id = root.final_chain.concrete_chain_identity().unwrap();
+        root.final_chain
+            .verify_or_initialize_concrete_state_pairing(
+                crate::concrete_state_projection::FinalChainConcreteIdentity {
+                    policy_version: 1,
+                    database_id: [9; 32],
+                    chain_id,
+                },
+            )
+            .expect("pair database");
+        root.storage
+            .final_chain()
+            .write_concrete_state_pairing(&rlp::encode_list::<Vec<u8>, _>(&[
+                vec![1],
+                vec![1; 32],
+                vec![9; 32],
+                vec![0xaa; 32],
+            ]))
+            .expect("tamper pairing");
+        drop(root);
+
+        let error = match bootstrap(path.clone()).bootstrap() {
+            Ok(_) => panic!("tampered chain identity must reject"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED")
+        );
         let _ = fs::remove_dir_all(path);
     }
 

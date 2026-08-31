@@ -23,7 +23,7 @@ must migrate or disappear; they may not be promoted into this table merely to pr
 | Client class | Named C++ clients | Retained boundary | C++ ownership | Narrowing or deletion condition |
 | --- | --- | --- | --- | --- |
 | Tarcap transport | `network::tarcap` packet handlers and `TaraxaCapability` | `BridgeConsensusNetworkApi` | Canonical peer snapshots, peer/socket mechanics, packet sealing, send/disconnect execution, known-cache mutation, physical lane scheduling | Keep only operation-shaped canonical ingress/egress and exact transport execution. `CRW-N01` is complete and the Rust composition has no handler-local consensus planner. |
-| Concrete EVM/StateAPI executor | `FinalChain` overlay calling `StateAPI` and `state_db/` | Exact system-fact, ordered-transaction, rewards, and state-commit requests/reports | Concrete EVM calls, staged `state_db/` mutation, tracing, and raw executor operations | Keep only exact typed leaves until concrete EVM and `state_db` move native; no executor or session handle may reappear. |
+| Concrete EVM/StateAPI executor | `FinalChain` overlay calling `StateAPI` and `state_db/` | Exact committed preflight, system-fact, ordered-transaction, rewards, state-commit, discard, and descriptor requests/reports | Concrete EVM calls, serialized staged `state_db/` mutation, tracing, and raw executor operations | Keep only exact typed leaves until concrete EVM and `state_db` move native; no executor or session handle may reappear. |
 | Application process host | `App`'s single Rust-mode consensus process shell | Exact timer/process and best-effort public-observer ports | Monotonic/Unix clocks, interruptible wait/stop mechanics, worker joining, and public event dispatch | Delete each leaf when the native runtime can own that physical operation; never expand it into manager orchestration. |
 | Signing executor | App-owned node-wallet adapter | Exact digest-signing and VRF-proof requests/reports; no manager handle | Secret-key custody and signature execution | Keep only operation-shaped signing reports; native vote, pillar, slashing, and DAG-proposer tasks own selection and sequencing. |
 | VDF executor | App-owned asynchronous `libraries/vdf` job adapter | Exact start, poll, and cancellation requests/reports | Proof work, job lifetime, and cancellation execution | Keep only the dedicated execution API; native proposer scheduling owns every decision around it. |
@@ -46,10 +46,10 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 5196 |
-| `shim_lines` | 831 |
+| `bridge_lines` | 5139 |
+| `shim_lines` | 811 |
 | `cxx_functions` | 85 |
-| `cxx_carriers` | 139 |
+| `cxx_carriers` | 138 |
 | `cxx_handles` | 10 |
 | `shim_directories` | 1 |
 | `granular_flags` | 0 |
@@ -75,10 +75,13 @@ The application-root execution cut lowers that storage checkpoint to
 transaction/DAG materializers, and 2,784 lines of superseded bridge compatibility tests. Native
 `ConsensusApplication` now owns system-transaction/rewards planning, ordered execution sequencing, canonical
 result/receipt/root validation, pending-marker recovery ordering, state-commit approval, and FinalChain publication.
-The retained StateAPI boundary is five exact typed request/report leaves: read-only committed-state preflight, system
-facts, ordered concrete-EVM execution, rewards, and state commit. Native execution checks the concrete period and,
+The retained StateAPI boundary is six exact typed request/report leaves: read-only committed-state preflight, system
+facts, ordered concrete-EVM execution, rewards, state commit, and exact discard. Recovery verifies reopened state through
+the same preflight leaf rather than exposing a separate reopen operation. Native execution checks the concrete period and,
 after genesis, root before mutation; committed reports carry the observed period/root and publication rejects a
-mismatch. Canonical PeriodData codec components and the legacy verified
+mismatch. Exact rewards retries return the same staged descriptor and reject conflicting identities; reward-only DPoS
+projection rows and the independently checked minted total/final DPoS balance cross in the existing typed report rather
+than a new handle. Canonical PeriodData codec components and the legacy verified
 reward-vote weight sidecar cross only at the stable codec boundary.
 The Rust overlay no longer declares `FinalChain::finalize` or its private `finalize_` compatibility stub. Rust-mode
 fixtures invoke the exact application-root task API and expand canonical public results through `ConsensusQueryApi`,
@@ -211,12 +214,18 @@ fails. An export used only from tests also fails unless it appears exactly once 
 
 | Shim directory | Current role | Named consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
-| `final_chain_shim` | Exact hybrid public-state/tracing adapter plus concrete-EVM/`state_db`, bridge-contract, recovery, rewards, and state-commit leaves | App-owned execution, RPC/GraphQL public state, debug tracing, light state pruning, and StateAPI | External boundary | General block, transaction, receipt, bloom, and DPoS reads are deleted; remove the shim when the named public-state clients and concrete executor migrate after the blocked `CRW-E02` design is resolved. |
+| `final_chain_shim` | Exact hybrid public-state/tracing adapter plus concrete-EVM/`state_db`, bridge-contract, recovery, rewards, discard, and state-commit leaves | App-owned execution, RPC/GraphQL public state, debug tracing, light state pruning, and StateAPI | External boundary | General block, transaction, receipt, bloom, and DPoS reads are deleted; preserve this classified StateAPI lifetime boundary for active `CRW-E02`, then remove it when `CRW-17` migrates its named clients. |
 
 ## Guarded Exceptions
 
 - `consensus_application_run_storage_conformance_v1` may remain test-only while differential storage conformance requires
   the versioned production-root transcript.
+- The upstream-owned StateAPI header/implementation contains the exact concrete-root policy marker, projection,
+  commit, discard, and descriptor ABI required by the classified `final_chain_shim` lifetime boundary. Rust-only
+  operations are guarded by `RUSTAXA_ENABLE`; they must contract with `CRW-17` rather than grow into a general handle.
+- The upstream-owned `App` startup implementation has one guarded concrete-root rebuild hook: it preserves the old
+  database pair under a timestamped backup and starts a clean full-resync database. It must not become in-place range
+  replay, synthetic-root rewriting, or C++ publication authority.
 - Pure-C++ implementations and tests are not Rust-mode bridge consumers.
 - A test-only export requires an explicit row here; ordinary native behavioral tests must not create CXX surface.
 

@@ -1,5 +1,4 @@
 #pragma once
-
 #include <atomic>
 #include <cstdint>
 #include <future>
@@ -19,7 +18,6 @@
 #include "rustaxa-bridge/application_host_ffi.rs.h"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
-
 namespace taraxa {
 class ExternalEvmPort;
 class DagManager;
@@ -29,9 +27,7 @@ class VoteManager;
 namespace taraxa::network {
 class ConsensusNetworkApi;
 }
-
 namespace taraxa::final_chain {
-
 /** Converts genesis state into the native application bootstrap account carrier. */
 rust::Vec<rustaxa::GenesisAccount> makeGenesisAccounts(const state_api::Config& config);
 /** Converts genesis validators into the native application bootstrap carrier. */
@@ -41,7 +37,6 @@ rustaxa::GenesisDposConfig makeGenesisDposConfig(const state_api::DPOSConfig& co
                                                  uint64_t dag_vdf_sortition_total_vote_count_until_period);
 /** Converts rewards and hardfork policy into the native application bootstrap carrier. */
 rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const taraxa::FullNodeConfig& config);
-
 // Rust-mode final-chain shim facade.
 // This class is a standalone surface in Rust-enabled builds.
 class FinalChain {
@@ -56,16 +51,13 @@ class FinalChain {
 
  public:
   decltype(block_applying_emitter_)::Subscriber const& block_applying_ = block_applying_emitter_;
-
   ~FinalChain() = default;
   FinalChain(const fs::path& state_db_path, const taraxa::FullNodeConfig& config,
              [[maybe_unused]] const addr_t& node_addr, SharedConsensusApplication consensus_application);
   FinalChain(const FinalChain&) = delete;
   FinalChain(FinalChain&&) = delete;
-
   FinalChain& operator=(const FinalChain&) = delete;
   FinalChain& operator=(FinalChain&&) = delete;
-
   /**
    * Looks up account state at a finalized block.
    *
@@ -92,7 +84,6 @@ class FinalChain {
    * so RPC/test polling can wait for publication to finish.
    */
   bytes getCode(addr_t const& addr, std::optional<EthBlockNumber> blk_n = {}) const;
-
   /**
    * Executes a read-only call against committed external EVM state or the Rust
    * native-call subset.
@@ -107,6 +98,7 @@ class FinalChain {
    * Missing or not-yet-executed EVM blocks retain external state; StateAPI and
    * storage failures propagate while Rust remains authoritative for indexes. */
   void prune(EthBlockNumber blk_n);
+
  private:
   /** Internal concrete-EVM header lookup; public readers use `ConsensusQueryApi`. */
   std::shared_ptr<const BlockHeader> blockHeader(std::optional<EthBlockNumber> n = {}) const;
@@ -130,7 +122,6 @@ class FinalChain {
   class ExternalEvmStateApiClient {
    public:
     ExternalEvmStateApiClient(StateAPI& state_api, std::mutex& state_api_mutex);
-
     rustaxa::HostFinalChainSystemFactsReport loadSystemTransactionFacts(
         const rustaxa::HostFinalChainSystemFactsRequest& request);
     rustaxa::HostFinalChainPreflightReport loadCommittedState(
@@ -138,40 +129,40 @@ class FinalChain {
     rustaxa::HostFinalChainExecutionReport executeTransactions(const rustaxa::HostFinalChainExecutionRequest& request);
     rustaxa::HostFinalChainRewardsReport distributeRewards(const rustaxa::HostFinalChainRewardsRequest& request);
     rustaxa::HostFinalChainStateCommitReport commitState(const rustaxa::HostFinalChainStateCommitRequest& request);
-
+    /** Discards one Rust-authorized exact durable marker and returns one lock-coherent concrete-state observation. */
+    rustaxa::HostFinalChainPreflightReport discardState(const rustaxa::CanonicalBytes& concrete_marker);
     state_api::StateDescriptor lastCommittedStateDescriptor() const;
     std::optional<state_api::Account> account(EthBlockNumber block_number, const addr_t& address) const;
     h256 accountStorageOrZero(EthBlockNumber block_number, const addr_t& address, const u256& key) const;
     bytes codeOrEmpty(EthBlockNumber block_number, const addr_t& address) const;
     state_api::ExecutionResult dryRunTransaction(const BlockHeader& block_header,
-                                                 const state_api::EVMTransaction& transaction, bool lock_client) const;
+                                                 const state_api::EVMTransaction& transaction) const;
     bytes traceTransactions(const BlockHeader& block_header, const std::vector<state_api::EVMTransaction>& state_trxs,
                             const std::vector<state_api::EVMTransaction>& trxs,
                             std::optional<state_api::Tracing> params) const;
     bool accountHasCode(EthBlockNumber block_number, const addr_t& address) const;
 
    private:
+    /** Rejects public/read-only leaves while the durable concrete pending marker exists. */
+    void ensureReadableLocked() const;
     StateAPI& state_api_;
     std::mutex& state_api_mutex_;
   };
-
   /** Read one 32-byte bridge-contract view at the latest applicable committed EVM snapshot; failures return zero. */
   h256 readBridgeContractHash(EthBlockNumber block_number, const bytes& method, const char* api_name) const;
-
   /**
    * Complete any Rust-owned external-EVM FinalChain publication left pending by
-   * a crash after `StateAPI::transition_state_commit()`.
+   * a crash after projection-approved `StateAPI::concrete_commit()`.
    *
-   * The Rust recovery path owns marker validation, rewards-cache recovery, and storage publication. This shim supplies
-   * only the committed `StateAPI` descriptor and returns after Rust accepts or rejects that descriptor.
+   * The native application root owns marker validation, discard authorization, retry policy, rewards-cache recovery,
+   * and storage publication. This shim lends the exact external-EVM executor port for one native recovery call and
+   * rejects startup only when that call returns a rejected publication report.
    */
   void recoverExternalEvmPendingPublication();
-
   SharedConsensusApplication consensus_application_;
   mutable std::mutex state_api_mutex_;
   StateAPI state_api_;
   ExternalEvmStateApiClient external_evm_state_api_;
   const taraxa::FullNodeConfig& config_;
 };
-
 }  // namespace taraxa::final_chain
