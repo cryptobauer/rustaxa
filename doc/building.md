@@ -23,6 +23,7 @@ Specifies whether to build with or without optimization and without or with the 
         llvm-18 \
         golang-go \
         python3-full \
+        zlib1g-dev \
         libzstd-dev \
         libsnappy-dev \
         libmicrohttpd-dev
@@ -103,4 +104,3 @@ in devnet, testnet or custom network
 
     # help
     ./taraxad --help
-

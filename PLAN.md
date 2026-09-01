@@ -297,8 +297,9 @@ Current Rust repositories include:
 - `TransactionRepository`
 
 This section and the current repository implementations are the storage coverage source of truth. Do not maintain a
-separate unchecked repository checklist: add remaining storage work to **Storage Gaps and Risks** or
-`doc/consensus_rewrite_tracker.md`, and remove an item when the implementation and required validation land.
+separate unchecked repository checklist: add a demonstrated storage gap to **Storage Gaps and Risks** and to the live
+queue in `doc/consensus_rewrite_tracker.md` only when it is actionable, then remove it when implementation and required
+validation land.
 
 ### Storage Gaps and Risks
 
@@ -335,8 +336,8 @@ classified compatibility call sites and sidecar materialization boundaries only 
 preserving the storage-boundary guard so new production consensus routes cannot re-enter `DbStorage` or bridge batch
 ownership.
 
-Compatibility cleanup tracking is folded into `doc/consensus_rewrite_tracker.md` under **Storage Boundary Status**; that
-tracker is the sole source for the numbered cleanup slices and their current status.
+Live storage boundary classifications and deletion conditions are recorded in
+`doc/consensus_bridge_shim_audit.md`; actionable new work belongs in `doc/consensus_rewrite_tracker.md`.
 
 Future cleanup should:
 
@@ -739,9 +740,10 @@ pure-C++ reference route stable. Internal C++ manager APIs and wiring are explic
 
 Native Rust consensus gap closeout:
 
-- The former native Rust consensus gap plan is complete for its non-network and non-EVM scope. Its results now live in
-  this consolidated plan and `doc/consensus_rewrite_tracker.md`; do not recreate a separate gap-plan document for the
-  same scope.
+- The native Rust consensus campaign is complete for the authorized consensus, network-planning, execution-
+  orchestration, and concrete-root scope. Stable ownership rules live here, retained boundaries live in
+  `doc/consensus_bridge_shim_audit.md`, and only actionable new work belongs in
+  `doc/consensus_rewrite_tracker.md`; do not recreate a gap-plan document for completed scope.
 - Rust owns consensus rules, durable consensus state, restart normalization, storage/query selection, canonical payload
   retention, validation decisions, lifecycle command selection where it affects consensus behavior, scheduler/timer
   policy, ordered side-effect planning, and typed executor-result validation.
@@ -840,20 +842,21 @@ must still leave Rust mode buildable, retain the pure-C++ reference route, and s
 
 ### External Consensus Facade Boundaries
 
-The native application root plus three shared Rust-owned facades define the long-lived external consensus contracts.
-They are narrow operation boundaries, not service locators: they must not expose consensus manager handles, mutable
-sidecars, storage iterators, `DbStorage`, or internal runtime state.
+The native application root, two client-oriented Rust APIs, and exact host ports define the long-lived external
+consensus contracts. They are narrow operation boundaries, not service locators: they must not expose consensus manager
+handles, mutable sidecars, storage iterators, `DbStorage`, `StateAPI`, or internal runtime state.
 
 | Boundary | Rust facade | Rust ownership | External executor or adapter ownership |
 | --- | --- | --- | --- |
 | Application tasks and public submission | `ConsensusApplication` | Lifecycle, DAG/transaction/proposer and pillar mutation tasks, canonical admission/finalization persistence, public-event selection, and exact host-effect/result validation | App process hosting, RPC/GraphQL mutation formatting, concrete gas execution, and best-effort public event delivery |
 | Network and tarcap | `ConsensusNetworkApi` | Canonical packet ingestion, inspection, admission, routing, consensus queues, peer/gossip/send decisions, effect ordering, identity, and result validation | Socket and peer mechanics, packet wrapping, actual send/gossip/disconnect execution, and physical lane scheduling |
-| External EVM and StateAPI | `ConsensusExecutionApi` | Execution orchestration, canonical requests and rewards payloads, result/receipt validation, lifecycle, commit ordering, recovery, publication planning, and storage-publication authorization | Concrete EVM calls, staged `state_db/` mutation, contract execution, tracing, and raw `StateAPI` operations |
+| External EVM and StateAPI | Application-owned `ExternalEvmPort` | Execution orchestration, canonical requests and rewards payloads, result/receipt validation, lifecycle, commit ordering, recovery, publication planning, and storage-publication authorization | Exact concrete EVM calls, staged `state_db/` mutation, contract execution, tracing, pruning, and descriptor operations |
 | Public reads | `ConsensusQueryApi` | Stable read-only consensus DTOs backed by Rust storage and query logic | RPC/GraphQL/plugin formatting, live network/admin views, and public C++ object materialization where still required |
 
 C++ adapters may execute or format these contracts, but they must not recreate consensus decisions from returned facts.
-Residual adapter deletion belongs in `doc/consensus_rewrite_tracker.md`; exact DTOs and methods are owned by the Rust
-facade modules and their bridge tests rather than by a separate touchpoint inventory.
+Residual adapter classifications and deletion conditions belong in `doc/consensus_bridge_shim_audit.md`; create a
+tracker item only when a named client can migrate or a correctness gap is demonstrated. Exact DTOs and methods are
+owned by the Rust facade modules and their bridge tests rather than by a separate touchpoint inventory.
 
 Signing, VDF, concrete gas estimation, and best-effort public observation remain operation-specific leaf calls rather
 than shared service facades. Host thread, timer, sleep, and process mechanics may remain as Rust-commanded executors,
@@ -872,25 +875,11 @@ Rules:
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep only physical network and OS-thread mechanics in C++; consensus callbacks, queues, routing, and orchestration move
   to the Rust application service.
-- The canonical vote-family network checkpoint removes Rust-mode selection of the three `Ext*` vote/pillar/sync bases,
-  raw tarcap bridge access, per-family effect drains, and PBFT/pillar ingress materialization. Four standalone adapters
-  submit canonical packets to native routes and one transport executor owns exact-id drain/ack/cancellation and lane
-  execution. That checkpoint left `CRW-N01` active for the audited residuals: object-shaped application egress fanout for PBFT,
-  pillar, DAG/transaction and transactions; C++ scalar status/get-next request decoding; and generic vote/pillar gossip
-  target selection in the transport executor. Blocked `CRW-E02` is unchanged.
-- The canonical egress checkpoint removes the Rust-mode object-shaped PBFT vote/bundle, pillar-vote, DAG-block, and
-  periodic transaction fanout helpers. `ConsensusNetworkApi` now prepares bounded one-shot egress operations from
-  canonical bytes, exposes only exact known-object probes for an immutable lane-serialized peer snapshot, then owns
-  peer eligibility, known/sync filtering, exclusions, bundle chunking, packet construction, target selection, and
-  send-dependent known marks. Tarcap executes only exact-peer packet sends and known-cache writes. The final
-  latest status/get-next checkpoint moves inspection to canonical-byte native operations, injects
-  immutable status identity once at application bootstrap, source-selects the untouched C++ status/sync hierarchy,
-  and removes the last Rust-mode sync-base dependency and handler-local transport throttle. The final `CRW-N01`
-  checkpoint source-selects the untouched C++ pillar-bundle handler, passes canonical request bytes to a standalone
-  Rust adapter, and moves strict decoding, Ficus policy, native lookup/validation, 250-vote chunking, complete response
-  wrapping, exact sends, dependent known marks, and outbound max-peer request construction into application-owned
-  network operations. The all-handler audit finds no Rust-mode handler-local consensus planning, so `CRW-N01` is
-  complete; blocked `CRW-E02` remains unchanged.
+- `ConsensusNetworkApi` owns canonical ingress inspection and bounded one-shot egress operations, including peer
+  eligibility, known/sync filtering, exclusions, chunking, packet construction, exact target selection, dependent known
+  marks, acknowledgement, retry, and cancellation. Tarcap retains only immutable peer snapshots, lane scheduling,
+  packet sealing, exact-peer sends/disconnects, and known-cache writes. No Rust-mode handler-local consensus planning or
+  object-shaped fanout helper remains.
 - Ignore logging when deciding whether behavior can move to Rust. Logs are boundary observability, not consensus
   ownership. Keep temporary C++ logging only as an executor/reporting detail while moving the underlying decision,
   state transition, or persistence logic into Rust.
@@ -920,10 +909,9 @@ Rules:
 
 ### PBFT Manager Rust Ownership Boundary
 
-Target state: the PBFT manager protocol brain, consensus queue ownership, and effect ordering live behind native
-`ConsensusApplication` tasks. The Rust-mode `PbftManager` facade is a deletion target, not the final compatibility
-surface. Until its last caller migrates, it may only execute named leaves and report exact typed results; replacement
-transport, execution, signing, timer/process, and public adapters must be operation-shaped rather than manager-shaped.
+The PBFT manager protocol brain, consensus queue ownership, and effect ordering live behind native
+`ConsensusApplication` tasks. The Rust-mode `PbftManager` facade and its compatibility surface are deleted. Transport,
+execution, signing, timer/process, and public adapters are operation-shaped rather than manager-shaped.
 
 Boundaries that should not move as part of the PBFT manager breakthrough:
 
@@ -944,12 +932,11 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
   owns lane serialization, packet sealing, peer syncing/report/disconnect execution, and acknowledgements. Accepted-only
   bundle aggregation is native. Latest-version proposed-block bundle intake is native too: Rust owns raw signed-block
   decoding, relevance and unique-author checks, FinalChain-backed DPoS admission, and storage-first publication, while
-  tarcap retains only syncing-peer gating and malicious-peer execution. Sync intake and remaining handler-local routing
-  are tracked by `CRW-N01`.
-- EVM/FinalChain execution: transaction execution, receipt/log bloom construction, gas execution, state transition
-  execution, and external contract execution stay in the existing FinalChain/EVM boundary until that execution layer is
-  migrated. Rust PBFT logic may plan finalization, validate facts, and request execution/finalization effects, but it
-  must not absorb EVM execution into the PBFT manager.
+  tarcap retains only syncing-peer gating and malicious-peer execution. Sync intake and handler routing are native
+  application/network operations.
+- EVM/StateAPI execution: Rust owns transaction ordering, native-action semantics, rewards planning, result validation,
+  commit approval, recovery, and publication. Exact concrete EVM, staged `state_db`, trace, prune, and descriptor
+  operations remain outside PBFT as the application-owned physical executor leaf.
 - Named leaf/public compatibility: temporary `PbftBlock`, `PbftVote`, `PeriodData`, `DagBlock`, `Transaction`, and
   pillar materialization may remain only for a named public client or unavoidable executor leaf. An internal manager,
   test, log, or convenient remaining caller is not a retention reason.
@@ -957,7 +944,7 @@ Boundaries that should not move as part of the PBFT manager breakthrough:
   startup/shutdown wiring, event emission mechanics, and key custody. Native `ConsensusApplicationRuntime` owns daemon
   scheduling, lifecycle state, retries, and ordered protocol effects; the shell retains no protocol cursor or manager.
 
-Everything else inside `PbftManager` is in scope for Rust ownership: period/round/step state, daemon-tick control flow,
+All former `PbftManager` authority is native: period/round/step state, daemon-tick control flow,
 proposal/certify/finish-polling transitions, sync-period admission, proposed-block selection and cleanup planning, vote
 and reward-vote selection, finalization planning and bounded resume, dynamic-lambda decisions, DAG/transaction cleanup
 planning, PBFT-chain head advancement plans, storage/write intents, cross-pipeline effects, and ordered side-effect
@@ -969,9 +956,9 @@ runtime, its native mutex and complete session container, daemon-tick and state-
 broadcast planning, sync-period admission,
 queue-backed compact facts and canonical transaction/cert-vote payload sources, proposal ranking, finalization planning,
 dynamic-lambda decisions, and bounded restart/duplicate classification. Remaining `PbftBlock`, `PbftVote`,
-`PeriodData`, `DagBlock`, `Transaction`, pillar sidecar, network, timer, FinalChain/EVM, and public API materialization
-is executor or compatibility work under the boundaries above, not authoritative PBFT manager decision state. Detailed
-status is tracked in `doc/consensus_rewrite_tracker.md`.
+`PeriodData`, `DagBlock`, `Transaction`, network, timer, concrete FinalChain/EVM, and public-formatting crossings are
+named external executor or client boundaries above, not authoritative PBFT manager decision state. Their live
+classifications and deletion conditions are tracked in `doc/consensus_bridge_shim_audit.md`.
 
 Rust-enabled composition no longer includes a `PbftManager` object or shim. `App` constructs one
 `ConsensusApplication` and drives lifecycle through it; network, query, execution, signing, timer, and lifecycle callers
@@ -992,679 +979,16 @@ Sync and ordinary PBFT block FinalChain-hash admission now compose the native PB
 the exact sync request identity, performs delayed-hash lookup outside the manager lock, exact-reports the result, and
 continues reward admission without a C++ hash-decision branch or standalone validation bridge API.
 
-The completed PBFT manager closeout folded the dedicated slice tracker into this plan. The landed sequence was:
+## Consensus Rewrite Closeout
 
-1. Runtime root and constructor collapse: `App::init` creates the long-lived Rust PBFT manager runtime, and Rust-mode
-   `PbftManager` construction no longer creates its core runtime through `DbStorage`, `BridgeStorage`, or
-   `db_->rustStorage()`.
-2. Startup, replay, and restore ownership: restart replay range selection, scalar/status restore, proposed-block restore,
-   and bounded replay classification are Rust-owned from typed runtime snapshots and storage queries.
-3. State mirrors, timers, and runtime snapshot authority: Rust snapshots are the authority for round, step, lambda,
-   broadcast planning, transition persistence, and compatibility mirror hydration.
-4. State-action and daemon control flow ownership: daemon ticks, state-action branch selection, transition eligibility,
-   follow-up decisions, and cursor advancement are driven by Rust runtime sessions with typed executor reports.
-5. Object sidecar and materialization reduction: PBFT decisions use Rust-owned canonical payloads and compact facts for
-   proposed blocks, cert-voted payloads, period-data queue payload bytes and peer identities, and selected
-   vote/pillar/reward facts. The period-data queue no longer keeps a parallel C++ object deque, correlation ids, or
-   compatibility mutex; C++ reconstructs `PeriodData` only after Rust pops an executor payload. Other old C++ objects
-   remain only at classified executor and public/network edges.
-6. Finalization executor collapse except EVM: Rust owns finalization action ordering, storage-write application,
-   dynamic-lambda decisions, duplicate/restart resume classification, and non-EVM live-mutation report validation while
-   FinalChain/EVM execution stays an explicit executor boundary.
-7. Sync and period-data intake without C++ decision state: Rust owns queue admission, encoded payload and peer
-   retention, cleanup, queue-drain ordering, staged `processPeriodData` check ordering, transaction warning
-   classification, and terminal sync actions. Queue push now derives PBFT hashes, reward references, finalized-DAG
-   transaction references, transaction hashes/senders/nonces, pillar votes, and presence flags from encoded
-   `PeriodData`; native snapshot/push composition samples the PBFT-chain sibling under the manager serialization domain,
-   and sync-admission queue clears and stale drain cleanup no longer cross CXX. The latest and v5 Rust-mode PBFT-sync
-   routes now hand the original packet bytes to a standalone handler backed by native exact-shape decoding, chain/queue
-   sequencing, certificate-target, pillar-schedule, and DAG-order prechecks. Exact-child queue submission preserves the
-   validated wire bytes. Database replay also retains exact stored bytes; neither Rust-mode caller
-   routes queue admission through `PbftManager::periodDataQueuePush`, so that overlay method and its vote-RLP helper are
-   retired. The application-owned PBFT root now runs a resumable weighted ingress session: it admits previous-cert
-   votes sequentially against native FinalChain, persists verified votes, pauses only for a typed slashing transaction
-   leaf, selects authoritative weighted reward payloads, and pushes the already-decoded exact child plus full peer id.
-   Tarcap retains peer transport/lifecycle publication and transaction construction/signing/insertion only. The
-   untouched latest handler remains the pure-C++ reference route.
-8. Vote, pillar, and slashing boundary tightening: PBFT manager no longer consumes live `VoteManager` or
-   `PillarChainManager` sidecar collections for protocol decisions; it uses typed manager ports and receives only
-   executor payloads for signing, network, finalization, or public compatibility.
-9. Storage shim and bridge surface deletion: targeted searches found no PBFT manager production dependency on
-   `BridgeStorage`, storage-shim batches, `rustBatchId`, `db_->rustStorage()`, direct `getDB()`, or generic `DbStorage`
-   consensus reads/writes.
-10. Overlay shrink and upstream-sync cleanup: `PbftManagerOld` production forwarding and stale overlay TODOs were
-    removed or replaced with explicit public API, lifecycle, network, EVM, and executor-boundary classifications. The
-    standalone Rust-mode facade and shim are now deleted; feature-on builds compile the private application runtime,
-    while pure-C++ builds retain the untouched original manager.
-11. Runtime mirror and protocol sidecar closeout: remaining direct scalar-mirror reads were removed from Rust-mode
-    production helpers or classified as compatibility caches, satisfying the PBFT manager closeout definition.
+The authorized consensus rewrite campaign is complete through CRW-18. Native Rust owns consensus state, protocol
+planning, scheduling, persistence, finalization/publication authority, network inspection/routing/selection, concrete-
+root validation/recovery, and bounded public query/mutation semantics. C++ remains only at the named external leaves in
+`doc/consensus_bridge_shim_audit.md`: process mechanics, signing, VDF, physical tarcap transport, concrete EVM/
+`state_db`, public-client formatting, administration, conformance, and the pure-C++ reference composition.
 
-Closeout definition: Rust-mode PBFT manager production behavior must not depend on `DbStorage`, `BridgeStorage`, generic
-storage-shim batches, C++ scalar mirrors, or C++ protocol sidecars except where a call site is explicitly part of
-network/tarcap execution, EVM/state execution, lifecycle wiring, or public API materialization. Any future PBFT manager
-rewrite work should continue to use `$implement-rustaxa-consensus-slice`, reuse existing Rust runtime/query APIs before
-adding C++ orchestration, and preserve at least Rust module or bridge parity before disabling C++ tests that only covered
-retired legacy behavior.
-
-### Current Consensus Shape
-
-The C++ consensus area includes:
-
-- DAG graph and proposal logic: `Dag`, `DagManager`, `DagBlockProposer`, `SortitionParamsManager`.
-- PBFT state and proposal flow: `PbftManager`, `PbftChain`, `PeriodDataQueue`, `ProposedBlocks`.
-- Voting and eligibility: vote manager, vote bundles, DPoS eligibility, eligible and total vote counts.
-- Transaction flow: `TransactionManager`, `TransactionQueue`, gas pricing, and transaction proposal selection.
-- Pillar chain, rewards, slashing, and final-chain state/query integration.
-
-The current Rust consensus footprint is broad but still incomplete:
-
-- `rustaxa-consensus` contains early FinalChain read/index logic, native DAG graph state owned by the Rust DAG manager
-  runtime with no standalone Rust-mode C++ graph facade or feature-on legacy Boost graph scaffold, Rust-backed
-  sortition efficiency/threshold runtime state, Rust-backed PBFT chain head/validation state, and Rust-backed
-  proposed PBFT block cache, period-data queue metadata state, and DagManager `verifyBlock` deterministic reject
-  decisions for prechecks, transaction availability, DAG VDF payload/embedded-VRF/difficulty/proof verification,
-  legacy DAG VRF/VDF message construction, DPoS authorization ordering, gas policy, Rust-backed transaction queue
-  metadata/order/limit state, Rust-backed `TransactionManager::packTrxs` deterministic packing decisions, Rust-owned
-  DAG transaction persistence planning plus Rust-storage batch commits, Rust-storage-backed `TransactionManager`
-  transaction lookup and non-finalized recovery payload loading, runtime-backed finalized transaction
-  filter/verification helpers, Rust-planned transaction verification and runtime/FinalChain-backed validated admission,
-  shim-owned live non-finalized/pool/count
-  read helpers, a canonical PBFT vote event fact boundary, a Rust-owned validation-backed PBFT vote admission runtime
-  that composes canonical validation, event-fact derivation, verified-vote mutation, threshold planning, retained
-  storage/slashing vote payload sidecars, and typed executor intents for peer-known marking, proposed-block sidecar
-  routing, gossip, and PBFT progress. Latest-tarcap vote handlers request admission through the shared Rust network
-  root, which calls the application-owned PBFT task directly; single-vote and bundle paths mark peers/votes known,
-  report slashing, and gossip only after native admission accepts the vote. Public snapshots and 2t+1 reads use
-  `ConsensusQueryApi`, while PBFT executor leaves materialize temporary `PbftVote` sidecars only from canonical native
-  payloads. Reward-vote validation and materialization enter the same runtime:
-  Rust builds preferred-round and reverse-period candidates from Rust-owned verified-vote metadata and returns selected
-  retained weighted records in PBFT-block requested order. All compatibility materialization uses Rust-retained payloads;
-  missing retained payloads for Rust-owned selected votes are invariant errors. The crate also contains a side-effect-free
-  PBFT vote-progress protocol planner
-  plus a Rust-owned PBFT vote pipeline session that stages
-  verified-vote insertion reports into typed
-  known/admit/slashing/gossip/progress intents, a side-effect-free PBFT vote ingress planner for deterministic
-  single-vote and bundle relevance/window/sync-hint/drop decisions reached only through the composed network ingress/effect API, and exposes operation-specific application-root tasks for Rust-owned PBFT vote validation
-  planning with replay-cache storage and composed canonical PBFT vote validation, signed/unsigned vote hashing,
-  signature recovery, VRF proof verification,
-  Rust-composed received-vote enrichment through borrowed FinalChain state, address-keyed VRF-key fallback caching,
-  Rust-computed received-vote weight and canonical weighted-payload construction, sortition-threshold calculation,
-  Rust-owned PBFT `2t+1` threshold cache, local
-  proposer-sortition screening, Rust-owned local PBFT vote byte generation for canonical signed and weighted vote
-  payloads through the retained signing leaf, and Rust-owned optimized PBFT vote-bundle construction from retained weighted payload records for
-  get-next-votes egress. The PBFT application root now owns the single native network service and its queue; direct
-  next-vote and pillar-bundle response routes query native sibling services without holding the network lock, validate
-  and chunk packet-ready payloads, and order successful-send known effects in Rust. Get-next-votes now uses a standalone
-  Rust-mode transport adapter with its manager/vote/slashing handler inheritance deleted; the native network service
-  reads the shared manager cursor directly and source-scoped drains cannot consume unrelated same-lane effects. C++ retains tarcap packet wrapping,
-  physical send/disconnect execution, and physical peer-known mutation at the network boundary. The crate also contains a Rust-backed
-  `GasPricer` oracle for finalized-block history, minimum-price
-  flooring, and percentile bid selection.
-  Rust mode no longer exposes a standalone `GasPricer` facade or feature flag. App finalization and metrics, Eth RPC,
-  GraphQL, and the native slashing transaction planner use the App-owned transaction service directly.
-  Pure-C++ configurations retain the untouched original `SlashingManager` implementation and reference tests.
-  Rust mode no longer exposes a `SlashingManager` facade or slashing bridge module. Verified-vote admission composes
-  deterministic double-voting evidence, the native FinalChain account view, configured submitter identities, nonce
-  selection, duplicate protection, and canonical transaction construction inside `PbftService`. The Rust result is one
-  typed transaction effect containing the exact selected wallet index, nonce, contract, value, gas, and calldata; C++
-  retains only secret-key signing, transaction-pool insertion, acknowledgement, and logging. No raw proof evidence,
-  account facts, gas planner inputs, or Rust-mode manager wiring cross CXX. Magnolia activation is supplied once at
-  native service construction, so Rust owns the legacy vote-A-period submission gate with activation equality allowed.
-  Rust FinalChain also treats Magnolia and Cacti activation block zero as active from genesis, matching the plain legacy
-  hardfork comparison while keeping transaction-inclusion activation separate from local proof-evidence admission.
-- `rustaxa-types` contains shared Rust domain and codec types, including the legacy transaction envelope used by native
-  application, query, and network tasks to decode canonical RLP bytes, hash transactions, recover/validate senders,
-  compute intrinsic gas coverage, and derive deterministic nonce/gas/value/cost facts without a C++
-  `TransactionManager` or mutable legacy object graph.
-- `rustaxa-types` now contains Rust pillar type and codec parity for `PillarBlock`,
-  `ValidatorVoteCountChange`, `PillarVote`, `PillarBlockData`, optimized pillar-vote bundles, and current pillar data
-  storage shape. Pillar-vote author recovery now lives on the Rust `PillarVote` type with C++ parity coverage for the
-  recoverable-signature path. Pillar signing, broader manager orchestration, and production routing remain later
-  consensus slices.
-- `rustaxa-consensus` now contains a Rust pillar-vote aggregation domain for already-verified pillar vote facts:
-  period initialization, per-validator uniqueness, weighted per-block aggregation, deterministic threshold subset
-  selection, and stale-period cleanup. The `RUSTAXA_ENABLE` overlay routes the C++ `PillarVotes` API
-  through Rust for deterministic aggregation while C++ keeps live `PillarVote` sidecars. The PBFT sync pillar-vote
-  bundle path now calls a stateless Rust bundle planner for period/block validation, duplicate-safe unique-weight
-  threshold accounting, deterministic rejection statuses, accepted vote weights, and Rust-recovered voter identities.
-  The PBFT shim resolves only Rust-accepted vote hashes back to live C++ sidecars and inserts them through a temporary
-  planned-insertion hook that does not re-run manager validation, recover voters in C++, or re-query DPoS weights.
-  `PillarChainManager::isRelevantPillarVote` now uses a shim-owned Rust relevance planner for period/block/known-vote
-  decisions under `RUSTAXA_ENABLE`.
-  `PillarChainManager::validatePillarVote` now inspects pillar-vote RLP in Rust, uses the Rust-recovered
-  `(period, vote_hash, voter)` identity for uniqueness, uses the recovered voter for DPoS eligibility, and avoids C++
-  signature or voter recovery in Rust mode. `PillarChainManager::addVerifiedPillarVote` now also runs through Rust
-  inspection, uses the Rust-recovered voter with Rust-backed FinalChain DPoS vote-count facts, and inserts with
-  `addVerifiedVoteWithRecoveredVoter` to avoid re-querying C++-side voter identity. The full Rust-mode
-  `PillarChainManager` overlay is now standalone: pillar-votes mode excludes the untouched legacy manager and
-  `PillarVotes` implementations instead of importing or compiling `PillarChainManagerOld`. Pillar signing and the
-  remaining external manager effects remain later slices.
-- `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
-
-### Historical Consensus Sequencing (Superseded)
-
-The numbered record below describes the incremental route used to reach the current native owners. It is not the active
-execution order. New work follows the `ConsensusApplication` vertical checkpoints in
-`doc/consensus_consolidation_plan.md` and the live queue in `doc/consensus_rewrite_tracker.md`; where this historical
-record conflicts with those authorities, it is obsolete.
-
-1. Inventory consensus APIs, dependencies, tests, and current Rust shim gaps.
-2. Create a tracker that classifies each item as Rust-backed, shim-stubbed, C++-owned temporary, or out of scope.
-3. Introduce pure Rust domain types for PBFT rounds, steps, votes, DAG ordering metadata, and eligibility outputs.
-4. Add ingress-compatible Rust inspection/planning surfaces as adjacent slices are touched. PBFT vote, DAG block,
-   transaction, pillar vote, and PBFT sync work should accept canonical bytes or compact facts, optionally create
-   enrichment records, and return route/admit/drop/gossip/request-sync/peer-action intents rather than depending on
-   network handler objects or eager C++ materialized objects. The first PBFT vote-progress runtime now routes
-   Rust-mode `VoteManager::addVerifiedVote` through a validation-backed Rust admission runtime: C++ supplies
-   FinalChain/key facts, Rust validates the canonical PBFT vote RLP, carries the validation result and calculated
-   weight into compact progress facts, mutates the single Rust-owned `VerifiedVotes` runtime, retains weighted storage
-   payloads and unweighted slashing evidence payloads, and returns one terminal executor report with Rust-planned
-   peer-known, proposed-block sidecar, gossip, storage, slashing, threshold, and PBFT-progress intents. Latest-tarcap
-   single-vote and bundle handlers execute admission as an exact-ID-correlated application effect and return its typed
-   outcome to Rust before dependent peer-known and gossip work advances or the handler acts on typed slashing;
-   bundle shape preflight is complete
-   before any member admission, and bundle rebroadcast in Rust mode is limited to accepted votes.
-   PBFT vote packet ingress now has a compact-fact Rust planner for relevance, period/round/step windows, proposed-vote bundle rejection,
-   bundle identity consistency, and PBFT/next-vote sync hints. Latest-tarcap packet handlers currently call this planner
-   through guarded temporary hooks in Rust-enabled builds, while C++ still decodes packets, supplies live peer/sidecar
-   facts, and executes network effects until the network/tarcap pipeline overlay owns those routes. The guarded latest-
-   tarcap method signature changes are temporary network-hook debt, not the target API shape.
-   Replay protection and PBFT `2t+1` threshold caching now live in the same Rust `VerifiedVotes`/admission runtime that
-   owns verified-vote mutation. PBFT vote validation now also has Rust planner surfaces for compatibility/testing:
-   C++ supplies DPoS/key facts, while Rust owns canonical vote-byte inspection, signature/VRF facts, Rust-computed
-   received-vote weight, final accept/reject statuses, replay-marker timing and storage, local proposer-sortition
-   screening, and the sortition-threshold formula. C++ still performs the temporary `PbftVote::weight_` live sidecar
-   mutation and parity-checks it against the Rust weight.
-5. Port DAG graph and manager orchestration before moving external executors: pivot/tip availability, ghost path,
-   ordering, counters, storage-facing queries, deterministic `verifyBlock` reject decisions, finalized-order apply,
-   non-finalized sync selection, add-block planning, signed-RLP proposed-block fact decoding, proposed DAG transaction
-   payload persistence, and proposal-attempt planning now route through Rust. Remaining C++ in this area is explicit
-   executor/compatibility work: FinalChain/DPoS fact sourcing, EVM gas execution,
-   event/network/public object materialization, local cache cleanup, and live transaction-manager sidecar cleanup.
-6. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
-   `DagManager` shim now gets those DPoS/VRF facts from a Rust FinalChain bridge bundle and routes embedded VRF proof
-   verification, DAG VDF payload decode, difficulty calculation, legacy-modulus Wesolowski proof check, status-coded
-   VDF/DPoS fact envelope, legacy VRF/VDF message construction, verify-side VDF denominator policy, and reject ordering
-   through Rust. The standalone Rust-mode `DagBlockProposer` overlay, which no longer imports or compiles the legacy
-   proposer implementation, routes proposer eligibility status decisions, legacy VRF
-   input construction, deterministic tip selection, proposer-session control flow, VDF input/message planning, block
-   construction planning, final signed-RLP construction, and signed-RLP manager submission through Rust while preserving
-   the C++ executor shell for lifecycle, network, VDF compute, and signing.
-7. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
-8. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
-   `PbftChain` startup restore, head updates, persisted-head preview, block existence/RLP lookup, and next-block
-   validation route through the standalone Rust-backed facade under `RUSTAXA_ENABLE`. The CXX-free native
-   `PbftChainService` now owns the storage handle, restore/default initialization, sibling lock, transitions,
-   validation, and lookup while bridge methods only adapt DTOs; feature-on builds
-   no longer import or compile `PbftChainOld`; proposed-block membership, validity flags, RLP snapshots, persistence,
-   restore, and cleanup route through the standalone Rust-backed facade under `RUSTAXA_ENABLE`, and
-   feature-on builds no longer import or compile `ProposedBlocksOld`; period-data queue admission, effective size, pop
-   vote-source decisions, encoded payload/peer retention, native fact derivation, and cleanup planning now live inside
-   the PBFT manager Rust runtime. The standalone period-data queue CXX handle, shim overlay, module flag, parallel C++
-   payload deque, peer sidecar, and Rust-mode PBFT-manager queue-push facade have been retired; C++ materializes `PeriodData` only after native pop for the
-   remaining validation/finalization executor. Current-certificate RLP remains opaque after pop while native
-   `PbftService` owns bundle shape, strict-VRF selection, preflighted FinalChain facts, durable verified-vote admission,
-   authoritative weight and threshold decisions, and a resumable per-slashing-effect session with exact report and abort
-   correlation. C++ materializes accepted weighted votes only at the retained finalization boundary; the standalone fact
-   validator and both manager validation facades are deleted. PBFT proposal validation now gives Rust immutable
-   extra-data presence and pillar-hash facts, so the native planner owns Ficus shape policy and the C++
-   `validatePbftBlockExtraData` facade is deleted.
-9. Continue shrinking the Rust-mode `PbftManager` overlay into Rust services for candidate validation and ordered
-   state-action scripts. The first grouped leader-candidate planner owns proposal candidate status derivation,
-   mark-valid commands, and deterministic leader ranking; the C++ overlay only supplies live block lookup/validation
-   facts, applies returned mark-valid effects, and materializes the selected vote/block. `getValidPbftProposedBlock`
-   now runs through a Rust-owned proposed-block admission planner that requests sidecar lookup, live block validation,
-   mark-valid mutation, acceptance, or rejection. PBFT manager state-action phases now consume that admission planner
-   through one shim helper for Rust-planned proposal/filter/certify/finish block hashes instead of duplicating
-   phase-local lookup and validation branches. Rust-planned state-action vote intents now also go through one shim
-   executor helper that centralizes live vote placement and next-vote status mirror persistence while Rust continues to
-   own the intent selection. Locally generated signed block/vote pairs now cross one narrow canonical-byte task:
-   native `PbftService` revalidates proposal signatures, VRF/DPoS weight, PBFT-chain membership, and the complete
-   FinalChain/reward/pillar/DAG block contract before deterministic leader ranking, then returns only the unchanged
-   input index. The C++ manager retains wallet signing and publication but no longer calls a VoteManager local-leader
-   facade or materializes leader-planner fact/command carriers. Authoritative received-vote leader selection now also
-   runs as one native `PbftService` task: Rust snapshots and ranks verified proposal votes, performs composed
-   PBFT/FinalChain/reward/pillar/DAG validation for uncached candidates after releasing sibling locks, revalidates the
-   snapshot, and publishes valid-cache state before returning only canonical selected block/vote payloads. The C++
-   manager retains live-object materialization and soft-vote placement but no longer owns the VoteManager selection
-   facade or the prepare/validation-report/finish transcript. PBFT proposed-block validation also has a Rust-owned staged planner for
-   the proposal path: Rust requests PBFT-chain, FinalChain hash, reward-vote, pillar-block, DAG-order, and DAG-weight
-   facts in legacy order, owns immutable extra-data/Ficus policy, then returns accept/reject or wait-for-finalization
-   decisions while C++ still supplies the live object checks. `processPeriodData` reuses native sync planners before handing cert-vote, transaction, pillar-vote, and
-   peer/queue side effects back to the PBFT sync runtime planner. Current-certificate validation/admission now calls the
-   native PBFT service directly and materializes only accepted weighted output. Candidate DAG order availability,
-   order hashing, legacy GHOST-divergence gas policy, ordered block bytes, and finalization-time non-finalized sidecar
-   lookup now compose through the native PBFT and DAG/transaction roots. Rust caches canonical block bytes by anchor,
-   resolves transaction bytes at the retained execution epoch, and clears the cache through the existing finalization
-   action; C++ materializes the result only at the retained finalization/EVM edge. Three
-   cache-membership exports, the C++ block-vector cache, and the separate DAG-weight executor check are deleted. The
-   retained direct `checkBlockWeight` helper is test-only stable-API parity surface. Proposal construction now also
-   drains every DAG-order request, gas-clipping decision, and re-anchor/recompute loop inside the composed native PBFT
-   and DAG roots. C++ receives only the terminal build/skip command and retains proposal signing/materialization; the
-   DAG-order report carriers and two-step C++ executor protocol are deleted. The next removal target is to replace
-   remaining transaction decision glue with shared Rust
-   executor intents that consume existing Rust FinalChain bundles. After the shared planner owns deeper sync acceptance,
-   `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and `secondFinish_` should collapse further into
-   hash/object resolution plus vote/sign/gossip/storage effect execution.
-10. Port transaction queue behavior before transaction manager orchestration. The standalone Rust-mode
-   `TransactionQueue` compatibility overlay and CXX handle are retired. Native
-   `rustaxa-consensus::transaction_service::TransactionService`, embedded by the application-owned
-   `ConsensusApplication`, is the sole production owner of the native Rust queue, including
-   deterministic metadata, per-account nonce ordering,
-   same-nonce replacement, non-proposer expiry, limits, gas-price thresholds, canonical payload retention,
-   known-transaction cache expiry, overflow/drop observation, and finalized-account purge planning. Rust-enabled
-   production builds exclude the untouched legacy C++ queue source; direct legacy queue tests remain pure-C++ reference
-   coverage. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
-   snapshotting, candidate scan, Rust-inspected envelope facts for candidate EVM input, declared-gas fit checks,
-   invalid-estimate demotion intent, accepted output ordering, accepted gas accumulation, and stop rules through native
-   `TransactionPackingService`. That service owns the private packing mutex and poison policy, compatibility-or-DAG
-   owner binding, canonical candidate/RLP snapshot, shard cursor, pending-estimate ordering, actual-demotion
-   acknowledgement, and selective abort. Compatibility `packTrxs` drives a narrow Rust step protocol, while DAG proposal packing is
-   composed inside native `DagTransactionService`: Rust derives pack limits from the private DAG cursor, binds the
-   transaction cursor to that proposal session, and transfers selected canonical payloads directly back into DAG state.
-   C++ sees only required EVM estimate candidates. Declared-gas and gas-estimation-cache hits are consumed inside Rust
-   without a callback. The stale standalone planner FFI, proposer request/report carriers, and C++ sharded-pack payload
-   relay are removed. The native service prevents compatibility and proposer callers from racing the single pack
-   session while EVM execution is outside every Rust lock. The same native service owns queue, sidecar/count/gas cache,
-   gas oracle, storage, drop observation, restoration, locking, poison policy, and the packing subowner. Native
-   `DagService` owns graph/storage state, proposer/verifier/add-block cursors, retry state, restoration, initial
-   proposal-period mapping, locking, and poison policy. Native `DagTransactionService` owns complete three-service
-   construction, restoration, lifetime, canonical lock order, add-block cursor and atomic DAG/transaction persistence,
-   finalized-order application with post-commit transaction-sidecar cleanup, proposer transaction packing, and the
-   complete DAG verification session. Verification resolves queue/sidecar/storage views, revalidates authorization and
-   VDF snapshots, verifies the VDF proof, and decides terminal gas status in Rust. Native application tasks also borrow
-   `FinalChain` only after releasing every DAG-cluster guard, then revalidate the exact proposer or verifier cursor before
-   applying head and authorization facts; C++ retains only transaction object materialization and EVM estimation as
-   unlocked executor leaves. The bridge unwraps the retained FinalChain handle and converts
-   CXX carriers for those operations without owning their state, lock choreography, or storage batches.
-   Rust also owns `estimateTransactionGas` and
-   `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction hash, proposal period)` opaque
-   `ExecutionResult` cache, while C++ keeps EVM execution, public transaction construction, final selected transaction
-   materialization, and lifecycle/finalization orchestration. The shim-only `TransactionQueue::demoteToNonProposable`
-   API has been removed because pack demotion mutates the Rust runtime queue directly.
-   Native `TransactionService` now owns live queue metadata/payloads, known-cache state, non-finalized and
-   recently-finalized transaction sidecars, authoritative transaction count, storage, restoration, and locking.
-   TransactionManager bridge routes call lock-owning native tasks and retain only owned carrier conversion. DAG
-   transaction persistence now derives transaction hashes, senders, nonces, gas facts, costs, and canonical RLP payloads
-   through the shared Rust legacy transaction envelope before sending facts to the Rust runtime. Rust sources latest
-   account nonces from the Rust FinalChain runtime and owns sidecar membership checks, duplicate filtering,
-   nonce-gated finalized-storage
-   lookup, accepted ordering, count planning, the storage batch, accepted non-finalized sidecar insertion, and accepted
-   queue erasure in one lock-owning native task before returning a typed DAG-save command report that C++ consumes only
-   for logging. The bridge no longer exposes or wraps native transaction state or guards for this route.
-   Proposed DAG blocks that already carry canonical transaction RLP payloads now use a payload-based
-   TransactionManager shim entry point, so C++ does not materialize `Transaction` objects before Rust-owned DAG
-   transaction persistence; materialization remains only for network/public compatibility paths.
-   Finalized transaction status updates now send finalized hashes and RLP payloads to Rust; Rust plans count increments, retention eviction, periodic
-   queue cleanup, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
-   erasure while persisting `TrxCount` before returning typed finalized-status command buckets that C++ logs. Periodic
-   finalized-account purge now executes inside the Rust finalized-status command report by sourcing account facts from
-   Rust FinalChain and mutating the Rust queue. Block-finalized queue cleanup now calls the Rust runtime mutator directly,
-   so C++ no longer receives count mirrors or switches on raw lifecycle notice IDs for these mutation paths.
-   Non-finalized recovery now asks Rust to delete stale finalized rows, inspect survivor legacy envelopes, validate key
-   hash and sender facts, and insert survivor sidecar payloads into the Rust runtime without returning count mirrors or a
-   C++-applied recovery input list.
-   `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now inspect legacy transaction envelopes in Rust
-   for identity facts, then call runtime-backed Rust bridge APIs for sidecar membership, latest FinalChain account nonce
-   sourcing where required, finalized-storage checks, and deterministic filtering/short-circuit decisions; the older
-   storage-only and sidecar-only finalized filter/verification CXX entry points have been removed. `verifyTransaction`,
-   `insertTransaction`, and `insertValidatedTransaction` now inspect the transaction envelope in Rust and call typed
-   Rust admission command reports for exact verification reasons, legacy public insertion result text,
-   latest FinalChain account sourcing, public insertion result mapping, staged known-fast-path prechecks, finalized-location mapping, Rust storage-completed admission
-   support, and fused proposable/non-proposable admission with Rust-owned live queue mutation. Public
-   `insertTransaction` now enters one Rust runtime operation that owns known precheck, verification decisioning,
-   FinalChain-backed account/finalized lookup, queue mutation, and an explicit event/log shell-intent list before C++ maps legacy public error
-   strings. Direct standalone validated-insert planner CXX entry points have been removed, so public and validated
-   insertion paths must go through the Rust runtime command-report APIs. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
-   and `isTransactionKnown` now uses a hash-only Rust runtime query that derives queue-known and sidecar membership from
-   Rust state. Rust now returns
-   typed DAG-save, finalized-status, and admission command reports instead of generic lifecycle/action reports. These
-   reports now carry direct hash receipts for the remaining C++ log/event sinks without redundant transaction-count
-   fields, and admission reports carry Rust-authored shell intents, so shim code no longer rebuilds input hash vectors,
-   revalidates Rust command bucket indexes, or infers admission log/event selection before realizing shell side effects.
-   The Rust-mode facade now owns the public `transaction_added_`
-   event surface and emits it from shim-owned code after Rust accepts a proposable queue mutation. `saveTransactionsFromDagBlock`
-   is now only a public-object adapter into the canonical payload save command, so Rust re-inspects transaction bytes
-   before DAG persistence decisions. Transaction read helpers no longer infer source
-   order in C++: `getTransaction`, `getTransactions`, `getBlockTransactions`, `getNonfinalizedTrx`, and
-   `getPoolTransactions` now consume Rust-owned transaction views that preserve request order and duplicates while
-   resolving queue, non-finalized sidecar, recently-finalized sidecar, pending storage, finalized regular storage, and
-   finalized system storage sources. The Rust runtime state exposes the authoritative Rust-mode transaction count and
-   drives count reads after persistence/finalization commits. Rust FinalChain now exposes block-scoped account snapshots,
-   and proposal transaction views verify stored transaction RLP hashes, inspect legacy sender/nonce identity in Rust, and
-   apply proposal-period finalized-account nonce filtering before C++ materializes returned payloads. The remaining
-   TransactionManager C++ surfaces are now classified shell edges: EVM estimation execution, event/log dispatch
-   infrastructure, public transaction object construction, final materialization, and lifecycle wiring. With transaction account-fact sourcing owned by Rust, the first PBFT
-   orchestration storage slice now restores proposed-block metadata directly from Rust storage and removes stale
-   proposed-block storage keys through Rust-batched cleanup. The first aggressive `CRW-12` extraction moves the
-   proposed-block storage handle, restoration, sibling lock, storage-first publication/cleanup behavior, and behavioral
-   tests into the CXX-free native `ProposedBlocksService`. The Rust-mode C++ `ProposedBlocks` facade is deleted; the
-   PBFT manager calls native publication, lookup, snapshot, and composed admission operations directly. Proposed-block
-   admission now owns canonical RLP decoding, identity checks, full native dependency validation, and valid-cache
-   mutation; C++ materializes `PbftBlock` only after acceptance at the retained vote/executor boundary. The bridge
-   retains DTO conversion plus separately
-   classified stateless storage and vote-candidate helpers while
-   the CXX-free native `PbftVerifiedVotesService` now owns verified-vote storage lifetime, restoration, the admission
-   runtime, and its shared mutex. The bridge temporarily borrows that native guard for cross-domain validation,
-   leader-selection, finalization, and typed effect conversion but owns no verified-vote runtime state or lock. The
-   CXX-free native `PbftService` now validates slashing configuration, restores every storage-backed PBFT sibling from
-   one handle, and owns bootstrap readiness. It is private under `ConsensusApplication`; the one-field
-   `BridgeConsensusApplication` CXX adapter has no independent sibling state, storage handle, mutex, or readiness flag.
-   Each native sibling owner supplies the exact durable handle for its operation. Native
-   `SlashingProofService` likewise owns the configured double-vote
-   planner, bounded submitted-proof cache, and mutex; the bridge performs evidence/status conversion and C++ retains
-   account/gas lookup plus transaction signing and submission execution. The C++ slashing facade also temporarily
-   retains its live-vote overload's slot precheck and compatibility materialization until the remaining network caller
-   supplies Rust-normalized evidence directly. Native `PbftServiceReadiness` instances own the independent PBFT and
-   pillar-bootstrap atomics plus their monotonic acquire/release publication contracts; the native application root
-   retains those capabilities. Native `PbftManagerService` likewise owns the
-   manager mutex, poison policy, and complete runtime/session container; bridge adapters borrow only a short-lived
-   native guard. The native PBFT root structurally requires its verified-vote, slashing, and pillar siblings;
-   C++ retains null-root and pillar-readiness checks but no longer probes for optional capabilities. Native
-   `PillarChainService` owns pillar storage/restoration, votes, anchor and preparation state, finalization token
-   sequencing, its outer mutex, and readiness. Native pillar-vote task methods own admission, relevance, weighted
-   bundles, payload/network lookup, and finalization prepare/ack; the temporary bridge guard and raw state accessor are
-   deleted. FinalChain adapters perform their external reads without a pillar guard and enter only generation-bound
-   native apply. Current-data publication, own-vote persistence,
-   startup bootstrap, anchor decisions, threshold and block/linkage planning, and latest-finalized lookup now enter
-   through task-oriented native service APIs, leaving only FFI result conversion in the pillar-chain bridge. The
-   native mutex guard, mutable state, snapshot, and decoder are crate-private rather than public compatibility APIs.
-   Native `SortitionService` owns restored sortition runtime state, its mutex, and poison policy. The production
-   DAG/transaction root requires that service structurally; optional sortition topology, availability probes, and
-   unavailable-domain branches are deleted while coupled DAG flows retain DAG-then-sortition lock ordering.
-   C++ keeps daemon threads, networking, timers,
-   finalization side effects, and live object dispatch. A full Rust-mode `PbftManager` overlay now owns PBFT startup and
-   sync-validation routing so upstream `pbft_manager.cpp` stays merge-clean; the copied overlay is deliberate PBFT
-   orchestration scaffolding and should be reduced over time by moving round/step/status planning into a Rust-owned PBFT
-   manager runtime. The first PBFT orchestration slice now routes `processPeriodData` sync-period admission through a
-   side-effect-free Rust planner: C++ still sources PBFT chain, FinalChain, reward/cert vote, transaction, and pillar
-   facts and still performs waits, queue clears, peer reporting, live object dispatch, and temporary log emission, while
-   Rust owns the deterministic accept/drop/wait/clear decision table. Logging is not a reason to leave the decision
-   table in C++. Missing or finalized transaction facts remain warn-only for
-   compatibility and do not reject synced period data. Rust now owns the sync-period transaction-finalization task:
-   it de-duplicates DAG references, removes hashes already supplied by period data, filters the resulting ordered lookup
-   set through the native transaction owner, reads only latest sender nonces from the narrow FinalChain boundary, verifies
-   canonical queue identities, and exact-reports warning and queue effects without a C++ manager relay. The PBFT sync
-   reward stage is also composed into the native admission transition: ordered reward hashes are immutable session facts,
-   verified-vote selection is generation/cursor/period/hash-bound, and only accepted weighted bytes cross back for the
-   temporary FinalChain-facing previous-certificate payload. C++ no longer drives compact VoteManager reward selection
-   or reports its result. The PBFT sync
-   runtime now has a staged Rust planner for the full `processPeriodData`
-   validation order: Rust returns the next required live C++ check for FinalChain, reward votes, cert votes,
-   transactions, pillar data, or pillar votes until all required facts are present, then returns accept/drop/wait/report
-   side-effect intent. This keeps sleeps, queue mutation, peer reporting, live vote/transaction managers, and
-   `PeriodData` materialization in the shim while making `NotChecked` facts explicit runtime work rather than implicit
-   acceptance. Rust now also owns the first PBFT manager daemon-tick runtime session: the overlay supplies current
-   state/period/round/step, network sync status, and post-prestate eligible-wallet reports, and Rust returns a cursor-managed script for
-   synced-block processing, optional vote broadcast/cert-block push, round advance, ineligible-wallet sleep, the current
-   PBFT state action, state transitions, and final sleep. C++ still executes each live action, but must report the result
-   back before Rust advances the cursor; cert-push and round-advance progress complete the session with a restart-loop
-   intent, while certify and second-finish branches are selected from explicit reported flags. Rust also now owns the
-   active PBFT state-action branch planner for value proposal, filtering, certify, first finish, and finish polling: the
-   shim supplies compact vote/timing/status facts, Rust returns typed proposal, soft-vote, cert-vote, next-vote, finish,
-   or no-op intents, and C++ only materializes live blocks/votes, storage mutations, and network effects. Rust now also
-   owns PBFT leader proposal ranking and selection: the shim supplies proposal vote identity, VRF credential, recovered
-   public key, weight, live candidate validation status, and pivot facts, while Rust computes the legacy
-   `getVoterIndexHash(credential, voter, index)` ranking over RLP bytes, applies the duplicate-rank overwrite rule,
-   skips already-in-chain/missing/invalid candidates, preserves the null-anchor fallback rule, and returns selected
-   vote/block hashes for C++ materialization. The shim-local `getProposal()` helper has been removed. C++ still owns
-   live `PbftBlock`/`PbftVote` object resolution, proposed-block validation fact collection, signing, storage mutation,
-   and gossip execution. Rust now also
-   owns PBFT manager cursor transitions for round reset, filter/certify/finish/finish-polling phase changes, finish
-   loopback, polling delays, exponential lambda backoff, next-voted status resets, cert-voted sidecar cleanup, own-vote
-   clearing, and candidate round-advance validation. Rust storage now owns the transition persistence apply path for
-   manager round/step fields, next-voted status resets, cert-voted block cleanup, and latest own-vote cleanup in one
-   committed batch, dropping rejected batches before C++ live mirrors change. The shim only applies Rust-planned live
-   mirror updates after that Rust storage apply succeeds, while keeping actual timers, FinalChain waits, VoteManager
-   period/round side effects, network effects, and compatibility objects in C++. Rust now also owns the long-lived PBFT
-   manager scalar runtime handle used by the overlay: startup restore reads persisted round/step/lambda/status facts
-   through Rust storage, applies legacy-compatible default and step-normalization rules, persists normalized startup step
-   state through Rust before C++ mirrors are updated, rejects missing Cacti dynamic-lambda facts explicitly, and advances
-   the runtime cursor only after a Rust-owned transition storage batch commits. C++ mirrors remain temporary compatibility
-   state until the remaining live side effects move behind Rust protocol plans. PBFT
-   finalization
-   execution now has a Rust-planned intent contract as well: the shim supplies accepted
-   block, PBFT head, anchor, pillar-finalization, and dynamic-lambda facts, and Rust returns explicit cleanup/finalize/
-   advance-period flags before C++ applies the existing DB, DAG, transaction-manager, PBFT-chain, FinalChain, and timer
-   side effects in the legacy order. Rust also now plans the native-ready PBFT finalization storage write set: the shim
-   supplies PBFT head key, canonical period-data RLP, ordered finalized DAG hashes, reordered transaction hashes,
-   certified-vote identity, and lambda facts, and Rust returns primary-batch write flags, positioned DAG/transaction
-   index writes, period-lambda persistence, executed-status persistence, and `blocks_per_year`. Rust now appends the
-   PBFT head, PBFT hash-to-period, period-data RLP, finalized DAG indexes, transaction indexes, and pending-row deletes
-   to the shim's Rust-backed storage batch. The PBFT finalization persistence bridge now exposes one staged Rust appender
-   for primary finalized-period writes, post-live-mutation dynamic-lambda persistence, and post-FinalChain-dispatch
-   executed-status persistence; compatibility wrappers remain for the older appender entrypoints. The C++ shim calls the
-   staged API while preserving the existing batch/commit boundaries. Rust now also owns the storage-batch lifecycle for
-   PBFT finalization persistence stages: the bridge creates, appends, commits, or drops Rust storage batches for the
-   primary finalized-period/reward-reset/sortition group, dynamic-lambda persistence, and executed-status persistence,
-   while the PBFT overlay still owns live FinalChain, timer, period-advance, and remaining object-materialization side
-   effects in the legacy order. Rust now owns a side-effect-free finalization runtime stepper and the Cacti
-   dynamic-lambda calculation for PBFT finalization: it returns the ordered mixed-executor action list, block-period
-   lambda, reward `blocks_per_year`, post-adjust rounds count, post-adjust dynamic lambda, and increase/decrease
-   telemetry flags. The PBFT overlay consumes those Rust outputs and no longer calls the C++ dynamic-lambda adjustment
-   routine from the Rust-mode finalization path. Rust now also owns a finalization runtime session cursor: the overlay
-   asks Rust for each action, executes the temporary C++ live effect, and reports success/failure back before Rust
-   advances the session. PBFT finalization sortition update is now two-phase: the sortition shim previews the Rust
-   threshold transition without mutating live state, the emitted change is included in the existing primary finalization
-   storage batch, and only after that batch commits does the shim commit live sortition runtime state and report the
-   action back to the Rust cursor. Reward-vote reset metadata commit, DAG finalized-order mutation, transaction
-   finalized-status sidecar cleanup, sortition runtime commit, and PBFT-chain live head updates now run behind shim-owned
-   executors that return structured post-state proofs back to Rust before the cursor advances: Rust validates the
-   finalized DAG count, finalized transaction count, finalized period, PBFT block hash, anchor hash, reward-vote
-   period/round/block metadata, stale extra-reward-vote cleanup, sortition change period/current-threshold facts,
-   PBFT-chain size, and PBFT-chain head/anchor state against the accepted finalization plan.
-   The bridge also exposes a storage-backed PBFT
-   finalization resume classifier for duplicate or
-   restart-adjacent blocks: Rust inspects the durable hash-to-period, period-data, finalized DAG/transaction indexes,
-   optional period-lambda, executed-status, and FinalChain height facts and returns complete, replay-needed,
-   missing-primary, or conflicting-primary classifications instead of letting the shim treat `pbftBlockInDb` as a blind
-   duplicate. The duplicate path now consumes that classification through a Rust-owned resume runtime session for the
-   storage-proven tail only: when primary finalization and dynamic lambda are already durable and FinalChain is exactly
-   one period behind, the overlay replays FinalChain finalization, persists executed status through Rust, sets the live
-   executed flag, advances the PBFT period, and reports each action back to Rust before the cursor advances. Dynamic
-   lambda gaps, missing/conflicting primary facts, and complete duplicates remain explicit no-replay paths. This
-   classifier/session does not yet replay ambiguous C++ live side effects because timers, reward metadata, sortition
-   live-state replay after duplicate admission, pillar post-processing, and broader startup recovery still lack durable
-   Rust-owned replay contracts. The
-   Rust-mode `VoteManager` overlay now uses the
-   approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
-   reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, passes the stage-4 Rust storage
-   facts into the Rust-owned finalization apply batch, and mutates live reward metadata only after Rust commits the
-   stage. The standalone Rust-mode `VerifiedVotes` facade is deleted; the same overlay now routes deterministic
-   verified-vote live state methods directly through the shared native `PbftVerifiedVotesService` instead of
-   `VoteManagerOld`: insertion/uniqueness,
-   vote presence and snapshots, proposal-vote selection, cleanup, 2t+1 block/bundle lookups, next-round detection,
-   current round persistence of non-cert bundles, and network t+1 step reads use Rust-owned metadata. `addVerifiedVote`
-   now enters a validation-backed Rust PBFT vote admission runtime: the shim collects only FinalChain/key-manager
-   facts, Rust owns canonical validation, replay-marker intent, calculated weight, event/progress fact construction,
-   insertion gating, authoritative verified-vote mutation and threshold decisions, duplicate/conflict classification,
-   retained slashing payload pairs, and storage-ready extra-reward/current-round 2t+1 payloads. C++ keeps
-   live `PbftVote` sidecars, temporary weight hydration for legacy sidecar compatibility, slashing transaction
-   construction/submission from Rust-normalized payloads and deferred network effects. Temporary C++ logging around this
-   executor boundary is allowed but is not an ownership constraint. PBFT
-   vote persistence for own verified votes, extra reward votes, finalized reward-vote resets, and latest-round 2t+1
-   bundles now routes through VoteManager-specific `rustaxa-storage` bridge operations and Rust-owned vote payload
-  builders: Rust constructs the weighted storage RLP records, raw weighted vote-bundle RLP for persistence, optimized
-  PBFT vote-bundle RLP for get-next network egress, and normalized unweighted slashing evidence RLP from canonical
-  signed vote bytes plus the authoritative calculated weight. Rust owns the immediate vote-progress write batch and the
-  caller-owned own-vote cleanup batch appender, and the Rust slashing planner consumes the normalized evidence before
-  building calldata. The shim mutates temporary live sidecars only after Rust accepts the durable operation. `validateVote`,
-   `voteAlreadyValidated`, `getPbftTwoTPlusOne`, and
-   `genAndValidateVrfSortition` now route away from `VoteManagerOld`: Rust owns validation/replay planning, canonical
-   received-vote RLP inspection, signed and unsigned vote hash derivation, recovered voter identity, signature and VRF
-   proof checks, Rust-computed received-vote weight, the replay cache, PBFT sortition-threshold formula, Rust-owned
-   `2t+1` threshold lookup/current-period cache, and local proposer-sortition screening. The threshold path now composes
-   its live Rust PBFT-chain size and exact-period FinalChain DPoS total inside the private `PbftService` reached through
-   `BridgeConsensusApplication`, so C++ supplies only period, vote type, and committee configuration. Local proposer
-   sortition now likewise composes identity validation,
-   voter/total DPoS reads, proposer proof generation/verification, and weight calculation behind one PBFT-service call;
-   VoteManager admission now also composes canonical inspection, voter/total DPoS reads, VRF-key lookup, validation,
-   and transactional publication behind one Rust service call; only separate PBFT-manager consumers of the generic
-   fact family remain tracked by `CRW-09I`. Weighted local generation now composes voter/total DPoS reads directly through a
-   borrowed Rust FinalChain handle and returns canonical weighted RLP; C++ supplies only signing/configuration input and
-   hydrates the checked temporary sidecar without recalculating weight. Rust now also
-   generates local PBFT vote bytes in a side-effect-free bridge API: it derives the VRF proof/output, signs the legacy
-   unsigned vote hash, returns canonical signed or weighted `PbftVote` RLP plus hashes/identity facts, and reports
-   zero-stake, zero-total-DPoS, and zero-weight outcomes as stable statuses. The shim now materializes local
-   `PbftVote` sidecars directly from Rust-generated signed or weighted RLP, hydrates the temporary C++ VRF credential
-   cache with local VRF verification, and persists locally generated own votes through Rust storage using the
-   Rust-generated weighted bytes. `checkRewardVotes` now calls the Rust verified-vote runtime to build reward-vote
-   candidates from Rust metadata, evaluate the preferred round and reverse period scan, and resolve selected retained
-   weighted records in the PBFT block's requested hash order; C++ only materializes those records into temporary
-   sidecars when callers request copied votes. Rust-retained weighted payloads now back verified-vote snapshots,
-   reward-vote materialization, and 2t+1 bundle reads, so missing C++ live sidecars no longer produce partial generic
-  snapshot, reward, or 2t+1 results. C++ still owns the temporary live sidecar type,
-  reward-vote sidecar mapping, and broader PBFT manager/network orchestration; FinalChain DPoS and VRF facts are
-  sourced through Rust-backed ports. Logging may
-   remain temporarily at this boundary but should be ignored when choosing what logic moves to Rust. Rust owns PBFT
-   finalization sortition-change persistence: the sortition shim now previews the live Rust runtime transition, returns
-   the emitted threshold change for storage staging, and commits the same transition only after the PBFT staged storage
-   appender has committed the primary batch. C++ still owns dynamic-lambda live-field assignment from Rust output,
-   FinalChain
-   dispatch, and live PBFT runtime mutation until those sidecar APIs move across the bridge.
-   Reward-vote reset live metadata is still physically mutated in the vote-manager shim, but the action is now an
-   explicit Rust-validated executor report instead of an unproved PBFT-manager side effect. The full Rust-mode
-   `PillarChainManager` overlay now keeps original pillar
-   manager files clean while Rust owns deterministic pillar-vote relevance/inspection/insertion and pillar-block
-   planning. Pillar validation, admission, synced-bundle weighting, threshold lookup, and block creation borrow Rust
-   FinalChain directly between generation-bound pillar stages; C++ no longer materializes DPoS fact requests or
-   per-validator weights. Pillar-block first/period/parent linkage and validator deltas are validated by Rust before C++
-   materializes or persists `PillarBlock` objects. C++ still owns bridge root/epoch executor facts, live `PillarVote`
-   sidecars, signing, storage compatibility materialization, event emission, network requests, and finalization
-   orchestration.
-   `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
-   selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
-   lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode
-   `DagManager::setDagBlockOrder()` now calls one Rust apply operation that resolves the anchor level from Rust storage,
-   computes the candidate finalization state, applies finalized-block counter updates, expired DAG deletes, and expired
-   non-finalized transaction deletes through one Rust storage batch, commits Rust state, then returns only local cache
-   and live transaction-manager sidecar cleanup facts to the shim. The native gas oracle inside the App-owned
-   `TransactionManager` restores finalized-block history from Rust storage, applies live finalized-block gas-price
-   updates, and enforces pool-mode minimum-price flooring. Pool mode reads the Rust-backed queue directly, without a
-   standalone Rust-mode `GasPricer` facade or a C++ scalar echo.
-10. Port deterministic rewards, remaining slashing-manager/runtime behavior, and pillar calculations after DPoS and final-chain query
-    ports are real. Native Rust rewards code accepts finalized-period facts, computes legacy-compatible `BlockStats`
-    RLP, and tracks interval cache/distribution boundaries. The active Rust `FinalChain` native finalization path owns a long-lived
-    rewards-stats runtime, builds finalized-period facts with bridged previous-block cert votes, persists/clears
-    interval cache rows in the finalized-block batch, reloads cached stats on startup, applies interval-boundary
-    fee commission rewards from the Rust planner to staged Rust account/DPoS snapshots, and now handles fixed-yield plus
-    Aspen part-two dynamic-yield minted block/DAG/vote distribution, total-supply migration, Rust-backed supply/yield and
-    delegator reward-page reads, validator paging reads, owner metadata/commission updates, claim balance/cursor updates,
-    commission reward claims, claim-all dynamic gas plus FinalChain-owned atomic publication, and header `total_reward`
-    natively. Moving unsupported DPoS event receipt parity and legacy
-    `BlockStats` carrier ownership fully into Rust remain future work. Double-voting proof planning, Rust FinalChain
-    double-vote jailing, slashing read calls, and already-verified pillar-vote aggregation are Rust-backed; slashing
-    transaction construction/signing, pillar signing/recovery, and
-    `PillarChainManager` orchestration still depend on future FinalChain/state ports.
-
-### Historical First Implementation Slice (Complete)
-
-Start with a consensus rewrite tracker, then implement Rust DAG graph logic as the first code slice.
-
-Tracker: `doc/consensus_rewrite_tracker.md`
-
-The tracker should list:
-
-- consensus classes and public APIs
-- direct dependencies on storage, final-chain state, networking, transaction pool, and config
-- current tests that cover each area
-- proposed ownership: Rust domain, Rust infra adapter, C++ shim, or deferred legacy path
-
-The first Rust code slice should focus on `Dag` graph operations because the domain is narrower than `PbftManager` and gives PBFT/finalization work a stable base.
-
-### Risks
-
-- `PbftManager` is the largest and most coupled consensus class; port it only after DAG, vote, and chain primitives are stable.
-- DPoS eligibility depends on FinalChain/state surfaces; the supported Rust snapshot and native-finalization subset must
-  keep unsupported contract methods, missing historical snapshots, and failed-receipt parity gaps explicit instead of
-  falling back silently.
-- Finalization crosses DAG, PBFT, storage, rewards, and state execution; port finalization decisions only after the read/query ports are real.
-- Consensus behavior is latency-sensitive and persistence-sensitive, so byte compatibility and deterministic ordering tests matter.
-
-### Consensus Validation
-
-Use targeted validation before broad integration runs:
-
-- Rust consensus changes require `cargo fmt --manifest-path rust/Cargo.toml`, `cargo clippy --manifest-path rust/Cargo.toml`, and `cargo test --manifest-path rust/Cargo.toml`.
-- DAG changes should run relevant DAG tests such as `dag_test` and `dag_block_test`.
-- DAG proposer-routing changes should run Rust validation plus `rust_consensus_tests`, `dag_block_test`, and proposer-path
-  PBFT or full-node coverage when thread/network orchestration changes.
-- Transaction queue, submission, packing, or proposer changes should run native Rust queue/runtime, application,
-  query/network, duplicate/restart, and fake-host-port coverage plus `rust_consensus_tests`, affected RPC/GraphQL/network
-  or full-node tests, and queue-focused `transaction_test` and `gas_pricer_test` cases in a pure-C++ reference build.
-  Rust mode has no transaction-manager or proposer facade test.
-- Sortition parameter changes should run native Rust sortition coverage, `rust_consensus_tests`, affected Rust-mode DAG
-  or network consumers, and `sortition_test` in the all-Rust-disabled pure-C++ reference build. Rust mode has no
-  `SortitionParamsManager` facade or facade-only shim test.
-- PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,
-  and targeted `pbft_chain_test` or `pbft_manager_test` cases; broader PBFT changes should also run relevant
-  `vote_test` coverage.
-- Pillar vote aggregation, PBFT sync bundle, finalization, or query changes should run native service/application,
-  persistence/restart, network, query, and observer validation plus `rust_consensus_tests`, affected Rust-enabled
-  network/RPC/full-node coverage, and targeted pure-C++ `pillar_chain_test` cases. Rust mode has no pillar-manager facade
-  or compatibility test.
-- Rewards-stat planner changes should run Rust validation plus the Rust rewards-stat and FinalChain unit tests and
-  `rust_consensus_tests`; add final-chain/full-node coverage when reward distribution routing changes. The legacy
-  `rewards_stats_test` is a pure-C++ reference-build target only because Rust mode no longer has a rewards-stats facade.
-- Shim startup behavior should be validated with a Rust-enabled node smoke test when consensus shims change.
-
-## Validation Matrix
-
-Use the narrowest validation that covers the changed behavior, then broaden for shared or high-risk paths. The dedicated
-strategy and repeatable Makefile targets live in `doc/rewrite_validation_strategy.md`.
-
-| Change area | Minimum validation |
-| --- | --- |
-| Rust-only type/codec changes | `cargo test --manifest-path rust/Cargo.toml` |
-| Rust storage bridge | `cmake --build /build --target rust_storage_tests` and `/build/bin/rust_storage_tests` |
-| C++ storage behavior | affected C++ gtests or relevant `ctest --output-on-failure` subset |
-| Larger storage refactor | storage tests plus `scripts/storage_conformance_diff.sh` after owner confirmation |
-| FinalChain read shim | targeted FinalChain/RPC/gtest coverage plus Rust tests for moved logic |
-| Finalization/write path | targeted unit tests, conformance where available, and broader CTest/Python integration coverage |
-| Upstream sync | pure C++ validation on `cpp-reference`, then Rust-enabled validation on the sync branch |
-
-## Near-Term Priorities
-
-1. Preserve the storage-boundary guard and current closure categories: no new production consensus `DbStorage`,
-   `getDB()`, `rustBatchId`, C++ batch, or bridge-batch authority in Rust mode.
-   PBFT duplicate-finalization recovery now republishes a reward cursor only
-   from a current process-local reset generation plus exact native durable
-   cursor/bundle validation; broader live-action restart replay remains blocked
-   on durable Rust-owned proofs.
-2. Retire remaining storage-shim batch/query compatibility only when callers move to Rust-owned runtimes, query APIs,
-   fixtures, or explicit unsupported Rust-mode behavior; keep conformance coverage for any behavior that changes.
-3. Continue FinalChain execution-runtime migration: native-supported finalization already routes through Rust, and
-   external-EVM orchestration now has Rust-owned request, plan, lifecycle-result, recovery, and publication decisions.
-   Publication-row audit coverage now verifies live, recovered, and representative transcript Rust publication against
-   persisted FinalChain rows through the normal `rustaxa-bridge` test suite. Next slices should reduce temporary C++
-   `StateAPI` fact collection and, if needed for pre-merge confidence, add a live legacy-vs-Rust external-EVM transcript
-   fixture without moving EVM ownership into FinalChain.
-4. Introduce missing P0 FinalChain domain types with byte-compatible codecs. FinalChain nonces are arbitrary-width
-   canonical values, and transaction positions are now an exact `u32` domain checked before external execution while
-   retaining existing request-identity and persisted-location bytes. FinalChain header, execution, publication, and
-   storage-index blooms now share one fixed 256-byte domain value while retaining historical RLP, hash, and marker bytes.
-   FinalChain gas prices now use a distinct `U256` domain through transient/native/external execution and checked fee
-   arithmetic while preserving fixed-width CXX request bytes and keeping value, balance, stake, and reward roles separate.
-   FinalChain transaction/call values now use their own `U256` domain through native, payable, transient, and external
-   execution while preserving fixed regular, legacy-minimal system, and canonical transaction-RLP bytes. FinalChain
-   account balances now use a distinct `U256` domain with fixed/minimal encoding provenance so untouched genesis and
-   mutated/new account snapshots remain byte-compatible across lookup, persistence, and restart. FinalChain gas limits,
-   usage, cumulative validation, rewards inputs, receipts, headers, and publication now share a checked `u64` domain
-   while preserving CXX carriers, RLP, hashes, request identities, and error ordering. DPoS eligibility threshold, vote
-   step, maximum stake, and minimum deposit now use the shared `DposTokenAmount(U256)` semantic domain. Aggregate stake,
-   delegation principal, and V1/V2 custody use that shared value plus a private consensus-owned persisted-encoding
-   wrapper, preserving historical fixed/minimal bytes and fixed-width registration ingress while rejecting malformed
-   persisted amounts before publication.
-   Ordered redelegation correction amounts now use the shared token domain and apply atomically through a candidate
-   snapshot while preserving aggregate-only legacy repair, principal, global votes, reward-head semantics, and restart.
-   Arbitrary-width reward indexes now use a consensus-private `BigUint` domain in graph authority and a separate
-   byte-provenance wrapper for inert snapshot mirrors, preserving exact restart bytes without exporting the semantic
-   type through `rustaxa-types`. Transaction-fee ownership, commission/delegator deltas, persisted reward pools, account
-   credits, and successful claim settlement now use `DposTokenAmount`, while snapshot encoding provenance remains
-   consensus-private and reward indexes remain arbitrary-width. Supply typing is complete, and final adapter contraction
-   is removing non-EVM Rust-to-C++-to-Rust fact relays in dependency order; both DAG proposal and DAG verification now
-   compose FinalChain DPoS/VRF facts directly inside the Rust DAG service and keep accepted VRF state cursor-private.
-   Temporary C++ `BlockStats` decoding
-   remains part of the accepted StateAPI executor boundary and moves only under the explicit external-EVM/StateAPI scope
-   gate.
-5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.
+The live bridge inventory and its guard are the deletion authority for retained CXX modules, functions, carriers,
+handles, factories, and consumers. The live queue in `doc/consensus_rewrite_tracker.md` is empty after closeout. New work
+requires a demonstrated correctness/parity gap, a named client migration, or explicit authorization to move an external
+boundary native; line-count reduction alone is not a roadmap item. Completed slice sequencing and implementation history
+remain available in git and must not be recreated as planning documents.

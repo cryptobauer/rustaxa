@@ -53,7 +53,7 @@ RUN add-apt-repository ppa:ethereum/ethereum \
     ccache \
     libmicrohttpd-dev \
     libgoogle-perftools-dev \
-    # these libs are required for arm build by go part
+    # Go state tests link the RocksDB compression dependencies dynamically
     zlib1g-dev \
     libzstd-dev \
     libsnappy-dev \

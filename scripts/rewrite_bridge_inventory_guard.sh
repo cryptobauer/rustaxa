@@ -5,10 +5,11 @@ usage() {
   cat <<'EOF'
 Usage: scripts/rewrite_bridge_inventory_guard.sh [--self-test] [--base-ref REF]
 
-Checks that every exported CXX `Bridge*` handle, Rust bridge module, and
-consensus shim directory is documented in doc/consensus_bridge_shim_audit.md,
-reports stale inventory rows after deletion, and prevents checked surface
-budgets from increasing relative to the selected base revision.
+Checks that every exported CXX opaque handle, Rust bridge module, non-test C++
+consumer, and consensus shim directory is documented in
+doc/consensus_bridge_shim_audit.md, reports stale inventory rows after deletion,
+and prevents checked surface budgets from increasing relative to the selected
+base revision.
 EOF
 }
 
@@ -45,12 +46,12 @@ cd "$repo_root"
 inventory_parser="$repo_root/scripts/rewrite_bridge_inventory.py"
 
 extract_ffi_bridge_types() {
-  sed -n 's/^[[:space:]]*type \(Bridge[A-Za-z0-9_]*\);[[:space:]]*$/\1/p' "$1" | sort -u
+  python3 "$inventory_parser" ffi-handles "$1"
 }
 
 extract_audited_bridge_types() {
   awk '
-    /^## Exported CXX Bridge Handles/ {
+    /^## Exported CXX Opaque Handles/ {
       in_section = 1
       next
     }
@@ -58,12 +59,32 @@ extract_audited_bridge_types() {
       exit
     }
     in_section {
-      if (match($0, /^\| `Bridge[A-Za-z0-9_]+` \|/)) {
+      if (match($0, /^\| `[A-Za-z][A-Za-z0-9_]+` \|/)) {
         handle = substr($0, RSTART + 3, RLENGTH - 6)
         print handle
       }
     }
-  ' "$1" | sort -u
+  ' "$1" | sort
+}
+
+extract_non_test_cpp_consumers() {
+  consumer_root="$1"
+  {
+    rg -l '#include [<"]rustaxa-bridge/(ffi|application_host_ffi)\.rs\.h[>"]' \
+      "$consumer_root/libraries" "$consumer_root/programs" \
+      --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' || true
+  } | sed "s#^$consumer_root/##" | sort -u
+}
+
+extract_audited_non_test_cpp_consumers() {
+  awk '
+    /^## Non-Test C[+][+] Bridge Consumers/ { in_section = 1; next }
+    /^## / && in_section { exit }
+    in_section && match($0, /^\| `(libraries|programs)\/[A-Za-z0-9_./-]+` \|/) {
+      value = substr($0, RSTART + 3, RLENGTH - 6)
+      print value
+    }
+  ' "$1" | sort
 }
 
 extract_bridge_modules() {
@@ -78,7 +99,7 @@ extract_audited_bridge_modules() {
       value = substr($0, RSTART + 3, RLENGTH - 6)
       print value
     }
-  ' "$1" | sort -u
+  ' "$1" | sort
 }
 
 extract_shim_directories() {
@@ -96,7 +117,7 @@ extract_audited_shim_directories() {
       value = substr($0, RSTART + 3, RLENGTH - 6)
       print value
     }
-  ' "$1" | sort -u
+  ' "$1" | sort
 }
 
 extract_cxx_functions() {
@@ -119,7 +140,7 @@ extract_audited_cxx_box_factories() {
       value = substr($0, RSTART + 3, RLENGTH - 6)
       print value
     }
-  ' "$1" | sort -u
+  ' "$1" | sort
 }
 
 extract_audited_partial_service_factories() {
@@ -509,14 +530,23 @@ check_inventory() {
   : >"$stale_file"
   ffi_types="$(mktemp)"
   audit_types="$(mktemp)"
-  trap 'rm -f "$ffi_types" "$audit_types"' HUP INT TERM
+  duplicate_types="$(mktemp)"
+  trap 'rm -f "$ffi_types" "$audit_types" "$duplicate_types"' HUP INT TERM
   extract_ffi_bridge_types "$ffi_file" >"$ffi_types"
   extract_audited_bridge_types "$audit_file" >"$audit_types"
+  uniq -d "$audit_types" >"$duplicate_types"
+  if [ -s "$duplicate_types" ]; then
+    echo "Rust bridge inventory guard failed: duplicate opaque handle rows:" >&2
+    cat "$duplicate_types" >&2
+    rm -f "$ffi_types" "$audit_types" "$duplicate_types"
+    trap - HUP INT TERM
+    return 1
+  fi
 
   comm -23 "$ffi_types" "$audit_types" >"$missing_file"
   comm -13 "$ffi_types" "$audit_types" >"$stale_file"
 
-  rm -f "$ffi_types" "$audit_types"
+  rm -f "$ffi_types" "$audit_types" "$duplicate_types"
   trap - HUP INT TERM
 }
 
@@ -541,8 +571,15 @@ check_documented_inventory() {
   audit_values="$temp_dir/${inventory_name}_audit"
   missing_values="$temp_dir/${inventory_name}_missing"
   stale_values="$temp_dir/${inventory_name}_stale"
+  duplicate_values="$temp_dir/${inventory_name}_duplicates"
   "$live_extractor" "$live_file" >"$live_values"
   "$audit_extractor" "$audit_file" >"$audit_values"
+  uniq -d "$audit_values" >"$duplicate_values"
+  if [ -s "$duplicate_values" ]; then
+    echo "Rust bridge inventory guard failed: duplicate $inventory_name audit entries:" >&2
+    cat "$duplicate_values" >&2
+    return 1
+  fi
   comm -23 "$live_values" "$audit_values" >"$missing_values"
   comm -13 "$live_values" "$audit_values" >"$stale_values"
   report_stale_entries "$inventory_name" "$stale_values"
@@ -611,7 +648,7 @@ check_bridge_names_do_not_leak_from_other_sections() {
   stale_file="$temp_dir/stale"
   check_inventory "$ffi_file" "$audit_file" "$missing_file" "$stale_file"
   if ! grep -qx "$ignored_type" "$missing_file"; then
-    echo "bridge inventory guard self-test failed: bridge mention outside handle table satisfied inventory" >&2
+    echo "bridge inventory guard self-test failed: opaque handle mention outside handle table satisfied inventory" >&2
     exit 1
   fi
 }
@@ -635,7 +672,7 @@ EOF
 
 | `BridgeMissing` | mentioned in the wrong section |
 
-## Exported CXX Bridge Handles
+## Exported CXX Opaque Handles
 
 | Handle | Implementing module | Current consumers | Classification | Delete or narrow when |
 | --- | --- | --- | --- | --- |
@@ -656,7 +693,7 @@ EOF
   cat >"$temp_dir/audit_with_stale.md" <<'EOF'
 # Audit
 
-## Exported CXX Bridge Handles
+## Exported CXX Opaque Handles
 
 | Handle | Implementing module | Current consumers | Classification | Delete or narrow when |
 | --- | --- | --- | --- | --- |
@@ -667,6 +704,14 @@ EOF
 
   check_stale_exactly "$temp_dir/ffi.rs" "$temp_dir/audit_with_stale.md" BridgeStale "$temp_dir"
 
+  sed '/BridgeDocumented.*module.rs/a | `BridgeDocumented` | `module.rs` | test | External boundary | keep |' \
+    "$temp_dir/audit_with_missing.md" >"$temp_dir/audit_with_duplicate.md"
+  if check_inventory "$temp_dir/ffi.rs" "$temp_dir/audit_with_duplicate.md" \
+    "$temp_dir/missing" "$temp_dir/stale" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: duplicate opaque handle row was accepted" >&2
+    exit 1
+  fi
+
   cat >"$temp_dir/lib.rs" <<'EOF'
 mod documented;
 mod documented_block; /* retained block comment */
@@ -674,6 +719,10 @@ mod documented_block; /* retained block comment */
 pub(crate) mod documented_crate; // visible inside the crate
 EOF
   mkdir -p "$temp_dir/shims/documented_shim"
+  mkdir -p "$temp_dir/consumer_root/libraries" "$temp_dir/consumer_root/programs"
+  cat >"$temp_dir/consumer_root/libraries/documented.cpp" <<'EOF'
+#include "rustaxa-bridge/ffi.rs.h"
+EOF
   cat >"$temp_dir/full_audit.md" <<'EOF'
 # Audit
 
@@ -686,6 +735,12 @@ EOF
 | `rust/crates/rustaxa-bridge/src/documented_crate.rs` | helper | test | Internal Rust route | keep |
 | `rust/crates/rustaxa-bridge/src/documented_public.rs` | helper | test | Internal Rust route | keep |
 
+## Non-Test C++ Bridge Consumers
+
+| Consumer path | Named client family | Removal condition |
+| --- | --- | --- |
+| `libraries/documented.cpp` | test | keep |
+
 ## Consensus Shim Directories
 
 | Shim directory | Current role | Current consumers | Classification | Removal or narrowing condition |
@@ -694,8 +749,18 @@ EOF
 EOF
   check_documented_inventory module "$temp_dir/lib.rs" "$temp_dir/full_audit.md" \
     extract_bridge_modules extract_audited_bridge_modules "$temp_dir"
+  check_documented_inventory consumer "$temp_dir/consumer_root" "$temp_dir/full_audit.md" \
+    extract_non_test_cpp_consumers extract_audited_non_test_cpp_consumers "$temp_dir"
   check_documented_inventory shim "$temp_dir/shims" "$temp_dir/full_audit.md" \
     extract_shim_directories extract_audited_shim_directories "$temp_dir"
+
+  sed '/libraries\/documented.cpp.*test/a | `libraries/documented.cpp` | test | keep |' \
+    "$temp_dir/full_audit.md" >"$temp_dir/duplicate_consumer_audit.md"
+  if check_documented_inventory consumer "$temp_dir/consumer_root" "$temp_dir/duplicate_consumer_audit.md" \
+    extract_non_test_cpp_consumers extract_audited_non_test_cpp_consumers "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: duplicate consumer row was accepted" >&2
+    exit 1
+  fi
 
   echo 'mod missing;' >>"$temp_dir/lib.rs"
   if check_documented_inventory module "$temp_dir/lib.rs" "$temp_dir/full_audit.md" \
@@ -716,6 +781,15 @@ EOF
     exit 1
   fi
   rm -rf "$temp_dir/shims/missing_shim"
+  cat >"$temp_dir/consumer_root/libraries/missing.cpp" <<'EOF'
+#include <rustaxa-bridge/application_host_ffi.rs.h>
+EOF
+  if check_documented_inventory consumer "$temp_dir/consumer_root" "$temp_dir/full_audit.md" \
+    extract_non_test_cpp_consumers extract_audited_non_test_cpp_consumers "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: undocumented consumer was accepted" >&2
+    exit 1
+  fi
+  rm "$temp_dir/consumer_root/libraries/missing.cpp"
 
   cat >"$temp_dir/stale_audit.md" <<'EOF'
 # Audit
@@ -945,9 +1019,9 @@ if [ -s "$missing_file" ]; then
   cat >&2 <<'EOF'
 Rust bridge inventory guard failed.
 
-Every exported CXX `Bridge*` handle must be classified in
+Every exported CXX opaque handle must be classified in
 doc/consensus_bridge_shim_audit.md before it is added or kept. Add an audit row
-under "Exported CXX Bridge Handles" with current consumers, classification, and
+under "Exported CXX Opaque Handles" with current consumers, classification, and
 a deletion or narrowing condition.
 
 Missing audit entries:
@@ -962,6 +1036,9 @@ trap 'rm -f "$missing_file" "$stale_file" "$ffi_inventory_file"; rm -rf "$invent
 check_documented_inventory \
   module rust/crates/rustaxa-bridge/src/lib.rs doc/consensus_bridge_shim_audit.md \
   extract_bridge_modules extract_audited_bridge_modules "$inventory_temp_dir"
+check_documented_inventory \
+  consumer "$repo_root" doc/consensus_bridge_shim_audit.md \
+  extract_non_test_cpp_consumers extract_audited_non_test_cpp_consumers "$inventory_temp_dir"
 check_documented_inventory \
   shim libraries/core_libs/consensus/shims doc/consensus_bridge_shim_audit.md \
   extract_shim_directories extract_audited_shim_directories "$inventory_temp_dir"

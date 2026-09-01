@@ -15,7 +15,6 @@ Read these sources before selecting or designing a slice:
 - `AGENTS.md`
 - `PLAN.md`
 - `doc/consensus_rewrite_tracker.md`
-- `doc/consensus_consolidation_plan.md`
 - `doc/consensus_bridge_shim_audit.md`
 - `doc/rewrite_validation_strategy.md`
 
@@ -23,7 +22,6 @@ Use them according to their declared ownership:
 
 - `PLAN.md` owns strategy, authorized scope, application boundaries, and retained external executors.
 - The tracker is the only execution queue and status/dependency authority.
-- The consolidation plan owns active bridge/shim reduction design and sequencing, not implementation history.
 - The bridge/shim audit is the mechanically checked inventory of live consumers, classifications, and deletion
   conditions.
 - The validation strategy owns reusable validation tiers and parity requirements.
@@ -215,7 +213,6 @@ classifies them as required. Never silently downgrade a required tier; report an
   same way.
 - Update the selected tracker item when status, dependencies, completion evidence, or debt changes.
 - Update `PLAN.md` only for a strategy, scope, or accepted-boundary change.
-- Update the consolidation plan only when active design or sequencing changes.
 - Update the bridge/shim audit in the same slice whenever consumers, classifications, deletion conditions, or live
   inventory change.
 - Measure and report production callers migrated and lines, functions, carriers, handles, shims, flags, partial

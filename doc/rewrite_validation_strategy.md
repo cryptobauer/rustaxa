@@ -1,7 +1,7 @@
 # Rewrite Validation Strategy
 
-This document is the source of truth for validating Rust rewrite work. Use it with the subsystem-specific
-**Validation Matrix** in `doc/consensus_rewrite_tracker.md` and the repeatable Makefile targets in the repository root.
+This document is the source of truth for validating Rust rewrite work. Use it with the live gaps in
+`doc/consensus_rewrite_tracker.md` and the repeatable Makefile targets in the repository root.
 
 The default rule for existing and new rewrites is:
 
@@ -207,7 +207,7 @@ intersection, or otherwise high-risk rewrite changes.
   `CRW-E02` active until this gate and the native DPoS/slashing/reward differential evidence all pass; never substitute
   an in-place synthetic-history rewrite or a link-only smoke test.
 
-  The 2026-08-31 closeout passed this composite gate and the complete two-test, five-node Python suite. The runner pins
+  The 2026-09-01 closeout passed this composite gate and the complete two-test, five-node Python suite. The runner pins
   Python dependencies and downloads Solidity 0.6.12 only by a fixed URL and SHA-256, so a clean environment can
   reproduce the legacy Ethereum/RPC and concrete-root rebuild/recovery evidence without a system `solc` installation.
 
@@ -248,8 +248,8 @@ manager-shaped shim. Move behavioral coverage to the native owner and retain onl
 error-mapping, or explicitly allowlisted conformance coverage at the bridge. Validate deletion by combining last-caller
 searches, bridge inventory checks, feature-on subsystem tests, and the pure-C++ route when source selection changes.
 
-For consensus work, unresolved work and parity gaps live in the **Remaining Consensus Work Queue**, while
-subsystem-specific minimum suites live in the **Validation Matrix** of `doc/consensus_rewrite_tracker.md`. Detailed
+For consensus work, unresolved work and parity gaps live in the **Remaining Consensus Work Queue** in
+`doc/consensus_rewrite_tracker.md`. The applicable validation tiers and composite gates live in this document. Detailed
 edge cases should live beside the owning Rust
 module tests, bridge fixtures, or focused C++ suite. Do not preserve a separate pre-routing checklist after a route has
 landed; when a touched behavior still lacks a reusable parity fixture, record that concrete gap in the tracker and add
