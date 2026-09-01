@@ -4880,7 +4880,7 @@ impl PbftManagerStateActionIntent {
 /// Stable status codes for PBFT manager state-action planning.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PbftManagerStateActionStatus {
-    /// The plan is usable by the C++ executor.
+    /// The plan is usable by the native application runtime.
     Ready,
     /// The supplied state is unknown or unsupported.
     InvalidState,
@@ -4889,7 +4889,7 @@ pub enum PbftManagerStateActionStatus {
 }
 
 impl PbftManagerStateActionStatus {
-    /// Stable bridge code for the state-action status.
+    /// Stable compact code for the state-action status.
     pub const fn as_u8(self) -> u8 {
         match self {
             Self::Ready => 0,
@@ -4899,12 +4899,12 @@ impl PbftManagerStateActionStatus {
     }
 }
 
-/// C++-originated facts for one PBFT manager state action.
+/// Native facts for one PBFT manager state action.
 ///
 /// The fact bundle is intentionally compact and contains only deterministic
-/// branch inputs. C++ remains responsible for sourcing those facts from live
-/// vote/proposed-block sidecars, executing returned intents, materializing
-/// blocks and votes, writing storage, and emitting network effects.
+/// branch inputs. Application-owned PBFT, vote, proposed-block, and storage
+/// services source the facts and execute returned intents; exact signing and
+/// transport operations use their named host leaves.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerStateActionFact {
     /// State being executed.
@@ -4921,7 +4921,7 @@ pub struct PbftManagerStateActionFact {
     pub deadline_ms: u64,
     /// Current round lambda in milliseconds.
     pub current_round_lambda_ms: u64,
-    /// Polling interval used by the legacy manager loop.
+    /// Polling interval used by the native application loop.
     pub polling_interval_ms: u64,
     /// Whether the previous round has 2t+1 next votes for null.
     pub has_previous_round_next_null: bool,
@@ -4948,7 +4948,7 @@ pub struct PbftManagerStateActionFact {
 pub struct PbftManagerStateActionPlan {
     /// Planning status.
     pub status: PbftManagerStateActionStatus,
-    /// Primary action intent for the C++ executor.
+    /// Primary action intent for the application runtime.
     pub primary_intent: PbftManagerStateActionIntent,
     /// Hash argument for the primary intent, if applicable.
     pub primary_hash: [u8; 32],
@@ -4964,28 +4964,29 @@ pub struct PbftManagerStateActionPlan {
     pub error_code: String,
 }
 
-/// One ordered PBFT manager state-action effect for the C++ executor.
+/// One ordered PBFT manager state-action effect for the application runtime.
 ///
 /// Inputs:
-/// - `intent` names the live action C++ must execute.
+/// - `intent` names the live action the native runtime must execute.
 /// - `hash` carries the block hash argument for intents that need one.
-/// - `request_proposed_block_sidecar` and the sidecar identity fields are set
-///   for effects whose executor must resolve a proposed PBFT block before it
-///   can generate a vote or re-proposal.
+/// - `request_proposed_block_sidecar` and the identity fields are set for
+///   effects whose runtime step must resolve a proposed PBFT block before vote
+///   generation or re-proposal.
 ///
 /// Invariants:
 /// - Effects are emitted in the order Rust expects them to run.
-/// - C++ must not reorder effects or infer extra branch work outside this list.
-/// - Rust owns which effects require proposed-block sidecar materialization.
-///   C++ remains the executor for materialization, vote generation, storage
-///   mutation, and gossip until those dependencies move to Rust.
+/// - The application runtime must not reorder effects or infer extra branch
+///   work outside this list.
+/// - Rust owns proposed-block resolution, vote generation, storage mutation,
+///   and gossip planning; only exact signing/transport operations reach host
+///   leaf ports.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerStateActionEffect {
-    /// Effect intent for the C++ executor.
+    /// Effect intent for the application runtime.
     pub intent: PbftManagerStateActionIntent,
     /// Hash argument for the effect, if applicable.
     pub hash: [u8; 32],
-    /// True when C++ must materialize/admit the proposed-block sidecar.
+    /// True when the runtime must resolve and admit the proposed block.
     pub request_proposed_block_sidecar: bool,
     /// Proposed-block sidecar hash requested by Rust.
     pub proposed_block_sidecar_hash: [u8; 32],
@@ -4997,9 +4998,9 @@ pub struct PbftManagerStateActionEffect {
 ///
 /// This is the effect-oriented successor surface for
 /// `plan_pbft_manager_state_action`. It keeps the same deterministic branch
-/// decisions but returns an ordered effect vector so the C++ shim can use one
-/// executor loop for value proposal, filter, certify, first finish, and finish
-/// polling. Empty `effects` is a valid no-op plan.
+/// decisions but returns an ordered effect vector so the native application
+/// runtime can use one loop for value proposal, filter, certify, first finish,
+/// and finish polling. Empty `effects` is a valid no-op plan.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerStateActionEffectPlan {
     /// Planning status.
@@ -5023,18 +5024,18 @@ pub enum PbftManagerStateActionSessionStatus {
     Complete,
     /// The original fact bundle was rejected by the planner.
     RejectedFact,
-    /// C++ reported an effect that did not match the pending cursor/intent.
+    /// A report did not match the pending cursor/intent.
     EffectMismatch,
     /// The report used an unknown result code.
     InvalidReport,
-    /// C++ reported a live check or sidecar failure for the pending effect.
+    /// The runtime reported a live-check or proposed-block failure.
     EffectFailed,
-    /// C++ reported an executor or bridge contract error.
+    /// A physical leaf or runtime contract failed.
     ContractError,
 }
 
 impl PbftManagerStateActionSessionStatus {
-    /// Stable bridge code for the session status.
+    /// Stable compact code for the session status.
     pub const fn as_u8(self) -> u8 {
         match self {
             Self::Active => 0,
@@ -5048,7 +5049,7 @@ impl PbftManagerStateActionSessionStatus {
     }
 }
 
-/// Result code reported by C++ after executing one state-action effect.
+/// Result code reported after executing one state-action effect.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PbftManagerStateActionEffectResultCode {
     /// The executor applied the effect or completed its no-progress live check.
@@ -5059,14 +5060,14 @@ pub enum PbftManagerStateActionEffectResultCode {
     SkippedMissingLiveObject,
     /// A live compatibility check rejected the effect.
     RejectedLiveCheck,
-    /// Unknown bridge result code.
+    /// Unknown compact result code.
     Unknown,
     /// The executor hit an unsupported effect, exception, or contract error.
     ExecutorError,
 }
 
 impl PbftManagerStateActionEffectResultCode {
-    /// Stable bridge code for effect reports.
+    /// Stable compact code for effect reports.
     pub const fn as_u8(self) -> u8 {
         match self {
             Self::Applied => 0,
@@ -5078,7 +5079,7 @@ impl PbftManagerStateActionEffectResultCode {
         }
     }
 
-    /// Decodes a stable bridge code.
+    /// Decodes a stable compact code.
     pub const fn from_u8(value: u8) -> Self {
         match value {
             0 => Self::Applied,
@@ -5092,7 +5093,7 @@ impl PbftManagerStateActionEffectResultCode {
     }
 }
 
-/// Report supplied by C++ after executing a Rust-planned state-action effect.
+/// Report supplied by the application runtime after a Rust-planned effect.
 ///
 /// Inputs:
 /// - `cursor` and `intent` must match the pending effect returned by Rust.
@@ -5101,13 +5102,13 @@ impl PbftManagerStateActionEffectResultCode {
 ///
 /// Invariants:
 /// - Rust validates report ordering before advancing the effect cursor.
-/// - Reports do not carry live objects; C++ remains the temporary owner of
-///   sidecar materialization and mutation.
+/// - Reports do not carry live objects; native services retain proposed-block
+///   resolution and state mutation authority.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerStateActionEffectReport {
     /// Cursor returned with the pending effect.
     pub cursor: u32,
-    /// Effect intent C++ attempted to execute.
+    /// Effect intent the application runtime attempted to execute.
     pub intent: PbftManagerStateActionIntent,
     /// Executor result.
     pub result: PbftManagerStateActionEffectResultCode,
@@ -5122,9 +5123,9 @@ pub struct PbftManagerStateActionSessionStep {
     pub status: PbftManagerStateActionSessionStatus,
     /// Monotonic effect cursor.
     pub cursor: u32,
-    /// True when `effect` contains work for the C++ executor.
+    /// True when `effect` contains work for the application runtime.
     pub has_effect: bool,
-    /// Pending effect for C++ execution.
+    /// Pending effect for native runtime execution.
     pub effect: PbftManagerStateActionEffect,
     /// Planned value for `go_finish_state_`.
     pub go_finish_state: bool,
@@ -5132,18 +5133,18 @@ pub struct PbftManagerStateActionSessionStep {
     pub loop_back_finish_state: bool,
     /// True when the session reached a terminal status.
     pub complete: bool,
-    /// True when the C++ caller may continue with follow-up manager routing.
+    /// True when the application runtime may continue native follow-up routing.
     pub can_continue: bool,
-    /// Stable diagnostic code for bridge/log consumers.
+    /// Stable diagnostic code for observability consumers.
     pub error_code: String,
 }
 
 /// Rust-owned cursor for ordered PBFT manager state-action effects.
 ///
 /// The session wraps `PbftManagerStateActionEffectPlan` and exposes one effect
-/// at a time. C++ must report each effect before Rust advances. This keeps
-/// state-action ordering in Rust while leaving live side effects outside the
-/// PBFT manager migration boundary.
+/// at a time. The application runtime must report each effect before Rust
+/// advances, preserving state-action ordering while exact physical operations
+/// use their named host leaf ports.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerStateActionEffectSession {
     /// Planned effects and state flags.
@@ -5172,7 +5173,7 @@ pub enum PbftManagerTransitionKind {
     DelayCertifyPoll,
     /// Delay finish polling without changing phase.
     DelayFinishPoll,
-    /// Unknown bridge transition code.
+    /// Unknown compact transition code.
     Unknown,
 }
 
@@ -6899,8 +6900,8 @@ fn finalized_dag_hashes_from_period_data(period_data_rlp: &[u8]) -> Result<Vec<H
 /// Invariants and edge behavior:
 /// - This owns only the durable status row. Callers must update live/runtime
 ///   mirrors only after this function returns success.
-/// - The post-`waitForPeriodFinalization()` ordering remains owned by the
-///   PBFT manager runtime/shim boundary until that executor moves to Rust.
+/// - The native PBFT application runtime preserves the required
+///   post-finalization ordering before applying this reset.
 pub fn apply_executed_block_reset_storage(storage: &Storage) -> Result<()> {
     storage
         .pbft()
@@ -7051,9 +7052,8 @@ fn append_transition_storage_to_batch(
 ///   and latest-round own-vote cleanup.
 /// - Callers must advance Rust runtime state and C++ mirrors only after an
 ///   `Applied` result.
-/// - Executed-block reset remains outside this batch to preserve the
-///   post-`waitForPeriodFinalization()` ordering until the executor moves to
-///   Rust.
+/// - Executed-block reset remains outside this batch so the native application
+///   runtime can preserve post-finalization ordering.
 pub fn apply_pbft_manager_transition_storage(
     storage: &Storage,
     plan: &PbftManagerTransitionPlan,

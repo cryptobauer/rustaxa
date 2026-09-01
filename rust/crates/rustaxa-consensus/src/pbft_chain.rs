@@ -284,11 +284,11 @@ impl PbftChainService {
         })
     }
 
-    /// Creates a native runtime from explicit compatibility parts.
+    /// Creates a native chain service from explicit parts.
     ///
-    /// This temporary constructor supports bridge fixtures until the complete
-    /// PBFT application owner moves native. Storage-backed lookup methods fail
-    /// with `PBFT_CHAIN_STORAGE_HANDLE_MISSING` when `storage` is absent.
+    /// This constructor supports focused native fixtures. Storage-backed lookup
+    /// methods fail with `PBFT_CHAIN_STORAGE_HANDLE_MISSING` when `storage` is
+    /// absent; production construction supplies application-owned storage.
     pub fn from_parts(
         storage: Option<Arc<Storage>>,
         head: PbftChainHead,
@@ -305,8 +305,8 @@ impl PbftChainService {
 
     /// Borrows chain state for a cross-domain PBFT operation.
     ///
-    /// This temporary escape hatch supports finalization and leader selection
-    /// until their application owner moves out of the bridge.
+    /// This internal composition accessor supports native finalization and
+    /// leader selection and must not cross CXX.
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, PbftChainState>> {
         self.state.read()
     }

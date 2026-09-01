@@ -2911,9 +2911,9 @@ pub fn validate_pbft_finalization_live_mutation_report(
 /// This planner is deliberately separate from normal finalization admission:
 /// `plan_pbft_finalization_intent` still rejects `block_in_chain=true`, while
 /// this function inspects storage-derived facts for duplicate/restart paths.
-/// It only returns actions whose need can be inferred from durable state. Live
-/// DAG, transaction, vote, timer, and period-reset replay remain explicit debt
-/// until those side effects have Rust-owned durable cursors.
+/// It only returns actions whose need can be inferred from durable state. The
+/// application runtime coordinates live DAG, transaction, vote, timer, and
+/// period-reset continuation outside this pure classifier.
 pub fn plan_pbft_finalization_resume(
     fact: PbftFinalizationResumeFact,
 ) -> PbftFinalizationResumePlan {

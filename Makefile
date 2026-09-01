@@ -221,7 +221,7 @@ rewrite-validate-smoke: ## Build taraxad and run a non-destructive Rust-enabled 
 	$(BUILD_OUTPUT_DIR)/bin/taraxad --version >/dev/null
 
 .PHONY: rewrite-validate-e02
-rewrite-validate-e02: rewrite-validate-final-chain-parity ## Run the CRW-E02 focused parity and full-node recovery gate.
+rewrite-validate-e02: rewrite-validate-final-chain-parity ## Run the concrete-root parity and full-node recovery gate.
 	cd tests/py && ./run.sh --node_executable_path "$(BUILD_OUTPUT_DIR)/bin/taraxad" "$(E02_PYTHON_TEST)" -s --tb=short
 
 .PHONY: cpp-intersection-list

@@ -738,9 +738,9 @@ pub struct DagVerifyAuthorization {
 ///
 /// This type is deliberately fact-only and supports staged collection. A
 /// `*_NOT_CHECKED` status means that dependency has not produced a fact yet,
-/// not that it succeeded. Infrastructure crates or C++ shims own live lookups
-/// until those dependencies move behind Rust ports, while Rust owns the
-/// deterministic reject ordering over the supplied facts.
+/// not that it succeeded. Application-owned leaf ports perform physical
+/// VRF/VDF or concrete-state lookups, while Rust owns fact correlation and the
+/// deterministic reject ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DagVerifyVdfDposFacts {
     pub vrf_key_found: bool,
@@ -1137,10 +1137,9 @@ pub struct DagVdfSortitionVerification {
 /// Decoded VDF sortition payload embedded in a DAG block.
 ///
 /// The canonical C++ payload is `[vrf_proof, vdf_solution_proof,
-/// vdf_solution_output, difficulty]`. The VRF proof is exposed separately so a
-/// temporary shim boundary can keep using the legacy VRF verifier until the VRF
-/// module is rewritten in Rust. The Wesolowski solution and difficulty are
-/// consumed by Rust-owned DAG VDF verification.
+/// vdf_solution_output, difficulty]`. The VRF proof is exposed separately for
+/// the application-owned key/VRF leaf, while the Wesolowski solution and
+/// difficulty are consumed by Rust-owned DAG VDF verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DagVdfSortitionPayload {
     pub vrf_proof: [u8; 80],

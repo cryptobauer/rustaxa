@@ -2,7 +2,7 @@
 
 This is the mechanically checked live inventory for the consensus rewrite boundaries defined in `PLAN.md`. It records
 what exists, its current boundary, its named consumers, and its deletion condition. Implementation history belongs in
-git; actionable work belongs only in `doc/consensus_rewrite_tracker.md`.
+git; actionable work belongs in the normal issue/roadmap process.
 
 ## Classifications
 

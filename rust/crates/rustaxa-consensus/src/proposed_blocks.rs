@@ -298,12 +298,11 @@ impl ProposedBlocksService {
         })
     }
 
-    /// Creates an application runtime from explicit native compatibility parts.
+    /// Creates a proposed-block service from explicit native parts.
     ///
-    /// This temporary constructor supports bridge fixtures that compose PBFT
-    /// sibling state before the complete PBFT application owner moves native.
-    /// Storage-changing methods return `PBFT_SERVICE_STORAGE_UNAVAILABLE` when
-    /// `storage` is absent.
+    /// This constructor supports focused native fixtures. Storage-changing
+    /// methods return `PBFT_SERVICE_STORAGE_UNAVAILABLE` when `storage` is
+    /// absent; production construction supplies the application-owned storage.
     pub fn from_parts(storage: Option<Arc<Storage>>, blocks: ProposedBlocks) -> Self {
         Self {
             storage,
@@ -313,17 +312,16 @@ impl ProposedBlocksService {
 
     /// Borrows the proposed-block index for a composed PBFT operation.
     ///
-    /// This temporary escape hatch supports leader selection and combined
-    /// period cleanup until those cross-domain operations move into the native
-    /// PBFT application owner under CRW-12. It must not be used for standalone
-    /// persistence mutation.
+    /// This internal composition accessor supports native leader selection and
+    /// combined period cleanup. It must not be used for standalone persistence
+    /// mutation or exposed through CXX.
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, ProposedBlocks>> {
         self.blocks.read()
     }
 
     /// Mutably borrows the proposed-block index for a composed PBFT operation.
     ///
-    /// This has the same temporary cross-domain restriction as [`Self::read`].
+    /// This has the same internal composition restriction as [`Self::read`].
     pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, ProposedBlocks>> {
         self.blocks.write()
     }

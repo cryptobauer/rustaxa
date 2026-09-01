@@ -238,18 +238,18 @@ pub struct PbftSyncTransactionWarning {
 ///
 /// Purpose:
 /// - Lets Rust own deterministic cert-vote bundle shape and threshold checks
-///   without requiring C++ to pass live `PbftVote` objects across the boundary.
+///   without passing materialized `PbftVote` objects between services.
 ///
 /// Inputs:
-/// - C++ supplies canonical identity fields from the decoded vote sidecar.
-/// - `weight_present`, `weight`, and `live_vote_valid` are executor reports
-///   from the temporary VoteManager validation path.
+/// - The application-owned vote service supplies canonical identity fields.
+/// - `weight_present`, `weight`, and `live_vote_valid` are correlated
+///   verification facts.
 ///
 /// Invariants and edge behavior:
 /// - Rust treats missing weight, invalid live validation reports, mismatched
 ///   period/round/type/step, and wrong block hashes as bundle rejection facts.
-/// - Signature, VRF, and DPoS weight calculation remain VoteManager executor
-///   effects until Slice 8 moves those ports fully into Rust.
+/// - Signature/VRF custody remains an exact host leaf; Rust owns DPoS weight
+///   calculation, validation, and bundle admission.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftSyncCertVoteFact {
     /// Canonical vote hash for diagnostics.
@@ -264,23 +264,23 @@ pub struct PbftSyncCertVoteFact {
     pub step: u64,
     /// Stable vote-type code carried by the vote.
     pub vote_type: u8,
-    /// True when the VoteManager executor accepted the live vote check.
+    /// True when the native vote verifier accepted the vote.
     pub live_vote_valid: bool,
-    /// True when `weight` was materialized by the VoteManager executor.
+    /// True when the native vote service resolved `weight`.
     pub weight_present: bool,
-    /// Vote weight reported by the VoteManager executor.
+    /// Vote weight resolved by the native vote service.
     pub weight: u64,
 }
 
-/// Sync cert-vote bundle fact supplied by the PBFT manager shim.
+/// Native sync cert-vote bundle facts for deterministic validation.
 ///
 /// Inputs:
 /// - `block_period` and `block_hash` identify the synced PBFT block.
 /// - `votes` carries compact per-vote facts gathered from queued cert-vote
 ///   sidecars.
-/// - `check_weight_threshold` controls whether Rust should enforce
-///   `two_t_plus_one`; C++ uses a shape-only precheck before running live
-///   VoteManager validation, then a final threshold check after weights exist.
+/// - `check_weight_threshold` controls whether validation enforces
+///   `two_t_plus_one`; callers may perform a shape-only pass before native vote
+///   weights are resolved, then a final threshold pass afterward.
 ///
 /// Outputs are produced by [`validate_pbft_sync_cert_vote_bundle`].
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -293,7 +293,7 @@ pub struct PbftSyncCertVoteBundleFact {
     pub votes: Vec<PbftSyncCertVoteFact>,
     /// Whether Rust should validate `two_t_plus_one` and summed weights.
     pub check_weight_threshold: bool,
-    /// Whether C++ could load a `2t+1` threshold for the previous period.
+    /// Whether the native PBFT service resolved the previous-period threshold.
     pub two_t_plus_one_found: bool,
     /// Required summed cert-vote weight when `two_t_plus_one_found`.
     pub two_t_plus_one: u64,

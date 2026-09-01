@@ -53,8 +53,8 @@ Core rules:
 - Pure-C++ reference behavior remains available through the untouched upstream implementations and the
   all-Rust-disabled validation route. It does not require Rust-enabled production to expose matching internal classes.
 - New shims are exceptional. Before adding one, prove that a named external C++ client cannot use an existing query,
-  transport, execution, bootstrap, admin, signing, or VDF adapter. A temporary shim must have a tracker item, deletion
-  condition, and owner.
+  transport, execution, bootstrap, admin, signing, or VDF adapter. A temporary shim must have a normal roadmap issue,
+  deletion condition, and owner.
 - When a named external client still requires an upstream-owned C++ class, use the overlay shim pattern: header overlay
   plus a standalone facade, with the untouched implementation selected only for pure-C++ mode. Prefer this over
   scattered inline `#ifdef` edits.
@@ -297,61 +297,25 @@ Current Rust repositories include:
 - `TransactionRepository`
 
 This section and the current repository implementations are the storage coverage source of truth. Do not maintain a
-separate unchecked repository checklist: add a demonstrated storage gap to **Storage Gaps and Risks** and to the live
-queue in `doc/consensus_rewrite_tracker.md` only when it is actionable, then remove it when implementation and required
-validation land.
+separate unchecked repository checklist: record a demonstrated storage gap in **Storage Gaps and Risks** and the normal
+issue/roadmap process only when it is actionable, then remove it when implementation and required validation land.
 
-### Storage Gaps and Risks
+### Storage Boundary and Remaining Risks
 
-- Rust-mode `DbStorage` and its storage overlay are deleted. New production paths must derive operation-shaped services
-  from `ConsensusApplication` or bounded reads from `ConsensusQueryApi`; no general storage accessor may be added.
-- Snapshot, migration, and broad iterator/compaction admin operations remain explicitly unsupported in Rust mode until
-  a named operation-shaped task is justified. They must not be recreated as a general storage facade.
-- FinalChain external-EVM state, code visibility, account snapshots, execution, and contract-boundary behavior remain
-  broader non-storage PBFT/runtime gaps. Do not hide those gaps by falling back to legacy C++ storage behavior.
-- External-EVM system-transaction publication now requires a non-empty canonical RLP whose Keccak hash matches the
-  indexed hash. Recovery rejects legacy pending system-transaction markers that lack this payload; Rust-mode operators
-  must rebuild rather than silently publishing incomplete historical data.
-
-### Storage Sequencing
-
-1. Preserve parity for existing shimmed APIs until their callers move or are explicitly unsupported in Rust mode.
-2. Replace externally used public query/network APIs with Rust read APIs where those surfaces remain in scope.
-3. Delete compatibility batch and storage-shim helpers after tests, conformance fixtures, and public materialization
-   callers no longer require them.
-4. Keep admin/snapshot/migration/light maintenance in C++ unless the scope changes.
-5. Delete the marked admin/query compatibility points only after the owning caller moves to a Rust-owned query API,
-   lifecycle runtime, fixture, or explicit out-of-consensus executor.
-
-### DbStorage Compatibility Shell Status
-
-Goal: Rust-mode consensus should depend directly on `rustaxa-storage` or subsystem runtimes that own
-`Arc<rustaxa_storage::Storage>`. `DbStorage` may remain as a compatibility shell for legacy/reference builds, external
-C++ APIs, tests, and lifecycle/query surfaces, but it must not be the storage API used by migrated Rust consensus
-managers, planners, and runtimes.
-
-Status: migrated production consensus storage ownership and the CRW-06 classification closeout are complete for the
-audited storage families. Future cleanup is caller-owned compatibility retirement, not storage migration. Remove
-classified compatibility call sites and sidecar materialization boundaries only after their owners move, while
-preserving the storage-boundary guard so new production consensus routes cannot re-enter `DbStorage` or bridge batch
-ownership.
-
-Live storage boundary classifications and deletion conditions are recorded in
-`doc/consensus_bridge_shim_audit.md`; actionable new work belongs in `doc/consensus_rewrite_tracker.md`.
-
-Future cleanup should:
-
-1. Keep the native Rust ownership rule: Rust consensus runtimes use `Arc<rustaxa_storage::Storage>` and repository APIs
-   directly. Root-bound bridge adapters may clone the application's shared `Arc<Storage>`, but storage fact collection,
-   write ordering, idempotency, restart normalization, and durable commits belong in Rust.
-2. Replace public query/network compatibility reads with explicit Rust read APIs where those surfaces stay active in
-   Rust mode. Keep compatibility markers on any remaining `DbStorage` reads so they are auditable.
-3. Delete bridge batch helpers and storage-shim methods only after C++ tests, storage conformance fixtures, network/API
-   materialization, and lifecycle callers have moved or been explicitly declared unsupported in Rust mode.
-4. Continue moving FinalChain/EVM/account facts and executor reports into typed Rust ports. These are no longer blockers
-   for consensus storage ownership, but they still prevent deleting many surrounding C++ sidecars and query paths.
-5. Re-run the storage-boundary guard and targeted searches whenever storage compatibility is removed, and treat any
-   unclassified production consensus fallback to legacy C++ as a rewrite blocker.
+- Rust-mode `DbStorage`, bridge batches, and the storage overlay are deleted. Production paths derive operation-shaped
+  services from `ConsensusApplication` or bounded reads from `ConsensusQueryApi`; no general storage accessor may be
+  added.
+- Rust consensus runtimes own storage fact collection, atomic write ordering, idempotency, restart normalization, and
+  durable commits through `rustaxa-storage` repositories. Legacy `DbStorage` remains only in the pure-C++ reference
+  composition and classified external/test paths.
+- Snapshot, migration, and broad iterator/compaction administration remain unsupported in Rust mode until a named
+  operation-shaped task is justified. They must not be recreated as a general storage facade.
+- External-EVM system-transaction publication requires non-empty canonical RLP whose Keccak hash matches the indexed
+  hash. Recovery rejects legacy pending markers without that payload; operators must rebuild rather than publish
+  incomplete historical data.
+- Live classifications and deletion conditions are recorded in `doc/consensus_bridge_shim_audit.md`. Re-run the storage
+  boundary guard whenever a storage-adjacent path changes and treat any unclassified production fallback to legacy C++
+  as a blocker.
 
 Validation:
 
@@ -471,8 +435,8 @@ retain the untouched legacy RewardsStats header, source, and focused test.
     Rust reward stats into staged validator commission and delegator reward pools, credits the DPoS contract account with
     the minted total, lazily migrates part-one minted tokens exactly once into an explicit durable Aspen supply state,
     enforces monotonic restart provenance and the configured maximum supply, and writes typed header `total_reward`
-    from the Rust plan. Rust-backed FinalChain shim reads now expose DPoS total delegated, yield,
-    total supply, and read-only delegator reward pages backed by the persisted Rust reward-reference graph. The page
+    from the Rust plan. Bounded native FinalChain queries expose DPoS total delegated, yield, total supply, and read-only
+    delegator reward pages backed by the persisted Rust reward-reference graph. The page
     read preserves legacy insertion/removal ordering, wrapping offsets, widened gas calculation, and strict corruption
     handling without falling back to scalar reward state. Rust now executes delegator
     `claimRewards(address)`, validator-owner `claimCommissionRewards(address)`, validator-owner metadata/commission
@@ -515,80 +479,31 @@ retain the untouched legacy RewardsStats header, source, and focused test.
     `getJailBlock(address)` and `getJailedValidators()` are Rust-backed both through `FinalChain::call` and as finalized
     native transactions. Recognized read transactions charge the legacy fixed action gas, retain successful value at
     the slashing account, emit no logs, and leave its nonce unchanged; malformed and out-of-gas reads roll value back.
-  - The `CRW-E01` application-root cut supersedes the former C++-driven session boundary: `ConsensusApplication` now
+  - The application-root execution cut supersedes the former C++-driven session boundary: `ConsensusApplication` now
     owns system-transaction/rewards planning, concrete-EVM sequencing, result/receipt/root validation, durable pending
     recovery ordering, state-commit approval, and FinalChain publication. C++ retains exact typed StateAPI leaves only;
     the broad execution API/session handles, factories, C++ action loop, and consensus materializers are deleted.
-    `CRW-E02` now uses one eager concrete-state policy: StateAPI executes every Rust-mode finalized period and its
-    committed post-rewards root is the canonical header root, including genesis. Rust binds prior, post-transaction,
-    post-rewards, and committed descriptors through the version-one concrete execution/provenance contract and the
-    version-three pending-publication marker. It independently replays Rust-supported transfers, DPoS, and slashing
+    The concrete-root rollout uses one eager concrete-state policy: StateAPI executes every Rust-mode finalized period
+    and its committed post-rewards root is the canonical header root, including genesis. Rust binds prior,
+    post-transaction, post-rewards, and committed descriptors through the version-one concrete execution/provenance
+    contract and the version-three pending-publication marker. It independently replays Rust-supported transfers, DPoS,
+    and slashing
     against ordered per-transaction concrete effects, including native actions after arbitrary EVM work. Exact rewards
     retries are idempotent; Rust checks the reported minted total and final DPoS contract balance after minted/fee
     credits. Reward-only DPoS rows are projected, zero configured yield disables rewards, and period zero
     is an explicit genesis activation while `u64::MAX` disables Aspen part two or Cacti in local fixtures. Concrete-root
     policy version one is paired across Rust storage and `state_db`. Markerless/synthetic history fails with
     `FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED`; `--rebuild-db` preserves the old pair in a timestamped backup and
-    starts a clean full-resync database instead of rewriting finalized hashes or falling back. `CRW-E02` is complete:
-    native differential tests cover transfer, DPoS, slashing, system/reward, arbitrary-EVM, marker/commit/publication
-    crash windows, and staged-state rejection, while the reproducible five-node Python gate proves timestamped rebuild,
-    clean full resync, graceful/crash restart, mixed-lane finalization, and exact state/transaction/receipt/header/finalized-
+    starts a clean full-resync database instead of rewriting finalized hashes or falling back. Deployment evidence is
+    complete: native differential tests cover transfer, DPoS, slashing, system/reward, arbitrary-EVM,
+    marker/commit/publication crash windows, and staged-state rejection, while the reproducible five-node Python gate
+    proves timestamped rebuild, clean full resync, graceful/crash restart, mixed-lane finalization, and exact
+    state/transaction/receipt/header/finalized-
     hash agreement. The Rust-mode `FinalChain` facade and `final_chain_shim` are deleted: one private
     `ExternalEvmStateOwner` is constructed at application bootstrap and serves exact finalization, account/code/storage/
     call, trace, prune, descriptor, commit, and discard operations. Native DPoS/slashing calls remain authoritative on
     the bounded query client; arbitrary EVM calls remain physical StateAPI operations. No CXX StateAPI handle, session,
-    action loop, range executor, service locator, or C++ publication authority exists. The following paragraph records the
-    superseded pre-`CRW-E01` checkpoint for history.
-  - Historical checkpoint: FinalChain native execution was behind a Rust-owned `FinalChainExecutionRuntime` session boundary. The
-    C++ FinalChain shim now builds the session request directly, asks Rust for the next execution step, and commits only
-    when Rust returns a native commit action. Native value transfers plus the supported DPoS/slashing precompile subset
-    still commit through the existing Rust FinalChain finalizer. Arbitrary EVM contract calls and contract creation now
-    surface as typed external-EVM execution requests in the runtime session API rather than being treated as
-    FinalChain-owned execution. When that boundary is needed, Rust now exposes the full ordered bridge-provided
-    transaction stream in the EVM request rather than only the contract-call subset, while still reporting the count of
-    transactions that require arbitrary EVM execution. EVM reports must cover that same full ordered request and validate
-    request identity, transaction order, cumulative gas, typed receipt status, and basic receipt shape. External-EVM
-    sessions now request bridge-contract system transaction facts before emitting the EVM request, plan canonical
-    `finalizeEpoch()` system transaction RLPs in Rust from those facts, decode the planned RLPs with the fixed Taraxa
-    system sender, append them after regular period transactions, and include them in the EVM request identity and
-    transaction roots. A valid EVM report now advances to a Rust-owned
-    rewards/state-root boundary, and a valid rewards report builds a non-mutating external EVM commit plan with
-    transaction/receipt trie roots, header and indexed log blooms, receipt payloads, gas, post-rewards state root, total
-    reward, regular/system transaction counts, and execution counters. Rust can also derive a non-mutating publication
-    plan with stored/full header RLP, block hash, receipt payloads, transaction-location/receipt publication facts, and
-    period system-transaction hash RLP. The publication plan has a deterministic plan id. Rust now validates a separate
-    external EVM state-commit intent against the request id, plan id, post-execution root, post-rewards root, period,
-    and publication block hash before C++ may call `StateAPI::transition_state_commit`; only after C++ reports a matching
-    committed staged-state lifecycle does Rust store a typed ready-to-publish decision and expose an explicit
-    storage-publication session action. The session-scoped Rust publication API consumes the stored plan and decision,
-    recomputes the plan id, validates the current FinalChain head, and applies the external-EVM FinalChain storage rows
-    in one Rust-owned batch: stored header, receipt-by-period, hash/number indexes, receipt-by-transaction hash,
-    transaction locations, bloom-index chunks, executed counters, period system-transaction hashes, rewards-stat cache
-    mutation, and `LAST_NUMBER` last. This publication API still does not execute EVM or call `StateAPI`. The Rust-mode
-    C++ FinalChain shim now owns the temporary external-EVM executor adapter for arbitrary contract calls and contract
-    creation: it collects bridge-contract system transaction
-    facts through `StateAPI`, executes the ordered EVM request through the existing C++ `StateAPI`, reports EVM
-    receipts/logs and rewards/state-root facts back to Rust, requests Rust's state-commit intent before committing the
-    staged `StateAPI` state, and then reports only the external state-commit result status plus diagnostic text to Rust.
-    Rust derives the lifecycle facts from the session-owned intent and commit plan, returns the ready-to-publish decision
-    only for committed outcomes, clears the pending marker only for explicit discarded outcomes, and keeps rejected or
-    ambiguous commit-call failures durable for startup recovery. The C++ shim calls the session-scoped Rust publication
-    API only after Rust's next action asks for storage publication. Ready publication decisions carry a Rust-generated
-    decision id derived from the post-commit lifecycle facts, so intent-shaped or hand-built decisions are rejected before
-    storage mutation. Rust remains the authority for request identity, report validation, header/root/bloom derivation,
-    state-commit intent validation, lifecycle decision validation, explicit discard/reject handling, rewards-stat cache
-    persistence, and FinalChain storage publication. Rust persists a Rust-owned pending-publication marker before the C++
-    `StateAPI` staged-state commit call; startup recovery compares that marker with
-    `StateAPI::get_last_committed_state_descriptor()` and only replays publication when the committed period and
-    post-rewards state root match exactly. Successful live or recovered publication clears the marker in the same
-    Rust-owned storage batch as `LAST_NUMBER`. Rust now also exposes a read-only external-EVM publication audit for
-    parity coverage; bridge tests use it after live publication, restart recovery, ambiguous rejected-then-recovered
-    publication, representative call/create/failure receipt transcripts, and Rust-planned system-transaction publication
-    to verify the stored header, full header hash, hash indexes, receipt rows, transaction indexes, bloom leaf, system
-    transaction hash row, and pending-marker clearance match the Rust publication plan. Native Rust finalization
-    now publishes transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block
-    visibility and `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before
-    those indexes.
+    action loop, range executor, service locator, or C++ publication authority exists.
   - PBFT manager fact collection now connects directly to the Rust FinalChain runtime for PBFT final-chain hash lookup
     and validation, total eligible vote counts, per-wallet eligible vote counts, and wallet eligibility refresh. Missing
     delayed headers or DPoS snapshots are returned to PBFT as typed Rust facts instead of re-centering those consensus
@@ -625,111 +540,24 @@ retain the untouched legacy RewardsStats header, source, and focused test.
     counts including legacy inflation/orphans, incomplete-history provenance, stale live-or-missing heads, and exact
     reward arithmetic. Schemas through 23 fail closed for graph-dependent behavior pending replay/rebuild. Native and
     direct `getDelegations(address,uint32)` routing, including paging, graph rewards, corruption handling, and restart
-    parity, is complete. `CRW-08` current-ABI FinalChain/DPoS parity is closed; historical snapshot replay/rebuild remains
+    parity, is complete. Current-ABI FinalChain/DPoS parity is closed; historical snapshot replay/rebuild remains
     an explicit deployment boundary rather than a legacy execution fallback.
-- Unimplemented public shim methods never fall back to legacy FinalChain behavior. `getAccountStorage`, `getCode`, `call`,
-  `getBridgeRoot`, `getBridgeEpoch`, and `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has
-  been committed by the Rust-mode executor adapter; otherwise they use the Rust FinalChain path where implemented or
-  throw explicit Rust-shim gaps. Bridge root/epoch reads return zero when the configured bridge contract has no committed
-  code, preserving native/no-bridge execution without claiming external-EVM state support. `prune` and private
-  `finalize_` remain explicit Rust-shim gaps. `waitForFinalized` remains a no-op because the Rust shim finalization path
-  is synchronous and returns a ready future.
+### FinalChain Persisted and External-State Boundaries
 
-### FinalChain Storage Touchpoints
+Rust storage owns FinalChain headers, hash/number indexes, receipts, transaction locations, bloom indexes, executed
+counters, rewards statistics, concrete-root provenance, and publication markers. Publication applies the complete
+visibility batch atomically and advances the finalized head last.
 
-FinalChain currently depends on:
+One application-owned `ExternalEvmStateOwner` retains the concrete `StateAPI` lifetime behind exact finalization,
+account, code, storage, call, trace, prune, descriptor, commit, and discard operations. Rust owns request identity,
+transaction/native-action ordering, rewards planning, result validation, commit approval, recovery, and publication.
+There is no Rust-mode FinalChain facade, shim, CXX StateAPI handle, C++-driven execution session, range executor,
+service locator, or C++ publication authority. Native Rust may use internal typed sessions as implementation details.
 
-- `final_chain_meta`
-- `final_chain_blk_by_number`
-- `final_chain_blk_hash_by_number`
-- `final_chain_blk_number_by_hash`
-- `final_chain_receipt_by_period`
-- `final_chain_receipt_by_trx_hash`
-- `final_chain_log_blooms_index`
-- `StatusDbField::ExecutedBlkCount`
-- `StatusDbField::ExecutedTrxCount`
-- period and transaction helpers from `DbStorage`
-- batch writes and maintenance paths such as snapshots/compaction
-- state execution through `StateAPI` / `taraxa-evm`
-
-### FinalChain Sequencing
-
-1. Keep Rust-backed read/index, transaction, receipt, bloom, account snapshot, DPoS snapshot, and PBFT fact-collection
-   parity stable.
-2. Continue finalization/write path parity beyond the currently supported native-transfer, DPoS mutation/read, rewards,
-   bloom, slashing, and FinalChain execution-session subset. The external-EVM storage publication batch is now
-   Rust-owned behind an explicit session action, and the Rust-mode compatibility finalizer now reaches it through the
-   shim-owned C++ external-EVM executor adapter. The current EVM session plans period bridge-contract system transaction
-   RLPs in Rust from C++ `StateAPI` facts and includes them in request/publication facts; Rust still needs
-   bridge-contract state reads before C++ can stop collecting those facts.
-3. Keep EVM execution outside FinalChain while completing the external executor port: request construction, report
-   validation, Rust-owned system-transaction planning from bridge facts, rewards/state-root reporting, non-mutating
-   commit/publication-plan derivation, two-phase state-commit intent/lifecycle validation, and session-gated one-batch
-   storage publication are Rust-owned, including rewards-stat cache persistence and explicit committed/discarded/rejected
-   state-commit result handling; the temporary C++ adapter still owns `StateAPI` fact collection, `StateAPI` execution,
-   rewards distribution, and the actual staged-state commit call. The current shim persists a Rust pending-publication
-   marker before the staged-state commit, reports only the external commit result status and diagnostic text, and lets
-   Rust either publish, clear a discarded marker, or retain an ambiguous rejected marker for startup recovery based on the
-   committed `StateAPI` descriptor. Rust bridge tests now audit live, recovered, and representative transcript
-   publications against the persisted FinalChain rows, including call/create/failure receipts, log blooms, full-header
-   bytes, transaction-location rows, and Rust-planned system transactions. A future broader C++ live-differential fixture
-   can compare legacy executor output against the same Rust publication transcript API without moving EVM execution into
-   Rust.
-4. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, and broader
-   state trie/code/storage recovery.
-5. Replace neutral placeholder shim methods with Rust implementations or explicit throwing stubs as their callers are
-   migrated.
-6. Defer broader StateAPI, bridge-heavy APIs, pruning, snapshots, and state-transition boundaries until the external
-   EVM execution port is ready to carry those results without re-centering behavior in C++.
-
-High-risk APIs:
-
-- `finalize` / `finalize_`
-- `prune`
-- `updateStateConfig`
-- `call`
-- `trace`
-- state and non-genesis DPoS query surfaces that depend on EVM/state integration
-
-## FinalChain Domain Type Backlog
-
-P0 done:
-
-- `StoredFinalChainBlockHeader`
-- `FinalChainBlockHeader`
-- `BlockHeaderContext`
-- `FinalChainBlockHeaderBuilder`
-- `PbftBlockMetadata`
-- `LegacyBlockHeaderRlpInput`
-- `LegacyBlockHeaderRlp`
-
-P0 todo:
-
-- `NewBlock`
-- `FinalizationResult`
-- `BlocksBlooms`
-- `LogEntry`
-- `TransactionReceipt`
-- `TransactionLocation`
-- core State API payloads: `EVMBlock`, `EVMTransaction`, `LogRecord`, `ExecutionResult`, `TransactionsExecutionResult`, `RewardsDistributionResult`, `Account`, `StateDescriptor`, `Tracing`
-
-P1 todo:
-
-- `ValidatorStake`
-- `ValidatorVoteCount`
-
-P2 later:
-
-- bridge-specific payload wrappers for `getBridgeRoot` and `getBridgeEpoch` if these reads move beyond the current
-  committed-StateAPI executor boundary
-- optional trace/debug JSON adapters if the trace path is migrated
-
-Recommended introduction order:
-
-1. Receipt/location and block-header data model types.
-2. Core state API execution result types.
-3. Finalization result aggregation types.
-4. DPoS validator query types.
+Historical databases without the paired concrete-root provenance marker fail closed and require the timestamped
+backup/full-resync path. Changes to FinalChain persistence, concrete execution, DPoS/slashing, receipts, roots, tracing,
+or pruning require the applicable native tests, current-source pure-C++ differential, restart/recovery coverage, and
+full-node gate in `doc/rewrite_validation_strategy.md`.
 
 ## Consensus Rewrite Plan
 
@@ -742,8 +570,8 @@ Native Rust consensus gap closeout:
 
 - The native Rust consensus campaign is complete for the authorized consensus, network-planning, execution-
   orchestration, and concrete-root scope. Stable ownership rules live here, retained boundaries live in
-  `doc/consensus_bridge_shim_audit.md`, and only actionable new work belongs in
-  `doc/consensus_rewrite_tracker.md`; do not recreate a gap-plan document for completed scope.
+  `doc/consensus_bridge_shim_audit.md`, and actionable new work belongs in the normal issue/roadmap process; do not
+  recreate a gap-plan document for completed scope.
 - Rust owns consensus rules, durable consensus state, restart normalization, storage/query selection, canonical payload
   retention, validation decisions, lifecycle command selection where it affects consensus behavior, scheduler/timer
   policy, ordered side-effect planning, and typed executor-result validation.
@@ -835,10 +663,10 @@ operation-specific DTOs may cross when owned by a named leaf or public client. T
 only at that leaf and must not become authoritative state or a manager-to-manager protocol.
 
 Migration proceeds by vertical subsystem checkpoint rather than a global preparation waterfall. Once the native owner
-for a PBFT, DAG/transaction, network, or execution family exists, the same checkpoint may perform its `CRW-12` owner
-move, `CRW-14` facade deletion, `CRW-15` materialization removal, `CRW-16` shim contraction, and applicable `CRW-17`
-boundary narrowing together. It need not wait for unrelated subsystems to finish those items globally. Every checkpoint
-must still leave Rust mode buildable, retain the pure-C++ reference route, and satisfy the validation strategy.
+for a PBFT, DAG/transaction, network, or execution family exists, the same checkpoint should combine its owner move,
+facade deletion, materialization removal, shim contraction, and boundary narrowing. It need not wait for unrelated
+subsystems to finish. Every checkpoint must still leave Rust mode buildable, retain the pure-C++ reference route, and
+satisfy the validation strategy.
 
 ### External Consensus Facade Boundaries
 
@@ -854,9 +682,9 @@ handles, mutable sidecars, storage iterators, `DbStorage`, `StateAPI`, or intern
 | Public reads | `ConsensusQueryApi` | Stable read-only consensus DTOs backed by Rust storage and query logic | RPC/GraphQL/plugin formatting, live network/admin views, and public C++ object materialization where still required |
 
 C++ adapters may execute or format these contracts, but they must not recreate consensus decisions from returned facts.
-Residual adapter classifications and deletion conditions belong in `doc/consensus_bridge_shim_audit.md`; create a
-tracker item only when a named client can migrate or a correctness gap is demonstrated. Exact DTOs and methods are
-owned by the Rust facade modules and their bridge tests rather than by a separate touchpoint inventory.
+Residual adapter classifications and deletion conditions belong in `doc/consensus_bridge_shim_audit.md`; open a normal
+roadmap item only when a named client can migrate or a correctness gap is demonstrated. Exact DTOs and methods are owned
+by the Rust facade modules and their bridge tests rather than by a separate touchpoint inventory.
 
 Signing, VDF, concrete gas estimation, and best-effort public observation remain operation-specific leaf calls rather
 than shared service facades. Host thread, timer, sleep, and process mechanics may remain as Rust-commanded executors,
@@ -869,9 +697,8 @@ Rules:
 - Temporary Rust-mode gaps must be explicit shim-local defaults, no-ops, or tracked unimplemented paths.
 - Temporary guarded touches to upstream-owned C++ files should be removed once a complete native route can own
   Rust-mode behavior. The PBFT application runtime now owns the former manager pillar-vote sync hook; original
-  `pbft_manager.cpp` stays clean versus `upstream-main`; the manager/materialization work under `CRW-15`/`CRW-16` is
-  complete; the private FinalChain facade is deleted under completed `CRW-17`, leaving only the classified concrete
-  StateAPI leaf operations.
+  `pbft_manager.cpp` stays clean versus `upstream-main`; manager/materialization removal is complete; the private
+  FinalChain facade is deleted, leaving only the classified concrete StateAPI leaf operations.
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep only physical network and OS-thread mechanics in C++; consensus callbacks, queues, routing, and orchestration move
   to the Rust application service.
@@ -981,14 +808,14 @@ continues reward admission without a C++ hash-decision branch or standalone vali
 
 ## Consensus Rewrite Closeout
 
-The authorized consensus rewrite campaign is complete through CRW-18. Native Rust owns consensus state, protocol
+The authorized consensus rewrite campaign is complete. Native Rust owns consensus state, protocol
 planning, scheduling, persistence, finalization/publication authority, network inspection/routing/selection, concrete-
 root validation/recovery, and bounded public query/mutation semantics. C++ remains only at the named external leaves in
 `doc/consensus_bridge_shim_audit.md`: process mechanics, signing, VDF, physical tarcap transport, concrete EVM/
 `state_db`, public-client formatting, administration, conformance, and the pure-C++ reference composition.
 
 The live bridge inventory and its guard are the deletion authority for retained CXX modules, functions, carriers,
-handles, factories, and consumers. The live queue in `doc/consensus_rewrite_tracker.md` is empty after closeout. New work
+handles, factories, and consumers. No repository-local consensus campaign queue remains after closeout. New work
 requires a demonstrated correctness/parity gap, a named client migration, or explicit authorization to move an external
-boundary native; line-count reduction alone is not a roadmap item. Completed slice sequencing and implementation history
-remain available in git and must not be recreated as planning documents.
+boundary native through the normal issue/roadmap process; line-count reduction alone is not a roadmap item. Completed
+slice sequencing and implementation history remain available in git and must not be recreated as planning documents.

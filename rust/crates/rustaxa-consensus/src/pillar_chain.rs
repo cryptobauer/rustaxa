@@ -673,9 +673,9 @@ pub fn save_own_pillar_block_vote_storage(storage: &Storage, vote_rlp: &[u8]) ->
 /// - Writes the finalized pillar-block row for `period`.
 ///
 /// Invariants and edge behavior:
-/// - This helper owns only finalized pillar-block persistence. Above-threshold
-///   vote lookup, event emission, and live finalized/current mirrors remain at
-///   the shim boundary until the full manager executor moves to Rust.
+/// - This helper owns only finalized pillar-block persistence. The native
+///   pillar services own vote lookup and current/finalized state; application
+///   observers own post-ack event delivery.
 /// - Empty block payloads are rejected to avoid creating an undecodable pillar
 ///   block record.
 pub fn save_finalized_pillar_block_storage(
@@ -703,8 +703,8 @@ pub fn save_finalized_pillar_block_storage(
 ///   no own vote is stored.
 ///
 /// Invariants and edge behavior:
-/// - This helper owns only the storage read. C++ still decodes and hydrates the
-///   live `PillarVote` object until pillar vote materialization moves to Rust.
+/// - This helper owns only the storage read. Native pillar services decode and
+///   validate the canonical vote bytes.
 pub fn load_own_pillar_block_vote_storage(storage: &Storage) -> Result<Vec<u8>> {
     Ok(storage
         .pillar()

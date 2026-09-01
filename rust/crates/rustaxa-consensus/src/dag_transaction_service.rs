@@ -78,8 +78,8 @@ pub struct DagTransactionServiceConfig {
 ///
 /// Every sibling receives the same `Arc<Storage>`. The root owns construction,
 /// restoration, lifetime, and cross-domain lock domains. Its lock accessors are
-/// a temporary CRW-12 Rust-only escape hatch for bridge task adapters and never
-/// expose raw mutexes or guards through CXX.
+/// a Rust-only application-composition boundary and never expose raw mutexes or
+/// guards through CXX.
 pub struct DagTransactionService {
     transaction: TransactionService,
     dag: DagService,

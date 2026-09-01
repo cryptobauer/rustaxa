@@ -430,10 +430,10 @@ pub struct TransactionServiceConfig {
 /// Complete mutable transaction application state.
 ///
 /// The state is published only inside [`TransactionService`] after transaction
-/// count and gas-history restoration succeed. Its public fields are a temporary
-/// CRW-12 bridge escape hatch for short-lived Rust adapters; callers must hold a
-/// [`TransactionServiceGuard`] and must not retain references across external
-/// executor callbacks.
+/// count and gas-history restoration succeed. Its public fields are an internal
+/// application-composition surface; callers must hold a [`TransactionServiceGuard`]
+/// and must not retain references across external executor callbacks or expose
+/// them through CXX.
 pub struct TransactionServiceState {
     /// Live transaction count, payload sidecars, and gas-estimation cache.
     pub sidecar: TransactionManagerSidecar,
@@ -1037,8 +1037,8 @@ impl TransactionServiceState {
 
     /// Restores the complete state used by [`TransactionService`].
     ///
-    /// This is public only for the temporary bridge adapter and its focused
-    /// mechanics tests. Production publication must use
+    /// This constructor is exposed for focused native mechanics tests.
+    /// Production publication must use
     /// [`TransactionService::restore`] so a partially restored state cannot
     /// escape without its native lock owner.
     pub fn restore(storage: Arc<Storage>, config: TransactionServiceConfig) -> Result<Self> {

@@ -1,7 +1,7 @@
 # Rewrite Validation Strategy
 
-This document is the source of truth for validating Rust rewrite work. Use it with the live gaps in
-`doc/consensus_rewrite_tracker.md` and the repeatable Makefile targets in the repository root.
+This document is the source of truth for validating Rust rewrite work. Use it with the ownership boundaries in
+`PLAN.md`, the live bridge inventory, and the repeatable Makefile targets in the repository root.
 
 The default rule for existing and new rewrites is:
 
@@ -79,8 +79,8 @@ application-root lifecycle/query-client PBFT sync integration case. Insufficient
 `pbft_sync::tests::cert_vote_bundle_rejects_bad_shape_and_threshold` test, replacing the legacy fixture that mutated the
 C++ chain facade directly.
 
-The target tolerates CMake targets that are unavailable in the configured build. A skipped test that the tracker
-Validation Matrix or the changed boundary requires is a validation gap and does not satisfy Tier 2. Reconfigure the
+The target tolerates CMake targets that are unavailable in the configured build. A skipped test that this validation
+policy or the changed boundary requires is a validation gap and does not satisfy Tier 2. Reconfigure the
 build, run the required test directly, or report the unresolved gap; do not treat the aggregate target's zero exit status
 as sufficient by itself.
 
@@ -203,9 +203,9 @@ intersection, or otherwise high-risk rewrite changes.
   This runs the complete FinalChain differential first, then the focused Python 3.11 full-node gate for mixed native
   transfer and arbitrary-EVM finalization, graceful and crash restart, timestamped paired-database rebuild, clean full
   resync, and multi-node header/root/hash agreement. `tests/py/run.sh` accepts `PYTHON_BIN` for an explicit Python 3.11
-  executable. A missing interpreter or unavailable full-node dependency is a validation gap, not a pass. Keep
-  `CRW-E02` active until this gate and the native DPoS/slashing/reward differential evidence all pass; never substitute
-  an in-place synthetic-history rewrite or a link-only smoke test.
+  executable. A missing interpreter or unavailable full-node dependency is a validation gap, not a pass. Treat the
+  concrete-root boundary as non-deployable until this gate and the native DPoS/slashing/reward differential evidence all
+  pass; never substitute an in-place synthetic-history rewrite or a link-only smoke test.
 
   The 2026-09-01 closeout passed this composite gate and the complete two-test, five-node Python suite. The runner pins
   Python dependencies and downloads Solidity 0.6.12 only by a fixed URL and SHA-256, so a clean environment can
@@ -240,7 +240,7 @@ New Rust production routing requires:
 C++ tests may be disabled, removed, or retargeted when they block retiring legacy C++ behavior, old object
 materialization, or shim scaffolding. That is acceptable only after equivalent or stronger Rust module coverage exists for
 the behavior that moved. If parity depends on the CXX bridge, bridge-level Rust tests or focused Rust-enabled shim tests
-must replace the lost C++ signal. Closeout notes or tracker updates must state why the old C++ test no longer describes
+must replace the lost C++ signal. Closeout notes or change records must state why the old C++ test no longer describes
 target Rust-mode behavior.
 
 Tests do not justify retaining a production CXX export, compatibility constructor, partial-service factory, or
@@ -248,12 +248,11 @@ manager-shaped shim. Move behavioral coverage to the native owner and retain onl
 error-mapping, or explicitly allowlisted conformance coverage at the bridge. Validate deletion by combining last-caller
 searches, bridge inventory checks, feature-on subsystem tests, and the pure-C++ route when source selection changes.
 
-For consensus work, unresolved work and parity gaps live in the **Remaining Consensus Work Queue** in
-`doc/consensus_rewrite_tracker.md`. The applicable validation tiers and composite gates live in this document. Detailed
-edge cases should live beside the owning Rust
+For consensus work, unresolved work and parity gaps belong in the normal issue/roadmap process. The applicable
+validation tiers and composite gates live in this document. Detailed edge cases should live beside the owning Rust
 module tests, bridge fixtures, or focused C++ suite. Do not preserve a separate pre-routing checklist after a route has
-landed; when a touched behavior still lacks a reusable parity fixture, record that concrete gap in the tracker and add
-the fixture before changing production authority.
+landed; when a touched behavior still lacks a reusable parity fixture, record that concrete gap and add the fixture
+before changing production authority.
 
 Temporary Rust shim defaults must be tracked and tested as explicit temporary behavior. They should not be hidden by
 delegation to legacy C++ implementation paths.
@@ -261,9 +260,9 @@ delegation to legacy C++ implementation paths.
 For storage-retirement work, `make rewrite-storage-boundary-guard` is a regression guard for newly added Rust-mode C++
 storage routes. A passing guard means the current diff did not introduce unreviewed `DbStorage`, `db_`, C++ batch,
 `rustStorage`, or `rustBatchId` usage outside allowlisted compatibility areas. It does not mean all pre-existing
-`BridgeStorage` or `DbStorage` routes have been eliminated; actionable removal work and debt belong in
-`doc/consensus_rewrite_tracker.md`, live classifications and deletion conditions belong in
-`doc/consensus_bridge_shim_audit.md`, and elimination must be verified by targeted call-site searches.
+`BridgeStorage` or `DbStorage` routes have been eliminated; actionable removal work and debt belong in the normal
+issue/roadmap process, live classifications and deletion conditions belong in `doc/consensus_bridge_shim_audit.md`, and
+elimination must be verified by targeted call-site searches.
 
 For post-migration consensus storage cleanup, use the guard plus targeted audits for `DbStorage`, `db_->`, `getDB()`,
 `rustStorage`, `createWriteBatch`, `commitWriteBatch`, `rustBatchId`, bridge-batch appenders, and direct FinalChain
