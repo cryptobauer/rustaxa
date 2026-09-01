@@ -169,7 +169,11 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
     if (!node) {
       throw std::runtime_error("LIGHT_HISTORY_API_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    node->getConsensusApplication()->pruneFinalChain(prune_block_num);
+#else
     node->getFinalChain()->prune(prune_block_num);
+#endif
   };
   return api;
 }

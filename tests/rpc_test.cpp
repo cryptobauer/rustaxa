@@ -104,15 +104,18 @@ void bindFinalChainReaders(net::rpc::eth::EthParams& params, const std::shared_p
   };
   log_replay.transaction_receipts_by_block_number = params.query_transaction_receipts_by_block_number;
   params.query_log_replay = std::move(log_replay);
-  const auto final_chain = node->getFinalChain();
-  params.query_account = [final_chain](const auto& address, auto block_number) {
-    return final_chain->getAccount(address, block_number);
+  const auto application = node->getConsensusApplication();
+  params.query_account = [application](const auto& address, auto block_number) {
+    return application->getAccount(address, block_number);
   };
-  params.query_account_storage = [final_chain](const auto& address, const auto& key, auto block_number) {
-    return final_chain->getAccountStorage(address, key, block_number);
+  params.query_account_storage = [application](const auto& address, const auto& key, auto block_number) {
+    return application->getAccountStorage(address, key, block_number);
   };
-  params.query_account_code = [final_chain](const auto& address, auto block_number) {
-    return final_chain->getCode(address, block_number);
+  params.query_account_code = [application](const auto& address, auto block_number) {
+    return application->getCode(address, block_number);
+  };
+  params.query_call = [application](const auto& transaction, auto block_number) {
+    return application->call(transaction, block_number);
   };
 }
 #endif
@@ -137,14 +140,9 @@ TEST_F(RPCTest, eth_syncing_uses_live_status_reader) {
   EXPECT_EQ(dev::toJS(9), syncing["highestBlock"].asString());
 }
 
-TEST_F(RPCTest, graphql_syncing_uses_live_status_reader) {
-  graphql::taraxa::SyncState sync_state(
-      nullptr, {}, [] { return 6; },
-      [] {
-        net::LiveStatusSnapshot snapshot;
-        snapshot.max_peer_pbft_chain_size = 12;
-        return snapshot;
-      });
+TEST_F(RPCTest, graphql_syncing_uses_reader_api) {
+  graphql::taraxa::SyncState sync_state(graphql::taraxa::SyncStateReader{
+      [] { return 6; }, []() -> std::optional<uint64_t> { return 12; }});
 
   EXPECT_EQ(0, sync_state.getStartingBlock().get<int>());
   EXPECT_EQ(6, sync_state.getCurrentBlock().get<int>());
@@ -1117,9 +1115,10 @@ TEST_F(RPCTest, eth_estimateGas) {
   net::rpc::eth::EthParams eth_rpc_params;
   eth_rpc_params.chain_id = node_cfg.front().genesis.chain_id;
   eth_rpc_params.gas_limit = node_cfg.front().genesis.dag.gas_limit;
-  eth_rpc_params.final_chain = nodes.front()->getFinalChain();
 #ifdef RUSTAXA_ENABLE
   bindFinalChainReaders(eth_rpc_params, nodes.front());
+#else
+  eth_rpc_params.final_chain = nodes.front()->getFinalChain();
 #endif
   auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
 
@@ -1171,14 +1170,14 @@ TEST_F(RPCTest, eth_estimateGas) {
 TEST_F(RPCTest, eth_call) {
   auto node_cfg = make_isolated_node_cfgs(1);
   auto nodes = launch_nodes(node_cfg);
-  const auto final_chain = nodes.front()->getFinalChain();
-
   net::rpc::eth::EthParams eth_rpc_params;
   eth_rpc_params.chain_id = node_cfg.front().genesis.chain_id;
   eth_rpc_params.gas_limit = node_cfg.front().genesis.dag.gas_limit;
-  eth_rpc_params.final_chain = final_chain;
 #ifdef RUSTAXA_ENABLE
   bindFinalChainReaders(eth_rpc_params, nodes.front());
+#else
+  const auto final_chain = nodes.front()->getFinalChain();
+  eth_rpc_params.final_chain = final_chain;
 #endif
   auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
 
@@ -1337,16 +1336,17 @@ TEST_F(RPCTest, eth_getBlock) {
   net::rpc::eth::EthParams eth_rpc_params;
   eth_rpc_params.chain_id = node_cfg.front().genesis.chain_id;
   eth_rpc_params.gas_limit = node_cfg.front().genesis.dag.gas_limit;
-  eth_rpc_params.final_chain = nodes.front()->getFinalChain();
 #ifdef RUSTAXA_ENABLE
   bindFinalChainReaders(eth_rpc_params, nodes.front());
+#else
+  eth_rpc_params.final_chain = nodes.front()->getFinalChain();
 #endif
   auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
 
   wait({10s, 500ms}, [&](auto& ctx) {
 #ifdef RUSTAXA_ENABLE
-    WAIT_EXPECT_EQ(ctx, 5,
-                   (*nodes[0]->getConsensusApplication()->queryClient())->consensus_query_final_chain_last_block_number());
+    WAIT_EXPECT_EQ(
+        ctx, 5, (*nodes[0]->getConsensusApplication()->queryClient())->consensus_query_final_chain_last_block_number());
 #else
     WAIT_EXPECT_EQ(ctx, 5, nodes[0]->getFinalChain()->lastBlockNumber());
 #endif
@@ -1363,9 +1363,10 @@ TEST_F(RPCTest, eip_1898) {
   net::rpc::eth::EthParams eth_rpc_params;
   eth_rpc_params.chain_id = node_cfg.front().genesis.chain_id;
   eth_rpc_params.gas_limit = node_cfg.front().genesis.dag.gas_limit;
-  eth_rpc_params.final_chain = nodes.front()->getFinalChain();
 #ifdef RUSTAXA_ENABLE
   bindFinalChainReaders(eth_rpc_params, nodes.front());
+#else
+  eth_rpc_params.final_chain = nodes.front()->getFinalChain();
 #endif
   auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
 

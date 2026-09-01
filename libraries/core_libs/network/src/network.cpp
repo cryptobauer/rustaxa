@@ -70,10 +70,11 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
                  std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
                  std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
 #endif
-                 std::shared_ptr<final_chain::FinalChain> final_chain
 #ifdef RUSTAXA_ENABLE
-                 ,
+                 SharedConsensusApplication consensus_application,
                  network::ConsensusNetworkApiShared consensus_network_api
+#else
+                 std::shared_ptr<final_chain::FinalChain> final_chain
 #endif
                  )
     : kConf(config),
@@ -175,10 +176,10 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
         vote_mgr, dag_mgr, trx_mgr, slashing_manager, pillar_chain_mgr,
 #endif
-        final_chain
 #ifdef RUSTAXA_ENABLE
-        ,
-        rust_consensus_network_api_
+        consensus_application, rust_consensus_network_api_
+#else
+        final_chain
 #endif
     );
     capabilities.emplace_back(latest_tarcap);
@@ -202,9 +203,10 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #ifndef RUSTAXA_ENABLE
         vote_mgr, dag_mgr, trx_mgr, slashing_manager, pillar_chain_mgr,
 #endif
-        final_chain,
 #ifdef RUSTAXA_ENABLE
-        rust_consensus_network_api_,
+        consensus_application, rust_consensus_network_api_,
+#else
+        final_chain,
 #endif
         network::tarcap::TaraxaCapability::kInitV5VersionHandlers);
     capabilities.emplace_back(v5_tarcap);

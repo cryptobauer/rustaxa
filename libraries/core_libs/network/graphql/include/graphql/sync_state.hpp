@@ -5,7 +5,9 @@
 #include <memory>
 
 #include "SyncStateObject.h"
+#ifndef RUSTAXA_ENABLE
 #include "final_chain/final_chain.hpp"
+#endif
 #include "network/live_status.hpp"
 #include "network/network.hpp"
 
@@ -21,9 +23,11 @@ struct SyncStateReader {
 
 class SyncState {
  public:
+#ifndef RUSTAXA_ENABLE
   explicit SyncState(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                      std::weak_ptr<::taraxa::Network> network, std::function<uint64_t()> current_block_query = {},
                      ::taraxa::net::LiveStatusReader live_status = {}) noexcept;
+#endif
   explicit SyncState(SyncStateReader reader) noexcept;
 
   response::Value getStartingBlock() const noexcept;

@@ -1,6 +1,7 @@
 include(GoogleTest)
 
 add_executable(rust_consensus_tests
+    test_concrete_root_rebuild.cpp
     test_external_evm_port.cpp
     test_final_chain.cpp
     test_network_api.cpp
@@ -11,6 +12,7 @@ target_link_libraries(rust_consensus_tests
     Rustaxa::bridge
     app
     core_libs
+    test_util
     vote
     GTest::gtest_main
     gmp::gmp

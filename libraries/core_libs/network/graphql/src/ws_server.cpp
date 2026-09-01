@@ -18,7 +18,6 @@
 namespace taraxa::net {
 
 std::string GraphQlWsSession::processRequest(const std::string_view& /*request*/) {
-  //  static auto q = std::make_shared<graphql::taraxa::Query>(ws_server_.lock()->getFinalChain(), nullptr, 0);
   //  static auto mutation = std::make_shared<graphql::taraxa::Mutation>();
   //  static auto subscription = std::make_shared<graphql::taraxa::Subscription>();
   //  static auto _service = std::make_shared<graphql::taraxa::Operations>(q, mutation, subscription);

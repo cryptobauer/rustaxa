@@ -151,6 +151,12 @@ set(GO_TEST_SCRIPT ${CMAKE_BINARY_DIR}/bin/go_test.sh)
 
 # List serializes with ; delimiter by default. This is not working for bash
 list(JOIN EVM_BUILD_ENV " " EVM_BUILD_ENV_STRING)
+# The production c-archive may be fully static, but Go test executables still
+# need the host C runtime and compression libraries. Reusing `-static` here
+# makes the CTest gate depend on optional static system packages and can also
+# leave cgo runtime symbols unresolved. Keep all include/library search paths
+# while allowing the test linker to resolve those host libraries dynamically.
+string(REPLACE " -static" "" EVM_TEST_BUILD_ENV_STRING "${EVM_BUILD_ENV_STRING}")
 
 # Add ${GO_TEST_SCRIPT} to CMake dependencies to regenrate it if file was removed or changed for some reason
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${GO_TEST_SCRIPT})
@@ -160,7 +166,7 @@ file(WRITE ${GO_TEST_SCRIPT}
 "#!/bin/bash
 cd ${CMAKE_SOURCE_DIR}/submodules/taraxa-evm/
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${CMAKE_BINARY_DIR}/lib
-export ${EVM_BUILD_ENV_STRING}
+export ${EVM_TEST_BUILD_ENV_STRING}
 go test ./..."
 )
 

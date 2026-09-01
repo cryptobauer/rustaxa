@@ -11,14 +11,11 @@ using namespace std::literals;
 
 namespace graphql::taraxa {
 
+#ifndef RUSTAXA_ENABLE
 namespace {
 BlockTransactionReader makeBlockTransactionReader(
-    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
+    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
   BlockTransactionReader reader;
-#ifdef RUSTAXA_ENABLE
-  reader.transaction_count = [](auto) { return uint64_t(0); };
-  reader.transactions = [](auto) { return std::vector<std::shared_ptr<::taraxa::Transaction>>{}; };
-#else
   reader.transaction_count = [final_chain](::taraxa::EthBlockNumber block_number) {
     return final_chain ? final_chain->transactionCount(block_number) : 0;
   };
@@ -28,10 +25,10 @@ BlockTransactionReader makeBlockTransactionReader(
     }
     return final_chain->transactions(block_number);
   };
-#endif
   return reader;
 }
 }  // namespace
+#endif
 
 #ifdef RUSTAXA_ENABLE
 namespace {
@@ -69,30 +66,17 @@ std::shared_ptr<::taraxa::Transaction> materializeTransactionView(const rustaxa:
 }  // namespace
 #endif
 
+#ifndef RUSTAXA_ENABLE
 Block::Block(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
              std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
              const ::taraxa::blk_hash_t& pbft_block_hash,
-             std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header
-#ifdef RUSTAXA_ENABLE
-             ,
-             std::function<uint64_t(::taraxa::EthBlockNumber)> transaction_count_query,
-             std::function<rustaxa::TransactionPublicView(::taraxa::EthBlockNumber, uint64_t)> transaction_query,
-             std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query
-#endif
-             ) noexcept
+             std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept
     : get_block_by_num_(std::move(get_block_by_num)),
       account_reader_(makeAccountStateReader(final_chain)),
       transaction_reader_(makeBlockTransactionReader(final_chain)),
       kPBftBlockHash(pbft_block_hash),
-      block_header_(std::move(block_header))
-#ifdef RUSTAXA_ENABLE
-      ,
-      transaction_count_query_(std::move(transaction_count_query)),
-      transaction_query_(std::move(transaction_query)),
-      receipt_query_(std::move(receipt_query))
+      block_header_(std::move(block_header)) {}
 #endif
-{
-}
 
 Block::Block(AccountStateReader account_reader,
              std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,

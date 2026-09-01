@@ -6877,6 +6877,9 @@ pub fn validate_pbft_manager_advance_period_action_report(
 fn finalized_dag_hashes_from_period_data(period_data_rlp: &[u8]) -> Result<Vec<H256>> {
     let period_data = rlp::Rlp::new(period_data_rlp);
     let dag_blocks_data = period_data.at(2)?;
+    if dag_blocks_data.is_empty() {
+        return Ok(Vec::new());
+    }
     let bundle = FinalizedDagBlockBundleRlp::new(dag_blocks_data.as_raw());
     let mut hashes = Vec::with_capacity(dag_blocks_data.at(2)?.item_count()?);
     for position in 0..dag_blocks_data.at(2)?.item_count()? {
@@ -12481,6 +12484,27 @@ mod tests {
             assert_eq!(replay.period_lambda, None);
         }
 
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn startup_replay_accepts_period_without_finalized_dag_bundle() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_startup_empty_dag");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let mut period_data = RlpStream::new_list(4);
+            period_data.append_empty_data();
+            period_data.append_empty_data();
+            period_data.append_empty_data();
+            period_data.begin_list(0);
+            storage.period().write(1, &period_data.out()).unwrap();
+
+            let replay = load_pbft_manager_startup_replay_period(&storage, 1, false)
+                .expect("empty finalized DAG bundle is canonical");
+            assert!(replay.found);
+            assert!(replay.finalized_dag_hashes.is_empty());
+        }
         let _ = fs::remove_dir_all(temp_dir);
     }
 

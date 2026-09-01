@@ -1,7 +1,7 @@
 from typing import Iterable
 
-import web3.contract
 from web3._utils.filters import Filter
+from web3.contract.contract import ContractEvent as Web3ContractEvent
 from web3.eth import Eth
 
 from common.util.predicates import SetHasBeenMatched
@@ -60,7 +60,7 @@ class ContractEvent:
         def create_filter(self, **kwargs):
             return self.event.filter_tester(**kwargs, **self.args)
 
-    def __init__(self, base: web3.contract.ContractEvent):
+    def __init__(self, base: Web3ContractEvent):
         self._base = base
 
     @property
@@ -79,12 +79,12 @@ class ContractEvent:
         return self.Called(self, **constructor_args)
 
     def filter_tester(self, from_block='latest', to_block='latest', enable_all_entries_test=True, **constructor_args):
-        f = self._base.createFilter(fromBlock=from_block, toBlock=to_block,
-                                    argument_filters=None if not constructor_args else constructor_args)
+        f = self._base.create_filter(fromBlock=from_block, toBlock=to_block,
+                                     argument_filters=None if not constructor_args else constructor_args)
         return FilterTester(f, collect_polled=enable_all_entries_test)
 
     def process_receipt(self, *args, **kwargs):
-        return self._base.processReceipt(*args, **kwargs)
+        return self._base.process_receipt(*args, **kwargs)
 
     def process_log(self, *args, **kwargs):
-        return self._base.processLog(*args, **kwargs)
+        return self._base.process_log(*args, **kwargs)

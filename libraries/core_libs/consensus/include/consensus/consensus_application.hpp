@@ -2,9 +2,11 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "common/event.hpp"
 #include "common/types.hpp"
+#include "final_chain/state_api_data.hpp"
 #include "pillar_chain/pillar_block.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/transaction.hpp"
@@ -17,11 +19,9 @@ struct HostFinalChainFinalizeTask;
 namespace taraxa {
 
 struct FullNodeConfig;
-namespace final_chain {
-class FinalChain;
-}
 class DagBlock;
 class ExternalEvmPort;
+class ExternalEvmStateOwner;
 
 /**
  * Stable public result for one native transaction-submission operation.
@@ -68,7 +68,8 @@ struct ConsensusRuntimeStatus {
 class ConsensusApplication final {
  public:
   /** Takes exclusive ownership of a fully restored native application root. */
-  explicit ConsensusApplication(rust::Box<rustaxa::BridgeConsensusApplication> service);
+  ConsensusApplication(rust::Box<rustaxa::BridgeConsensusApplication> service,
+                       std::shared_ptr<ExternalEvmStateOwner> external_evm_state);
   ~ConsensusApplication();
 
   ConsensusApplication(const ConsensusApplication&) = delete;
@@ -113,8 +114,24 @@ class ConsensusApplication final {
    * is set only after an accepted queue mutation and may be used for best-effort public notification.
    */
   PublicTransactionSubmissionResult submitTransaction(const SharedTransaction& transaction,
-                                                      const FullNodeConfig& config,
-                                                      const final_chain::FinalChain& final_chain) const;
+                                                      const FullNodeConfig& config) const;
+
+  /** Reads an account through the serialized concrete-EVM state owner. */
+  std::optional<state_api::Account> getAccount(const addr_t& address,
+                                               std::optional<EthBlockNumber> block_number = {}) const;
+  /** Reads one contract-storage slot through the serialized concrete-EVM state owner. */
+  h256 getAccountStorage(const addr_t& address, const u256& key, std::optional<EthBlockNumber> block_number = {}) const;
+  /** Reads account code through the serialized concrete-EVM state owner. */
+  bytes getCode(const addr_t& address, std::optional<EthBlockNumber> block_number = {}) const;
+  /** Executes one read-only concrete/native EVM call without exposing StateAPI. */
+  state_api::ExecutionResult call(const state_api::EVMTransaction& transaction,
+                                  std::optional<EthBlockNumber> block_number = {}) const;
+  /** Traces one exact transaction sequence against committed concrete state. */
+  std::string trace(std::vector<state_api::EVMTransaction> state_transactions,
+                    std::vector<state_api::EVMTransaction> transactions, EthBlockNumber block_number,
+                    std::optional<state_api::Tracing> params = {}) const;
+  /** Prunes concrete state and native finalized indexes at one application operation boundary. */
+  void pruneFinalChain(EthBlockNumber block_number) const;
 
   /** Executes one canonical FinalChain operation through the native application root and exact concrete-EVM leaf. */
   rustaxa::HostFinalChainFinalizeReport finalize(ExternalEvmPort& external_evm,
@@ -132,8 +149,16 @@ class ConsensusApplication final {
                          uint64_t non_block_periods_to_keep) const;
 
  private:
+  friend class ExternalEvmPort;
+  friend std::shared_ptr<ConsensusApplication> createConsensusApplication(const FullNodeConfig& config);
+
+  /** Completes a crash-interrupted concrete-EVM publication before the application escapes bootstrap. */
+  void recoverExternalEvmPendingPublication(const std::shared_ptr<ConsensusApplication>& self);
+  std::shared_ptr<ExternalEvmStateOwner> externalEvmStateOwner() const noexcept { return external_evm_state_; }
+
   rust::Box<rustaxa::BridgeConsensusApplication> service_;
   ConsensusQueryClient query_client_;
+  std::shared_ptr<ExternalEvmStateOwner> external_evm_state_;
   util::event::Event<ConsensusApplication, trx_hash_t> transaction_observed_;
   util::event::Event<ConsensusApplication, std::shared_ptr<DagBlock>> dag_block_observed_;
   util::event::Event<ConsensusApplication, pillar_chain::PillarBlockData> pillar_block_observed_;

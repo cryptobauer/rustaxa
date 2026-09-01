@@ -39,9 +39,11 @@ struct PbftProgress {
   uint64_t non_empty_finalized_periods = 0;
 };
 
+#ifndef RUSTAXA_ENABLE
 namespace final_chain {
 class FinalChain;
 }
+#endif
 namespace pillar_chain {
 #ifndef RUSTAXA_ENABLE
 class PillarChainManager;
@@ -83,7 +85,9 @@ class AppBase {
 #endif
   /** Returns one coherent live PBFT progress snapshot. */
   virtual PbftProgress getPbftProgress() const = 0;
+#ifndef RUSTAXA_ENABLE
   virtual std::shared_ptr<final_chain::FinalChain> getFinalChain() const = 0;
+#endif
   virtual std::shared_ptr<metrics::MetricsService> getMetrics() const = 0;
 #ifndef RUSTAXA_ENABLE
   // used only in pure-C++ reference tests

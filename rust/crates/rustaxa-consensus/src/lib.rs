@@ -111,9 +111,8 @@ pub use dag_service::DagServiceConfig;
 pub use dag_transaction_service::{
     DagAnchors, DagGhostPathRoot, DagGraphView, DagLevelHashes, DagNonFinalizedIndex,
     DagNonFinalizedSummary, DagRuntimeStatus, DagTransactionServiceConfig,
-    PublicTransactionFinalChainFacts, PublicTransactionSubmissionReport,
-    PublicTransactionSubmissionRequest, TransactionGossipAccount, TransactionGossipEntry,
-    TransactionPoolStatus,
+    PublicTransactionSubmissionReport, PublicTransactionSubmissionRequest,
+    TransactionGossipAccount, TransactionGossipEntry, TransactionPoolStatus,
 };
 pub use final_chain::FinalChain;
 pub use final_chain_execution::{

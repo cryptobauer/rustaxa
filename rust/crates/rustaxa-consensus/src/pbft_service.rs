@@ -1642,6 +1642,7 @@ impl PbftService {
             }
         }
 
+        let cert_identity = session.weighted_facts.first().cloned();
         let validation = validate_pbft_sync_cert_vote_bundle(PbftSyncCertVoteBundleFact {
             block_period: session.block_period,
             block_hash: session.block_hash,
@@ -1650,6 +1651,15 @@ impl PbftService {
             two_t_plus_one_found: session.threshold.is_some(),
             two_t_plus_one: session.threshold.unwrap_or(0),
         });
+        if validation.valid {
+            let first = cert_identity.context("PBFT_SYNC_CERT_MAPPING_VOTE_MISSING")?;
+            self.verified_votes().ensure_sync_cert_mapping(
+                first.period,
+                first.round,
+                first.step,
+                first.block_hash,
+            )?;
+        }
         Ok(Self::sync_cert_terminal_step(
             session.session_id,
             validation,

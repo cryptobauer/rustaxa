@@ -881,12 +881,11 @@ impl ConsensusApplication {
     }
 
     /// Admits one canonical network transaction through the shared ingress owner.
-    pub fn ingest_transaction_packet<E: ConsensusExecutionPort>(
+    pub fn ingest_transaction_packet(
         &self,
         request: TransactionPacketIngressRequest,
-        execution: &E,
     ) -> Result<TransactionPacketIngressReport> {
-        self.ingress.ingest_transaction_packet(request, execution)
+        self.ingress.ingest_transaction_packet(request)
     }
 
     /// Verifies and publishes one canonical network DAG block.
@@ -907,24 +906,13 @@ impl ConsensusApplication {
         self.ingress.ingest_dag_sync_packet(request, execution)
     }
 
-    /// Submits canonical public bytes using explicit FinalChain facts.
-    pub fn submit_public_transaction(
+    /// Submits canonical public bytes through the native FinalChain owner.
+    pub fn submit_public_transaction_from_native_state(
         &self,
         request: PublicTransactionSubmissionRequest,
-        final_chain_facts: PublicTransactionFinalChainFacts,
     ) -> Result<PublicTransactionSubmissionReport> {
         self.ingress
-            .submit_public_transaction(request, final_chain_facts)
-    }
-
-    /// Submits canonical public bytes through one borrowed execution leaf.
-    pub fn submit_public_transaction_with_execution<E: ConsensusExecutionPort>(
-        &self,
-        request: PublicTransactionSubmissionRequest,
-        execution: &E,
-    ) -> Result<PublicTransactionSubmissionReport> {
-        self.ingress
-            .submit_public_transaction_with_execution(request, execution)
+            .submit_public_transaction_from_native_state(request)
     }
 }
 
@@ -979,15 +967,13 @@ impl ConsensusIngressService {
 
     /// Admits one canonical transaction packet and selects exact transport and
     /// public-observer leaves without exposing transaction-manager state.
-    pub fn ingest_transaction_packet<E: ConsensusExecutionPort>(
+    pub fn ingest_transaction_packet(
         &self,
         request: TransactionPacketIngressRequest,
-        execution: &E,
     ) -> Result<TransactionPacketIngressReport> {
         let transaction_rlp = request.submission.transaction_rlp.clone();
         let peer_id = request.peer_id;
-        let submission =
-            self.submit_public_transaction_with_execution(request.submission, execution)?;
+        let submission = self.submit_public_transaction_from_native_state(request.submission)?;
         let newly_inserted = submission.transaction_observed;
         Ok(TransactionPacketIngressReport {
             submission,
@@ -1071,28 +1057,29 @@ impl ConsensusIngressService {
                 })?;
         }
         if !step.complete {
-            let effect_id = self.runtime.next_operation_effect()?;
-            let gas = execution.estimate_dag_transaction_gas(&crate::DagGasEstimateRequest {
-                effect_id,
-                proposal_period: step.proposal_period,
-                transactions: resolved_transactions
+            let (mut estimated_transactions_weight, estimate_requests) =
+                plan_dag_verification_gas(&resolved_transactions)?;
+            if !estimate_requests.is_empty() {
+                let effect_id = self.runtime.next_operation_effect()?;
+                let gas =
+                    execution.estimate_dag_transaction_gas(&crate::DagGasEstimateRequest {
+                        effect_id,
+                        proposal_period: step.proposal_period,
+                        transactions: estimate_requests,
+                    })?;
+                self.runtime
+                    .validate_operation_report(effect_id, gas.effect_id)?;
+                if !gas.succeeded {
+                    bail!("DAG_BLOCK_INGRESS_GAS_FAILED: {}", gas.error_code);
+                }
+                estimated_transactions_weight = gas
+                    .estimates
                     .iter()
-                    .map(|transaction| crate::DagGasEstimateInput {
-                        hash: transaction.hash.0,
-                        transaction_rlp: transaction.transaction_rlp.clone(),
+                    .try_fold(estimated_transactions_weight, |sum, value| {
+                        sum.checked_add(value.gas_used)
                     })
-                    .collect(),
-            })?;
-            self.runtime
-                .validate_operation_report(effect_id, gas.effect_id)?;
-            if !gas.succeeded {
-                bail!("DAG_BLOCK_INGRESS_GAS_FAILED: {}", gas.error_code);
+                    .context("DAG_BLOCK_INGRESS_GAS_OVERFLOW")?;
             }
-            let estimated_transactions_weight = gas
-                .estimates
-                .iter()
-                .try_fold(0_u64, |sum, value| sum.checked_add(value.gas_used))
-                .context("DAG_BLOCK_INGRESS_GAS_OVERFLOW")?;
             step = self
                 .dag_transaction
                 .report_verify_block_gas(DagVerifyBlockGasReport {
@@ -1151,7 +1138,6 @@ impl ConsensusIngressService {
                 .iter()
                 .map(|value| value.sender.0)
                 .collect(),
-            execution,
         )?;
         let commit = self
             .dag_transaction
@@ -1178,32 +1164,16 @@ impl ConsensusIngressService {
         })
     }
 
-    fn load_operation_account_nonces<E: ConsensusExecutionPort>(
-        &self,
-        addresses: Vec<[u8; 20]>,
-        execution: &E,
-    ) -> Result<Vec<U256>> {
-        let effect_id = self.runtime.next_operation_effect()?;
-        let report = execution.load_final_chain_account_facts(
-            &crate::consensus_application_runtime::FinalChainAccountFactsRequest {
-                effect_id,
-                addresses: addresses.clone(),
-            },
-        )?;
-        self.runtime
-            .validate_operation_report(effect_id, report.effect_id)?;
-        if !report.succeeded || report.accounts.len() != addresses.len() {
-            bail!("DAG_BLOCK_INGRESS_ACCOUNT_FACTS_FAILED");
-        }
-        report
-            .accounts
+    fn load_operation_account_nonces(&self, addresses: Vec<[u8; 20]>) -> Result<Vec<U256>> {
+        let block = self.final_chain.last_block_number_typed()?;
+        addresses
             .into_iter()
-            .zip(addresses)
-            .map(|(account, expected)| {
-                if account.address != expected {
-                    bail!("DAG_BLOCK_INGRESS_ACCOUNT_FACTS_ORDER_MISMATCH");
-                }
-                Ok(U256::from_big_endian(&account.nonce))
+            .map(|address| {
+                Ok(self
+                    .final_chain
+                    .account_at_block(block, address)?
+                    .map(|account| U256::from_big_endian(&account.nonce.to_bytes()))
+                    .unwrap_or_default())
             })
             .collect()
     }
@@ -1260,10 +1230,10 @@ impl ConsensusIngressService {
 
     /// Submits canonical public transaction bytes through the native owner.
     ///
-    /// The caller supplies only exact external-EVM account facts; Rust owns
+    /// The native-state entry point supplies exact external-EVM account facts; Rust owns
     /// envelope decoding, verification, duplicate handling, queue mutation,
     /// and observer-effect selection.
-    pub fn submit_public_transaction(
+    pub(crate) fn submit_public_transaction(
         &self,
         request: PublicTransactionSubmissionRequest,
         final_chain_facts: PublicTransactionFinalChainFacts,
@@ -1272,32 +1242,24 @@ impl ConsensusIngressService {
             .submit_public_transaction(request, final_chain_facts)
     }
 
-    /// Submits canonical transaction bytes using the configured external-EVM leaf.
-    ///
-    /// Rust decodes the sender before issuing one exact account query, validates
-    /// report identity/order/head, resolves finalized membership from native
-    /// storage, and only then enters queue admission. Host failure or malformed
-    /// reports leave queue and observer state unchanged.
-    pub fn submit_public_transaction_with_execution<E: ConsensusExecutionPort>(
+    /// Submits canonical transaction bytes using the native FinalChain snapshot.
+    pub fn submit_public_transaction_from_native_state(
         &self,
         request: PublicTransactionSubmissionRequest,
-        execution: &E,
     ) -> Result<PublicTransactionSubmissionReport> {
         let envelope = LegacyTransactionEnvelope::decode(&request.transaction_rlp)
             .context("PUBLIC_TRANSACTION_DECODE_FAILED")?;
         let sender = envelope
             .sender
             .context("PUBLIC_TRANSACTION_SENDER_MISSING")?;
-        let effect_id = self.runtime.next_operation_effect()?;
-        let report = execution.load_final_chain_account_facts(
-            &crate::consensus_application_runtime::FinalChainAccountFactsRequest {
-                effect_id,
-                addresses: vec![sender.0],
-            },
-        )?;
-        self.runtime
-            .validate_operation_report(effect_id, report.effect_id)?;
-        ensure_public_account_report(&report, sender.0, request.last_block_number)?;
+        let observed_block = self.final_chain.last_block_number_typed()?;
+        ensure!(
+            observed_block.as_u64() == request.last_block_number,
+            "PUBLIC_TRANSACTION_ACCOUNT_FACTS_HEAD_MISMATCH"
+        );
+        let account = self
+            .final_chain
+            .account_at_block(observed_block, sender.0)?;
         let finalized_period = self
             .final_chain
             .transaction_location(envelope.hash.0)?
@@ -1307,14 +1269,19 @@ impl ConsensusIngressService {
                     .context("PUBLIC_TRANSACTION_FINALIZED_LOCATION_DECODE")
             })
             .transpose()?;
-        let account = &report.accounts[0];
         self.submit_public_transaction(
             request,
             PublicTransactionFinalChainFacts {
                 sender: sender.0,
-                account_found: account.found,
-                account_nonce: U256::from_big_endian(&account.nonce),
-                account_balance: U256::from_big_endian(&account.balance),
+                account_found: account.is_some(),
+                account_nonce: account
+                    .as_ref()
+                    .map(|account| U256::from_big_endian(&account.nonce.to_bytes()))
+                    .unwrap_or_default(),
+                account_balance: account
+                    .as_ref()
+                    .map(|account| U256::from_big_endian(&account.balance.to_snapshot_bytes()))
+                    .unwrap_or_default(),
                 finalized_period,
             },
         )
@@ -1533,26 +1500,6 @@ fn dag_proposer_inputs(
         .collect()
 }
 
-fn ensure_public_account_report(
-    report: &crate::consensus_application_runtime::FinalChainAccountFactsReport,
-    sender: [u8; 20],
-    expected_block: u64,
-) -> Result<()> {
-    if !report.succeeded {
-        bail!(
-            "PUBLIC_TRANSACTION_ACCOUNT_FACTS_FAILED: {}",
-            report.error_code
-        );
-    }
-    if report.observed_block != expected_block {
-        bail!("PUBLIC_TRANSACTION_ACCOUNT_FACTS_HEAD_MISMATCH");
-    }
-    if report.accounts.len() != 1 || report.accounts[0].address != sender {
-        bail!("PUBLIC_TRANSACTION_ACCOUNT_FACTS_SHAPE_MISMATCH");
-    }
-    Ok(())
-}
-
 /// Temporary Rust-only PBFT dispatch compatibility for bridge migration.
 ///
 /// CXX sees only the opaque application root and cannot retrieve or construct
@@ -1719,6 +1666,35 @@ fn resolve_dag_block_transaction_payloads(
         .collect()
 }
 
+/// Splits DAG verification gas work according to the legacy consensus rule.
+///
+/// Transactions whose declared gas is at most 200,000 contribute that exact
+/// value. Only larger transactions cross the concrete-EVM estimation leaf.
+/// The returned direct sum preserves checked arithmetic so malformed payloads
+/// cannot wrap the consensus comparison.
+fn plan_dag_verification_gas(
+    transactions: &[DagAddBlockTransactionPayload],
+) -> Result<(u64, Vec<crate::DagGasEstimateInput>)> {
+    const ESTIMATE_GAS_LIMIT: u64 = 200_000;
+    let mut direct_gas = 0_u64;
+    let mut estimates = Vec::new();
+    for transaction in transactions {
+        let envelope = LegacyTransactionEnvelope::decode(&transaction.transaction_rlp)
+            .context("DAG_BLOCK_INGRESS_GAS_TRANSACTION_DECODE")?;
+        if envelope.gas <= ESTIMATE_GAS_LIMIT {
+            direct_gas = direct_gas
+                .checked_add(envelope.gas)
+                .context("DAG_BLOCK_INGRESS_GAS_OVERFLOW")?;
+        } else {
+            estimates.push(crate::DagGasEstimateInput {
+                hash: transaction.hash.0,
+                transaction_rlp: transaction.transaction_rlp.clone(),
+            });
+        }
+    }
+    Ok((direct_gas, estimates))
+}
+
 fn select_dag_sync_transaction_payloads(
     block_hashes: &[H256],
     packet_payloads: &std::collections::HashMap<H256, Vec<u8>>,
@@ -1767,13 +1743,6 @@ mod tests {
         ) -> Result<crate::consensus_application_runtime::PillarAnchorStateReport> {
             bail!("unused pillar lookup")
         }
-
-        fn load_final_chain_account_facts(
-            &self,
-            _request: &crate::consensus_application_runtime::FinalChainAccountFactsRequest,
-        ) -> Result<crate::consensus_application_runtime::FinalChainAccountFactsReport> {
-            bail!("unused account lookup")
-        }
     }
 
     fn bootstrap(path: std::path::PathBuf) -> ConsensusApplicationBootstrap {
@@ -1805,12 +1774,11 @@ mod tests {
         std::env::temp_dir().join(format!("{name}_{nonce}"))
     }
 
-    fn signed_public_transaction() -> (Vec<u8>, [u8; 20]) {
+    fn signed_public_transaction_with_gas(gas: u64) -> (Vec<u8>, [u8; 20]) {
         use tiny_keccak::{Hasher, Keccak};
         let key = SigningKey::from_slice(&[0x33; 32]).expect("fixed signing key");
         let nonce = U256::from(1);
         let gas_price = U256::from(2);
-        let gas = 21_000_u64;
         let receiver = H160::repeat_byte(0x44);
         let value = U256::from(3);
         let chain_id = 2_999_u64;
@@ -1850,6 +1818,34 @@ mod tests {
             .sender
             .expect("recover sender");
         (bytes, sender.0)
+    }
+
+    fn signed_public_transaction() -> (Vec<u8>, [u8; 20]) {
+        signed_public_transaction_with_gas(21_000)
+    }
+
+    #[test]
+    fn dag_verification_gas_uses_declared_weight_below_estimation_limit() {
+        let (direct_rlp, _) = signed_public_transaction_with_gas(71_676);
+        let direct = LegacyTransactionEnvelope::decode(&direct_rlp).unwrap();
+        let (estimated_rlp, _) = signed_public_transaction_with_gas(200_001);
+        let estimated = LegacyTransactionEnvelope::decode(&estimated_rlp).unwrap();
+        let payloads = vec![
+            DagAddBlockTransactionPayload {
+                hash: direct.hash,
+                transaction_rlp: direct_rlp,
+            },
+            DagAddBlockTransactionPayload {
+                hash: estimated.hash,
+                transaction_rlp: estimated_rlp.clone(),
+            },
+        ];
+
+        let (direct_gas, requests) = plan_dag_verification_gas(&payloads).unwrap();
+        assert_eq!(direct_gas, 71_676);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].hash, estimated.hash.0);
+        assert_eq!(requests[0].transaction_rlp, estimated_rlp);
     }
 
     fn public_submission_request(transaction_rlp: Vec<u8>) -> PublicTransactionSubmissionRequest {
@@ -1962,6 +1958,7 @@ mod tests {
         let (rlp, sender) = signed_public_transaction();
 
         let first = root
+            .ingress
             .submit_public_transaction(
                 public_submission_request(rlp.clone()),
                 public_account_facts(sender),
@@ -1978,6 +1975,7 @@ mod tests {
         );
 
         let duplicate = root
+            .ingress
             .submit_public_transaction(public_submission_request(rlp), public_account_facts(sender))
             .expect("duplicate report");
         assert!(!duplicate.accepted);
@@ -1999,6 +1997,7 @@ mod tests {
         mismatched.sender[0] ^= 1;
 
         let error = root
+            .ingress
             .submit_public_transaction(public_submission_request(rlp), mismatched)
             .expect_err("mismatched facts reject");
         assert!(
@@ -2019,17 +2018,48 @@ mod tests {
     }
 
     #[test]
+    fn native_public_submission_rejects_a_stale_or_future_head_before_account_admission() {
+        let path = temp_path("consensus_application_public_submission_head_mismatch");
+        let root = bootstrap(path.clone())
+            .bootstrap()
+            .expect("root bootstraps");
+        let (rlp, _) = signed_public_transaction();
+        let mut request = public_submission_request(rlp);
+        request.last_block_number = 1;
+
+        let error = root
+            .submit_public_transaction_from_native_state(request)
+            .expect_err("head mismatch rejects before account facts can be mixed");
+        assert!(
+            error
+                .to_string()
+                .contains("PUBLIC_TRANSACTION_ACCOUNT_FACTS_HEAD_MISMATCH")
+        );
+        assert_eq!(
+            root.consensus_query_api_for_bridge()
+                .transaction_pool_status()
+                .unwrap()
+                .queue_size,
+            0
+        );
+
+        drop(root);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn public_submission_restart_does_not_restore_ephemeral_queue() {
         let path = temp_path("consensus_application_public_submission_restart");
         let root = bootstrap(path.clone())
             .bootstrap()
             .expect("root bootstraps");
         let (rlp, sender) = signed_public_transaction();
-        root.submit_public_transaction(
-            public_submission_request(rlp.clone()),
-            public_account_facts(sender),
-        )
-        .expect("submission");
+        root.ingress
+            .submit_public_transaction(
+                public_submission_request(rlp.clone()),
+                public_account_facts(sender),
+            )
+            .expect("submission");
         drop(root);
 
         let restarted = bootstrap(path.clone()).bootstrap().expect("root restarts");
@@ -2039,6 +2069,7 @@ mod tests {
             .expect("pool status");
         assert_eq!(status.queue_size, 0);
         let replay = restarted
+            .ingress
             .submit_public_transaction(public_submission_request(rlp), public_account_facts(sender))
             .expect("replay after restart");
         assert!(replay.accepted);

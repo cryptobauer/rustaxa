@@ -59,11 +59,12 @@ class CoinTxExtraParams:
 class DefaultNonceStrategy:
 
     def __init__(self):
-        self.i = 1
+        self._next_by_address = {}
 
     def __call__(self, addr):
-        prev, self.i = self.i, self.i + 1
-        return prev
+        next_nonce = self._next_by_address.get(addr, 1)
+        self._next_by_address[addr] = next_nonce + 1
+        return next_nonce
 
-    def update(self, new_value):
-        self.i = new_value
+    def update(self, addr, new_value):
+        self._next_by_address[addr] = new_value

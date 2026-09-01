@@ -590,11 +590,12 @@ void fillMissingCurrentStateReaderCallbacks(CurrentStateReader& reader,
 }
 
 SyncStateReader makeQuerySyncStateReader(
-    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
-    std::weak_ptr<::taraxa::Network> network, ::taraxa::net::LiveStatusReader live_status
 #ifdef RUSTAXA_ENABLE
-    ,
+    std::weak_ptr<::taraxa::Network> network, ::taraxa::net::LiveStatusReader live_status,
     ::taraxa::net::ConsensusQueryApiPtr consensus_query_api
+#else
+    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain, std::weak_ptr<::taraxa::Network> network,
+    ::taraxa::net::LiveStatusReader live_status
 #endif
 ) {
   SyncStateReader reader;
@@ -624,20 +625,22 @@ SyncStateReader makeQuerySyncStateReader(
 }
 
 void fillMissingSyncStateReaderCallbacks(SyncStateReader& reader,
+#ifdef RUSTAXA_ENABLE
+                                         std::weak_ptr<::taraxa::Network> network,
+                                         ::taraxa::net::LiveStatusReader live_status,
+                                         ::taraxa::net::ConsensusQueryApiPtr consensus_query_api = {}
+#else
                                          const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
                                          std::weak_ptr<::taraxa::Network> network,
                                          ::taraxa::net::LiveStatusReader live_status
-#ifdef RUSTAXA_ENABLE
-                                         ,
-                                         ::taraxa::net::ConsensusQueryApiPtr consensus_query_api = {}
 #endif
 ) {
-  auto defaults = makeQuerySyncStateReader(final_chain, std::move(network), std::move(live_status)
 #ifdef RUSTAXA_ENABLE
-                                                                                ,
-                                           std::move(consensus_query_api)
+  auto defaults =
+      makeQuerySyncStateReader(std::move(network), std::move(live_status), std::move(consensus_query_api));
+#else
+  auto defaults = makeQuerySyncStateReader(final_chain, std::move(network), std::move(live_status));
 #endif
-  );
   if (!reader.current_block) {
     reader.current_block = std::move(defaults.current_block);
   }
@@ -832,19 +835,23 @@ Query::Query(QueryReaders readers, uint64_t chain_id) noexcept
                                          nullptr
 #endif
   );
+#ifdef RUSTAXA_ENABLE
+  fillMissingSyncStateReaderCallbacks(sync_state_reader_, {}, {});
+#else
   fillMissingSyncStateReaderCallbacks(sync_state_reader_, nullptr, {}, {});
+#endif
   get_block_by_num_ = [&](::taraxa::EthBlockNumber num) {
     return getBlock(response::Value(static_cast<int>(num)), std::nullopt);
   };
 }
 
 #ifdef RUSTAXA_ENABLE
-Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, QueryGasPriceReader gas_price_reader,
+Query::Query(AccountStateReader account_reader, QueryGasPriceReader gas_price_reader,
              std::weak_ptr<::taraxa::Network> network, uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status,
              ::taraxa::net::ConsensusQueryApiPtr consensus_query_api) noexcept
     : Query(
           QueryReaders{
-              makeAccountStateReader(final_chain, consensus_query_api),
+              std::move(account_reader),
               {},
               {},
               {},
@@ -867,7 +874,7 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, Que
                                    const auto status = (*query)->consensus_query_status();
                                    return status.latest_dag_period_found ? status.latest_dag_period : uint64_t(0);
                                  }},
-              makeQuerySyncStateReader(final_chain, std::move(network), std::move(live_status), consensus_query_api),
+              makeQuerySyncStateReader(std::move(network), std::move(live_status), consensus_query_api),
               makeConsensusQueryReader(std::move(consensus_query_api)),
           },
           chain_id) {}

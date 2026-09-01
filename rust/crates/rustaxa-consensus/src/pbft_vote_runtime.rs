@@ -1406,6 +1406,41 @@ impl PbftVerifiedVotesService {
         runtime.select_reward_vote_payloads(block_period, requested_vote_hashes)
     }
 
+    /// Ensures a threshold-validated PBFT-sync certificate has its canonical
+    /// cert mapping before the synchronized block enters finalization.
+    ///
+    /// Vote admission normally creates this mapping on the threshold-crossing
+    /// vote. Clean resync may replay votes whose persisted/progress outcome is
+    /// already current, so the bundle-level threshold proof closes that
+    /// idempotent gap here. An existing first-writer mapping remains
+    /// authoritative; the later reward-reset preparation still requires its
+    /// exact certificate identity and fails closed on a mismatch.
+    pub(crate) fn ensure_sync_cert_mapping(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: H256,
+    ) -> Result<()> {
+        let mut runtime = self.lock()?;
+        let kind = TwoTPlusOneVotedBlockType::CertVotedBlock;
+        if runtime
+            .verified_votes
+            .get_two_t_plus_one_voted_block(period, round, kind)
+            .is_some()
+        {
+            return Ok(());
+        }
+        let outcome = runtime
+            .verified_votes
+            .insert_two_t_plus_one_voted_block(period, round, kind, block_hash, step);
+        ensure!(
+            outcome.round_found && outcome.inserted,
+            "PBFT_SYNC_CERT_MAPPING_INSERT_FAILED"
+        );
+        Ok(())
+    }
+
     /// Builds a canonical reward-reset stage from an exact cert identity.
     ///
     /// The request gate must be set, the native cert mapping must match period,

@@ -3,12 +3,6 @@
 #include "network/consensus_network_api.hpp"
 #include "network/tarcap/packets_handlers/latest/common/packet_handler.hpp"
 
-namespace taraxa {
-namespace final_chain {
-class FinalChain;
-}
-}  // namespace taraxa
-
 namespace taraxa::network::tarcap {
 
 /**
@@ -22,8 +16,7 @@ class RustPbftBlocksBundlePacketHandler final : public PacketHandler {
  public:
   RustPbftBlocksBundlePacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                     std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                                    network::ConsensusNetworkApiShared consensus_network_api,
-                                    std::shared_ptr<final_chain::FinalChain> final_chain, const addr_t& node_addr,
+                                    network::ConsensusNetworkApiShared consensus_network_api, const addr_t& node_addr,
                                     const std::string& logs_prefix = "");
   ~RustPbftBlocksBundlePacketHandler() override;
 
@@ -34,7 +27,6 @@ class RustPbftBlocksBundlePacketHandler final : public PacketHandler {
 
  private:
   network::ConsensusNetworkApiShared consensus_network_api_;
-  std::shared_ptr<final_chain::FinalChain> final_chain_;
 };
 
 }  // namespace taraxa::network::tarcap

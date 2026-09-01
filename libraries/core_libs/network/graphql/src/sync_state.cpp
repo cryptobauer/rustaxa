@@ -7,15 +7,12 @@
 
 namespace graphql::taraxa {
 
+#ifndef RUSTAXA_ENABLE
 namespace {
-SyncStateReader makeSyncStateReader([[maybe_unused]] std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
+SyncStateReader makeSyncStateReader(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                                     std::weak_ptr<::taraxa::Network> network) {
   SyncStateReader reader;
-#ifdef RUSTAXA_ENABLE
-  reader.current_block = []() -> uint64_t { throw std::runtime_error("GRAPHQL_SYNC_QUERY_UNAVAILABLE"); };
-#else
   reader.current_block = [final_chain = std::move(final_chain)] { return final_chain->lastBlockNumber(); };
-#endif
   reader.highest_block = [network = std::move(network)]() -> std::optional<uint64_t> {
     auto net = network.lock();
     if (!net) {
@@ -59,6 +56,7 @@ SyncState::SyncState(std::shared_ptr<::taraxa::final_chain::FinalChain> final_ch
                                                           : std::function<std::optional<uint64_t>()>{}} {
   fillMissingSyncStateReaderCallbacks(reader_, std::move(final_chain), std::move(network));
 }
+#endif
 
 SyncState::SyncState(SyncStateReader reader) noexcept : reader_(std::move(reader)) {}
 

@@ -9,6 +9,7 @@
 #include "final_chain/final_chain.hpp"
 #include "final_chain/state_api.hpp"
 #ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
 #include "network/consensus_query.hpp"
 #endif
 
@@ -30,18 +31,22 @@ struct AccountStateReader {
 // Builds the temporary compatibility adapter for GraphQL account-state reads.
 // The returned reader keeps the GraphQL object API narrow while the backing
 // implementation remains on the external FinalChain/StateAPI boundary.
-AccountStateReader makeAccountStateReader(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain
-#ifdef RUSTAXA_ENABLE
-                                          ,
-                                          ::taraxa::net::ConsensusQueryApiPtr consensus_query_api = {}
+#ifndef RUSTAXA_ENABLE
+AccountStateReader makeAccountStateReader(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain);
 #endif
-);
+
+#ifdef RUSTAXA_ENABLE
+/** Builds GraphQL account-state reads over the native application concrete-state boundary. */
+AccountStateReader makeAccountStateReader(std::shared_ptr<::taraxa::ConsensusApplication> application);
+#endif
 
 class Account {
  public:
+#ifndef RUSTAXA_ENABLE
   explicit Account(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, dev::Address address,
                    ::taraxa::EthBlockNumber blk_n);
   explicit Account(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, dev::Address address);
+#endif
   explicit Account(AccountStateReader reader, dev::Address address, ::taraxa::EthBlockNumber blk_n);
   explicit Account(AccountStateReader reader, dev::Address address);
 

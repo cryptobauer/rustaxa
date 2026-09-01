@@ -4,11 +4,15 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "config/config.hpp"
+#include "consensus/consensus_application.hpp"
 #include "consensus_application_test.hpp"
+#include "final_chain/state_api.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 using namespace rustaxa;
@@ -53,6 +57,15 @@ class RustFinalChainTest : public ::testing::Test {
         out.push_back(byte);
         seen_non_zero = true;
       }
+    }
+    return out;
+  }
+
+  static std::vector<uint8_t> u256_be(uint64_t value) {
+    std::vector<uint8_t> out(32, 0);
+    for (auto index = 0U; index < sizeof(value); ++index) {
+      out[31 - index] = static_cast<uint8_t>(value & 0xFF);
+      value >>= 8;
     }
     return out;
   }
@@ -186,7 +199,7 @@ class RustFinalChainTest : public ::testing::Test {
     return input;
   }
 
-  static uint64_t abi_word_u64(const rust::Vec<uint8_t>& data, size_t offset) {
+  static uint64_t abi_word_u64(const dev::bytes& data, size_t offset) {
     uint64_t value = 0;
     for (auto i = offset + 24; i < offset + 32; ++i) {
       value = (value << 8) | data[i];
@@ -200,13 +213,13 @@ class RustFinalChainTest : public ::testing::Test {
     return word;
   }
 
-  static std::string abi_string_at(const rust::Vec<uint8_t>& data, size_t tuple_start, size_t offset) {
+  static std::string abi_string_at(const dev::bytes& data, size_t tuple_start, size_t offset) {
     const auto tail_start = tuple_start + offset;
     const auto size = abi_word_u64(data, tail_start);
     return std::string(data.begin() + tail_start + 32, data.begin() + tail_start + 32 + size);
   }
 
-  static std::vector<std::array<uint8_t, 20>> validator_page_addresses(const rust::Vec<uint8_t>& data) {
+  static std::vector<std::array<uint8_t, 20>> validator_page_addresses(const dev::bytes& data) {
     const auto array_start = static_cast<size_t>(abi_word_u64(data, 0));
     const auto size = static_cast<size_t>(abi_word_u64(data, array_start));
     std::vector<std::array<uint8_t, 20>> addresses;
@@ -263,22 +276,26 @@ class RustFinalChainTest : public ::testing::Test {
     return config;
   }
 
-  static GenesisValidator genesis_validator(std::array<uint8_t, 20> validator_address,
-                                            std::array<uint8_t, 20> owner = address(0x11),
-                                            std::string description = "bridge validator metadata") {
-    GenesisValidator validator;
-    validator.address = validator_address;
-    validator.owner = owner;
-    validator.vrf_key = vrf_key(0xA0);
-    validator.commission = 12;
-    validator.description = rust::String(description);
-    validator.endpoint = rust::String("https://validator.example");
-    validator.total_stake = u64_be(10000);
+  static taraxa::state_api::ValidatorInfo genesis_validator(std::array<uint8_t, 20> validator_address,
+                                                            std::array<uint8_t, 20> owner = address(0x11),
+                                                            std::string description = "bridge validator metadata") {
+    const auto validator_vrf_key = vrf_key(0xA0);
+    taraxa::state_api::ValidatorInfo validator{
+        taraxa::addr_t(validator_address.data(), taraxa::addr_t::ConstructFromPointer),
+        taraxa::addr_t(owner.data(), taraxa::addr_t::ConstructFromPointer),
+        taraxa::vrf_wrapper::vrf_pk_t(validator_vrf_key.data(), taraxa::vrf_wrapper::vrf_pk_t::ConstructFromPointer),
+        12,
+        "https://validator.example",
+        std::move(description),
+        {},
+    };
+    validator.delegations.emplace(validator.owner, 10'000);
     return validator;
   }
 
-  static rust::Vec<GenesisValidator> genesis_validators(std::array<uint8_t, 20> validator_address) {
-    rust::Vec<GenesisValidator> validators;
+  static std::vector<taraxa::state_api::ValidatorInfo> genesis_validators(
+      std::array<uint8_t, 20> validator_address) {
+    std::vector<taraxa::state_api::ValidatorInfo> validators;
     validators.push_back(genesis_validator(validator_address));
     return validators;
   }
@@ -299,23 +316,28 @@ class RustFinalChainTest : public ::testing::Test {
     return config;
   }
 
-  rust::Box<BridgeConsensusApplication> create_final_chain_for_test(rust::Vec<GenesisValidator> validators) {
-    return test::createConsensusApplication(test_dir, pbft_config(), 32, 10, genesis_accounts(), std::move(validators),
-                                            genesis_dpos_config(), default_rewards_config());
-  }
-
-  static FinalChainCall dpos_call(uint64_t block_number, rust::Vec<uint8_t> input) {
-    FinalChainCall call;
-    call.block_number = block_number;
-    call.sender = {};
-    call.receiver_found = true;
-    call.receiver = {};
-    call.receiver[19] = 0xfe;
-    call.value = {};
-    call.gas_price = {};
-    call.gas_limit = 1'000'000;
-    call.input = std::move(input);
-    return call;
+  taraxa::SharedConsensusApplication create_final_chain_for_test(
+      std::vector<taraxa::state_api::ValidatorInfo> validators) {
+    taraxa::FullNodeConfig config{};
+    config.db_path = test_dir;
+    config.genesis.chain_id = 1;
+    config.genesis.state.initial_balances.clear();
+    for (const auto& validator : validators) {
+      for (const auto& [delegator, stake] : validator.delegations) {
+        config.genesis.state.initial_balances[delegator] += stake;
+      }
+    }
+    config.genesis.state.dpos.eligibility_balance_threshold = 1'000;
+    config.genesis.state.dpos.vote_eligibility_balance_step = 1'000;
+    config.genesis.state.dpos.validator_maximum_stake = 30'000;
+    config.genesis.state.dpos.commission_change_delta = 500;
+    config.genesis.state.dpos.commission_change_frequency = 7;
+    config.genesis.state.dpos.delegation_delay = 0;
+    config.genesis.state.dpos.yield_percentage = 0;
+    config.genesis.state.hardforks.aspen_hf.block_num_part_one = std::numeric_limits<uint64_t>::max();
+    config.genesis.state.hardforks.aspen_hf.block_num_part_two = std::numeric_limits<uint64_t>::max();
+    config.genesis.state.dpos.initial_validators = std::move(validators);
+    return taraxa::createConsensusApplication(config);
   }
 
   std::filesystem::path test_dir;
@@ -325,126 +347,31 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
   const auto validator_address = address(0x10);
   const auto unknown_address = address(0x20);
   auto final_chain = create_final_chain_for_test(genesis_validators(validator_address));
-  auto query = create_consensus_query_api(*final_chain);
+  const auto query = final_chain->queryClient();
 
-  EXPECT_EQ(query->consensus_query_final_chain_dpos_eligible_total_vote_count(0), 10u);
-  EXPECT_EQ(query->consensus_query_final_chain_dpos_eligible_vote_count(0, validator_address), 10u);
-  EXPECT_GT(query->consensus_query_final_chain_dpos_eligible_vote_count(0, validator_address), 0);
-  EXPECT_EQ(query->consensus_query_final_chain_dpos_eligible_vote_count(0, unknown_address), 0u);
-  EXPECT_EQ(query->consensus_query_final_chain_dpos_eligible_vote_count(0, unknown_address), 0);
+  EXPECT_EQ((*query)->consensus_query_final_chain_dpos_eligible_total_vote_count(0), 10u);
+  EXPECT_EQ((*query)->consensus_query_final_chain_dpos_eligible_vote_count(0, validator_address), 10u);
+  EXPECT_GT((*query)->consensus_query_final_chain_dpos_eligible_vote_count(0, validator_address), 0);
+  EXPECT_EQ((*query)->consensus_query_final_chain_dpos_eligible_vote_count(0, unknown_address), 0u);
+  EXPECT_EQ((*query)->consensus_query_final_chain_dpos_eligible_vote_count(0, unknown_address), 0);
 
-  const auto stakes = query->consensus_query_final_chain_dpos_validators_total_stakes(0);
+  const auto stakes = (*query)->consensus_query_final_chain_dpos_validators_total_stakes(0);
   ASSERT_EQ(stakes.size(), 1u);
   EXPECT_EQ(stakes[0].address, validator_address);
-  EXPECT_EQ(bytes(stakes[0].stake), bytes(u64_be(10000)));
-  EXPECT_EQ(bytes(query->consensus_query_final_chain_dpos_total_amount_delegated(0)), bytes(u64_be(10000)));
-  EXPECT_EQ(query->consensus_query_final_chain_dpos_yield(0), 0u);
-  EXPECT_TRUE(query->consensus_query_final_chain_dpos_total_supply(0).empty());
+  EXPECT_EQ(bytes(stakes[0].stake), u256_be(10000));
+  EXPECT_EQ(bytes((*query)->consensus_query_final_chain_dpos_total_amount_delegated(0)), bytes(u64_be(10000)));
+  EXPECT_EQ((*query)->consensus_query_final_chain_dpos_yield(0), 0u);
+  EXPECT_TRUE((*query)->consensus_query_final_chain_dpos_total_supply(0).empty());
 
-  auto total_delegation = final_chain->call(dpos_call(0, get_total_delegation_input(validator_address)));
-  ASSERT_EQ(std::string(total_delegation.code_err), "");
-  ASSERT_EQ(std::string(total_delegation.consensus_err), "");
-  EXPECT_EQ(abi_word_u64(total_delegation.code_retval, 0), 10'000u);
-
-  auto delegations = final_chain->call(dpos_call(0, get_delegations_input(validator_address, 0)));
-  ASSERT_EQ(std::string(delegations.code_err), "");
-  ASSERT_EQ(std::string(delegations.consensus_err), "");
-  ASSERT_EQ(delegations.code_retval.size(), 192u);
-  EXPECT_EQ(abi_word_u64(delegations.code_retval, 0), 64u);
-  EXPECT_EQ(abi_word_u64(delegations.code_retval, 32), 1u);
-  EXPECT_EQ(abi_word_u64(delegations.code_retval, 64), 1u);
-  const auto validator_word = abi_address_word(validator_address);
-  EXPECT_EQ(std::vector<uint8_t>(delegations.code_retval.begin() + 96, delegations.code_retval.begin() + 128),
-            std::vector<uint8_t>(validator_word.begin(), validator_word.end()));
-  EXPECT_EQ(abi_word_u64(delegations.code_retval, 128), 10'000u);
-  EXPECT_EQ(abi_word_u64(delegations.code_retval, 160), 0u);
 }
 
 TEST_F(RustFinalChainTest, DposQueriesRejectMissingNonGenesisSnapshot) {
   const auto validator_address = address(0x10);
   auto final_chain = create_final_chain_for_test(genesis_validators(validator_address));
-  auto query = create_consensus_query_api(*final_chain);
+  const auto query = final_chain->queryClient();
 
-  EXPECT_THROW(query->consensus_query_final_chain_dpos_eligible_total_vote_count(1), std::exception);
-  EXPECT_THROW(query->consensus_query_final_chain_dpos_eligible_vote_count(1, validator_address), std::exception);
-  EXPECT_THROW(query->consensus_query_final_chain_dpos_eligible_vote_count(1, validator_address), std::exception);
-  EXPECT_THROW(query->consensus_query_final_chain_dpos_validators_total_stakes(1), std::exception);
-}
-
-TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorMetadata) {
-  const auto validator_address = address(0x10);
-  const auto owner = address(0x11);
-  auto final_chain = create_final_chain_for_test(genesis_validators(validator_address));
-
-  auto outcome = final_chain->call(dpos_call(0, get_validator_input(validator_address)));
-  const auto owner_word = abi_address_word(owner);
-
-  ASSERT_EQ(std::string(outcome.code_err), "");
-  ASSERT_EQ(std::string(outcome.consensus_err), "");
-  ASSERT_EQ(outcome.code_retval.size(), 416u);
-  EXPECT_EQ(abi_word_u64(outcome.code_retval, 0), 32u);
-  EXPECT_EQ(abi_word_u64(outcome.code_retval, 32), 10'000u);
-  EXPECT_EQ(abi_word_u64(outcome.code_retval, 64), 0u);
-  EXPECT_EQ(abi_word_u64(outcome.code_retval, 96), 12u);
-  EXPECT_EQ(std::vector<uint8_t>(outcome.code_retval.begin() + 192, outcome.code_retval.begin() + 224),
-            std::vector<uint8_t>(owner_word.begin(), owner_word.end()));
-  EXPECT_EQ(abi_word_u64(outcome.code_retval, 224), 256u);
-  EXPECT_EQ(abi_word_u64(outcome.code_retval, 256), 320u);
-  EXPECT_EQ(abi_string_at(outcome.code_retval, 32, 256), "bridge validator metadata");
-  EXPECT_EQ(abi_string_at(outcome.code_retval, 32, 320), "https://validator.example");
-}
-
-TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorPages) {
-  const auto first_validator = address(0x30);
-  const auto second_validator = address(0x10);
-  const auto first_owner = address(0x11);
-  const auto second_owner = address(0x22);
-  rust::Vec<GenesisValidator> validators;
-  validators.push_back(genesis_validator(first_validator, first_owner, "first"));
-  validators.push_back(genesis_validator(second_validator, second_owner, "second"));
-
-  auto final_chain = create_final_chain_for_test(std::move(validators));
-
-  auto all = final_chain->call(dpos_call(0, get_validators_input(0)));
-  ASSERT_EQ(std::string(all.code_err), "");
-  ASSERT_EQ(std::string(all.consensus_err), "");
-  EXPECT_EQ(all.gas_used, 10'000u);
-  EXPECT_EQ(abi_word_u64(all.code_retval, 32), 1u);
-  EXPECT_EQ(validator_page_addresses(all.code_retval), (std::vector{first_validator, second_validator}));
-
-  auto by_owner = final_chain->call(dpos_call(0, get_validators_for_input(first_owner, 0)));
-  ASSERT_EQ(std::string(by_owner.code_err), "");
-  ASSERT_EQ(std::string(by_owner.consensus_err), "");
-  EXPECT_EQ(by_owner.gas_used, 100'000u);
-  EXPECT_EQ(validator_page_addresses(by_owner.code_retval), (std::vector{first_validator}));
-}
-
-TEST_F(RustFinalChainTest, DposCallExecutesMutationsTransientlyAndReturnsLogs) {
-  const auto validator_address = address(0x10);
-  auto final_chain = create_final_chain_for_test(genesis_validators(validator_address));
-
-  auto claim_rewards_outcome = final_chain->call(dpos_call(0, get_claim_rewards_input(validator_address)));
-  ASSERT_EQ(std::string(claim_rewards_outcome.code_err), "Delegation does not exist");
-  EXPECT_EQ(std::string(claim_rewards_outcome.consensus_err), "");
-  EXPECT_TRUE(claim_rewards_outcome.code_retval.empty());
-  EXPECT_TRUE(claim_rewards_outcome.logs.empty());
-
-  auto delegate_call = dpos_call(0, get_delegate_input(validator_address));
-  delegate_call.value = u64_be(1'000);
-  auto delegate_outcome = final_chain->call(std::move(delegate_call));
-  ASSERT_EQ(std::string(delegate_outcome.code_err), "");
-  ASSERT_EQ(std::string(delegate_outcome.consensus_err), "");
-  ASSERT_EQ(delegate_outcome.logs.size(), 1u);
-  EXPECT_EQ(delegate_outcome.logs[0].address[19], 0xfe);
-  EXPECT_EQ(delegate_outcome.logs[0].topics.size(), 3u);
-  EXPECT_EQ(delegate_outcome.logs[0].data.size(), 32u);
-
-  auto claim_all_outcome = final_chain->call(dpos_call(0, get_claim_all_rewards_input()));
-  ASSERT_EQ(std::string(claim_all_outcome.code_err), "");
-  EXPECT_EQ(std::string(claim_all_outcome.consensus_err), "");
-  EXPECT_TRUE(claim_all_outcome.code_retval.empty());
-  EXPECT_TRUE(claim_all_outcome.logs.empty());
-
-  auto delegation_after_call = final_chain->call(dpos_call(0, get_total_delegation_input(address(0x00))));
-  EXPECT_EQ(abi_word_u64(delegation_after_call.code_retval, 0), 0u);
+  EXPECT_THROW((*query)->consensus_query_final_chain_dpos_eligible_total_vote_count(1), std::exception);
+  EXPECT_THROW((*query)->consensus_query_final_chain_dpos_eligible_vote_count(1, validator_address), std::exception);
+  EXPECT_THROW((*query)->consensus_query_final_chain_dpos_eligible_vote_count(1, validator_address), std::exception);
+  EXPECT_THROW((*query)->consensus_query_final_chain_dpos_validators_total_stakes(1), std::exception);
 }

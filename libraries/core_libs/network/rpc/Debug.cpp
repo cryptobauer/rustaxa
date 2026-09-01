@@ -16,6 +16,7 @@
 #endif
 
 #ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
 
@@ -142,17 +143,23 @@ DebugTraceReader makeDebugTraceReader(std::weak_ptr<taraxa::AppBase> app
     if (!node) {
       throw std::runtime_error("DEBUG_TRACE_READER_APP_EXPIRED");
     }
-    if (tracing) {
-      return node->getFinalChain()->trace(std::move(state_trxs), std::move(trxs), block_number, std::move(*tracing));
-    }
-    return node->getFinalChain()->trace(std::move(state_trxs), std::move(trxs), block_number);
+#ifdef RUSTAXA_ENABLE
+    return node->getConsensusApplication()->trace(std::move(state_trxs), std::move(trxs), block_number,
+                                                  std::move(tracing));
+#else
+    return node->getFinalChain()->trace(std::move(state_trxs), std::move(trxs), block_number, std::move(tracing));
+#endif
   };
   reader.account_at = [app](const Address& address, EthBlockNumber block_number) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("DEBUG_TRACE_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    return node->getConsensusApplication()->getAccount(address, block_number);
+#else
     return node->getFinalChain()->getAccount(address, block_number);
+#endif
   };
   reader.latest_finalized_block_number = [app
 #ifdef RUSTAXA_ENABLE
@@ -554,7 +561,6 @@ DebugPeriodTransactionsReader makeDebugPeriodTransactionsReader(std::weak_ptr<ta
     if (!node) {
       throw std::runtime_error("DEBUG_PERIOD_TRANSACTIONS_READER_APP_EXPIRED");
     }
-    auto final_chain = node->getFinalChain();
 #ifdef RUSTAXA_ENABLE
     if (!consensus_query_api) {
       throw std::runtime_error("DEBUG_PERIOD_TRANSACTIONS_QUERY_UNAVAILABLE");
@@ -577,6 +583,7 @@ DebugPeriodTransactionsReader makeDebugPeriodTransactionsReader(std::weak_ptr<ta
     }
     return result;
 #else
+    auto final_chain = node->getFinalChain();
     auto block_hash = final_chain->blockHash(period);
     auto trxs = node->getDB()->getPeriodTransactions(period);
     if (!trxs.has_value() || trxs->empty()) {

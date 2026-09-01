@@ -5,14 +5,14 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <iterator>
 #include <stdexcept>
 #include <utility>
 
 #include "common/constants.hpp"
 #include "config/config.hpp"
 #include "config/version.hpp"
-#include "final_chain/final_chain.hpp"
-#include "final_chain/state_api.hpp"
+#include "consensus/external_evm_state_owner.hpp"
 
 namespace taraxa {
 namespace {
@@ -31,9 +31,7 @@ std::array<uint8_t, 32> toBridgeU256(const Value& value) {
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& value) {
   rust::Vec<uint8_t> out;
   out.reserve(value.size());
-  for (const auto byte : value) {
-    out.push_back(byte);
-  }
+  std::copy(value.begin(), value.end(), std::back_inserter(out));
   return out;
 }
 
@@ -71,9 +69,8 @@ SharedConsensusApplication createConsensusApplication(const FullNodeConfig& conf
   if (directory_error) {
     throw std::runtime_error("FINAL_CHAIN_STATE_DB_PARENT_CREATE_FAILED: " + directory_error.message());
   }
-  StateAPI state_api_descriptor_reader([](EthBlockNumber) { return ZeroHash(); }, config.genesis.state,
-                                       config.opts_final_chain, {(config.db_path / "state_db").string()});
-  const auto state_api_descriptor = state_api_descriptor_reader.get_last_committed_state_descriptor();
+  auto external_evm_state = std::make_shared<ExternalEvmStateOwner>(config);
+  const auto state_api_descriptor = external_evm_state->lastCommittedStateDescriptor();
   rustaxa::PbftServiceConfig pbft_config{};
   pbft_config.genesis_lambda_ms = config.genesis.pbft.lambda_ms;
   pbft_config.cacti_lambda_max_ms = config.genesis.state.hardforks.cacti_hf.lambda_max;
@@ -129,31 +126,39 @@ SharedConsensusApplication createConsensusApplication(const FullNodeConfig& conf
   dag_proposer_config.default_dag_gas_limit = config.genesis.dag.gas_limit;
   dag_proposer_config.cornus_dag_gas_limit = config.genesis.state.hardforks.cornus_hf.dag_gas_limit;
 
-  return std::make_shared<ConsensusApplication>(rustaxa::create_consensus_application(
-      config.db_path.string(), TARAXA_DB_MAJOR_VERSION, TARAXA_DB_MINOR_VERSION, config.genesis.genesisHash().asArray(),
-      config.genesis.dag_genesis_block.getHash().asArray(), config.dag_expiry_limit, config.max_levels_per_period,
-      sortitionRuntimeConfigFromNodeConfig(config), rustaxa::TransactionQueueConfig{config.transactions_pool_size},
-      gasPricerConfigFromNodeConfig(config), config.propose_dag_gas_limit, std::move(pbft_config),
-      std::move(signing_identities), std::move(dag_proposer_config), config.genesis.pbft.gas_limit,
-      config.genesis.dag_genesis_block.getTimestamp(), state_api_descriptor.blk_num,
-      state_api_descriptor.state_root.asArray(),
-      config.genesis.state.hardforks.ficus_hf.bridge_contract_address.asArray(),
-      final_chain::makeGenesisAccounts(config.genesis.state), final_chain::makeGenesisValidators(config.genesis.state),
-      final_chain::makeGenesisDposConfig(config.genesis.state.dpos,
-                                         config.genesis.state.hardforks.magnolia_hf.block_num),
-      final_chain::makeFinalChainRewardsConfig(config)));
+  auto application = std::make_shared<ConsensusApplication>(
+      rustaxa::create_consensus_application(
+          config.db_path.string(), TARAXA_DB_MAJOR_VERSION, TARAXA_DB_MINOR_VERSION,
+          config.genesis.genesisHash().asArray(), config.genesis.dag_genesis_block.getHash().asArray(),
+          config.dag_expiry_limit, config.max_levels_per_period, sortitionRuntimeConfigFromNodeConfig(config),
+          rustaxa::TransactionQueueConfig{config.transactions_pool_size}, gasPricerConfigFromNodeConfig(config),
+          config.propose_dag_gas_limit, std::move(pbft_config), std::move(signing_identities),
+          std::move(dag_proposer_config), config.genesis.pbft.gas_limit,
+          config.genesis.dag_genesis_block.getTimestamp(), state_api_descriptor.blk_num,
+          state_api_descriptor.state_root.asArray(),
+          config.genesis.state.hardforks.ficus_hf.bridge_contract_address.asArray(),
+          makeGenesisAccounts(config.genesis.state), makeGenesisValidators(config.genesis.state),
+          makeGenesisDposConfig(config.genesis.state.dpos, config.genesis.state.hardforks.magnolia_hf.block_num),
+          makeFinalChainRewardsConfig(config)),
+      external_evm_state);
+  external_evm_state->bindApplication(application);
+  application->recoverExternalEvmPendingPublication(application);
+  return application;
 }
 
-ConsensusApplication::ConsensusApplication(rust::Box<rustaxa::BridgeConsensusApplication> service)
+ConsensusApplication::ConsensusApplication(rust::Box<rustaxa::BridgeConsensusApplication> service,
+                                           std::shared_ptr<ExternalEvmStateOwner> external_evm_state)
     : service_(std::move(service)),
       query_client_(std::make_shared<rust::Box<rustaxa::BridgeConsensusQueryApi>>(
-          rustaxa::create_consensus_query_api(*service_))) {}
+          rustaxa::create_consensus_query_api(*service_))),
+      external_evm_state_(std::move(external_evm_state)) {
+  if (!external_evm_state_) throw std::invalid_argument("ConsensusApplication requires ExternalEvmStateOwner");
+}
 
 ConsensusApplication::~ConsensusApplication() = default;
 
-PublicTransactionSubmissionResult ConsensusApplication::submitTransaction(
-    const SharedTransaction& transaction, const FullNodeConfig& config,
-    const final_chain::FinalChain& final_chain) const {
+PublicTransactionSubmissionResult ConsensusApplication::submitTransaction(const SharedTransaction& transaction,
+                                                                          const FullNodeConfig& config) const {
   if (!transaction) {
     throw std::invalid_argument("PUBLIC_TRANSACTION_MISSING");
   }
@@ -168,18 +173,7 @@ PublicTransactionSubmissionResult ConsensusApplication::submitTransaction(
   request.last_block_number = last_block_number;
   request.cornus_active = config.genesis.state.hardforks.isOnCornusHardfork(last_block_number);
 
-  const auto sender = transaction->getSender();
-  const auto account = final_chain.getAccount(sender);
-  const auto location = (*query)->consensus_query_transaction_by_hash(transaction->getHash().asArray());
-  rustaxa::PublicTransactionFinalChainFacts final_chain_facts;
-  final_chain_facts.sender = sender.asArray();
-  final_chain_facts.account_found = account.has_value();
-  final_chain_facts.account_nonce = toBridgeU256(account.value_or(state_api::ZeroAccount).nonce);
-  final_chain_facts.account_balance = toBridgeU256(account.value_or(state_api::ZeroAccount).balance);
-  final_chain_facts.finalized_period_found = location.found && location.location_found;
-  final_chain_facts.finalized_period = final_chain_facts.finalized_period_found ? location.block_number : 0;
-
-  auto report = rustaxa::consensus_application_submit_transaction(service(), std::move(request), final_chain_facts);
+  auto report = rustaxa::consensus_application_submit_transaction(service(), std::move(request));
   auto result =
       PublicTransactionSubmissionResult{trx_hash_t(report.transaction_hash.data(), trx_hash_t::ConstructFromPointer),
                                         report.accepted, std::string(report.message), report.transaction_observed};
@@ -187,6 +181,35 @@ PublicTransactionSubmissionResult ConsensusApplication::submitTransaction(
     transaction_observed_.emit(result.transaction_hash);
   }
   return result;
+}
+
+std::optional<state_api::Account> ConsensusApplication::getAccount(const addr_t& address,
+                                                                   std::optional<EthBlockNumber> block_number) const {
+  return external_evm_state_->account(address, block_number);
+}
+
+h256 ConsensusApplication::getAccountStorage(const addr_t& address, const u256& key,
+                                             std::optional<EthBlockNumber> block_number) const {
+  return external_evm_state_->accountStorage(address, key, block_number);
+}
+
+bytes ConsensusApplication::getCode(const addr_t& address, std::optional<EthBlockNumber> block_number) const {
+  return external_evm_state_->code(address, block_number);
+}
+
+state_api::ExecutionResult ConsensusApplication::call(const state_api::EVMTransaction& transaction,
+                                                      std::optional<EthBlockNumber> block_number) const {
+  return external_evm_state_->call(transaction, block_number);
+}
+
+std::string ConsensusApplication::trace(std::vector<state_api::EVMTransaction> state_transactions,
+                                        std::vector<state_api::EVMTransaction> transactions,
+                                        EthBlockNumber block_number, std::optional<state_api::Tracing> params) const {
+  return external_evm_state_->trace(std::move(state_transactions), std::move(transactions), block_number, params);
+}
+
+void ConsensusApplication::pruneFinalChain(EthBlockNumber block_number) const {
+  external_evm_state_->prune(block_number);
 }
 
 ConsensusRuntimeStatus ConsensusApplication::runtimeStatus() const {

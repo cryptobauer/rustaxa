@@ -753,6 +753,21 @@ impl ConsensusQueryApi {
             .dpos_total_supply(block_number.into())
     }
 
+    /// Executes the deterministic native DPoS/slashing read-only call path.
+    ///
+    /// Arbitrary EVM calls remain a concrete StateAPI leaf. Keeping native
+    /// precompile semantics on this live query client prevents the physical
+    /// executor from becoming an alternate consensus implementation.
+    pub fn final_chain_native_call(
+        &self,
+        request: crate::FinalChainCallRequest,
+    ) -> Result<rustaxa_types::FinalChainCallOutcome> {
+        self.live_final_chain
+            .as_ref()
+            .context("CONSENSUS_QUERY_LIVE_FINAL_CHAIN_UNAVAILABLE")?
+            .call(request)
+    }
+
     /// Returns the exact persisted dynamic lambda for a finalized period.
     ///
     /// This is the public-query route for `taraxa_getPeriodLambda`. It

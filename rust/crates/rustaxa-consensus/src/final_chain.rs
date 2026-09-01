@@ -209,6 +209,34 @@ mod concrete_projection_tests {
     }
 
     #[test]
+    fn concrete_magnolia_validator_storage_preserves_embedded_rlp_shape() {
+        let path = temp_db_path("cornus-validator-storage-shape");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x31; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        let canonical = canonical_concrete_precompile_storage(&snapshot, true).unwrap();
+        let validator_key = concrete_storage_key(&[&[0, 0], &validator]);
+        let encoded = &canonical[&(DPOS_CONTRACT_ADDRESS, validator_key)][0];
+        let outer = rlp::Rlp::new(encoded);
+        assert_eq!(outer.item_count().unwrap(), 2);
+        assert_eq!(outer.at(0).unwrap().item_count().unwrap(), 4);
+        assert_eq!(outer.val_at::<u16>(1).unwrap(), 0);
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn concrete_final_storage_rejects_mutated_active_dpos_value() {
         let path = temp_db_path("mutated-active-dpos-storage");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -5266,7 +5294,7 @@ impl FinalChain {
             validate_concrete_precompile_storage_transition(
                 &dpos_before_effect,
                 &dpos_snapshot,
-                self.is_on_cornus(block_number),
+                !self.pre_magnolia_fee_reward_period(block_number),
                 &effect.storage,
                 "TRANSACTION",
             )?;
@@ -5294,7 +5322,7 @@ impl FinalChain {
         validate_concrete_precompile_final_storage(
             &dpos_before_rewards,
             &dpos_snapshot,
-            self.is_on_cornus(block_number),
+            !self.pre_magnolia_fee_reward_period(block_number),
             &projection.storage,
         )?;
         let accounts_before_rewards = accounts.clone();
@@ -9574,7 +9602,7 @@ fn insert_concrete_iterable_map(
 /// update, and deletion (including empty tombstones) before publication.
 fn canonical_concrete_precompile_storage(
     snapshot: &DposSnapshot,
-    cornus_active: bool,
+    extended_validator_active: bool,
 ) -> Result<ConcreteRawStorageMap, anyhow::Error> {
     let mut storage = ConcreteRawStorageMap::new();
 
@@ -9620,26 +9648,33 @@ fn canonical_concrete_precompile_storage(
             .map_err(|_| anyhow::anyhow!("DPoS undelegation count exceeds uint16"))?;
 
         let encode_validator = |extended: bool| {
-            let mut stream = rlp::RlpStream::new_list(if extended { 5 } else { 4 });
-            stream.append(&stake);
-            stream.append(&metadata.commission);
-            stream.append(&metadata.last_commission_change);
-            stream.append(&last_updated);
-            if extended {
-                stream.append(&undelegations_count);
+            let mut legacy = rlp::RlpStream::new_list(4);
+            legacy.append(&stake);
+            legacy.append(&metadata.commission);
+            legacy.append(&metadata.last_commission_change);
+            legacy.append(&last_updated);
+            let legacy = legacy.out().to_vec();
+            if !extended {
+                return legacy;
             }
-            stream.out().to_vec()
+            // Go's post-Cornus `Validator` embeds `*ValidatorV1`; its RLP is
+            // therefore `[validator_v1, undelegations_count]`, not a flattened
+            // five-field list.
+            let mut extended = rlp::RlpStream::new_list(2);
+            extended.append_raw(&legacy, 1);
+            extended.append(&undelegations_count);
+            extended.out().to_vec()
         };
         let validator_key = concrete_storage_key(&[&[0, 0], validator]);
         insert_concrete_storage_value(
             &mut storage,
             DPOS_CONTRACT_ADDRESS,
             validator_key,
-            encode_validator(cornus_active),
+            encode_validator(extended_validator_active),
         );
-        // A validator untouched since before Cornus may legitimately retain
+        // A validator untouched since before Magnolia may legitimately retain
         // the four-field representation when its extended count is zero.
-        if cornus_active && undelegations_count == 0 {
+        if extended_validator_active && undelegations_count == 0 {
             insert_concrete_storage_value(
                 &mut storage,
                 DPOS_CONTRACT_ADDRESS,
@@ -9865,12 +9900,12 @@ fn canonical_concrete_precompile_storage(
 fn validate_concrete_precompile_storage_transition(
     before: &DposSnapshot,
     after: &DposSnapshot,
-    cornus_active: bool,
+    extended_validator_active: bool,
     rows: &[FinalChainConcreteStorageProjection],
     boundary: &str,
 ) -> Result<(), anyhow::Error> {
-    let before = canonical_concrete_precompile_storage(before, cornus_active)?;
-    let after = canonical_concrete_precompile_storage(after, cornus_active)?;
+    let before = canonical_concrete_precompile_storage(before, extended_validator_active)?;
+    let after = canonical_concrete_precompile_storage(after, extended_validator_active)?;
     let actual = rows
         .iter()
         .map(|row| ((row.contract, row.key), row.value.as_slice()))
@@ -9909,11 +9944,12 @@ fn validate_concrete_precompile_storage_transition(
 fn validate_concrete_precompile_final_storage(
     before_rewards: &DposSnapshot,
     after_rewards: &DposSnapshot,
-    cornus_active: bool,
+    extended_validator_active: bool,
     rows: &[FinalChainConcreteStorageProjection],
 ) -> Result<(), anyhow::Error> {
-    let before = canonical_concrete_precompile_storage(before_rewards, cornus_active)?;
-    let final_storage = canonical_concrete_precompile_storage(after_rewards, cornus_active)?;
+    let before = canonical_concrete_precompile_storage(before_rewards, extended_validator_active)?;
+    let final_storage =
+        canonical_concrete_precompile_storage(after_rewards, extended_validator_active)?;
     let actual = rows
         .iter()
         .map(|row| ((row.contract, row.key), row.value.as_slice()))

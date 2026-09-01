@@ -229,19 +229,6 @@ pub mod rustaxa_ffi {
         cornus_active: bool,
     }
 
-    /// Exact FinalChain facts for the sender of one public transaction.
-    ///
-    /// `finalized_period_found == false` means the transaction is not present
-    /// in finalized storage and `finalized_period` is ignored.
-    struct PublicTransactionFinalChainFacts {
-        sender: [u8; 20],
-        account_found: bool,
-        account_nonce: [u8; 32],
-        account_balance: [u8; 32],
-        finalized_period_found: bool,
-        finalized_period: u64,
-    }
-
     /// Terminal native result for one operation-shaped public submission.
     ///
     /// Deterministic rejection is represented by `accepted == false`; bridge
@@ -868,22 +855,12 @@ pub mod rustaxa_ffi {
         redelegations: Vec<RedelegationCorrection>,
     }
 
-    struct AccountLookup {
-        found: bool,
-        /// Canonical minimal big-endian account nonce (empty means zero).
-        nonce: Vec<u8>,
-        balance: Vec<u8>,
-        storage_root_hash: [u8; 32],
-        code_hash: [u8; 32],
-        code_size: u64,
-    }
-
     struct DposValidatorStake {
         address: [u8; 20],
         stake: Vec<u8>,
     }
 
-    struct FinalChainCall {
+    struct FinalChainNativeCall {
         block_number: u64,
         sender: [u8; 20],
         receiver_found: bool,
@@ -894,22 +871,22 @@ pub mod rustaxa_ffi {
         input: Vec<u8>,
     }
 
-    struct FinalChainCallOutcome {
-        code_retval: Vec<u8>,
-        logs: Vec<FinalChainEvmLog>,
-        gas_used: u64,
-        code_err: String,
-        consensus_err: String,
-    }
-
-    struct FinalChainEvmLogTopic {
+    struct FinalChainNativeCallLogTopic {
         topic: [u8; 32],
     }
 
-    struct FinalChainEvmLog {
+    struct FinalChainNativeCallLog {
         address: [u8; 20],
-        topics: Vec<FinalChainEvmLogTopic>,
+        topics: Vec<FinalChainNativeCallLogTopic>,
         data: Vec<u8>,
+    }
+
+    struct FinalChainNativeCallOutcome {
+        code_retval: Vec<u8>,
+        logs: Vec<FinalChainNativeCallLog>,
+        gas_used: u64,
+        code_err: String,
+        consensus_err: String,
     }
 
     struct DagHash {
@@ -1103,6 +1080,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             block_number: u64,
         ) -> Result<Vec<u8>>;
+        pub fn consensus_query_final_chain_native_call(
+            self: &BridgeConsensusQueryApi,
+            request: FinalChainNativeCall,
+        ) -> Result<FinalChainNativeCallOutcome>;
         pub fn consensus_query_period_lambda_by_period(
             self: &BridgeConsensusQueryApi,
             period: u64,
@@ -1392,23 +1373,6 @@ pub mod rustaxa_ffi {
         pub fn consensus_application_submit_transaction(
             application: &BridgeConsensusApplication,
             request: PublicTransactionSubmissionRequest,
-            final_chain: PublicTransactionFinalChainFacts,
         ) -> Result<PublicTransactionSubmissionReport>;
-        /// Prunes native FinalChain lookup indexes below the retained block.
-        pub fn prune_final_chain_before(
-            self: &BridgeConsensusApplication,
-            first_to_keep: u64,
-        ) -> Result<u64>;
-        /// Exact native-account leaf retained by the hybrid public-state adapter.
-        pub fn get_account_at_block(
-            self: &BridgeConsensusApplication,
-            block_number: u64,
-            address: &[u8; 20],
-        ) -> Result<AccountLookup>;
-        /// Exact native-call leaf retained by the hybrid concrete-EVM adapter.
-        pub fn call(
-            self: &BridgeConsensusApplication,
-            request: FinalChainCall,
-        ) -> Result<FinalChainCallOutcome>;
     }
 }

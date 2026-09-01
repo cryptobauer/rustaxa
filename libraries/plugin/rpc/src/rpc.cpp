@@ -1,7 +1,7 @@
 #include "plugin/rpc.hpp"
 
-#include <chrono>
 #include <boost/program_options.hpp>
+#include <chrono>
 
 #include "graphql/http_processor.hpp"
 #include "graphql/ws_server.hpp"
@@ -54,9 +54,9 @@ std::shared_ptr<final_chain::FinalizationResult> finalizedResultFromQuery(
       throw std::runtime_error("FINALIZED_BLOCK_RECEIPT_QUERY_MISMATCH");
     }
     const auto transaction_rlp = dev::bytes(view.transaction_rlp.begin(), view.transaction_rlp.end());
-    std::shared_ptr<Transaction> transaction = view.is_system
-        ? std::static_pointer_cast<Transaction>(std::make_shared<SystemTransaction>(transaction_rlp))
-        : std::make_shared<Transaction>(transaction_rlp);
+    std::shared_ptr<Transaction> transaction =
+        view.is_system ? std::static_pointer_cast<Transaction>(std::make_shared<SystemTransaction>(transaction_rlp))
+                       : std::make_shared<Transaction>(transaction_rlp);
     if (transaction->getHash().asArray() != view.transaction_hash) {
       throw std::runtime_error("FINALIZED_BLOCK_TRANSACTION_HASH_MISMATCH");
     }
@@ -64,9 +64,11 @@ std::shared_ptr<final_chain::FinalizationResult> finalizedResultFromQuery(
     transactions.push_back(std::move(transaction));
     receipts.push_back(util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_rlp)));
   }
-  return std::make_shared<final_chain::FinalizationResult>(final_chain::FinalizationResult{
-      {header->author, header->timestamp, {}, header->hash}, std::move(header), std::move(transactions),
-      std::move(receipts)});
+  return std::make_shared<final_chain::FinalizationResult>(
+      final_chain::FinalizationResult{{header->author, header->timestamp, {}, header->hash},
+                                      std::move(header),
+                                      std::move(transactions),
+                                      std::move(receipts)});
 }
 }  // namespace
 #endif
@@ -121,9 +123,9 @@ void Rpc::start() {
 #endif
 
 #ifdef RUSTAXA_ENABLE
-    const auto sync_now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                              std::chrono::steady_clock::now().time_since_epoch())
-                              .count();
+    const auto sync_now =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
     const auto sync_status = (*query_api)->consensus_query_pbft_sync_status(sync_now);
     snapshot.pbft_syncing = sync_status.active;
     snapshot.syncing_seconds = sync_status.elapsed_ms / 1000;
@@ -175,7 +177,9 @@ void Rpc::start() {
     eth_rpc_params.address = app()->getAddress();
     eth_rpc_params.chain_id = conf.genesis.chain_id;
     eth_rpc_params.gas_limit = conf.genesis.dag.gas_limit;
+#ifndef RUSTAXA_ENABLE
     eth_rpc_params.final_chain = app()->getFinalChain();
+#endif
 #ifdef RUSTAXA_ENABLE
     eth_rpc_params.gas_pricer = [query = consensus_query_api]() {
       return dev::fromBigEndian<dev::u256>((*query)->consensus_query_live_transaction_status().gas_price_bid);
@@ -227,21 +231,26 @@ void Rpc::start() {
     };
     log_replay_api.transaction_receipts_by_block_number = eth_rpc_params.query_transaction_receipts_by_block_number;
     eth_rpc_params.query_log_replay = std::move(log_replay_api);
-    eth_rpc_params.query_account = [final_chain = app()->getFinalChain()](auto const &address, auto block_number) {
-      return final_chain->getAccount(address, block_number);
+    eth_rpc_params.query_account = [application = app()->getConsensusApplication()](auto const &address,
+                                                                                    auto block_number) {
+      return application->getAccount(address, block_number);
     };
-    eth_rpc_params.query_account_storage = [final_chain = app()->getFinalChain()](auto const &address, auto const &key,
-                                                                                  auto block_number) {
-      return final_chain->getAccountStorage(address, key, block_number);
+    eth_rpc_params.query_account_storage = [application = app()->getConsensusApplication()](
+                                               auto const &address, auto const &key, auto block_number) {
+      return application->getAccountStorage(address, key, block_number);
     };
-    eth_rpc_params.query_account_code = [final_chain = app()->getFinalChain()](auto const &address, auto block_number) {
-      return final_chain->getCode(address, block_number);
+    eth_rpc_params.query_account_code = [application = app()->getConsensusApplication()](auto const &address,
+                                                                                         auto block_number) {
+      return application->getCode(address, block_number);
+    };
+    eth_rpc_params.query_call = [application = app()->getConsensusApplication()](auto const &transaction,
+                                                                                 auto block_number) {
+      return application->call(transaction, block_number);
     };
 #endif
 #ifdef RUSTAXA_ENABLE
-    eth_rpc_params.send_trx = [application = app()->getConsensusApplication(), config = conf,
-                               final_chain = app()->getFinalChain()](auto const &trx) {
-      const auto report = application->submitTransaction(trx, config, *final_chain);
+    eth_rpc_params.send_trx = [application = app()->getConsensusApplication(), config = conf](auto const &trx) {
+      const auto report = application->submitTransaction(trx, config);
       if (!report.accepted) {
         BOOST_THROW_EXCEPTION(
             std::runtime_error(fmt("Transaction is rejected.\n"
@@ -326,14 +335,13 @@ void Rpc::start() {
     if (!conf.db_config.rebuild_db) {
 #ifdef RUSTAXA_ENABLE
       app()->getConsensusApplication()->finalizedBlockObserved().subscribe(
-          [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_), query = consensus_query_api]
-          (const FinalizedBlockObservation &observation) {
+          [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_),
+           query = consensus_query_api](const FinalizedBlockObservation &observation) {
             const auto res = finalizedResultFromQuery(query, observation);
 #else
       app()->getFinalChain()->block_finalized_.subscribe(
-          [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_)
-           , db = as_weak(app()->getDB())
-      ](const auto &res) {
+          [eth_json_rpc = as_weak(eth_json_rpc), ws = as_weak(jsonrpc_ws_),
+           db = as_weak(app()->getDB())](const auto &res) {
 #endif
             if (auto _eth_json_rpc = eth_json_rpc.lock()) {
               _eth_json_rpc->note_block_executed(*res->final_chain_blk, res->trxs, res->trx_receipts);
@@ -344,9 +352,11 @@ void Rpc::start() {
                 _ws->newEthBlock(*res->final_chain_blk, trx_hashes);
                 _ws->newLogs(*res->final_chain_blk, std::move(trx_hashes), res->trx_receipts);
 #ifdef RUSTAXA_ENABLE
-                const auto pbft_view = (*query)->consensus_query_pbft_schedule_block_by_period(res->final_chain_blk->number);
+                const auto pbft_view =
+                    (*query)->consensus_query_pbft_schedule_block_by_period(res->final_chain_blk->number);
                 if (pbft_view.found) {
-                  const auto pivot = blk_hash_t(pbft_view.dag_block_hash_as_pivot.data(), blk_hash_t::ConstructFromPointer);
+                  const auto pivot =
+                      blk_hash_t(pbft_view.dag_block_hash_as_pivot.data(), blk_hash_t::ConstructFromPointer);
                   if (pivot != kNullBlockHash) {
                     _ws->newDagBlockFinalized(pivot, pbft_view.period);
                   }
@@ -441,15 +451,15 @@ void Rpc::start() {
       auto gas_price_reader = graphql::taraxa::QueryGasPriceReader{[query = consensus_query_api]() {
         return dev::fromBigEndian<dev::u256>((*query)->consensus_query_live_transaction_status().gas_price_bid);
       }};
-      auto graphql_query = std::make_shared<graphql::taraxa::Query>(app()->getFinalChain(), std::move(gas_price_reader),
-                                                                    as_weak(app()->getNetwork()), conf.genesis.chain_id,
-                                                                    live_status_reader, consensus_query_api);
+      auto graphql_query = std::make_shared<graphql::taraxa::Query>(
+          graphql::taraxa::makeAccountStateReader(app()->getConsensusApplication()), std::move(gas_price_reader),
+          as_weak(app()->getNetwork()), conf.genesis.chain_id, live_status_reader, consensus_query_api);
 #endif
 #ifdef RUSTAXA_ENABLE
       graphql::taraxa::MutationTransactionApi mutation_api;
-      mutation_api.insert_transaction = [application = app()->getConsensusApplication(), config = conf,
-                                         final_chain = app()->getFinalChain()](const SharedTransaction &trx) {
-        const auto report = application->submitTransaction(trx, config, *final_chain);
+      mutation_api.insert_transaction = [application = app()->getConsensusApplication(),
+                                         config = conf](const SharedTransaction &trx) {
+        const auto report = application->submitTransaction(trx, config);
         return std::pair{report.accepted, report.message};
       };
       auto graphql_mutation = std::make_shared<graphql::taraxa::Mutation>(std::move(mutation_api));

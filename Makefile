@@ -20,6 +20,7 @@ RUST_MANIFEST?=rust/Cargo.toml
 REWRITE_CONSENSUS_TESTS?=rust_consensus_tests rpc_test network_test
 REWRITE_FINAL_CHAIN_TESTS?=rust_consensus_tests state_api_test rpc_test
 FINAL_CHAIN_CPP_BUILD_ROOT?=/tmp/rustaxa-final-chain-pure-cpp
+E02_PYTHON_TEST?=tests/test_concrete_root_recovery.py
 
 define require_cmake_build
 	@if [ ! -f "$(BUILD_OUTPUT_DIR)/CMakeCache.txt" ]; then \
@@ -218,6 +219,10 @@ rewrite-validate-smoke: ## Build taraxad and run a non-destructive Rust-enabled 
 		exit 1; \
 	fi
 	$(BUILD_OUTPUT_DIR)/bin/taraxad --version >/dev/null
+
+.PHONY: rewrite-validate-e02
+rewrite-validate-e02: rewrite-validate-final-chain-parity ## Run the CRW-E02 focused parity and full-node recovery gate.
+	cd tests/py && ./run.sh --node_executable_path "$(BUILD_OUTPUT_DIR)/bin/taraxad" "$(E02_PYTHON_TEST)" -s --tb=short
 
 .PHONY: cpp-intersection-list
 cpp-intersection-list: ## Print detected intersection paths (override via CPP_INTERSECTION_PATHS)

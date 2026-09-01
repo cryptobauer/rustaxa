@@ -16,8 +16,6 @@ struct HostFinalChainStateCommitRequest;
 struct HostFinalChainSystemFactsReport;
 struct HostFinalChainSystemFactsRequest;
 struct HostDagGasBatch;
-struct HostFinalChainAccountFactsReport;
-struct HostFinalChainAccountFactsRequest;
 struct HostGossipPillarVoteRequest;
 struct HostGossipDagBlockRequest;
 struct HostGossipVoteBundleRequest;
@@ -47,10 +45,6 @@ namespace taraxa {
 class ConsensusApplication;
 class FullNodeConfig;
 class Network;
-
-namespace final_chain {
-class FinalChain;
-}
 
 /**
  * Existing host-process bridge handle used by the native consensus runner.
@@ -159,8 +153,7 @@ class ConsensusTransportPort final {
  */
 class ExternalEvmPort final {
  public:
-  explicit ExternalEvmPort(std::shared_ptr<final_chain::FinalChain> final_chain);
-  explicit ExternalEvmPort(final_chain::FinalChain& final_chain);
+  explicit ExternalEvmPort(std::shared_ptr<ConsensusApplication> application);
   ~ExternalEvmPort();
 
   ExternalEvmPort(const ExternalEvmPort&) = delete;
@@ -184,9 +177,6 @@ class ExternalEvmPort final {
   /** Loads the exact finalized header/bridge facts needed for pillar restart recovery. */
   rustaxa::HostPillarAnchorStateReport consensusLoadPillarAnchorState(
       const rustaxa::HostPillarAnchorStateRequest& request) const;
-  /** Loads an ordered account batch from one exact FinalChain snapshot. */
-  rustaxa::HostFinalChainAccountFactsReport consensusLoadFinalChainAccountFacts(
-      const rustaxa::HostFinalChainAccountFactsRequest& request) const;
   /**
    * Estimates one ordered canonical transaction batch against concrete FinalChain state.
    *
@@ -212,8 +202,7 @@ class ExternalEvmPort final {
  */
 class ConsensusProcess final {
  public:
-  ConsensusProcess(std::shared_ptr<ConsensusApplication> application, const FullNodeConfig& config,
-                   std::shared_ptr<final_chain::FinalChain> final_chain);
+  ConsensusProcess(std::shared_ptr<ConsensusApplication> application, const FullNodeConfig& config);
   ~ConsensusProcess();
 
   ConsensusProcess(const ConsensusProcess&) = delete;

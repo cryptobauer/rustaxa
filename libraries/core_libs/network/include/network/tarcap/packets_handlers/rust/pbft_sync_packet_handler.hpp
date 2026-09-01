@@ -19,7 +19,7 @@ class RustPbftSyncPacketHandler final : public RustConsensusTransportPacketHandl
   RustPbftSyncPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                             std::shared_ptr<TimePeriodPacketsStats> packets_stats, net::ConsensusQueryClient pbft_chain,
                             network::ConsensusLiveStatusProvider consensus_status,
-                            std::shared_ptr<final_chain::FinalChain> final_chain,
+                            SharedConsensusApplication consensus_application,
                             network::ConsensusNetworkApiShared consensus_network_api, const addr_t& node_addr,
                             const std::string& logs_prefix = "");
   ~RustPbftSyncPacketHandler() override;
@@ -36,7 +36,7 @@ class RustPbftSyncPacketHandler final : public RustConsensusTransportPacketHandl
 
   bool executeSlashingTransaction(const network::PbftSyncSlashingTransaction& effect) const;
 
-  std::shared_ptr<final_chain::FinalChain> final_chain_;
+  SharedConsensusApplication consensus_application_;
   network::ConsensusNetworkApiShared consensus_network_api_;
   util::ThreadPool periodic_events_tp_;
 };

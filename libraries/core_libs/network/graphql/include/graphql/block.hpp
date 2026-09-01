@@ -24,18 +24,12 @@ struct BlockTransactionReader {
 
 class Block {
  public:
-  explicit Block(
-      std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-      std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
-      const ::taraxa::blk_hash_t& pbft_block_hash,
-      std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header
-#ifdef RUSTAXA_ENABLE
-      ,
-      std::function<uint64_t(::taraxa::EthBlockNumber)> transaction_count_query = {},
-      std::function<rustaxa::TransactionPublicView(::taraxa::EthBlockNumber, uint64_t)> transaction_query = {},
-      std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query = {}
+#ifndef RUSTAXA_ENABLE
+  explicit Block(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
+                 std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+                 const ::taraxa::blk_hash_t& pbft_block_hash,
+                 std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept;
 #endif
-      ) noexcept;
   explicit Block(AccountStateReader account_reader,
                  std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
                  const ::taraxa::blk_hash_t& pbft_block_hash,

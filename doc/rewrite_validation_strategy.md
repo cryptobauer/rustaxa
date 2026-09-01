@@ -194,6 +194,23 @@ intersection, or otherwise high-risk rewrite changes.
   `RUSTAXA_ENABLE` set to `ON`; otherwise the result may be
   C++ compared with C++ and must not be reported as Rust/C++ parity.
 
+- Concrete-root deployment and recovery evidence:
+
+  ```bash
+  make rewrite-validate-e02
+  ```
+
+  This runs the complete FinalChain differential first, then the focused Python 3.11 full-node gate for mixed native
+  transfer and arbitrary-EVM finalization, graceful and crash restart, timestamped paired-database rebuild, clean full
+  resync, and multi-node header/root/hash agreement. `tests/py/run.sh` accepts `PYTHON_BIN` for an explicit Python 3.11
+  executable. A missing interpreter or unavailable full-node dependency is a validation gap, not a pass. Keep
+  `CRW-E02` active until this gate and the native DPoS/slashing/reward differential evidence all pass; never substitute
+  an in-place synthetic-history rewrite or a link-only smoke test.
+
+  The 2026-08-31 closeout passed this composite gate and the complete two-test, five-node Python suite. The runner pins
+  Python dependencies and downloads Solidity 0.6.12 only by a fixed URL and SHA-256, so a clean environment can
+  reproduce the legacy Ethereum/RPC and concrete-root rebuild/recovery evidence without a system `solc` installation.
+
 - Pure C++ validation on `cpp-reference` for upstream sync work or C++ intersection changes. Use the repository
   intersection helpers to identify and carry the smallest applicable upstream-owned change, verify the staged patch,
   and run the required all-Rust-disabled build and tests on `cpp-reference`. A Rust-enabled result on `main` does not

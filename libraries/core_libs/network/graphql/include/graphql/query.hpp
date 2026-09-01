@@ -116,7 +116,7 @@ class Query {
 #endif
 #ifdef RUSTAXA_ENABLE
   /** Builds a public-query client over the native query API and retained account/network leaves. */
-  explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, QueryGasPriceReader gas_price_reader,
+  explicit Query(AccountStateReader account_reader, QueryGasPriceReader gas_price_reader,
                  std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
                  ::taraxa::net::LiveStatusReader live_status,
                  ::taraxa::net::ConsensusQueryApiPtr consensus_query_api) noexcept;

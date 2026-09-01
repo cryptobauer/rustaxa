@@ -434,14 +434,14 @@ pub struct PublicTransactionSubmissionRequest {
     pub cornus_active: bool,
 }
 
-/// Exact external-EVM facts needed to admit one canonical public transaction.
+/// Crate-private external-EVM facts needed to admit one canonical public transaction.
 ///
 /// The address is repeated so the native operation can reject reordered or
 /// stale host reports before mutating queue state. A missing account carries
 /// zero nonce and balance. `finalized_period` identifies an already-finalized
 /// transaction and preserves duplicate/public-result behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PublicTransactionFinalChainFacts {
+pub(crate) struct PublicTransactionFinalChainFacts {
     pub sender: [u8; 20],
     pub account_found: bool,
     pub account_nonce: U256,
@@ -550,7 +550,7 @@ impl DagTransactionService {
     /// mutation. Deterministic verification/admission rejection is returned as
     /// a successful report. Duplicate submissions preserve native known-first
     /// semantics and never repeat the observer effect.
-    pub fn submit_public_transaction(
+    pub(crate) fn submit_public_transaction(
         &self,
         request: PublicTransactionSubmissionRequest,
         final_chain: PublicTransactionFinalChainFacts,

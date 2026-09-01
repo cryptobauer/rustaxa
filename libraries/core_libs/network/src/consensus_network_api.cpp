@@ -12,7 +12,6 @@
 #ifdef RUSTAXA_ENABLE
 #include "consensus/consensus_application.hpp"
 #include "consensus/consensus_host_ports.hpp"
-#include "final_chain/final_chain.hpp"
 #include "network/consensus_query.hpp"
 #include "rustaxa-bridge/application_host_ffi.rs.h"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -132,24 +131,19 @@ rust::Vec<rustaxa::SlashingSubmitterIdentity> makeSlashingSubmitters(const FullN
 
 class ConsensusNetworkApi::Impl final {
  public:
-  Impl(SharedConsensusApplication consensus_application, std::shared_ptr<final_chain::FinalChain> final_chain,
-       ConsensusNetworkObservers observers)
-      : Impl(requireConsensusApplication(std::move(consensus_application)), std::move(final_chain),
-             std::move(observers), BoundRoot{}) {}
+  Impl(SharedConsensusApplication consensus_application, ConsensusNetworkObservers observers)
+      : Impl(requireConsensusApplication(std::move(consensus_application)), std::move(observers), BoundRoot{}) {}
 
  private:
   struct BoundRoot {};
 
-  Impl(SharedConsensusApplication consensus_application, std::shared_ptr<final_chain::FinalChain> final_chain,
-       ConsensusNetworkObservers observers, BoundRoot)
-      : final_chain(std::move(final_chain)),
-        external_evm(this->final_chain),
+  Impl(SharedConsensusApplication consensus_application, ConsensusNetworkObservers observers, BoundRoot)
+      : external_evm(consensus_application),
         api(rustaxa::create_consensus_network_api(consensus_application->service())),
         query(consensus_application->queryClient()),
         observers(std::move(observers)) {}
 
  public:
-  std::shared_ptr<final_chain::FinalChain> final_chain;
   ExternalEvmPort external_evm;
   rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
   taraxa::net::ConsensusQueryClient query;
@@ -160,9 +154,8 @@ class ConsensusNetworkApi::Impl final {
 };
 
 ConsensusNetworkApi::ConsensusNetworkApi(SharedConsensusApplication consensus_application,
-                                         std::shared_ptr<final_chain::FinalChain> final_chain,
                                          ConsensusNetworkObservers observers)
-    : impl_(std::make_unique<Impl>(std::move(consensus_application), std::move(final_chain), std::move(observers))) {}
+    : impl_(std::make_unique<Impl>(std::move(consensus_application), std::move(observers))) {}
 ConsensusNetworkApi::~ConsensusNetworkApi() = default;
 
 PbftSyncStatus ConsensusNetworkApi::pbftSyncStatus(uint64_t now_ms) const {
@@ -723,8 +716,7 @@ TransactionPacketOutcome ConsensusNetworkApi::ingestTransactionPacket(
   request.minimum_gas_price = toBridgeU256(val_t(config.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
   request.last_block_number = last_block_number;
   request.cornus_active = config.genesis.state.hardforks.isOnCornusHardfork(last_block_number);
-  const auto report =
-      rustaxa::consensus_network_ingest_transaction_packet(*impl_->api, std::move(request), impl_->external_evm);
+  const auto report = rustaxa::consensus_network_ingest_transaction_packet(*impl_->api, std::move(request));
 
   for (const auto& member : report.transactions) {
     if (member.observe_transaction && impl_->observers.transaction_observed) {
@@ -983,8 +975,7 @@ bool ConsensusNetworkApi::submitSlashingTransaction(size_t wallet_index, const s
   request.minimum_gas_price = toBridgeU256(val_t(config.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
   request.last_block_number = last_block_number;
   request.cornus_active = config.genesis.state.hardforks.isOnCornusHardfork(last_block_number);
-  const auto submission = rustaxa::consensus_network_submit_transaction_with_execution(*impl_->api, std::move(request),
-                                                                                       impl_->external_evm);
+  const auto submission = rustaxa::consensus_network_submit_transaction(*impl_->api, std::move(request));
   return submission.accepted;
 }
 

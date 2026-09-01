@@ -48,12 +48,17 @@ class ChainTester:
                  auto_test_tx_and_blk_filters=False,
                  default_tx_signer=NO_SIGNER,
                  sync_timeout_per_blk_per_node=Timeout(num_attempts=240, backoff_seconds=1),
-                 nonce_strategy=DefaultNonceStrategy()):
+                 nonce_strategy=None,
+                 expected_block_gas_limit=9007199254740991,
+                 require_quiescent_tip=True):
         self.default_tx_signer = default_tx_signer
         self.sync_timeout_per_blk_per_node = sync_timeout_per_blk_per_node
 
         self._cluster = cluster
-        self._nonce_strategy = nonce_strategy
+        # A nonce cursor is stateful and must be private to one chain harness.
+        self._nonce_strategy = nonce_strategy or DefaultNonceStrategy()
+        self._expected_block_gas_limit = expected_block_gas_limit
+        self._require_quiescent_tip = require_quiescent_tip
         self._pending_trxs: Dict[HexBytes, ChainTester._PendingTransaction] = {}
         self._executed_trxs: Dict[HexBytes, TxData] = {}
         self._receipts: Dict[HexBytes, TxReceipt] = {}
@@ -77,7 +82,8 @@ class ChainTester:
         sync_results = []
         while self._pending_trxs:
             sync_results.append(self._sync_next_block())
-        self._get_block(len(self._blocks_by_num), expect_absent=True)
+        if self._require_quiescent_tip:
+            self._get_block(len(self._blocks_by_num), expect_absent=True)
         if self._track_balances:
             print("checking balances...")
         final_balances_to_check = {}
@@ -199,7 +205,7 @@ class ChainTester:
         assert blk.miner in {node.account.address for node in self._cluster}
         assert blk.miner == to_checksum_address(blk.author)
         assert blk.extraData == bytes()
-        assert blk.gasLimit == 9007199254740991
+        assert blk.gasLimit == self._expected_block_gas_limit
         assert blk.mixHash == bytes(32)
         assert blk.nonce == bytes(8)
         assert blk.sha3Uncles == HexBytes('0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347')
@@ -213,6 +219,7 @@ class ChainTester:
             pending_tx = self._pending_trxs.pop(tx.hash, None)
             assert pending_tx is not None, f"transaction {tx} is not known as pending"
             from_addr = getattr(tx, 'from')
+            tx_to = tx.get('to')
             contract_deployment = self._contract_deployments_by_trx_hash.get(tx.hash, None)
             try:
                 assert tx.hash not in self._executed_trxs
@@ -226,12 +233,14 @@ class ChainTester:
                 assert receipt.status == (1 if pending_tx.expectation.is_ok else 0)
                 assert 'root' not in receipt
                 assert getattr(receipt, 'from') == from_addr
-                assert receipt.to == tx.to
+                # Web3 v6 omits `to` from contract-creation receipts instead
+                # of exposing it as an AttributeDict field containing None.
+                assert receipt.get('to') == tx_to
                 assert receipt.transactionHash == tx.hash
                 assert receipt.blockNumber == blk_n
                 assert receipt.blockHash == blk.hash
                 assert receipt.transactionIndex == tx_i
-                if not tx.to:
+                if not tx_to:
                     assert receipt.contractAddress
                     assert contract_deployment
                     contract_deployment.address = receipt.contractAddress
@@ -258,24 +267,24 @@ class ChainTester:
                 raise AssertionError(pending_tx.error_msg) from e
             self._executed_trxs[tx.hash] = tx
             if self._track_balances:
-                for addr in [from_addr, tx.to]:
+                for addr in [from_addr, tx_to]:
                     if addr and addr not in tracked_balances:
                         tracked_balances[addr] = self._cluster.node().eth.get_balance(addr, block_identifier=blk_n - 1)
                 # TODO [1620]: remove this when gas is enabled
                 # tracked_balances[from_addr] -= (tx.value + tx.gasPrice * receipt.gasUsed)
                 tracked_balances[from_addr] -= tx.value
-                if tx.to:
-                    tracked_balances[tx.to] += tx.value
+                if tx_to:
+                    tracked_balances[tx_to] += tx.value
         self._blocks_by_num.append(blk)
         return blk, tracked_balances
 
     def _get_correct_nonce(self, node, address):
         node_nonce = node.eth.get_transaction_count(address)
         local_nonce = self._nonce_strategy(address)
-        if(node_nonce == 0 or local_nonce > node_nonce):
+        if local_nonce >= node_nonce:
             return local_nonce
-        self._nonce_strategy.update(node_nonce + 1)
-        return node_nonce + 1
+        self._nonce_strategy.update(address, node_nonce + 1)
+        return node_nonce
 
     def _send_tx(self, tx: TxParams, node_index=None, signer: Optional[BaseAccount] = None,
                  expectation=TransactionExpectation()):
@@ -324,7 +333,12 @@ class ChainTester:
                 with_from = {'from': signer.address}
                 tx_params = TxParams(**with_from, **tx_params) if tx_params else TxParams(**with_from)
             if estimate_gas:
-                return bound_method.estimateGas(tx_params, dry_run_block_id)
+                return bound_method.estimate_gas(tx_params, block_identifier=dry_run_block_id)
             return bound_method.call(tx_params, dry_run_block_id)
-        return self._send_tx(bound_method.buildTransaction(tx_params),
+        # Taraxa exposes legacy gas-price transactions, not EIP-1559 fee RPCs.
+        # Supplying gasPrice before web3 fills defaults prevents it from probing
+        # eth_maxPriorityFeePerGas/eth_feeHistory on every contract mutation.
+        tx_params = dict(tx_params or {})
+        tx_params.setdefault('gasPrice', node.eth.gas_price)
+        return self._send_tx(bound_method.build_transaction(tx_params),
                              node_index=node_index, signer=signer, expectation=expectation)

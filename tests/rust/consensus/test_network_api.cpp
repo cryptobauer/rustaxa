@@ -93,9 +93,9 @@ rust::Vec<uint8_t> bridgeBytes(const dev::bytes& bytes) {
 
 TEST(ConsensusObserverBridgeTest, canonicalPillarDataPublishesThroughHostPort) {
   TemporaryStorageDirectory directory;
-  auto application = std::make_shared<taraxa::ConsensusApplication>(
-      rustaxa::test::createConsensusApplication(directory.path, serviceConfig()));
   taraxa::FullNodeConfig config{};
+  config.db_path = directory.path;
+  auto application = taraxa::createConsensusApplication(config);
   taraxa::ConsensusProcessPort process(config, application);
   auto block = std::make_shared<taraxa::pillar_chain::PillarBlock>(
       21, dev::h256(1), taraxa::blk_hash_t(2), dev::h256(3), 4,
@@ -127,9 +127,9 @@ TEST(ConsensusObserverBridgeTest, canonicalPillarDataPublishesThroughHostPort) {
 
 TEST(ConsensusObserverBridgeTest, rejectsMismatchedAndMalformedPillarData) {
   TemporaryStorageDirectory directory;
-  auto application = std::make_shared<taraxa::ConsensusApplication>(
-      rustaxa::test::createConsensusApplication(directory.path, serviceConfig()));
   taraxa::FullNodeConfig config{};
+  config.db_path = directory.path;
+  auto application = taraxa::createConsensusApplication(config);
   taraxa::ConsensusProcessPort process(config, application);
   auto block = std::make_shared<taraxa::pillar_chain::PillarBlock>(
       21, dev::h256(1), taraxa::blk_hash_t(2), dev::h256(3), 4,

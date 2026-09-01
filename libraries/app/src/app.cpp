@@ -17,7 +17,11 @@
 #include "dag/dag_block_proposer.hpp"
 #include "dag/dag_manager.hpp"
 #endif
+#ifdef RUSTAXA_ENABLE
+#include "final_chain/data.hpp"
+#else
 #include "final_chain/final_chain.hpp"
+#endif
 #ifndef RUSTAXA_ENABLE
 #include "key_manager/key_manager.hpp"
 #endif
@@ -27,6 +31,7 @@
 #include "metrics/transaction_queue_metrics.hpp"
 #include "network/network.hpp"
 #ifdef RUSTAXA_ENABLE
+#include "consensus/consensus_application.hpp"
 #include "consensus/consensus_host_ports.hpp"
 #include "network/consensus_network_api.hpp"
 #include "network/consensus_query.hpp"
@@ -198,9 +203,7 @@ void App::init(const cli::Config &cli_conf) {
   }
 
 #ifdef RUSTAXA_ENABLE
-  final_chain_ =
-      std::make_shared<final_chain::FinalChain>(conf_.db_path / "state_db", conf_, node_addr, consensus_application_);
-  consensus_process_ = std::make_unique<ConsensusProcess>(consensus_application_, conf_, final_chain_);
+  consensus_process_ = std::make_unique<ConsensusProcess>(consensus_application_, conf_);
 #else
   final_chain_ = std::make_shared<final_chain::FinalChain>(db_, conf_, node_addr);
 #endif
@@ -293,9 +296,9 @@ void App::init(const cli::Config &cli_conf) {
       pillar_chain_mgr_,
 #endif
 #ifdef RUSTAXA_ENABLE
-      final_chain_,
+      consensus_application_,
       std::make_shared<network::ConsensusNetworkApi>(
-          consensus_application_, final_chain_,
+          consensus_application_,
           network::ConsensusNetworkObservers{
               [application = consensus_application_](const std::vector<uint8_t> &canonical_block_rlp) {
                 try {

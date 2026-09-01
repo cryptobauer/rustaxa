@@ -749,8 +749,10 @@ class EthImpl : public Eth, EthParams {
     if (query_account) {
       return query_account(addr, n);
     }
-#endif
+    throw std::runtime_error("Consensus account query is unavailable");
+#else
     return final_chain->getAccount(addr, n);
+#endif
   }
 
   h256 account_storage(const Address& addr, const u256& key, EthBlockNumber n) const {
@@ -758,8 +760,10 @@ class EthImpl : public Eth, EthParams {
     if (query_account_storage) {
       return query_account_storage(addr, key, n);
     }
-#endif
+    throw std::runtime_error("Consensus account-storage query is unavailable");
+#else
     return final_chain->getAccountStorage(addr, key, n);
+#endif
   }
 
   bytes account_code(const Address& addr, EthBlockNumber n) const {
@@ -767,24 +771,24 @@ class EthImpl : public Eth, EthParams {
     if (query_account_code) {
       return query_account_code(addr, n);
     }
-#endif
+    throw std::runtime_error("Consensus account-code query is unavailable");
+#else
     return final_chain->getCode(addr, n);
+#endif
   }
 
   state_api::ExecutionResult call(EthBlockNumber blk_n, const TransactionSkeleton& trx) {
-    const auto result = final_chain->call(
-        {
-            trx.from,
-            trx.gas_price.value_or(0),
-            trx.to,
-            trx.nonce.value_or(0),
-            trx.value,
-            trx.gas.value_or(0),
-            trx.data,
-        },
-        blk_n);
-
-    return result;
+    const auto request = state_api::EVMTransaction{
+        trx.from, trx.gas_price.value_or(0), trx.to, trx.nonce.value_or(0), trx.value, trx.gas.value_or(0), trx.data,
+    };
+#ifdef RUSTAXA_ENABLE
+    if (query_call) {
+      return query_call(request, blk_n);
+    }
+    throw std::runtime_error("Consensus call query is unavailable");
+#else
+    return final_chain->call(request, blk_n);
+#endif
   }
 
   // this should be used only in eth_call and eth_estimateGas

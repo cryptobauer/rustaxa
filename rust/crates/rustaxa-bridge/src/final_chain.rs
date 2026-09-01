@@ -1,28 +1,5 @@
 use crate::ffi::rustaxa_ffi;
-use crate::ffi::BridgeApp;
-use rustaxa_consensus::Account;
 use rustaxa_consensus::ConsensusFinalChainConfig;
-
-pub(crate) fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
-    match account {
-        Some(account) => rustaxa_ffi::AccountLookup {
-            found: true,
-            nonce: account.nonce.to_bytes(),
-            balance: account.balance.to_snapshot_bytes(),
-            storage_root_hash: account.storage_root_hash,
-            code_hash: account.code_hash,
-            code_size: account.code_size,
-        },
-        None => rustaxa_ffi::AccountLookup {
-            found: false,
-            nonce: vec![],
-            balance: vec![],
-            storage_root_hash: [0; 32],
-            code_hash: [0; 32],
-            code_size: 0,
-        },
-    }
-}
 
 fn genesis_account_from_ffi(
     account: rustaxa_ffi::GenesisAccount,
@@ -31,46 +8,6 @@ fn genesis_account_from_ffi(
         address: account.address,
         balance: rustaxa_types::FinalChainAccountBalance::from_cpp_genesis_bytes(&account.balance)?,
     })
-}
-
-pub(crate) fn final_chain_call_request_from_ffi(
-    request: rustaxa_ffi::FinalChainCall,
-) -> Result<rustaxa_consensus::FinalChainCallRequest, anyhow::Error> {
-    Ok(rustaxa_consensus::FinalChainCallRequest {
-        block_number: request.block_number.into(),
-        sender: request.sender,
-        receiver: request.receiver_found.then_some(request.receiver),
-        value: rustaxa_types::FinalChainTransactionValue::try_from(request.value.as_slice())
-            .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_TRANSACTION_VALUE_EXCEEDS_U256"))?,
-        gas_price: rustaxa_types::FinalChainGasPrice::try_from(request.gas_price.as_slice())
-            .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256"))?,
-        gas_limit: request.gas_limit.into(),
-        input: request.input,
-    })
-}
-
-pub(crate) fn final_chain_call_outcome_to_ffi(
-    outcome: rustaxa_types::FinalChainCallOutcome,
-) -> rustaxa_ffi::FinalChainCallOutcome {
-    rustaxa_ffi::FinalChainCallOutcome {
-        code_retval: outcome.code_retval,
-        logs: outcome
-            .logs
-            .into_iter()
-            .map(|log| rustaxa_ffi::FinalChainEvmLog {
-                address: log.address,
-                topics: log
-                    .topics
-                    .into_iter()
-                    .map(|topic| rustaxa_ffi::FinalChainEvmLogTopic { topic })
-                    .collect(),
-                data: log.data,
-            })
-            .collect(),
-        gas_used: outcome.gas_used.as_u64(),
-        code_err: outcome.code_err,
-        consensus_err: outcome.consensus_err,
-    }
 }
 
 pub(crate) fn genesis_dpos_config_from_ffi(
@@ -236,47 +173,4 @@ pub(crate) fn genesis_validators_from_ffi(
             }
         })
         .collect()
-}
-
-impl BridgeApp {
-    /// Prunes native FinalChain lookup indexes without exposing a batch or repository handle.
-    pub fn prune_final_chain_before(
-        self: &BridgeApp,
-        first_to_keep: u64,
-    ) -> Result<u64, anyhow::Error> {
-        self.0
-            .final_chain_for_bridge()
-            .prune_block_indexes_before(first_to_keep)
-    }
-
-    /// Reads an exact native account snapshot for the retained public-state adapter.
-    ///
-    /// This operation remains application-root bound because the C++ adapter
-    /// composes it with the concrete `state_db` head. It is not part of the
-    /// general public consensus query facade and exposes no FinalChain handle.
-    pub fn get_account_at_block(
-        self: &BridgeApp,
-        block_number: u64,
-        address: &[u8; 20],
-    ) -> Result<rustaxa_ffi::AccountLookup, anyhow::Error> {
-        Ok(account_to_lookup(
-            self.0
-                .final_chain_for_bridge()
-                .account_at_block(block_number.into(), *address)?,
-        ))
-    }
-
-    /// Executes the native read-only call subset for the retained hybrid EVM adapter.
-    ///
-    /// Arbitrary EVM calls remain in C++ `StateAPI`; this leaf handles only native FinalChain calls.
-    pub fn call(
-        self: &BridgeApp,
-        request: rustaxa_ffi::FinalChainCall,
-    ) -> Result<rustaxa_ffi::FinalChainCallOutcome, anyhow::Error> {
-        let outcome = self
-            .0
-            .final_chain_for_bridge()
-            .call(final_chain_call_request_from_ffi(request)?)?;
-        Ok(final_chain_call_outcome_to_ffi(outcome))
-    }
 }

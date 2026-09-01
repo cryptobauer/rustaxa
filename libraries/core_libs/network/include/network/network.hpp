@@ -53,10 +53,10 @@ class Network {
           std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
           std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
 #endif
-          std::shared_ptr<final_chain::FinalChain> final_chain
 #ifdef RUSTAXA_ENABLE
-          ,
-          network::ConsensusNetworkApiShared consensus_network_api
+          SharedConsensusApplication consensus_application, network::ConsensusNetworkApiShared consensus_network_api
+#else
+          std::shared_ptr<final_chain::FinalChain> final_chain
 #endif
   );
 

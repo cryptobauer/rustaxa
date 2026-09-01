@@ -111,9 +111,10 @@ TaraxaCapability::TaraxaCapability(
     std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
     std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
 #endif
-    std::shared_ptr<final_chain::FinalChain> final_chain,
 #ifdef RUSTAXA_ENABLE
-    network::ConsensusNetworkApiShared consensus_network_api,
+    SharedConsensusApplication consensus_application, network::ConsensusNetworkApiShared consensus_network_api,
+#else
+    std::shared_ptr<final_chain::FinalChain> final_chain,
 #endif
     InitPacketsHandlers init_packets_handlers)
     : version_(version),
@@ -152,7 +153,11 @@ TaraxaCapability::TaraxaCapability(
 #ifndef RUSTAXA_ENABLE
                                             vote_mgr, dag_mgr, trx_mgr, slashing_manager, pillar_chain_mgr,
 #endif
+#ifdef RUSTAXA_ENABLE
+                                            consensus_application, version, node_addr);
+#else
                                             final_chain, version, node_addr);
+#endif
 
   // Must be called after init_packets_handlers
   thread_pool_->setPacketsHandlers(version, packets_handlers_);
@@ -489,7 +494,11 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
        const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
        const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
 #endif
-       [[maybe_unused]] const std::shared_ptr<final_chain::FinalChain> &final_chain,
+#ifdef RUSTAXA_ENABLE
+       const SharedConsensusApplication &consensus_application,
+#else
+       const std::shared_ptr<final_chain::FinalChain> &final_chain,
+#endif
        [[maybe_unused]] TarcapVersion version, const addr_t &node_addr) {
       auto packets_handlers = std::make_shared<PacketsHandler>();
       // Consensus packets with high processing priority
@@ -613,8 +622,8 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
                                                                logs_prefix);
 #else
       packets_handlers->registerHandler<RustPbftSyncPacketHandler>(config, peers_state, packets_stats, pbft_chain,
-                                                                   consensus_status, final_chain, consensus_network_api,
-                                                                   node_addr, logs_prefix);
+                                                                   consensus_status, consensus_application,
+                                                                   consensus_network_api, node_addr, logs_prefix);
 #endif
       packets_handlers->registerHandler<
 #ifdef RUSTAXA_ENABLE
@@ -658,7 +667,7 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
 
 #ifdef RUSTAXA_ENABLE
       packets_handlers->registerHandler<RustPbftBlocksBundlePacketHandler>(
-          config, peers_state, packets_stats, consensus_network_api, final_chain, node_addr, logs_prefix);
+          config, peers_state, packets_stats, consensus_network_api, node_addr, logs_prefix);
 #else
       packets_handlers->registerHandler<PbftBlocksBundlePacketHandler>(
           config, peers_state, packets_stats, pbft_mgr, final_chain, pbft_syncing_state, node_addr, logs_prefix);
@@ -687,7 +696,11 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
        const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
        const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
 #endif
+#ifdef RUSTAXA_ENABLE
+       [[maybe_unused]] const SharedConsensusApplication &consensus_application,
+#else
        [[maybe_unused]] const std::shared_ptr<final_chain::FinalChain> &final_chain,
+#endif
        [[maybe_unused]] TarcapVersion version, const addr_t &node_addr) {
       auto packets_handlers = std::make_shared<PacketsHandler>();
       // Consensus packets with high processing priority
@@ -811,8 +824,8 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
                                                                logs_prefix);
 #else
       packets_handlers->registerHandler<RustPbftSyncPacketHandler>(config, peers_state, packets_stats, pbft_chain,
-                                                                   consensus_status, final_chain, consensus_network_api,
-                                                                   node_addr, logs_prefix);
+                                                                   consensus_status, consensus_application,
+                                                                   consensus_network_api, node_addr, logs_prefix);
 #endif
       packets_handlers->registerHandler<
 #ifdef RUSTAXA_ENABLE

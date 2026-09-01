@@ -4,7 +4,7 @@
 #include <chrono>
 #include <stdexcept>
 
-#include "final_chain/final_chain.hpp"
+#include "consensus/consensus_application.hpp"
 #include "network/consensus_query.hpp"
 #include "transaction/transaction.hpp"
 
@@ -20,11 +20,12 @@ std::array<uint8_t, 32> toBridgeU256(const u256& value) {
 }
 
 std::vector<network::PbftSyncSlashingSubmitterFact> makeSlashingSubmitterFacts(
-    const FullNodeConfig& config, const std::shared_ptr<final_chain::FinalChain>& final_chain) {
+    const FullNodeConfig& config, const SharedConsensusApplication& consensus_application) {
   std::vector<network::PbftSyncSlashingSubmitterFact> submitters;
   submitters.reserve(config.wallets.size());
   for (size_t index = 0; index < config.wallets.size(); ++index) {
-    const auto account = final_chain->getAccount(config.wallets[index].node_addr).value_or(state_api::ZeroAccount);
+    const auto account =
+        consensus_application->getAccount(config.wallets[index].node_addr).value_or(state_api::ZeroAccount);
     submitters.push_back({index, toBridgeU256(account.nonce), toBridgeU256(account.balance)});
     if (account.balance != 0) {
       break;
@@ -46,12 +47,12 @@ constexpr uint8_t kPbftSyncStopTransportFailed = 4;
 RustPbftSyncPacketHandler::RustPbftSyncPacketHandler(
     const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats, net::ConsensusQueryClient pbft_chain,
-    network::ConsensusLiveStatusProvider consensus_status, std::shared_ptr<final_chain::FinalChain> final_chain,
+    network::ConsensusLiveStatusProvider consensus_status, SharedConsensusApplication consensus_application,
     network::ConsensusNetworkApiShared consensus_network_api, const addr_t& node_addr, const std::string& logs_prefix)
     : RustConsensusTransportPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_chain),
                                           std::move(consensus_status), consensus_network_api, node_addr,
                                           logs_prefix + "PBFT_SYNC_PH"),
-      final_chain_(std::move(final_chain)),
+      consensus_application_(std::move(consensus_application)),
       consensus_network_api_(std::move(consensus_network_api)),
       periodic_events_tp_(1, true) {}
 
@@ -71,7 +72,7 @@ void RustPbftSyncPacketHandler::process(const threadpool::PacketData& packet_dat
 
   const auto packet_rlp = packet_data.rlp_.data().toBytes();
   const auto ingress = consensus_network_api_->admitPbftSyncPacket(
-      packet_rlp, packet_data.id_, peer->getId().asArray(), makeSlashingSubmitterFacts(kConf, final_chain_),
+      packet_rlp, packet_data.id_, peer->getId().asArray(), makeSlashingSubmitterFacts(kConf, consensus_application_),
       network::PbftSyncIngressExecutor{[this](const auto& effect) { return executeSlashingTransaction(effect); }});
   if (ingress.action == network::PbftSyncIngressAction::kMalicious) {
     LOG(log_er_) << "Native PBFT-sync ingress rejected packet: " << ingress.error_code;

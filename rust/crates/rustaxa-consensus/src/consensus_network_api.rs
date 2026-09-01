@@ -257,25 +257,22 @@ impl ConsensusNetworkApi {
 
     /// Decodes a transaction packet, admits each canonical member through the
     /// application ingress owner, and queues exact native network effects.
-    pub fn ingest_transaction_packet<E: ConsensusExecutionPort>(
+    pub fn ingest_transaction_packet(
         &self,
         context: NetworkTransactionPacketContext,
         packet_rlp: &[u8],
         policy: PublicTransactionSubmissionRequest,
-        execution: &E,
     ) -> Result<NetworkTransactionPacketReport> {
         let peer_id = context.peer_id;
         self.network
             .ingest_transaction_packet(context, packet_rlp, |transaction_rlp| {
                 let mut submission = policy.clone();
                 submission.transaction_rlp = transaction_rlp;
-                self.ingress.ingest_transaction_packet(
-                    TransactionPacketIngressRequest {
+                self.ingress
+                    .ingest_transaction_packet(TransactionPacketIngressRequest {
                         submission,
                         peer_id,
-                    },
-                    execution,
-                )
+                    })
             })
     }
 
@@ -343,13 +340,12 @@ impl ConsensusNetworkApi {
 
     /// Submits a host-signed canonical transaction through the same native
     /// ingress owner used by network packets.
-    pub fn submit_transaction_with_execution<E: ConsensusExecutionPort>(
+    pub fn submit_transaction_from_native_state(
         &self,
         request: PublicTransactionSubmissionRequest,
-        execution: &E,
     ) -> Result<PublicTransactionSubmissionReport> {
         self.ingress
-            .submit_public_transaction_with_execution(request, execution)
+            .submit_public_transaction_from_native_state(request)
     }
 
     /// Resolves native DAG/transaction inputs and publishes one bounded egress

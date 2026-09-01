@@ -62,9 +62,9 @@ LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBa
 #endif
 
 #ifdef RUSTAXA_ENABLE
-  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now().time_since_epoch())
-                          .count();
+  const auto now_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+          .count();
   const auto sync_status = (*query)->consensus_query_pbft_sync_status(now_ms);
   snapshot.pbft_syncing = sync_status.active;
   snapshot.syncing_seconds = sync_status.elapsed_ms / 1000;
@@ -112,7 +112,11 @@ TestTransactionApi makeTestTransactionApi(std::weak_ptr<taraxa::AppBase> app) {
     if (!node) {
       throw std::runtime_error("TEST_TRANSACTION_API_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    return node->getConsensusApplication()->getAccount(address).value().nonce.convert_to<uint64_t>() + 1;
+#else
     return node->getFinalChain()->getAccount(address).value().nonce.convert_to<uint64_t>() + 1;
+#endif
   };
   api.insert_transaction = [app](const SharedTransaction &trx) {
     auto node = app.lock();
@@ -120,8 +124,7 @@ TestTransactionApi makeTestTransactionApi(std::weak_ptr<taraxa::AppBase> app) {
       throw std::runtime_error("TEST_TRANSACTION_API_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto report =
-        node->getConsensusApplication()->submitTransaction(trx, node->getConfig(), *node->getFinalChain());
+    const auto report = node->getConsensusApplication()->submitTransaction(trx, node->getConfig());
     return std::pair{report.accepted, report.message};
 #else
     return node->getTransactionManager()->insertTransaction(trx);

@@ -33,7 +33,9 @@ struct EthParams {
   Address address;
   uint64_t chain_id = 0;
   uint64_t gas_limit = ((uint64_t)1 << 53) - 1;
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<final_chain::FinalChain> final_chain;
+#endif
   std::function<std::shared_ptr<Transaction>(const h256&)> get_trx;
 #ifdef RUSTAXA_ENABLE
   std::function<rustaxa::TransactionPublicView(const h256&)> query_transaction;
@@ -51,6 +53,7 @@ struct EthParams {
   std::function<std::optional<state_api::Account>(const Address&, EthBlockNumber)> query_account;
   std::function<h256(const Address&, const u256&, EthBlockNumber)> query_account_storage;
   std::function<bytes(const Address&, EthBlockNumber)> query_account_code;
+  std::function<state_api::ExecutionResult(const state_api::EVMTransaction&, EthBlockNumber)> query_call;
 #endif
   std::function<void(const std::shared_ptr<Transaction>& trx)> send_trx;
   std::function<u256()> gas_pricer = [] { return u256(0); };

@@ -88,7 +88,9 @@ void RustDagBlockPacketHandler::process(const threadpool::PacketData& packet_dat
       disconnect(peer->getId(), dev::p2p::UserReason);
       return;
     case kDagRejectionMalicious:
-      throw MaliciousPeerException("Native DAG-block peer policy rejected payload: " + outcome.error_code);
+      throw MaliciousPeerException("Native DAG-block peer policy rejected payload: " + outcome.error_code +
+                                   ", reject_code=" +
+                                   std::to_string(outcome.admission ? outcome.admission->reject_code : 0));
     default:
       throw std::runtime_error("Native DAG-block peer policy returned an unknown rejection action");
   }

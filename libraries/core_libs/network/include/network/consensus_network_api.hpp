@@ -19,10 +19,6 @@ struct FullNodeConfig;
 using SharedConsensusApplication = std::shared_ptr<ConsensusApplication>;
 }  // namespace taraxa
 
-namespace taraxa::final_chain {
-class FinalChain;
-}
-
 namespace taraxa::network {
 
 /** Read-only live consensus facts supplied by App without exposing its native root or private executor. */
@@ -439,8 +435,7 @@ struct DagSyncPacketOutcome {
  */
 class ConsensusNetworkApi final {
  public:
-  ConsensusNetworkApi(SharedConsensusApplication consensus_application,
-                      std::shared_ptr<final_chain::FinalChain> final_chain, ConsensusNetworkObservers observers = {});
+  ConsensusNetworkApi(SharedConsensusApplication consensus_application, ConsensusNetworkObservers observers = {});
   ~ConsensusNetworkApi();
 
   ConsensusNetworkApi(const ConsensusNetworkApi&) = delete;

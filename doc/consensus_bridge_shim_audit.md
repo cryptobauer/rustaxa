@@ -23,7 +23,7 @@ must migrate or disappear; they may not be promoted into this table merely to pr
 | Client class | Named C++ clients | Retained boundary | C++ ownership | Narrowing or deletion condition |
 | --- | --- | --- | --- | --- |
 | Tarcap transport | `network::tarcap` packet handlers and `TaraxaCapability` | `BridgeConsensusNetworkApi` | Canonical peer snapshots, peer/socket mechanics, packet sealing, send/disconnect execution, known-cache mutation, physical lane scheduling | Keep only operation-shaped canonical ingress/egress and exact transport execution. `CRW-N01` is complete and the Rust composition has no handler-local consensus planner. |
-| Concrete EVM/StateAPI executor | `FinalChain` overlay calling `StateAPI` and `state_db/` | Exact committed preflight, system-fact, ordered-transaction, rewards, state-commit, discard, and descriptor requests/reports | Concrete EVM calls, serialized staged `state_db/` mutation, tracing, and raw executor operations | Keep only exact typed leaves until concrete EVM and `state_db` move native; no executor or session handle may reappear. |
+| Concrete EVM/StateAPI executor | Application-owned `ExternalEvmStateOwner`, used by named finalization, RPC/GraphQL state, debug trace, and light-prune clients | Exact committed preflight, system-fact, ordered-transaction, rewards, state-commit, discard, descriptor, account/code/storage/call, trace, and prune operations | One bootstrap-created `StateAPI`, serialized staged `state_db/` mutation, tracing, and raw executor operations | Delete each client-specific operation when concrete EVM and `state_db` move native; never expose the owner or `StateAPI` through CXX and never recreate a FinalChain facade, session, or action loop. |
 | Application process host | `App`'s single Rust-mode consensus process shell | Exact timer/process and best-effort public-observer ports | Monotonic/Unix clocks, interruptible wait/stop mechanics, worker joining, and public event dispatch | Delete each leaf when the native runtime can own that physical operation; never expand it into manager orchestration. |
 | Signing executor | App-owned node-wallet adapter | Exact digest-signing and VRF-proof requests/reports; no manager handle | Secret-key custody and signature execution | Keep only operation-shaped signing reports; native vote, pillar, slashing, and DAG-proposer tasks own selection and sequencing. |
 | VDF executor | App-owned asynchronous `libraries/vdf` job adapter | Exact start, poll, and cancellation requests/reports | Proof work, job lifetime, and cancellation execution | Keep only the dedicated execution API; native proposer scheduling owns every decision around it. |
@@ -46,16 +46,28 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 5139 |
-| `shim_lines` | 811 |
-| `cxx_functions` | 85 |
-| `cxx_carriers` | 138 |
+| `bridge_lines` | 4965 |
+| `shim_lines` | 0 |
+| `cxx_functions` | 83 |
+| `cxx_carriers` | 132 |
 | `cxx_handles` | 10 |
-| `shim_directories` | 1 |
+| `shim_directories` | 0 |
 | `granular_flags` | 0 |
 | `partial_service_factories` | 0 |
 | `compatibility_constructor_calls` | 0 |
 | `non_test_cpp_consumers` | 17 |
+
+The concrete-state lifetime cut lowers the preceding 5,139/811/85/138/10/1/17 checkpoint to
+4,965/0/83/132/10/0/17. It deletes the complete Rust-mode `FinalChain` overlay, source-selection injection, two net CXX
+functions, six net carriers, and the last shim directory. One application-bootstrap-owned `ExternalEvmStateOwner` now
+holds the physical `StateAPI` lifetime behind exact finalization and named state/query/trace/admin operations; no CXX
+handle, execution session, action loop, range executor, service locator, or C++ publication authority is introduced.
+Native `ConsensusApplication` continues to own request identity, ordered execution and native-action validation,
+rewards planning, commit approval, crash recovery, and FinalChain publication. The retained bridge module contains
+only plain FinalChain/genesis/rewards configuration conversion. The bounded query client retains one exact native
+DPoS/slashing call operation so StateAPI cannot become an alternate implementation of native action semantics. Public
+transaction submission now loads account and finalized-location facts from one native head; the deleted external fact
+carrier cannot mix a C++-sampled policy height with a later StateAPI account snapshot.
 
 This DAG/transaction/proposer cut lowers the preceding 14,340/7,628/277/217/14/6/33 checkpoint by 2,224 bridge lines,
 3,553 shim lines, 66 CXX functions, 47 carriers, zero opaque handles, three shim directories, and five non-test C++
@@ -143,7 +155,7 @@ includes the two pillar bridge modules and the bridge-only pillar-vote bundle te
 
 The Rust-mode manager facades and their PBFT, DAG, transaction, proposer, and pillar bridge/shim modules are deleted. `App` owns one
 `ConsensusApplication` and a process-only shell containing one worker thread and the exact timer, signing, tarcap,
-VDF, FinalChain account-fact, pillar-anchor-state, concrete EVM/gas, and public-observer ports. Daemon and proposer
+VDF, concrete bridge-contract/gas/EVM, and public-observer ports. Daemon and proposer
 scheduling, state progression, sync continuation, startup recovery, DAG/transaction and pillar admission, packing,
 pillar finalization persistence/lifecycle, and finalization sequencing live in the native application root. Pillar
 events cross the observer only after native durable acknowledgement. Public network, RPC, GraphQL, debug, and stats clients use
@@ -151,8 +163,9 @@ operation-shaped network, query, status, and transaction-submission APIs and can
 cross CXX only at named physical transport, signing, VDF, fact-source, execution, public-event, and public-formatting
 leaves; no manager task/action carrier remains supported. The master
 `RUSTAXA_ENABLE` source selection preserves the untouched manager/runtime path for pure-C++ reference builds.
-Scheduled transport rejection is retryable without advancing native broadcast counters, FinalChain account facts are
-resolved lazily only for a published slashing conflict, and complete App process start/stop transitions are serialized.
+Scheduled transport rejection is retryable without advancing native broadcast counters, native FinalChain account
+snapshots resolve transaction and slashing facts without a host callback, and complete App process start/stop
+transitions are serialized.
 
 ## CXX Box Factory Inventory
 
@@ -193,10 +206,10 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | Module | Surface | Named consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
 | `rust/crates/rustaxa-bridge/src/application_host_ffi.rs` | Application-only CXX declarations and carriers for process, signing, VDF, transport, exact external bridge-contract facts, concrete EVM/gas, and public-observer leaves | App-owned consensus process | External boundary | Keep isolated from the aggregate leaf bridge; delete each callback when its concrete host executor or fact source moves native. Native pillar headers, state roots, validator sets, signer weights, and totals never cross this boundary. |
-| `rust/crates/rustaxa-bridge/src/consensus_host_ports.rs` | Exact process, signing, asynchronous VDF, tarcap, FinalChain account-fact, bridge-root/epoch, concrete EVM/gas, public-submission, and observer leaf conversion | App-owned consensus process and public mutation clients | External boundary | Keep only physical host/execution/public-client leaves; delete each adapter when that executor, fact source, or public client moves native. |
+| `rust/crates/rustaxa-bridge/src/consensus_host_ports.rs` | Exact process, signing, asynchronous VDF, tarcap, concrete bridge-root/epoch and EVM/gas, public-submission, and observer leaf conversion | App-owned consensus process and public mutation clients | External boundary | Keep only physical host/execution/public-client leaves; delete each adapter when that executor, fact source, or public client moves native. |
 | `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | Sole application-root bootstrap plus operation-shaped public transaction submission | App bootstrap, RPC, and GraphQL mutations | Bootstrap/public-client adapter | Retain only root bootstrap, public submission/status conversion, and focused ABI coverage; native `ConsensusApplication` owns DAG, transaction, sortition, and proposer behavior and state. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
-| `rust/crates/rustaxa-bridge/src/final_chain.rs` | Application-bootstrap conversion plus exact native-account/native-call, prune, and pending-publication projection | FinalChain concrete-EVM/public-state adapter and application root | Bootstrap/external boundary | Contains no general block, transaction, receipt, bloom, or DPoS public-query route; delete each exact leaf when the corresponding concrete executor, state client, admin task, or recovery client moves. |
+| `rust/crates/rustaxa-bridge/src/final_chain.rs` | Plain application-bootstrap conversion for genesis DPoS, rewards, redelegation corrections, and native FinalChain configuration | `BridgeConsensusApplication` construction | Bootstrap conversion boundary | Delete when application bootstrap accepts the native configuration directly; no runtime operation, state lifetime, query, or publication authority may enter this module. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | Root-bound canonical packet-family adapter for native PBFT, pillar-vote, DAG, DAG-sync, transaction, status, sync lifecycle/response, and prepared exact-target egress pipelines | latest/v5 tarcap handler families and application-root transport leaves | External boundary | Keep only canonical peer/payload requests, bounded preparation probes, immutable peer snapshots, typed network decisions/reports, and exact tarcap transport execution; query snapshots live exclusively in `query.rs`. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, including coherent PBFT, period-indexed finalized pillar data, live DAG, transaction-pool, finalized-history, DPoS, and public status views | RPC, GraphQL, debug/Test RPC, stats, light plugin, Rust-mode query fixtures | External boundary | Keep a bounded client-oriented read API; never expose private services, locks, queues, cursors, or mutable object graphs. |
 | `rust/crates/rustaxa-bridge/src/storage_admin.rs` | Operation-shaped light-history prune and versioned conformance transcript adapters | application root, light plugin, storage conformance | Admin/conformance boundary | Keep only named root operations; never expose storage handles, query families, or caller-owned batches. |
@@ -214,18 +227,22 @@ fails. An export used only from tests also fails unless it appears exactly once 
 
 | Shim directory | Current role | Named consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
-| `final_chain_shim` | Exact hybrid public-state/tracing adapter plus concrete-EVM/`state_db`, bridge-contract, recovery, rewards, discard, and state-commit leaves | App-owned execution, RPC/GraphQL public state, debug tracing, light state pruning, and StateAPI | External boundary | General block, transaction, receipt, bloom, and DPoS reads are deleted; preserve this classified StateAPI lifetime boundary for active `CRW-E02`, then remove it when `CRW-17` migrates its named clients. |
 
 ## Guarded Exceptions
 
 - `consensus_application_run_storage_conformance_v1` may remain test-only while differential storage conformance requires
   the versioned production-root transcript.
 - The upstream-owned StateAPI header/implementation contains the exact concrete-root policy marker, projection,
-  commit, discard, and descriptor ABI required by the classified `final_chain_shim` lifetime boundary. Rust-only
-  operations are guarded by `RUSTAXA_ENABLE`; they must contract with `CRW-17` rather than grow into a general handle.
+  commit, discard, descriptor, state-query, trace, and prune ABI used by the private application-owned
+  `ExternalEvmStateOwner`. Rust-only operations are guarded by `RUSTAXA_ENABLE`; they are physical C++ leaves and must
+  not grow into a CXX handle, facade, session, or publication authority.
 - The upstream-owned `App` startup implementation has one guarded concrete-root rebuild hook: it preserves the old
   database pair under a timestamped backup and starts a clean full-resync database. It must not become in-place range
   replay, synthetic-root rewriting, or C++ publication authority.
+- Upstream-owned AppBase, RPC, GraphQL, network/tarcap, light-plugin, and test-util call sites contain only master-
+  `RUSTAXA_ENABLE` routing to the application/query clients or source-selected Rust handler construction. Their legacy
+  branches remain the pure-C++ implementation; an isolated all-Rust-disabled `taraxad` build and FinalChain suite prove
+  that main-only headers and symbols do not leak into that composition.
 - Pure-C++ implementations and tests are not Rust-mode bridge consumers.
 - A test-only export requires an explicit row here; ordinary native behavioral tests must not create CXX surface.
 

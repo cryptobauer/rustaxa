@@ -23,11 +23,12 @@
 #include "common/vrf_wrapper.hpp"
 #include "config/config.hpp"
 #include "consensus/consensus_application.hpp"
+#include "consensus/external_evm_state_owner.hpp"
 #include "dag/dag_block.hpp"
-#include "final_chain/final_chain.hpp"
 #include "network/network.hpp"
 #include "pbft/period_data.hpp"
 #include "rustaxa-bridge/application_host_ffi.rs.h"
+#include "storage/storage.hpp"
 #include "transaction/transaction.hpp"
 #include "vdf/sortition.hpp"
 
@@ -36,6 +37,17 @@ namespace taraxa {
 rustaxa::HostFinalChainFinalizeReport ConsensusApplication::finalize(ExternalEvmPort& external_evm,
                                                                      rustaxa::HostFinalChainFinalizeTask task) const {
   return rustaxa::consensus_application_finalize(service(), external_evm, std::move(task));
+}
+
+void ConsensusApplication::recoverExternalEvmPendingPublication(const std::shared_ptr<ConsensusApplication>& self) {
+  constexpr uint8_t kPublicationApplied = 0;
+  constexpr uint8_t kPublicationAlreadyApplied = 2;
+  ExternalEvmPort external_evm(self);
+  const auto report = rustaxa::consensus_application_recover_final_chain(service(), external_evm);
+  if (report.status != kPublicationApplied && report.status != kPublicationAlreadyApplied) {
+    throw DbException("ConsensusApplication startup rejected native external EVM publication recovery: " +
+                      std::string(report.error_code));
+  }
 }
 
 }  // namespace taraxa
@@ -58,28 +70,11 @@ Report failedReport(const rustaxa::HostEffectId& effect_id, const char* error) {
 rust::Vec<uint8_t> toRustBytes(const dev::bytes& bytes) {
   rust::Vec<uint8_t> result;
   result.reserve(bytes.size());
-  for (const auto byte : bytes) {
-    result.push_back(byte);
-  }
+  std::copy(bytes.begin(), bytes.end(), std::back_inserter(result));
   return result;
 }
 
 dev::bytes fromRustBytes(const rust::Vec<uint8_t>& bytes) { return {bytes.begin(), bytes.end()}; }
-
-template <typename Value>
-std::array<uint8_t, 32> toBridgeU256(const Value& value) {
-  std::array<uint8_t, 32> out{};
-  const auto bytes = dev::toBigEndian(value);
-  if (bytes.size() > out.size()) {
-    throw std::runtime_error("host integer exceeds 32 bytes");
-  }
-  std::copy(bytes.begin(), bytes.end(), out.begin() + static_cast<std::ptrdiff_t>(out.size() - bytes.size()));
-  return out;
-}
-
-addr_t fromHostAddress(const std::array<uint8_t, 20>& address) {
-  return addr_t(address.data(), addr_t::ConstructFromPointer);
-}
 
 rustaxa::HostTransportReport successfulTransportReport(const rustaxa::HostEffectId& effect_id) {
   rustaxa::HostTransportReport report{};
@@ -578,113 +573,39 @@ rustaxa::HostConsensusObservationReport ConsensusProcessPort::consensusObserve(
 
 class ExternalEvmPort::Impl final {
  public:
-  explicit Impl(std::shared_ptr<final_chain::FinalChain> final_chain)
-      : owner(std::move(final_chain)), final_chain(owner.get()) {
-    if (!this->final_chain) {
-      throw std::invalid_argument("ExternalEvmPort requires FinalChain");
-    }
+  explicit Impl(std::shared_ptr<ConsensusApplication> application)
+      : application(std::move(application)),
+        state(this->application ? this->application->externalEvmStateOwner() : nullptr) {
+    if (!this->application || !state) throw std::invalid_argument("ExternalEvmPort requires ConsensusApplication");
   }
-  explicit Impl(final_chain::FinalChain& final_chain) : final_chain(&final_chain) {}
 
-  std::shared_ptr<final_chain::FinalChain> owner;
-  final_chain::FinalChain* final_chain;
+  std::shared_ptr<ConsensusApplication> application;
+  std::shared_ptr<ExternalEvmStateOwner> state;
 };
 
-ExternalEvmPort::ExternalEvmPort(std::shared_ptr<final_chain::FinalChain> final_chain)
-    : impl_(std::make_unique<Impl>(std::move(final_chain))) {}
-ExternalEvmPort::ExternalEvmPort(final_chain::FinalChain& final_chain) : impl_(std::make_unique<Impl>(final_chain)) {}
+ExternalEvmPort::ExternalEvmPort(std::shared_ptr<ConsensusApplication> application)
+    : impl_(std::make_unique<Impl>(std::move(application))) {}
 ExternalEvmPort::~ExternalEvmPort() = default;
 
 rustaxa::HostPillarAnchorStateReport ExternalEvmPort::consensusLoadPillarAnchorState(
     const rustaxa::HostPillarAnchorStateRequest& request) const {
-  rustaxa::HostPillarAnchorStateReport report{};
-  report.effect_id = request.effect_id;
   try {
-    report.succeeded = true;
-    report.bridge_root = impl_->final_chain->getBridgeRoot(request.period).asArray();
-    report.bridge_epoch = impl_->final_chain->getBridgeEpoch(request.period).asArray();
+    return impl_->state->loadPillarAnchorState(request);
   } catch (const std::exception& error) {
     const auto error_code = std::string("PILLAR_ANCHOR_STATE_READ_FAILED: ") + error.what();
     return failedReport<rustaxa::HostPillarAnchorStateReport>(request.effect_id, error_code.c_str());
   }
-  return report;
-}
-
-rustaxa::HostFinalChainAccountFactsReport ExternalEvmPort::consensusLoadFinalChainAccountFacts(
-    const rustaxa::HostFinalChainAccountFactsRequest& request) const {
-  rustaxa::HostFinalChainAccountFactsReport report{};
-  report.effect_id = request.effect_id;
-  try {
-    report.observed_block = impl_->final_chain->lastBlockNumber();
-    report.accounts.reserve(request.addresses.size());
-    for (const auto& requested : request.addresses) {
-      const auto address = fromHostAddress(requested.bytes);
-      const auto account = impl_->final_chain->getAccount(address, report.observed_block);
-      rustaxa::HostFinalChainAccountFact fact{};
-      fact.address = requested.bytes;
-      fact.found = account.has_value();
-      if (account) {
-        fact.nonce = toBridgeU256(account->nonce);
-        fact.balance = toBridgeU256(account->balance);
-      }
-      report.accounts.push_back(std::move(fact));
-    }
-    report.succeeded = true;
-  } catch (const std::exception&) {
-    return failedReport<rustaxa::HostFinalChainAccountFactsReport>(request.effect_id,
-                                                                   "FINAL_CHAIN_ACCOUNT_FACTS_READ_FAILED");
-  }
-  return report;
 }
 
 rustaxa::HostDagGasBatch ExternalEvmPort::consensusEstimateDagTransactionGas(
     const rustaxa::HostDagGasBatch& request) const {
-  rustaxa::HostDagGasBatch report{};
-  report.effect_id = request.effect_id;
-  report.proposal_period = request.proposal_period;
-  report.transaction_hashes.reserve(request.transaction_hashes.size());
-  for (const auto& hash : request.transaction_hashes) {
-    report.transaction_hashes.push_back(hash);
-  }
-  try {
-    if (request.transaction_hashes.size() != request.transaction_rlps.size()) {
-      report.error_code = rust::String("DAG_GAS_TRANSACTION_COUNT_MISMATCH");
-      return report;
-    }
-    report.observed_block = impl_->final_chain->lastBlockNumber();
-    report.gas_used.reserve(request.transaction_hashes.size());
-    report.result_rlps.reserve(request.transaction_hashes.size());
-    for (size_t index = 0; index < request.transaction_hashes.size(); ++index) {
-      const auto transaction = std::make_shared<Transaction>(fromRustBytes(request.transaction_rlps[index].data));
-      if (transaction->getHash().asArray() != request.transaction_hashes[index].hash) {
-        report.gas_used.clear();
-        report.result_rlps.clear();
-        report.error_code = rust::String("DAG_GAS_TRANSACTION_HASH_MISMATCH");
-        return report;
-      }
-      const auto evm_transaction = state_api::EVMTransaction{
-          transaction->getSender(), transaction->getGasPrice(), transaction->getReceiver(), transaction->getNonce(),
-          transaction->getValue(),  transaction->getGas(),      transaction->getData(),
-      };
-      const auto result = impl_->final_chain->call(evm_transaction, request.proposal_period);
-      report.gas_used.push_back(result.gas_used);
-      rustaxa::CanonicalBytes result_rlp{};
-      result_rlp.data = toRustBytes(util::rlp_enc(result));
-      report.result_rlps.push_back(std::move(result_rlp));
-    }
-    report.succeeded = true;
-  } catch (const std::exception& error) {
-    report.gas_used.clear();
-    report.result_rlps.clear();
-    report.error_code = rust::String(std::string("DAG_GAS_ESTIMATION_FAILED: ") + error.what());
-  }
-  return report;
+  return impl_->state->estimateDagTransactionGas(request);
 }
 
 rustaxa::HostFinalChainSystemFactsReport ExternalEvmPort::consensusLoadFinalChainSystemFacts(
     const rustaxa::HostFinalChainSystemFactsRequest& request) const {
   try {
-    return impl_->final_chain->external_evm_state_api_.loadSystemTransactionFacts(request);
+    return impl_->state->loadSystemTransactionFacts(request);
   } catch (const std::exception& error) {
     rustaxa::HostFinalChainSystemFactsReport report{};
     report.request_id = request.request_id;
@@ -697,7 +618,7 @@ rustaxa::HostFinalChainSystemFactsReport ExternalEvmPort::consensusLoadFinalChai
 rustaxa::HostFinalChainPreflightReport ExternalEvmPort::consensusLoadFinalChainCommittedState(
     const rustaxa::HostFinalChainPreflightRequest& request) const {
   try {
-    return impl_->final_chain->external_evm_state_api_.loadCommittedState(request);
+    return impl_->state->loadCommittedState(request);
   } catch (const std::exception& error) {
     rustaxa::HostFinalChainPreflightReport report{};
     report.request_id = request.request_id;
@@ -708,34 +629,33 @@ rustaxa::HostFinalChainPreflightReport ExternalEvmPort::consensusLoadFinalChainC
 
 rustaxa::HostFinalChainExecutionReport ExternalEvmPort::consensusExecuteFinalChainTransactions(
     const rustaxa::HostFinalChainExecutionRequest& request) const {
-  return impl_->final_chain->external_evm_state_api_.executeTransactions(request);
+  return impl_->state->executeTransactions(request);
 }
 
 rustaxa::HostFinalChainRewardsReport ExternalEvmPort::consensusDistributeFinalChainRewards(
     const rustaxa::HostFinalChainRewardsRequest& request) const {
-  return impl_->final_chain->external_evm_state_api_.distributeRewards(request);
+  return impl_->state->distributeRewards(request);
 }
 
 rustaxa::HostFinalChainStateCommitReport ExternalEvmPort::consensusCommitFinalChainState(
     const rustaxa::HostFinalChainStateCommitRequest& request) const {
-  return impl_->final_chain->external_evm_state_api_.commitState(request);
+  return impl_->state->commitState(request);
 }
 
 rustaxa::HostFinalChainPreflightReport ExternalEvmPort::consensusDiscardFinalChainState(
     const rustaxa::CanonicalBytes& concrete_marker) const {
-  return impl_->final_chain->external_evm_state_api_.discardState(concrete_marker);
+  return impl_->state->discardState(concrete_marker);
 }
 
 class ConsensusProcess::Impl final {
  public:
   enum class LifecycleState : uint8_t { kStopped, kRunning };
 
-  Impl(std::shared_ptr<ConsensusApplication> application, const FullNodeConfig& config,
-       std::shared_ptr<final_chain::FinalChain> final_chain)
+  Impl(std::shared_ptr<ConsensusApplication> application, const FullNodeConfig& config)
       : application(std::move(application)),
         process(config, this->application),
         signer(config),
-        evm(std::move(final_chain)) {
+        evm(this->application) {
     if (!this->application) {
       throw std::invalid_argument("ConsensusProcess requires ConsensusApplication");
     }
@@ -756,9 +676,8 @@ class ConsensusProcess::Impl final {
   LifecycleState state{LifecycleState::kStopped};
 };
 
-ConsensusProcess::ConsensusProcess(std::shared_ptr<ConsensusApplication> application, const FullNodeConfig& config,
-                                   std::shared_ptr<final_chain::FinalChain> final_chain)
-    : impl_(std::make_unique<Impl>(std::move(application), config, std::move(final_chain))) {}
+ConsensusProcess::ConsensusProcess(std::shared_ptr<ConsensusApplication> application, const FullNodeConfig& config)
+    : impl_(std::make_unique<Impl>(std::move(application), config)) {}
 
 ConsensusProcess::~ConsensusProcess() { stop(); }
 

@@ -54,6 +54,7 @@ RUN add-apt-repository ppa:ethereum/ethereum \
     libmicrohttpd-dev \
     libgoogle-perftools-dev \
     # these libs are required for arm build by go part
+    zlib1g-dev \
     libzstd-dev \
     libsnappy-dev \
     # replace this with conan dependency

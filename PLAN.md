@@ -364,12 +364,13 @@ Validation:
 ### Scope
 
 Goal: preserve protocol, RPC, GraphQL, and pure-C++ FinalChain behavior while
-moving Rust-mode public reads to `ConsensusQueryApi` and contracting the C++
-`final_chain::FinalChain` overlay to exact concrete-EVM/`state_db`, tracing,
-public-state, recovery, and state-lifecycle leaves. The historical Rust-mode
-C++ class surface is not itself a compatibility contract.
+keeping Rust-mode FinalChain ownership native. Public reads use
+`ConsensusQueryApi`; one application-bootstrap-owned concrete-state adapter
+retains exact concrete-EVM/`state_db`, tracing, public-state, recovery, and
+state-lifecycle operations for named clients. The historical Rust-mode C++
+class surface is not a compatibility contract and has been deleted.
 
-The FinalChain shim uses a header overlay pattern and is enabled by the single
+The untouched pure-C++ FinalChain implementation is selected by the single
 Rust production composition switch:
 
 - `RUSTAXA_ENABLE`
@@ -527,9 +528,15 @@ retain the untouched legacy RewardsStats header, source, and focused test.
     is an explicit genesis activation while `u64::MAX` disables Aspen part two or Cacti in local fixtures. Concrete-root
     policy version one is paired across Rust storage and `state_db`. Markerless/synthetic history fails with
     `FINAL_CHAIN_CONCRETE_ROOT_REBUILD_REQUIRED`; `--rebuild-db` preserves the old pair in a timestamped backup and
-    starts a clean full-resync database instead of rewriting finalized hashes or falling back. `CRW-E02` remains active
-    until mixed-lane, crash/restart, rebuild/resync, and multi-node parity complete the required evidence. Stable
-    public-state/tracing calls remain temporary `final_chain_shim` leaves. The following paragraph records the
+    starts a clean full-resync database instead of rewriting finalized hashes or falling back. `CRW-E02` is complete:
+    native differential tests cover transfer, DPoS, slashing, system/reward, arbitrary-EVM, marker/commit/publication
+    crash windows, and staged-state rejection, while the reproducible five-node Python gate proves timestamped rebuild,
+    clean full resync, graceful/crash restart, mixed-lane finalization, and exact state/transaction/receipt/header/finalized-
+    hash agreement. The Rust-mode `FinalChain` facade and `final_chain_shim` are deleted: one private
+    `ExternalEvmStateOwner` is constructed at application bootstrap and serves exact finalization, account/code/storage/
+    call, trace, prune, descriptor, commit, and discard operations. Native DPoS/slashing calls remain authoritative on
+    the bounded query client; arbitrary EVM calls remain physical StateAPI operations. No CXX StateAPI handle, session,
+    action loop, range executor, service locator, or C++ publication authority exists. The following paragraph records the
     superseded pre-`CRW-E01` checkpoint for history.
   - Historical checkpoint: FinalChain native execution was behind a Rust-owned `FinalChainExecutionRuntime` session boundary. The
     C++ FinalChain shim now builds the session request directly, asks Rust for the next execution step, and commits only
@@ -860,7 +867,8 @@ Rules:
 - Temporary guarded touches to upstream-owned C++ files should be removed once a complete native route can own
   Rust-mode behavior. The PBFT application runtime now owns the former manager pillar-vote sync hook; original
   `pbft_manager.cpp` stays clean versus `upstream-main`; the manager/materialization work under `CRW-15`/`CRW-16` is
-  complete, and the remaining private FinalChain/external-EVM executor contraction is tracked under `CRW-17`.
+  complete; the private FinalChain facade is deleted under completed `CRW-17`, leaving only the classified concrete
+  StateAPI leaf operations.
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep only physical network and OS-thread mechanics in C++; consensus callbacks, queues, routing, and orchestration move
   to the Rust application service.

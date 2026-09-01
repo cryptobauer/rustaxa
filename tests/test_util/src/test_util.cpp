@@ -64,9 +64,7 @@ TransactionClient::Context TransactionClient::process(const std::shared_ptr<Tran
       trx,
   };
 #ifdef RUSTAXA_ENABLE
-  if (!node_->getConsensusApplication()
-           ->submitTransaction(ctx.trx, node_->getConfig(), *node_->getFinalChain())
-           .accepted) {
+  if (!node_->getConsensusApplication()->submitTransaction(ctx.trx, node_->getConfig()).accepted) {
 #else
   if (!node_->getTransactionManager()->insertTransaction(ctx.trx).first) {
 #endif
@@ -143,7 +141,11 @@ SharedTransaction make_redelegate_tx(const FullNodeConfig& sender_node_cfg, cons
 }
 
 u256 own_balance(const std::shared_ptr<AppBase>& node) {
+#ifdef RUSTAXA_ENABLE
+  const auto account = node->getConsensusApplication()->getAccount(node->getAddress());
+#else
   const auto account = node->getFinalChain()->getAccount(node->getAddress());
+#endif
   return account ? account->balance : 0;
 }
 
@@ -191,11 +193,19 @@ void wait_for_balances(const std::vector<std::shared_ptr<AppBase>>& nodes, const
   wait(to_wait, [&](auto& ctx) {
     for (const auto& node : nodes) {
       for (const auto& b : balances) {
+#ifdef RUSTAXA_ENABLE
+        const auto account = node->getConsensusApplication()->getAccount(b.first);
+#else
         const auto account = node->getFinalChain()->getAccount(b.first);
+#endif
         if ((account ? account->balance : 0) != b.second) {
           auto trx_client = TransactionClient(node);
           trx_client.coinTransfer(KeyPair::create().address(), 0, false);
+#ifdef RUSTAXA_ENABLE
+          const auto updated_account = node->getConsensusApplication()->getAccount(b.first);
+#else
           const auto updated_account = node->getFinalChain()->getAccount(b.first);
+#endif
           WAIT_EXPECT_EQ(ctx, updated_account ? updated_account->balance : 0, b.second);
         }
       }

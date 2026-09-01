@@ -351,30 +351,18 @@ pub struct EvmFinalizationReport {
     pub error_code: String,
 }
 
-/// Ordered account lookup against the concrete external-EVM FinalChain.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FinalChainAccountFactsRequest {
-    pub effect_id: ConsensusEffectId,
-    pub addresses: Vec<[u8; 20]>,
-}
-
-/// One exact external-EVM account row. Missing accounts carry zero nonce and
-/// balance values.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FinalChainAccountFact {
-    pub address: [u8; 20],
-    pub found: bool,
-    pub nonce: [u8; 32],
-    pub balance: [u8; 32],
+struct NativeFinalChainAccountFact {
+    address: [u8; 20],
+    found: bool,
+    nonce: Vec<u8>,
+    balance: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FinalChainAccountFactsReport {
-    pub effect_id: ConsensusEffectId,
-    pub succeeded: bool,
-    pub observed_block: u64,
-    pub accounts: Vec<FinalChainAccountFact>,
-    pub error_code: String,
+struct NativeFinalChainAccountFacts {
+    observed_block: u64,
+    accounts: Vec<NativeFinalChainAccountFact>,
 }
 
 /// Exact FinalChain/EVM read needed to reconstruct a due pillar block after restart.
@@ -571,12 +559,6 @@ pub trait ConsensusExecutionPort {
         &self,
         request: &PillarAnchorStateRequest,
     ) -> Result<PillarAnchorStateReport>;
-
-    /// Loads ordered account facts from the concrete execution owner.
-    fn load_final_chain_account_facts(
-        &self,
-        request: &FinalChainAccountFactsRequest,
-    ) -> Result<FinalChainAccountFactsReport>;
 
     /// Estimates exact canonical transaction payloads for one proposer cursor.
     fn estimate_dag_transaction_gas(
@@ -1055,34 +1037,36 @@ impl ConsensusApplicationRuntime {
         )
     }
 
-    fn load_account_facts<E: ConsensusExecutionPort>(
+    fn load_account_facts(
         &self,
-        generation: u64,
         addresses: Vec<[u8; 20]>,
-        evm: &E,
-    ) -> Result<FinalChainAccountFactsReport> {
-        let id = self.next_effect(generation)?;
-        let report = evm.load_final_chain_account_facts(&FinalChainAccountFactsRequest {
-            effect_id: id,
-            addresses: addresses.clone(),
-        })?;
-        self.validate_report(id, report.effect_id)?;
-        ensure!(
-            report.succeeded,
-            "CONSENSUS_RUNTIME_ACCOUNT_FACTS_FAILED: {}",
-            report.error_code
-        );
-        ensure!(
-            report.accounts.len() == addresses.len(),
-            "CONSENSUS_RUNTIME_ACCOUNT_FACTS_COUNT_MISMATCH"
-        );
-        for (expected, actual) in addresses.iter().zip(&report.accounts) {
-            ensure!(
-                *expected == actual.address,
-                "CONSENSUS_RUNTIME_ACCOUNT_FACTS_ORDER_MISMATCH"
-            );
-        }
-        Ok(report)
+        final_chain: &FinalChain,
+    ) -> Result<NativeFinalChainAccountFacts> {
+        let observed_block = final_chain.last_block_number_typed()?;
+        let accounts = addresses
+            .into_iter()
+            .map(|address| {
+                let account = final_chain.account_at_block(observed_block, address)?;
+                Ok(match account {
+                    Some(account) => NativeFinalChainAccountFact {
+                        address,
+                        found: true,
+                        nonce: account.nonce.to_bytes(),
+                        balance: account.balance.to_snapshot_bytes(),
+                    },
+                    None => NativeFinalChainAccountFact {
+                        address,
+                        found: false,
+                        nonce: Vec::new(),
+                        balance: Vec::new(),
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(NativeFinalChainAccountFacts {
+            observed_block: observed_block.as_u64(),
+            accounts,
+        })
     }
 
     /// Composes one pillar anchor from native FinalChain state and the exact
@@ -1457,13 +1441,12 @@ impl ConsensusApplicationRuntime {
                 }
             } else {
                 let accounts = self.load_account_facts(
-                    generation,
                     prepared
                         .account_requests
                         .iter()
                         .map(|value| value.sender.0)
                         .collect(),
-                    execution,
+                    final_chain,
                 )?;
                 let commit = dag.complete_add_block(DagAddBlockCompletion {
                     cursor_id: prepared.cursor_id,
@@ -1546,8 +1529,7 @@ impl ConsensusApplicationRuntime {
                 PbftApplicationFinalizationStep::Complete(_) => return Ok(true),
                 PbftApplicationFinalizationStep::Rejected { .. } => return Ok(false),
                 PbftApplicationFinalizationStep::AccountFacts(effect) => {
-                    let report =
-                        self.load_account_facts(generation, effect.addresses.clone(), evm)?;
+                    let report = self.load_account_facts(effect.addresses.clone(), final_chain)?;
                     report_pbft_application_finalization_account_facts(
                         pbft,
                         dag,
@@ -1556,7 +1538,7 @@ impl ConsensusApplicationRuntime {
                         &effect,
                         PbftApplicationAccountFactsReport {
                             cursor: effect.cursor,
-                            succeeded: report.succeeded,
+                            succeeded: true,
                             observed_block: report.observed_block,
                             accounts: report
                                 .accounts
@@ -1564,10 +1546,11 @@ impl ConsensusApplicationRuntime {
                                 .map(|account| PbftApplicationAccountFact {
                                     address: account.address,
                                     found: account.found,
-                                    nonce: account.nonce,
+                                    nonce: ethereum_types::U256::from_big_endian(&account.nonce)
+                                        .to_big_endian(),
                                 })
                                 .collect(),
-                            error_code: report.error_code,
+                            error_code: String::new(),
                         },
                     )?
                 }
@@ -1711,17 +1694,16 @@ impl ConsensusApplicationRuntime {
         }
     }
 
-    fn slashing_submitters<E: ConsensusExecutionPort>(
+    fn slashing_submitters(
         &self,
-        generation: u64,
-        evm: &E,
+        final_chain: &FinalChain,
     ) -> Result<Vec<crate::SlashingSubmitterIdentity>> {
         let addresses = self
             .signing_identities
             .iter()
             .map(|identity| identity.address)
             .collect::<Vec<_>>();
-        let report = self.load_account_facts(generation, addresses, evm)?;
+        let report = self.load_account_facts(addresses, final_chain)?;
         Ok(self
             .signing_identities
             .iter()
@@ -2485,7 +2467,7 @@ impl ConsensusApplicationRuntime {
                                         &generated,
                                         || {
                                             let submitters =
-                                                self.slashing_submitters(generation, evm)?;
+                                                self.slashing_submitters(final_chain)?;
                                             resolved_submitters.replace(Some(submitters.clone()));
                                             Ok(submitters)
                                         },
@@ -2585,8 +2567,7 @@ impl ConsensusApplicationRuntime {
                                     &task,
                                     &generated,
                                     || {
-                                        let submitters =
-                                            self.slashing_submitters(generation, evm)?;
+                                        let submitters = self.slashing_submitters(final_chain)?;
                                         resolved_submitters.replace(Some(submitters.clone()));
                                         Ok(submitters)
                                     },
@@ -2645,7 +2626,7 @@ impl ConsensusApplicationRuntime {
                         let outcome = match pbft.process_synced_pbft_blocks(
                             dag_transaction,
                             final_chain,
-                            || self.slashing_submitters(generation, evm),
+                            || self.slashing_submitters(final_chain),
                             &leaves,
                             |accepted| {
                                 let request = PbftApplicationFinalizationRequest {
@@ -2928,69 +2909,6 @@ mod tests {
         calls: std::sync::atomic::AtomicUsize,
     }
 
-    struct FakeEvm {
-        succeed: bool,
-        stale: bool,
-    }
-
-    impl ConsensusExecutionPort for FakeEvm {
-        fn load_pillar_anchor_state(
-            &self,
-            request: &PillarAnchorStateRequest,
-        ) -> Result<PillarAnchorStateReport> {
-            Ok(PillarAnchorStateReport {
-                effect_id: ConsensusEffectId {
-                    generation: request.effect_id.generation,
-                    sequence: request.effect_id.sequence + u64::from(self.stale),
-                },
-                succeeded: self.succeed,
-                block_header_rlp: self.succeed.then_some(vec![0xc0]).unwrap_or_default(),
-                state_root: [1; 32],
-                bridge_root: [2; 32],
-                bridge_epoch: [0; 32],
-                validator_vote_counts: request
-                    .signer_addresses
-                    .iter()
-                    .map(|address| PillarAnchorValidatorVoteCount {
-                        address: *address,
-                        vote_count: 1,
-                    })
-                    .collect(),
-                signer_vote_counts: vec![1; request.signer_addresses.len()],
-                total_eligible_vote_count: request.signer_addresses.len() as u64,
-                error_code: (!self.succeed)
-                    .then_some("EVM_REJECTED".into())
-                    .unwrap_or_default(),
-            })
-        }
-
-        fn load_final_chain_account_facts(
-            &self,
-            request: &FinalChainAccountFactsRequest,
-        ) -> Result<FinalChainAccountFactsReport> {
-            Ok(FinalChainAccountFactsReport {
-                effect_id: ConsensusEffectId {
-                    generation: request.effect_id.generation,
-                    sequence: request.effect_id.sequence + u64::from(self.stale),
-                },
-                succeeded: self.succeed,
-                observed_block: 1,
-                accounts: request
-                    .addresses
-                    .iter()
-                    .map(|address| FinalChainAccountFact {
-                        address: *address,
-                        found: true,
-                        nonce: [0; 32],
-                        balance: [0xff; 32],
-                    })
-                    .collect(),
-                error_code: (!self.succeed)
-                    .then_some("EVM_REJECTED".into())
-                    .unwrap_or_default(),
-            })
-        }
-    }
     impl FakeTransport {
         fn report(&self, effect_id: ConsensusEffectId) -> ConsensusTransportReport {
             ConsensusTransportReport {
@@ -3288,55 +3206,6 @@ mod tests {
             expected
         );
         assert_eq!(transport.calls.load(Ordering::Acquire), 2);
-    }
-
-    #[test]
-    fn external_account_facts_validate_effect_identity_and_preserve_order() {
-        let runtime = ConsensusApplicationRuntime::new(vec![identity()], 1).unwrap();
-        let generation = runtime.begin_run().unwrap();
-        let addresses = vec![[1; 20], [2; 20]];
-        let report = runtime
-            .load_account_facts(
-                generation,
-                addresses.clone(),
-                &FakeEvm {
-                    succeed: true,
-                    stale: false,
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            report
-                .accounts
-                .iter()
-                .map(|account| account.address)
-                .collect::<Vec<_>>(),
-            addresses
-        );
-        assert!(
-            runtime
-                .load_account_facts(
-                    generation,
-                    vec![[1; 20]],
-                    &FakeEvm {
-                        succeed: true,
-                        stale: true,
-                    },
-                )
-                .is_err()
-        );
-        assert!(
-            runtime
-                .load_account_facts(
-                    generation,
-                    vec![[1; 20]],
-                    &FakeEvm {
-                        succeed: false,
-                        stale: false,
-                    },
-                )
-                .is_err()
-        );
     }
 
     #[test]

@@ -7,8 +7,7 @@ use crate::consensus_host_ports::{
     consensus_application_finalize, consensus_application_recover_final_chain,
     consensus_application_run, consensus_network_ingest_dag_block_packet,
     consensus_network_ingest_dag_sync_packet, consensus_network_ingest_transaction_packet,
-    consensus_network_submit_transaction_with_execution,
-    consensus_network_transaction_gas_price_bid,
+    consensus_network_submit_transaction, consensus_network_transaction_gas_price_bid,
 };
 use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::ffi::BridgeConsensusNetworkApi;
@@ -115,30 +114,6 @@ pub mod application_host_ffi {
     struct HostTransportStatus {
         available: bool,
         packet_queue_over_limit: bool,
-    }
-    /// One canonical EVM address carried by an ordered host request.
-    struct HostAddress20 {
-        bytes: [u8; 20],
-    }
-    /// One FinalChain account observed at the report's exact block number.
-    struct HostFinalChainAccountFact {
-        address: [u8; 20],
-        found: bool,
-        nonce: [u8; 32],
-        balance: [u8; 32],
-    }
-    /// Ordered account addresses requested from one FinalChain snapshot.
-    struct HostFinalChainAccountFactsRequest {
-        effect_id: HostEffectId,
-        addresses: Vec<HostAddress20>,
-    }
-    /// Exact account facts observed from one FinalChain block.
-    struct HostFinalChainAccountFactsReport {
-        effect_id: HostEffectId,
-        succeeded: bool,
-        observed_block: u64,
-        accounts: Vec<HostFinalChainAccountFact>,
-        error_code: String,
     }
     /// Exact FinalChain lookup needed to restore a persisted pillar anchor.
     struct HostPillarAnchorStateRequest {
@@ -486,11 +461,6 @@ pub mod application_host_ffi {
             self: &ExternalEvmPort,
             request: &HostPillarAnchorStateRequest,
         ) -> Result<HostPillarAnchorStateReport>;
-        #[cxx_name = "consensusLoadFinalChainAccountFacts"]
-        fn consensus_load_final_chain_account_facts(
-            self: &ExternalEvmPort,
-            request: &HostFinalChainAccountFactsRequest,
-        ) -> Result<HostFinalChainAccountFactsReport>;
         #[cxx_name = "consensusEstimateDagTransactionGas"]
         fn consensus_estimate_dag_transaction_gas(
             self: &ExternalEvmPort,
@@ -527,7 +497,6 @@ pub mod application_host_ffi {
         pub fn consensus_network_ingest_transaction_packet(
             network: &BridgeConsensusNetworkApi,
             request: NetworkTransactionPacketRequest,
-            external_evm: &ExternalEvmPort,
         ) -> Result<NetworkTransactionPacketReport>;
         pub fn consensus_network_ingest_dag_block_packet(
             network: &BridgeConsensusNetworkApi,
@@ -544,10 +513,9 @@ pub mod application_host_ffi {
             network: &BridgeConsensusNetworkApi,
         ) -> Result<[u8; 32]>;
         /// Submits one host-signed network transaction through the bound native API.
-        pub fn consensus_network_submit_transaction_with_execution(
+        pub fn consensus_network_submit_transaction(
             network: &BridgeConsensusNetworkApi,
             request: PublicTransactionSubmissionRequest,
-            external_evm: &ExternalEvmPort,
         ) -> Result<PublicTransactionSubmissionReport>;
     }
 }

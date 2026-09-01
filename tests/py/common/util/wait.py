@@ -18,6 +18,7 @@ def wait(get_value: Callable[[], Any],
          timeout=Timeout()):
     assert 0 <= timeout.num_attempts
     infinite_attempts = timeout.num_attempts == 0
+    attempts_remaining = timeout.num_attempts
     while True:
         value, is_exception = None, False
         try:
@@ -35,7 +36,7 @@ def wait(get_value: Callable[[], Any],
                 raise value
             raise ValueError(value)
         if not infinite_attempts:
-            timeout.num_attempts -= 1
-            if timeout.num_attempts == 0:
+            attempts_remaining -= 1
+            if attempts_remaining == 0:
                 raise TimeoutError()
         time.sleep(timeout.backoff_seconds)

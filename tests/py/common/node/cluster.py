@@ -36,6 +36,17 @@ class Cluster:
         for node in self:
             node.use_w3_provider(provider_type)
 
+    def restart_node(self, index, extra_args=(), graceful=True, wait_interconnect=True):
+        """Restart one managed node and optionally wait for it to rejoin the cluster."""
+        self.node(index).restart(extra_args=extra_args, graceful=graceful)
+        if wait_interconnect:
+            self.wait_adequate_interconnection()
+        return self.node(index)
+
+    def kill_node(self, index):
+        """Immediately kill one managed node."""
+        self.node(index).kill()
+
     def node(self, index=None):
         index = self.default_node_index if index is None else index
         return self.random_node if index == Cluster.RANDOM_NODE_INDEX else self._nodes[index]

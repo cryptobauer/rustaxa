@@ -8,9 +8,11 @@ using namespace std::literals;
 
 namespace graphql::taraxa {
 
-Log::Log(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-         std::shared_ptr<const Transaction> transaction, ::taraxa::LogEntry log, int index) noexcept
+#ifndef RUSTAXA_ENABLE
+Log::Log(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, std::shared_ptr<const Transaction> transaction,
+         ::taraxa::LogEntry log, int index) noexcept
     : Log(makeAccountStateReader(std::move(final_chain)), std::move(transaction), std::move(log), index) {}
+#endif
 
 Log::Log(AccountStateReader account_reader, std::shared_ptr<const Transaction> transaction, ::taraxa::LogEntry log,
          int index) noexcept

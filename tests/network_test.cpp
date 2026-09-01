@@ -116,8 +116,7 @@ TEST_F(NetworkTest, pillar_vote_rebroadcast_resends_vote_known_to_peer) {
 #ifdef RUSTAXA_ENABLE
   const auto node_cfgs = make_node_cfgs(1, 1, 5);
   const auto nodes = create_nodes(node_cfgs, true);
-  auto consensus_network_api = std::make_shared<network::ConsensusNetworkApi>(nodes.front()->getConsensusApplication(),
-                                                                              nodes.front()->getFinalChain());
+  auto consensus_network_api = std::make_shared<network::ConsensusNetworkApi>(nodes.front()->getConsensusApplication());
   TestPillarVotePacketHandler handler(std::move(peers_state), std::move(consensus_network_api));
 #else
   TestPillarVotePacketHandler handler(std::move(peers_state));
@@ -2038,7 +2037,7 @@ TEST_F(NetworkTest, consensus_effect_execution_is_source_scoped_and_exactly_ackn
   auto conf = node->getConfig();
   conf.db_path = data_dir / "consensus_network_api";
   auto consensus_service = createConsensusApplication(conf);
-  auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service, node->getFinalChain());
+  auto network_api = std::make_shared<network::ConsensusNetworkApi>(consensus_service);
 
   std::array<uint8_t, 64> peer_id{};
   peer_id.fill(0x71);

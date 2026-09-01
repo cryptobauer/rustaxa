@@ -2412,7 +2412,17 @@ impl DagService {
 
     /// Loads proposal-period hash and found flag from storage.
     pub fn runtime_period_block_hash(&self, period: u64) -> Result<DagHashStorageLookup> {
-        period_block_hash_from_storage(self.lock()?.storage.as_ref(), period)
+        let lookup = period_block_hash_from_storage(self.lock()?.storage.as_ref(), period)?;
+        // Period zero is the canonical pre-finalization anchor. Legacy DAG
+        // verification uses the zero hash for that anchor because no
+        // `PeriodData` record exists until the first PBFT block finalizes.
+        if !lookup.found && period == 0 {
+            return Ok(DagHashStorageLookup {
+                found: true,
+                hash: H256::zero(),
+            });
+        }
+        Ok(lookup)
     }
 
     /// Reads persisted DAG counters from storage.
@@ -2940,6 +2950,29 @@ mod tests {
                 .to_string()
                 .contains("DAG_RUNTIME_RESTORE_ANCHOR_BLOCK")
         );
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_period_block_hash_exposes_canonical_genesis_anchor() -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_genesis_period_hash");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+        )?;
+
+        let lookup = service.runtime_period_block_hash(0)?;
+        assert!(lookup.found);
+        assert_eq!(lookup.hash, H256::zero());
+
+        drop(service);
         drop(storage);
         std::fs::remove_dir_all(path)?;
         Ok(())

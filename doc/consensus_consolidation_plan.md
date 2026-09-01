@@ -882,17 +882,19 @@ selection retains the untouched legacy storage implementation.
 
 ### 9. Contract FinalChain and execution
 
-Current state: execution orchestration and the native public/query contraction are complete for the selected family.
+Current state: complete. Execution orchestration, native public/query contraction, and concrete-state lifetime
+contraction are application owned.
 Native application/FinalChain tasks own planning, sequencing, validation, recovery ordering, publication, pillar
 header/state-root lookup, and pillar DPoS fact composition. Block, transaction, receipt, bloom, and public DPoS readers
 use `ConsensusQueryApi`; the duplicate application-root exports and Rust-mode FinalChain object materializers are
 deleted. The broad execution API, bridge session, C++ action loop, manager-shaped carriers, and consensus
-materializers are deleted. `final_chain_shim` retains only hybrid public-state and tracing behavior plus exact
-bridge-contract, committed-state preflight, system-fact, concrete ordered-EVM, rewards, state-commit, prune, and recovery
-leaves. Native-to-external period gaps fail before concrete mutation pending the explicit `CRW-E02` catch-up/import
-design. Rust-mode fixtures call the query client or exact application-root finalization/state leaf, and query expansion
-preserves regular-then-system transaction and receipt order. Delete the shim when those named state clients and the
-concrete executor migrate.
+materializers are deleted. The Rust-mode `FinalChain` facade, `final_chain_shim`, and overlay source selection are also
+deleted. One private `ExternalEvmStateOwner`, constructed once at application bootstrap, owns the physical StateAPI
+lifetime behind exact finalization and named public-state, native-call, trace, and prune operations. Rust-mode fixtures
+call the query client or exact application-root finalization/state leaf, and query expansion preserves
+regular-then-system transaction and receipt order. Every retained concrete-state operation has a named client and is
+deleted when that physical EVM/`state_db` capability moves native; no CXX handle, execution session, action loop, range
+executor, service locator, or C++ publication authority may reappear.
 
 ### 10. Final deletion and documentation closeout
 

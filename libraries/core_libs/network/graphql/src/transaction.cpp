@@ -10,13 +10,10 @@ using namespace std::literals;
 
 namespace graphql::taraxa {
 namespace {
+#ifndef RUSTAXA_ENABLE
 TransactionReceiptReader makeTransactionReceiptReader(
-    [[maybe_unused]] const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
+    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
   TransactionReceiptReader reader;
-#ifdef RUSTAXA_ENABLE
-  reader.location = [](const auto&) { return std::optional<::taraxa::TransactionLocation>{}; };
-  reader.receipt = [](auto, auto, const auto&) { return std::optional<::taraxa::TransactionReceipt>{}; };
-#else
   reader.location = [final_chain](const ::taraxa::trx_hash_t& hash) {
     if (!final_chain) {
       return std::optional<::taraxa::TransactionLocation>{};
@@ -29,9 +26,9 @@ TransactionReceiptReader makeTransactionReceiptReader(
     }
     return final_chain->transactionReceipt(period, position, hash);
   };
-#endif
   return reader;
 }
+#endif
 }  // namespace
 
 #ifdef RUSTAXA_ENABLE
@@ -40,6 +37,7 @@ dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(
 }  // namespace
 #endif
 
+#ifndef RUSTAXA_ENABLE
 Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                          std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
                          std::shared_ptr<::taraxa::Transaction> transaction) noexcept
@@ -53,6 +51,7 @@ Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> fina
     }
   }
 }
+#endif
 
 Transaction::Transaction(TransactionReceiptReader receipt_reader,
                          std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
@@ -75,23 +74,6 @@ Transaction::Transaction(TransactionReceiptReader receipt_reader, AccountStateRe
 }
 
 #ifdef RUSTAXA_ENABLE
-Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-                         std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
-                         std::shared_ptr<::taraxa::Transaction> transaction,
-                         const rustaxa::TransactionPublicView& transaction_view,
-                         const rustaxa::TransactionReceiptPublicView& receipt_view) noexcept
-    : get_block_by_num_(std::move(get_block_by_num)),
-      transaction_(std::move(transaction)),
-      account_reader_(makeAccountStateReader(final_chain)),
-      receipt_reader_(makeTransactionReceiptReader(final_chain)),
-      location_{transaction_view.block_number, transaction_view.transaction_index, transaction_view.is_system},
-      receipt_lookup_complete_(true) {
-  if (receipt_view.found) {
-    auto receipt_bytes = bytesFromBridge(receipt_view.receipt_rlp);
-    receipt_ = ::taraxa::util::rlp_dec<::taraxa::TransactionReceipt>(dev::RLP(receipt_bytes));
-  }
-}
-
 Transaction::Transaction(TransactionReceiptReader receipt_reader, AccountStateReader account_reader,
                          std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
                          std::shared_ptr<::taraxa::Transaction> transaction,

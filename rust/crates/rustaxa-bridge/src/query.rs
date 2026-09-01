@@ -23,6 +23,46 @@ fn query_number_lookup_to_ffi(
     }
 }
 
+fn native_call_request_from_ffi(
+    request: rustaxa_ffi::FinalChainNativeCall,
+) -> Result<rustaxa_consensus::FinalChainCallRequest, anyhow::Error> {
+    Ok(rustaxa_consensus::FinalChainCallRequest {
+        block_number: request.block_number.into(),
+        sender: request.sender,
+        receiver: request.receiver_found.then_some(request.receiver),
+        value: rustaxa_types::FinalChainTransactionValue::try_from(request.value.as_slice())
+            .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_TRANSACTION_VALUE_EXCEEDS_U256"))?,
+        gas_price: rustaxa_types::FinalChainGasPrice::try_from(request.gas_price.as_slice())
+            .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256"))?,
+        gas_limit: request.gas_limit.into(),
+        input: request.input,
+    })
+}
+
+fn native_call_outcome_to_ffi(
+    outcome: rustaxa_types::FinalChainCallOutcome,
+) -> rustaxa_ffi::FinalChainNativeCallOutcome {
+    rustaxa_ffi::FinalChainNativeCallOutcome {
+        code_retval: outcome.code_retval,
+        logs: outcome
+            .logs
+            .into_iter()
+            .map(|log| rustaxa_ffi::FinalChainNativeCallLog {
+                address: log.address,
+                topics: log
+                    .topics
+                    .into_iter()
+                    .map(|topic| rustaxa_ffi::FinalChainNativeCallLogTopic { topic })
+                    .collect(),
+                data: log.data,
+            })
+            .collect(),
+        gas_used: outcome.gas_used.as_u64(),
+        code_err: outcome.code_err,
+        consensus_err: outcome.consensus_err,
+    }
+}
+
 fn period_lambda_to_ffi(lambda: rustaxa_consensus::QueryPeriodLambda) -> rustaxa_ffi::PeriodLambda {
     rustaxa_ffi::PeriodLambda {
         found: lambda.found,
@@ -491,6 +531,16 @@ impl BridgeConsensusQueryApi {
         block_number: u64,
     ) -> Result<Vec<u8>, anyhow::Error> {
         self.0.final_chain_dpos_total_supply(block_number)
+    }
+
+    /// Executes only the native DPoS/slashing read-only semantics.
+    pub fn consensus_query_final_chain_native_call(
+        &self,
+        request: rustaxa_ffi::FinalChainNativeCall,
+    ) -> Result<rustaxa_ffi::FinalChainNativeCallOutcome, anyhow::Error> {
+        Ok(native_call_outcome_to_ffi(self.0.final_chain_native_call(
+            native_call_request_from_ffi(request)?,
+        )?))
     }
 
     /// Returns the exact persisted dynamic lambda for a finalized period.

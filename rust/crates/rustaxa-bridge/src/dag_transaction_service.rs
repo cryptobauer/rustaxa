@@ -59,19 +59,9 @@ pub(crate) fn public_transaction_report_to_ffi(
 pub fn consensus_application_submit_transaction(
     application: &BridgeConsensusApplication,
     request: PublicTransactionSubmissionRequest,
-    final_chain: PublicTransactionFinalChainFacts,
 ) -> Result<PublicTransactionSubmissionReport> {
-    let report = application.0.submit_public_transaction(
+    let report = application.0.submit_public_transaction_from_native_state(
         public_transaction_request_to_native(request),
-        rustaxa_consensus::PublicTransactionFinalChainFacts {
-            sender: final_chain.sender,
-            account_found: final_chain.account_found,
-            account_nonce: U256::from_big_endian(&final_chain.account_nonce),
-            account_balance: U256::from_big_endian(&final_chain.account_balance),
-            finalized_period: final_chain
-                .finalized_period_found
-                .then_some(final_chain.finalized_period),
-        },
     )?;
     Ok(public_transaction_report_to_ffi(report))
 }

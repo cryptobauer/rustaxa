@@ -10,7 +10,6 @@ use crate::ffi::{rustaxa_ffi, rustaxa_ffi::HostConsensusLiveStatus, BridgeConsen
 use crate::network::to_bridge_network_ingress_decision;
 use anyhow::{bail, ensure, Result};
 use rustaxa_consensus::consensus_application_runtime::{
-    FinalChainAccountFact, FinalChainAccountFactsReport, FinalChainAccountFactsRequest,
     PillarAnchorStateReport, PillarAnchorStateRequest,
 };
 use rustaxa_consensus::{
@@ -361,39 +360,6 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                     hash: hash.hash,
                     gas_used,
                     result_rlp: result_rlp.data,
-                })
-                .collect(),
-            error_code: report.error_code,
-        })
-    }
-
-    fn load_final_chain_account_facts(
-        &self,
-        request: &FinalChainAccountFactsRequest,
-    ) -> Result<FinalChainAccountFactsReport> {
-        let report = self.0.consensus_load_final_chain_account_facts(
-            &HostFinalChainAccountFactsRequest {
-                effect_id: to_ffi_effect_id(request.effect_id),
-                addresses: request
-                    .addresses
-                    .iter()
-                    .copied()
-                    .map(|bytes| HostAddress20 { bytes })
-                    .collect(),
-            },
-        )?;
-        Ok(FinalChainAccountFactsReport {
-            effect_id: to_native_effect_id(report.effect_id),
-            succeeded: report.succeeded,
-            observed_block: report.observed_block,
-            accounts: report
-                .accounts
-                .into_iter()
-                .map(|fact| FinalChainAccountFact {
-                    address: fact.address,
-                    found: fact.found,
-                    nonce: fact.nonce,
-                    balance: fact.balance,
                 })
                 .collect(),
             error_code: report.error_code,
@@ -758,17 +724,14 @@ pub fn consensus_network_transaction_gas_price_bid(
 }
 
 /// Submits one host-signed network transaction without escaping to the root.
-pub fn consensus_network_submit_transaction_with_execution(
+pub fn consensus_network_submit_transaction(
     network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::PublicTransactionSubmissionRequest,
-    external_evm: &ExternalEvmPort,
 ) -> Result<rustaxa_ffi::PublicTransactionSubmissionReport> {
-    let external_evm = ExternalEvmPortAdapter(external_evm);
     Ok(public_transaction_report_to_ffi(
-        network.0.submit_transaction_with_execution(
-            public_transaction_request_to_native(request),
-            &external_evm,
-        )?,
+        network
+            .0
+            .submit_transaction_from_native_state(public_transaction_request_to_native(request))?,
     ))
 }
 
@@ -776,9 +739,7 @@ pub fn consensus_network_submit_transaction_with_execution(
 pub fn consensus_network_ingest_transaction_packet(
     network: &BridgeConsensusNetworkApi,
     request: rustaxa_ffi::NetworkTransactionPacketRequest,
-    external_evm: &ExternalEvmPort,
 ) -> Result<rustaxa_ffi::NetworkTransactionPacketReport> {
-    let external_evm = ExternalEvmPortAdapter(external_evm);
     let context = rustaxa_consensus::NetworkTransactionPacketContext {
         transport_lane: request.transport_lane,
         peer_id: request.peer_id,
@@ -792,10 +753,9 @@ pub fn consensus_network_ingest_transaction_packet(
         last_block_number: request.last_block_number,
         cornus_active: request.cornus_active,
     };
-    let report =
-        network
-            .0
-            .ingest_transaction_packet(context, &request.packet_rlp, policy, &external_evm)?;
+    let report = network
+        .0
+        .ingest_transaction_packet(context, &request.packet_rlp, policy)?;
     Ok(rustaxa_ffi::NetworkTransactionPacketReport {
         decision: to_bridge_network_ingress_decision(report.decision),
         transactions: report

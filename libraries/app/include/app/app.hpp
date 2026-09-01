@@ -61,7 +61,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<PbftChain> getPbftChain() const { return pbft_chain_; }
 #endif
   PbftProgress getPbftProgress() const;
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<final_chain::FinalChain> getFinalChain() const { return final_chain_; }
+#endif
   std::shared_ptr<metrics::MetricsService> getMetrics() const { return metrics_; }
 #ifndef RUSTAXA_ENABLE
   // used only in pure-C++ reference tests
@@ -148,7 +150,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<KeyManager> key_manager_;
 #endif
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<final_chain::FinalChain> final_chain_;
+#endif
   std::shared_ptr<metrics::MetricsService> metrics_;
 
   std::map<std::string, std::shared_ptr<Plugin>> active_plugins_;

@@ -13,8 +13,10 @@ namespace graphql::taraxa {
 
 class Log {
  public:
+#ifndef RUSTAXA_ENABLE
   explicit Log(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                std::shared_ptr<const Transaction> transaction, ::taraxa::LogEntry log, int index) noexcept;
+#endif
   explicit Log(AccountStateReader account_reader, std::shared_ptr<const Transaction> transaction,
                ::taraxa::LogEntry log, int index) noexcept;
 

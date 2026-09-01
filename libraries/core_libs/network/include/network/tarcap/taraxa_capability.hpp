@@ -41,9 +41,11 @@ class PillarChainManager;
 #endif
 }  // namespace pillar_chain
 
+#ifndef RUSTAXA_ENABLE
 namespace final_chain {
 class FinalChain;
 }
+#endif
 
 }  // namespace taraxa
 
@@ -87,7 +89,12 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
       const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
       const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
 #endif
-      const std::shared_ptr<final_chain::FinalChain> &final_chain, TarcapVersion version, const addr_t &node_addr)>;
+#ifdef RUSTAXA_ENABLE
+      const SharedConsensusApplication &consensus_application,
+#else
+      const std::shared_ptr<final_chain::FinalChain> &final_chain,
+#endif
+      TarcapVersion version, const addr_t &node_addr)>;
 
   /**
    * @brief Default InitPacketsHandlers function definition with the latest version of packets handlers
@@ -115,9 +122,11 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
                    std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
                    std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
 #endif
-                   std::shared_ptr<final_chain::FinalChain> final_chain,
 #ifdef RUSTAXA_ENABLE
+                   SharedConsensusApplication consensus_application,
                    network::ConsensusNetworkApiShared consensus_network_api,
+#else
+                   std::shared_ptr<final_chain::FinalChain> final_chain,
 #endif
                    InitPacketsHandlers init_packets_handlers = kInitLatestVersionHandlers);
 

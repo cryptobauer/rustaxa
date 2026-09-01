@@ -34,9 +34,11 @@ struct TransactionReceiptReader {
 
 class Transaction final : public std::enable_shared_from_this<Transaction> {
  public:
+#ifndef RUSTAXA_ENABLE
   explicit Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
+#endif
   explicit Transaction(TransactionReceiptReader receipt_reader,
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
@@ -44,11 +46,6 @@ class Transaction final : public std::enable_shared_from_this<Transaction> {
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
 #ifdef RUSTAXA_ENABLE
-  explicit Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-                       std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
-                       std::shared_ptr<::taraxa::Transaction> transaction,
-                       const rustaxa::TransactionPublicView& transaction_view,
-                       const rustaxa::TransactionReceiptPublicView& receipt_view) noexcept;
   explicit Transaction(TransactionReceiptReader receipt_reader, AccountStateReader account_reader,
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction,
