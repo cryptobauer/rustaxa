@@ -207,9 +207,14 @@ impl<'a> WesolowskiProver<'a> {
     }
 }
 
+/// Owned cancellation signal shared by VDF job owners and proof workers.
+///
+/// Clones observe the same atomic flag. Cancellation is monotonic and
+/// idempotent; a fresh token starts clear, and no external pointer or borrowed
+/// lifetime crosses the worker boundary.
+#[derive(Clone)]
 pub struct CancellationToken {
     flag: Arc<AtomicBool>,
-    external_ptr: Option<*const bool>,
 }
 
 impl Default for CancellationToken {
@@ -222,35 +227,17 @@ impl CancellationToken {
     pub fn new() -> Self {
         CancellationToken {
             flag: Arc::new(AtomicBool::new(false)),
-            external_ptr: None,
-        }
-    }
-
-    pub fn from_atomic_ptr(atomic_ptr: *const bool) -> Self {
-        CancellationToken {
-            flag: Arc::new(AtomicBool::new(false)), // Unused in this case
-            external_ptr: Some(atomic_ptr),
         }
     }
 
     /// Signals cancellation to any listening operations
     pub fn cancel(&self) {
-        if let Some(ptr) = self.external_ptr {
-            unsafe {
-                *(ptr as *mut AtomicBool) = AtomicBool::new(true);
-            }
-        } else {
-            self.flag.store(true, Ordering::Release);
-        }
+        self.flag.store(true, Ordering::Release);
     }
 
     /// Checks if cancellation has been requested
     pub fn is_cancelled(&self) -> bool {
-        if let Some(ptr) = self.external_ptr {
-            unsafe { (*(ptr as *const AtomicBool)).load(Ordering::Acquire) }
-        } else {
-            self.flag.load(Ordering::Acquire)
-        }
+        self.flag.load(Ordering::Acquire)
     }
 }
 

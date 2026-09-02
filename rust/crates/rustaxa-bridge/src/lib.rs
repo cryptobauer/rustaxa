@@ -6,4 +6,3 @@ mod final_chain;
 mod network;
 mod query;
 mod storage_admin;
-mod vdf;

@@ -2868,6 +2868,7 @@ mod tests {
                 next_retry_count: 0,
                 record_proposed_block: false,
                 vdf_message: Vec::new(),
+                vrf_proof: Vec::new(),
                 selected_transaction_hashes: Vec::new(),
                 transaction_gas_estimations: Vec::new(),
                 selected_transactions: Vec::new(),

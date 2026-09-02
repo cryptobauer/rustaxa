@@ -330,6 +330,8 @@ pub struct DagProposerSessionStep {
     pub last_finalized_period: u64,
     /// VRF input passed to the retained external executor.
     pub vrf_input: Vec<u8>,
+    /// Verified VRF proof retained for native VDF payload construction.
+    pub vrf_proof: Vec<u8>,
     /// Sender-eligible vote count.
     pub vote_count: u64,
     /// VDF-sortition maximum vote count.
@@ -394,6 +396,8 @@ pub struct DagProposerSession {
     pub next_retry_count: u64,
     pub record_proposed_block: bool,
     pub vdf_message: Vec<u8>,
+    /// Verified VRF proof retained until native VDF payload construction.
+    pub vrf_proof: Vec<u8>,
     pub selected_transaction_hashes: Vec<H256>,
     pub transaction_gas_estimations: Vec<u64>,
     pub selected_transactions: Vec<TransactionPackingSelection>,
@@ -876,6 +880,7 @@ impl DagServiceState {
                 minimum_vdf_difficulty: 0,
                 sortition_params: empty_sortition_params(),
                 vdf_message: Vec::new(),
+                vrf_proof: Vec::new(),
                 selected_transaction_hashes: Vec::new(),
                 transaction_gas_estimations: Vec::new(),
                 selected_transactions: Vec::new(),
@@ -1151,6 +1156,7 @@ impl DagServiceState {
         session.update_retry_state = attempt.update_retry_state;
         session.next_last_propose_level = attempt.next_last_propose_level;
         session.next_retry_count = attempt.next_retry_count;
+        session.vrf_proof = proof.to_vec();
         session.attempt = attempt;
         let step = proposer_session_step(session);
         Ok(finish_proposer_session_step(self, session_id, step))
@@ -1893,6 +1899,7 @@ fn proposer_session_step(session: &DagProposerSession) -> DagProposerSessionStep
         proposal_period: session.attempt.proposal_period,
         last_finalized_period: session.attempt.last_finalized_period,
         vrf_input: session.attempt.vrf_input.clone(),
+        vrf_proof: session.vrf_proof.clone(),
         vote_count: session.attempt.vote_count,
         max_vote_count: session.attempt.max_vote_count,
         vdf_difficulty: session.attempt.vdf_difficulty,
@@ -1930,6 +1937,7 @@ fn proposer_session_not_started_step() -> DagProposerSessionStep {
         proposal_period: 0,
         last_finalized_period: 0,
         vrf_input: Vec::new(),
+        vrf_proof: Vec::new(),
         vote_count: 0,
         max_vote_count: 0,
         vdf_difficulty: 0,

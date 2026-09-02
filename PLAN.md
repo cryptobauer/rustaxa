@@ -53,7 +53,7 @@ Core rules:
 - Pure-C++ reference behavior remains available through the untouched upstream implementations and the
   all-Rust-disabled validation route. It does not require Rust-enabled production to expose matching internal classes.
 - New shims are exceptional. Before adding one, prove that a named external C++ client cannot use an existing query,
-  transport, execution, bootstrap, admin, signing, or VDF adapter. A temporary shim must have a normal roadmap issue,
+  transport, execution, bootstrap, admin, or signing adapter. A temporary shim must have a normal roadmap issue,
   deletion condition, and owner.
 - When a named external client still requires an upstream-owned C++ class, use the overlay shim pattern: header overlay
   plus a standalone facade, with the untouched implementation selected only for pure-C++ mode. Prefer this over
@@ -368,13 +368,12 @@ retain the untouched legacy RewardsStats header, source, and focused test.
   - DagBlockProposer now has a standalone Rust-mode overlay facade with no feature-on legacy proposer source or
     `DagBlockProposerOld` scaffold. Rust owns proposer eligibility status decisions, legacy VRF
     input bytes, deterministic tip-selection policy, transaction-pack command flow, atomic DAG observation and
-    revalidation, VDF input/message bytes, runtime-derived wait/cancel/stale-proof decisions, retry-cursor updates,
-    proposal timestamps, session-owned block construction and unsigned intent state, and final signed-RLP construction
-    after temporary C++ node-secret signing. C++ receives only the signing hash and returns only signature bytes; it no
-    longer echoes frontier, transaction, gas, timestamp, or unsigned-intent fields through standalone bridge planners.
-    C++ still owns thread/network orchestration, live
-    network throttle checks, async VDF compute execution, node-secret signature execution, add-block effect execution,
-    logging, and network egress.
+    revalidation, VDF input/message bytes, asynchronous VDF proof jobs and cancellation, runtime-derived
+    wait/cancel/stale-proof decisions, retry-cursor updates, proposal timestamps, session-owned block construction and
+    unsigned intent state, and final signed-RLP construction after temporary C++ node-secret signing. C++ receives only
+    exact signing/VRF requests and returns only signature/proof bytes; it no longer echoes frontier, transaction, gas,
+    timestamp, unsigned-intent, or VDF job fields through standalone bridge planners. C++ still owns process-thread and
+    network mechanics, node-secret signature/VRF execution, concrete gas execution, logging, and network egress.
   - Rust finalization appends DPoS snapshots for finalized native-transfer blocks and the Rust-supported
     `registerValidator(address,bytes,bytes,uint16,string,string)`, `delegate(address)`,
     `undelegate(address,uint256)`, `confirmUndelegate(address)`, `cancelUndelegate(address)`,
@@ -575,8 +574,8 @@ Native Rust consensus gap closeout:
 - Rust owns consensus rules, durable consensus state, restart normalization, storage/query selection, canonical payload
   retention, validation decisions, lifecycle command selection where it affects consensus behavior, scheduler/timer
   policy, ordered side-effect planning, and typed executor-result validation.
-- C++ may remain only as a leaf adapter for named public APIs, minimal app hosting, OS primitives, key signing, VDF
-  execution, tarcap peer transport mechanics, and concrete EVM/StateAPI operations.
+- C++ may remain only as a leaf adapter for named public APIs, minimal app hosting, OS primitives, key signing,
+  tarcap peer transport mechanics, and concrete EVM/StateAPI operations.
 - Rust is now authorized to own network packet inspection, admission, routing, consensus queueing, effect ordering,
   gossip/send selection, and executor-result validation. Tarcap retains socket/peer mechanics, packet wrapping, actual
   transmission, disconnect execution, and lane scheduling.
@@ -599,8 +598,8 @@ Completed closeout slices:
    network, RPC, GraphQL, stats, and light clients cannot obtain a `DagManager` or materialize mutable internal DAG
    graphs; the facade, bridge task/materialization family, and shim directory are deleted.
 4. DAG proposer application cutover: native runtime owns scheduling, eligibility, packing, retry/throttle decisions,
-   asynchronous VDF progression, tip selection, block construction, signing progression, local admission, and gossip
-   planning. App supplies exact timer/process, signing/VRF, VDF start/poll/cancel, concrete gas, tarcap, and public-event
+   asynchronous VDF progression and proof execution, tip selection, block construction, signing progression, local
+   admission, and gossip planning. App supplies exact timer/process, signing/VRF, concrete gas, tarcap, and public-event
    reports. The Rust-mode proposer facade, worker-command bridge module, App ownership, and shim directory are deleted.
 5. Vote, slashing, and pillar application cutover: native services own pillar startup/restoration, vote admission,
    threshold state, block construction, finalization persistence/cleanup, lifecycle, network decisions, public query
@@ -648,7 +647,7 @@ Cross-boundary execution follows a resumable typed-effect protocol:
 2. Rust validates the request, reads private consensus state, may update only provisional session/cursor state, and
    returns the next typed external leaf effect when physical work is required. Authoritative durable or published state
    does not mutate until the matching result is accepted.
-3. C++ executes only the named tarcap, concrete EVM/`state_db`, signing, VDF, timer/process, or public-formatting leaf.
+3. C++ executes only the named tarcap, concrete EVM/`state_db`, signing, timer/process, or public-formatting leaf.
 4. C++ reports the exact effect identity and typed result; Rust validates it before advancing, persisting, publishing,
    or producing the next effect.
 
@@ -686,7 +685,7 @@ Residual adapter classifications and deletion conditions belong in `doc/consensu
 roadmap item only when a named client can migrate or a correctness gap is demonstrated. Exact DTOs and methods are owned
 by the Rust facade modules and their bridge tests rather than by a separate touchpoint inventory.
 
-Signing, VDF, concrete gas estimation, and best-effort public observation remain operation-specific leaf calls rather
+Signing, concrete gas estimation, and best-effort public observation remain operation-specific leaf calls rather
 than shared service facades. Host thread, timer, sleep, and process mechanics may remain as Rust-commanded executors,
 but they do not justify an internal manager or service handle and are deleted or narrowed when native infrastructure
 owns the physical operation.
@@ -811,7 +810,7 @@ continues reward admission without a C++ hash-decision branch or standalone vali
 The authorized consensus rewrite campaign is complete. Native Rust owns consensus state, protocol
 planning, scheduling, persistence, finalization/publication authority, network inspection/routing/selection, concrete-
 root validation/recovery, and bounded public query/mutation semantics. C++ remains only at the named external leaves in
-`doc/consensus_bridge_shim_audit.md`: process mechanics, signing, VDF, physical tarcap transport, concrete EVM/
+`doc/consensus_bridge_shim_audit.md`: process mechanics, signing, physical tarcap transport, concrete EVM/
 `state_db`, public-client formatting, administration, conformance, and the pure-C++ reference composition.
 
 The live bridge inventory and its guard are the deletion authority for retained CXX modules, functions, carriers,

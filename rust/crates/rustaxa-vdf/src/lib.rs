@@ -1,8 +1,8 @@
 //! Rust implementations of Taraxa VDF, VRF, and VDF/VRF sortition primitives.
 //!
 //! The crate keeps compatibility-oriented modules separate from low-level
-//! puzzle/prover/verifier code so C++ shims can call stable bridge functions
-//! without depending on storage or consensus orchestration.
+//! puzzle/prover/verifier code so native consensus can own proof execution
+//! without depending on storage or unrelated orchestration.
 
 pub mod config;
 pub mod hash;

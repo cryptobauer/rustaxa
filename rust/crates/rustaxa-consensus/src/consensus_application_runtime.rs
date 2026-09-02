@@ -57,6 +57,7 @@ use crate::pbft_vote_generation::{
 };
 use crate::pbft_vote_validation::{PbftPublicProposerSortitionInput, prepare_public_proposer_vrf};
 use crate::transaction_packing_service::TransactionPackingEstimate;
+use crate::vdf_executor::{NativeVdfExecutor, NativeVdfPollResult, NativeVdfRequest};
 use crate::verified_votes::PbftVoteType;
 use crate::verified_votes::TwoTPlusOneVotedBlockType;
 use anyhow::{Context, Result, bail, ensure};
@@ -240,59 +241,6 @@ pub struct DagGasEstimateReport {
     pub succeeded: bool,
     pub observed_block: u64,
     pub estimates: Vec<DagGasEstimateResult>,
-    pub error_code: String,
-}
-
-/// Exact key-custody-free VDF executor request for one native proposer cursor.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DagVdfRequest {
-    pub effect_id: ConsensusEffectId,
-    pub wallet_index: u64,
-    pub vrf_input: Vec<u8>,
-    pub vdf_message: Vec<u8>,
-    pub vote_count: u64,
-    pub max_vote_count: u64,
-    /// Dynamic sortition lambda retained by the native proposer cursor.
-    pub lambda_bound: u16,
-    pub difficulty: u16,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DagVdfStartReport {
-    pub effect_id: ConsensusEffectId,
-    pub started: bool,
-    pub job_id: u64,
-    pub error_code: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DagVdfPollRequest {
-    pub effect_id: ConsensusEffectId,
-    pub job_id: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DagVdfPollReport {
-    pub effect_id: ConsensusEffectId,
-    pub job_id: u64,
-    pub complete: bool,
-    pub succeeded: bool,
-    pub cancelled: bool,
-    pub vdf_rlp: Vec<u8>,
-    pub error_code: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DagVdfCancelRequest {
-    pub effect_id: ConsensusEffectId,
-    pub job_id: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DagVdfCancelReport {
-    pub effect_id: ConsensusEffectId,
-    pub job_id: u64,
-    pub cancelled: bool,
     pub error_code: String,
 }
 
@@ -498,13 +446,6 @@ pub trait ConsensusTransportPort {
     }
 }
 
-/// CPU-heavy VDF proof execution. Wallet secrets remain behind this port.
-pub trait ConsensusVdfPort {
-    fn start_dag_vdf(&self, request: &DagVdfRequest) -> Result<DagVdfStartReport>;
-    fn poll_dag_vdf(&self, request: &DagVdfPollRequest) -> Result<DagVdfPollReport>;
-    fn cancel_dag_vdf(&self, request: &DagVdfCancelRequest) -> Result<DagVdfCancelReport>;
-}
-
 /// Public event/WebSocket publication leaf.
 pub trait ConsensusObserverPort {
     fn observe(&self, request: &ConsensusObservationRequest) -> Result<ConsensusObservationReport>;
@@ -692,6 +633,7 @@ pub struct ConsensusApplicationRuntime {
     dag_proposer_config: DagProposerConfig,
     bridge_contract_address: [u8; 20],
     max_levels_per_period: u64,
+    vdf_executor: NativeVdfExecutor,
 }
 
 impl ConsensusApplicationRuntime {
@@ -772,6 +714,7 @@ impl ConsensusApplicationRuntime {
             dag_proposer_config,
             bridge_contract_address,
             max_levels_per_period,
+            vdf_executor: NativeVdfExecutor::new(),
         })
     }
 
@@ -1173,27 +1116,13 @@ impl ConsensusApplicationRuntime {
         }
     }
 
-    fn cancel_active_dag_vdf<V: ConsensusVdfPort>(
-        &self,
-        generation: u64,
-        job_id: u64,
-        vdf: &V,
-    ) -> Result<()> {
-        let effect_id = self
-            .next_effect(generation)
-            .or_else(|_| self.next_operation_effect())?;
-        let report = vdf.cancel_dag_vdf(&DagVdfCancelRequest { effect_id, job_id })?;
-        ensure!(
-            report.effect_id == effect_id && report.job_id == job_id && report.cancelled,
-            "CONSENSUS_DAG_VDF_CANCEL_FAILED: {}",
-            report.error_code
-        );
-        Ok(())
+    fn cancel_active_dag_vdf(&self, job_id: u64) -> Result<()> {
+        self.vdf_executor.cancel(job_id)
     }
 
     /// Drives one complete native DAG proposal attempt for one configured wallet.
     #[allow(clippy::too_many_arguments)]
-    fn drive_dag_proposer<P, S, T, E, V, O>(
+    fn drive_dag_proposer<P, S, T, E, O>(
         &self,
         generation: u64,
         wallet_index: u64,
@@ -1205,7 +1134,6 @@ impl ConsensusApplicationRuntime {
         signer: &S,
         transport: &T,
         execution: &E,
-        vdf: &V,
         observer: &O,
     ) -> Result<bool>
     where
@@ -1213,7 +1141,6 @@ impl ConsensusApplicationRuntime {
         S: ConsensusSigningPort,
         T: ConsensusTransportPort,
         E: ConsensusExecutionPort,
-        V: ConsensusVdfPort,
         O: ConsensusObserverPort,
     {
         let session_id = dag.begin_proposer_session(input)?;
@@ -1324,49 +1251,33 @@ impl ConsensusApplicationRuntime {
                 matches!(step.action, DagProposerSessionAction::StartVdf),
                 "CONSENSUS_DAG_PROPOSER_EXPECTED_VDF"
             );
-            let start_id = self.next_effect(generation)?;
-            let started = vdf.start_dag_vdf(&DagVdfRequest {
-                effect_id: start_id,
-                wallet_index,
-                vrf_input: step.vrf_input.clone(),
+            let job_id = self.vdf_executor.start(NativeVdfRequest {
+                vrf_proof: step.vrf_proof.clone(),
                 vdf_message: step.vdf_message.clone(),
-                vote_count: step.vote_count,
-                max_vote_count: step.max_vote_count,
                 lambda_bound: step.sortition_params.vdf.lambda_bound,
                 difficulty: step.vdf_difficulty,
             })?;
-            if started.started && started.job_id != 0 {
-                active_vdf_job = Some(started.job_id);
-            }
-            self.validate_report(start_id, started.effect_id)?;
-            ensure!(
-                started.started && started.job_id != 0,
-                "CONSENSUS_DAG_VDF_START_FAILED: {}",
-                started.error_code
-            );
-            let proof = loop {
+            active_vdf_job = Some(job_id);
+            let vdf_rlp = loop {
                 let native = dag.poll_proposer_vdf(session_id)?;
                 if matches!(native.action, DagProposerSessionAction::CancelVdf)
                     || process.stop_requested(generation)
                 {
-                    self.cancel_active_dag_vdf(generation, started.job_id, vdf)?;
+                    self.cancel_active_dag_vdf(job_id)?;
                     active_vdf_job = None;
                     let _ = dag.abort_proposer_session(session_id);
                     return Ok(native.return_value);
                 }
-                let poll_id = self.next_effect(generation)?;
-                let polled = vdf.poll_dag_vdf(&DagVdfPollRequest {
-                    effect_id: poll_id,
-                    job_id: started.job_id,
-                })?;
-                self.validate_report(poll_id, polled.effect_id)?;
-                ensure!(
-                    polled.job_id == started.job_id && !polled.cancelled,
-                    "CONSENSUS_DAG_VDF_POLL_IDENTITY_MISMATCH"
-                );
-                if polled.complete {
-                    active_vdf_job = None;
-                    break polled;
+                match self.vdf_executor.poll(job_id)? {
+                    NativeVdfPollResult::Completed(vdf_rlp) => {
+                        active_vdf_job = None;
+                        break vdf_rlp;
+                    }
+                    NativeVdfPollResult::Cancelled => {
+                        active_vdf_job = None;
+                        bail!("CONSENSUS_DAG_VDF_UNEXPECTED_CANCELLATION");
+                    }
+                    NativeVdfPollResult::Pending => {}
                 }
                 if self.wait_for(
                     generation,
@@ -1377,16 +1288,11 @@ impl ConsensusApplicationRuntime {
                     continue;
                 }
             };
-            ensure!(
-                proof.succeeded,
-                "CONSENSUS_DAG_VDF_FAILED: {}",
-                proof.error_code
-            );
             step = dag.report_proposer_vdf_proof(
                 session_id,
                 DagProposerVdfProofReport {
                     proof_ok: true,
-                    vdf_rlp: proof.vdf_rlp,
+                    vdf_rlp,
                 },
             )?;
             if matches!(step.action, DagProposerSessionAction::StaleProofSleep) {
@@ -1498,7 +1404,7 @@ impl ConsensusApplicationRuntime {
         })();
         if result.is_err() {
             if let Some(job_id) = active_vdf_job.take() {
-                let _ = self.cancel_active_dag_vdf(generation, job_id, vdf);
+                let _ = self.cancel_active_dag_vdf(job_id);
             }
             let _ = dag.abort_proposer_session(session_id);
         }
@@ -1825,7 +1731,7 @@ impl ConsensusApplicationRuntime {
     /// acknowledgement, and counter publication are native. Remaining state
     /// action and finalization variants are listed explicitly and fail closed
     /// until their composed service operations are available.
-    pub fn run<P, S, T, E, V, O>(
+    pub fn run<P, S, T, E, O>(
         &self,
         pbft: &PbftService,
         dag_transaction: &DagTransactionService,
@@ -1834,7 +1740,6 @@ impl ConsensusApplicationRuntime {
         signer: &S,
         transport: &T,
         evm: &E,
-        vdf: &V,
         observer: &O,
     ) -> Result<ConsensusRunExit>
     where
@@ -1842,7 +1747,6 @@ impl ConsensusApplicationRuntime {
         S: ConsensusSigningPort,
         T: ConsensusTransportPort,
         E: ConsensusExecutionPort,
-        V: ConsensusVdfPort,
         O: ConsensusObserverPort,
     {
         let generation = self.begin_run()?;
@@ -1992,7 +1896,6 @@ impl ConsensusApplicationRuntime {
                     signer,
                     transport,
                     evm,
-                    vdf,
                     observer,
                 )?;
             }
@@ -2715,11 +2618,6 @@ mod tests {
         stale: bool,
     }
 
-    struct RecordingVdf {
-        cancel_jobs: Mutex<Vec<u64>>,
-        cancel_succeeds: bool,
-    }
-
     struct RecordingObserver {
         requests: Mutex<Vec<ConsensusObservationRequest>>,
         fail: bool,
@@ -2745,29 +2643,6 @@ mod tests {
                     .stale
                     .then_some("INJECTED_STALE_OBSERVER_REPORT".to_owned())
                     .unwrap_or_default(),
-            })
-        }
-    }
-
-    impl ConsensusVdfPort for RecordingVdf {
-        fn start_dag_vdf(&self, _request: &DagVdfRequest) -> Result<DagVdfStartReport> {
-            bail!("unused VDF start")
-        }
-
-        fn poll_dag_vdf(&self, _request: &DagVdfPollRequest) -> Result<DagVdfPollReport> {
-            bail!("unused VDF poll")
-        }
-
-        fn cancel_dag_vdf(&self, request: &DagVdfCancelRequest) -> Result<DagVdfCancelReport> {
-            self.cancel_jobs.lock().unwrap().push(request.job_id);
-            if !self.cancel_succeeds {
-                bail!("injected VDF cancellation failure");
-            }
-            Ok(DagVdfCancelReport {
-                effect_id: request.effect_id,
-                job_id: request.job_id,
-                cancelled: true,
-                error_code: String::new(),
             })
         }
     }
@@ -3206,30 +3081,5 @@ mod tests {
             expected
         );
         assert_eq!(transport.calls.load(Ordering::Acquire), 2);
-    }
-
-    #[test]
-    fn active_vdf_cleanup_attempts_exact_job_on_success_and_injected_failure() {
-        let runtime = ConsensusApplicationRuntime::new(vec![identity()], 1).unwrap();
-        let generation = runtime.begin_run().unwrap();
-        let successful = RecordingVdf {
-            cancel_jobs: Mutex::new(Vec::new()),
-            cancel_succeeds: true,
-        };
-        runtime
-            .cancel_active_dag_vdf(generation, 41, &successful)
-            .unwrap();
-        assert_eq!(*successful.cancel_jobs.lock().unwrap(), vec![41]);
-
-        let failing = RecordingVdf {
-            cancel_jobs: Mutex::new(Vec::new()),
-            cancel_succeeds: false,
-        };
-        assert!(
-            runtime
-                .cancel_active_dag_vdf(generation, 42, &failing)
-                .is_err()
-        );
-        assert_eq!(*failing.cancel_jobs.lock().unwrap(), vec![42]);
     }
 }

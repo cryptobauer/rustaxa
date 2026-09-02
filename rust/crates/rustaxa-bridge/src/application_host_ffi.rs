@@ -1,6 +1,6 @@
 //! Application-only CXX boundary for concrete consensus host leaves.
 //!
-//! Its dedicated translation unit keeps storage, VDF, and query leaf links from
+//! Its dedicated translation unit keeps storage and query leaf links from
 //! retaining callbacks implemented only by the C++ application shell.
 
 use crate::consensus_host_ports::{
@@ -268,43 +268,6 @@ pub mod application_host_ffi {
         result_rlps: Vec<CanonicalBytes>,
         error_code: String,
     }
-    /// Starts one asynchronous native DAG-VDF proof job.
-    struct HostDagVdfRequest {
-        effect_id: HostEffectId,
-        wallet_index: u64,
-        vrf_input: Vec<u8>,
-        vdf_message: Vec<u8>,
-        vote_count: u64,
-        max_vote_count: u64,
-        difficulty: u16,
-        lambda_bound: u16,
-    }
-    struct HostDagVdfStartReport {
-        effect_id: HostEffectId,
-        started: bool,
-        job_id: u64,
-        error_code: String,
-    }
-    /// Identifies one exact asynchronous DAG-VDF job for polling or cancellation.
-    struct HostDagVdfJobRequest {
-        effect_id: HostEffectId,
-        job_id: u64,
-    }
-    struct HostDagVdfPollReport {
-        effect_id: HostEffectId,
-        job_id: u64,
-        complete: bool,
-        succeeded: bool,
-        cancelled: bool,
-        vdf_rlp: Vec<u8>,
-        error_code: String,
-    }
-    struct HostDagVdfCancelReport {
-        effect_id: HostEffectId,
-        job_id: u64,
-        cancelled: bool,
-        error_code: String,
-    }
     /// Post-commit public observation emitted by native consensus.
     struct HostConsensusObservationRequest {
         effect_id: HostEffectId,
@@ -405,21 +368,6 @@ pub mod application_host_ffi {
             self: &ConsensusTransportPort,
             request: &HostMaliciousPeerRequest,
         ) -> Result<HostTransportReport>;
-        #[cxx_name = "consensusStartDagVdf"]
-        fn consensus_start_dag_vdf(
-            self: &ConsensusProcessPort,
-            request: &HostDagVdfRequest,
-        ) -> Result<HostDagVdfStartReport>;
-        #[cxx_name = "consensusPollDagVdf"]
-        fn consensus_poll_dag_vdf(
-            self: &ConsensusProcessPort,
-            request: &HostDagVdfJobRequest,
-        ) -> Result<HostDagVdfPollReport>;
-        #[cxx_name = "consensusCancelDagVdf"]
-        fn consensus_cancel_dag_vdf(
-            self: &ConsensusProcessPort,
-            request: &HostDagVdfJobRequest,
-        ) -> Result<HostDagVdfCancelReport>;
         #[cxx_name = "consensusObserve"]
         fn consensus_observe(
             self: &ConsensusProcessPort,

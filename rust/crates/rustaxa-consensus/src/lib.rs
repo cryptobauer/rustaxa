@@ -49,6 +49,7 @@ pub mod transaction_packing_service;
 pub mod transaction_queue;
 pub mod transaction_service;
 pub mod transaction_storage;
+pub(crate) mod vdf_executor;
 pub mod verified_votes;
 
 mod final_chain;
@@ -78,13 +79,11 @@ pub use consensus_application_runtime::{
     ConsensusObservationReport, ConsensusObservationRequest, ConsensusObserverPort,
     ConsensusProcessPort, ConsensusRunExit, ConsensusRunReason, ConsensusSignReport,
     ConsensusSignRequest, ConsensusSigningPort, ConsensusTransportPort, ConsensusTransportReport,
-    ConsensusTransportStatus, ConsensusVdfPort, ConsensusVrfReport, ConsensusVrfRequest,
-    ConsensusWaitOutcome, ConsensusWaitReport, ConsensusWaitRequest, DagGasEstimateInput,
-    DagGasEstimateReport, DagGasEstimateRequest, DagGasEstimateResult, DagVdfCancelReport,
-    DagVdfCancelRequest, DagVdfPollReport, DagVdfPollRequest, DagVdfRequest, DagVdfStartReport,
-    EvmFinalizationReport, EvmFinalizationRequest, GossipDagBlockRequest, GossipPillarVoteRequest,
-    GossipVoteBundleRequest, GossipVoteRequest, PillarAnchorStateReport, PillarAnchorStateRequest,
-    ReportMaliciousPeerRequest, SigningIdentity,
+    ConsensusTransportStatus, ConsensusVrfReport, ConsensusVrfRequest, ConsensusWaitOutcome,
+    ConsensusWaitReport, ConsensusWaitRequest, DagGasEstimateInput, DagGasEstimateReport,
+    DagGasEstimateRequest, DagGasEstimateResult, EvmFinalizationReport, EvmFinalizationRequest,
+    GossipDagBlockRequest, GossipPillarVoteRequest, GossipVoteBundleRequest, GossipVoteRequest,
+    PillarAnchorStateReport, PillarAnchorStateRequest, ReportMaliciousPeerRequest, SigningIdentity,
 };
 pub use consensus_network_api::ConsensusNetworkApi;
 pub use consensus_pipeline::{

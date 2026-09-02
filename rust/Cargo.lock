@@ -1308,7 +1308,6 @@ dependencies = [
  "rustaxa-consensus",
  "rustaxa-storage",
  "rustaxa-types",
- "rustaxa-vdf",
  "tiny-keccak",
 ]
 

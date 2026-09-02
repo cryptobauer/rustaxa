@@ -1396,13 +1396,12 @@ impl ConsensusApplication {
     }
 
     /// Runs the restartable native consensus daemon on the calling thread.
-    pub fn run_consensus<P, S, T, E, V, O>(
+    pub fn run_consensus<P, S, T, E, O>(
         &self,
         process: &P,
         signer: &S,
         transport: &T,
         evm: &E,
-        vdf: &V,
         observer: &O,
     ) -> Result<ConsensusRunExit>
     where
@@ -1410,7 +1409,6 @@ impl ConsensusApplication {
         S: ConsensusSigningPort,
         T: ConsensusTransportPort,
         E: ConsensusExecutionPort,
-        V: crate::ConsensusVdfPort,
         O: crate::ConsensusObserverPort,
     {
         self.runtime.run(
@@ -1421,7 +1419,6 @@ impl ConsensusApplication {
             signer,
             transport,
             evm,
-            vdf,
             observer,
         )
     }

@@ -96,7 +96,7 @@ TEST(ConsensusObserverBridgeTest, canonicalPillarDataPublishesThroughHostPort) {
   taraxa::FullNodeConfig config{};
   config.db_path = directory.path;
   auto application = taraxa::createConsensusApplication(config);
-  taraxa::ConsensusProcessPort process(config, application);
+  taraxa::ConsensusProcessPort process(application);
   auto block = std::make_shared<taraxa::pillar_chain::PillarBlock>(
       21, dev::h256(1), taraxa::blk_hash_t(2), dev::h256(3), 4,
       std::vector<taraxa::pillar_chain::PillarBlock::ValidatorVoteCountChange>{});
@@ -130,7 +130,7 @@ TEST(ConsensusObserverBridgeTest, rejectsMismatchedAndMalformedPillarData) {
   taraxa::FullNodeConfig config{};
   config.db_path = directory.path;
   auto application = taraxa::createConsensusApplication(config);
-  taraxa::ConsensusProcessPort process(config, application);
+  taraxa::ConsensusProcessPort process(application);
   auto block = std::make_shared<taraxa::pillar_chain::PillarBlock>(
       21, dev::h256(1), taraxa::blk_hash_t(2), dev::h256(3), 4,
       std::vector<taraxa::pillar_chain::PillarBlock::ValidatorVoteCountChange>{});

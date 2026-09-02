@@ -6,6 +6,7 @@
 //! module deliberately keeps owned byte vectors at the boundary so adapters do
 //! not borrow Rust internals across calls.
 
+use crate::prover::{CancellationToken, WesolowskiProver};
 use crate::sortition::{self, LEGACY_ASCII_HEX_MODULUS, LegacySortitionParams, LegacyVdfSortition};
 use crate::vdf::WesolowskiVdf;
 use crate::verifier::WesolowskiVerifier;
@@ -37,6 +38,20 @@ pub struct VdfSortitionPayload {
     pub vdf_solution_output: Vec<u8>,
     /// VDF difficulty encoded in the payload.
     pub difficulty: u16,
+}
+
+/// Terminal result of one VDF-sortition proof attempt.
+///
+/// Cancellation is represented separately from operational failure so an
+/// asynchronous owner can distinguish an expected superseded proposal from a
+/// broken prover. Completed payloads preserve the legacy four-field wire
+/// representation when passed to [`encode_vdf_sortition_payload`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VdfSortitionProofOutcome {
+    /// Proof and output were generated successfully.
+    Completed(VdfSortitionPayload),
+    /// The owned cancellation token was signalled during proof generation.
+    Cancelled,
 }
 
 /// Runtime parameters for standalone VDF difficulty and modulus checks.
@@ -112,6 +127,56 @@ pub fn calculate_vdf_sortition_difficulty(
     };
 
     sortition::calculate_legacy_difficulty(legacy_config, threshold)
+}
+
+/// Generates the VDF portion of a legacy DAG sortition payload from a
+/// previously verified VRF proof.
+///
+/// Inputs:
+/// - `vrf_proof`: exact 80-byte proof produced by the key-custody signer.
+/// - `vdf_input`: canonical DAG VDF message bytes.
+/// - `difficulty`: Rust-selected difficulty retained by the proposer cursor.
+/// - `lambda_bound`: nonzero Wesolowski hash-to-prime bound.
+/// - `cancellation_token`: owned token shared with the asynchronous job owner.
+///
+/// The function does not require or reconstruct private key material. Empty
+/// prover output is accepted only when cancellation was observed; otherwise it
+/// is returned as an operational error.
+pub fn prove_vdf_sortition(
+    vrf_proof: &[u8],
+    vdf_input: &[u8],
+    difficulty: u16,
+    lambda_bound: u16,
+    cancellation_token: &CancellationToken,
+) -> Result<VdfSortitionProofOutcome> {
+    ensure!(
+        lambda_bound != 0,
+        "VDF lambda bound must be greater than zero"
+    );
+    let vrf_proof: [u8; VRF_PROOF_BYTES] = vrf_proof
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("VRF proof must be {VRF_PROOF_BYTES} bytes"))?;
+    let vdf = WesolowskiVdf::new(
+        u32::from(lambda_bound),
+        u32::from(difficulty),
+        vdf_input.to_vec(),
+        legacy_vdf_modulus_ascii_hex().to_vec(),
+    );
+    let solution = WesolowskiProver::new(&vdf).prove(cancellation_token);
+    if solution.first.is_empty() && solution.second.is_empty() && cancellation_token.is_cancelled()
+    {
+        return Ok(VdfSortitionProofOutcome::Cancelled);
+    }
+    ensure!(
+        !solution.first.is_empty() && !solution.second.is_empty(),
+        "VDF prover returned an empty proof or output"
+    );
+    Ok(VdfSortitionProofOutcome::Completed(VdfSortitionPayload {
+        vrf_proof,
+        vdf_solution_proof: solution.first,
+        vdf_solution_output: solution.second,
+        difficulty,
+    }))
 }
 
 /// Verifies a VDF sortition payload using the legacy ASCII-hex modulus.

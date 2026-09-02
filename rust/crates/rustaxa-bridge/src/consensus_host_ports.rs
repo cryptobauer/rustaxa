@@ -23,65 +23,6 @@ use rustaxa_consensus::{
 
 struct ProcessPortAdapter<'a>(&'a ConsensusProcessPort);
 
-impl rustaxa_consensus::ConsensusVdfPort for ProcessPortAdapter<'_> {
-    fn start_dag_vdf(
-        &self,
-        request: &rustaxa_consensus::DagVdfRequest,
-    ) -> Result<rustaxa_consensus::DagVdfStartReport> {
-        let report = self.0.consensus_start_dag_vdf(&HostDagVdfRequest {
-            effect_id: to_ffi_effect_id(request.effect_id),
-            wallet_index: request.wallet_index,
-            vrf_input: request.vrf_input.clone(),
-            vdf_message: request.vdf_message.clone(),
-            vote_count: request.vote_count,
-            max_vote_count: request.max_vote_count,
-            difficulty: request.difficulty,
-            lambda_bound: request.lambda_bound,
-        })?;
-        Ok(rustaxa_consensus::DagVdfStartReport {
-            effect_id: to_native_effect_id(report.effect_id),
-            started: report.started,
-            job_id: report.job_id,
-            error_code: report.error_code,
-        })
-    }
-
-    fn poll_dag_vdf(
-        &self,
-        request: &rustaxa_consensus::DagVdfPollRequest,
-    ) -> Result<rustaxa_consensus::DagVdfPollReport> {
-        let report = self.0.consensus_poll_dag_vdf(&HostDagVdfJobRequest {
-            effect_id: to_ffi_effect_id(request.effect_id),
-            job_id: request.job_id,
-        })?;
-        Ok(rustaxa_consensus::DagVdfPollReport {
-            effect_id: to_native_effect_id(report.effect_id),
-            job_id: report.job_id,
-            complete: report.complete,
-            succeeded: report.succeeded,
-            cancelled: report.cancelled,
-            vdf_rlp: report.vdf_rlp,
-            error_code: report.error_code,
-        })
-    }
-
-    fn cancel_dag_vdf(
-        &self,
-        request: &rustaxa_consensus::DagVdfCancelRequest,
-    ) -> Result<rustaxa_consensus::DagVdfCancelReport> {
-        let report = self.0.consensus_cancel_dag_vdf(&HostDagVdfJobRequest {
-            effect_id: to_ffi_effect_id(request.effect_id),
-            job_id: request.job_id,
-        })?;
-        Ok(rustaxa_consensus::DagVdfCancelReport {
-            effect_id: to_native_effect_id(report.effect_id),
-            job_id: report.job_id,
-            cancelled: report.cancelled,
-            error_code: report.error_code,
-        })
-    }
-}
-
 impl rustaxa_consensus::ConsensusObserverPort for ProcessPortAdapter<'_> {
     fn observe(
         &self,
@@ -618,14 +559,10 @@ pub fn consensus_application_run(
     let signer = SigningPortAdapter(signer);
     let transport = TransportPortAdapter(transport);
     let external_evm = ExternalEvmPortAdapter(external_evm);
-    let exit = application.0.run_consensus(
-        &process,
-        &signer,
-        &transport,
-        &external_evm,
-        &process,
-        &process,
-    )?;
+    let exit =
+        application
+            .0
+            .run_consensus(&process, &signer, &transport, &external_evm, &process)?;
     let reason = match exit.reason {
         ConsensusRunReason::Stopped => 0,
         ConsensusRunReason::Completed => 1,

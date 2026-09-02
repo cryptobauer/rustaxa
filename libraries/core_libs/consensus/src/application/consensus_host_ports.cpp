@@ -6,31 +6,25 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <exception>
-#include <future>
 #include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "common/vrf_wrapper.hpp"
 #include "config/config.hpp"
 #include "consensus/consensus_application.hpp"
 #include "consensus/external_evm_state_owner.hpp"
-#include "dag/dag_block.hpp"
 #include "network/network.hpp"
 #include "pbft/period_data.hpp"
 #include "rustaxa-bridge/application_host_ffi.rs.h"
 #include "storage/storage.hpp"
 #include "transaction/transaction.hpp"
-#include "vdf/sortition.hpp"
 
 namespace taraxa {
 
@@ -83,7 +77,6 @@ rustaxa::HostTransportReport successfulTransportReport(const rustaxa::HostEffect
   return report;
 }
 
-class ConsensusVdfExecutor;
 class ConsensusObserverExecutor;
 
 }  // namespace
@@ -91,7 +84,7 @@ class ConsensusObserverExecutor;
 class ConsensusProcessPort::Impl final {
  public:
   Impl() = default;
-  Impl(const FullNodeConfig& config, std::shared_ptr<ConsensusApplication> application);
+  explicit Impl(std::shared_ptr<ConsensusApplication> application);
   ~Impl();
 
   void reset() {
@@ -110,7 +103,6 @@ class ConsensusProcessPort::Impl final {
   mutable std::mutex mutex;
   mutable std::condition_variable cv;
   bool stop_requested{false};
-  std::unique_ptr<ConsensusVdfExecutor> vdf;
   std::unique_ptr<ConsensusObserverExecutor> observer;
 };
 
@@ -290,169 +282,6 @@ rustaxa::HostTransportReport ConsensusTransportPort::consensusReportMaliciousPee
 
 namespace {
 
-class ConsensusVdfExecutor final {
- public:
-  // The legacy VDF type overrides a virtual formatter but has no virtual
-  // destructor. Keep the concrete asynchronous job allocation final so its
-  // exact destructor is always selected without changing the upstream type.
-  class VdfProofJob final : public vdf_sortition::VdfSortition {
-   public:
-    using vdf_sortition::VdfSortition::VdfSortition;
-  };
-
-  explicit ConsensusVdfExecutor(const FullNodeConfig& config) : wallets(config.wallets) {}
-
-  ~ConsensusVdfExecutor() {
-    std::vector<std::unique_ptr<Job>> pending;
-    {
-      const std::scoped_lock lock(mutex);
-      pending.reserve(jobs.size());
-      for (auto& [_, job] : jobs) {
-        job->cancelled->store(true, std::memory_order_relaxed);
-        pending.push_back(std::move(job));
-      }
-      jobs.clear();
-    }
-    for (auto& job : pending) {
-      job->computation.wait();
-    }
-  }
-
-  rustaxa::HostDagVdfStartReport start(const rustaxa::HostDagVdfRequest& request);
-  rustaxa::HostDagVdfPollReport poll(const rustaxa::HostDagVdfJobRequest& request);
-  rustaxa::HostDagVdfCancelReport cancel(const rustaxa::HostDagVdfJobRequest& request);
-
-  struct Job {
-    std::shared_ptr<VdfProofJob> proof;
-    std::shared_ptr<std::atomic_bool> cancelled;
-    std::future<void> computation;
-  };
-
-  uint64_t nextJobId() {
-    auto id = next_job_id++;
-    if (id == 0) {
-      id = next_job_id++;
-    }
-    return id;
-  }
-
-  std::vector<WalletConfig> wallets;
-  std::mutex mutex;
-  uint64_t next_job_id{1};
-  std::unordered_map<uint64_t, std::unique_ptr<Job>> jobs;
-};
-
-rustaxa::HostDagVdfStartReport ConsensusVdfExecutor::start(const rustaxa::HostDagVdfRequest& request) {
-  rustaxa::HostDagVdfStartReport report{};
-  report.effect_id = request.effect_id;
-  if (request.wallet_index >= wallets.size()) {
-    report.error_code = rust::String("VDF_WALLET_INDEX_OUT_OF_RANGE");
-    return report;
-  }
-  if (request.max_vote_count == 0 || request.lambda_bound == 0) {
-    report.error_code = rust::String("VDF_REQUEST_INVALID");
-    return report;
-  }
-
-  try {
-    const auto& wallet = wallets[request.wallet_index];
-    const auto vrf_proof = vrf_wrapper::getVrfProof(wallet.vrf_secret, fromRustBytes(request.vrf_input));
-    if (!vrf_proof) {
-      report.error_code = rust::String("VDF_VRF_PROOF_FAILED");
-      return report;
-    }
-
-    dev::RLPStream encoded;
-    encoded.appendList(4) << *vrf_proof << dev::bytes{} << dev::bytes{} << request.difficulty;
-    auto proof = std::make_shared<VdfProofJob>(encoded.invalidate());
-    auto cancelled = std::make_shared<std::atomic_bool>(false);
-    const SortitionParams execution_config{/*threshold_upper=*/1,
-                                           /*min=*/request.difficulty,
-                                           /*max=*/request.difficulty,
-                                           /*stale=*/request.difficulty,
-                                           /*lambda_max_bound=*/request.lambda_bound};
-    auto job = std::make_unique<Job>();
-    job->proof = proof;
-    job->cancelled = cancelled;
-    job->computation = std::async(std::launch::async,
-                                  [proof, cancelled, execution_config, message = fromRustBytes(request.vdf_message)] {
-                                    proof->computeVdfSolution(execution_config, message, *cancelled);
-                                  });
-
-    {
-      const std::scoped_lock lock(mutex);
-      report.job_id = nextJobId();
-      jobs.emplace(report.job_id, std::move(job));
-    }
-    report.started = true;
-  } catch (const std::exception& error) {
-    report.error_code = rust::String(std::string("VDF_START_FAILED: ") + error.what());
-  }
-  return report;
-}
-
-rustaxa::HostDagVdfPollReport ConsensusVdfExecutor::poll(const rustaxa::HostDagVdfJobRequest& request) {
-  rustaxa::HostDagVdfPollReport report{};
-  report.effect_id = request.effect_id;
-  report.job_id = request.job_id;
-  std::unique_ptr<Job> job;
-  {
-    const std::scoped_lock lock(mutex);
-    const auto found = jobs.find(request.job_id);
-    if (found == jobs.end()) {
-      report.error_code = rust::String("VDF_JOB_NOT_FOUND");
-      return report;
-    }
-    if (found->second->computation.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
-      return report;
-    }
-    job = std::move(found->second);
-    jobs.erase(found);
-  }
-
-  report.complete = true;
-  try {
-    job->computation.get();
-    report.cancelled = job->cancelled->load(std::memory_order_relaxed);
-    if (report.cancelled) {
-      report.error_code = rust::String("VDF_CANCELLED");
-    } else {
-      report.vdf_rlp = toRustBytes(job->proof->rlp());
-      report.succeeded = true;
-    }
-  } catch (const std::exception& error) {
-    report.cancelled = job->cancelled->load(std::memory_order_relaxed);
-    report.error_code = rust::String(std::string("VDF_PROOF_FAILED: ") + error.what());
-  }
-  return report;
-}
-
-rustaxa::HostDagVdfCancelReport ConsensusVdfExecutor::cancel(const rustaxa::HostDagVdfJobRequest& request) {
-  rustaxa::HostDagVdfCancelReport report{};
-  report.effect_id = request.effect_id;
-  report.job_id = request.job_id;
-  std::unique_ptr<Job> job;
-  {
-    const std::scoped_lock lock(mutex);
-    const auto found = jobs.find(request.job_id);
-    if (found == jobs.end()) {
-      report.error_code = rust::String("VDF_JOB_NOT_FOUND");
-      return report;
-    }
-    found->second->cancelled->store(true, std::memory_order_relaxed);
-    job = std::move(found->second);
-    jobs.erase(found);
-  }
-  try {
-    job->computation.get();
-    report.cancelled = true;
-  } catch (const std::exception& error) {
-    report.cancelled = true;
-    report.error_code = rust::String(std::string("VDF_CANCEL_FAILED: ") + error.what());
-  }
-  return report;
-}
-
 class ConsensusObserverExecutor final {
  public:
   explicit ConsensusObserverExecutor(std::shared_ptr<ConsensusApplication> application)
@@ -514,54 +343,17 @@ rustaxa::HostConsensusObservationReport ConsensusObserverExecutor::observe(
 
 }  // namespace
 
-ConsensusProcessPort::Impl::Impl(const FullNodeConfig& config, std::shared_ptr<ConsensusApplication> application)
-    : vdf(std::make_unique<ConsensusVdfExecutor>(config)),
-      observer(std::make_unique<ConsensusObserverExecutor>(std::move(application))) {}
+ConsensusProcessPort::Impl::Impl(std::shared_ptr<ConsensusApplication> application)
+    : observer(std::make_unique<ConsensusObserverExecutor>(std::move(application))) {}
 
 ConsensusProcessPort::Impl::~Impl() = default;
 
 ConsensusProcessPort::ConsensusProcessPort() : impl_(std::make_unique<Impl>()) {}
 
-ConsensusProcessPort::ConsensusProcessPort(const FullNodeConfig& config,
-                                           std::shared_ptr<ConsensusApplication> application)
-    : impl_(std::make_unique<Impl>(config, std::move(application))) {}
+ConsensusProcessPort::ConsensusProcessPort(std::shared_ptr<ConsensusApplication> application)
+    : impl_(std::make_unique<Impl>(std::move(application))) {}
 
 ConsensusProcessPort::~ConsensusProcessPort() = default;
-
-rustaxa::HostDagVdfStartReport ConsensusProcessPort::consensusStartDagVdf(
-    const rustaxa::HostDagVdfRequest& request) const {
-  if (!impl_->vdf) {
-    rustaxa::HostDagVdfStartReport report{};
-    report.effect_id = request.effect_id;
-    report.error_code = rust::String("VDF_EXECUTOR_UNAVAILABLE");
-    return report;
-  }
-  return impl_->vdf->start(request);
-}
-
-rustaxa::HostDagVdfPollReport ConsensusProcessPort::consensusPollDagVdf(
-    const rustaxa::HostDagVdfJobRequest& request) const {
-  if (!impl_->vdf) {
-    rustaxa::HostDagVdfPollReport report{};
-    report.effect_id = request.effect_id;
-    report.job_id = request.job_id;
-    report.error_code = rust::String("VDF_EXECUTOR_UNAVAILABLE");
-    return report;
-  }
-  return impl_->vdf->poll(request);
-}
-
-rustaxa::HostDagVdfCancelReport ConsensusProcessPort::consensusCancelDagVdf(
-    const rustaxa::HostDagVdfJobRequest& request) const {
-  if (!impl_->vdf) {
-    rustaxa::HostDagVdfCancelReport report{};
-    report.effect_id = request.effect_id;
-    report.job_id = request.job_id;
-    report.error_code = rust::String("VDF_EXECUTOR_UNAVAILABLE");
-    return report;
-  }
-  return impl_->vdf->cancel(request);
-}
 
 rustaxa::HostConsensusObservationReport ConsensusProcessPort::consensusObserve(
     const rustaxa::HostConsensusObservationRequest& request) const {
@@ -652,10 +444,7 @@ class ConsensusProcess::Impl final {
   enum class LifecycleState : uint8_t { kStopped, kRunning };
 
   Impl(std::shared_ptr<ConsensusApplication> application, const FullNodeConfig& config)
-      : application(std::move(application)),
-        process(config, this->application),
-        signer(config),
-        evm(this->application) {
+      : application(std::move(application)), process(this->application), signer(config), evm(this->application) {
     if (!this->application) {
       throw std::invalid_argument("ConsensusProcess requires ConsensusApplication");
     }

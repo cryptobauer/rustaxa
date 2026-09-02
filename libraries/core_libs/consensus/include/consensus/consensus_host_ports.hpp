@@ -20,11 +20,6 @@ struct HostGossipPillarVoteRequest;
 struct HostGossipDagBlockRequest;
 struct HostGossipVoteBundleRequest;
 struct HostGossipVoteRequest;
-struct HostDagVdfRequest;
-struct HostDagVdfStartReport;
-struct HostDagVdfJobRequest;
-struct HostDagVdfPollReport;
-struct HostDagVdfCancelReport;
 struct HostConsensusObservationReport;
 struct HostConsensusObservationRequest;
 struct HostMaliciousPeerRequest;
@@ -50,17 +45,16 @@ class Network;
  * Existing host-process bridge handle used by the native consensus runner.
  *
  * The port owns monotonic-clock and condition-variable process mechanics plus
- * private, operation-specific VDF and public-observer executors. Sharing this
- * one CXX handle does not merge their state: every operation echoes its native
- * effect/job identity, stop wakes active waits, VDF cancellation joins its
- * exact job, and observation remains best-effort. No protocol phase, queue,
+ * a private public-observer executor. Sharing this one CXX handle does not
+ * merge their state: every operation echoes its native effect identity, stop
+ * wakes active waits, and observation remains best-effort. No protocol phase, queue,
  * timer cursor, DAG state, or public-event ordering cursor is retained here.
  */
 class ConsensusProcessPort final {
  public:
   /** Constructs clock/wait mechanics only for focused host-process tests. */
   ConsensusProcessPort();
-  ConsensusProcessPort(const FullNodeConfig& config, std::shared_ptr<ConsensusApplication> application);
+  explicit ConsensusProcessPort(std::shared_ptr<ConsensusApplication> application);
   ~ConsensusProcessPort();
 
   ConsensusProcessPort(const ConsensusProcessPort&) = delete;
@@ -72,12 +66,6 @@ class ConsensusProcessPort final {
   bool consensusStopRequested(uint64_t generation) const;
   uint64_t consensusNowMillis() const;
   uint64_t consensusUnixTimeSeconds() const;
-  /** Starts one exact asynchronous DAG-proposer VDF job. */
-  rustaxa::HostDagVdfStartReport consensusStartDagVdf(const rustaxa::HostDagVdfRequest& request) const;
-  /** Polls one exact asynchronous DAG-proposer VDF job without blocking. */
-  rustaxa::HostDagVdfPollReport consensusPollDagVdf(const rustaxa::HostDagVdfJobRequest& request) const;
-  /** Cancels and joins one exact asynchronous DAG-proposer VDF job. */
-  rustaxa::HostDagVdfCancelReport consensusCancelDagVdf(const rustaxa::HostDagVdfJobRequest& request) const;
   /** Publishes one best-effort post-commit public observation. */
   rustaxa::HostConsensusObservationReport consensusObserve(
       const rustaxa::HostConsensusObservationRequest& request) const;

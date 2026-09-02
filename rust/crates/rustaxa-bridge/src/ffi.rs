@@ -5,7 +5,6 @@ use crate::dag_transaction_service::*;
 use crate::network::*;
 use crate::query::*;
 use crate::storage_admin::*;
-use crate::vdf::*;
 use rustaxa_consensus::ConsensusQueryApi;
 use std::sync::Arc;
 
@@ -957,34 +956,6 @@ pub mod rustaxa_ffi {
         computation_interval: u16,
     }
 
-    struct LegacySortitionParams {
-        vrf_threshold_upper: u16,
-        vdf_difficulty_min: u16,
-        vdf_difficulty_max: u16,
-        vdf_difficulty_stale: u16,
-        vdf_lambda_bound: u16,
-    }
-
-    struct VrfProofResult {
-        ok: bool,
-        status: u8,
-        error: String,
-        public_key: [u8; 32],
-        proof: [u8; 80],
-        output: [u8; 64],
-        threshold: u16,
-    }
-
-    struct VdfSortitionVerifyResult {
-        ok: bool,
-        status: u8,
-        error: String,
-        vrf_output: [u8; 64],
-        vrf_threshold: u16,
-        expected_difficulty: u16,
-        actual_difficulty: u16,
-    }
-
     /// Public identity of one configured signing wallet.
     ///
     /// The stable index selects host-held key material for later effects;
@@ -1294,45 +1265,6 @@ pub mod rustaxa_ffi {
             proof_hash: &[u8; 32],
             transaction_inserted: bool,
         ) -> Result<bool>;
-
-        type WesolowskiVdf;
-        type CancellationToken;
-        type Solution;
-
-        pub fn make_vdf(
-            lambda: u32,
-            time_bits: u32,
-            input: &[u8],
-            modulus: &[u8],
-        ) -> Box<WesolowskiVdf>;
-
-        pub fn make_solution(proof: &[u8], output: &[u8]) -> Box<Solution>;
-
-        pub unsafe fn make_cancellation_token_with_atomic(
-            atomic_ptr: *const bool,
-        ) -> Box<CancellationToken>;
-
-        pub fn prove(vdf: &WesolowskiVdf, cancelled: &CancellationToken) -> Box<Solution>;
-        pub fn verify(vdf: &WesolowskiVdf, solution: &Solution) -> bool;
-
-        pub fn solution_get_proof(solution: &Solution) -> &[u8];
-        pub fn solution_get_output(solution: &Solution) -> &[u8];
-
-        pub fn prove_legacy_vrf_sortition(
-            secret_key: &[u8; 64],
-            message: &[u8],
-            vote_count: u16,
-        ) -> VrfProofResult;
-
-        pub fn verify_legacy_vdf_sortition(
-            params: LegacySortitionParams,
-            public_key: &[u8; 32],
-            sortition_rlp: &[u8],
-            vrf_input: &[u8],
-            vdf_input: &[u8],
-            vote_count: u64,
-            total_vote_count: u64,
-        ) -> VdfSortitionVerifyResult;
 
         // Consensus DAG
 
