@@ -2,7 +2,18 @@
 
 ## Status
 
-Draft.
+Draft. Rebased onto the completed consensus rewrite.
+
+The node now uses the native consensus application root and `ConsensusNetworkApi` for domain routing.
+The ingress experiment lives separately in `rustaxa-network` and the bridge's `network_ingress` module;
+it must not replace or recreate the native consensus service. The C++ shim preserves the existing peer
+registration and PBFT sync disconnect lifecycle.
+
+`RUSTAXA_ENABLE_NETWORK` remains off by default and requires `RUSTAXA_ENABLE`. It selects an unfinished
+ingress worker that does not yet dispatch packets to consensus, so it is not a functional node networking
+mode. Completing that cutover requires forwarding packets (including capability version and peer session)
+to the native routing API, handling its effects, and validating sync and gossip end to end. The sections
+below describing C++ manager adapters are the original proposal, not the post-rewrite integration target.
 
 ## Summary
 

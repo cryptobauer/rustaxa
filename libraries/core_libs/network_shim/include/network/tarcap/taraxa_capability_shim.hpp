@@ -16,7 +16,7 @@ class RustaxaNetworkShim {
 
   bool queueIsFull();
 
-  bool ingestPacket(SubprotocolPacketType packet_type, const dev::p2p::NodeID& node_id, const dev::RLP& rlp);
+  void ingestPacket(SubprotocolPacketType packet_type, const dev::p2p::NodeID& node_id, const dev::RLP& rlp);
 
   bool connectPeer(const dev::p2p::NodeID& node_id);
 

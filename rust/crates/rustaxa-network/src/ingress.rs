@@ -22,7 +22,7 @@ use crate::{events::NetworkEvent, packet::Packet, peers::PeerRegistry};
 
 /// Lifecycle wrapper for ingress worker threads.
 ///
-/// `Ingress` owns a single [`Processor`] until [`Ingress::listen`] is called.
+/// `Ingress` owns a single [`Processor`] until [`Ingress::start`] is called.
 /// Starting the worker moves the processor into a background thread and stores
 /// the thread handle so [`Ingress::shutdown`] can request termination and join
 /// it.
@@ -35,7 +35,7 @@ pub struct Ingress {
 impl Ingress {
     /// Creates an ingress worker over the supplied packet arena and event queue.
     ///
-    /// The worker starts in a shut down state. Call [`Ingress::listen`] to spawn
+    /// The worker starts in a shut down state. Call [`Ingress::start`] to spawn
     /// the background processing thread.
     pub fn new(
         arena: Arc<Arena<Packet>>,
@@ -53,7 +53,7 @@ impl Ingress {
     /// Starts the background ingress loop.
     ///
     /// This consumes the internally stored processor and spawns one worker
-    /// thread. The current type is single-start: calling `listen` more than once
+    /// thread. The current type is single-start: calling `start` more than once
     /// is a programming error.
     pub fn start(&mut self) {
         self.shutdown.store(false, Ordering::Release);
@@ -64,7 +64,7 @@ impl Ingress {
 
     /// Requests shutdown and waits for all started ingress workers to exit.
     ///
-    /// Calling this before [`Ingress::listen`] is valid and simply consumes the
+    /// Calling this before [`Ingress::start`] is valid and simply consumes the
     /// idle worker wrapper.
     pub fn shutdown(self) {
         self.shutdown.store(true, Ordering::Release);
@@ -114,7 +114,9 @@ impl Processor {
         while !self.shutdown.load(Ordering::Acquire) {
             match self.events.pop() {
                 Ok(event) => {
-                    self.process(event);
+                    if let Err(error) = self.process(event) {
+                        eprintln!("ingress packet processing failed: {error}");
+                    }
                     backoff.reset();
                 }
                 Err(PopError::Empty) => {
@@ -216,11 +218,12 @@ mod tests {
         let ringbuffer = RingBuffer::<NetworkEvent>::new(100);
         let registry = Arc::new(PeerRegistry::new());
         let shutdown = Arc::new(AtomicBool::new(true));
+        registry.connect(NodeId::new([1u8; 64])).unwrap();
         let processor = Processor::new(arena.clone(), ringbuffer.1, registry, shutdown);
         let reservation = arena.try_reserve().unwrap();
         let slot = arena.insert(reservation, test_packet()).unwrap();
 
-        processor.process(NetworkEvent { slot });
+        processor.process(NetworkEvent { slot }).unwrap();
 
         assert!(arena.borrow(slot).is_ok());
     }

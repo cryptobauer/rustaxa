@@ -137,7 +137,8 @@ TaraxaCapability::TaraxaCapability(
       rust_consensus_network_api_(std::move(consensus_network_api))
 #endif
 #ifdef RUSTAXA_ENABLE_NETWORK
-      , rust_network_shim_(rust_network_shim)
+      ,
+      rust_network_shim_(rust_network_shim)
 #endif
 {
   // const std::string logs_prefix = "V" + std::to_string(version) + "_";
@@ -189,20 +190,6 @@ void TaraxaCapability::onConnect(std::weak_ptr<dev::p2p::Session> session, u256 
 
   const auto node_id = session_p->id();
 
-#ifdef RUSTAXA_ENABLE_NETWORK
-  const bool connected = rust_network_shim_.connectPeer(node_id);
-
-  if (!connected) {
-    session_p->disconnect(dev::p2p::UserReason);
-    return;
-  }
-
-  auto status_packet_handler = getSpecificHandler<ISyncPacketHandler>(network::SubprotocolPacketType::kStatusPacket);
-  status_packet_handler->sendStatus(node_id, true);
-
-  return;
-#endif
-
   if (peers_state_->is_peer_malicious(node_id)) {
     session_p->disconnect(dev::p2p::UserReason);
     LOG(log_wr_) << "Node " << node_id << " connection dropped - malicious node";
@@ -216,6 +203,13 @@ void TaraxaCapability::onConnect(std::weak_ptr<dev::p2p::Session> session, u256 
     return;
   }
 
+#ifdef RUSTAXA_ENABLE_NETWORK
+  if (!rust_network_shim_.connectPeer(node_id)) {
+    session_p->disconnect(dev::p2p::UserReason);
+    return;
+  }
+#endif
+
   peers_state_->addPendingPeer(node_id, session_p->info().host + ":" + std::to_string(session_p->info().port));
   LOG(log_nf_) << "Node " << node_id << " connected";
 
@@ -224,9 +218,11 @@ void TaraxaCapability::onConnect(std::weak_ptr<dev::p2p::Session> session, u256 
 
 void TaraxaCapability::onDisconnect(dev::p2p::NodeID const &_nodeID) {
 #ifdef RUSTAXA_ENABLE_NETWORK
-  rust_network_shim_.disconnectPeer(node_id);
-
-  return;
+  try {
+    rust_network_shim_.disconnectPeer(_nodeID);
+  } catch (const std::exception &error) {
+    LOG(log_wr_) << "Rust ingress peer disconnect failed: " << error.what();
+  }
 #endif
 
   LOG(log_nf_) << "Node " << _nodeID << " disconnected";
