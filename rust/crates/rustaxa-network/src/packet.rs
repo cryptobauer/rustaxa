@@ -10,7 +10,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use rustaxa_types::ethereum::NodeId;
 use rustaxa_types::time::Microseconds;
 
-use crate::peers::{PeerRef, PeerRegistry, SessionId};
+use crate::peers::{PeerRef, SessionId};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 #[repr(u8)]

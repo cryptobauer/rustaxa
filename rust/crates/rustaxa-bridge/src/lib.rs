@@ -1,10 +1,10 @@
-mod arena;
-mod network_ingress;
 mod application_host_ffi;
+mod arena;
 mod consensus_host_ports;
 mod dag_transaction_service;
 mod ffi;
 mod final_chain;
 mod network;
+mod network_ingress;
 mod query;
 mod storage_admin;

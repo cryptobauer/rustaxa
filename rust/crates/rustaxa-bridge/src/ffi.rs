@@ -1,15 +1,15 @@
 use crate::arena::create_packet_arena;
-use crate::network_ingress::*;
-use rustaxa_arena::arena::Arena;
-use rustaxa_network::{network::Network, packet::Packet};
 use crate::consensus_host_ports::*;
 pub(crate) use crate::dag_transaction_service::BridgeApp;
 pub use crate::dag_transaction_service::BridgeConsensusApplication;
 use crate::dag_transaction_service::*;
 use crate::network::*;
+use crate::network_ingress::*;
 use crate::query::*;
 use crate::storage_admin::*;
+use rustaxa_arena::arena::Arena;
 use rustaxa_consensus::ConsensusQueryApi;
+use rustaxa_network::{network::Network, packet::Packet};
 use std::sync::Arc;
 
 /// Rust-owned public consensus query facade.
@@ -27,12 +27,9 @@ pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
 /// consensus runtime.
 pub struct BridgeConsensusNetworkApi(pub(crate) Arc<rustaxa_consensus::ConsensusNetworkApi>);
 
-/// Thin CXX adapter over the CXX-free native PBFT application root.
-///
-/// The bridge owns no sibling protocol state, storage handle, mutex, or
-/// readiness flag. It maps stable CXX inputs and outputs around the native
-/// composition without changing the native siblings' lock domains.
+/// Experimental packet ingress pipeline; independent of the native consensus network API.
 pub struct BridgeNetwork(pub Network);
+/// Shared packet storage for the experimental ingress pipeline.
 pub struct BridgePacketArena(pub Arc<Arena<Packet>>);
 
 #[cxx::bridge(namespace = "rustaxa")]

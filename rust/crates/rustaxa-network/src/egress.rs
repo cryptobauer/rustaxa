@@ -22,7 +22,7 @@ use crate::{events::NetworkEvent, packet::Packet, peers::PeerRegistry};
 
 /// Lifecycle wrapper for egress worker threads.
 ///
-/// `Egress` owns a single [`Processor`] until [`Egress::listen`] is called.
+/// `Egress` owns a single [`Processor`] until [`Egress::start`] is called.
 /// Starting the worker moves the processor into a background thread and stores
 /// the thread handle so [`Egress::shutdown`] can request termination and join
 /// it.
@@ -35,7 +35,7 @@ pub struct Egress {
 impl Egress {
     /// Creates an egress worker over the supplied packet arena and event queue.
     ///
-    /// The worker starts in a shut down state. Call [`Egress::listen`] to spawn
+    /// The worker starts in a shut down state. Call [`Egress::start`] to spawn
     /// the background processing thread.
     pub fn new(
         arena: Arc<Arena<Packet>>,
@@ -53,7 +53,7 @@ impl Egress {
     /// Starts the background egress loop.
     ///
     /// This consumes the internally stored processor and spawns one worker
-    /// thread. The current type is single-start: calling `listen` more than once
+    /// thread. The current type is single-start: calling `start` more than once
     /// is a programming error.
     pub fn start(&mut self) {
         self.shutdown.store(false, Ordering::Release);
@@ -64,7 +64,7 @@ impl Egress {
 
     /// Requests shutdown and waits for all started egress workers to exit.
     ///
-    /// Calling this before [`Egress::listen`] is valid and simply consumes the
+    /// Calling this before [`Egress::start`] is valid and simply consumes the
     /// idle worker wrapper.
     pub fn shutdown(self) {
         self.shutdown.store(true, Ordering::Release);
@@ -84,7 +84,7 @@ impl Egress {
 pub struct Processor {
     arena: Arc<Arena<Packet>>,
     events: Consumer<NetworkEvent>,
-    registry: Arc<PeerRegistry>,
+    _registry: Arc<PeerRegistry>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -99,7 +99,7 @@ impl Processor {
         Processor {
             arena,
             events,
-            registry,
+            _registry: registry,
             shutdown,
         }
     }
@@ -114,7 +114,9 @@ impl Processor {
         while !self.shutdown.load(Ordering::Acquire) {
             match self.events.pop() {
                 Ok(event) => {
-                    self.process(event);
+                    if let Err(error) = self.process(event) {
+                        eprintln!("egress packet processing failed: {error}");
+                    }
                     backoff.reset();
                 }
                 Err(PopError::Empty) => {
@@ -217,7 +219,7 @@ mod tests {
         let reservation = arena.try_reserve().unwrap();
         let slot = arena.insert(reservation, test_packet()).unwrap();
 
-        processor.process(NetworkEvent { slot });
+        processor.process(NetworkEvent { slot }).unwrap();
 
         assert!(arena.borrow(slot).is_ok());
     }

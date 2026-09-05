@@ -105,7 +105,9 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
           kConf.getFirstWallet().node_addr)),
       periodic_events_tp_(kPeriodicEventsThreadCount, false)
 #ifdef RUSTAXA_ENABLE_NETWORK
-      , rust_network_shim_(std::make_unique<network::tarcap::RustaxaNetworkShim>(kConf.network.ddos_protection.max_packets_queue_size))
+      ,
+      rust_network_shim_(
+          std::make_unique<network::tarcap::RustaxaNetworkShim>(kConf.network.ddos_protection.max_packets_queue_size))
 #endif
 {
   auto const &node_addr = kConf.getFirstWallet().node_addr;
@@ -189,7 +191,8 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
         final_chain
 #endif
 #ifdef RUSTAXA_ENABLE_NETWORK
-        , *rust_network_shim_
+        ,
+        *rust_network_shim_
 #endif
     );
     capabilities.emplace_back(latest_tarcap);

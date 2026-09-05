@@ -137,7 +137,9 @@ impl PeerRegistry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Reference to one peer session.
 pub struct PeerRef {
+    /// Remote node identity.
     pub node: NodeId,
+    /// Connection generation for this peer reference.
     pub session: SessionId,
 }
 
@@ -155,6 +157,7 @@ pub struct PeerSession {
     pub id: SessionId,
 
     /// Node id for the connected peer.
+    /// Remote node identity.
     pub node: NodeId,
 
     /// Whether the connection is still waiting for full handshake acceptance.
@@ -171,6 +174,7 @@ pub struct PeerSession {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerRecord {
     /// Node id for the known peer.
+    /// Remote node identity.
     pub node: NodeId,
 
     /// Whether this peer is barred from connecting.
