@@ -11,6 +11,7 @@ import (
 	"github.com/Taraxa-project/taraxa-evm/core/vm"
 	"github.com/Taraxa-project/taraxa-evm/crypto"
 	"github.com/Taraxa-project/taraxa-evm/params"
+	contract_storage "github.com/Taraxa-project/taraxa-evm/taraxa/state/contracts/storage"
 	"github.com/Taraxa-project/taraxa-evm/taraxa/state/state_db"
 	"github.com/Taraxa-project/taraxa-evm/taraxa/state/state_evm"
 	"github.com/Taraxa-project/taraxa-evm/taraxa/trie"
@@ -92,8 +93,133 @@ func (m *mem) GetNode(k *common.Hash, cb func([]byte)) {
 }
 func (m *mem) PutValue(k *common.Hash, v []byte) { m.Values[hx(k[:])] = hx(v) }
 func (m *mem) PutNode(k *common.Hash, v []byte)  { m.Nodes[hx(k[:])] = hx(v) }
+
+// Code-backed complete synthetic state for instruction and nested-frame probes.
+type codeInput struct {
+	input
+	codes map[common.Address][]byte
+}
+
+func (i codeInput) GetCode(h *common.Hash) []byte {
+	for _, code := range i.codes {
+		if crypto.Keccak256Hash(code) == *h {
+			return code
+		}
+	}
+	panic("missing code")
+}
+func (i codeInput) GetAccount(a *common.Address, cb func(state_db.Account)) {
+	if code, ok := i.codes[*a]; ok {
+		h := crypto.Keccak256Hash(code)
+		cb(state_db.Account{Nonce: big.NewInt(1), Balance: big.NewInt(0), CodeHash: &h, CodeSize: uint64(len(code))})
+		return
+	}
+	i.input.GetAccount(a, cb)
+}
+func opcodeFixtures() []map[string]any {
+	var results []map[string]any
+	child := common.BytesToAddress([]byte{0xcc})
+	// CALL child, discard success flag, then stop. Child stores transient and reverts.
+	parent := []byte{0x60, 0, 0x60, 0, 0x60, 0, 0x60, 0, 0x60, 0, 0x60, 0xcc, 0x61, 0xff, 0xff, 0xf1, 0x50, 0}
+	for _, c := range []struct {
+		name   string
+		code   []byte
+		cacti  bool
+		nested bool
+	}{
+		{"push0-base", []byte{0x5f, 0}, false, false},
+		{"sload-base", []byte{0x60, 0, 0x54, 0}, false, false},
+		{"sstore-set-clear", []byte{0x60, 1, 0x60, 0, 0x55, 0x60, 0, 0x60, 0, 0x55, 0}, false, false},
+		{"transient-old-alias", []byte{0x60, 0x55, 0x60, 1, 0xb4, 0x60, 1, 0xb3, 0}, false, false},
+		{"transient-new-before-cacti", []byte{0x60, 0x55, 0x60, 1, 0x5d, 0}, false, false},
+		{"transient-new-at-cacti", []byte{0x60, 0x55, 0x60, 1, 0x5d, 0}, true, false},
+		{"nested-transient-revert", parent, true, true},
+	} {
+		codes := map[common.Address][]byte{target: c.code}
+		if c.nested {
+			codes[child] = []byte{0x60, 0x55, 0x60, 1, 0x5d, 0x60, 0, 0x60, 0, 0xfd}
+		}
+		in := codeInput{input{big.NewInt(1), big.NewInt(1000000), false}, codes}
+		s := new(state_evm.TransitionState)
+		s.Init(state_evm.Opts{})
+		s.SetInput(in)
+		var e vm.EVM
+		e.Init(func(types.BlockNum) *big.Int { return new(big.Int) }, s, vm.DefaultOpts(), params.TestChainConfig, vm.Config{})
+		e.SetBlock(&vm.Block{Number: 1, BlockInfo: vm.BlockInfo{GasLimit: 1000000, Difficulty: big.NewInt(0)}}, vm.Rules{IsCornus: true, IsCacti: c.cacti})
+		r, err := e.Main(&vm.Transaction{From: address, To: &target, Nonce: big.NewInt(1), GasPrice: big.NewInt(1), Value: big.NewInt(0), Gas: 100000})
+		errorText := ""
+		if err != nil {
+			errorText = err.Error()
+		}
+		key := common.BytesToHash([]byte{1})
+		readAddr := target
+		if c.nested {
+			readAddr = child
+		}
+		transient := s.GetTransientState(&readAddr, key)
+		results = append(results, map[string]any{"case": c.name, "code": hx(c.code), "child_code": hx(codes[child]), "cacti": c.cacti, "gas_used": r.GasUsed, "error": errorText, "execution_error": r.ExecutionErr, "consensus_error": r.ConsensusErr, "return": hx(r.CodeRetval), "transient": hx(transient[:]), "refund": s.GetRefund(), "ordinary_slot_zero": s.GetAccountConcrete(&target).GetState(big.NewInt(0)).String()})
+	}
+	return results
+}
+
+// Native map backend starts from a complete empty state. Missing keys mean
+// absence; unsupported balance/nonce operations panic through the nil interface.
+type nativeStore struct {
+	contract_storage.StorageWriter
+	rows   map[common.Hash][]byte
+	writes []map[string]string
+}
+
+func (n *nativeStore) GetAccountStorage(_ *common.Address, k *common.Hash, cb func([]byte)) {
+	if v, ok := n.rows[*k]; ok && len(v) > 0 {
+		cb(v)
+	}
+}
+func (n *nativeStore) Put(_ *common.Address, k *common.Hash, v []byte) {
+	n.rows[*k] = append([]byte(nil), v...)
+	n.writes = append(n.writes, map[string]string{"key": hx(k[:]), "value": hx(v)})
+}
+func nativeFixtures() []map[string]any {
+	n := &nativeStore{rows: map[common.Hash][]byte{}}
+	wrapper := new(contract_storage.StorageWrapper).Init(&address, n)
+	var items contract_storage.IterableMap
+	items.Init(wrapper, []byte{0, 5})
+	var results []map[string]any
+	for _, op := range []struct {
+		name   string
+		item   byte
+		remove bool
+	}{
+		{"insert-a", 0xa1, false}, {"insert-b", 0xb2, false}, {"insert-c", 0xc3, false},
+		{"remove-middle", 0xb2, true}, {"remove-last", 0xc3, true}, {"remove-final", 0xa1, true},
+	} {
+		n.writes = nil
+		var count uint32
+		if op.remove {
+			count = items.RemoveItem([]byte{op.item})
+		} else {
+			count = items.CreateItem([]byte{op.item})
+		}
+		m := &mem{map[string]string{}, map[string]string{}}
+		w := new(trie.Writer).Init(state_db.AccountTrieSchema{}, nil, trie.WriterOpts{})
+		rows := map[string]string{}
+		for k, v := range n.rows {
+			rows[hx(k[:])] = hx(v)
+			if len(v) > 0 {
+				key := crypto.Keccak256Hash(k[:])
+				w.Put(m, &key, state_db.NewAccStorageTrieValue(v))
+			}
+		}
+		root := w.Commit(m)
+		results = append(results, map[string]any{"operation": op.name, "item": fmt.Sprintf("%02x", op.item), "count": count, "writes": n.writes, "rows_including_tombstones": rows, "storage_root": hx(root[:])})
+	}
+	return results
+}
+
 func main() {
 	result := map[string]any{}
+	result["native_iterable"] = nativeFixtures()
+	result["opcodes"] = opcodeFixtures()
 	var envelopes []map[string]any
 	for _, cornus := range []bool{false, true} {
 		for _, c := range []struct {
@@ -167,7 +293,7 @@ func main() {
 		root := w.Commit(m)
 		commitments = append(commitments, map[string]any{"kind": "account", "nonce": a.Nonce.String(), "disk": hx(disk), "leaf": hx(leaf), "key": hx(k[:]), "root": hx(root[:]), "nodes": m.Nodes})
 	}
-	for _, size := range []int{1, 28, 29, 30, 31, 32, 55, 56, 80} {
+	for _, size := range []int{1, 27, 28, 29, 30, 31, 32, 55, 56, 80} {
 		m := &mem{map[string]string{}, map[string]string{}}
 		w := new(trie.Writer).Init(state_db.AccountTrieSchema{}, nil, trie.WriterOpts{})
 		leaves := map[string]string{}

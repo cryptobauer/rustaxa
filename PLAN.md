@@ -5,6 +5,8 @@ This is the consolidated plan for progressively replacing C++ internals with Rus
 The remaining EVM/state database modernization is evaluated in the [execution research](doc/evm_research/README.md).
 That assessment preserves existing-network compatibility and current Rust ownership; its proposed experiments and
 migration gates do not activate a new execution backend.
+The [bounded feasibility checkpoint](doc/evm_research/04_feasibility.md) records isolated reference fixtures,
+REVM integration probes and commitment evidence; production routing and protocol changes remain outside its scope.
 
 ## Objectives
 

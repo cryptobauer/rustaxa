@@ -41,6 +41,7 @@ def main():
         "go_version": run("go", "version").decode().strip(),
         "scope": "Synthetic direct EVM/state/trie fixtures; no network replay, wire admission, RocksDB or lifecycle provenance",
         "environment": {"sender": "00" * 19 + "aa", "target": "00" * 19 + "bb", "prior_nonce": "1", "period": 1, "gas_limit": 1000000, "timestamp": 0, "difficulty": "0", "value": "0", "rules": "only Cornus varies; all other flags false", "chain_config": "params.TestChainConfig at each pinned revision", "state": "only sender exists unless missing_prior_account; no code/storage; unexpected reads panic"},
+        "additional_inputs": {"opcodes": "codeInput: sender nonce 1 balance 1000000, target/child nonce 1 balance 0 with recorded code; gas cap 100000, price 1, Cornus true, Cacti varies", "native_iterable": "complete empty map at prefix 0005; one-byte items a1/b2/c3, ordered insert/remove operations; roots over Keccak(raw keys), empty bytes delete"},
         "sha256": {name: hashlib.sha256(data).hexdigest() for name, data in artifacts.items()},
         "exporter_sha256": hashlib.sha256((HERE / "reference.go").read_bytes()).hexdigest(),
     }

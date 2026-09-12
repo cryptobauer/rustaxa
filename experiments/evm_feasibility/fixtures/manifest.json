@@ -19,9 +19,13 @@
     "chain_config": "params.TestChainConfig at each pinned revision",
     "state": "only sender exists unless missing_prior_account; no code/storage; unexpected reads panic"
   },
-  "sha256": {
-    "public.json": "344a418d99627632524809e75501c2a5f59cf82c215899b1146b044b8123b76f",
-    "local.json": "344a418d99627632524809e75501c2a5f59cf82c215899b1146b044b8123b76f"
+  "additional_inputs": {
+    "opcodes": "codeInput: sender nonce 1 balance 1000000, target/child nonce 1 balance 0 with recorded code; gas cap 100000, price 1, Cornus true, Cacti varies",
+    "native_iterable": "complete empty map at prefix 0005; one-byte items a1/b2/c3, ordered insert/remove operations; roots over Keccak(raw keys), empty bytes delete"
   },
-  "exporter_sha256": "2d67ee174b2e3960c2a8ba5d37eb7ee9930b0ad9593ecc9315286abc3480d9a7"
+  "sha256": {
+    "public.json": "a5adcf5f2de83a39c04da06ccdd1dcd2bdc88adf1f78780ee5be72575d401852",
+    "local.json": "a5adcf5f2de83a39c04da06ccdd1dcd2bdc88adf1f78780ee5be72575d401852"
+  },
+  "exporter_sha256": "881dbed2048ce95487044c9a211586bbea711bf8467042f237a54e5ff8b752b4"
 }

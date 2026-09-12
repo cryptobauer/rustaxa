@@ -79,6 +79,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn native_ordered_mutations_commit_exact_bytes() {
+        use std::collections::BTreeMap;
+        let mut state = BTreeMap::new();
+        for step in fixtures()["native_iterable"].as_array().unwrap() {
+            for write in step["writes"].as_array().unwrap() {
+                state.insert(
+                    write["key"].as_str().unwrap().to_owned(),
+                    bytes(&write["value"]),
+                );
+            }
+            let expected = step["rows_including_tombstones"].as_object().unwrap();
+            assert_eq!(state.len(), expected.len());
+            for (key, value) in &state {
+                assert_eq!(*value, bytes(&expected[key]));
+            }
+            let leaves = state
+                .iter()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(k, v)| {
+                    (
+                        revm::primitives::keccak256(hex::decode(k).unwrap()).to_vec(),
+                        rlp::encode(v).to_vec(),
+                    )
+                })
+                .collect();
+            assert_eq!(root(leaves), step["storage_root"].as_str().unwrap());
+        }
+        // Zero count is four actual zero bytes, not a deletion. The empty map
+        // therefore retains a nonempty commitment. Never normalize raw bytes.
+        let live: Vec<_> = state.values().filter(|v| !v.is_empty()).collect();
+        assert_eq!(live, vec![&vec![0, 0, 0, 0]]);
+    }
+
+    #[test]
+    fn wide_create_address_matches_reference_using_native_nonce() {
+        for row in fixtures()["envelopes"].as_array().unwrap() {
+            if row["case"] != "create-wide" {
+                continue;
+            }
+            let nonce =
+                FinalChainNonce::from_bytes(&hex::decode("010000000000000000").unwrap()).unwrap();
+            let mut rlp = rlp::RlpStream::new_list(2);
+            let mut address = vec![0; 20];
+            address[19] = 0xaa;
+            rlp.append(&address).append(&nonce.to_bytes());
+            let hash = revm::primitives::keccak256(rlp.out());
+            assert_eq!(&hash[12..], bytes(&row["created"]));
+        }
+    }
+
     fn run(code: &[u8], price: U256) -> (Interpreter, InterpreterAction) {
         let mut host = ProbeHost {
             price,

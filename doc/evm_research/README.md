@@ -43,13 +43,21 @@ The decisive findings are:
 - Modern crypto implementations are not automatically historical substitutes: the Falcon/FN-DSA version and encoding
   need direct compatibility evidence. See the [crypto assessment](02_engines.md).
 
+## Bounded feasibility checkpoint
+
+[Executable E1–E5 findings](04_feasibility.md) now accompany the source reports.
+The isolated harness reproduces both pinned Go references, compiles REVM probes,
+and independently verifies account/slot and native-mutation commitments. It
+recommends interpreter/host prototyping while retaining explicit frame, native
+adapter, historical replay and physical-storage gates. Production remains unchanged.
+
 ## Remaining experimental work
 
 The source research defines twelve experiment groups in the [validation design](03_state_migration_validation.md),
 covering engine feasibility, envelope/opcode behavior, native mutations, codecs, cryptography, fork replay, public APIs,
-crash recovery, import/pruning, rollback and performance. First acquire reproducible reference fixtures and compare the
-two REVM integration depths against wide values, nested frames and exact native writes. Verify one concrete commitment
-path before expanding to a complete backend.
+crash recovery, import/pruning, rollback and performance. The first checkpoint supplies synthetic reference fixtures and an independent commitment path. Next extend the
+integration-depth comparison to complete nested frames and real native calls, then verify physical node reads and
+acquire historical replay inputs before expanding to a complete backend.
 
 No final engine selection, implementation estimate, network parity claim or production cutover follows from source
 inspection alone. Archive availability, representative runtime results and operational performance remain unresolved.
@@ -62,4 +70,6 @@ Those limitations are explicit decision gates rather than assumed successes.
 - **Proposed:** a design or acceptance criterion for future implementation.
 - **Unresolved:** cannot be closed by the available source and documentation alone.
 
-No production implementation, compilation, execution tests, benchmarks, or state migration form part of these results.
+The three original reports contain source assessment only. Compilation and execution
+evidence belongs to the linked feasibility checkpoint; no production cutover, benchmark
+or state migration forms part of either assessment.

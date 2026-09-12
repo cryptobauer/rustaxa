@@ -59,3 +59,21 @@ leaves. Nonces use existing Rust domain types. Persisted Taraxa nodes are eviden
 not parsed by the Rust calculator. No claim of incremental storage compatibility
 follows from root agreement. No upstream library patches were needed for these
 probes; full transaction, frame, journal, native and mixed-gas integration remain.
+
+## Phase 3: native mutations and opcode observations
+
+The final corpus also includes seven opcode cases (including a real CALL child
+that TSTOREs and REVERTs) and six native IterableMap stages. The native exporter
+records each ordered write, including middle-item swap/removal, final removal,
+and exact count bytes. Seven Rust tests now pass, including independent roots
+from those raw writes and wide CREATE address comparison. The primitive map test
+is not a DPoS business-kernel replacement or proof of complete native dispatch.
+
+The [checkpoint report](../../doc/evm_research/04_feasibility.md) records measured
+results, the framework/host replacement map, canonical mutation design, historical
+compatibility blockers and the next bounded experiments. The repository fast gate
+also passed. Full backend, production routing and protocol changes remain excluded.
+
+The final corpus adds raw length 27 beside length 28, exercising exactly 31- and
+32-byte child hash encodings. The final commitment inventory is 14 cases; phase 2
+originally contained 13.
