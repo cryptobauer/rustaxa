@@ -1,0 +1,18 @@
+[package]
+name = "rustaxa-evm-feasibility"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Deliberately separate from the production workspace and its lockfile.
+[workspace]
+
+[dependencies]
+revm = { git = "https://github.com/bluealloy/revm.git", rev = "6014612c86f3690e4e9173a8c4deade396af398d", default-features = false, features = ["std"] }
+rustaxa-types = { path = "../../rust/crates/rustaxa-types" }
+rlp = "0.6"
+triehash = "0.8"
+keccak-hasher = "0.15"
+hex = "0.4"
+serde_json = "1"
+num-bigint = "0.4"
