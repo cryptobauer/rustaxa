@@ -42,6 +42,11 @@ returns the public ancestor above. These are repository metadata observations, n
 deployed by network validators. Pin the node release's own submodule rather than assuming its EVM revision is the
 same commit as the EVM repository head.[^14]
 
+For these particular two revisions, local Git tree comparison establishes identical contents: both the node
+v1.14.1 EVM pin and the public merge have tree `db119d09f081019c3ab567e15a49043bcd776295`. Their commit identities
+differ, but there is no source-content difference between them. The two subsequent local changes still require
+separate classification.
+
 ## Configured network profiles
 
 These are values in the pinned repository's genesis JSON files, not independently verified live network schedules.

@@ -12,7 +12,7 @@ requirements and architectural constraints; they do not constitute execution par
 | Phase | Deliverable | Status |
 | --- | --- | --- |
 | 1 | [Compatibility specification and reference evidence](01_compatibility.md) | Complete source assessment; runtime evidence outstanding |
-| 2 | Engine and library assessment | Pending |
+| 2 | [Engine and library assessment](02_engines.md) | Complete source assessment; integration depth requires experiments |
 | 3 | State ownership, migration, and validation design | Pending |
 
 The evidence baseline is repository commit `922dd662502a0f932c033c7de142737b472af9a1` and EVM commit

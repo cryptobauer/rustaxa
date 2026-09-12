@@ -1,0 +1,329 @@
+{
+  "retrieved_on": "2026-09-12",
+  "purpose": "Pinned source evidence; not a tested or mutually compatible dependency graph",
+  "references": {
+    "revm": {
+      "repository": "bluealloy/revm",
+      "tag": "v117",
+      "revision": "6014612c86f3690e4e9173a8c4deade396af398d",
+      "date": "2026-08-28T09:04:43Z"
+    },
+    "evmone": {
+      "repository": "ipsilon/evmone",
+      "tag": "v0.23.0",
+      "revision": "2184b24461ae20398520f0bc5023cb7dcc0e003c",
+      "date": "2026-08-11T13:12:05Z"
+    },
+    "reth": {
+      "repository": "paradigmxyz/reth",
+      "tag": "v2.5.2",
+      "revision": "5a6940e351fed80458fe6c9da8581cbe4b8bd036",
+      "date": "2026-09-02T10:35:39Z"
+    },
+    "alloy_evm": {
+      "repository": "alloy-rs/evm",
+      "tag": "v0.38.0",
+      "revision": "aa16b156595d7de8d25c31fc0c346e608fa7eb9c",
+      "date": "2026-07-31T10:21:34Z"
+    },
+    "alloy_trie": {
+      "repository": "alloy-rs/trie",
+      "tag": "v0.9.0",
+      "revision": "f8390e9abdec9fae90c1b010f394af92690925c9",
+      "date": "2025-06-20T10:26:04Z"
+    },
+    "fn_dsa": {
+      "repository": "pornin/rust-fn-dsa",
+      "tag": "main",
+      "revision": "0629bb118ebf077857e78c1bd067c704a37795ed",
+      "date": "2026-07-30T17:29:07Z"
+    },
+    "alloy_trie_published": {
+      "repository": "alloy-rs/trie",
+      "version": "0.9.5",
+      "revision": "9c5a16b21c6d46f2f6c5bfc619969c1aa0813354",
+      "archive_url": "https://crates.io/api/v1/crates/alloy-trie/0.9.5/download",
+      "archive_sha256": "3f14b5d9b2c2173980202c6ff470d96e7c5e202c65a9f67884ad565226df7fbb"
+    }
+  },
+  "retrieved_sources": [
+    {
+      "library": "revm",
+      "path": "Cargo.toml",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/Cargo.toml",
+      "sha256": "159cecd574dbd9aabd8faf62d62ac9f1fd23bfddda1c74079967296f4f33c2d7",
+      "bytes": 6910
+    },
+    {
+      "library": "revm",
+      "path": "crates/revm/Cargo.toml",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/revm/Cargo.toml",
+      "sha256": "869af66eddf377d737902428ca98bc4c0efb4bbba0d879c2d263d1432e583e7d",
+      "bytes": 3568
+    },
+    {
+      "library": "revm",
+      "path": "crates/state/src/account_info.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/state/src/account_info.rs",
+      "sha256": "d2f306ab26c68f5277697b7af82e886bf09be29125c8a2ecd8694f02ff7a34a0",
+      "bytes": 12266
+    },
+    {
+      "library": "revm",
+      "path": "crates/context/interface/src/journaled_state.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/context/interface/src/journaled_state.rs",
+      "sha256": "84c2fb5f07efb53784105e5b21c440683aa5c19cea7dd51e0afaf33d47b4bda1",
+      "bytes": 17718
+    },
+    {
+      "library": "revm",
+      "path": "crates/context/interface/src/journaled_state/account.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/context/interface/src/journaled_state/account.rs",
+      "sha256": "ea43cad934fe8d739d0fddd3249d79769495ab230d1e44a3a970e4e9b604e47c",
+      "bytes": 16182
+    },
+    {
+      "library": "revm",
+      "path": "crates/handler/src/frame.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/handler/src/frame.rs",
+      "sha256": "20d25162c57fb7cbfca24edd4ab4fd752a77f3b26912bd2c31cbaaf1ba8ef2c2",
+      "bytes": 28573
+    },
+    {
+      "library": "revm",
+      "path": "crates/handler/src/handler.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/handler/src/handler.rs",
+      "sha256": "33a672105c71bf15bf3ac866dd74e938ae25daa8a6b34edec8e7cd6a602ea279",
+      "bytes": 27904
+    },
+    {
+      "library": "revm",
+      "path": "crates/handler/src/validation.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/handler/src/validation.rs",
+      "sha256": "8ad4107132bae1d5d45d745638a43a36f9c2da683744f8f6afc086f14b8c6a33",
+      "bytes": 28870
+    },
+    {
+      "library": "revm",
+      "path": "crates/handler/src/pre_execution.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/handler/src/pre_execution.rs",
+      "sha256": "515e8a839cd093c4b7a1461c33d4f769c848e69b0763d66d308e8ef3137e1503",
+      "bytes": 22624
+    },
+    {
+      "library": "revm",
+      "path": "crates/handler/src/post_execution.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/handler/src/post_execution.rs",
+      "sha256": "43e2382777389769c9f0206080031fdec79d251ff37bfd9a499267f7d10df87e",
+      "bytes": 7242
+    },
+    {
+      "library": "revm",
+      "path": "crates/handler/src/precompile_provider.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/handler/src/precompile_provider.rs",
+      "sha256": "fbd10902a611d5c4ac62a0b8aa209db1ae6b05dd95982eb4e613e62cc5bf8c6d",
+      "bytes": 13431
+    },
+    {
+      "library": "revm",
+      "path": "crates/interpreter/src/instructions/host.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/interpreter/src/instructions/host.rs",
+      "sha256": "62881c90c4f11495900f41fa302ae4f72399926d7445c16b344e2724ea6f84ba",
+      "bytes": 13600
+    },
+    {
+      "library": "revm",
+      "path": "crates/interpreter/src/instructions/contract.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/interpreter/src/instructions/contract.rs",
+      "sha256": "6b847afd281c1427a1131f1c0125425ef10355dcd6fddd55caa2c217feee3df8",
+      "bytes": 10493
+    },
+    {
+      "library": "revm",
+      "path": "crates/context/interface/src/transaction.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/context/interface/src/transaction.rs",
+      "sha256": "e18d4679724933c0bbe103e396678fcbbdc2f93386cb4afe26360db403493bc0",
+      "bytes": 9151
+    },
+    {
+      "library": "revm",
+      "path": "examples/custom_precompile_journal/src/main.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/examples/custom_precompile_journal/src/main.rs",
+      "sha256": "a96cdee91f3652168dd511446ebd7776f77c416067b916b0ebf4a4d9922f0798",
+      "bytes": 8278
+    },
+    {
+      "library": "evmone",
+      "path": "CMakeLists.txt",
+      "url": "https://raw.githubusercontent.com/ipsilon/evmone/2184b24461ae20398520f0bc5023cb7dcc0e003c/CMakeLists.txt",
+      "sha256": "9e717b4b98047b73410af23f26fa02d13df09d9667ab2b0f4d77fb95bed724cf",
+      "bytes": 7135
+    },
+    {
+      "library": "evmone",
+      "path": "lib/evmone/instructions_traits.hpp",
+      "url": "https://raw.githubusercontent.com/ipsilon/evmone/2184b24461ae20398520f0bc5023cb7dcc0e003c/lib/evmone/instructions_traits.hpp",
+      "sha256": "7cd0d9d92b379c907b9f1584e59fb7dca07c608c7c1652edaa8a10fb8b83b36e",
+      "bytes": 19370
+    },
+    {
+      "library": "evmone",
+      "path": "lib/evmone/instructions_calls.cpp",
+      "url": "https://raw.githubusercontent.com/ipsilon/evmone/2184b24461ae20398520f0bc5023cb7dcc0e003c/lib/evmone/instructions_calls.cpp",
+      "sha256": "ebd616a87756cc24f6fb658a86804f2568a33df28a5808883e534c95a1390004",
+      "bytes": 10186
+    },
+    {
+      "library": "evmone",
+      "path": "lib/evmone/instructions_storage.cpp",
+      "url": "https://raw.githubusercontent.com/ipsilon/evmone/2184b24461ae20398520f0bc5023cb7dcc0e003c/lib/evmone/instructions_storage.cpp",
+      "sha256": "eee55544eec2a2be817b653f1baca2fa4623004a454546582c36a5c032abcf53",
+      "bytes": 5663
+    },
+    {
+      "library": "evmone",
+      "path": ".gitmodules",
+      "url": "https://raw.githubusercontent.com/ipsilon/evmone/2184b24461ae20398520f0bc5023cb7dcc0e003c/.gitmodules",
+      "sha256": "3aa2214dddc4eeaa21eaa5137bfa085141ae65592a1b22a5c750f2ce82bebd84",
+      "bytes": 106
+    },
+    {
+      "library": "reth",
+      "path": "Cargo.toml",
+      "url": "https://raw.githubusercontent.com/paradigmxyz/reth/5a6940e351fed80458fe6c9da8581cbe4b8bd036/Cargo.toml",
+      "sha256": "f45bb725adbc046b78f3a1ef35a707bdeb759808426f7a04b7fd4191e93666a3",
+      "bytes": 24835
+    },
+    {
+      "library": "reth",
+      "path": "crates/evm/evm/src/lib.rs",
+      "url": "https://raw.githubusercontent.com/paradigmxyz/reth/5a6940e351fed80458fe6c9da8581cbe4b8bd036/crates/evm/evm/src/lib.rs",
+      "sha256": "0899e731dc28ac9564a06001211e746e280162e23995868055392bc0184635c2",
+      "bytes": 20594
+    },
+    {
+      "library": "alloy_evm",
+      "path": "Cargo.toml",
+      "url": "https://raw.githubusercontent.com/alloy-rs/evm/aa16b156595d7de8d25c31fc0c346e608fa7eb9c/Cargo.toml",
+      "sha256": "e1b74951bcab79d5041a81292bd41f1cb753ac16a0465f806b419c5229054404",
+      "bytes": 1898
+    },
+    {
+      "library": "alloy_trie",
+      "path": "Cargo.toml",
+      "url": "https://raw.githubusercontent.com/alloy-rs/trie/f8390e9abdec9fae90c1b010f394af92690925c9/Cargo.toml",
+      "sha256": "e21ff4f074be1324de8ca4adf1be6d97d62fc7745ee10f4c49cbe81fb5045d5f",
+      "bytes": 2974
+    },
+    {
+      "library": "alloy_trie",
+      "path": "src/account.rs",
+      "url": "https://raw.githubusercontent.com/alloy-rs/trie/f8390e9abdec9fae90c1b010f394af92690925c9/src/account.rs",
+      "sha256": "170b33dd042b1a0df8787571276b6027448a7994e8404decae5ee6e48815a88d",
+      "bytes": 3079
+    },
+    {
+      "library": "alloy_trie",
+      "path": "src/hash_builder/mod.rs",
+      "url": "https://raw.githubusercontent.com/alloy-rs/trie/f8390e9abdec9fae90c1b010f394af92690925c9/src/hash_builder/mod.rs",
+      "sha256": "1c3c53406f544eef22a16b2ae10c1b6a785c9b54e246f7a48a1ed7b808588335",
+      "bytes": 25808
+    },
+    {
+      "library": "fn_dsa",
+      "path": "Cargo.toml",
+      "url": "https://raw.githubusercontent.com/pornin/rust-fn-dsa/0629bb118ebf077857e78c1bd067c704a37795ed/Cargo.toml",
+      "sha256": "1cec10868737269ba94046cb275f3aa2f871d059132a778d2db35aecde2c6707",
+      "bytes": 728
+    },
+    {
+      "library": "fn_dsa",
+      "path": "README.md",
+      "url": "https://raw.githubusercontent.com/pornin/rust-fn-dsa/0629bb118ebf077857e78c1bd067c704a37795ed/README.md",
+      "sha256": "9fb5459a57a6a962960a9bd6b1634aa44201bee37bff21adcb61535be640cf1a",
+      "bytes": 11322
+    },
+    {
+      "library": "fn_dsa",
+      "path": "fn-dsa-vrfy/src/lib.rs",
+      "url": "https://raw.githubusercontent.com/pornin/rust-fn-dsa/0629bb118ebf077857e78c1bd067c704a37795ed/fn-dsa-vrfy/src/lib.rs",
+      "sha256": "248bf7f67bc43a25c65bccd20a2e1e9231ab255c6b3e6d0b5274499e5683577c",
+      "bytes": 47053
+    },
+    {
+      "library": "revm",
+      "path": "crates/context/interface/src/host.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/context/interface/src/host.rs",
+      "sha256": "f1aa4ab4799ede6a6638c79bbe49aad78bbdd65ac778d0a37a2e12cdc8955da2",
+      "bytes": 15943
+    },
+    {
+      "library": "revm",
+      "path": "crates/interpreter/src/instructions/tx_info.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/interpreter/src/instructions/tx_info.rs",
+      "sha256": "63ab91f52ebe5eb6b2eb0b3f9d4318b5412f684923b25f6bc4d7d24020bfa853",
+      "bytes": 1105
+    },
+    {
+      "library": "revm",
+      "path": "examples/my_evm/src/lib.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/examples/my_evm/src/lib.rs",
+      "sha256": "b3211c708efe295e63282f701abbc150d8d7f946af2c7de889570edbe6de90e5",
+      "bytes": 844
+    },
+    {
+      "library": "revm",
+      "path": "crates/handler/src/instructions.rs",
+      "url": "https://raw.githubusercontent.com/bluealloy/revm/6014612c86f3690e4e9173a8c4deade396af398d/crates/handler/src/instructions.rs",
+      "sha256": "5d4458476838e887d736213181930b489ddfa27e92996a5b5e8d19468404072f",
+      "bytes": 4395
+    },
+    {
+      "library": "alloy_evm",
+      "path": "crates/evm/src/lib.rs",
+      "url": "https://raw.githubusercontent.com/alloy-rs/evm/aa16b156595d7de8d25c31fc0c346e608fa7eb9c/crates/evm/src/lib.rs",
+      "sha256": "abbee3b22eac68b5e388091c59428268581e7c57f4bc7c38bc6b4e2504d495fb",
+      "bytes": 1011
+    },
+    {
+      "library": "fn_dsa",
+      "path": "fn-dsa-comm/src/lib.rs",
+      "url": "https://raw.githubusercontent.com/pornin/rust-fn-dsa/0629bb118ebf077857e78c1bd067c704a37795ed/fn-dsa-comm/src/lib.rs",
+      "sha256": "290a61ef060401657a23578fff224f271f2b309128405f22928a8b29f2c058ea",
+      "bytes": 11357
+    },
+    {
+      "library": "alloy_trie_published",
+      "path": "Cargo.toml.orig",
+      "url": "https://docs.rs/crate/alloy-trie/0.9.5/source/Cargo.toml.orig",
+      "sha256": "d73701d56cd8e0af5d29263ed9d3c0d7d7651237774059b4afcac691f946f25d",
+      "bytes": 2912
+    },
+    {
+      "library": "alloy_trie_published",
+      "path": "src/account.rs",
+      "url": "https://docs.rs/crate/alloy-trie/0.9.5/source/src/account.rs",
+      "sha256": "170b33dd042b1a0df8787571276b6027448a7994e8404decae5ee6e48815a88d",
+      "bytes": 3079
+    },
+    {
+      "library": "alloy_trie_published",
+      "path": "src/hash_builder/mod.rs",
+      "url": "https://docs.rs/crate/alloy-trie/0.9.5/source/src/hash_builder/mod.rs",
+      "sha256": "50d1c6cc1924191c4aec59ce3d32aa375b990949f17b81d269dd1a3d2a18e071",
+      "bytes": 27043
+    }
+  ],
+  "failed_lookups": [
+    {
+      "library": "alloy_evm",
+      "path": "src/lib.rs",
+      "url": "https://raw.githubusercontent.com/alloy-rs/evm/aa16b156595d7de8d25c31fc0c346e608fa7eb9c/src/lib.rs",
+      "error": "HTTP Error 404: Not Found"
+    }
+  ],
+  "metadata_conflicts": [
+    "REVM tag v117 release title is v43.0.1; umbrella manifest is 43.0.0 with mixed component patch versions",
+    "Alloy trie GitHub latest-release metadata returned v0.9.0; published 0.9.5 was inspected from crates.io after the tag lookup failed"
+  ]
+}

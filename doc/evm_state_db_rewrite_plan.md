@@ -6,6 +6,11 @@ Evaluated on 2026-09-12, branch `feat/rust/evm-state-db`, repository revision
 `922dd662502a0f932c033c7de142737b472af9a1`, EVM submodule revision `bb0ab67c8`.
 This proposal supplements [PLAN.md](../PLAN.md); it does not change its current ownership boundaries.
 
+The follow-up [deep research](evm_research/README.md) refines this proposal. In particular, it establishes additional
+gas-price width constraints, compares REVM framework versus interpreter-level integration, and finds bounded CREATE
+nonce handling in the inspected evmone release. The detailed research takes precedence over broad candidate
+descriptions here; no engine has yet passed execution feasibility tests.
+
 ## Recommendation
 
 Pursue a modern Rust execution stack with REVM as the preferred engine, subject to a compatibility feasibility gate.
