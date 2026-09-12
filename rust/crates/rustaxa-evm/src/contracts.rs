@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn opcode_projection_retains_the_low_256_bits_of_wide_values() {
-        let wide = (BigUint::from(1_u8) << 256) + BigUint::from(0xabu8);
+        let wide: BigUint = (BigUint::from(1_u8) << 256_usize) + BigUint::from(0xabu8);
         let gas_price = ExecutionGasPrice::new(wide.clone());
         let value = ExecutionValue::new(wide);
         let mut expected = [0_u8; 32];
