@@ -2,6 +2,7 @@
 members = [
     "crates/rustaxa-bridge",
     "crates/rustaxa-consensus",
+    "crates/rustaxa-evm",
     "crates/rustaxa-storage",
     "crates/rustaxa-types",
     "crates/rustaxa-vdf",
