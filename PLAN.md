@@ -7,6 +7,10 @@ That assessment preserves existing-network compatibility and current Rust owners
 migration gates do not activate a new execution backend.
 The [bounded feasibility checkpoint](doc/evm_research/04_feasibility.md) records isolated reference fixtures,
 REVM integration probes and commitment evidence; production routing and protocol changes remain outside its scope.
+The [direction decision](doc/evm_research/07_direction_decision.md) closes architecture research: implement a
+Rustaxa-owned transaction/frame/host layer over REVM interpreter components, reuse existing Rust native kernels,
+and retain the concrete RocksDB format initially. Its E1–E12 acceptance matrix and bounded implementation sequence
+apply before any separately authorized production cutover; historical dataset acquisition remains a release blocker.
 
 ## Objectives
 

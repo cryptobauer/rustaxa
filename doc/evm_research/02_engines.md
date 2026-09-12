@@ -1,5 +1,8 @@
 # Engine and library decision assessment
 
+> Source assessment at the pinned baseline. Subsequent executable evidence and the resolved
+> architecture recommendation are recorded in the [direction decision](07_direction_decision.md).
+
 ## Recommendation
 
 Prefer REVM components with Taraxa-owned transaction and state policy, but do not assume its default account,

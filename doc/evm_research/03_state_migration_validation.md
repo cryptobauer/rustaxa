@@ -1,5 +1,8 @@
 # State ownership, migration, and validation design
 
+> Source assessment at the pinned baseline. Subsequent executable evidence and the resolved
+> architecture recommendation are recorded in the [direction decision](07_direction_decision.md).
+
 ## Recommendation and confidence
 
 Modernize the execution engine and state backend behind the existing Rust application boundary. Keep consensus,

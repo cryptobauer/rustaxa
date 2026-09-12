@@ -1,5 +1,8 @@
 # Creation frame feasibility checkpoint
 
+> Historical checkpoint. The [final experiments](06_native_storage_crypto.md) and
+> [direction decision](07_direction_decision.md) supersede its next-work and engine-selection status.
+
 This continues [the initial checkpoint](04_feasibility.md) from `4033d6fea` on
 `feat/rust/evm-state-db`. All new executable code is isolated under
 `experiments/evm_feasibility`; production routing, consensus, FinalChain, native

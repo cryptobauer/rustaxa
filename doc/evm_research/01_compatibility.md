@@ -1,5 +1,8 @@
 # Execution compatibility specification and reference evidence
 
+> Source assessment at the pinned baseline. Subsequent executable evidence and the resolved
+> architecture recommendation are recorded in the [direction decision](07_direction_decision.md).
+
 ## Decision and scope
 
 The first migration must remain compatible with existing Taraxa networks. Preserve canonical execution and all

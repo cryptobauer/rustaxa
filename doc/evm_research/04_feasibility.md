@@ -1,5 +1,8 @@
 # Bounded execution feasibility checkpoint
 
+> Historical checkpoint. The [final experiments](06_native_storage_crypto.md) and
+> [direction decision](07_direction_decision.md) supersede its next-work and engine-selection status.
+
 Date: 2026-09-12. Research baseline: `6c33faaaf`. Implementation is isolated in
 [`experiments/evm_feasibility`](../../experiments/evm_feasibility/README.md) on
 `feat/rust/evm-state-db`. No production routing, protocol, original C++ file,
