@@ -220,6 +220,7 @@ func main() {
 	result := map[string]any{}
 	result["native_iterable"] = nativeFixtures()
 	result["opcodes"] = opcodeFixtures()
+	result["creation_frames"] = creationFrames()
 	var envelopes []map[string]any
 	for _, cornus := range []bool{false, true} {
 		for _, c := range []struct {

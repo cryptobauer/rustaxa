@@ -214,6 +214,654 @@
       }
     }
   ],
+  "creation_frames": [
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "946961",
+          "code": "",
+          "disk": "c802830e7311808080",
+          "leaf": "f84702830e7311a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "60016016600039600160006000f060005260206000f300",
+          "disk": "ee890100000000000000018080a0f2908e684f1fb6d0b41272b3a4d0acd890b3d485065e2403260f3a703d96491817",
+          "leaf": "f84d8901000000000000000180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0f2908e684f1fb6d0b41272b3a4d0acd890b3d485065e2403260f3a703d964918",
+          "nonce": "18446744073709551617"
+        },
+        "4892d44e904007e7a23b1731e0e27228696dc34c": null,
+        "4d7bac175478109fd513ca6d48ea6f37e730c317": {
+          "balance": "0",
+          "code": "",
+          "disk": "c50180808080",
+          "leaf": "f8440180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "1"
+        }
+      },
+      "case": "create-u64-success",
+      "child": "4d7bac175478109fd513ca6d48ea6f37e730c317",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 53039,
+      "grandchild": "4892d44e904007e7a23b1731e0e27228696dc34c",
+      "init": "00",
+      "parent_code": "60016016600039600160006000f060005260206000f300",
+      "parent_nonce": "0x10000000000000000",
+      "parent_revert": false,
+      "return": "0000000000000000000000004d7bac175478109fd513ca6d48ea6f37e730c317",
+      "root": "b7313dd34c92a7c498759c73da9ba8e3c6b5fac3bb466fc1129c0776eb381ae7",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "946961",
+          "code": "",
+          "disk": "c802830e7311808080",
+          "leaf": "f84702830e7311a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "60016016600039600160006000f060005260206000f300",
+          "disk": "f846a10100000000000000000000000000000000000000000000000000000000000000008080a0f2908e684f1fb6d0b41272b3a4d0acd890b3d485065e2403260f3a703d96491817",
+          "leaf": "f865a101000000000000000000000000000000000000000000000000000000000000000080a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0f2908e684f1fb6d0b41272b3a4d0acd890b3d485065e2403260f3a703d964918",
+          "nonce": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+        },
+        "036a1000a3772063461b44bfd4d30e2bc733c3b5": null,
+        "2012aacccad690180ab8811a2f8c5a3cad17361a": {
+          "balance": "0",
+          "code": "",
+          "disk": "c50180808080",
+          "leaf": "f8440180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "1"
+        }
+      },
+      "case": "create-u256-success",
+      "child": "2012aacccad690180ab8811a2f8c5a3cad17361a",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 53039,
+      "grandchild": "036a1000a3772063461b44bfd4d30e2bc733c3b5",
+      "init": "00",
+      "parent_code": "60016016600039600160006000f060005260206000f300",
+      "parent_nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "parent_revert": false,
+      "return": "0000000000000000000000002012aacccad690180ab8811a2f8c5a3cad17361a",
+      "root": "99fabdf7b9995195aeb6d6921e547a0dbdeea7e33c0f488fb42a462ddd400e74",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "946961",
+          "code": "",
+          "disk": "c802830e7311808080",
+          "leaf": "f84702830e7311a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "60016016600039600160006000f060005260206000f300",
+          "disk": "f847a2010000000000000000000000000000000000000000000000000000000000000000018080a0f2908e684f1fb6d0b41272b3a4d0acd890b3d485065e2403260f3a703d96491817",
+          "leaf": "f866a20100000000000000000000000000000000000000000000000000000000000000000180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0f2908e684f1fb6d0b41272b3a4d0acd890b3d485065e2403260f3a703d964918",
+          "nonce": "29642774844752946028434172162224104410437116074403984394101141506025761187823617"
+        },
+        "427d4d996fc31d3dc0b85dd897ef5b1f461af2c6": null,
+        "f06a4159de700fe6c9c6f4af8e7547f65cf708af": {
+          "balance": "0",
+          "code": "",
+          "disk": "c50180808080",
+          "leaf": "f8440180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "1"
+        }
+      },
+      "case": "create-above-u256",
+      "child": "f06a4159de700fe6c9c6f4af8e7547f65cf708af",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 53039,
+      "grandchild": "427d4d996fc31d3dc0b85dd897ef5b1f461af2c6",
+      "init": "00",
+      "parent_code": "60016016600039600160006000f060005260206000f300",
+      "parent_nonce": "0x1000000000000000000000000000000000000000000000000000000000000000000",
+      "parent_revert": false,
+      "return": "000000000000000000000000f06a4159de700fe6c9c6f4af8e7547f65cf708af",
+      "root": "497a88e7f9399cbb3752898ae0697f0fad139ef5340c076f694827e223e38aab",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "703846",
+          "code": "",
+          "disk": "c802830abd66808080",
+          "leaf": "f84702830abd66a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "60016016600039600160006000f060005260206000f300",
+          "disk": "f846a10100000000000000000000000000000000000000000000000000000000000000008080a0f2908e684f1fb6d0b41272b3a4d0acd890b3d485065e2403260f3a703d96491817",
+          "leaf": "f865a101000000000000000000000000000000000000000000000000000000000000000080a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0f2908e684f1fb6d0b41272b3a4d0acd890b3d485065e2403260f3a703d964918",
+          "nonce": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+        },
+        "036a1000a3772063461b44bfd4d30e2bc733c3b5": null,
+        "2012aacccad690180ab8811a2f8c5a3cad17361a": {
+          "balance": "0",
+          "code": "",
+          "disk": "c50180808080",
+          "leaf": "f8440180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "1"
+        }
+      },
+      "case": "create-collision",
+      "child": "2012aacccad690180ab8811a2f8c5a3cad17361a",
+      "collision": true,
+      "consensus_error": "",
+      "create2": false,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 296154,
+      "grandchild": "036a1000a3772063461b44bfd4d30e2bc733c3b5",
+      "init": "00",
+      "parent_code": "60016016600039600160006000f060005260206000f300",
+      "parent_nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "parent_revert": false,
+      "return": "0000000000000000000000000000000000000000000000000000000000000000",
+      "root": "6f734fb44c8b31a7f229cf86055fa9947d4ff836a0b6d3b66125a6dd26a5499e",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "946934",
+          "code": "",
+          "disk": "c802830e72f6808080",
+          "leaf": "f84702830e72f6a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "600a6019600039600a60006000f0503d600060003e3d6000f360ab60005360016000fd",
+          "disk": "f846a10100000000000000000000000000000000000000000000000000000000000000008080a0ec59d3560e0bef3f19ce18ad587930c3d19541191b92b1e83ee0c060fa2420e823",
+          "leaf": "f865a101000000000000000000000000000000000000000000000000000000000000000080a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0ec59d3560e0bef3f19ce18ad587930c3d19541191b92b1e83ee0c060fa2420e8",
+          "nonce": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+        },
+        "036a1000a3772063461b44bfd4d30e2bc733c3b5": null,
+        "2012aacccad690180ab8811a2f8c5a3cad17361a": null
+      },
+      "case": "create-child-revert",
+      "child": "2012aacccad690180ab8811a2f8c5a3cad17361a",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 53066,
+      "grandchild": "036a1000a3772063461b44bfd4d30e2bc733c3b5",
+      "init": "60ab60005360016000fd",
+      "parent_code": "600a6019600039600a60006000f0503d600060003e3d6000f360ab60005360016000fd",
+      "parent_nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "parent_revert": false,
+      "return": "ab",
+      "root": "1cadc2fc5ab6a0a0696335a9a85d245967265f5736b1bab8e309173b09908833",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "703846",
+          "code": "",
+          "disk": "c802830abd66808080",
+          "leaf": "f84702830abd66a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "60016016600039600160006000f060005260206000f3fe",
+          "disk": "ee890100000000000000018080a04affffaa8b2b2e51093e89baa23ddfa67fd87130216271f9bec90916b054e78517",
+          "leaf": "f84d8901000000000000000180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a04affffaa8b2b2e51093e89baa23ddfa67fd87130216271f9bec90916b054e785",
+          "nonce": "18446744073709551617"
+        },
+        "4892d44e904007e7a23b1731e0e27228696dc34c": null,
+        "4d7bac175478109fd513ca6d48ea6f37e730c317": null
+      },
+      "case": "create-child-invalid",
+      "child": "4d7bac175478109fd513ca6d48ea6f37e730c317",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 296154,
+      "grandchild": "4892d44e904007e7a23b1731e0e27228696dc34c",
+      "init": "fe",
+      "parent_code": "60016016600039600160006000f060005260206000f3fe",
+      "parent_nonce": "0x10000000000000000",
+      "parent_revert": false,
+      "return": "0000000000000000000000000000000000000000000000000000000000000000",
+      "root": "98f240dd89b6e3cf92fd3da30eddd24cba82b54fd012fe6809085cd52d87a2fc",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "946961",
+          "code": "",
+          "disk": "c802830e7311808080",
+          "leaf": "f84702830e7311a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "60016016600039600160006000f060005260206000fd00",
+          "disk": "f845a0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff8080a0e52d0364f0ff99626fd719e57094d022018ca953b32e3fdbf20c9484e2a72c4a17",
+          "leaf": "f864a0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff80a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0e52d0364f0ff99626fd719e57094d022018ca953b32e3fdbf20c9484e2a72c4a",
+          "nonce": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+        },
+        "036a1000a3772063461b44bfd4d30e2bc733c3b5": null,
+        "2012aacccad690180ab8811a2f8c5a3cad17361a": null
+      },
+      "case": "create-parent-revert",
+      "child": "2012aacccad690180ab8811a2f8c5a3cad17361a",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "execution reverted",
+      "execution_error": "execution reverted",
+      "gas_cap": 300000,
+      "gas_used": 53039,
+      "grandchild": "036a1000a3772063461b44bfd4d30e2bc733c3b5",
+      "init": "00",
+      "parent_code": "60016016600039600160006000f060005260206000fd00",
+      "parent_nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "parent_revert": true,
+      "return": "0000000000000000000000002012aacccad690180ab8811a2f8c5a3cad17361a",
+      "root": "1b21a41b93006f2b88386fef149dd3620a509e36ec4a78977bdf7ecbf3825ced",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "914952",
+          "code": "",
+          "disk": "c802830df608808080",
+          "leaf": "f84702830df608a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "60086016600039600860006000f060005260206000f3600060006000f000",
+          "disk": "f846a10100000000000000000000000000000000000000000000000000000000000000008080a0986d0de4abfe7457de5433aedf5cc7b23a8809a33717a560c14de1b5efd669b51e",
+          "leaf": "f865a101000000000000000000000000000000000000000000000000000000000000000080a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0986d0de4abfe7457de5433aedf5cc7b23a8809a33717a560c14de1b5efd669b5",
+          "nonce": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+        },
+        "036a1000a3772063461b44bfd4d30e2bc733c3b5": {
+          "balance": "0",
+          "code": "",
+          "disk": "c50180808080",
+          "leaf": "f8440180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "1"
+        },
+        "2012aacccad690180ab8811a2f8c5a3cad17361a": {
+          "balance": "0",
+          "code": "",
+          "disk": "c50280808080",
+          "leaf": "f8440280a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        }
+      },
+      "case": "create-grandchild",
+      "child": "2012aacccad690180ab8811a2f8c5a3cad17361a",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 85048,
+      "grandchild": "036a1000a3772063461b44bfd4d30e2bc733c3b5",
+      "init": "600060006000f000",
+      "parent_code": "60086016600039600860006000f060005260206000f3600060006000f000",
+      "parent_nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "parent_revert": false,
+      "return": "0000000000000000000000002012aacccad690180ab8811a2f8c5a3cad17361a",
+      "root": "495ff4fd54936eb9cf23ef84cd8792b71fb6b7950a7d20afeddb93437eac1701",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "914952",
+          "code": "",
+          "disk": "c802830df608808080",
+          "leaf": "f84702830df608a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "60086016600039600860006000f060005260206000fd600060006000f000",
+          "disk": "ee890100000000000000008080a00eaf9ac36fddd49c0260f61d462d49e7a9ec62eeab4b2deb85dd3e38324460391e",
+          "leaf": "f84d8901000000000000000080a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a00eaf9ac36fddd49c0260f61d462d49e7a9ec62eeab4b2deb85dd3e3832446039",
+          "nonce": "18446744073709551616"
+        },
+        "4892d44e904007e7a23b1731e0e27228696dc34c": null,
+        "4d7bac175478109fd513ca6d48ea6f37e730c317": null
+      },
+      "case": "create-grandchild-parent-revert",
+      "child": "4d7bac175478109fd513ca6d48ea6f37e730c317",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "execution reverted",
+      "execution_error": "execution reverted",
+      "gas_cap": 300000,
+      "gas_used": 85048,
+      "grandchild": "4892d44e904007e7a23b1731e0e27228696dc34c",
+      "init": "600060006000f000",
+      "parent_code": "60086016600039600860006000f060005260206000fd600060006000f000",
+      "parent_nonce": "0x10000000000000000",
+      "parent_revert": true,
+      "return": "0000000000000000000000004d7bac175478109fd513ca6d48ea6f37e730c317",
+      "root": "07178ea1f26655650c20f1373ef3958a5770deb4fab7f213da1f71bed0083eb4",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "946743",
+          "code": "",
+          "disk": "c802830e7237808080",
+          "leaf": "f84702830e7237a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "600a6016600039600a60006000f060005260206000f360ef60005360016000f3",
+          "disk": "ee890100000000000000018080a0e34f967aa1d68ec568a80680418234abd9190edb27d005ae079e8ac318248a3220",
+          "leaf": "f84d8901000000000000000180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0e34f967aa1d68ec568a80680418234abd9190edb27d005ae079e8ac318248a32",
+          "nonce": "18446744073709551617"
+        },
+        "4892d44e904007e7a23b1731e0e27228696dc34c": null,
+        "4d7bac175478109fd513ca6d48ea6f37e730c317": {
+          "balance": "0",
+          "code": "ef",
+          "disk": "e5018080a0309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a301",
+          "leaf": "f8440180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3",
+          "nonce": "1"
+        }
+      },
+      "case": "create-code-deposit",
+      "child": "4d7bac175478109fd513ca6d48ea6f37e730c317",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 53257,
+      "grandchild": "4892d44e904007e7a23b1731e0e27228696dc34c",
+      "init": "60ef60005360016000f3",
+      "parent_code": "600a6016600039600a60006000f060005260206000f360ef60005360016000f3",
+      "parent_nonce": "0x10000000000000000",
+      "parent_revert": false,
+      "return": "0000000000000000000000004d7bac175478109fd513ca6d48ea6f37e730c317",
+      "root": "e3b5e40c24f817b6d7436c2b5e60b527943ba5d0e1c9820e62dff302cecec7fc",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "914944",
+          "code": "",
+          "disk": "c802830df600808080",
+          "leaf": "f84702830df600a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "600d6016600039600d60006000f060005260206000f3600060006000f05060006000fd",
+          "disk": "f846a10100000000000000000000000000000000000000000000000000000000000000008080a0a8d0b16ac109e9b67cf091ec8b934be173ec0100048802f6e1b8d71cc18619c923",
+          "leaf": "f865a101000000000000000000000000000000000000000000000000000000000000000080a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0a8d0b16ac109e9b67cf091ec8b934be173ec0100048802f6e1b8d71cc18619c9",
+          "nonce": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+        },
+        "036a1000a3772063461b44bfd4d30e2bc733c3b5": null,
+        "2012aacccad690180ab8811a2f8c5a3cad17361a": null
+      },
+      "case": "create-grandchild-child-revert",
+      "child": "2012aacccad690180ab8811a2f8c5a3cad17361a",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 85056,
+      "grandchild": "036a1000a3772063461b44bfd4d30e2bc733c3b5",
+      "init": "600060006000f05060006000fd",
+      "parent_code": "600d6016600039600d60006000f060005260206000f3600060006000f05060006000fd",
+      "parent_nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "parent_revert": false,
+      "return": "0000000000000000000000000000000000000000000000000000000000000000",
+      "root": "2338b224081cf5151805d618c8ff3183e3b851e6d3557ad4159ce3affd248655",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "945511",
+          "code": "",
+          "disk": "c802830e6d67808080",
+          "leaf": "f84702830e6d67a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "60056016600039600560006000f060005260206000f3600a6000f3",
+          "disk": "ee890100000000000000018080a095bcac4b25e464e606f5313c7733da33732ba33157bd8332d39507dee32018f31b",
+          "leaf": "f84d8901000000000000000180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a095bcac4b25e464e606f5313c7733da33732ba33157bd8332d39507dee32018f3",
+          "nonce": "18446744073709551617"
+        },
+        "4892d44e904007e7a23b1731e0e27228696dc34c": null,
+        "4d7bac175478109fd513ca6d48ea6f37e730c317": null
+      },
+      "case": "create-code-deposit-oog",
+      "child": "4d7bac175478109fd513ca6d48ea6f37e730c317",
+      "collision": false,
+      "consensus_error": "",
+      "create2": false,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 54500,
+      "gas_used": 54489,
+      "grandchild": "4892d44e904007e7a23b1731e0e27228696dc34c",
+      "init": "600a6000f3",
+      "parent_code": "60056016600039600560006000f060005260206000f3600a6000f3",
+      "parent_nonce": "0x10000000000000000",
+      "parent_revert": false,
+      "return": "0000000000000000000000000000000000000000000000000000000000000000",
+      "root": "c2c51f026d2ada84e4021125ff9714a0f9f1cb1ec3e23cd817d786a722dae9c0",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "946952",
+          "code": "",
+          "disk": "c802830e7308808080",
+          "leaf": "f84702830e7308a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "600160186000396001600160006000f560005260206000f300",
+          "disk": "f846a10100000000000000000000000000000000000000000000000000000000000000008080a06070c0584794852c90687952ded7ebadd5fde10a2df24514338eca83d0b6f70f19",
+          "leaf": "f865a101000000000000000000000000000000000000000000000000000000000000000080a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a06070c0584794852c90687952ded7ebadd5fde10a2df24514338eca83d0b6f70f",
+          "nonce": "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+        },
+        "0e8e3ad2c1e6b656434a2f87d43299c50bb47591": {
+          "balance": "0",
+          "code": "",
+          "disk": "c50180808080",
+          "leaf": "f8440180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "1"
+        },
+        "e02e354a87d49bb665ab467aadad98a2978a0c51": null
+      },
+      "case": "create2-u256-success",
+      "child": "0e8e3ad2c1e6b656434a2f87d43299c50bb47591",
+      "collision": false,
+      "consensus_error": "",
+      "create2": true,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 53048,
+      "grandchild": "e02e354a87d49bb665ab467aadad98a2978a0c51",
+      "init": "00",
+      "parent_code": "600160186000396001600160006000f560005260206000f300",
+      "parent_nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "parent_revert": false,
+      "return": "0000000000000000000000000e8e3ad2c1e6b656434a2f87d43299c50bb47591",
+      "root": "5563426f62c135133eaa6c7ad39a459da33c94296d2c2f5d875c49a21425349a",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "703346",
+          "code": "",
+          "disk": "c802830abb72808080",
+          "leaf": "f84702830abb72a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "600160226000396001600160006000f5506001600160006000f560005260206000f300",
+          "disk": "f846a10100000000000000000000000000000000000000000000000000000000000000018080a0dd02d8d7350baa9f4467c99960cb4b167f6184121265a5f5f5e16a686eabfbd923",
+          "leaf": "f865a101000000000000000000000000000000000000000000000000000000000000000180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0dd02d8d7350baa9f4467c99960cb4b167f6184121265a5f5f5e16a686eabfbd9",
+          "nonce": "115792089237316195423570985008687907853269984665640564039457584007913129639937"
+        },
+        "0e8e3ad2c1e6b656434a2f87d43299c50bb47591": {
+          "balance": "0",
+          "code": "",
+          "disk": "c50180808080",
+          "leaf": "f8440180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "1"
+        },
+        "e02e354a87d49bb665ab467aadad98a2978a0c51": null
+      },
+      "case": "create2-second-collision",
+      "child": "0e8e3ad2c1e6b656434a2f87d43299c50bb47591",
+      "collision": false,
+      "consensus_error": "",
+      "create2": true,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 296654,
+      "grandchild": "e02e354a87d49bb665ab467aadad98a2978a0c51",
+      "init": "00",
+      "parent_code": "600160226000396001600160006000f5506001600160006000f560005260206000f300",
+      "parent_nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "parent_revert": false,
+      "return": "0000000000000000000000000000000000000000000000000000000000000000",
+      "root": "b405d8d1c52107ccd8bfda0a62d2fb8dcc591162c44f848ff02ae44628184dba",
+      "twice": true
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "946946",
+          "code": "",
+          "disk": "c802830e7302808080",
+          "leaf": "f84702830e7302a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "600560186000396001600560006000f560005260206000f360006000fd",
+          "disk": "ee890100000000000000018080a066e2149c8cdc022c8a003d6ed84894e33a37dcc058148fac550e10a3bcaf02301d",
+          "leaf": "f84d8901000000000000000180a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a066e2149c8cdc022c8a003d6ed84894e33a37dcc058148fac550e10a3bcaf0230",
+          "nonce": "18446744073709551617"
+        },
+        "2fb2d757863fd95c63ed0fd890c17bc8fb62addc": null,
+        "aba7cbe9854120a18a4840a134b479c292df0eab": null
+      },
+      "case": "create2-child-revert",
+      "child": "aba7cbe9854120a18a4840a134b479c292df0eab",
+      "collision": false,
+      "consensus_error": "",
+      "create2": true,
+      "error": "",
+      "execution_error": "",
+      "gas_cap": 300000,
+      "gas_used": 53054,
+      "grandchild": "2fb2d757863fd95c63ed0fd890c17bc8fb62addc",
+      "init": "60006000fd",
+      "parent_code": "600560186000396001600560006000f560005260206000f360006000fd",
+      "parent_nonce": "0x10000000000000000",
+      "parent_revert": false,
+      "return": "0000000000000000000000000000000000000000000000000000000000000000",
+      "root": "af465edc519c7d25c5f5fc0918009ceaed25f3ac42623c6ec577f6949fface07",
+      "twice": false
+    },
+    {
+      "accounts": {
+        "00000000000000000000000000000000000000aa": {
+          "balance": "946952",
+          "code": "",
+          "disk": "c802830e7308808080",
+          "leaf": "f84702830e7308a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+          "nonce": "2"
+        },
+        "00000000000000000000000000000000000000bb": {
+          "balance": "0",
+          "code": "600160186000396001600160006000f560005260206000fd00",
+          "disk": "ee890100000000000000008080a00a2c7db78bbb38f27164e5afa9e9d9db38942312578af521cc35f14d5af79f6719",
+          "leaf": "f84d8901000000000000000080a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a00a2c7db78bbb38f27164e5afa9e9d9db38942312578af521cc35f14d5af79f67",
+          "nonce": "18446744073709551616"
+        },
+        "0e8e3ad2c1e6b656434a2f87d43299c50bb47591": null,
+        "e02e354a87d49bb665ab467aadad98a2978a0c51": null
+      },
+      "case": "create2-parent-revert",
+      "child": "0e8e3ad2c1e6b656434a2f87d43299c50bb47591",
+      "collision": false,
+      "consensus_error": "",
+      "create2": true,
+      "error": "execution reverted",
+      "execution_error": "execution reverted",
+      "gas_cap": 300000,
+      "gas_used": 53048,
+      "grandchild": "e02e354a87d49bb665ab467aadad98a2978a0c51",
+      "init": "00",
+      "parent_code": "600160186000396001600160006000f560005260206000fd00",
+      "parent_nonce": "0x10000000000000000",
+      "parent_revert": true,
+      "return": "0000000000000000000000000e8e3ad2c1e6b656434a2f87d43299c50bb47591",
+      "root": "ba83ca1d8c14c8c88db5262a21a10ec5e65dfb679605292fa321f933b9655060",
+      "twice": false
+    }
+  ],
   "envelopes": [
     {
       "balance": "979000",

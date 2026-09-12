@@ -77,3 +77,16 @@ also passed. Full backend, production routing and protocol changes remain exclud
 The final corpus adds raw length 27 beside length 28, exercising exactly 31- and
 32-byte child hash encodings. The final commitment inventory is 14 cases; phase 2
 originally contained 13.
+
+## Phase 4: bounded nested creation driver
+
+The [creation checkpoint](../../doc/evm_research/05_creation_frames.md) adds 16 dual-
+reference scenarios and a Rust frame driver. Eight isolated tests now pass, including
+exact gas, return/error fields, account bytes and full account-state roots for nested
+CREATE/CREATE2, wide successors, collisions, child/parent revert and code deposit.
+Manifest schema two hashes both Go exporter files. Production remains unlinked.
+
+The driver rejects unsupported host work, nonzero creation value and opcodes outside
+its fixture subset. It uses clone checkpoints and a fixed valid envelope; neither is
+a proposed general executor. CALL/native kernels, storage journals, full gas/fork
+policy, physical persistence and historical replay remain explicit next gates.

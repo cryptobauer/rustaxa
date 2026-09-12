@@ -2,6 +2,8 @@
 //! Tests compare independently encoded commitments with pinned Go evidence and
 //! exercise REVM interface boundaries. They do not implement a Taraxa backend.
 #[cfg(test)]
+mod frames;
+#[cfg(test)]
 mod host;
 
 #[cfg(test)]

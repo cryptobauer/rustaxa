@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "references": {
     "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
     "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
@@ -20,12 +20,16 @@
     "state": "only sender exists unless missing_prior_account; no code/storage; unexpected reads panic"
   },
   "additional_inputs": {
+    "creation_frames": "complete account map in reference_frames.go; sender aa nonce1 balance1000000 calls bb with recorded gas_cap price1 value0, Cornus only; root from enumerated post-EVM accounts before database persistence",
     "opcodes": "codeInput: sender nonce 1 balance 1000000, target/child nonce 1 balance 0 with recorded code; gas cap 100000, price 1, Cornus true, Cacti varies",
     "native_iterable": "complete empty map at prefix 0005; one-byte items a1/b2/c3, ordered insert/remove operations; roots over Keccak(raw keys), empty bytes delete"
   },
   "sha256": {
-    "public.json": "a5adcf5f2de83a39c04da06ccdd1dcd2bdc88adf1f78780ee5be72575d401852",
-    "local.json": "a5adcf5f2de83a39c04da06ccdd1dcd2bdc88adf1f78780ee5be72575d401852"
+    "public.json": "efb971c3d938441bcb3ee9f66092c4b871ead22306d608361e2754f4146c349a",
+    "local.json": "efb971c3d938441bcb3ee9f66092c4b871ead22306d608361e2754f4146c349a"
   },
-  "exporter_sha256": "881dbed2048ce95487044c9a211586bbea711bf8467042f237a54e5ff8b752b4"
+  "exporter_sha256": {
+    "reference.go": "117a99812f542cb24cdcfe2ccb98c31789db6cb399d4b9f3816a38cf72199744",
+    "reference_frames.go": "464dc34386f4e54f61bdb6fdd53f653e4c7aea9b278b1b90f40e7655f41f75aa"
+  }
 }

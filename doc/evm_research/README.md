@@ -51,12 +51,16 @@ and independently verifies account/slot and native-mutation commitments. It
 recommends interpreter/host prototyping while retaining explicit frame, native
 adapter, historical replay and physical-storage gates. Production remains unchanged.
 
+The [creation frame continuation](05_creation_frames.md) now executes a bounded
+Rust frame driver against 16 dual-reference cases, including wide nonce growth,
+collisions, nested rollback and exact account-state roots.
+
 ## Remaining experimental work
 
 The source research defines twelve experiment groups in the [validation design](03_state_migration_validation.md),
 covering engine feasibility, envelope/opcode behavior, native mutations, codecs, cryptography, fork replay, public APIs,
 crash recovery, import/pruning, rollback and performance. The first checkpoint supplies synthetic reference fixtures and an independent commitment path. Next extend the
-integration-depth comparison to complete nested frames and real native calls, then verify physical node reads and
+frame comparison to CALL/native execution and full state journals, then verify physical node reads and
 acquire historical replay inputs before expanding to a complete backend.
 
 No final engine selection, implementation estimate, network parity claim or production cutover follows from source

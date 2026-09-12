@@ -34,16 +34,17 @@ def main():
             subprocess.run(["tar", "-x", "-C", directory], input=archive, check=True)
             command = tree / "cmd/feasibility"
             command.mkdir(parents=True)
-            (command / "main.go").write_bytes((HERE / "reference.go").read_bytes())
+            for source in sorted(HERE.glob("reference*.go")):
+                (command / source.name).write_bytes(source.read_bytes())
             artifacts[label + ".json"] = run("go", "run", "-mod=readonly", "./cmd/feasibility", cwd=tree)
     manifest = {
-        "schema": 1, "references": REVISIONS,
+        "schema": 2, "references": REVISIONS,
         "go_version": run("go", "version").decode().strip(),
         "scope": "Synthetic direct EVM/state/trie fixtures; no network replay, wire admission, RocksDB or lifecycle provenance",
         "environment": {"sender": "00" * 19 + "aa", "target": "00" * 19 + "bb", "prior_nonce": "1", "period": 1, "gas_limit": 1000000, "timestamp": 0, "difficulty": "0", "value": "0", "rules": "only Cornus varies; all other flags false", "chain_config": "params.TestChainConfig at each pinned revision", "state": "only sender exists unless missing_prior_account; no code/storage; unexpected reads panic"},
-        "additional_inputs": {"opcodes": "codeInput: sender nonce 1 balance 1000000, target/child nonce 1 balance 0 with recorded code; gas cap 100000, price 1, Cornus true, Cacti varies", "native_iterable": "complete empty map at prefix 0005; one-byte items a1/b2/c3, ordered insert/remove operations; roots over Keccak(raw keys), empty bytes delete"},
+        "additional_inputs": {"creation_frames": "complete account map in reference_frames.go; sender aa nonce1 balance1000000 calls bb with recorded gas_cap price1 value0, Cornus only; root from enumerated post-EVM accounts before database persistence", "opcodes": "codeInput: sender nonce 1 balance 1000000, target/child nonce 1 balance 0 with recorded code; gas cap 100000, price 1, Cornus true, Cacti varies", "native_iterable": "complete empty map at prefix 0005; one-byte items a1/b2/c3, ordered insert/remove operations; roots over Keccak(raw keys), empty bytes delete"},
         "sha256": {name: hashlib.sha256(data).hexdigest() for name, data in artifacts.items()},
-        "exporter_sha256": hashlib.sha256((HERE / "reference.go").read_bytes()).hexdigest(),
+        "exporter_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(HERE.glob("reference*.go"))},
     }
     fixtures = HERE / "fixtures"
     if args.record:
