@@ -89,15 +89,17 @@ impl ExecutionBalance {
         &self.0
     }
 
-    /// Returns the low 256 bits of a non-negative balance for EVM balance opcodes.
+    /// Returns the balance modulo 2^256 for EVM balance opcodes.
     ///
-    /// A negative balance is rejected because its operand-stack projection is
-    /// not established by the current compatibility evidence.
-    pub fn low_word(&self) -> Result<[u8; 32], BalanceConversionError> {
-        match self.0.to_bytes_be() {
-            (Sign::Minus, _) => Err(BalanceConversionError::Negative),
-            (_, bytes) => Ok(low_u256_word(&BigUint::from_bytes_be(&bytes))),
+    /// The pinned Go `uint256.Int::SetFromBig` loads the low magnitude limbs
+    /// and applies two's-complement negation when the source is negative.
+    pub fn low_word(&self) -> [u8; 32] {
+        let (sign, bytes) = self.0.to_bytes_be();
+        let mut word = low_u256_word(&BigUint::from_bytes_be(&bytes));
+        if sign == Sign::Minus {
+            twos_complement_negate(&mut word);
         }
+        word
     }
 
     /// Converts a settled non-negative journal balance to the shared persisted domain.
@@ -572,6 +574,19 @@ fn low_u256_word(value: &BigUint) -> [u8; 32] {
     word
 }
 
+fn twos_complement_negate(word: &mut [u8; 32]) {
+    for byte in word.iter_mut() {
+        *byte = !*byte;
+    }
+    for byte in word.iter_mut().rev() {
+        let (next, overflow) = byte.overflowing_add(1);
+        *byte = next;
+        if !overflow {
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,9 +626,9 @@ mod tests {
     }
 
     #[test]
-    fn negative_zero_sender_intermediate_cannot_be_persisted_as_unsigned() {
+    fn negative_zero_sender_intermediate_projects_but_cannot_be_persisted_unsigned() {
         let balance = ExecutionBalance::new(BigInt::from(-1));
-        assert_eq!(balance.low_word(), Err(BalanceConversionError::Negative));
+        assert_eq!(balance.low_word(), [0xff; 32]);
         assert_eq!(
             balance.try_to_persisted(),
             Err(BalanceConversionError::Negative)
