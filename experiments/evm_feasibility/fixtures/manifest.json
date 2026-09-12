@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Synthetic direct EVM/state/trie fixtures; no network replay, wire admission, RocksDB or lifecycle provenance",
+  "environment": {
+    "sender": "00000000000000000000000000000000000000aa",
+    "target": "00000000000000000000000000000000000000bb",
+    "prior_nonce": "1",
+    "period": 1,
+    "gas_limit": 1000000,
+    "timestamp": 0,
+    "difficulty": "0",
+    "value": "0",
+    "rules": "only Cornus varies; all other flags false",
+    "chain_config": "params.TestChainConfig at each pinned revision",
+    "state": "only sender exists unless missing_prior_account; no code/storage; unexpected reads panic"
+  },
+  "sha256": {
+    "public.json": "344a418d99627632524809e75501c2a5f59cf82c215899b1146b044b8123b76f",
+    "local.json": "344a418d99627632524809e75501c2a5f59cf82c215899b1146b044b8123b76f"
+  },
+  "exporter_sha256": "2d67ee174b2e3960c2a8ba5d37eb7ee9930b0ad9593ecc9315286abc3480d9a7"
+}

@@ -1,0 +1,39 @@
+# Bounded execution feasibility
+
+This directory is an isolated experiment, outside the production Rust workspace and
+CMake routing. Keep it on `feat/rust/evm-state-db`; no experimental production branch
+is needed while all changes remain here and in research documentation.
+
+## Phase 1: reproducible synthetic reference fixtures
+
+Run `python3 experiments/evm_feasibility/reference.py` from the repository. Requires
+Go and both pinned EVM revisions in the submodule object database. It exports each
+revision into a disposable directory, adds the exporter, executes with the pinned
+Go module graph, and compares all output bytes and hashes. `--record` explicitly
+refreshes evidence; inspect changes before accepting them. It never edits a source
+submodule or opens a node database. Go dependency downloads may require network access.
+
+The manifest pins both references, exporter checksum, toolchain used to capture,
+and synthetic environment. The exporter is the complete input specification.
+Fixtures cover 16 envelope cases, four state snapshot/flush cases and 13 account/
+slot trie cases. Account leaves include nonce 2^256 and 2^264. Slot pairs use adjacent
+prehashed keys to exercise embedded child nodes and RLP length transitions.
+Persisted Taraxa node bytes are recorded separately from commitment leaves.
+
+The two references give identical bytes for this corpus. This is not historical
+network replay, transaction-wire admission, complete E1–E5 coverage, RocksDB
+compatibility or a production parity claim. The raw-write cases directly exercise
+TransitionState, not DPoS ABI dispatch or nested EVM CALL opcodes. Envelope cases do
+not yet capture full post-state roots. Unexpected backing-state reads panic.
+
+Observed: nonce skipping and successor above U256 work; pre/post Cornus failure
+nonces differ; stale nonce charges full gas cap. Existing-account raw writes survive
+snapshot revert while ordinary writes/logs revert. Transient writes survive revert
+but clear on transaction commit. A newly created account is removed by revert,
+including its raw writes; without revert an otherwise empty new account is deleted
+at flush even when it has dirty storage. These are compatibility observations, not
+permission to fix the reference semantics.
+
+Validation: both pinned exporters executed and a fresh second execution reproduced
+all fixture bytes. No production Rust/C++/storage module changed, so focused fixture
+validation applies; expensive repository differential gates are not invoked.
