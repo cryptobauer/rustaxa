@@ -1,0 +1,335 @@
+{
+  "assessment_date": "2026-09-12",
+  "repository_revision": "922dd662502a0f932c033c7de142737b472af9a1",
+  "evm_revision": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+  "public_evm_ancestor": "28c69ca6a4f9d65e9537f728c43a0f063fa3abc2",
+  "compatibility_requirement": "Preserve existing-network historical and currently valid behavior",
+  "evidence_scope": "Source inspection only; no compilation, execution tests, historical replay, or live-head verification",
+  "network_profiles": {
+    "mainnet": {
+      "path": "libraries/cli/include/cli/config_jsons/mainnet/mainnet_genesis.json",
+      "sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7",
+      "chain_id": 841,
+      "hardforks": {
+        "fix_redelegate_block_num": 3091000,
+        "redelegations": [
+          {
+            "validator": "0x6671df8b597c0A14a9361b4B98F97AF1360e4352",
+            "delegator": "0xaf5a5cd6da86838efac0ea91a712857d6aca53ac",
+            "amount": "0x3e8"
+          }
+        ],
+        "rewards_distribution_frequency": {
+          "5730000": 100
+        },
+        "magnolia_hf": {
+          "block_num": 5730000,
+          "jail_time": 163459
+        },
+        "phalaenopsis_hf_block_num": 6943000,
+        "fix_claim_all_block_num": 7600000,
+        "aspen_hf": {
+          "block_num_part_one": 8118000,
+          "block_num_part_two": 8572000,
+          "max_supply": "0x26C62AD77DC602DAE0000000",
+          "generated_rewards": "0x105674788D280AE305A6EC0"
+        },
+        "ficus_hf": {
+          "block_num": 11616000,
+          "pillar_blocks_interval": 4000,
+          "bridge_contract_address": "0xe126E0BaeAE904b8Cfd619Be1A8667A173b763a1"
+        },
+        "cornus_hf": {
+          "block_num": 15610000,
+          "delegation_locking_period": 163459,
+          "dag_gas_limit": "0x1908B100",
+          "pbft_gas_limit": "0x7d2b7500"
+        },
+        "soleirolia_hf": {
+          "block_num": 17380000,
+          "trx_min_gas_price": "0x3B9ACA00",
+          "trx_max_gas_limit": "0x1E0A6E0"
+        },
+        "cacti_hf": {
+          "block_num": 24350801,
+          "lambda_min": 500,
+          "lambda_max": 1500,
+          "lambda_default": 2000,
+          "lambda_change_interval": 300,
+          "lambda_change": 10,
+          "block_propagation_min": 4000,
+          "block_propagation_max": 17000,
+          "consensus_delay": 400,
+          "delegation_locking_period": 252000,
+          "jail_time": 252000
+        }
+      },
+      "initial_balance_entries": 1343,
+      "initial_validators": 20
+    },
+    "testnet": {
+      "path": "libraries/cli/include/cli/config_jsons/testnet/testnet_genesis.json",
+      "sha256": "c5ae6826c16a7d78daaa7b38ce5ca0d9dccb19732e2ffd9f51279efea12941ae",
+      "chain_id": 842,
+      "hardforks": {
+        "fix_redelegate_block_num": 0,
+        "redelegations": [],
+        "rewards_distribution_frequency": {
+          "0": 100
+        },
+        "magnolia_hf": {
+          "block_num": 0,
+          "jail_time": 163459
+        },
+        "phalaenopsis_hf_block_num": 0,
+        "fix_claim_all_block_num": -1,
+        "aspen_hf": {
+          "block_num_part_one": 0,
+          "block_num_part_two": 0,
+          "max_supply": "0x26C62AD77DC602DAE0000000",
+          "generated_rewards": "0x0"
+        },
+        "ficus_hf": {
+          "block_num": 1000,
+          "pillar_blocks_interval": 1000,
+          "bridge_contract_address": "0xcAF2b453FE8382a4B8110356DF0508f6d71F22BF"
+        },
+        "cornus_hf": {
+          "block_num": 1000,
+          "delegation_locking_period": 5,
+          "dag_gas_limit": "0x1908B100",
+          "pbft_gas_limit": "0x7d2b7500"
+        },
+        "soleirolia_hf": {
+          "block_num": 2358000,
+          "trx_min_gas_price": "0x3B9ACA00",
+          "trx_max_gas_limit": "0x1E0A6E0"
+        },
+        "cacti_hf": {
+          "block_num": 2934000,
+          "lambda_min": 500,
+          "lambda_max": 1500,
+          "lambda_default": 2000,
+          "lambda_change_interval": 300,
+          "lambda_change": 10,
+          "block_propagation_min": 4000,
+          "block_propagation_max": 17000,
+          "consensus_delay": 400,
+          "delegation_locking_period": 500,
+          "jail_time": 252000
+        }
+      },
+      "initial_balance_entries": 3,
+      "initial_validators": 6
+    },
+    "devnet": {
+      "path": "libraries/cli/include/cli/config_jsons/devnet/devnet_genesis.json",
+      "sha256": "1cea802079706b883cd6fab01386bbe1d74cb4e7ae23013c784287d3c4f1699c",
+      "chain_id": 843,
+      "hardforks": {
+        "fix_redelegate_block_num": 0,
+        "rewards_distribution_frequency": {
+          "0": 100
+        },
+        "magnolia_hf": {
+          "block_num": 0,
+          "jail_time": 1000
+        },
+        "phalaenopsis_hf_block_num": 0,
+        "fix_claim_all_block_num": -1,
+        "aspen_hf": {
+          "block_num_part_one": 0,
+          "block_num_part_two": 0,
+          "max_supply": "0x26C62AD77DC602DAE0000000",
+          "generated_rewards": "0x16E59F7481A7EC1F60"
+        },
+        "ficus_hf": {
+          "block_num": 100,
+          "pillar_blocks_interval": 10,
+          "bridge_contract_address": "0xcAF2b453FE8382a4B8110356DF0508f6d71F22BF"
+        },
+        "cornus_hf": {
+          "block_num": 1000,
+          "delegation_locking_period": 5,
+          "dag_gas_limit": "0x1908B100",
+          "pbft_gas_limit": "0x7d2b7500"
+        },
+        "soleirolia_hf": {
+          "block_num": 1000,
+          "trx_min_gas_price": "0x3B9ACA00",
+          "trx_max_gas_limit": "0x1E0A6E0"
+        },
+        "cacti_hf": {
+          "block_num": 0,
+          "lambda_min": 500,
+          "lambda_max": 1500,
+          "lambda_default": 2000,
+          "lambda_change_interval": 100,
+          "lambda_change": 10,
+          "block_propagation_min": 4000,
+          "block_propagation_max": 17000,
+          "consensus_delay": 400,
+          "delegation_locking_period": 10,
+          "jail_time": 2000
+        }
+      },
+      "initial_balance_entries": 3,
+      "initial_validators": 18
+    },
+    "default": {
+      "path": "libraries/cli/include/cli/config_jsons/default/default_genesis.json",
+      "sha256": "9ece2bb7f4d1bf21088de505fbf570dc4f0ce2c1f1226630b4e79b3059a7365f",
+      "chain_id": 844,
+      "hardforks": {
+        "fix_redelegate_block_num": 0,
+        "rewards_distribution_frequency": {
+          "0": 100
+        },
+        "magnolia_hf": {
+          "block_num": 0,
+          "jail_time": 163459
+        },
+        "phalaenopsis_hf_block_num": 0,
+        "fix_claim_all_block_num": -1,
+        "aspen_hf": {
+          "block_num_part_one": 0,
+          "block_num_part_two": 0,
+          "max_supply": "0x26C62AD77DC602DAE0000000",
+          "generated_rewards": "0x0"
+        },
+        "ficus_hf": {
+          "block_num": 20,
+          "pillar_blocks_interval": 10,
+          "bridge_contract_address": "0xcAF2b453FE8382a4B8110356DF0508f6d71F22BF"
+        },
+        "cornus_hf": {
+          "block_num": 100,
+          "delegation_locking_period": 5,
+          "dag_gas_limit": "0x1908B100",
+          "pbft_gas_limit": "0x7d2b7500"
+        },
+        "soleirolia_hf": {
+          "block_num": 0,
+          "trx_min_gas_price": "0x1",
+          "trx_max_gas_limit": "0x1E0A6E0"
+        },
+        "cacti_hf": {
+          "block_num": 0,
+          "lambda_min": 500,
+          "lambda_max": 1500,
+          "lambda_default": 2000,
+          "lambda_change_interval": 10,
+          "lambda_change": 10,
+          "block_propagation_min": 4000,
+          "block_propagation_max": 17000,
+          "consensus_delay": 400,
+          "delegation_locking_period": 10,
+          "jail_time": 252000
+        }
+      },
+      "initial_balance_entries": 3,
+      "initial_validators": 3
+    }
+  },
+  "source_files": {
+    "libraries/cli/include/cli/config_jsons/default/default_genesis.json": {
+      "sha256": "9ece2bb7f4d1bf21088de505fbf570dc4f0ce2c1f1226630b4e79b3059a7365f"
+    },
+    "libraries/cli/include/cli/config_jsons/devnet/devnet_genesis.json": {
+      "sha256": "1cea802079706b883cd6fab01386bbe1d74cb4e7ae23013c784287d3c4f1699c"
+    },
+    "libraries/cli/include/cli/config_jsons/mainnet/mainnet_genesis.json": {
+      "sha256": "7931f2b9b92e018dad154becbf20058d2f97f8ad5d9cc0d4b443da7c72ae3ce7"
+    },
+    "libraries/cli/include/cli/config_jsons/testnet/testnet_genesis.json": {
+      "sha256": "c5ae6826c16a7d78daaa7b38ce5ca0d9dccb19732e2ffd9f51279efea12941ae"
+    },
+    "libraries/config/src/hardfork.cpp": {
+      "sha256": "c903caf09dc1659c500cde45d66a927c4f3933c71bd23c395c921e271f67e714"
+    },
+    "libraries/core_libs/consensus/include/final_chain/state_api.hpp": {
+      "sha256": "dce48d8cb5ff3e9f1636c90ad05d9896c1c0ad649254588e0c1f9aa0dedec7e1"
+    },
+    "rust/crates/rustaxa-consensus/src/concrete_state_projection.rs": {
+      "sha256": "4f8bffdf69b667632af31e285e687bee9e799387fe7454e2d9a172995133bef0"
+    },
+    "rust/crates/rustaxa-consensus/src/final_chain.rs": {
+      "sha256": "13aad84e638e7e72d743aadbbab81d9feb83a09dee15a375ca18e6408967ae04"
+    },
+    "rust/crates/rustaxa-types/src/final_chain.rs": {
+      "sha256": "a641333179caeb7b42fd8b3bfb6b8c5043e3427bd96ac47d7e408a2f20deb334"
+    },
+    "rust/crates/rustaxa-types/src/transaction.rs": {
+      "sha256": "4a61d883f9d6d772f5a793a26dcb8c9249b121c2a65299056fc88b63f0b41b08"
+    },
+    "submodules/taraxa-evm/core/vm/constants.go": {
+      "sha256": "b398eb08c8cb1f6c68f7d75b320ac730483d5c1803631c18f2a5b25785d75c43"
+    },
+    "submodules/taraxa-evm/core/vm/contracts.go": {
+      "sha256": "ac1c557cfb0d579337786a286d9013931efbb9c6007588c57e0515638367784e"
+    },
+    "submodules/taraxa-evm/core/vm/contracts_test.go": {
+      "sha256": "0c81e2f63fdc8410d998f69c865b0d905cfd4e50e2fdecdc6754b7628aef550b"
+    },
+    "submodules/taraxa-evm/core/vm/eips.go": {
+      "sha256": "b00f34a588a9263bfbebd8bdeb039d3da4cea63c4e953caed85b56e5777a568d"
+    },
+    "submodules/taraxa-evm/core/vm/evm.go": {
+      "sha256": "9d63e0f58b3c2b32987f0979b88a30cccd294787eb7f5c8d45cc2ca1cbe5882f"
+    },
+    "submodules/taraxa-evm/core/vm/gas.go": {
+      "sha256": "6f6da8c9c41e28c07d915065899ee69e3c0f58892eafa429da0fdc275daa28de"
+    },
+    "submodules/taraxa-evm/core/vm/gas_table.go": {
+      "sha256": "4b84f0b7d4c802abb0076e5c1168a6aa93646b89627e3bcfbd707530fa827cb2"
+    },
+    "submodules/taraxa-evm/core/vm/instructions.go": {
+      "sha256": "742c7fe25b91ff63d4c1ae8098e1a927c5b3243155386acb46bf736e49f16785"
+    },
+    "submodules/taraxa-evm/core/vm/jump_table.go": {
+      "sha256": "6833fe4c4cb23b0e836f9754efdca1fdbd00f9ac195daa5169785b364afba443"
+    },
+    "submodules/taraxa-evm/core/vm/opcodes.go": {
+      "sha256": "e90d5fc4b97f3b665fdf04fa2e08ed7c7cd8d0559fa419fd9d325db0c0fc22ef"
+    },
+    "submodules/taraxa-evm/go.mod": {
+      "sha256": "eb5938aaef35ceefaa809b633936478d3d648605cf49da68f075a136d7c14dc8"
+    },
+    "submodules/taraxa-evm/taraxa/state/chain_config/chain_config.go": {
+      "sha256": "c3aaf2cb635637a7bdab61b03e4be0101358b0defe75bfc0ded54fa800a45da8"
+    },
+    "submodules/taraxa-evm/taraxa/state/contracts/storage/evm_state_storage_adapter.go": {
+      "sha256": "8aaa74d16aa76a0a0a76463f89635ed3b066b84d5d42e986c8ce13e1f447a691"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_db/account_trie.go": {
+      "sha256": "5fcacff81b96ddfd7a061cee8730bdcf9a0b487dabb8c62a207d91f31e25c28e"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_db/main_trie.go": {
+      "sha256": "701ebd4a98333671f6157ab83d3f6658b8fbd4fbcc761910306751b05a4aefcc"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_dry_runner/dry_runner.go": {
+      "sha256": "abc2b1ace3669007190f901fea2da144bcc00167468d02939b847c7fdac506ed"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_evm/account.go": {
+      "sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_evm/transition_state.go": {
+      "sha256": "2018e491bb14d3c48a6a12774f814789eba733f695c9c52c6971a6b4b14ce5eb"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_transition/state_hardforks.go": {
+      "sha256": "1432c0e39e7ecaee8683c3e9fd28571e97f816e906c3938b0f38fa886c246aae"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_transition/trie_sink.go": {
+      "sha256": "90d3ac9dd49e3e78cdbe5c35ac34d1d8d508324c282ee7af22b23c74909f8aa4"
+    },
+    "tests/CMakeLists.txt": {
+      "sha256": "221ab872e32c882e7bcfe7c3b9e0c6aa39092ec94de73aeed6918ed6cb0ddcab"
+    },
+    "tests/final_chain_test.cpp": {
+      "sha256": "c19cd77ae671eb0c2a859fd4d9c64dd4bf00db2822e5438b6c214c29b1066768"
+    },
+    "tests/state_api_test.cpp": {
+      "sha256": "c4da1601ac019a5c25519439411de97ac4e5d232d0d0401358c190d8963919ba"
+    }
+  }
+}
