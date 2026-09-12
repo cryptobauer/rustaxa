@@ -59,6 +59,9 @@ fn execute(
         gas,
     );
     let mut host = ProbeHost {
+        native_load: false,
+        slots: None,
+        transient: None,
         price: U256::from(1),
         gas: GasParams::new_spec(SpecId::ISTANBUL),
     };

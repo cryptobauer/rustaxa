@@ -221,6 +221,9 @@ func main() {
 	result["native_iterable"] = nativeFixtures()
 	result["opcodes"] = opcodeFixtures()
 	result["creation_frames"] = creationFrames()
+	result["node_history"] = nodeHistory()
+	result["native_calls"] = nativeCalls()
+	result["falcon"] = cryptoFixtures()
 	var envelopes []map[string]any
 	for _, cornus := range []bool{false, true} {
 		for _, c := range []struct {

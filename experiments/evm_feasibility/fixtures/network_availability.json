@@ -1,0 +1,30 @@
+{
+  "observed_utc": "2026-09-12T21:30:25.246190+00:00",
+  "scope": "availability only; no archive acquired or peer messages sent",
+  "results": [
+    {
+      "network": "mainnet",
+      "kind": "rpc",
+      "url": "https://rpc.mainnet.taraxa.io",
+      "error": "<urlopen error [Errno -3] Temporary failure in name resolution>"
+    },
+    {
+      "network": "mainnet",
+      "kind": "snapshot",
+      "url": "https://snapshots.taraxa.io/api?network=mainnet",
+      "error": "<urlopen error timed out>"
+    },
+    {
+      "network": "testnet",
+      "kind": "rpc",
+      "url": "https://rpc.testnet.taraxa.io",
+      "error": "<urlopen error [Errno -3] Temporary failure in name resolution>"
+    },
+    {
+      "network": "testnet",
+      "kind": "snapshot",
+      "url": "https://snapshots.taraxa.io/api?network=testnet",
+      "error": "<urlopen error timed out>"
+    }
+  ]
+}

@@ -90,3 +90,34 @@ The driver rejects unsupported host work, nonzero creation value and opcodes out
 its fixture subset. It uses clone checkpoints and a fixed valid envelope; neither is
 a proposed general executor. CALL/native kernels, storage journals, full gas/fork
 policy, physical persistence and historical replay remain explicit next gates.
+
+## Phase 5: final architecture feasibility evidence
+
+The [final experimental report](../../doc/evm_research/06_native_storage_crypto.md) adds:
+
+- Six actual Go native CALL/STATICCALL cases, compared with the existing Rust FinalChain
+  business kernel during a REVM call yield. The disposable test overlay executes with
+  `python3 experiments/evm_feasibility/native.py`; its own `native.Cargo.lock` pins test
+  dependencies. No production crate or public API is modified.
+- Eight physical-node update/delete/reinsert stages. Rust decodes persisted Taraxa bytes,
+  checks node hashes and independently reconstructs roots for these stages and the
+  original 14 commitment cases. The incremental update writer remains Go.
+- Six executed mixed gas/opcode comparisons, using REVM's instruction tables and overrides.
+- Fifteen deterministic historical Falcon vectors: Rust verifier 0.3.0 matches; 0.4.0
+  rejects the three historical valid signatures. ABI output/gas are checked separately.
+- A bounded official network availability observation. RPC DNS failures and snapshot
+  timeouts prevented archive acquisition; this is environment-specific evidence.
+
+The isolated suite now has 12 tests. The separate native overlay test covers all six cases
+against both references. Run `native.py --clippy` to check its test composition, and
+`rustfmt --edition 2024 --check experiments/evm_feasibility/src/native.rs` for its formatting;
+it is intentionally outside the standalone crate's module graph. Existing production
+Clippy warnings are reported by the overlay; the new native module denies warnings.
+The standalone experiment retains strict `--all-targets -- -D warnings` validation.
+Manifest schema two now hashes all five Go exporters.
+
+Earlier phase entries describe their historical scope. The
+[direction decision](../../doc/evm_research/07_direction_decision.md) closes architecture
+research and recommends interpreter/host integration plus compatible Rust concrete state.
+General execution, incremental persistence, historical replay and operational acceptance
+remain implementation work. The prototypes are not reusable production implementations.

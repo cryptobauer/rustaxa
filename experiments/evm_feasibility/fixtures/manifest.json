@@ -20,16 +20,22 @@
     "state": "only sender exists unless missing_prior_account; no code/storage; unexpected reads panic"
   },
   "additional_inputs": {
+    "node_history": "reference_nodes.go: eight insert/update/delete/reinsert stages; reopen Go writer from prior physical nodes and root each stage; accumulated nodes and tombstones retained",
+    "native_calls": "reference_native.go: six real DPoS setCommission CALL/STATICCALL cases at period1; Magnolia/Cornus, nested-call fix varies; complete five-row legacy validator storage, owner and membership; recorded code, ABI and initial raw bytes",
+    "falcon": "reference_crypto.go: deterministic historical go-fn-dsa v0.2.0 SHAKE256 seeds; three keys/messages times five validity variants; Cacti FA1C ABI execution, gas cap300000 price1",
     "creation_frames": "complete account map in reference_frames.go; sender aa nonce1 balance1000000 calls bb with recorded gas_cap price1 value0, Cornus only; root from enumerated post-EVM accounts before database persistence",
     "opcodes": "codeInput: sender nonce 1 balance 1000000, target/child nonce 1 balance 0 with recorded code; gas cap 100000, price 1, Cornus true, Cacti varies",
     "native_iterable": "complete empty map at prefix 0005; one-byte items a1/b2/c3, ordered insert/remove operations; roots over Keccak(raw keys), empty bytes delete"
   },
   "sha256": {
-    "public.json": "efb971c3d938441bcb3ee9f66092c4b871ead22306d608361e2754f4146c349a",
-    "local.json": "efb971c3d938441bcb3ee9f66092c4b871ead22306d608361e2754f4146c349a"
+    "public.json": "b73ce3ae99ab4a24b7cd272c395c7b41a0750686a0d156cfbd5c15db9b1cb593",
+    "local.json": "b73ce3ae99ab4a24b7cd272c395c7b41a0750686a0d156cfbd5c15db9b1cb593"
   },
   "exporter_sha256": {
-    "reference.go": "117a99812f542cb24cdcfe2ccb98c31789db6cb399d4b9f3816a38cf72199744",
-    "reference_frames.go": "464dc34386f4e54f61bdb6fdd53f653e4c7aea9b278b1b90f40e7655f41f75aa"
+    "reference.go": "4fab24173535d254e6d504c109d1575b66b9897266ebb8326eba7944cc9e4b54",
+    "reference_crypto.go": "12ed6c871bdbf60c568b2a8547bb312a1bd758b477a3b1aa299185ace9eed844",
+    "reference_frames.go": "464dc34386f4e54f61bdb6fdd53f653e4c7aea9b278b1b90f40e7655f41f75aa",
+    "reference_native.go": "27e2cbc001a989a441d8a5fdc6e09b0b89bf501673d5e175e0aa959c56acdbf5",
+    "reference_nodes.go": "04b5eb48fae46f83ec04baad18b0aa4e36f3ee98715e5939ee64e857bf95c756"
   }
 }

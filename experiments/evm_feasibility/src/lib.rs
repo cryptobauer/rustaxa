@@ -2,9 +2,15 @@
 //! Tests compare independently encoded commitments with pinned Go evidence and
 //! exercise REVM interface boundaries. They do not implement a Taraxa backend.
 #[cfg(test)]
+mod crypto;
+#[cfg(test)]
 mod frames;
 #[cfg(test)]
 mod host;
+#[cfg(test)]
+mod nodes;
+#[cfg(test)]
+mod profile;
 
 #[cfg(test)]
 mod tests {
@@ -134,6 +140,9 @@ mod tests {
 
     fn run(code: &[u8], price: U256) -> (Interpreter, InterpreterAction) {
         let mut host = ProbeHost {
+            native_load: false,
+            slots: None,
+            transient: None,
             price,
             gas: GasParams::new_spec(SpecId::ISTANBUL),
         };
