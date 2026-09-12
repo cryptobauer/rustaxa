@@ -7,6 +7,9 @@ roots, receipts, or hashes to accommodate a library.
 This research develops the [modernization proposal](../evm_state_db_rewrite_plan.md). Source-level findings establish
 requirements and architectural constraints; they do not constitute execution parity or a deployment approval.
 
+Start with the [architecture overview](architecture_overview.md) for the DAG/PBFT → FinalChain → execution/state
+flow, current Go ownership, database roles, and what REVM concretely replaces.
+
 ## Research phases
 
 | Phase | Deliverable | Status |

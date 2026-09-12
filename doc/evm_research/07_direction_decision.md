@@ -93,6 +93,11 @@ additional requirements beyond this one method.
 
 ## Database, migration and failure policy
 
+The [architecture overview](architecture_overview.md#data-commitments-and-physical-databases) clarifies the distinction
+between permanent logical data responsibilities and optional physical database separation. The initial compatible
+layout below is a migration baseline; evaluate consolidation before implementing production persistence. This does
+not change the selected REVM integration or authorize a database conversion.
+
 Keep separate application and concrete state databases initially. Their common logical
 period does not provide atomic or durable cross-database publication. Implement the
 prepared-state identity, recovery reconciliation and persistence ordering described in
