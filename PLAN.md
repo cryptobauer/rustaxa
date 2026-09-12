@@ -2,6 +2,10 @@
 
 This is the consolidated plan for progressively replacing C++ internals with Rust while keeping the node buildable, testable, and syncable with upstream.
 
+The remaining EVM/state database modernization is evaluated in the [execution research](doc/evm_research/README.md).
+That assessment preserves existing-network compatibility and current Rust ownership; its proposed experiments and
+migration gates do not activate a new execution backend.
+
 ## Objectives
 
 - Keep upstream C++ sync practical through a pure-C++ validation gate.

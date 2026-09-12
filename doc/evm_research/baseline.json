@@ -250,11 +250,23 @@
     "libraries/core_libs/consensus/include/final_chain/state_api.hpp": {
       "sha256": "dce48d8cb5ff3e9f1636c90ad05d9896c1c0ad649254588e0c1f9aa0dedec7e1"
     },
+    "libraries/core_libs/consensus/src/application/external_evm_state_owner.cpp": {
+      "sha256": "801517926360292d2e06b5b8f47b66a88f55c086ad2999e7b286b0335922fb7c"
+    },
     "rust/crates/rustaxa-consensus/src/concrete_state_projection.rs": {
       "sha256": "4f8bffdf69b667632af31e285e687bee9e799387fe7454e2d9a172995133bef0"
     },
+    "rust/crates/rustaxa-consensus/src/consensus_application_runtime.rs": {
+      "sha256": "f00186e3a82ccf0a4a54e29fcbc7990f925a00c0f879502d66748c001e9875fa"
+    },
     "rust/crates/rustaxa-consensus/src/final_chain.rs": {
       "sha256": "13aad84e638e7e72d743aadbbab81d9feb83a09dee15a375ca18e6408967ae04"
+    },
+    "rust/crates/rustaxa-storage/src/db.rs": {
+      "sha256": "d5e806b76eaa674de5a0e999c46808da2fef46e9a66f74145d4638ee515eb383"
+    },
+    "rust/crates/rustaxa-storage/src/final_chain.rs": {
+      "sha256": "3ac6b612ef59ed19406a2cd3f086b064c3d5796a31ee89b2bc7802e35bef6481"
     },
     "rust/crates/rustaxa-types/src/final_chain.rs": {
       "sha256": "a641333179caeb7b42fd8b3bfb6b8c5043e3427bd96ac47d7e408a2f20deb334"
@@ -301,11 +313,32 @@
     "submodules/taraxa-evm/taraxa/state/contracts/storage/evm_state_storage_adapter.go": {
       "sha256": "8aaa74d16aa76a0a0a76463f89635ed3b066b84d5d42e986c8ce13e1f447a691"
     },
+    "submodules/taraxa-evm/taraxa/state/state_common/index.go": {
+      "sha256": "03fb048f83c039755d42669e80d5144803160fd8152786fab4d83d02e312ac68"
+    },
     "submodules/taraxa-evm/taraxa/state/state_db/account_trie.go": {
       "sha256": "5fcacff81b96ddfd7a061cee8730bdcf9a0b487dabb8c62a207d91f31e25c28e"
     },
+    "submodules/taraxa-evm/taraxa/state/state_db/concrete_state.go": {
+      "sha256": "01c4a8097985d5a6a8c541df743cf3649155824a57c5441fd865dcf98ea59240"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_db/db.go": {
+      "sha256": "e0e2957540aa8686e48c084ca321efa208e908fb293aeeec813ec9f3840af381"
+    },
     "submodules/taraxa-evm/taraxa/state/state_db/main_trie.go": {
       "sha256": "701ebd4a98333671f6157ab83d3f6658b8fbd4fbcc761910306751b05a4aefcc"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_db_rocksdb/concrete_state.go": {
+      "sha256": "ce17c6e86908d5bc71570618e7f077d9bdc24c9008ebcef09cabfbafd14467ae"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_db_rocksdb/db.go": {
+      "sha256": "73960015e99d52bc29a4d6ff165014796869534f8890e3ccb3ac1f904df2c6b2"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_db_rocksdb/latest_state.go": {
+      "sha256": "016ce86dceed9015da167d8c9d2ee18e3565d0c4be3681e34972c802468e5e8e"
+    },
+    "submodules/taraxa-evm/taraxa/state/state_db_rocksdb/misc.go": {
+      "sha256": "298d7a6a5282828e202178c68a3cb97ba1de5b43a65f25cc35245f8cf12493cc"
     },
     "submodules/taraxa-evm/taraxa/state/state_dry_runner/dry_runner.go": {
       "sha256": "abc2b1ace3669007190f901fea2da144bcc00167468d02939b847c7fdac506ed"
@@ -321,6 +354,9 @@
     },
     "submodules/taraxa-evm/taraxa/state/state_transition/trie_sink.go": {
       "sha256": "90d3ac9dd49e3e78cdbe5c35ac34d1d8d508324c282ee7af22b23c74909f8aa4"
+    },
+    "submodules/taraxa-evm/taraxa/trie/hash_encoder.go": {
+      "sha256": "24529c7c9be9ae4bf7c43589ad031c39e83bdb91abb497ed8af5f2e01ea3027d"
     },
     "tests/CMakeLists.txt": {
       "sha256": "221ab872e32c882e7bcfe7c3b9e0c6aa39092ec94de73aeed6918ed6cb0ddcab"

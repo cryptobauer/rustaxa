@@ -9,7 +9,8 @@ This proposal supplements [PLAN.md](../PLAN.md); it does not change its current 
 The follow-up [deep research](evm_research/README.md) refines this proposal. In particular, it establishes additional
 gas-price width constraints, compares REVM framework versus interpreter-level integration, and finds bounded CREATE
 nonce handling in the inspected evmone release. The detailed research takes precedence over broad candidate
-descriptions here; no engine has yet passed execution feasibility tests.
+descriptions here; no engine has yet passed execution feasibility tests. Its completed state assessment also separates
+native semantic validation from canonical raw-byte writing and specifies migration, durability and acceptance gates.
 
 ## Recommendation
 
