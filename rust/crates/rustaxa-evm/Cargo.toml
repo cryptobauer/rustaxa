@@ -1,0 +1,16 @@
+[package]
+name = "rustaxa-evm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rustaxa-types = { path = "../rustaxa-types" }
+num-bigint = "0.4.6"
+
+[dev-dependencies]
+anyhow = "1.0.100"
+ethereum-types = { version = "0.16.0", features = ["rlp"] }
+rustaxa-consensus = { path = "../rustaxa-consensus" }
+rustaxa-storage = { path = "../rustaxa-storage" }
+

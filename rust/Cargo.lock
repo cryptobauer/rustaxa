@@ -1331,6 +1331,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustaxa-evm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ethereum-types",
+ "num-bigint",
+ "rustaxa-consensus",
+ "rustaxa-storage",
+ "rustaxa-types",
+]
+
+[[package]]
 name = "rustaxa-storage"
 version = "0.1.0"
 dependencies = [
