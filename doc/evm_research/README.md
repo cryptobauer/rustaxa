@@ -10,6 +10,9 @@ requirements and architectural constraints; they do not constitute execution par
 Start with the [architecture overview](architecture_overview.md) for the DAG/PBFT → FinalChain → execution/state
 flow, current Go ownership, database roles, and what REVM concretely replaces.
 
+The [implementation plan](08_implementation_plan.md) fixes the existing-layout compatibility constraint, records
+the supplied mainnet snapshot, and assigns implementation slices to agents/models, including a focused Spark helper.
+
 ## Research phases
 
 | Phase | Deliverable | Status |
@@ -74,9 +77,10 @@ as implementation and release acceptance criteria, with explicit evidence limits
 writer, full historical replay, API parity, durable recovery, import/pruning and performance validation remain to be
 implemented and tested. These are not a reason to repeat engine-selection research.
 
-Historical dataset acquisition remains blocked from this environment: the bounded official RPC/snapshot requests
-failed. No provenance-qualified archive or paired checkpoint was acquired. That blocks existing-network cutover
-evidence, not the architecture decision. No network parity, performance or delivery-duration claim is made.
+The official endpoint attempts failed during research. A task-owner-supplied mainnet light snapshot is now available
+locally with both database directories; its [metadata inventory](snapshot_inventory.json) does not yet establish
+paired identity/root or retained historical coverage. The implementation plan starts with qualification of this data.
+Full historical replay remains an acceptance gap. No network parity, performance or delivery-duration claim is made.
 
 ## Evidence labels
 

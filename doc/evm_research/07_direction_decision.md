@@ -93,10 +93,11 @@ additional requirements beyond this one method.
 
 ## Database, migration and failure policy
 
-The [architecture overview](architecture_overview.md#data-commitments-and-physical-databases) clarifies the distinction
-between permanent logical data responsibilities and optional physical database separation. The initial compatible
-layout below is a migration baseline; evaluate consolidation before implementing production persistence. This does
-not change the selected REVM integration or authorize a database conversion.
+The task owner subsequently confirmed existing-network compatibility and preservation of the current general
+layout wherever possible. The [implementation plan](08_implementation_plan.md) therefore defers consolidation;
+a necessary layout exception requires a concrete blocker and task-owner review. The
+[architecture overview](architecture_overview.md#data-commitments-and-physical-databases) distinguishes logical
+responsibilities from physical separation without making a redesign a prerequisite.
 
 Keep separate application and concrete state databases initially. Their common logical
 period does not provide atomic or durable cross-database publication. Implement the
@@ -139,12 +140,12 @@ The original E1–E12 groups are retained as the implementation/release acceptan
 | E11 migration | Paired identity/import/rollback protocol specified; bounded acquisition attempted | Verified database pair, compatible import/reopen, reference rollback and catch-up |
 | E12 operations | Workload dimensions and baseline procedure specified | Measured sustained performance and resources on matching data/hardware, with agreed numerical budgets |
 
-E7/E11 data acquisition is the current external blocker. Official endpoint attempts from
-this environment failed; no historical archive was acquired. Resolve it through a
-reachable archive or verified operator export before making an existing-network delivery
-commitment. Synthetic fixtures permit implementation to begin, but cannot waive that gate.
-Other outstanding rows require the actual backend to test; extending a toy executor to
-pretend to pass operational gates would not reduce that work.
+At research closeout, official endpoint acquisition failed. The task owner has since supplied a mainnet light-node
+snapshot containing both database directories. The [intake inventory and plan](08_implementation_plan.md#snapshot-intake-and-provenance)
+record filesystem evidence only; paired identity/root, producer provenance and retained replay coverage still need
+qualification. This replaces the absence of a local dataset with a bounded qualification task, not a network-parity
+claim. Full historical coverage remains unresolved. Other outstanding rows require the actual backend to test;
+extending a toy executor to pretend to pass operational gates would not reduce that work.
 
 ## Bounded implementation sequence and stop conditions
 

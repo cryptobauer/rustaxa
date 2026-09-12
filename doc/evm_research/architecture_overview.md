@@ -56,10 +56,11 @@ record also includes code size, which is absent from the account commitment enco
 Both application data and execution state remain necessary long term. **Two physical databases are optional.**
 The current `db/` and `state_db/` layout requires coordinated publication/recovery because separate RocksDB writes
 are not one atomic commit. Keeping that layout initially simplifies reference comparison and migration; it is not
-an REVM requirement or a permanent architecture conclusion. Before implementing production persistence, evaluate
-consolidation into one RocksDB instance with separate column families, preserving logical module ownership.
-Cross-column-family atomic batches could simplify publication, but migration, shared resource contention, durability,
-pruning and rollback still need validation. RocksDB documents the underlying
+a REVM requirement or a permanent architecture conclusion. The task owner has selected preservation of the
+existing layout for this implementation; consolidation is deferred. The
+[implementation plan](08_implementation_plan.md) makes this constraint explicit. A later consolidation could use
+cross-column-family atomic batches, but would need separate migration, shared-resource, durability, pruning and
+rollback validation. RocksDB documents the underlying
 [column-family guarantees](https://github.com/facebook/rocksdb/wiki/Column-Families).
 Physical consolidation need not change consensus-visible state roots or adopt Ethereum account encoding.
 

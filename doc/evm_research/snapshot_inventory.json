@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "observed_utc": "2026-09-12T23:36:49.307353+00:00",
+  "local_path": "/tmp/snapshot-litenode",
+  "user_provenance": {
+    "network": "mainnet",
+    "capture_method": "RocksDB snapshot feature, as reported by task owner; exact API and paired capture timing unverified",
+    "chain_context": "Task owner reports network on hold; snapshot mostly precedes hold and excludes the final blocks. Not independently verified."
+  },
+  "inspection_scope": "Filesystem metadata and small text files only; no RocksDB open, database mutation, full content hashing, root or paired-generation verification",
+  "databases": {
+    "db": {
+      "relative_path": "db/db",
+      "regular_file_count": 1100386,
+      "logical_file_bytes": 6855682210,
+      "file_extensions": {
+        "(none)": 7,
+        ".1774910776685504": 1,
+        ".1774910787217527": 1,
+        ".log": 1,
+        ".sst": 1100376
+      },
+      "current_manifest": "MANIFEST-32593043",
+      "options_file": "OPTIONS-32593045",
+      "options_rocksdb_version": "9.10.0",
+      "options_column_families": [
+        "default",
+        "migrations",
+        "genesis",
+        "dag_blocks",
+        "transactions",
+        "status",
+        "pbft_mgr_round_step",
+        "pbft_mgr_status",
+        "cert_voted_block_in_round",
+        "proposed_pbft_blocks",
+        "pbft_head",
+        "latest_round_own_votes",
+        "latest_round_two_t_plus_one_votes",
+        "extra_reward_votes",
+        "proposal_period_levels_map",
+        "final_chain_meta",
+        "final_chain_blk_hash_by_number",
+        "final_chain_blk_number_by_hash",
+        "final_chain_log_blooms_index",
+        "sortition_params_change",
+        "dag_blocks_level",
+        "period_data",
+        "pillar_block",
+        "current_pillar_block_data",
+        "current_pillar_block_own_vote",
+        "system_transaction",
+        "period_system_transactions",
+        "final_chain_blk_by_number",
+        "final_chain_receipt_by_period",
+        "period_lambda",
+        "rounds_count_dynamic_lambda",
+        "block_rewards_stats",
+        "trx_period",
+        "final_chain_receipt_by_trx_hash",
+        "dag_block_period",
+        "pbft_block_period"
+      ],
+      "small_metadata_files": {
+        "CURRENT": {
+          "bytes": 18,
+          "sha256": "d67ac4c21444515e24261cb981fba930915606078e9052a21fec7a8d586b4cae"
+        },
+        "IDENTITY": {
+          "bytes": 36,
+          "sha256": "63cb81374de11551497ef0d699f5357a9958e228b3e002342336cfbd4e38e6fe"
+        },
+        "OPTIONS-32593045": {
+          "bytes": 169390,
+          "sha256": "b62161adf66a6ef8b57334bedee7dafce0d75c164eb66adcb98c8c3fda16c65b"
+        }
+      }
+    },
+    "state_db": {
+      "relative_path": "db/state_db",
+      "regular_file_count": 64,
+      "logical_file_bytes": 2971297964,
+      "file_extensions": {
+        "(none)": 7,
+        ".1774910796631690": 1,
+        ".log": 1,
+        ".sst": 55
+      },
+      "current_manifest": "MANIFEST-997855",
+      "options_file": "OPTIONS-997861",
+      "options_rocksdb_version": "9.10.0",
+      "options_column_families": [
+        "default",
+        "1",
+        "3",
+        "5",
+        "6",
+        "7",
+        "8",
+        "4",
+        "2"
+      ],
+      "small_metadata_files": {
+        "CURRENT": {
+          "bytes": 16,
+          "sha256": "8c0d794b338c7cf4ad381040e48b8c639fff7ac033a962400695f264ecd1e71a"
+        },
+        "IDENTITY": {
+          "bytes": 36,
+          "sha256": "fd43cf4efc5336b49048f04c01ca3b407891217624f3077ea9441a176ce61b9d"
+        },
+        "OPTIONS-997861": {
+          "bytes": 44316,
+          "sha256": "85e035846cb6e8cfa94b0d760ae7a4edeb7ec921f97d4bd6d55d92008873e649"
+        }
+      }
+    }
+  }
+}
