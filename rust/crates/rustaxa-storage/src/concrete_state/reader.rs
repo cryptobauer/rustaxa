@@ -1355,12 +1355,45 @@ mod tests {
             entry.hashed_path == storage_trie_path(total_supply)
                 && entry.value == decode_hex("237465dd4fbad4693966174c")
         }));
+        let minted_tokens = ConcreteStorageKey(keccak256(&[6]));
+        let yield_key = ConcreteStorageKey(keccak256(&[8]));
+        assert_eq!(
+            checkpoints
+                .storage_at(identity, address, minted_tokens)
+                .unwrap(),
+            ConcreteRead::Tombstone
+        );
+        assert_eq!(
+            checkpoints
+                .verify_storage_path_at(identity, address, minted_tokens)
+                .unwrap(),
+            ConcreteStoragePath::NonMember
+        );
+        assert!(
+            !inventory
+                .entries
+                .iter()
+                .any(|entry| entry.hashed_path == storage_trie_path(minted_tokens))
+        );
+        assert_eq!(
+            checkpoints
+                .storage_at(identity, address, yield_key)
+                .unwrap(),
+            ConcreteRead::Present(decode_hex("83016db8"))
+        );
+        assert!(inventory.entries.iter().any(|entry| {
+            entry.hashed_path == storage_trie_path(yield_key)
+                && entry.value == decode_hex("83016db8")
+        }));
         eprintln!(
-            "qualified DPoS live inventory: nodes={}, leaves={}, value_bytes={}, digest={:x}",
+            "qualified DPoS live inventory: nodes={}, leaves={}, value_bytes={}, digest={:x}, minted_path={:x}, total_supply_path={:x}, yield_path={:x}",
             inventory.nodes_visited,
             inventory.entries.len(),
             inventory.value_bytes,
             ethereum_types::H256(inventory_digest),
+            ethereum_types::H256(storage_trie_path(minted_tokens)),
+            ethereum_types::H256(storage_trie_path(total_supply)),
+            ethereum_types::H256(storage_trie_path(yield_key)),
         );
     }
 
