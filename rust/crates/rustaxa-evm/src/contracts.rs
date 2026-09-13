@@ -813,7 +813,9 @@ mod tests {
     fn native_raw_put_rejects_reference_deletion_encoding() {
         assert_eq!(NativeRawValue::new(Vec::new()), Err(NativeRawValueError));
         assert_eq!(
-            NativeRawValue::new(vec![0_u8]).expect("nonempty zero bytes are a value").as_bytes(),
+            NativeRawValue::new(vec![0_u8])
+                .expect("nonempty zero bytes are a value")
+                .as_bytes(),
             &[0_u8]
         );
     }
