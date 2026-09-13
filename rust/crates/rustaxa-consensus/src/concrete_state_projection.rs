@@ -376,13 +376,14 @@ fn append_invocations(stream: &mut RlpStream, invocations: &[FinalChainConcreteI
 /// Derives the catalog hash from sorted `(address,key)` identities exactly as
 /// StateAPI does; values are intentionally excluded from this inventory hash.
 pub fn concrete_storage_catalog_hash(storage: &[FinalChainConcreteStorageProjection]) -> [u8; 32] {
-    let mut stream = RlpStream::new_list(storage.len());
-    for row in storage {
-        stream.begin_list(2);
-        stream.append(&row.contract.as_slice());
-        stream.append(&row.key.as_slice());
-    }
-    concrete_state_bytes_digest(&stream.out())
+    rustaxa_types::codec::rlp::concrete_lifecycle::concrete_storage_slot_catalog_hash(
+        storage.iter().map(
+            |row| rustaxa_types::concrete_lifecycle::ConcreteStorageSlot {
+                address: row.contract,
+                key: row.key,
+            },
+        ),
+    )
 }
 
 fn decode_accounts(rlp: &Rlp<'_>) -> anyhow::Result<Vec<FinalChainConcreteAccountProjection>> {

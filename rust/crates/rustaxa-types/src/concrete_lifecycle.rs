@@ -62,3 +62,15 @@ pub struct FinalChainConcreteStateProvenance {
     pub projection_hash: [u8; 32],
     pub catalog_hash: [u8; 32],
 }
+
+/// One logical slot identity in the existing monotonic native storage catalog.
+///
+/// Values are excluded: the catalog records every tracked `(address, key)` even
+/// after deletion. Persisted catalogs sort lexicographically and contain no
+/// duplicates. Native contract eligibility and monotonic extension are checked
+/// by the caller against the approved projection and prior catalog.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ConcreteStorageSlot {
+    pub address: [u8; 20],
+    pub key: [u8; 32],
+}
