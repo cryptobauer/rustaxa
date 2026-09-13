@@ -340,6 +340,13 @@ fn compare_execution(name: &str, actual: &TransactionExecutionResult, expected: 
         panic!("{name}: Go fixture executed but Rust returned consensus failure")
     };
     let error = expected["execution_error"].as_str().unwrap();
+    if actual.status == CodeExecutionStatus::Failure(CodeExecutionError::Revert) {
+        assert_eq!(
+            rustaxa_evm::revert::dry_run_revert_diagnostic(&actual.output),
+            error.as_bytes(),
+            "{name}: full dry-run revert diagnostic",
+        );
+    }
     assert_eq!(
         actual.status,
         match error {

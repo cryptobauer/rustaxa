@@ -237,3 +237,25 @@ affected-target clippy passed; `make rewrite-validate-fast` passed. The
 Rust-enabled CMake storage and consensus bridge targets built with 12 jobs;
 all four storage tests and the four focused FinalChain/account-query/result
 bridge tests passed. No expensive acceptance campaign was run.
+
+
+## Exact revert-reason bytes
+
+`revert::revert_reason_bytes` follows pinned Go `abi.UnpackRevert` for
+`Error(string)`: full256-bit offset/length bounds, unaligned/zero offsets,
+empty reasons and accepted trailing bytes. It borrows the existing input and
+never allocates from a declared ABI length. `dry_run_revert_diagnostic` adds
+the same `: ` suffix as `DryRunner.Apply` only after successful decoding.
+Reasons remain bytes because Go strings admit invalid UTF-8; RPC JSON string
+normalization is a separate still-open policy. Native contract errors are not
+passed through this ordinary-REVERT helper.
+
+The 17-case dual-pin ABI corpus is byte-identical and reproducible under Python
+`-O`; the existing eight simulation tests now compare the full actual DryRunner
+revert diagnostic as well as typed status and return bytes. Independent review,
+strict affected-target clippy and `make rewrite-validate-fast` passed.
+
+```sh
+python3 -O experiments/evm_feasibility/revert_reference.py
+cargo test --locked --manifest-path rust/Cargo.toml -p rustaxa-evm --test revert_reference --test simulation_reference
+```

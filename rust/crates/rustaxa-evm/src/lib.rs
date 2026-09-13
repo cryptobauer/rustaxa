@@ -21,5 +21,6 @@ pub mod modexp;
 pub mod native;
 pub mod p256;
 pub mod profile;
+pub mod revert;
 pub mod simulation;
 pub mod stateless;

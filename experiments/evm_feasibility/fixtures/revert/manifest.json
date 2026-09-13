@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "scope": "actual abi.UnpackRevert bytes; DryRunner suffix composition; no RPC JSON string normalization",
+  "exporter_sha256": "a04fccfcf32ca0ca00a026c125b1be48dc4b33c8a06ff0e0999b964c3611c0f1",
+  "sha256": {
+    "public": "eebac504d1e42dbcf69c26a268ec9585d21c496b9f3fb3e0ec010bdc213afda3",
+    "local": "eebac504d1e42dbcf69c26a268ec9585d21c496b9f3fb3e0ec010bdc213afda3"
+  }
+}
