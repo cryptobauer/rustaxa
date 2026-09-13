@@ -448,14 +448,10 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
 
     /// Installs runtime code through the ordinary rollback lane.
     ///
-    /// The caller supplies the already verified hash. Code bytes are emitted as
-    /// an immutable sink row only if the containing transaction settles.
-    pub fn set_code(
-        &mut self,
-        address: JournalAddress,
-        code_hash: [u8; 32],
-        code: Vec<u8>,
-    ) -> Result<(), JournalError> {
+    /// Computes the Keccak-256 identity from nonempty code, matching the reference.
+    /// Empty input only ensures account existence and leaves existing code intact.
+    /// Code bytes are emitted as an immutable sink row only on settlement.
+    pub fn set_code(&mut self, address: JournalAddress, code: Vec<u8>) -> Result<(), JournalError> {
         self.ensure_account(address)?;
         if code.is_empty() {
             return Ok(());
@@ -465,7 +461,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
             .accounts
             .get_mut(&address)
             .expect("account was touched");
-        account.code_hash = Some(code_hash);
+        account.code_hash = Some(revm::primitives::keccak256(&code).0);
         account.code_size = code.len() as u64;
         account.code = Some(code);
         account.mod_count = account.mod_count.saturating_add(1);

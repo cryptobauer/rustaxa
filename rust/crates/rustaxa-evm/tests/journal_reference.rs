@@ -36,6 +36,9 @@ struct MemoryState {
     nonce: FinalChainNonce,
     balance: ConcreteAccountBalance,
     storage_root: Option<[u8; 32]>,
+    code_hash: Option<[u8; 32]>,
+    code_size: u64,
+    codes: BTreeMap<[u8; 32], Vec<u8>>,
     storage: BTreeMap<([u8; 20], ConcreteStorageKey), Vec<u8>>,
 }
 
@@ -59,6 +62,9 @@ impl MemoryState {
                 BigUint::default()
             }),
             storage_root: case["exists"].as_bool().unwrap().then_some([0x33; 32]),
+            code_hash: None,
+            code_size: 0,
+            codes: BTreeMap::new(),
             storage,
         }
     }
@@ -66,20 +72,32 @@ impl MemoryState {
     fn apply(&mut self, plan: JournalWritePlan) {
         for write in plan.accounts {
             match write.operation {
-                JournalAccountOperation::Upsert { nonce, balance, .. } => {
+                JournalAccountOperation::Upsert {
+                    nonce,
+                    balance,
+                    code_hash,
+                    code_size,
+                } => {
                     self.exists = true;
                     self.nonce = nonce;
                     self.balance = balance;
+                    self.code_hash = code_hash;
+                    self.code_size = code_size;
                 }
                 JournalAccountOperation::Delete => {
                     self.exists = false;
                     self.nonce = FinalChainNonce::zero();
                     self.balance = ConcreteAccountBalance::default();
                     self.storage_root = None;
+                    self.code_hash = None;
+                    self.code_size = 0;
                     self.storage
                         .retain(|(address, _), _| address != &write.address);
                 }
             }
+        }
+        for write in plan.code {
+            self.codes.insert(write.code_hash, write.code);
         }
         for write in plan.ordinary_storage {
             if write.value == BigUint::default() {
@@ -126,8 +144,8 @@ impl ConcreteStateRead for MemoryState {
                 nonce: self.nonce.clone(),
                 balance: self.balance.clone(),
                 storage_root: self.storage_root,
-                code_hash: None,
-                code_size: 0,
+                code_hash: self.code_hash,
+                code_size: self.code_size,
             },
             physical_rlp: vec![0xc0],
         }))
@@ -145,8 +163,12 @@ impl ConcreteStateRead for MemoryState {
             .map_or(ConcreteRead::Absent, ConcreteRead::Present))
     }
 
-    fn code(&self, _code_hash: [u8; 32]) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
-        Ok(ConcreteRead::Absent)
+    fn code(&self, code_hash: [u8; 32]) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        Ok(self
+            .codes
+            .get(&code_hash)
+            .cloned()
+            .map_or(ConcreteRead::Absent, ConcreteRead::Present))
     }
 }
 
@@ -320,8 +342,23 @@ fn journal_matches_mutator_edge_oracle() {
             nonce: parse_nonce(&before["nonce"]),
             balance: ConcreteAccountBalance::new(parse_biguint(&before["balance"], "balance")),
             storage_root: before["exists"].as_bool().unwrap().then_some([0x66; 32]),
+            code_hash: None,
+            code_size: 0,
+            codes: BTreeMap::new(),
             storage,
         };
+        let code_rows = case["prior_rows"][0].as_object().unwrap();
+        assert!(
+            code_rows.len() <= 1,
+            "mutator fixture needs explicit account code selection"
+        );
+        for (hash, code) in code_rows {
+            let hash: [u8; 32] = parse_hex(hash).try_into().unwrap();
+            let code = parse_hex(code.as_str().unwrap());
+            state.code_hash = Some(hash);
+            state.code_size = code.len() as u64;
+            state.codes.insert(hash, code);
+        }
         let mut journal = ExecutionJournal::new(state.clone());
         match case["case"].as_str().unwrap() {
             "storage-noop-leading-zero" => journal
@@ -338,7 +375,7 @@ fn journal_matches_mutator_edge_oracle() {
                     NativeRawOperation::Put(NativeRawValue::new(vec![0x44]).unwrap()),
                 )
                 .unwrap(),
-            "empty-code-noop" => journal.set_code(address, [0x77; 32], Vec::new()).unwrap(),
+            "empty-code-noop" => journal.set_code(address, Vec::new()).unwrap(),
             "reverted-new" => {
                 let checkpoint = journal.checkpoint();
                 journal
@@ -380,6 +417,16 @@ fn journal_matches_mutator_edge_oracle() {
             assert_eq!(settled.writes, JournalWritePlan::default());
         }
         state.apply(settled.writes);
+        let reached_code = state
+            .code_hash
+            .and_then(|hash| state.codes.get(&hash))
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            reached_code,
+            parse_hex(case["reopened"]["code"].as_str().unwrap())
+        );
+
         let reopened = ExecutionJournal::new(state);
         let expected = &case["reopened"];
         let account = reopened.account(address).unwrap();
@@ -430,6 +477,9 @@ fn journal_matches_reverse_nested_and_nil_root_oracle() {
             storage_root: (before["exists"].as_bool().unwrap()
                 && !case["nil_root"].as_bool().unwrap())
             .then_some([0x88; 32]),
+            code_hash: None,
+            code_size: 0,
+            codes: BTreeMap::new(),
             storage,
         };
         let mut journal = ExecutionJournal::new(state.clone());
@@ -561,4 +611,41 @@ fn parse_nonce(value: &Value) -> FinalChainNonce {
     } else {
         FinalChainNonce::from_bytes(&value.to_bytes_be()).expect("canonical nonce")
     }
+}
+
+#[test]
+fn installed_code_hash_matches_reference_code_row() {
+    let fixtures: Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/journal_mutators_local.json"
+    ))
+    .unwrap();
+    let case = fixtures
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["case"] == "empty-code-noop")
+        .unwrap();
+    let (hash, code) = case["prior_rows"][0]
+        .as_object()
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap();
+    let expected_hash: [u8; 32] = parse_hex(hash).try_into().unwrap();
+    let code = parse_hex(code.as_str().unwrap());
+    let mut state = MemoryState::from_case(&serde_json::json!({"exists": false}));
+    let mut journal = ExecutionJournal::new(state.clone());
+    journal.set_code(ADDRESS, code.clone()).unwrap();
+    let settled = journal.settle_transaction().unwrap();
+    assert_eq!(settled.writes.code.len(), 1);
+    assert_eq!(settled.writes.code[0].code_hash, expected_hash);
+    assert_eq!(settled.writes.code[0].code, code);
+    state.apply(settled.writes);
+    assert!(state.exists);
+    assert_eq!(state.code_hash, Some(expected_hash));
+    assert_eq!(state.code_size, code.len() as u64);
+    assert_eq!(
+        state.code(expected_hash).unwrap(),
+        ConcreteRead::Present(code)
+    );
 }
