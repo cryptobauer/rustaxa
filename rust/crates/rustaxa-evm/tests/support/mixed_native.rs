@@ -17,8 +17,9 @@ use rustaxa_consensus::{
         FinalChainNativeInvocationId, FinalChainNativeInvocationResult,
         FinalChainNativeOrdinaryMutation, FinalChainNativeOutcome, FinalChainNativeRawMutation,
         FinalChainNativeRawOperation, FinalChainNativeRequest, FinalChainNativeRewardsOutcome,
-        FinalChainNativeSession, FinalChainNativeSessionError, FinalChainNativeStateRead,
-        FinalChainNativeStateReadError, FinalChainNativeStatus, FinalChainNativeValue,
+        FinalChainNativeSession, FinalChainNativeSessionError, FinalChainNativeSimulation,
+        FinalChainNativeStateRead, FinalChainNativeStateReadError, FinalChainNativeStatus,
+        FinalChainNativeValue,
     },
 };
 use rustaxa_evm::contracts::{
@@ -30,6 +31,69 @@ use rustaxa_evm::contracts::{
 use rustaxa_types::concrete_state::{ConcreteRead, ConcreteStorageKey};
 
 type RawIdentity = ([u8; 20], ConcreteStorageKey);
+
+/// Test-only adapter owning a disposable historical FinalChain simulation.
+///
+/// Reuses the same domain conversion and journal reader as period execution,
+/// but exposes no terminal rewards, replay-context extraction or publication.
+#[allow(dead_code)] // Shared helper is compiled by period-only fixtures too.
+pub struct SimulationNativeExecutionPort<'a> {
+    simulation: FinalChainNativeSimulation<'a>,
+}
+
+#[allow(dead_code)]
+impl<'a> SimulationNativeExecutionPort<'a> {
+    /// Consumes a fresh historical simulation authenticated by the fixture owner.
+    pub fn new(simulation: FinalChainNativeSimulation<'a>) -> Self {
+        Self { simulation }
+    }
+}
+
+impl NativeExecutionPort for SimulationNativeExecutionPort<'_> {
+    fn prepare(
+        &mut self,
+        invocation: &NativeInvocation,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeGasQuote, NativePortError> {
+        let read = RecordingRead::new(journal, RecordedReads::default());
+        let quote = self
+            .simulation
+            .prepare(&consensus_request(invocation), &read)
+            .map_err(native_port_error)?;
+        Ok(NativeGasQuote {
+            invocation: native_id(quote.invocation),
+            required_gas: quote.required_gas,
+        })
+    }
+
+    fn invoke(
+        &mut self,
+        invocation: &NativeInvocation,
+        quote: NativeGasQuote,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeInvocationResult, NativePortError> {
+        let read = RecordingRead::new(journal, RecordedReads::default());
+        let result = self
+            .simulation
+            .invoke(
+                &consensus_request(invocation),
+                FinalChainNativeGasQuote {
+                    invocation: consensus_id(quote.invocation),
+                    required_gas: quote.required_gas,
+                },
+                &read,
+            )
+            .map_err(native_port_error)?;
+        match result {
+            FinalChainNativeInvocationResult::InsufficientGas { required_gas } => {
+                Ok(NativeInvocationResult::InsufficientGas { required_gas })
+            }
+            FinalChainNativeInvocationResult::Completed(outcome) => {
+                Ok(NativeInvocationResult::Completed(native_outcome(&outcome)?))
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 struct RecordedReads {

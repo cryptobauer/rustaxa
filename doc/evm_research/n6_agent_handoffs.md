@@ -47,3 +47,27 @@ Requested existing Sol worker ran successfully; Astra reviewer approved the
 read-only API and historical error identity. Eight focused reader tests, the
 fast gate and all four required Rust-enabled C++ storage bridge tests passed.
 The authenticated inventory is the worker's next separate slice.
+
+
+## Integrated resumed slices
+
+| Slice | Requested/assigned model; ran? | Result and routing |
+| --- | --- | --- |
+| Historical native session/query | Existing Sol high; yes | `ed38b8d27` integrated as `46eaf2e9e`; 18 focused tests and independent source review passed. No routing failure. |
+| Actual native DryRunner oracle | Existing Sol high; yes | `d8300c934`→`89d0d57c4`, typed-log follow-up `717b94ea9`→`4ccc0078e`; both pins reproduced. No routing failure. |
+| Authenticated storage inventory | Existing Sol high; yes | `46c981560`→`1a3f2db23`, evidence `148de2bb2`→`3eca1c369`; independent review and bounded copied-head reproduction passed. No routing failure. |
+| Multi-validator reward map | Existing Sol high; yes | `c90cd4064`→`c535f4327`; actual Go permutations, focused tests and independent source review passed. No routing failure. |
+| Persisted native API integration | Existing Astra lead; lead worked | Exact six-case Go comparison, two concrete opens and missing-known-row negative test passed; independent reviewer approved. No new model request. |
+| V1 custody pair follow-up | Existing Sol high; startup confirmed | Source mapping completed; native worker implementing existing-kernel port/serializer extension and execution worker producing actual Go oracle. No routing failure. |
+| Jailed cleanup follow-up | Existing Sol high; startup confirmed | Go EndBlock ordering and existing Rust kernel contract settled; implementation underway. No routing failure. |
+| Retained historical snapshot audit | Existing Sol high; existing thread resumed | Checking H-5..H availability separately from semantic reconstruction; no inference of pruning from lite-node provenance alone. |
+
+No new helper slot was established, so Luna remains unlaunched; no Sol/Astra
+helper replaced that assignment. These are execution/routing observations,
+not evidence of billing or account quota consumption.
+
+Integrated closeout for these chunks: fast gate, strict native-simulation clippy,
+four native-simulation/support tests, four storage bridge tests and four focused
+FinalChain/account-query/result bridge tests passed. The master CMake switch
+remained `RUSTAXA_ENABLE:BOOL=ON`. Qualified-copy inventory reproduction passed
+with the exact recorded digest; no original snapshot writes occurred.

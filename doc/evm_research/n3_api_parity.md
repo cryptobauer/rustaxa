@@ -189,3 +189,50 @@ native corpus are separate coupled slices still under implementation.
 Independent source review approved the facade contract. Strict affected-target
 clippy and `make rewrite-validate-fast` passed, including all 24 native-driver
 and eight historical simulation tests. No production route selects this API.
+
+
+## Persisted native DryRunner parity
+
+The actual pinned `state_dry_runner.DryRunner.Apply` corpus now covers six cases
+using a committed StateTransition-generated H=1 trie. Genesis validator stake90
+is below threshold100; a finalized delegation20 raises current eligibility to
+11 votes. Delay1 still reads H=0 and returns zero votes. An ordinary wrapper
+delegates25, queries its new current delegation, then queries delayed votes: it
+returns `[25,0]`, uses94934 gas and emits the exact Delegated log. Repeating the
+call leaves all committed Go observations unchanged. Malformed one/two-word
+queries, a missing validator and nonzero high address bits pin exact errors and
+gas. Both immutable pins produce identical typed-hex-log artifacts.
+
+Rust materializes all78 physical seed rows in a disposable concrete database.
+It independently creates the corresponding H0/H1 semantic DPoS history through
+the public FinalChain constructor and native finalization, then executes every
+case through `simulate_with_native` and the owning historical native wrapper.
+All six cases match exact gas, status/error, return bytes, logs and full-width
+nonce policy, twice across concrete-reader reopen. All default/CF1–CF8 rows are
+unchanged; the finalized native stake remains110.
+
+The fixture's `CompleteSeedReader` has absence authority only because the Go
+export contains its complete, unpruned creation history. An expected physical
+prefix that disappears stays `HistoryUnavailable`; an unlisted missing row
+becomes absent only after an authenticated logical nonmembership proof. The
+negative fixture deletes all versions of a known slot and verifies failure after
+reopen. This adapter is test-only and cannot establish equivalent authority for
+the mainnet light-node copy. No imported checkpoint or production route is added.
+
+Independent source review approved this bounded composition and absence boundary.
+Reproduction commands:
+
+```sh
+python3 -O experiments/evm_feasibility/native_simulation_reference.py
+cargo test --locked --manifest-path rust/Cargo.toml -p rustaxa-evm --test native_simulation_reference
+```
+
+This closes the bounded staged-native/current-query/delayed-query simulation
+comparison. Full native method coverage, complete RPC defaults/error policy,
+traces and qualified existing-network bootstrap remain open.
+
+Integrated validation: all four native simulation/support tests and strict
+affected-target clippy passed; `make rewrite-validate-fast` passed. The
+Rust-enabled CMake storage and consensus bridge targets built with 12 jobs;
+all four storage tests and the four focused FinalChain/account-query/result
+bridge tests passed. No expensive acceptance campaign was run.
