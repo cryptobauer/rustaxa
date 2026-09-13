@@ -1,10 +1,15 @@
 //! Direct driver comparison against the pinned two-period Go S4 oracle.
 //!
 //! This test applies each journal plan synchronously to a complete tiny state
-//! and reopens period two from those logical rows. It compares execution and
-//! mutation facts only; physical trie roots belong to the writer composition.
+//! and continues period two from those same in-memory logical rows. It compares
+//! execution and complete logical mutation key sets only; serialization,
+//! generation identity and physical trie roots belong to the writer composition.
 
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 
 use num_bigint::BigUint;
 use rustaxa_evm::{
@@ -170,10 +175,46 @@ impl TinyState {
             );
         }
     }
+
+    fn assert_complete_keys(&self, expected_accounts: &[Value]) {
+        let expected_account_keys: BTreeSet<_> = expected_accounts
+            .iter()
+            .map(|account| address(account["address"].as_str().unwrap()))
+            .collect();
+        let expected_storage_keys: BTreeSet<_> = expected_accounts
+            .iter()
+            .filter(|account| account["slot_zero_present"].as_bool().unwrap())
+            .map(|account| {
+                (
+                    address(account["address"].as_str().unwrap()),
+                    ConcreteStorageKey([0_u8; 32]),
+                )
+            })
+            .collect();
+        let expected_code_keys: BTreeSet<_> = expected_accounts
+            .iter()
+            .filter_map(|account| optional_hash(&account["code_hash"]))
+            .collect();
+        let rows = self.rows.borrow();
+        assert_eq!(
+            rows.accounts.keys().copied().collect::<BTreeSet<_>>(),
+            expected_account_keys
+        );
+        assert_eq!(
+            rows.storage.keys().copied().collect::<BTreeSet<_>>(),
+            expected_storage_keys
+        );
+        assert_eq!(
+            rows.code.keys().copied().collect::<BTreeSet<_>>(),
+            expected_code_keys
+        );
+    }
 }
 
 impl ConcreteStateRead for TinyState {
     fn identity(&self) -> ConcreteStateIdentity {
+        // This test adapter has no persisted generation. Its fixed root is a
+        // trait placeholder and is never compared with the oracle's trie roots.
         ConcreteStateIdentity {
             period: self.period,
             state_root: [0_u8; 32],
@@ -242,7 +283,7 @@ impl NativeAddressClassifier for NoNative {
 }
 
 #[test]
-fn signed_transfer_create_and_reopened_call_match_go_results_and_mutations() {
+fn signed_transfer_create_and_logical_continuation_call_match_go_results_and_mutations() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../../experiments/evm_feasibility/fixtures/s4_public.json"
     ))
@@ -317,9 +358,11 @@ fn signed_transfer_create_and_reopened_call_match_go_results_and_mutations() {
             let settled = journal.settle_transaction().unwrap();
             period_state.apply(settled.writes);
         }
-        for expected in period["accounts"].as_array().unwrap() {
+        let expected_accounts = period["accounts"].as_array().unwrap();
+        for expected in expected_accounts {
             period_state.assert_account(expected);
         }
+        period_state.assert_complete_keys(expected_accounts);
     }
 }
 
