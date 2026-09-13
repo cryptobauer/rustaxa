@@ -42,6 +42,8 @@ pub enum JournalError {
     Balance(BalanceConversionError),
     /// Refund arithmetic exceeded its unsigned domain.
     RefundOverflow,
+    /// The reference rejects replacing a nonce with a smaller value.
+    NonceDecrease,
     /// Native ordinary output was not based on the current journal state.
     NativeExpectation {
         /// Account whose expected state was stale.
@@ -90,7 +92,7 @@ pub enum JournalAccountOperation {
         /// Exact reference code size.
         code_size: u64,
     },
-    /// Remove an empty account created by this transaction.
+    /// Remove a modified EIP-161-empty account.
     Delete,
 }
 
@@ -165,10 +167,11 @@ pub struct SettledTransaction {
 #[derive(Clone, Debug)]
 struct JournalAccount {
     exists: bool,
-    created: bool,
-    dirty: bool,
+    mod_count: u32,
+    times_touched: u32,
     nonce: FinalChainNonce,
     balance: ExecutionBalance,
+    storage_root: Option<[u8; 32]>,
     code_hash: Option<[u8; 32]>,
     code_size: u64,
     code: Option<Vec<u8>>,
@@ -322,23 +325,30 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
 
     /// Creates/touches an account through the ordinary rollback lane.
     pub fn touch_account(&mut self, address: JournalAddress) -> Result<(), JournalError> {
-        let previous = self.load_account(address)?;
-        if previous.exists {
+        self.ensure_account(address)?;
+        let current = self.accounts.get(&address).expect("account was ensured");
+        if !current.empty() {
             return Ok(());
+        }
+        let mut undo_account = current.clone();
+        if address == ripemd_address() {
+            // The pinned Go account carries this historical dirty increment
+            // outside the touch undo callback.
+            undo_account.mod_count = undo_account.mod_count.saturating_add(1);
         }
         self.undo.push(Undo::Account {
             address,
-            previous: self.accounts.get(&address).cloned(),
+            previous: Some(undo_account),
         });
-        self.accounts.insert(
-            address,
-            JournalAccount {
-                exists: true,
-                created: true,
-                dirty: true,
-                ..previous
-            },
-        );
+        let account = self
+            .accounts
+            .get_mut(&address)
+            .expect("account was ensured");
+        account.times_touched = account.times_touched.saturating_add(1);
+        account.mod_count = account.mod_count.saturating_add(1);
+        if address == ripemd_address() {
+            account.mod_count = account.mod_count.saturating_add(1);
+        }
         Ok(())
     }
 
@@ -348,7 +358,16 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         address: JournalAddress,
         nonce: FinalChainNonce,
     ) -> Result<(), JournalError> {
-        self.touch_account(address)?;
+        self.ensure_account(address)?;
+        if self
+            .accounts
+            .get(&address)
+            .expect("account was ensured")
+            .nonce
+            > nonce
+        {
+            return Err(JournalError::NonceDecrease);
+        }
         let previous = self.accounts.get(&address).cloned();
         self.undo.push(Undo::Account { address, previous });
         let account = self
@@ -356,7 +375,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
             .get_mut(&address)
             .expect("account was touched");
         account.nonce = nonce;
-        account.dirty = true;
+        account.mod_count = account.mod_count.saturating_add(1);
         Ok(())
     }
 
@@ -366,7 +385,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         address: JournalAddress,
         balance: ExecutionBalance,
     ) -> Result<(), JournalError> {
-        self.touch_account(address)?;
+        self.ensure_account(address)?;
         let previous = self.accounts.get(&address).cloned();
         self.undo.push(Undo::Account { address, previous });
         let account = self
@@ -374,7 +393,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
             .get_mut(&address)
             .expect("account was touched");
         account.balance = balance;
-        account.dirty = true;
+        account.mod_count = account.mod_count.saturating_add(1);
         Ok(())
     }
 
@@ -388,7 +407,10 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         code_hash: [u8; 32],
         code: Vec<u8>,
     ) -> Result<(), JournalError> {
-        self.touch_account(address)?;
+        self.ensure_account(address)?;
+        if code.is_empty() {
+            return Ok(());
+        }
         let previous = self.accounts.get(&address).cloned();
         self.undo.push(Undo::Account { address, previous });
         let account = self
@@ -398,21 +420,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         account.code_hash = Some(code_hash);
         account.code_size = code.len() as u64;
         account.code = Some(code);
-        account.dirty = true;
-        Ok(())
-    }
-
-    /// Deletes an account through the ordinary rollback lane.
-    pub fn delete_account(&mut self, address: JournalAddress) -> Result<(), JournalError> {
-        let current = self.load_account(address)?;
-        if !current.exists {
-            return Ok(());
-        }
-        let previous = self.accounts.get(&address).cloned();
-        self.undo.push(Undo::Account { address, previous });
-        let account = self.accounts.get_mut(&address).expect("account was loaded");
-        account.exists = false;
-        account.dirty = true;
+        account.mod_count = account.mod_count.saturating_add(1);
         Ok(())
     }
 
@@ -494,7 +502,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         if let Some(cell) = self.ordinary.get(&(address, key)) {
             return Ok((cell.original.clone(), cell.current.clone()));
         }
-        let value = read_storage_integer(self.reader.storage(address, key)?);
+        let value = self.committed_ordinary_value(address, key)?;
         Ok((value.clone(), value))
     }
 
@@ -505,13 +513,13 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         key: ConcreteStorageKey,
         value: BigUint,
     ) -> Result<(), JournalError> {
-        self.touch_account(address)?;
+        self.ensure_account(address)?;
         let map_key = (address, key);
         let previous = self.ordinary.get(&map_key).cloned();
         let mut cell = match previous.clone() {
             Some(cell) => cell,
             None => {
-                let original = read_storage_integer(self.reader.storage(address, key)?);
+                let original = self.committed_ordinary_value(address, key)?;
                 StorageCell {
                     original: original.clone(),
                     current: original,
@@ -519,6 +527,19 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
                 }
             }
         };
+        if cell.current == value {
+            return Ok(());
+        }
+        let account_previous = self.accounts.get(&address).cloned();
+        self.undo.push(Undo::Account {
+            address,
+            previous: account_previous,
+        });
+        let account = self
+            .accounts
+            .get_mut(&address)
+            .expect("account was ensured");
+        account.mod_count = account.mod_count.saturating_add(1);
         self.undo.push(Undo::Storage {
             address,
             key,
@@ -557,8 +578,13 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         key: ConcreteStorageKey,
         operation: NativeRawOperation,
     ) -> Result<(), JournalError> {
-        self.touch_account(address)?;
+        self.ensure_account(address)?;
         self.raw.insert((address, key), operation);
+        let account = self
+            .accounts
+            .get_mut(&address)
+            .expect("account was ensured");
+        account.mod_count = account.mod_count.saturating_add(1);
         Ok(())
     }
 
@@ -610,7 +636,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
 
     /// Settles one transaction and resets transaction-local facts.
     ///
-    /// Empty accounts created in this transaction are deleted and contribute no
+    /// Modified EIP-161-empty accounts are deleted and contribute no
     /// storage writes. Ordinary values are emitted before raw values. Negative
     /// balances fail explicitly at this unsupported persistence boundary.
     pub fn settle_transaction(&mut self) -> Result<SettledTransaction, JournalError> {
@@ -621,13 +647,16 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         let mut writes = JournalWritePlan::default();
         let mut discarded = Vec::new();
         for (address, account) in &self.accounts {
-            if !account.exists || (account.created && account.empty()) {
+            if !account.exists {
+                continue;
+            }
+            if account.mod_count != 0 && account.empty() {
                 discarded.push(*address);
                 writes.accounts.push(JournalAccountWrite {
                     address: *address,
                     operation: JournalAccountOperation::Delete,
                 });
-            } else if account.dirty {
+            } else if account.mod_count != 0 && account.mod_count != account.times_touched {
                 writes.accounts.push(JournalAccountWrite {
                     address: *address,
                     operation: JournalAccountOperation::Upsert {
@@ -714,6 +743,48 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         Ok(account)
     }
 
+    fn ensure_account(&mut self, address: JournalAddress) -> Result<(), JournalError> {
+        let current = self.load_account(address)?;
+        if current.exists {
+            return Ok(());
+        }
+        let previous = self.accounts.get(&address).cloned();
+        self.undo.push(Undo::Account { address, previous });
+        self.accounts.insert(
+            address,
+            JournalAccount {
+                exists: true,
+                mod_count: 1,
+                times_touched: 0,
+                nonce: FinalChainNonce::zero(),
+                balance: ExecutionBalance::default(),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+                code: None,
+            },
+        );
+        Ok(())
+    }
+
+    fn committed_ordinary_value(
+        &self,
+        address: JournalAddress,
+        key: ConcreteStorageKey,
+    ) -> Result<BigUint, JournalError> {
+        let storage_root = match self.accounts.get(&address) {
+            Some(account) => account.storage_root,
+            None => match self.reader.account(address)? {
+                ConcreteRead::Present(record) => record.account.storage_root,
+                ConcreteRead::Absent | ConcreteRead::Tombstone => None,
+            },
+        };
+        if storage_root.is_none() {
+            return Ok(BigUint::default());
+        }
+        Ok(read_storage_integer(self.reader.storage(address, key)?))
+    }
+
     fn current_account(
         &self,
         address: JournalAddress,
@@ -757,20 +828,22 @@ fn read_account(
     match read {
         ConcreteRead::Present(record) => JournalAccount {
             exists: true,
-            created: false,
-            dirty: false,
+            mod_count: 0,
+            times_touched: 0,
             nonce: record.account.nonce,
             balance: ExecutionBalance::from_persisted(&record.account.balance),
+            storage_root: record.account.storage_root,
             code_hash: record.account.code_hash,
             code_size: record.account.code_size,
             code: None,
         },
         ConcreteRead::Absent | ConcreteRead::Tombstone => JournalAccount {
             exists: false,
-            created: false,
-            dirty: false,
+            mod_count: 0,
+            times_touched: 0,
             nonce: FinalChainNonce::zero(),
             balance: ExecutionBalance::default(),
+            storage_root: None,
             code_hash: None,
             code_size: 0,
             code: None,
@@ -783,4 +856,10 @@ fn read_storage_integer(read: ConcreteRead<Vec<u8>>) -> BigUint {
         ConcreteRead::Present(bytes) => BigUint::from_bytes_be(&bytes),
         ConcreteRead::Absent | ConcreteRead::Tombstone => BigUint::default(),
     }
+}
+
+fn ripemd_address() -> JournalAddress {
+    let mut address = [0_u8; 20];
+    address[19] = 3;
+    address
 }
