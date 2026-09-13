@@ -597,6 +597,55 @@ func runJailedValidatorCleanupWitness() map[string]any {
 			"seed_scope":  "the list and jail-block rows are produced by an actual successful commitDoubleVotingProof transaction; every cleanup observation invokes the actual StateTransition.EndBlock path",
 		},
 		"decreasing_jail_duration_scheduler": runDecreasingJailDurationSchedulerWitness(),
+		"reopened_scheduler":                 runReopenedCleanupSchedulerWitness(),
+	}
+}
+
+func runReopenedCleanupSchedulerWitness() map[string]any {
+	validator := testSender()
+	cfg := jailedRewardsConfig(validator)
+	latest := newMemoryLatest()
+	transition := newStateTransition(latest, &cfg)
+	transition.BeginBlock(&vm.BlockInfo{Author: currentMissingAuthor, GasLimit: blockGas, Difficulty: new(big.Int)})
+	spec := transactionSpec{Name: "commit-double-voting-proof", Nonce: 0, GasPrice: 1, Gas: transactionGas, To: &currentSlashing, Input: currentDoubleVotingProofInput()}
+	signed := signTransaction(spec, validator, testPrivateKey)
+	tx := transactionFromSigned(spec, signed, validator)
+	result := transition.ExecuteTransaction(&tx)
+	if result.ConsensusErr != "" || result.ExecutionErr != "" {
+		panic(fmt.Sprintf("reopen double-voting proof failed: consensus=%q execution=%q", result.ConsensusErr, result.ExecutionErr))
+	}
+	transition.EndBlock()
+	transition.Commit()
+	periodTwo := runCurrentCleanupEndBlock(transition, latest, 2, validator)
+	transition.Close()
+
+	// StateAPI.Init and DiscardConcreteExecution both construct a fresh
+	// StateTransition. Reconstructing over the exact committed period-2 reader
+	// therefore exercises the same zero-valued Contract.nextCleanUpBlock rule
+	// without serializing or injecting the private timer.
+	reopened := newStateTransition(latest, &cfg)
+	periodThree := runCurrentCleanupEndBlock(reopened, latest, 3, validator)
+	periodFour := runCurrentCleanupEndBlock(reopened, latest, 4, validator)
+	reopened.Close()
+	periodTwoWrites := periodTwo["ordered_raw_writes"].([]currentRawWrite)
+	periodThreeWrites := periodThree["ordered_raw_writes"].([]currentRawWrite)
+	periodFourWrites := periodFour["ordered_raw_writes"].([]currentRawWrite)
+	if len(periodTwoWrites) != 1 || len(periodThreeWrites) != 1 || len(periodFourWrites) != 0 {
+		panic(fmt.Sprintf("reopened cleanup scheduler mismatch: period2=%#v period3=%#v period4=%#v", periodTwoWrites, periodThreeWrites, periodFourWrites))
+	}
+	if periodTwoWrites[0].Value != periodThreeWrites[0].Value {
+		panic(fmt.Sprintf("reopened cleanup changed all-future list: period2=%#v period3=%#v", periodTwoWrites, periodThreeWrites))
+	}
+	return map[string]any{
+		"period_2_live_cleanup": periodTwo,
+		"period_3_after_reopen": periodThree,
+		"period_4_live_cleanup": periodFour,
+		"contract": map[string]any{
+			"go_sources": []string{"taraxa/state/api.go:API.Init/API.DiscardConcreteExecution", "taraxa/state/state_transition/state_transition.go:StateTransition.Init", "taraxa/state/contracts/slashing/precompiled/slashing_contract.go:Contract.CleanupJailedValidators"},
+			"reset":      "closing the period-2 transition and constructing a new StateTransition over the same committed state resets nextCleanUpBlock to zero, exactly as StateAPI initialization and verified discard/reopen construction do",
+			"observed":   "the long-lived transition caches period 5 at period 2; the reopened transition rewrites the unchanged list at period 3 and caches period 5 again, then skips period 4",
+			"consensus":  "the reset is process-local lifecycle state and is absent from the period-2 descriptor, state root, account rows, and storage rows",
+		},
 	}
 }
 

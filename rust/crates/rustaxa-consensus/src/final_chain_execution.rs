@@ -894,6 +894,10 @@ pub struct FinalChainExecutionSession {
     external_evm_publication_plan: Option<FinalChainExternalEvmPublicationPlan>,
     external_evm_state_commit_intent: Option<FinalChainExternalEvmStateCommitIntent>,
     external_evm_commit_decision: Option<FinalChainExternalEvmCommitDecision>,
+    prepared_reward_scheduler_successor:
+        Option<crate::final_chain::reward_scheduler::FinalChainPreparedRewardSchedulerSuccessor>,
+    reward_scheduler_publication_binding:
+        Option<crate::final_chain::reward_scheduler::FinalChainRewardSchedulerPublicationBinding>,
     error_code: String,
 }
 
@@ -1823,15 +1827,19 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit_with_nati
     if let Some(context) = native_context {
         context.validate_binding(evm_request.request_id, &projection)?;
     }
-    let (dpos_snapshot_rlp, account_snapshot_rlp) = final_chain.external_evm_concrete_projection(
-        session.block_number,
-        evm_request.block_author,
-        &evm_request.transactions,
-        &projection,
-        &prepared_rewards_stats_plan,
-        &reported_total_reward,
-        native_context,
-    )?;
+    let (dpos_snapshot_rlp, account_snapshot_rlp, scheduler_successor) = final_chain
+        .external_evm_concrete_projection(
+            evm_request.request_id,
+            state_api_epoch,
+            session.block_number,
+            evm_request.block_author,
+            &evm_request.transactions,
+            &projection,
+            &prepared_rewards_stats_plan,
+            &reported_total_reward,
+            native_context,
+        )?;
+    session.prepared_reward_scheduler_successor = Some(scheduler_successor);
     let concrete_provenance_rlp =
         encode_concrete_state_provenance(&FinalChainConcreteStateProvenance {
             identity: projection.identity,
@@ -2235,7 +2243,23 @@ pub fn final_chain_execution_session_publish_external_evm_publication(
         ));
     };
 
-    let report = final_chain.publish_external_evm_publication(publication_plan, decision)?;
+    let scheduler_binding = session.reward_scheduler_publication_binding;
+    let scheduler_required = session
+        .external_evm_state_commit_intent
+        .as_ref()
+        .is_some_and(|intent| intent.state_api_epoch != 0);
+    if scheduler_required && scheduler_binding.is_none() {
+        anyhow::bail!("FINAL_CHAIN_REWARD_SCHEDULER_PUBLICATION_BINDING_MISSING");
+    }
+    let report = if let Some(binding) = scheduler_binding {
+        final_chain.publish_external_evm_publication_with_reward_scheduler(
+            publication_plan,
+            decision,
+            binding,
+        )?
+    } else {
+        final_chain.publish_external_evm_publication(publication_plan, decision)?
+    };
     match report.status {
         FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
         | FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED => {
@@ -2317,14 +2341,38 @@ pub fn final_chain_execution_session_persist_external_evm_pending_publication(
             session.error_code.clone(),
         ));
     };
-    let report = final_chain.write_external_evm_pending_publication_marker(
-        external_evm_pending_publication_marker(
-            publication_plan,
-            intent,
-            commit_plan.post_transaction_state_root,
-            commit_plan.post_rewards_state_root,
-        ),
-    )?;
+    let pending_marker = external_evm_pending_publication_marker(
+        publication_plan,
+        intent.clone(),
+        commit_plan.post_transaction_state_root,
+        commit_plan.post_rewards_state_root,
+    );
+    let report = if intent.state_api_epoch != 0 {
+        let prepared = session
+            .prepared_reward_scheduler_successor
+            .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_REWARD_SCHEDULER_SUCCESSOR_MISSING"))?;
+        let marker = decode_concrete_execution_marker(&intent.concrete_marker_rlp)
+            .context("FINAL_CHAIN_REWARD_SCHEDULER_MARKER_INVALID")?;
+        let binding =
+            crate::final_chain::reward_scheduler::FinalChainRewardSchedulerPublicationBinding {
+                request_id: intent.request_id,
+                expected_parent: intent.prior_state.period,
+                period: intent.period,
+                state_api_epoch: intent.state_api_epoch,
+                concrete_database_id: marker.identity.database_id,
+                concrete_generation: marker.generation,
+                concrete_projection_hash: intent.concrete_projection_hash,
+                publication_plan_id: intent.plan_id,
+            };
+        session.reward_scheduler_publication_binding = Some(binding);
+        final_chain.arm_reward_scheduler_and_write_pending_publication(
+            prepared,
+            binding,
+            pending_marker,
+        )?
+    } else {
+        final_chain.write_external_evm_pending_publication_marker(pending_marker)?
+    };
     if report.status == FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED && report.error_code.is_empty() {
         session.error_code.clear();
     } else {
@@ -2687,6 +2735,15 @@ fn discard_concrete_after_failure<E: FinalChainExecutionLeaf>(
             discard.error_code
         );
     }
+    if let Err(reset_error) = final_chain.reset_reward_scheduler_after_verified_reopen(
+        discard.previous_state_api_epoch,
+        discard.state_api_epoch,
+        discard.prior_state.period,
+    ) {
+        return anyhow::anyhow!(
+            "{cause:#}; FINAL_CHAIN_REWARD_SCHEDULER_DISCARD_RESET_FAILED: {reset_error:#}"
+        );
+    }
     if let Err(clear_error) = final_chain.clear_external_evm_pending_publication_marker() {
         return anyhow::anyhow!(
             "{cause:#}; FINAL_CHAIN_CONCRETE_PENDING_PUBLICATION_CLEAR_AFTER_DISCARD_FAILED: {clear_error:#}"
@@ -2912,6 +2969,11 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
                 "FINAL_CHAIN_CONCRETE_RECOVERY_ORPHAN_DISCARD_MISMATCH: {}",
                 discarded.error_code
             );
+            final_chain.reset_reward_scheduler_after_verified_reopen(
+                discarded.previous_state_api_epoch,
+                discarded.state_api_epoch,
+                discarded.prior_state.period,
+            )?;
             let reopened = load()?;
             validate_reopened_state_api_epoch(&discarded, &reopened)?;
             ensure!(
@@ -2972,6 +3034,11 @@ pub fn recover_final_chain_application_state<E: FinalChainExecutionLeaf>(
         "FINAL_CHAIN_CONCRETE_RECOVERY_DISCARD_MISMATCH: {}",
         discarded.error_code
     );
+    final_chain.reset_reward_scheduler_after_verified_reopen(
+        discarded.previous_state_api_epoch,
+        discarded.state_api_epoch,
+        discarded.prior_state.period,
+    )?;
     let reopened = load()?;
     validate_reopened_state_api_epoch(&discarded, &reopened)?;
     ensure!(
@@ -3370,6 +3437,8 @@ impl FinalChainExecutionSession {
                 external_evm_publication_plan: None,
                 external_evm_state_commit_intent: None,
                 external_evm_commit_decision: None,
+                prepared_reward_scheduler_successor: None,
+                reward_scheduler_publication_binding: None,
                 error_code: String::new(),
             };
         }
@@ -3406,6 +3475,8 @@ impl FinalChainExecutionSession {
             external_evm_publication_plan: None,
             external_evm_state_commit_intent: None,
             external_evm_commit_decision: None,
+            prepared_reward_scheduler_successor: None,
+            reward_scheduler_publication_binding: None,
             error_code: String::new(),
         }
     }
@@ -3431,6 +3502,8 @@ impl FinalChainExecutionSession {
             external_evm_publication_plan: None,
             external_evm_state_commit_intent: None,
             external_evm_commit_decision: None,
+            prepared_reward_scheduler_successor: None,
+            reward_scheduler_publication_binding: None,
             error_code,
         }
     }

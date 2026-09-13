@@ -86,9 +86,14 @@ mod mixed_genesis_tests;
 
 mod native_admission;
 pub mod native_session;
+pub(crate) mod reward_scheduler;
 use native_session::context_replay::{
     validate_native_context_final_storage, validate_native_context_reward_accounts,
     validate_native_context_transaction_storage,
+};
+use reward_scheduler::{
+    FinalChainPreparedRewardSchedulerSuccessor, FinalChainRewardSchedulerPublicationBinding,
+    FinalChainRewardSchedulerRuntime,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1370,6 +1375,9 @@ pub struct FinalChain {
     /// and replaced only after a finalized block and its rewards-cache mutation
     /// have committed successfully.
     rewards_stats_runtime: Mutex<FinalChainRewardsStatsRuntimeState>,
+    /// Process-local Go-compatible slashing cleanup scheduler. Its timer is
+    /// never serialized and advances only with its exact durable publication.
+    reward_scheduler_runtime: Mutex<FinalChainRewardSchedulerRuntime>,
     /// Account snapshots keyed by finalized block number for proposal-period
     /// account reads. Missing accounts remain absent from each snapshot.
     account_snapshots: Mutex<HashMap<FinalChainBlockNumber, HashMap<[u8; 20], Account>>>,
@@ -2009,6 +2017,9 @@ impl FinalChain {
                 generation: 0,
                 runtime: rewards_stats_runtime,
             }),
+            reward_scheduler_runtime: Mutex::new(FinalChainRewardSchedulerRuntime::new(
+                rewards_stats_runtime_head,
+            )),
             account_snapshots: Mutex::new(HashMap::from([(
                 FinalChainBlockNumber::GENESIS,
                 genesis_accounts.clone(),
@@ -3357,6 +3368,61 @@ impl FinalChain {
         })
     }
 
+    /// Arms the process-local successor and writes its recovery marker under
+    /// one scheduler admission lock. A marker-write error retains the armed
+    /// candidate for exact same-process classification or retry.
+    pub(crate) fn arm_reward_scheduler_and_write_pending_publication(
+        &self,
+        prepared: FinalChainPreparedRewardSchedulerSuccessor,
+        binding: FinalChainRewardSchedulerPublicationBinding,
+        marker: ExternalEvmPendingPublicationMarker,
+    ) -> Result<FinalChainExternalEvmPublicationReport, anyhow::Error> {
+        let mut scheduler = self
+            .reward_scheduler_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain reward scheduler lock poisoned"))?;
+        scheduler.arm(prepared, binding)?;
+        self.write_external_evm_pending_publication_marker(marker)
+    }
+
+    /// Publishes FinalChain storage and installs the exact armed successor while
+    /// holding one scheduler lifecycle admission lock across both operations.
+    pub(crate) fn publish_external_evm_publication_with_reward_scheduler(
+        &self,
+        plan: FinalChainExternalEvmPublicationPlan,
+        decision: FinalChainExternalEvmCommitDecision,
+        binding: FinalChainRewardSchedulerPublicationBinding,
+    ) -> Result<FinalChainExternalEvmPublicationReport, anyhow::Error> {
+        let mut scheduler = self
+            .reward_scheduler_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain reward scheduler lock poisoned"))?;
+        scheduler.validate_recovery_publication(binding.state_api_epoch, binding)?;
+        let report = self.publish_external_evm_publication(plan, decision)?;
+        if matches!(
+            report.status,
+            FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+                | FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
+        ) && report.error_code.is_empty()
+        {
+            scheduler.install_applied(binding)?;
+        }
+        Ok(report)
+    }
+
+    /// Invalidates the old scheduler generation after verified StateAPI reopen.
+    pub(crate) fn reset_reward_scheduler_after_verified_reopen(
+        &self,
+        previous_state_api_epoch: u64,
+        state_api_epoch: u64,
+        prior_head: FinalChainBlockNumber,
+    ) -> Result<(), anyhow::Error> {
+        self.reward_scheduler_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain reward scheduler lock poisoned"))?
+            .reset_after_verified_reopen(previous_state_api_epoch, state_api_epoch, prior_head)
+    }
+
     /// Verifies that an execution leaf's commit intent is the exact durable
     /// pending publication accepted by this FinalChain generation.
     ///
@@ -3423,7 +3489,7 @@ impl FinalChain {
     /// descriptor for the marker period with a different root, or a descriptor
     /// beyond the marker period while FinalChain is missing the block, is
     /// rejected and leaves the marker intact for operator/debug visibility.
-    pub fn recover_external_evm_pending_publication(
+    pub(crate) fn recover_external_evm_pending_publication(
         &self,
         committed_period: u64,
         committed_state_root: [u8; 32],
@@ -3548,6 +3614,12 @@ impl FinalChain {
             });
         }
         if recovery.status == FINAL_CHAIN_EVM_RECOVERY_DECISION_ALREADY_PUBLISHED {
+            let scheduler_binding = reward_scheduler_publication_binding(&marker, state_api_epoch)?;
+            let mut scheduler = self
+                .reward_scheduler_runtime
+                .lock()
+                .map_err(|_| anyhow::anyhow!("final-chain reward scheduler lock poisoned"))?;
+            scheduler.validate_recovery_publication(state_api_epoch, scheduler_binding)?;
             if !self.verify_external_evm_rewards_stats_update(&marker.plan.rewards_stats_update)? {
                 return Ok(rejected_external_evm_publication_report(
                     &marker.plan,
@@ -3555,10 +3627,11 @@ impl FinalChain {
                 ));
             }
             let execution_status = self.execution_status()?;
+            self.reload_rewards_stats_runtime_after_publication()?;
+            scheduler.install_recovered_publication(state_api_epoch, scheduler_binding)?;
             self.storage
                 .final_chain()
                 .delete_external_evm_pending_publication()?;
-            self.reload_rewards_stats_runtime_after_publication()?;
             return Ok(FinalChainExternalEvmPublicationReport {
                 request_id: marker.plan.request_id,
                 plan_id: marker.plan.plan_id,
@@ -3580,7 +3653,14 @@ impl FinalChain {
             ));
         }
 
-        self.publish_external_evm_publication(
+        let scheduler_binding = reward_scheduler_publication_binding(&marker, state_api_epoch)?;
+        let mut scheduler = self
+            .reward_scheduler_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain reward scheduler lock poisoned"))?;
+        scheduler.validate_recovery_publication(state_api_epoch, scheduler_binding)?;
+
+        let report = self.publish_external_evm_publication(
             marker.plan.clone(),
             FinalChainExternalEvmCommitDecision {
                 request_id: marker.state_commit_intent.request_id,
@@ -3596,7 +3676,16 @@ impl FinalChain {
                 status: FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH,
                 error_code: String::new(),
             },
-        )
+        )?;
+        if matches!(
+            report.status,
+            FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+                | FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
+        ) && report.error_code.is_empty()
+        {
+            scheduler.install_recovered_publication(state_api_epoch, scheduler_binding)?;
+        }
+        Ok(report)
     }
 
     /// Applies a validated external-EVM FinalChain publication plan.
@@ -5491,6 +5580,8 @@ impl FinalChain {
     /// Without a context, the existing transaction-boundary replay is retained.
     pub(crate) fn external_evm_concrete_projection(
         &self,
+        request_id: [u8; 32],
+        state_api_epoch: u64,
         block_number: FinalChainBlockNumber,
         block_author: [u8; 20],
         transactions: &[FinalChainEvmTransactionInput],
@@ -5500,14 +5591,23 @@ impl FinalChain {
         native_context: Option<
             &crate::native_projection_context::FinalChainNativeProjectionContext,
         >,
-    ) -> Result<(Vec<u8>, Vec<u8>), anyhow::Error> {
+    ) -> Result<(Vec<u8>, Vec<u8>, FinalChainPreparedRewardSchedulerSuccessor), anyhow::Error> {
         anyhow::ensure!(
             projection.transaction_effects.len() == transactions.len(),
             "FINAL_CHAIN_CONCRETE_TRANSACTION_EFFECT_COUNT_MISMATCH"
         );
         let head = self.last_block_number_typed()?;
+        let scheduler_basis =
+            self.reward_scheduler_basis(request_id, state_api_epoch, block_number, head)?;
         let mut native_replay = native_context
-            .map(|context| self.begin_native_session_bound(context.request_id, block_number, head))
+            .map(|context| {
+                self.begin_native_session_bound_with_scheduler_basis(
+                    context.request_id,
+                    block_number,
+                    head,
+                    scheduler_basis,
+                )
+            })
             .transpose()?;
         let mut accounts = self.current_account_snapshot()?;
         let bounded_native_code = if native_context.is_some() {
@@ -5698,7 +5798,13 @@ impl FinalChain {
             _ => anyhow::bail!("FINAL_CHAIN_NATIVE_CONTEXT_SESSION_MISMATCH"),
         };
         let dpos_before_rewards = dpos_snapshot.clone();
-        cleanup_slashing_jailed_validators(&mut dpos_snapshot, block_number);
+        let cleanup_plan = scheduler_basis.plan_cleanup(
+            &dpos_snapshot.slashing_jailed_validators,
+            &dpos_snapshot.slashing_jail_blocks,
+        );
+        if cleanup_plan.ran {
+            dpos_snapshot.slashing_jailed_validators = cleanup_plan.retained_validators.clone();
+        }
 
         let distribution_stats =
             decode_rewards_block_distributions(&rewards_plan.distribution_stats)?;
@@ -5720,7 +5826,8 @@ impl FinalChain {
         if let Some(replayed) = &replayed_rewards {
             anyhow::ensure!(
                 replayed.dpos_snapshot == dpos_snapshot
-                    && replayed.total_reward == total_minted_reward,
+                    && replayed.total_reward == total_minted_reward
+                    && replayed.scheduler_successor == Some(cleanup_plan.successor),
                 "FINAL_CHAIN_NATIVE_REWARDS_CONTEXT_SEMANTIC_MISMATCH"
             );
         }
@@ -5746,6 +5853,7 @@ impl FinalChain {
         Ok((
             encode_dpos_snapshot_rlp(&dpos_snapshot)?,
             encode_account_snapshot_rlp(&accounts),
+            cleanup_plan.successor,
         ))
     }
 
@@ -9534,6 +9642,27 @@ pub(crate) fn external_evm_pending_publication_marker(
         post_rewards_state_root,
         account_snapshot_status,
     }
+}
+
+fn reward_scheduler_publication_binding(
+    marker: &ExternalEvmPendingPublicationMarker,
+    state_api_epoch: u64,
+) -> Result<FinalChainRewardSchedulerPublicationBinding, anyhow::Error> {
+    anyhow::ensure!(
+        state_api_epoch != 0,
+        "FINAL_CHAIN_REWARD_SCHEDULER_RECOVERY_EPOCH_ZERO"
+    );
+    let concrete = decode_concrete_execution_marker(&marker.plan.concrete_marker_rlp)?;
+    Ok(FinalChainRewardSchedulerPublicationBinding {
+        request_id: marker.plan.request_id,
+        expected_parent: marker.state_commit_intent.prior_state.period,
+        period: marker.plan.period,
+        state_api_epoch,
+        concrete_database_id: concrete.identity.database_id,
+        concrete_generation: concrete.generation,
+        concrete_projection_hash: marker.plan.concrete_projection_hash,
+        publication_plan_id: marker.plan.plan_id,
+    })
 }
 
 fn encode_external_evm_pending_publication_marker(
