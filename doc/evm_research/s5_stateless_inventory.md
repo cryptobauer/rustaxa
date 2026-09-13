@@ -24,7 +24,8 @@ surfaces. For example, storage-local `ecrecover_address` in
 `rust/crates/rustaxa-storage/src/main.rs` does not own EVM padding/gas/error
 semantics. This inventory does not audit every cryptographic consumer.
 
-Addresses 1–4 now have bounded direct primitive comparisons. Remaining entries
+Addresses 1–9 now have bounded direct primitive and frame comparisons, including
+[MODEXP](s5_modexp_oracle.md) and [BN254/BLAKE2F](s5_curve_precompiles.md). Remaining entries
 still need exact input padding, validation, output, gas and error comparisons;
 full registry activation and frame integration remain separate gates. Directly consuming REVM precompile tables would require an explicit
 review because their registry and `SpecId` selection are Ethereum-oriented.

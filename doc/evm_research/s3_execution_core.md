@@ -3,8 +3,11 @@
 The isolated `rustaxa-evm` crate now exposes a canonical-input adapter, a wide
 transaction envelope, a concrete journal, a host-generic instruction profile and
 an iterative ordinary CALL/CREATE frame driver. Production routing is unchanged.
-Native dispatch, SELFDESTRUCT, wide SSTORE comparisons, general period execution
-and full persisted executor parity remain open.
+Opt-in [native frame handling](s5_native_journal.md),
+[stateless dispatch](s5_stateless_frames.md) and
+[wide SSTORE comparisons](s3_wide_sstore.md) are now implemented with bounded
+evidence. SELFDESTRUCT, general period execution and full persisted executor
+parity remain open.
 
 The journal preserves signed intermediate balances, arbitrary-width nonces,
 ordinary/raw visibility, irreversible raw and transient effects, nested ordinary
