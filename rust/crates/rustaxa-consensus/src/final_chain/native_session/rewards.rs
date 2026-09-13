@@ -13,12 +13,11 @@
 //! intermediate raw and account mutations are not canonical. End-block
 //! processing also rewrites a previously committed slashing jailed list when
 //! at least one member expires, after the DPoS deferred rows and with every
-//! source jail-block row authenticated. An all-future nonempty list remains out
-//! of scope because Go's raw-write decision depends on process-local cleanup
-//! scheduling that is not persisted. A Cacti jail duration below Magnolia also
-//! remains out of scope: a new shorter expiry does not lower Go's cached cleanup
-//! block. Ordinary custody effects remain full-width and raw effects retain
-//! repeated writes to the same validator-rewards row.
+//! source jail-block row authenticated. Scheduler-bound sessions reproduce
+//! all-future skips and decreasing jail-duration behavior from the private live
+//! timer. Standalone sessions retain the narrower authenticated-state guards.
+//! Ordinary custody effects remain full-width and raw effects retain repeated
+//! writes to the same validator-rewards row.
 
 use super::account::{DposAccountPort, StagedDposAccountPort};
 use super::raw::FinalChainNativeRawTrace;
@@ -35,6 +34,10 @@ pub struct FinalChainNativeRewardsOutcome {
     pub raw_mutations: Vec<FinalChainNativeRawMutation>,
     /// Complete unpublished semantic state used by independent consensus replay.
     pub(in crate::final_chain) dpos_snapshot: DposSnapshot,
+    /// Process-local cleanup timer derived from the FinalChain-issued basis.
+    /// It remains absent for standalone sessions and cannot publish by itself.
+    pub(in crate::final_chain) scheduler_successor:
+        Option<FinalChainPreparedRewardSchedulerSuccessor>,
 }
 
 impl FinalChainNativeSession<'_> {
@@ -155,7 +158,8 @@ impl FinalChainNativeSession<'_> {
             ));
         }
         self.serialize_deferred_end_block(&next, &mut trace)?;
-        self.serialize_slashing_cleanup(&mut next, &mut trace)?;
+        let (cleanup_ran, scheduler_successor) =
+            self.serialize_slashing_cleanup(&mut next, &mut trace)?;
 
         let mut expected = self.dpos_state.clone();
         let mut expected_rewards = planned.dpos_rewards;
@@ -171,7 +175,9 @@ impl FinalChainNativeSession<'_> {
         self.final_chain
             .apply_dpos_reward_deltas(&mut expected, expected_rewards, planned.supply_after)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
-        cleanup_slashing_jailed_validators(&mut expected, self.pending_period);
+        if cleanup_ran {
+            cleanup_slashing_jailed_validators(&mut expected, self.pending_period);
+        }
         if next != expected {
             return Err(FinalChainNativeSessionError::Domain(
                 "selected reward write reconstruction disagrees with FinalChain semantic kernel"
@@ -184,6 +190,7 @@ impl FinalChainNativeSession<'_> {
             account_mutations: accounts.into_mutations(),
             raw_mutations: trace.finish(),
             dpos_snapshot: next,
+            scheduler_successor,
         })
     }
 
@@ -603,19 +610,33 @@ impl FinalChainNativeSession<'_> {
         &self,
         snapshot: &mut DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
-    ) -> std::result::Result<(), FinalChainNativeSessionError> {
-        if snapshot.slashing_jailed_validators.is_empty() {
-            return Ok(());
-        }
-        // With a fixed or nondecreasing jail duration, every jail row written
-        // after a cleanup scan expires later than that scan's cached minimum.
-        // A shorter Cacti duration breaks that ordering, while the cache itself
-        // is unavailable in authenticated state.
-        if self.final_chain.cacti_active(self.pending_period)
-            && self.final_chain.rewards_config.cacti_jail_time
-                < self.final_chain.rewards_config.magnolia_jail_time
-        {
-            return Err(FinalChainNativeSessionError::RewardsScopeUnsupported);
+    ) -> std::result::Result<
+        (bool, Option<FinalChainPreparedRewardSchedulerSuccessor>),
+        FinalChainNativeSessionError,
+    > {
+        let scheduled = self.reward_scheduler_basis.map(|basis| {
+            basis.plan_cleanup(
+                &snapshot.slashing_jailed_validators,
+                &snapshot.slashing_jail_blocks,
+            )
+        });
+        if let Some(plan) = &scheduled {
+            if !plan.ran {
+                return Ok((false, Some(plan.successor)));
+            }
+        } else {
+            if snapshot.slashing_jailed_validators.is_empty() {
+                return Ok((false, None));
+            }
+            // Without a FinalChain-issued process-local basis, fixed or
+            // nondecreasing jail duration plus an expiring member is the only
+            // state-derived subset whose scheduler decision is determined.
+            if self.final_chain.cacti_active(self.pending_period)
+                && self.final_chain.rewards_config.cacti_jail_time
+                    < self.final_chain.rewards_config.magnolia_jail_time
+            {
+                return Err(FinalChainNativeSessionError::RewardsScopeUnsupported);
+            }
         }
         let key = ConcreteStorageKey(slashing_jailed_validators_key());
         let before = encode_slashing_jailed_list(snapshot);
@@ -638,15 +659,20 @@ impl FinalChainNativeSession<'_> {
                 .map(|block| block <= self.pending_period.as_u64())
                 .unwrap_or(true);
         }
-        if !expires {
+        if scheduled.is_none() && !expires {
             return Err(FinalChainNativeSessionError::RewardsScopeUnsupported);
         }
-        cleanup_slashing_jailed_validators(snapshot, self.pending_period);
+        if let Some(plan) = &scheduled {
+            snapshot.slashing_jailed_validators = plan.retained_validators.clone();
+        } else {
+            cleanup_slashing_jailed_validators(snapshot, self.pending_period);
+        }
         trace.put(
             SLASHING_CONTRACT_ADDRESS,
             key,
             encode_slashing_jailed_list(snapshot),
-        )
+        )?;
+        Ok((true, scheduled.map(|plan| plan.successor)))
     }
 
     /// Rejects newly staged slashing rows until their same-period Go visibility
@@ -1624,6 +1650,43 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_bound_all_future_list_runs_first_scan_and_prepares_timer() {
+        with_current_reward_chain(|chain| {
+            seed_committed_jail(chain, 3);
+            let reward_plan = plan(Vec::new());
+            let basis = chain
+                .reward_scheduler_basis(
+                    reward_plan.request_id,
+                    17,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            let mut session = chain
+                .begin_native_session_bound(
+                    reward_plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            session.reward_scheduler_basis = Some(basis);
+            let state = RewardState::from_snapshot(&session.dpos_state);
+
+            let outcome = session.finish_rewards(&reward_plan, &state).unwrap();
+            assert_eq!(outcome.raw_mutations.len(), 1);
+            assert_eq!(
+                mutation_value(&outcome.raw_mutations[0]),
+                encode_slashing_jailed_list(&outcome.dpos_snapshot)
+            );
+            assert_eq!(
+                outcome.dpos_snapshot.slashing_jailed_validators,
+                vec![ZERO_YIELD_DELEGATOR]
+            );
+            assert!(outcome.scheduler_successor.is_some());
+        });
+    }
+
+    #[test]
     fn decreasing_cacti_jail_duration_requires_scheduler_provenance() {
         with_reward_chain_and_jail_policy(1, FinalChainBlockNumber::GENESIS, 100, 1, |chain| {
             seed_committed_jail(chain, 1);
@@ -1643,6 +1706,36 @@ mod tests {
             ));
             assert!(!session.finished_rewards);
             assert!(!session.aborted);
+        });
+    }
+
+    #[test]
+    fn scheduler_bound_decreasing_jail_duration_uses_live_timer_authority() {
+        with_reward_chain_and_jail_policy(1, FinalChainBlockNumber::GENESIS, 100, 1, |chain| {
+            seed_committed_jail(chain, 1);
+            let reward_plan = plan(Vec::new());
+            let basis = chain
+                .reward_scheduler_basis(
+                    reward_plan.request_id,
+                    17,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            let mut session = chain
+                .begin_native_session_bound(
+                    reward_plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            session.reward_scheduler_basis = Some(basis);
+            let state = RewardState::from_snapshot(&session.dpos_state);
+
+            let outcome = session.finish_rewards(&reward_plan, &state).unwrap();
+            assert!(outcome.dpos_snapshot.slashing_jailed_validators.is_empty());
+            assert_eq!(outcome.raw_mutations.len(), 1);
+            assert!(outcome.scheduler_successor.is_some());
         });
     }
 

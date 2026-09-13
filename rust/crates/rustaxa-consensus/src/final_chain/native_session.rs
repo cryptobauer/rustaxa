@@ -341,6 +341,9 @@ struct PreparedCall {
 pub struct FinalChainNativeSession<'a> {
     final_chain: &'a FinalChain,
     request_id: Option<[u8; 32]>,
+    /// Immutable process-local cleanup timer issued by this FinalChain. It is
+    /// present only for execution bound to a live StateAPI epoch.
+    reward_scheduler_basis: Option<reward_scheduler::FinalChainRewardSchedulerBasis>,
     pending_period: FinalChainBlockNumber,
     period_start_total_vote_count: u64,
     period_start_amount_delegated: U256,
@@ -390,6 +393,42 @@ impl FinalChain {
         expected_parent: FinalChainBlockNumber,
     ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
         self.begin_native_session_inner(Some(request_id), pending_period, expected_parent)
+    }
+
+    pub(super) fn reward_scheduler_basis(
+        &self,
+        request_id: [u8; 32],
+        state_api_epoch: u64,
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<
+        reward_scheduler::FinalChainRewardSchedulerBasis,
+        FinalChainNativeSessionError,
+    > {
+        let mut runtime = self.reward_scheduler_runtime.lock().map_err(|_| {
+            FinalChainNativeSessionError::Domain(
+                "final-chain reward scheduler lock poisoned".to_owned(),
+            )
+        })?;
+        runtime
+            .observe_live_epoch(state_api_epoch)
+            .and_then(|()| {
+                runtime.basis(state_api_epoch, expected_parent, pending_period, request_id)
+            })
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))
+    }
+
+    pub(super) fn begin_native_session_bound_with_scheduler_basis(
+        &self,
+        request_id: [u8; 32],
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+        basis: reward_scheduler::FinalChainRewardSchedulerBasis,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let mut session =
+            self.begin_native_session_inner(Some(request_id), pending_period, expected_parent)?;
+        session.reward_scheduler_basis = Some(basis);
+        Ok(session)
     }
 
     /// Begins an unpublished native session over one exact finalized state.
@@ -473,6 +512,7 @@ impl FinalChain {
         Ok(FinalChainNativeSession {
             final_chain: self,
             request_id,
+            reward_scheduler_basis: None,
             pending_period: period,
             period_start_total_vote_count,
             period_start_amount_delegated,
