@@ -13,7 +13,10 @@ use rustaxa_evm::{
         ExecutionBlockContext, ExecutionGasPrice, ExecutionTransaction, ExecutionTransactionKind,
         ExecutionValue, TransactionExecutionResult,
     },
-    driver::{NativeAddressClassifier, execute_top_level_call, execute_top_level_create},
+    driver::{
+        ExecutionDriverError, NativeAddressClassifier, execute_top_level_call,
+        execute_top_level_create,
+    },
     envelope::EnvelopeRules,
     host::{HostError, JournalHost},
     journal::{ExecutionJournal, JournalAccountOperation, JournalError},
@@ -605,6 +608,268 @@ fn zero_value_call_to_absent_ordinary_account_does_not_touch_target() {
     );
 }
 
+#[test]
+fn call_preentry_funds_check_precedes_referenced_code_loading() {
+    let unavailable_hash = [0x77; 32];
+    let parent = call_program(TARGET, 1);
+    let mut journal = journal_with_program_and_unavailable_target(parent, unavailable_hash);
+    let result = execute_top_level_call(
+        &mut journal,
+        &BlockHashes,
+        &NoNative,
+        &test_block(),
+        &call_transaction([0xcc; 20]),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("must execute")
+    };
+    assert_eq!(result.status, CodeExecutionStatus::Success);
+    assert_eq!(result.gas_used, FinalChainGas::new(28_421));
+    assert_eq!(journal.reader().code_reads.get(), 1);
+}
+
+#[test]
+fn call_value_new_account_gas_uses_full_width_eip161_emptiness() {
+    let cases = [
+        (
+            "existing empty",
+            ReaderAccount {
+                nonce: FinalChainNonce::zero(),
+                balance: ConcreteAccountBalance::default(),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+            },
+            53_421,
+        ),
+        (
+            "nonzero nonce",
+            ReaderAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::default(),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+            },
+            28_421,
+        ),
+        (
+            "wide nonzero balance with zero low word",
+            ReaderAccount {
+                nonce: FinalChainNonce::zero(),
+                balance: ConcreteAccountBalance::new(BigUint::from(1_u8) << 256_usize),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+            },
+            28_421,
+        ),
+    ];
+
+    for (name, target, expected_gas) in cases {
+        let parent_address = [0xcc; 20];
+        let parent = call_program(TARGET, 1);
+        let parent_hash = keccak256(&parent).0;
+        let mut reader = empty_reader();
+        reader.accounts.insert(
+            SENDER,
+            ReaderAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::new(BigUint::from(1_000_000_u64)),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+            },
+        );
+        reader.accounts.insert(
+            parent_address,
+            ReaderAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::new(BigUint::from(10_u8)),
+                storage_root: None,
+                code_hash: Some(parent_hash),
+                code_size: parent.len() as u64,
+            },
+        );
+        reader.accounts.insert(TARGET, target);
+        reader
+            .codes
+            .insert(parent_hash, ConcreteRead::Present(parent));
+        let mut journal = ExecutionJournal::new(reader);
+        let result = execute_top_level_call(
+            &mut journal,
+            &BlockHashes,
+            &NoNative,
+            &test_block(),
+            &call_transaction(parent_address),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )
+        .unwrap();
+        let TransactionExecutionResult::Executed(result) = result else {
+            panic!("{name}: must execute")
+        };
+        assert_eq!(result.status, CodeExecutionStatus::Success, "{name}");
+        assert_eq!(result.gas_used, FinalChainGas::new(expected_gas), "{name}");
+        assert_eq!(journal.reader().code_reads.get(), 1, "{name}");
+    }
+}
+
+#[test]
+fn admitted_call_loads_and_rejects_unavailable_referenced_code() {
+    let unavailable_hash = [0x77; 32];
+
+    let mut nested =
+        journal_with_program_and_unavailable_target(call_program(TARGET, 0), unavailable_hash);
+    assert!(matches!(
+        execute_top_level_call(
+            &mut nested,
+            &BlockHashes,
+            &NoNative,
+            &test_block(),
+            &call_transaction([0xcc; 20]),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        ),
+        Err(ExecutionDriverError::Journal(
+            JournalError::ReferencedCodeMissing { .. }
+        ))
+    ));
+    assert_eq!(nested.reader().code_reads.get(), 2);
+
+    let mut direct_reader = reader_with_account(TARGET, Some(unavailable_hash), 1);
+    direct_reader.accounts.insert(
+        SENDER,
+        ReaderAccount {
+            nonce: FinalChainNonce::from_u64(1),
+            balance: ConcreteAccountBalance::new(BigUint::from(1_000_000_u64)),
+            storage_root: None,
+            code_hash: None,
+            code_size: 0,
+        },
+    );
+    let mut direct = ExecutionJournal::new(direct_reader);
+    assert!(matches!(
+        execute_top_level_call(
+            &mut direct,
+            &BlockHashes,
+            &NoNative,
+            &test_block(),
+            &call_transaction(TARGET),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        ),
+        Err(ExecutionDriverError::Journal(
+            JournalError::ReferencedCodeMissing { .. }
+        ))
+    ));
+    assert_eq!(direct.reader().code_reads.get(), 1);
+}
+
+#[test]
+fn call_preflight_scope_restores_before_strict_extcodesize_loading() {
+    let unavailable_hash = [0x77; 32];
+    let mut parent = call_program(TARGET, 1);
+    assert_eq!(parent.pop(), Some(0x00));
+    parent.extend_from_slice(&[0x50, 0x73]);
+    parent.extend_from_slice(&TARGET);
+    parent.extend_from_slice(&[0x3b, 0x00]);
+    let mut journal = journal_with_program_and_unavailable_target(parent, unavailable_hash);
+    assert!(matches!(
+        execute_top_level_call(
+            &mut journal,
+            &BlockHashes,
+            &NoNative,
+            &test_block(),
+            &call_transaction([0xcc; 20]),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        ),
+        Err(ExecutionDriverError::Host(HostError::Journal(
+            JournalError::ReferencedCodeMissing { .. }
+        )))
+    ));
+    assert_eq!(journal.reader().code_reads.get(), 2);
+}
+
+#[test]
+fn depth_preentry_does_not_load_the_rejected_target_code() {
+    let addresses: Vec<[u8; 20]> = (0..1_025).map(chain_address).collect();
+    let unavailable = [0xee; 20];
+    let unavailable_hash = [0x77; 32];
+    let mut reader = empty_reader();
+    reader.accounts.insert(
+        SENDER,
+        ReaderAccount {
+            nonce: FinalChainNonce::from_u64(1),
+            balance: ConcreteAccountBalance::new(BigUint::from(1_000_000_u64)),
+            storage_root: None,
+            code_hash: None,
+            code_size: 0,
+        },
+    );
+    for (index, address) in addresses.iter().enumerate() {
+        let callee = addresses.get(index + 1).copied().unwrap_or(unavailable);
+        let mut code = hex::decode("60016000556000600060006000600073").unwrap();
+        code.extend_from_slice(&callee);
+        code.extend_from_slice(&[0x5a, 0xf1, 0x50, 0x00]);
+        let hash = keccak256(&code).0;
+        reader.accounts.insert(
+            *address,
+            ReaderAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::default(),
+                storage_root: None,
+                code_hash: Some(hash),
+                code_size: code.len() as u64,
+            },
+        );
+        reader.codes.insert(hash, ConcreteRead::Present(code));
+    }
+    reader.accounts.insert(
+        unavailable,
+        ReaderAccount {
+            nonce: FinalChainNonce::from_u64(1),
+            balance: ConcreteAccountBalance::default(),
+            storage_root: None,
+            code_hash: Some(unavailable_hash),
+            code_size: 1,
+        },
+    );
+    let mut journal = ExecutionJournal::new(reader);
+    let mut transaction = call_transaction(addresses[0]);
+    transaction.gas_limit = FinalChainGas::new(u64::MAX);
+    transaction.gas_price = ExecutionGasPrice::new(BigUint::default());
+    let mut block = test_block();
+    block.gas_limit = FinalChainGas::new(u64::MAX);
+    let result = execute_top_level_call(
+        &mut journal,
+        &BlockHashes,
+        &NoNative,
+        &block,
+        &transaction,
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    assert!(matches!(
+        result,
+        TransactionExecutionResult::Executed(ref result)
+            if result.status == CodeExecutionStatus::Success
+    ));
+    assert_eq!(journal.reader().code_reads.get(), 1_025);
+    assert_eq!(
+        journal
+            .ordinary_storage(addresses[1_024], ConcreteStorageKey([0_u8; 32]))
+            .unwrap()
+            .1,
+        BigUint::from(1_u8)
+    );
+}
+
 fn reader_with_account(
     address: [u8; 20],
     code_hash: Option<[u8; 32]>,
@@ -622,6 +887,63 @@ fn reader_with_account(
         },
     );
     reader
+}
+
+fn journal_with_program_and_unavailable_target(
+    parent: Vec<u8>,
+    unavailable_hash: [u8; 32],
+) -> ExecutionJournal<MemoryReader> {
+    let parent_address = [0xcc; 20];
+    let parent_hash = keccak256(&parent).0;
+    let mut reader = empty_reader();
+    reader.accounts.insert(
+        SENDER,
+        ReaderAccount {
+            nonce: FinalChainNonce::from_u64(1),
+            balance: ConcreteAccountBalance::new(BigUint::from(1_000_000_u64)),
+            storage_root: None,
+            code_hash: None,
+            code_size: 0,
+        },
+    );
+    reader.accounts.insert(
+        parent_address,
+        ReaderAccount {
+            nonce: FinalChainNonce::from_u64(1),
+            balance: ConcreteAccountBalance::default(),
+            storage_root: None,
+            code_hash: Some(parent_hash),
+            code_size: parent.len() as u64,
+        },
+    );
+    reader.accounts.insert(
+        TARGET,
+        ReaderAccount {
+            nonce: FinalChainNonce::from_u64(1),
+            balance: ConcreteAccountBalance::default(),
+            storage_root: None,
+            code_hash: Some(unavailable_hash),
+            code_size: 1,
+        },
+    );
+    reader
+        .codes
+        .insert(parent_hash, ConcreteRead::Present(parent));
+    ExecutionJournal::new(reader)
+}
+
+fn call_program(target: [u8; 20], value: u8) -> Vec<u8> {
+    let mut code = hex::decode("6000600060006000").unwrap();
+    code.extend_from_slice(&[0x60, value, 0x73]);
+    code.extend_from_slice(&target);
+    code.extend_from_slice(&[0x61, 0x03, 0xe8, 0xf1, 0x00]);
+    code
+}
+
+fn chain_address(index: usize) -> [u8; 20] {
+    let mut address = [0xdd; 20];
+    address[12..].copy_from_slice(&(index as u64).to_be_bytes());
+    address
 }
 
 fn empty_reader() -> MemoryReader {
