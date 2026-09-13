@@ -3,6 +3,9 @@
 This is a source inventory only. It does not select a generic Ethereum spec,
 define Taraxa activation rules, or claim byte/gas/error parity.
 
+The inspected Go revisions are public `6c7e5338b22d5e596cc2365a88d1f94840e1ee1b`
+and local `bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418`.
+
 The pinned Go registry is in `submodules/taraxa-evm/core/vm/contracts.go`:
 
 | Registry | Addresses | Go implementation | Rust availability observed locally |
@@ -25,3 +28,25 @@ Before implementation, each registry entry still needs exact input padding,
 validation, output, gas, error and activation comparisons against the pinned Go
 functions. Directly consuming REVM precompile tables would require an explicit
 review because their registry and `SpecId` selection are Ethereum-oriented.
+
+## Exact locally locked candidates
+
+`rust/Cargo.lock` pins `revm-precompile 43.0.1` at the repository's pinned
+REVM revision. Its public module paths are
+`revm::precompile::{secp256k1,hash,identity,modexp,bn254,blake2,bls12_381,secp256r1}`
+(`crates/precompile/src/lib.rs:19-31`). Candidate entry symbols are
+`secp256k1::ec_recover_run`, `hash::{sha256_run,ripemd160_run}`,
+`identity::identity_run`, `modexp::{byzantium_run,berlin_run,osaka_run}` and
+`bn254::{run_add,run_mul,run_pair}`. These APIs accept input plus gas limit and
+return REVM precompile results; their Ethereum gas variants must not be assumed
+to equal the Go table.
+
+The lock also contains `k256 0.13.4`, `sha2 0.10.9` and `0.11.0`, `ripemd
+0.2.0`, `aurora-engine-modexp 1.2.0`, `ark-bn254 0.6.0`, and `p256 0.13.2`.
+They are transitive REVM implementation dependencies except `k256`, which is a
+direct `rustaxa-evm` development dependency. Existing Rustaxa uses of k256
+include storage-local `ecrecover_address` in
+`rustaxa-storage/src/main.rs:1395`; this is a useful primitive consumer but
+does not supply EVM padding/gas/error semantics. This inventory did not audit
+every k256 consumer. Falcon is unknown/missing in the inspected lock and crate
+sources; no compatible Rust candidate was identified.
