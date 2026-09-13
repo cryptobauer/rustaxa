@@ -90,9 +90,122 @@ storage tests exercise complete results, all three resource failures, exact
 identity rejection, and missing hashed sibling dependencies without requiring
 the qualified copy.
 
+## Six-period historical availability
+
+A second temporary read-only diagnostic used `FinalChainRepository` point reads
+to obtain the exact H-5 through H headers, then opened all six identities in one
+`ConcreteCheckpointReaders` handle. The diagnostic source SHA-256 was
+`5a93eb2f5166da3f51d36e05d5b76fcaba042ee539c89fbc437832523c02cd2e`.
+Its 121-line TSV output had SHA-256
+`d5a6455cbaf22f9c5a5d2b0436f7760710f2e9c36a3eefa88383d290190cb425`.
+The diagnostic opened only the same independently copied application and state
+databases and refused the original snapshot path.
+
+All six finalized headers were present and decoded to these identities:
+
+| Period | State root |
+| ---: | --- |
+| 25,706,944 | `33199a435b8e4e4496fd7fd2bd8dd5bbb52263b775bc42b80f377a7e78b69014` |
+| 25,706,945 | `387d37ea3df2ab3b69f78cffdb193fc6fee34565239988f6c7560eec621678b9` |
+| 25,706,946 | `19c7e922abbc04acd3fae7e15437a84a9cd0ba502b3d116d6e57feb9031fb649` |
+| 25,706,947 | `d2dc0b257de18518578497a8316087c2d10ec9e581b878795a9cc3930237dde7` |
+| 25,706,948 | `926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2` |
+| 25,706,949 | `b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227` |
+
+The checkpoint reader accepted every exact period/root pair. At every identity,
+the DPoS account was present with storage root
+`c62767fbe35b09e45975d25132970f8bc5e6614b41e3f3ea51e1f25b77dcf504`
+and the slashing account was present with storage root
+`d688bfddb847c241b44f78c048b41d7e423f138bc5ee8fe6c24e6f047b051a7a`.
+The shared native roots show that finalized native state did not change across
+this six-period window even though the overall state roots changed.
+
+For each period the diagnostic authenticated a fixed 17-path sample:
+
+- DPoS total votes, total stake, minted tokens, total supply, yield, and the
+  validator-list count;
+- validator positions 1 and 196, followed by each selected validator's record,
+  reward, owner, and VRF rows; and
+- the slashing jailed-validator list.
+
+Every selected physical result agreed with its logical membership proof. There
+was no unavailable-history, missing-node, corrupt-value, or identity error.
+The validator count was 196 throughout. The first and final indexed validator
+addresses and their sampled rows were unchanged. The jailed list was the
+authenticated empty RLP list `c0` throughout. These point reads are a
+deterministic availability sample, not complete historical leaf coverage.
+
+Only the head DPoS trie was fully inventoried above. A separate head-only
+slashing inventory used ceilings of 10,000 nodes, 10,000 leaves, and 4 MiB of
+values. It completed with 71 nodes, 54 leaves, 128 value bytes, and deterministic
+entry digest
+`20bdbc5d9966419de9571790797bc0e2eade35012ade428884162c1bd0275be4`.
+The value shapes were one `c0` jailed list, 32 one-byte `01` values, and 21 RLP
+integer-shaped values. Source layout makes those shapes consistent with proof
+flags and retained jail-block rows, but values alone do not recover their key
+preimages or authorize a semantic classification.
+
+Because the DPoS and slashing storage roots are identical at all six periods,
+their content-addressed physical node sets are also identical. The audit did
+not select every versioned leaf value separately at each historical period, so
+it does not claim six exhaustive historical inventories. It establishes that
+the headers, roots, native accounts, and every sampled historical dependency
+needed by the proposed H-5 through H native view are present.
+
+The Rust-owned `rustaxa:dpos_snapshot:*` and
+`rustaxa:account_snapshot:*` sidecars were absent at all six periods. Those are
+rewrite-derived caches that this pre-Rust snapshot was not expected to contain.
+Their absence is an importer input, rather than evidence that the authenticated
+legacy concrete rows were pruned.
+
+## Semantic reconstruction audit
+
+The Rust canonical projection describes how a complete `DposSnapshot` maps to
+raw rows, but there is no inverse importer from concrete rows. Some current
+state can be reconstructed from public indexes:
+
+- the global validator iterable map enumerates all 196 current validators;
+- each known validator address derives its record, metadata, reward, owner, and
+  VRF keys; and
+- global vote, stake, supply, and yield keys are fixed.
+
+That enumeration is insufficient for a complete snapshot. Delegation and
+undelegation indexes are scoped by delegator, while no global current-delegator
+index supplies every delegator preimage. Public getters such as validators-for,
+delegations, and undelegations therefore require an address already known to
+the caller. The account trie and the 23,278-leaf DPoS inventory expose hashed
+paths and cannot recover those addresses. Candidate addresses from retained
+transactions or logs would not prove completeness on a pruned light-history
+database.
+
+Slashing has the same inversion boundary. `getJailedValidators` exposes only
+the current list, which is empty here, while `getJailBlock` requires a supplied
+validator. Persisted jail-block rows intentionally outlive list cleanup.
+Double-voting proof rows use proof hashes as logical keys and have no iterable
+index. The live inventory applies a second trie hash, so neither historical
+validator addresses nor proof hashes can be inverted from its paths.
+
+Consequently the observed blocker is not a demonstrated absence of H-5 through
+H roots or sampled native state. It is the lack of authoritative logical-key
+preimages and a reviewed inverse decoder that can prove every live path is
+represented. A producer/reference native snapshot export, an authenticated
+logical-key manifest, or complete historical evidence capable of deriving the
+same preimages would close that input. After reconstruction, the Rust canonical
+projection can compare every candidate row with the live inventory and reject
+unknown or missing paths.
+
+The remaining boundary separates evidence from implementation:
+
+| Category | Current finding |
+| --- | --- |
+| Qualified source facts | Six headers and roots, both native account roots, all sampled historical paths, the complete head DPoS live inventory, and the complete head slashing live inventory are readable. |
+| Facts still missing | Authoritative logical preimages for every delegator-scoped DPoS row, retained slashing jail row and proof row; evidence for deleted-history/catalog lineage and redelegation-corruption history completeness; and producer configuration/reward inputs tracked by the replay workstream. |
+| Rust work not implemented | A fail-closed inverse native-state decoder, exhaustive candidate-to-live-inventory comparison, concrete-backed checkpoint account port, and sidecar/bootstrap publication through existing owners. |
+| Historical-retention status | No actual dependency is missing in the bounded H-5 through H sample. Exhaustive historical leaf-version availability remains untested rather than failed. |
+
 ## Qualification boundary
 
-The successful traversal proves the complete set of live hashed paths and exact
+The successful head traversal proves the complete set of live hashed paths and exact
 selected values reachable from this one account storage root. Hashed paths are
 not invertible into unknown logical keys. Live trie coverage cannot recover
 deleted slots or establish the all-ever key catalog required by existing
