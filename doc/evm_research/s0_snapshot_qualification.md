@@ -90,3 +90,11 @@ supplied snapshot. These guards were checked with small synthetic filesystem tes
 were not repeated. Invalid integer-comparator key widths now abort explicitly instead of applying an
 incompatible fallback order. Transaction-location evidence describes only decoding the period field;
 complete location row/key/position/system-flag validation was not performed.
+
+
+The owner additionally suspects that the producing validator used public address
+`0xfbb85d00ca77b0d49da4f71a91de552bce88b083`, but explicitly cannot confirm it.
+This is an unverified provenance clue. A matching validator record in the copied
+network state can provide a cross-check, but cannot identify which node produced
+the snapshot or establish its build/capture procedure. No private signing keys
+are required for this check or native-state reconstruction.

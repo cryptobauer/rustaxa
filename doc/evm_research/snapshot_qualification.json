@@ -203,7 +203,9 @@
     "session_prefix_matches": true,
     "state_db_identity": "5bf6b18a-743e-4cca-8f9c-35af996efc45",
     "state_session_id": "Q6EXN31JYCZ49V3C8FYG",
-    "user_reported_likely_node_commit": "a0e85fe31eb03573cd92c165a5f81035cec9907e"
+    "user_reported_likely_node_commit": "a0e85fe31eb03573cd92c165a5f81035cec9907e",
+    "user_reported_possible_validator_address": "0xfbb85d00ca77b0d49da4f71a91de552bce88b083",
+    "possible_validator_address_status": "Owner suspects this address but cannot confirm it. Presence in network state cannot establish snapshot producer identity."
   },
   "read_tool": {
     "api": "DB::open_cf_descriptors_read_only",
