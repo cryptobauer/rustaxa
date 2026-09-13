@@ -1,9 +1,9 @@
 //! Bounded top-level Taraxa bytecode execution through REVM.
 //!
 //! This driver composes the reviewed envelope, profile and journal for an
-//! ordinary top-level CALL. It executes real REVM instructions and settles
-//! interpreter gas/refunds once. Nested CALL/CREATE actions, native dispatch,
-//! top-level creation and SELFDESTRUCT remain typed unavailable boundaries.
+//! ordinary top-level CALL or CREATE. It executes real REVM legacy bytecode and
+//! settles interpreter gas/refunds once. Nested CALL/CREATE actions, native
+//! dispatch and SELFDESTRUCT remain typed unavailable boundaries.
 
 use num_bigint::BigInt;
 use revm::{
@@ -93,6 +93,11 @@ impl From<JournalError> for ExecutionDriverError {
 }
 
 /// Executes and settles one ordinary top-level CALL.
+///
+/// Consensus rejections and bytecode failures are returned as transaction
+/// results. Infrastructure/unsupported errors abort the pending period; the
+/// caller must discard the journal because envelope admission may already have
+/// changed its sender balance or nonce.
 pub fn execute_top_level_call<
     R: ConcreteStateRead,
     B: BlockHashRead,
@@ -135,6 +140,11 @@ pub fn execute_top_level_call<
 }
 
 /// Executes and settles one top-level CREATE using the exact transaction nonce.
+///
+/// Creator nonce increments survive collision and child failure, while the
+/// child checkpoint owns target account, transfer, initcode storage/logs and
+/// runtime code. Infrastructure/unsupported errors abort the pending period;
+/// callers must discard the possibly admission-mutated journal.
 pub fn execute_top_level_create<R: ConcreteStateRead, B: BlockHashRead>(
     journal: &mut ExecutionJournal<R>,
     block_hashes: &B,
@@ -411,7 +421,7 @@ fn run_revm<R: ConcreteStateRead, B: BlockHashRead>(
 ) -> Result<(revm::interpreter::InterpreterResult, u8), ExecutionDriverError> {
     let mut interpreter = Interpreter::<EthInterpreter>::new(
         SharedMemory::new(),
-        ExtBytecode::new(Bytecode::new_raw(Bytes::from(code))),
+        ExtBytecode::new(Bytecode::new_legacy(Bytes::from(code))),
         InputsImpl {
             target_address: Address::from(target),
             bytecode_address: Some(Address::from(target)),
