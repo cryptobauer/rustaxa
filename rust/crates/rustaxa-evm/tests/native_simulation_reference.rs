@@ -16,7 +16,10 @@ use k256::ecdsa::SigningKey;
 use num_bigint::BigUint;
 use revm::primitives::keccak256;
 use rlp::RlpStream;
-use rustaxa_consensus::FinalChain;
+use rustaxa_consensus::{
+    FinalChain,
+    native_session::{ConcreteCheckpointNativeStateRead, FinalChainNativeStateRead},
+};
 use rustaxa_evm::{
     contracts::{
         BlockHashRead, BlockHashReadError, CodeExecutionError, CodeExecutionStatus,
@@ -28,7 +31,7 @@ use rustaxa_evm::{
     profile::{TaraxaPhase, TaraxaProfile},
     simulation::simulate_with_native,
 };
-use rustaxa_storage::{Column, ConcreteStateReader, Config, Storage};
+use rustaxa_storage::{Column, ConcreteCheckpointReaders, ConcreteStateReader, Config, Storage};
 use rustaxa_types::{
     FinalChainBlockNumber, FinalChainNonce, FinalChainRewardsConfig, FinalizationTransaction,
     GenesisAccount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
@@ -424,6 +427,60 @@ fn persisted_native_simulations_match_actual_go_dry_runner_and_reopen() {
         final_chain.dpos_total_amount_delegated(1.into()).unwrap(),
         vec![110]
     );
+}
+
+/// The production checkpoint adapter preserves actual Go account bytes and raw
+/// availability across reopen without inheriting this fixture's absence authority.
+#[test]
+fn checkpoint_native_reader_preserves_go_seed_across_reopen() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/native_simulation/public.json"
+    ))
+    .unwrap();
+    let path = FixturePath::new("checkpoint-native");
+    let identity = materialize(&fixture, &path);
+    let before = concrete_rows(&path);
+    for _ in 0..2 {
+        let readers =
+            ConcreteCheckpointReaders::open_read_only(&path.0, identity, [identity]).unwrap();
+        let native = ConcreteCheckpointNativeStateRead::new(&readers, identity).unwrap();
+        assert_eq!(native.identity(), identity);
+        for expected in fixture["state_before"]["accounts"].as_array().unwrap() {
+            let account = native
+                .account(bytes(&expected["address"]).try_into().unwrap())
+                .unwrap();
+            assert!(account.exists);
+            assert_eq!(
+                BigUint::from_bytes_be(&account.nonce.to_bytes()),
+                number(&expected["nonce"])
+            );
+            assert_eq!(account.balance, number(&expected["balance"]).into());
+        }
+        let key = ConcreteStorageKey(keccak256([4_u8]).0);
+        let prefix = rustaxa_storage::storage_version_prefix(address(0xfe), key);
+        let expected = fixture["state_before"]["seed_rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["column"] == 4 && bytes(&row["key"]).starts_with(&prefix))
+            .max_by_key(|row| bytes(&row["key"]))
+            .unwrap();
+        assert_eq!(
+            native.raw_storage(address(0xfe), &key).unwrap(),
+            ConcreteRead::Present(bytes(&expected["value"]))
+        );
+        assert_eq!(
+            native.raw_storage(address(0xfe), &ConcreteStorageKey([0x77; 32])),
+            Err(ConcreteReadError::HistoryUnavailable(identity).into())
+        );
+        let mut unretained = identity;
+        unretained.state_root[0] ^= 1;
+        assert_eq!(
+            ConcreteCheckpointNativeStateRead::new(&readers, unretained).unwrap_err(),
+            ConcreteReadError::HistoryUnavailable(unretained).into()
+        );
+    }
+    assert_eq!(concrete_rows(&path), before);
 }
 
 /// Complete fixture provenance must never hide loss of an expected physical row.

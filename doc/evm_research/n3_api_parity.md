@@ -113,7 +113,10 @@ ordered prefix plus two targets, preserved stale nonce, revert, creation,
 empty code and return-data bounds. Each runs the structured logger and the
 OpenEthereum `trace`, `vmTrace`, combined and neither-selected configurations.
 Both pins emit identical artifacts and leave committed observations unchanged.
-This is reference evidence; a Rust trace implementation is still open.
+This is reference evidence. A typed append-only Rust trace collector now exists
+(`trace.rs`), with phase-dependent opcode facts and attempted storage tracking.
+Driver hooks and exact Go-compatible serializers remain under implementation;
+the collector alone does not establish trace API parity.
 
 Unlike `DryRunner.Apply`, tracing starts at `max(block - 1, 0)` and preserves
 the supplied nonce. Prefix and target transactions share a disposable block

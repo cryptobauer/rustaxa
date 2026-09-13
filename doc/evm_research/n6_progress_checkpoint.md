@@ -20,7 +20,8 @@ the broader implementation plan 08 remains open.
   per-distribution yield and supply, custody, raw writes and final semantic state.
   Zero configured yield skips rewards but flushes deferred end-block state;
   the interrupted worker's implementation was recovered and tested by the lead.
-  Multi-entry maps, jailed cleanup and the redelegation correction remain open.
+  Multi-entry maps and scoped committed-parent jailed cleanup are now integrated;
+  general scheduler lifecycle and the redelegation correction remain open.
 - The read-only copied-head preflight executes all 19 real signed transactions,
   matches receipts and cumulative gas, and derives the retained head root from
   20 final account mutations using 116 calculated trie rows. It neither exposes
@@ -28,8 +29,8 @@ the broader implementation plan 08 remains open.
   and authoritative full-period replay remain open.
 - Seven actual Go TraceRunner scenarios compare five tracer configurations at
   both source pins. Prefix state and supplied nonce differ from DryRunner;
-  neither-selected options cause a recorded reference panic. Rust trace
-  collection/serialization is not implemented by this oracle.
+  neither-selected options cause a recorded reference panic. A typed Rust trace
+  collector is now integrated; driver hooks and exact serialization remain open.
 
 ## Validation and review
 
@@ -66,22 +67,27 @@ and six-case persisted Go DryRunner comparison are integrated and reviewed
 (`46eaf2e9e`, `0a01539d9`, `8aff5384e`). The multi-validator reward-map slice is
 also integrated (`c535f4327`), with both observed Go orders and explicit bounded
 physical-inventory qualifications. V1 custody and its actual Go oracle are
-integrated as `71f6d9ab2` and `a6d800912`; direct Rust corpus assertions are the
-next additional check, alongside retained existing lifecycle tests.
+integrated as `71f6d9ab2` and `a6d800912`; direct Rust corpus assertions are
+now integrated as `ee9fc24f3`, alongside retained existing lifecycle tests.
+Exact Go revert diagnostic bytes are implemented as `4c7c77983`, including
+non-UTF-8 reasons and 17 independent decoder witnesses.
 
 1. Complete remaining stateful adapters and reward boundaries through existing
-   Rust kernels. Jailed cleanup remains unintegrated: review found Go's cached
-   scheduling state and a Cacti jail-duration decrease can change whether a raw
-   write occurs. No unapproved reward implementation is treated as parity.
+   Rust kernels. Scoped committed-parent jailed cleanup is integrated as
+   `25c9e41e1`; it rejects unsupported cached-future and decreasing-duration
+   cases. General process-lifetime scheduler binding and paired V1/V2
+   cancellation are active implementation work.
 2. Add trace facts to the existing iterative frame driver and serializers over
-   those facts. The execution owner is preparing a bounded structured-observer
-   contract against the existing actual Go TraceRunner corpus. No second VM or
+   those facts. The reviewed typed collector is integrated as `7a005eae9` and
+   `d21d1769a`. Driver hooks have focused witnesses but remain under review for
+   frame settlement timing and exact host-error precedence. No second VM or
    production route is authorized.
 3. Replace full account-snapshot authority for an explicit offline checkpoint
    with authenticated concrete point reads plus a touched overlay. The reviewed
-   checkpoint readers and live inventories exist; the state owner is preparing
-   the next account working-set boundary. Sparse maps must not acquire complete-
-   snapshot authority. Normal production constructors remain untouched.
+   checkpoint readers and live inventories exist; the exact-identity native
+   adapter is integrated as `b73055338`. It preserves full-width account values
+   and physical raw-read classifications beneath current journal overlays.
+   Sparse maps must not acquire complete-snapshot authority.
 4. Finish native semantic reconstruction and catalog qualification before
    adoption. All H-5..H headers/roots/native accounts and sampled paths are
    readable; no sampled dependency is missing. Full head DPoS and slashing live

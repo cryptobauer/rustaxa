@@ -96,3 +96,34 @@ from the assignment alone.
 
 No new agent was spawned; no Luna slot became available or substitute helper
 was assigned. No model/account quota conclusion follows from this handoff.
+
+
+## Checkpoint reader, custody corpus and trace integration
+
+Requested models remain Astra lead/reviewer and Sol high implementation owners.
+The existing threads ran successfully; no new spawn or routing failure occurred.
+No Luna slot was established; no model substitution or billing inference follows.
+
+- Sol rewards owner: approved scoped cleanup `16778db9d` integrated as
+  `25c9e41e1`. Earlier rejected candidates remain excluded. Process-lifetime
+  scheduler design is a separate active task.
+- Astra lead: revert bytes/oracle `4c7c77983`, independently reviewed. Actual Go
+  ABI decoder and ordinary DryRunner diagnostics pass targeted comparisons.
+- Sol execution owner: collector `1bc14a4e0` and phase documentation `b476da104`
+  integrated as `7a005eae9` / `d21d1769a`; three collector tests pass. Subsequent
+  driver hooks remain under independent review and are not accepted by assignment.
+- Sol native owner: direct V1 Go corpus tests `59db07f6a9` integrated as
+  `ee9fc24f3`; both tests pass. Paired V1/V2 cancellation is active.
+- Sol state owner: checkpoint native adapter `5a4d00619` integrated as
+  `b73055338`; five adapter tests pass. Bounded native inverse coverage tooling
+  is active, with no semantic completeness or adoption authority claimed.
+- Astra lead: persisted Go-seed adapter coverage passes all five native simulation
+  tests, including reopen, full-width values, unavailable raw history and exact
+  unchanged database rows. This uses synthetic fixture provenance only.
+
+Combined `make rewrite-validate-fast` passed, as did strict affected-test
+clippy with `--no-deps`, a Rust-enabled `rust_consensus_tests` build with 12 jobs
+and all four focused FinalChain/account-query/result bridge tests. Strict
+dependency-wide clippy encountered existing consensus warnings; the normal
+repository gate passed without weakening checks. Expensive broad replay and
+production routing remain unauthorized.
