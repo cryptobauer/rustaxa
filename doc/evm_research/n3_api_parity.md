@@ -262,3 +262,35 @@ strict affected-target clippy and `make rewrite-validate-fast` passed.
 python3 -O experiments/evm_feasibility/revert_reference.py
 cargo test --locked --manifest-path rust/Cargo.toml -p rustaxa-evm --test revert_reference --test simulation_reference
 ```
+
+## Historical block selection and bounded trace hooks
+
+`query_policy::select_historical_query` preserves operation-specific defaults and
+future-period selection without opening a reader. Account and ordinary call
+requests default to the FinalChain head then clamp to the concrete head; storage
+and code default to concrete head and produce zero/empty only for explicit future
+requests. Direct DPoS calls retain the requested/default FinalChain period. Trace
+rejects periods above concrete head before header lookup; its selected period B
+is the execution header, with state max(B-1,0) selected separately by TraceRunner.
+
+The reference harness extracts the five complete current C++ owner methods,
+substituting only recording leaves and available headers. All 188 cases match
+Rust, including unequal heads, explicit genesis and u64 boundaries. This assumes
+stable caller-observed heads and a readable owner. It proves selection, not RPC
+parsing, concurrent lifecycle behavior, header availability or leaf-error policy.
+In particular, future composition must retain original account request context:
+the C++ clamped future branch and ordinary historical branch catch leaf errors
+differently. Missing historical data never becomes a future-request constant.
+
+The reviewed driver now emits bounded opcode facts from the same interpreter.
+Six focused tests cover four actual Go scenarios, unsupported gas/nested-frame
+paths, and exact host-error precedence. It preserves duplicate fault rows for
+REVERT and return-data bounds, and emits no guessed row for unsupported gas,
+early-fault or CALL/CREATE suspension paths. Frame settlement events and complete
+structured/OpenEthereum output remain separate work. Current oracle refund
+witnesses are zero; nonzero refund timing is source-reviewed only.
+
+```sh
+python3 -O experiments/evm_feasibility/query_policy_reference.py
+cargo test --locked --manifest-path rust/Cargo.toml -p rustaxa-evm --test query_policy_reference --test trace_driver_reference
+```

@@ -127,3 +127,24 @@ and all four focused FinalChain/account-query/result bridge tests. Strict
 dependency-wide clippy encountered existing consensus warnings; the normal
 repository gate passed without weakening checks. Expensive broad replay and
 production routing remain unauthorized.
+
+## Block selection and opcode hook handoff
+
+- Requested Sol high execution owner ran and produced reviewed `d2b0157df`,
+  integrated as `46380b0a3`. Root's six focused driver tests and affected strict
+  clippy passed. Related default structured serialization work resumed in the
+  same thread; full trace API parity remains open.
+- Requested Astra lead implemented pure block selection and an actual C++ method
+  extraction oracle with 188 cases. Independent Astra source review approved;
+  root corpus test, Python `-O` reproduction and strict affected clippy passed.
+- Requested Sol high rewards owner and Astra reviewer agreed the scheduler must
+  bind to actual process-local StateAPI epochs, source FinalChain instance and
+  publication lifecycle. Coherent epoch/transport/session implementation now
+  belongs to the existing rewards thread, including named rewrite-owned boundary
+  files. No backend routing or durable encoding change is authorized.
+- Sol state owner continues bounded inverse decoding; independent review found
+  permissive RLP shape/length handling that must be corrected before approval.
+  An authenticated live inventory alone cannot establish semantic completeness.
+
+No new agent was spawned, no new routing failure occurred, and no Luna slot or
+billing/quota usage is inferred from these assignments.

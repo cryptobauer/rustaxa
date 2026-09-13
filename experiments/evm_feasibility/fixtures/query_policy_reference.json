@@ -1,0 +1,1473 @@
+{
+  "source": "libraries/core_libs/consensus/src/application/external_evm_state_owner.cpp",
+  "methods_sha256": "226fc73cf3070520e8939d6dc50a76c3d28e053c5153daf4594115bd2d2188db",
+  "harness_sha256": "0ad63cb244bd6bc842a1e5badc38adef6863f775f400c7c42fce714cd73e012e",
+  "scope": "selection only; stable heads, readable owner and available headers; leaves stop before state execution",
+  "cases": [
+    {
+      "op": 0,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": null,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 0,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 0,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 0,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 6,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 0,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 7,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 0,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 8,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 0,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 10,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 0,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 11,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 0,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 18446744073709551615,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 1,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": null,
+      "kind": "storage",
+      "period": 0
+    },
+    {
+      "op": 1,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 0,
+      "kind": "storage",
+      "period": 0
+    },
+    {
+      "op": 1,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 6,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 1,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 7,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 1,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 8,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 1,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 10,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 1,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 11,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 1,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 18446744073709551615,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 2,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": null,
+      "kind": "code",
+      "period": 0
+    },
+    {
+      "op": 2,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 0,
+      "kind": "code",
+      "period": 0
+    },
+    {
+      "op": 2,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 6,
+      "kind": "empty_code"
+    },
+    {
+      "op": 2,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 7,
+      "kind": "empty_code"
+    },
+    {
+      "op": 2,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 8,
+      "kind": "empty_code"
+    },
+    {
+      "op": 2,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 10,
+      "kind": "empty_code"
+    },
+    {
+      "op": 2,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 11,
+      "kind": "empty_code"
+    },
+    {
+      "op": 2,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 18446744073709551615,
+      "kind": "empty_code"
+    },
+    {
+      "op": 3,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": null,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 3,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 0,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 3,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 6,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 3,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 7,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 3,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 8,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 3,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 10,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 3,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 11,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 3,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 18446744073709551615,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 4,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": null,
+      "kind": "native",
+      "period": 0
+    },
+    {
+      "op": 4,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 0,
+      "kind": "native",
+      "period": 0
+    },
+    {
+      "op": 4,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 6,
+      "kind": "native",
+      "period": 6
+    },
+    {
+      "op": 4,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 7,
+      "kind": "native",
+      "period": 7
+    },
+    {
+      "op": 4,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 8,
+      "kind": "native",
+      "period": 8
+    },
+    {
+      "op": 4,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 10,
+      "kind": "native",
+      "period": 10
+    },
+    {
+      "op": 4,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 11,
+      "kind": "native",
+      "period": 11
+    },
+    {
+      "op": 4,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 18446744073709551615,
+      "kind": "native",
+      "period": 18446744073709551615
+    },
+    {
+      "op": 5,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 0,
+      "kind": "trace",
+      "period": 0
+    },
+    {
+      "op": 5,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 6,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 5,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 7,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 5,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 8,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 5,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 10,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 5,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 11,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 5,
+      "app_head": 0,
+      "concrete_head": 0,
+      "requested": 18446744073709551615,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 0,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": null,
+      "kind": "account",
+      "period": 7
+    },
+    {
+      "op": 0,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 0,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 0,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 6,
+      "kind": "account",
+      "period": 6
+    },
+    {
+      "op": 0,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 7,
+      "kind": "account",
+      "period": 7
+    },
+    {
+      "op": 0,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 8,
+      "kind": "account",
+      "period": 7
+    },
+    {
+      "op": 0,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 10,
+      "kind": "account",
+      "period": 7
+    },
+    {
+      "op": 0,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 11,
+      "kind": "account",
+      "period": 7
+    },
+    {
+      "op": 0,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 18446744073709551615,
+      "kind": "account",
+      "period": 7
+    },
+    {
+      "op": 1,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": null,
+      "kind": "storage",
+      "period": 7
+    },
+    {
+      "op": 1,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 0,
+      "kind": "storage",
+      "period": 0
+    },
+    {
+      "op": 1,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 6,
+      "kind": "storage",
+      "period": 6
+    },
+    {
+      "op": 1,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 7,
+      "kind": "storage",
+      "period": 7
+    },
+    {
+      "op": 1,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 8,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 1,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 10,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 1,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 11,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 1,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 18446744073709551615,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 2,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": null,
+      "kind": "code",
+      "period": 7
+    },
+    {
+      "op": 2,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 0,
+      "kind": "code",
+      "period": 0
+    },
+    {
+      "op": 2,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 6,
+      "kind": "code",
+      "period": 6
+    },
+    {
+      "op": 2,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 7,
+      "kind": "code",
+      "period": 7
+    },
+    {
+      "op": 2,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 8,
+      "kind": "empty_code"
+    },
+    {
+      "op": 2,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 10,
+      "kind": "empty_code"
+    },
+    {
+      "op": 2,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 11,
+      "kind": "empty_code"
+    },
+    {
+      "op": 2,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 18446744073709551615,
+      "kind": "empty_code"
+    },
+    {
+      "op": 3,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": null,
+      "kind": "call",
+      "period": 7
+    },
+    {
+      "op": 3,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 0,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 3,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 6,
+      "kind": "call",
+      "period": 6
+    },
+    {
+      "op": 3,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 7,
+      "kind": "call",
+      "period": 7
+    },
+    {
+      "op": 3,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 8,
+      "kind": "call",
+      "period": 7
+    },
+    {
+      "op": 3,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 10,
+      "kind": "call",
+      "period": 7
+    },
+    {
+      "op": 3,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 11,
+      "kind": "call",
+      "period": 7
+    },
+    {
+      "op": 3,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 18446744073709551615,
+      "kind": "call",
+      "period": 7
+    },
+    {
+      "op": 4,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": null,
+      "kind": "native",
+      "period": 10
+    },
+    {
+      "op": 4,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 0,
+      "kind": "native",
+      "period": 0
+    },
+    {
+      "op": 4,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 6,
+      "kind": "native",
+      "period": 6
+    },
+    {
+      "op": 4,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 7,
+      "kind": "native",
+      "period": 7
+    },
+    {
+      "op": 4,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 8,
+      "kind": "native",
+      "period": 8
+    },
+    {
+      "op": 4,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 10,
+      "kind": "native",
+      "period": 10
+    },
+    {
+      "op": 4,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 11,
+      "kind": "native",
+      "period": 11
+    },
+    {
+      "op": 4,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 18446744073709551615,
+      "kind": "native",
+      "period": 18446744073709551615
+    },
+    {
+      "op": 5,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 0,
+      "kind": "trace",
+      "period": 0
+    },
+    {
+      "op": 5,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 6,
+      "kind": "trace",
+      "period": 6
+    },
+    {
+      "op": 5,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 7,
+      "kind": "trace",
+      "period": 7
+    },
+    {
+      "op": 5,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 8,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 5,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 10,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 5,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 11,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 5,
+      "app_head": 10,
+      "concrete_head": 7,
+      "requested": 18446744073709551615,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 0,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": null,
+      "kind": "account",
+      "period": 7
+    },
+    {
+      "op": 0,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 0,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 0,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 6,
+      "kind": "account",
+      "period": 6
+    },
+    {
+      "op": 0,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 7,
+      "kind": "account",
+      "period": 7
+    },
+    {
+      "op": 0,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 8,
+      "kind": "account",
+      "period": 8
+    },
+    {
+      "op": 0,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 10,
+      "kind": "account",
+      "period": 10
+    },
+    {
+      "op": 0,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 11,
+      "kind": "account",
+      "period": 10
+    },
+    {
+      "op": 0,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 18446744073709551615,
+      "kind": "account",
+      "period": 10
+    },
+    {
+      "op": 1,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": null,
+      "kind": "storage",
+      "period": 10
+    },
+    {
+      "op": 1,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 0,
+      "kind": "storage",
+      "period": 0
+    },
+    {
+      "op": 1,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 6,
+      "kind": "storage",
+      "period": 6
+    },
+    {
+      "op": 1,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 7,
+      "kind": "storage",
+      "period": 7
+    },
+    {
+      "op": 1,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 8,
+      "kind": "storage",
+      "period": 8
+    },
+    {
+      "op": 1,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 10,
+      "kind": "storage",
+      "period": 10
+    },
+    {
+      "op": 1,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 11,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 1,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 18446744073709551615,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 2,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": null,
+      "kind": "code",
+      "period": 10
+    },
+    {
+      "op": 2,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 0,
+      "kind": "code",
+      "period": 0
+    },
+    {
+      "op": 2,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 6,
+      "kind": "code",
+      "period": 6
+    },
+    {
+      "op": 2,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 7,
+      "kind": "code",
+      "period": 7
+    },
+    {
+      "op": 2,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 8,
+      "kind": "code",
+      "period": 8
+    },
+    {
+      "op": 2,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 10,
+      "kind": "code",
+      "period": 10
+    },
+    {
+      "op": 2,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 11,
+      "kind": "empty_code"
+    },
+    {
+      "op": 2,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 18446744073709551615,
+      "kind": "empty_code"
+    },
+    {
+      "op": 3,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": null,
+      "kind": "call",
+      "period": 7
+    },
+    {
+      "op": 3,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 0,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 3,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 6,
+      "kind": "call",
+      "period": 6
+    },
+    {
+      "op": 3,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 7,
+      "kind": "call",
+      "period": 7
+    },
+    {
+      "op": 3,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 8,
+      "kind": "call",
+      "period": 8
+    },
+    {
+      "op": 3,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 10,
+      "kind": "call",
+      "period": 10
+    },
+    {
+      "op": 3,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 11,
+      "kind": "call",
+      "period": 10
+    },
+    {
+      "op": 3,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 18446744073709551615,
+      "kind": "call",
+      "period": 10
+    },
+    {
+      "op": 4,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": null,
+      "kind": "native",
+      "period": 7
+    },
+    {
+      "op": 4,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 0,
+      "kind": "native",
+      "period": 0
+    },
+    {
+      "op": 4,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 6,
+      "kind": "native",
+      "period": 6
+    },
+    {
+      "op": 4,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 7,
+      "kind": "native",
+      "period": 7
+    },
+    {
+      "op": 4,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 8,
+      "kind": "native",
+      "period": 8
+    },
+    {
+      "op": 4,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 10,
+      "kind": "native",
+      "period": 10
+    },
+    {
+      "op": 4,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 11,
+      "kind": "native",
+      "period": 11
+    },
+    {
+      "op": 4,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 18446744073709551615,
+      "kind": "native",
+      "period": 18446744073709551615
+    },
+    {
+      "op": 5,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 0,
+      "kind": "trace",
+      "period": 0
+    },
+    {
+      "op": 5,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 6,
+      "kind": "trace",
+      "period": 6
+    },
+    {
+      "op": 5,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 7,
+      "kind": "trace",
+      "period": 7
+    },
+    {
+      "op": 5,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 8,
+      "kind": "trace",
+      "period": 8
+    },
+    {
+      "op": 5,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 10,
+      "kind": "trace",
+      "period": 10
+    },
+    {
+      "op": 5,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 11,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 5,
+      "app_head": 7,
+      "concrete_head": 10,
+      "requested": 18446744073709551615,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    },
+    {
+      "op": 0,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": null,
+      "kind": "account",
+      "period": 18446744073709551614
+    },
+    {
+      "op": 0,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 0,
+      "kind": "account",
+      "period": 0
+    },
+    {
+      "op": 0,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 6,
+      "kind": "account",
+      "period": 6
+    },
+    {
+      "op": 0,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 7,
+      "kind": "account",
+      "period": 7
+    },
+    {
+      "op": 0,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 8,
+      "kind": "account",
+      "period": 8
+    },
+    {
+      "op": 0,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 10,
+      "kind": "account",
+      "period": 10
+    },
+    {
+      "op": 0,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 11,
+      "kind": "account",
+      "period": 11
+    },
+    {
+      "op": 0,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 18446744073709551615,
+      "kind": "account",
+      "period": 18446744073709551614
+    },
+    {
+      "op": 1,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": null,
+      "kind": "storage",
+      "period": 18446744073709551614
+    },
+    {
+      "op": 1,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 0,
+      "kind": "storage",
+      "period": 0
+    },
+    {
+      "op": 1,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 6,
+      "kind": "storage",
+      "period": 6
+    },
+    {
+      "op": 1,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 7,
+      "kind": "storage",
+      "period": 7
+    },
+    {
+      "op": 1,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 8,
+      "kind": "storage",
+      "period": 8
+    },
+    {
+      "op": 1,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 10,
+      "kind": "storage",
+      "period": 10
+    },
+    {
+      "op": 1,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 11,
+      "kind": "storage",
+      "period": 11
+    },
+    {
+      "op": 1,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 18446744073709551615,
+      "kind": "zero_storage"
+    },
+    {
+      "op": 2,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": null,
+      "kind": "code",
+      "period": 18446744073709551614
+    },
+    {
+      "op": 2,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 0,
+      "kind": "code",
+      "period": 0
+    },
+    {
+      "op": 2,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 6,
+      "kind": "code",
+      "period": 6
+    },
+    {
+      "op": 2,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 7,
+      "kind": "code",
+      "period": 7
+    },
+    {
+      "op": 2,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 8,
+      "kind": "code",
+      "period": 8
+    },
+    {
+      "op": 2,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 10,
+      "kind": "code",
+      "period": 10
+    },
+    {
+      "op": 2,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 11,
+      "kind": "code",
+      "period": 11
+    },
+    {
+      "op": 2,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 18446744073709551615,
+      "kind": "empty_code"
+    },
+    {
+      "op": 3,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": null,
+      "kind": "call",
+      "period": 18446744073709551614
+    },
+    {
+      "op": 3,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 0,
+      "kind": "call",
+      "period": 0
+    },
+    {
+      "op": 3,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 6,
+      "kind": "call",
+      "period": 6
+    },
+    {
+      "op": 3,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 7,
+      "kind": "call",
+      "period": 7
+    },
+    {
+      "op": 3,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 8,
+      "kind": "call",
+      "period": 8
+    },
+    {
+      "op": 3,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 10,
+      "kind": "call",
+      "period": 10
+    },
+    {
+      "op": 3,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 11,
+      "kind": "call",
+      "period": 11
+    },
+    {
+      "op": 3,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 18446744073709551615,
+      "kind": "call",
+      "period": 18446744073709551614
+    },
+    {
+      "op": 4,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": null,
+      "kind": "native",
+      "period": 18446744073709551615
+    },
+    {
+      "op": 4,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 0,
+      "kind": "native",
+      "period": 0
+    },
+    {
+      "op": 4,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 6,
+      "kind": "native",
+      "period": 6
+    },
+    {
+      "op": 4,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 7,
+      "kind": "native",
+      "period": 7
+    },
+    {
+      "op": 4,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 8,
+      "kind": "native",
+      "period": 8
+    },
+    {
+      "op": 4,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 10,
+      "kind": "native",
+      "period": 10
+    },
+    {
+      "op": 4,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 11,
+      "kind": "native",
+      "period": 11
+    },
+    {
+      "op": 4,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 18446744073709551615,
+      "kind": "native",
+      "period": 18446744073709551615
+    },
+    {
+      "op": 5,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 0,
+      "kind": "trace",
+      "period": 0
+    },
+    {
+      "op": 5,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 6,
+      "kind": "trace",
+      "period": 6
+    },
+    {
+      "op": 5,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 7,
+      "kind": "trace",
+      "period": 7
+    },
+    {
+      "op": 5,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 8,
+      "kind": "trace",
+      "period": 8
+    },
+    {
+      "op": 5,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 10,
+      "kind": "trace",
+      "period": 10
+    },
+    {
+      "op": 5,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 11,
+      "kind": "trace",
+      "period": 11
+    },
+    {
+      "op": 5,
+      "app_head": 18446744073709551615,
+      "concrete_head": 18446744073709551614,
+      "requested": 18446744073709551615,
+      "error": "FinalChain::trace is not implemented above EVM head"
+    }
+  ]
+}
