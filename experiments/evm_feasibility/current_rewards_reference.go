@@ -94,6 +94,14 @@ func currentRewardsConfig() chain_config.ChainConfig {
 	}
 }
 
+func zeroYieldRewardsConfig(sender common.Address) chain_config.ChainConfig {
+	cfg := currentRewardsConfig()
+	cfg.DPOS.YieldPercentage = 0
+	cfg.GenesisBalances[sender] = big.NewInt(1_000_000)
+	cfg.Hardforks.AspenHf.MaxSupply = big.NewInt(1_006_000)
+	return cfg
+}
+
 func currentRewardSlots(reader state_db.ExtendedReader) []map[string]any {
 	keys := []struct {
 		name string
@@ -192,6 +200,54 @@ func runCurrentRewardsWitness() map[string]any {
 			"exact_trace_limit":        "raw reward-row writes and intermediate account replacements follow Go runtime map order and therefore are not stable for a multi-entry map",
 			"physical_retention_limit": "this bounded witness does not prove equality of retained intermediate trie nodes or other physical database artifacts across multi-entry map orders; full acceptance must inventory those artifacts independently even though the committed root is order-independent",
 		},
+		"zero_yield_end_block": runZeroYieldEndBlockWitness(),
+	}
+}
+
+func runZeroYieldEndBlockWitness() map[string]any {
+	sender := testSender()
+	cfg := zeroYieldRewardsConfig(sender)
+	latest := newMemoryLatest()
+	transition := newStateTransition(latest, &cfg)
+	defer transition.Close()
+	genesis := state_db.ExtendedReader{Reader: latest.readerAt(0)}
+	beforeDescriptor := latest.GetCommittedDescriptor()
+	before := map[string]any{
+		"descriptor":   map[string]any{"period": 0, "root": hex.EncodeToString(beforeDescriptor.StateRoot[:])},
+		"dpos_account": observeAccountReader(genesis, currentDpos), "slots": currentRewardSlots(genesis),
+	}
+
+	transition.BeginBlock(&vm.BlockInfo{Author: currentValidatorOne, GasLimit: blockGas, Difficulty: new(big.Int)})
+	delegateInput := append([]byte{0x5c, 0x19, 0xa9, 0x5c}, make([]byte, 12)...)
+	delegateInput = append(delegateInput, currentValidatorOne[:]...)
+	spec := transactionSpec{Name: "delegate", Nonce: 0, GasPrice: 1, Gas: transactionGas, To: &currentDpos, Value: 100, Input: delegateInput}
+	signed := signTransaction(spec, sender, testPrivateKey)
+	tx := transactionFromSigned(spec, signed, sender)
+	result := transition.ExecuteTransaction(&tx)
+	transaction := transactionRow(spec, signed, tx, result, transition.GetEvmState().GetRefund())
+
+	stats := currentStats(currentValidatorOne, currentValidatorOne, 11)
+	beginCurrentRawWrites()
+	minted := transition.DistributeRewards(&stats)
+	distributionWrites := finishCurrentRawWrites()
+	if minted != nil {
+		panic("zero configured yield unexpectedly called reward distribution")
+	}
+	beginCurrentRawWrites()
+	transition.EndBlock()
+	endBlockWrites := finishCurrentRawWrites()
+	root := transition.Commit()
+	afterReader := state_db.ExtendedReader{Reader: latest.readerAt(1)}
+	after := map[string]any{
+		"descriptor":   map[string]any{"period": 1, "root": hex.EncodeToString(root[:])},
+		"dpos_account": observeAccountReader(afterReader, currentDpos), "slots": currentRewardSlots(afterReader),
+	}
+	return map[string]any{
+		"configuration": map[string]any{"period": 1, "yield_percentage": 0, "aspen_part_two": 1},
+		"transaction":   transaction,
+		"before":        before, "distribution_return": nil, "distribution_ordered_raw_writes": distributionWrites,
+		"end_block_ordered_raw_writes": endBlockWrites, "after": after,
+		"contract": "RewardsEnabled is false, so StateTransition.DistributeRewards returns nil without calling the DPoS contract; EndBlock still flushes DPoS counters changed by the preceding delegate transaction",
 	}
 }
 

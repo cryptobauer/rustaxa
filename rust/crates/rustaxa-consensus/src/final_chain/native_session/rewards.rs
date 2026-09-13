@@ -1,7 +1,8 @@
 //! Terminal staged rewards and end-block execution for the mixed-period profile.
 //!
-//! The adapter covers ordered fixed-yield and Aspen-part-two distributions with
-//! any number of live validators. It reuses FinalChain's reward planner as
+//! The adapter covers disabled-yield end-block processing and ordered
+//! fixed-yield and Aspen-part-two distributions with any number of live
+//! validators. It reuses FinalChain's reward planner as
 //! semantic authority, reconstructs the pinned Go helper's intermediate write
 //! order, and checks that reconstruction reaches the planner's complete DPoS
 //! result. Go iterates each distribution's validator map in runtime map order;
@@ -33,14 +34,16 @@ impl FinalChainNativeSession<'_> {
     /// Finishes one bound session through rewards and deferred DPoS end-block writes.
     ///
     /// The opaque plan must belong to this exact request and pending period. The
-    /// current adapter accepts Magnolia reward periods with nonzero configured
-    /// yield, ordered zero-or-more distribution rows, at most one validator per
-    /// row for exact Go raw-order parity, no jailed-validator cleanup, and no
-    /// redelegation correction at this height. Both fixed-yield and Aspen part
-    /// two supply transitions are reconstructed. Any state-read, planner,
-    /// reconstruction, or raw-integrity error aborts the session and exposes no
-    /// result. Successful completion consumes the session phase and cannot be
-    /// repeated.
+    /// current adapter accepts Magnolia reward periods, ordered zero-or-more
+    /// distribution rows, at most one validator per enabled-yield row for exact
+    /// Go raw-order parity, no jailed-validator cleanup, and no redelegation
+    /// correction at this height. A zero configured yield skips distributions
+    /// exactly as `StateTransition::DistributeRewards` does, while retaining
+    /// deferred end-block writes. Fixed-yield and Aspen part-two supply
+    /// transitions are reconstructed when rewards are enabled. Any state-read,
+    /// planner, reconstruction, or raw-integrity error aborts the session and
+    /// exposes no result. Successful completion consumes the session phase and
+    /// cannot be repeated.
     pub fn finish_rewards(
         &mut self,
         plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
@@ -94,7 +97,6 @@ impl FinalChainNativeSession<'_> {
         if self
             .final_chain
             .pre_magnolia_fee_reward_period(self.pending_period)
-            || self.final_chain.rewards_config.yield_percentage == 0
             || self.pending_period == self.final_chain.rewards_config.fix_redelegate_block_num
             || !self.dpos_state.slashing_jailed_validators.is_empty()
         {
@@ -102,9 +104,11 @@ impl FinalChainNativeSession<'_> {
         }
         let distributions = decode_rewards_block_distributions(&plan.distribution_stats)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
-        if distributions
-            .iter()
-            .any(|stats| stats.validators_stats.len() > 1)
+        let rewards_enabled = self.final_chain.rewards_config.yield_percentage != 0;
+        if rewards_enabled
+            && distributions
+                .iter()
+                .any(|stats| stats.validators_stats.len() > 1)
         {
             return Err(FinalChainNativeSessionError::RewardsScopeUnsupported);
         }
@@ -112,7 +116,7 @@ impl FinalChainNativeSession<'_> {
         let mut trace = FinalChainNativeRawTrace::new(state);
         self.validate_deferred_origins(&mut trace)?;
         let mut next = self.dpos_state.clone();
-        let mut accounts = if distributions.is_empty() {
+        let mut accounts = if !rewards_enabled || distributions.is_empty() {
             StagedDposAccountPort::from_state(state)
         } else {
             StagedDposAccountPort::new([(
@@ -126,8 +130,11 @@ impl FinalChainNativeSession<'_> {
             .final_chain
             .plan_minted_rewards(self.pending_period, &distributions, &self.dpos_state)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
-        let reconstruction =
-            self.reconstruct_rewards(&distributions, &mut next, &mut trace, &mut accounts)?;
+        let reconstruction = if rewards_enabled {
+            self.reconstruct_rewards(&distributions, &mut next, &mut trace, &mut accounts)?
+        } else {
+            DposTokenAmount::zero()
+        };
         if reconstruction != planned.total_minted_reward {
             return Err(FinalChainNativeSessionError::Domain(
                 "selected reward reconstruction disagrees with FinalChain minted total".to_owned(),
@@ -144,8 +151,12 @@ impl FinalChainNativeSession<'_> {
 
         let mut expected = self.dpos_state.clone();
         let mut expected_rewards = planned.dpos_rewards;
-        let mut fees = fee_rewards_from_distribution_stats(&distributions)
-            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        let mut fees = if rewards_enabled {
+            fee_rewards_from_distribution_stats(&distributions)
+                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
+        } else {
+            BTreeMap::new()
+        };
         retain_existing_validator_fee_rewards(&mut fees, &expected);
         merge_reward_map(&mut expected_rewards.commission_rewards, &fees)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
@@ -652,12 +663,17 @@ mod tests {
     const DELEGATOR_TWO: [u8; 20] = [
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x42,
     ];
+    const ZERO_YIELD_DELEGATOR: [u8; 20] = [
+        0x1a, 0x64, 0x2f, 0x0e, 0x3c, 0x3a, 0xf5, 0x45, 0xe7, 0xac, 0xbd, 0x38, 0xb0, 0x72, 0x51,
+        0xb3, 0x99, 0x09, 0x14, 0xf1,
+    ];
     type RewardRows = BTreeMap<([u8; 20], [u8; 32]), ConcreteRead<Vec<u8>>>;
 
     #[derive(Default)]
     struct RewardState {
         rows: RefCell<RewardRows>,
         account_reads: Cell<usize>,
+        dpos_balance: RefCell<BigInt>,
     }
 
     impl RewardState {
@@ -686,7 +702,24 @@ mod tests {
             Self {
                 rows: RefCell::new(rows),
                 account_reads: Cell::new(0),
+                dpos_balance: RefCell::new(BigInt::from(3_000_u64)),
             }
+        }
+
+        fn apply(&self, mutation: &FinalChainNativeRawMutation) {
+            let value = match &mutation.operation {
+                FinalChainNativeRawOperation::Put(value) => {
+                    ConcreteRead::Present(value.as_bytes().to_vec())
+                }
+                FinalChainNativeRawOperation::Delete => ConcreteRead::Present(Vec::new()),
+            };
+            self.rows
+                .borrow_mut()
+                .insert((mutation.address, mutation.key.0), value);
+        }
+
+        fn set_dpos_balance(&self, balance: u64) {
+            *self.dpos_balance.borrow_mut() = BigInt::from(balance);
         }
     }
 
@@ -704,7 +737,7 @@ mod tests {
             Ok(FinalChainNativeAccount {
                 exists: true,
                 nonce: FinalChainNonce::from_u64(1),
-                balance: BigInt::from(3_000_u64),
+                balance: self.dpos_balance.borrow().clone(),
             })
         }
 
@@ -733,7 +766,7 @@ mod tests {
         ))
     }
 
-    fn with_current_reward_chain(test: impl FnOnce(&FinalChain)) {
+    fn with_reward_chain(yield_percentage: u16, test: impl FnOnce(&FinalChain)) {
         let path = temp_db_path();
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = |address, delegator, stake: u64, commission| GenesisValidator {
@@ -771,7 +804,7 @@ mod tests {
                 fix_redelegate_block_num: FinalChainBlockNumber::MAX,
                 max_block_author_reward_percent: 10,
                 dag_proposers_reward_percent: 50,
-                yield_percentage: 1,
+                yield_percentage,
                 dpos_blocks_per_year: 10,
                 cornus_period: FinalChainBlockNumber::GENESIS,
                 genesis_balance_sum: Some(DposTokenAmount::from(U256::from(5_000))),
@@ -788,6 +821,10 @@ mod tests {
         drop(chain);
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    fn with_current_reward_chain(test: impl FnOnce(&FinalChain)) {
+        with_reward_chain(1, test);
     }
 
     fn distribution_rlp(
@@ -836,6 +873,28 @@ mod tests {
         match &mutation.operation {
             FinalChainNativeRawOperation::Put(value) => value.as_bytes().to_vec(),
             FinalChainNativeRawOperation::Delete => Vec::new(),
+        }
+    }
+
+    fn delegate_request() -> FinalChainNativeRequest {
+        let mut input = DPOS_DELEGATE_SELECTOR.to_vec();
+        input.extend_from_slice(&[0; 12]);
+        input.extend_from_slice(&VALIDATOR_ONE);
+        FinalChainNativeRequest {
+            id: FinalChainNativeInvocationId {
+                transaction: FinalChainTransactionPosition::new(0),
+                sequence: 0,
+            },
+            period: 1.into(),
+            depth: 0,
+            kind: FinalChainNativeCallKind::Call,
+            is_static: false,
+            caller: ZERO_YIELD_DELEGATOR,
+            contract: DPOS_CONTRACT_ADDRESS,
+            state_address: DPOS_CONTRACT_ADDRESS,
+            value: FinalChainNativeValue::new(BigUint::from(100_u64)),
+            input,
+            supplied_gas: DPOS_DELEGATE_GAS.into(),
         }
     }
 
@@ -983,6 +1042,80 @@ mod tests {
             assert!(outcome.raw_mutations.is_empty());
             assert_eq!(outcome.dpos_snapshot, before);
             assert_eq!(state.account_reads.get(), 0);
+        });
+    }
+
+    #[test]
+    fn zero_yield_skips_distribution_but_flushes_deferred_end_block_rows() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../experiments/evm_feasibility/fixtures/current_rewards_public.json"
+        )))
+        .unwrap();
+        let fixture = &fixture["zero_yield_end_block"];
+        assert!(fixture["distribution_return"].is_null());
+        assert!(
+            fixture["distribution_ordered_raw_writes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        with_reward_chain(0, |chain| {
+            let reward_plan = plan(vec![distribution_rlp(1, VALIDATOR_ONE, VALIDATOR_ONE, 11)]);
+            let mut session = chain
+                .begin_native_session_bound(
+                    reward_plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            let state = RewardState::from_snapshot(&session.dpos_state);
+            let delegate = delegate_request();
+            let quote = session.prepare(&delegate, &state).unwrap();
+            let FinalChainNativeInvocationResult::Completed(delegate_outcome) =
+                session.invoke(&delegate, quote, &state).unwrap()
+            else {
+                panic!("delegate fixture has sufficient gas")
+            };
+            assert_eq!(delegate_outcome.status, FinalChainNativeStatus::Success);
+            for mutation in &delegate_outcome.raw_mutations {
+                state.apply(mutation);
+            }
+            // The surrounding ordinary EVM frame has already transferred the
+            // delegate value before terminal rewards execute.
+            state.set_dpos_balance(3_100);
+
+            let outcome = session.finish_rewards(&reward_plan, &state).unwrap();
+            assert_eq!(outcome.total_reward, DposTokenAmount::zero());
+            assert!(outcome.account_mutations.is_empty());
+            assert_eq!(outcome.raw_mutations.len(), 2);
+            let expected = fixture["end_block_ordered_raw_writes"].as_array().unwrap();
+            for (actual, expected) in outcome.raw_mutations.iter().zip(expected) {
+                assert_eq!(hex_bytes(actual.address), expected["address"]);
+                assert_eq!(hex_bytes(actual.key.0), expected["key"]);
+                assert_eq!(hex_bytes(mutation_value(actual)), expected["value"]);
+            }
+            assert_eq!(
+                outcome
+                    .raw_mutations
+                    .iter()
+                    .map(|mutation| mutation.expected.clone())
+                    .collect::<Vec<_>>(),
+                vec![
+                    ConcreteRead::Present(vec![0x01, 0x2c]),
+                    ConcreteRead::Present(vec![0x0b, 0xb8]),
+                ]
+            );
+            assert_eq!(
+                outcome.dpos_snapshot.total_stakes[&VALIDATOR_ONE].as_u256(),
+                U256::from(1_100)
+            );
+            assert_eq!(outcome.dpos_snapshot.total_vote_count, 310);
+            assert!(matches!(
+                outcome.dpos_snapshot.aspen_supply_state,
+                AspenSupplyState::Unmigrated { .. }
+            ));
         });
     }
 }

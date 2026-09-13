@@ -127,9 +127,11 @@ def main() -> None:
             "schema", "references", "scope", "public_local_identical", "sha256",
             "exporter_sha256", "trace_patch",
         ):
-            assert saved[field] == manifest[field], f"reward manifest mismatch: {field}"
+            if saved[field] != manifest[field]:
+                raise RuntimeError(f"reward manifest mismatch: {field}")
         for label, data in artifacts.items():
-            assert data == (fixtures / f"current_rewards_{label}.json").read_bytes(), label
+            if data != (fixtures / f"current_rewards_{label}.json").read_bytes():
+                raise RuntimeError(f"reward fixture mismatch: {label}")
     print("Both pinned Aspen2 reward references " + ("recorded" if args.record else "reproduced"))
     print("Public/local identical:", manifest["public_local_identical"])
 
