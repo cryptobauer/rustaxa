@@ -183,15 +183,18 @@ impl ConcreteStateLifecycle {
     }
 
     /// Returns exact persisted lifecycle facts without changing marker or head.
-    pub fn observation(&self) -> ConcreteLifecycleObservation {
-        ConcreteLifecycleObservation {
+    /// A prior marker write error makes durability ambiguous, so a poisoned
+    /// handle refuses observations until the caller drops and reopens it.
+    pub fn observation(&self) -> Result<ConcreteLifecycleObservation, ConcreteReadError> {
+        self.ensure_usable()?;
+        Ok(ConcreteLifecycleObservation {
             identity: self.provenance.identity,
             committed: concrete_identity(self.provenance.committed_state),
             generation: self.provenance.generation,
             provenance_rlp: self.provenance_rlp.clone(),
             catalog_rlp: self.catalog_rlp.clone(),
             pending_marker_rlp: self.pending_rlp.clone(),
-        }
+        })
     }
 
     /// Borrows the immutable prior-generation read port over this same RocksDB
@@ -531,7 +534,7 @@ mod tests {
             catalog.clone(),
         )
         .unwrap();
-        let genesis_observed = lifecycle.observation();
+        let genesis_observed = lifecycle.observation().unwrap();
         assert_eq!(genesis_observed.generation, 0);
         assert_eq!(
             hex::encode(genesis_observed.committed.state_root),
@@ -560,7 +563,10 @@ mod tests {
 
         let mut lifecycle =
             ConcreteStateLifecycle::open(&path.0, chain_id, genesis_observed.committed).unwrap();
-        assert_eq!(lifecycle.observation().pending_marker_rlp, marker_rlp);
+        assert_eq!(
+            lifecycle.observation().unwrap().pending_marker_rlp,
+            marker_rlp
+        );
         assert!(lifecycle.discard_execution(&[0xc0]).is_err());
         let intermediate = lifecycle
             .prepare(
@@ -624,7 +630,7 @@ mod tests {
 
         let mut lifecycle =
             ConcreteStateLifecycle::open(&path.0, chain_id, committed.committed).unwrap();
-        assert_eq!(lifecycle.observation(), committed);
+        assert_eq!(lifecycle.observation().unwrap(), committed);
         let nodes = lifecycle.writer.db.cf_handle("2").unwrap();
         assert!(
             lifecycle
@@ -651,7 +657,13 @@ mod tests {
         let discard_rlp = encode_concrete_execution_marker(&discard_marker);
         lifecycle.stage_execution(&discard_rlp).unwrap();
         lifecycle.discard_execution(&discard_rlp).unwrap();
-        assert!(lifecycle.observation().pending_marker_rlp.is_empty());
+        assert!(
+            lifecycle
+                .observation()
+                .unwrap()
+                .pending_marker_rlp
+                .is_empty()
+        );
     }
 
     #[test]
@@ -678,7 +690,7 @@ mod tests {
             Err(ConcreteReadError::Io(_))
         ));
 
-        let observation = lifecycle.observation();
+        let observation = lifecycle.observation().unwrap();
         let marker = FinalChainConcreteExecutionMarker {
             identity: observation.identity,
             generation: 1,
@@ -732,7 +744,7 @@ mod tests {
             Vec::new(),
         )
         .unwrap();
-        let observation = lifecycle.observation();
+        let observation = lifecycle.observation().unwrap();
         let marker_a = FinalChainConcreteExecutionMarker {
             identity: observation.identity,
             generation: 1,
