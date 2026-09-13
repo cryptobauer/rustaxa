@@ -22,6 +22,25 @@ validates writer/prior/sequence binding. This gives the executor composition an
 account projection view without opening a second conflicting RocksDB handle or
 presenting prepared data as published state.
 
+`ConcreteStateLifecycle` adds the authorized durable boundary using the
+existing StateAPI keys and shared canonical codecs. Its only bootstrap path
+exclusively creates a new directory, derives the real period-0 root, generates
+a nonzero database identity, and atomically installs rows, descriptor,
+generation-0 provenance, and the sorted storage catalog. Existing databases
+must already contain matching provenance and catalog; any pending marker is
+returned unchanged for FinalChain recovery.
+
+Execution staging synchronously persists the exact canonical marker before
+preparation. Successive cumulative transaction preparations retain their
+content-addressed CF1/CF2/CF4 rows in memory so reference intermediate roots
+survive the final commit, while only the latest cumulative CF3/CF5 values are
+published. The approved commit consumes the lifecycle handle and uses one
+synchronous RocksDB batch for all rows, descriptor, exact provenance/catalog,
+and marker deletion. It validates marker/generation/prior/period lineage,
+prepared root, projection and catalog hashes, and monotonic catalog extension.
+FinalChain remains responsible for approving the projection and publishing the
+application generation.
+
 `persist_contents` atomically stages only compatible CF1-CF5 content, node, and
 version rows. It does not change `last_committed_descriptor`, provenance,
 catalog, pending-publication, or application metadata. Prepared values are
@@ -85,7 +104,7 @@ Targeted validation:
 
 ```text
 cargo test -p rustaxa-storage concrete_state::
-13 passed; 0 failed; 1 ignored (qualified copied-snapshot test)
+16 passed; 0 failed; 1 ignored (qualified copied-snapshot test)
 ```
 
 The documented Spark helper was attempted for the bounded mapping task but was
@@ -95,10 +114,9 @@ with the assigned lead model; this does not weaken the pinned byte comparisons.
 ## Remaining S4 work
 
 FinalChain still needs to consume the accepted execution/journal plan, bind it
-to `PreparedConcreteState`, and atomically authorize concrete descriptor,
-provenance, catalog, and pending-publication transitions through the existing
-durable lifecycle. The private descriptor helper exists only inside the
-disposable reopen test and is not callable by production code.
+to `PreparedConcreteState`, and drive this lifecycle through the persisted
+period composition. The private descriptor helper used by the earlier writer
+reopen test is not callable by production code.
 
 Imported database raw-history coverage remains unresolved. The writer does not
 turn a missing retained physical row into semantic zero or add markerless
@@ -112,4 +130,5 @@ rows from lifecycle-authorized staging. Callers must not reopen and prepare a
 different generation from the same prior after unpublished staging. The durable
 S4 lifecycle must keep prepared rows in memory until its existing atomic
 CF-row/descriptor/provenance/catalog/marker commit, eliminating that interim
-staging ambiguity.
+staging ambiguity. `ConcreteStateLifecycle` follows that rule; the standalone
+`persist_contents` API remains only the earlier unpublished storage milestone.

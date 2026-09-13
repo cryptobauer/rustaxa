@@ -10,6 +10,7 @@
 //! remains an explicit FinalChain integration boundary.
 
 mod codec;
+mod lifecycle;
 mod physical_node;
 mod reader;
 mod trie_writer;
@@ -19,6 +20,7 @@ pub use codec::{
     account_commitment_rlp, account_version_prefix, decode_physical_account,
     storage_version_prefix, versioned_key,
 };
+pub use lifecycle::{ConcreteCommitApproval, ConcreteLifecycleObservation, ConcreteStateLifecycle};
 pub use reader::{ConcreteStateReader, ConcreteStoragePath};
 pub use writer::{
     ConcreteAccountMutation, ConcreteCodeInsertion, ConcreteStateMutationBatch,
