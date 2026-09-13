@@ -7,6 +7,7 @@ namespace rustaxa {
 struct CanonicalBytes;
 struct HostFinalChainExecutionReport;
 struct HostFinalChainExecutionRequest;
+struct HostFinalChainDiscardRequest;
 struct HostFinalChainPreflightReport;
 struct HostFinalChainPreflightRequest;
 struct HostFinalChainRewardsReport;
@@ -161,7 +162,7 @@ class ExternalEvmPort final {
       const rustaxa::HostFinalChainStateCommitRequest& request) const;
   /** Discards one exact staged StateAPI marker and reports the lock-coherent concrete state after reopening. */
   rustaxa::HostFinalChainPreflightReport consensusDiscardFinalChainState(
-      const rustaxa::CanonicalBytes& concrete_marker) const;
+      const rustaxa::HostFinalChainDiscardRequest& request) const;
   /** Loads the exact finalized header/bridge facts needed for pillar restart recovery. */
   rustaxa::HostPillarAnchorStateReport consensusLoadPillarAnchorState(
       const rustaxa::HostPillarAnchorStateRequest& request) const;

@@ -224,6 +224,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                 })?;
         Ok(rustaxa_consensus::FinalChainExternalEvmPreflightReport {
             request_id: report.request_id,
+            state_api_epoch: report.state_api_epoch,
             committed: rustaxa_consensus::FinalChainExternalEvmCommittedStateDescriptor {
                 period: report.committed_period.into(),
                 state_root: report.committed_state_root,
@@ -373,6 +374,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         let report =
             self.0
                 .consensus_execute_final_chain_transactions(&HostFinalChainExecutionRequest {
+                    expected_state_api_epoch: request.state_api_epoch,
                     concrete_marker_rlp: request.concrete_marker_rlp.clone(),
                     block_author: request.block_author,
                     timestamp: request.timestamp,
@@ -393,11 +395,13 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                         .collect(),
                 })?;
         ensure!(
-            report.results.len() == request.transactions.len(),
+            report.state_api_epoch == request.state_api_epoch
+                && report.results.len() == request.transactions.len(),
             "FINAL_CHAIN_EXECUTION_RESULT_COUNT_MISMATCH"
         );
         Ok(rustaxa_consensus::FinalChainEvmExecutionReport {
             request_id: request.request_id,
+            state_api_epoch: report.state_api_epoch,
             status: rustaxa_consensus::FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             prior_state: request.prior_state,
             concrete_marker_rlp: request.concrete_marker_rlp.clone(),
@@ -452,6 +456,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         let report =
             self.0
                 .consensus_distribute_final_chain_rewards(&HostFinalChainRewardsRequest {
+                    expected_state_api_epoch: request.state_api_epoch,
                     concrete_marker_rlp: request.concrete_marker_rlp.clone(),
                     distribution_stats: request
                         .distribution_stats
@@ -462,8 +467,13 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
                         })
                         .collect(),
                 })?;
+        ensure!(
+            report.state_api_epoch == request.state_api_epoch,
+            "FINAL_CHAIN_REWARDS_STATE_API_EPOCH_MISMATCH"
+        );
         Ok(rustaxa_consensus::FinalChainEvmRewardsReport {
             request_id: request.request_id,
+            state_api_epoch: report.state_api_epoch,
             period: request.period,
             status: rustaxa_consensus::FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
             prior_state: request.prior_state,
@@ -487,11 +497,16 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         let report =
             self.0
                 .consensus_commit_final_chain_state(&HostFinalChainStateCommitRequest {
+                    expected_state_api_epoch: request.state_api_epoch,
                     concrete_marker_rlp: request.concrete_marker_rlp.clone(),
                     concrete_projection_rlp: request.concrete_projection_rlp.clone(),
                     concrete_projection_hash: request.concrete_projection_hash,
                     concrete_provenance_rlp: request.concrete_provenance_rlp.clone(),
                 })?;
+        ensure!(
+            report.state_api_epoch == request.state_api_epoch,
+            "FINAL_CHAIN_STATE_COMMIT_STATE_API_EPOCH_MISMATCH"
+        );
         ensure!(
             report.status != rustaxa_consensus::FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED
                 || (report.committed_period == request.period.as_u64()
@@ -500,6 +515,7 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
         );
         Ok(rustaxa_consensus::FinalChainExternalEvmStateCommitResult {
             request_id: request.request_id,
+            state_api_epoch: report.state_api_epoch,
             plan_id: request.plan_id,
             period: request.period,
             publication_block_hash: request.publication_block_hash,
@@ -527,11 +543,19 @@ impl rustaxa_consensus::ConsensusExecutionPort for ExternalEvmPortAdapter<'_> {
     ) -> Result<rustaxa_consensus::FinalChainExternalEvmDiscardReport> {
         let report = self
             .0
-            .consensus_discard_final_chain_state(&CanonicalBytes {
-                data: request.concrete_marker_rlp.clone(),
+            .consensus_discard_final_chain_state(&HostFinalChainDiscardRequest {
+                concrete_marker_rlp: request.concrete_marker_rlp.clone(),
+                expected_state_api_epoch: request.expected_state_api_epoch,
             })?;
+        ensure!(
+            report.state_api_epoch != 0
+                && report.state_api_epoch != request.expected_state_api_epoch,
+            "FINAL_CHAIN_STATE_DISCARD_EPOCH_NOT_REPLACED"
+        );
         Ok(rustaxa_consensus::FinalChainExternalEvmDiscardReport {
             request_id: request.request_id,
+            previous_state_api_epoch: request.expected_state_api_epoch,
+            state_api_epoch: report.state_api_epoch,
             period: request.period,
             concrete_marker_rlp: request.concrete_marker_rlp.clone(),
             marker_hash: request.marker_hash,
