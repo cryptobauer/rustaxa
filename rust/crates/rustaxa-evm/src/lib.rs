@@ -27,3 +27,4 @@ pub mod simulation;
 pub mod stateless;
 pub mod structured_trace;
 pub mod trace;
+pub mod trace_runner;
