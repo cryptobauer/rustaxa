@@ -83,7 +83,8 @@ The return-data bounds case maps REVM `OutOfOffset` to the typed
 `ReturnDataOutOfBounds` execution failure. The follow-up
 [RETURNDATACOPY slice](s3_returndatacopy.md) implements Go's memory/gas-before-
 bounds ordering, including overflow and reference-panic distinctions, and
-compares 69 full-frame programs. Independent closeout review remains pending.
+compares 69 full-frame programs. Independent closeout review approved this
+scoped behavior.
 
 An integrated gas-search test runs seven fresh Rust simulations against the same
 Go-derived state. Every probe sees the original slot seven and privately writes
@@ -167,3 +168,24 @@ unchanged; only the seed rows were added to their state observations.
 This closes the bounded ordinary persisted-reader/reopen evidence gap. It does
 not close native simulation, public RPC block/default/error policy, Rust tracing,
 legacy bootstrap, full retention qualification or reference-binary reopen.
+
+
+## Disposable native simulation composition
+
+`simulate_with_native` reuses the historical nonce policy and existing native
+CALL/CREATE driver. Its factory receives the exact validated committed identity
+and must create a fresh unpublished native adapter authenticated to that state.
+The facade owns and drops the port, journal and zero-based consensus sequence
+on every return path; its result contains no mutation or publication authority.
+Period mismatch and sender-read failures precede factory construction.
+
+The focused scripted-port test verifies repeated probes start sequence zero,
+ignore the stale supplied nonce, return identical results, preserve committed
+accounts and drop the port on successful execution or infrastructure failure.
+This is ownership/driver evidence only. The real FinalChain simulation wrapper,
+staged current-state queries, frozen delayed eligibility and actual Go DryRunner
+native corpus are separate coupled slices still under implementation.
+
+Independent source review approved the facade contract. Strict affected-target
+clippy and `make rewrite-validate-fast` passed, including all 24 native-driver
+and eight historical simulation tests. No production route selects this API.

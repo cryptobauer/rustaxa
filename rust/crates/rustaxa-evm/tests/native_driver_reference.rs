@@ -29,6 +29,7 @@ use rustaxa_evm::{
     envelope::EnvelopeRules,
     journal::ExecutionJournal,
     profile::TaraxaProfile,
+    simulation::{SimulationError, simulate_with_native},
 };
 use rustaxa_types::{
     FinalChainBlockNumber, FinalChainGas, FinalChainNonce, FinalChainTransactionPosition,
@@ -161,6 +162,109 @@ impl NativeExecutionPort for ScriptedPort {
         self.invocations.lock().unwrap().push(invocation.clone());
         Ok(self.result.clone())
     }
+}
+
+/// Observes lifetime and fresh sequence behavior, not native business parity.
+struct DisposablePort<'a> {
+    inner: ScriptedPort,
+    dropped: &'a AtomicUsize,
+    fail: bool,
+}
+
+impl Drop for DisposablePort<'_> {
+    fn drop(&mut self) {
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl NativeExecutionPort for DisposablePort<'_> {
+    fn prepare(
+        &mut self,
+        invocation: &NativeInvocation,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeGasQuote, NativePortError> {
+        assert_eq!(
+            invocation.id.sequence, 0,
+            "probe must start a fresh sequence"
+        );
+        if self.fail {
+            return Err(NativePortError::Infrastructure("fixture failure".into()));
+        }
+        self.inner.prepare(invocation, journal)
+    }
+
+    fn invoke(
+        &mut self,
+        invocation: &NativeInvocation,
+        quote: NativeGasQuote,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeInvocationResult, NativePortError> {
+        self.inner.invoke(invocation, quote, journal)
+    }
+}
+
+#[test]
+fn native_simulation_consumes_fresh_sessions_on_success_and_failure() {
+    let reader = Reader {
+        accounts: BTreeMap::from([(
+            SENDER,
+            ConcreteAccount {
+                nonce: FinalChainNonce::from_u64(9),
+                balance: ConcreteAccountBalance::new(BigUint::from(1_000_000_u64)),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+            },
+        )]),
+        codes: BTreeMap::new(),
+        code_reads: Arc::new(AtomicUsize::new(0)),
+    };
+    let before = reader.accounts.clone();
+    let dropped = AtomicUsize::new(0);
+    let opened = AtomicUsize::new(0);
+    let request = transaction(NATIVE, ExecutionValue::new(BigUint::from(5_u8)));
+    let run = |context: &ExecutionBlockContext, fail: bool| {
+        simulate_with_native(
+            &reader,
+            &NoHistory,
+            &AddressSet(vec![NATIVE]),
+            &AddressSet(vec![NATIVE]),
+            |identity| {
+                assert_eq!(identity, reader.identity());
+                opened.fetch_add(1, Ordering::Relaxed);
+                Ok(DisposablePort {
+                    inner: ScriptedPort::completed(NativeStatus::Success, vec![0xab]),
+                    dropped: &dropped,
+                    fail,
+                })
+            },
+            context,
+            &request,
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )
+    };
+    let first = run(&block(), false).unwrap();
+    assert_eq!(first, run(&block(), false).unwrap());
+    let TransactionExecutionResult::Executed(result) = first.execution else {
+        panic!("stored nonce must replace supplied stale nonce");
+    };
+    assert_eq!(result.output, vec![0xab]);
+    assert!(matches!(
+        run(&block(), true),
+        Err(SimulationError::Execution(_))
+    ));
+    assert_eq!(opened.load(Ordering::Relaxed), 3);
+    assert_eq!(dropped.load(Ordering::Relaxed), 3);
+    let mut wrong_period = block();
+    wrong_period.period = FinalChainBlockNumber::new(8);
+    assert!(matches!(
+        run(&wrong_period, false),
+        Err(SimulationError::StatePeriodMismatch { .. })
+    ));
+    assert_eq!(opened.load(Ordering::Relaxed), 3);
+    assert_eq!(reader.accounts, before);
+    assert_eq!(request.nonce, FinalChainNonce::from_u64(1));
 }
 
 #[test]

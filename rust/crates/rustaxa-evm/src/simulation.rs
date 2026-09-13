@@ -4,8 +4,9 @@
 //! supplied transaction nonce with the sender's stored nonce plus one. This
 //! module applies that policy before reusing the ordinary CALL/CREATE driver.
 //! Each invocation owns and drops its journal, including on failure; it returns
-//! no mutations, prepared state, or publication capability. Native dispatch and
-//! RPC error presentation are separate adapters, not implicit legacy fallbacks.
+//! no mutations, prepared state, or publication capability. Native simulation
+//! additionally constructs and consumes one private native port per invocation.
+//! RPC error presentation remains a separate adapter.
 
 use rustaxa_types::concrete_state::{
     ConcreteAccountRecord, ConcreteRead, ConcreteReadError, ConcreteStateIdentity,
@@ -15,11 +16,12 @@ use rustaxa_types::concrete_state::{
 use crate::{
     contracts::{
         BlockHashRead, ExecutionBlockContext, ExecutionTransaction, ExecutionTransactionKind,
-        TransactionExecutionResult,
+        NativeExecutionPort, NativePortError, TransactionExecutionResult,
     },
     driver::{
-        ExecutionDriverError, NativeAddressClassifier, execute_top_level_call,
-        execute_top_level_create,
+        ExecutionDriverError, NativeAddressClassifier, PeriodConsensusSequence,
+        execute_top_level_call, execute_top_level_call_with_native, execute_top_level_create,
+        execute_top_level_create_with_native,
     },
     envelope::EnvelopeRules,
     journal::{ExecutionJournal, JournalError},
@@ -39,6 +41,8 @@ pub enum SimulationError {
     },
     /// Loading the authoritative sender failed; absence is handled normally.
     Sender(JournalError),
+    /// Creating the private native session failed before execution began.
+    NativeSession(NativePortError),
     /// Infrastructure, unsupported dispatch, or driver invariants failed.
     Execution(ExecutionDriverError),
 }
@@ -139,6 +143,96 @@ pub fn simulate_ordinary<
             &mut journal,
             block_hashes,
             native_addresses,
+            block,
+            &request,
+            envelope_rules,
+            profile,
+        ),
+        kind => Err(ExecutionDriverError::UnsupportedTransactionKind(kind)),
+    }
+    .map_err(SimulationError::Execution)?;
+    Ok(SimulationResult { state, execution })
+}
+
+/// Simulates CALL or CREATE with one disposable native session and journal.
+///
+/// The historical state, nonce and envelope policies are identical to
+/// [`simulate_ordinary`]. After period validation and the sender read,
+/// `native_factory` receives the exact committed identity and must construct a
+/// fresh, unpublished port bound to that historical state. The adapter owns
+/// authentication of its semantic native snapshot and any delayed read views;
+/// it must not write committed state or reuse a mutable session from another
+/// probe. A pending-next-block session is not a historical simulation session.
+///
+/// This function consumes the resulting port alongside a fresh zero-based
+/// native sequence and journal, including on error. None can be recovered from
+/// the result. The factory is not called for a period mismatch, failed sender
+/// read or unsupported system input. Native infrastructure failures retain the
+/// driver's error rather than becoming a code execution result. This is an
+/// explicit composition API; it does not select application or production routes.
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_with_native<
+    R: ConcreteStateRead + ?Sized,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+    F: FnOnce(ConcreteStateIdentity) -> Result<P, NativePortError>,
+>(
+    reader: &R,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_factory: F,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<SimulationResult, SimulationError> {
+    let state = reader.identity();
+    if state.period != block.period {
+        return Err(SimulationError::StatePeriodMismatch {
+            state,
+            requested: block.period,
+        });
+    }
+    let mut journal = ExecutionJournal::new(BorrowedCommitted(reader));
+    let mut request = transaction.clone();
+    request.nonce = journal
+        .account(request.sender)
+        .map_err(SimulationError::Sender)?
+        .nonce
+        .next();
+    if !matches!(
+        request.kind,
+        ExecutionTransactionKind::Call | ExecutionTransactionKind::Create
+    ) {
+        return Err(SimulationError::Execution(
+            ExecutionDriverError::UnsupportedTransactionKind(request.kind),
+        ));
+    }
+    let mut native_port = native_factory(state).map_err(SimulationError::NativeSession)?;
+    let mut sequence = PeriodConsensusSequence::new(state.period);
+    let execution = match request.kind {
+        ExecutionTransactionKind::Call => execute_top_level_call_with_native(
+            &mut journal,
+            block_hashes,
+            all_native_addresses,
+            consensus_native_addresses,
+            &mut native_port,
+            &mut sequence,
+            block,
+            &request,
+            envelope_rules,
+            profile,
+        ),
+        ExecutionTransactionKind::Create => execute_top_level_create_with_native(
+            &mut journal,
+            block_hashes,
+            all_native_addresses,
+            consensus_native_addresses,
+            &mut native_port,
+            &mut sequence,
             block,
             &request,
             envelope_rules,
