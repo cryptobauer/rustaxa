@@ -168,3 +168,19 @@ billing/quota usage is inferred from these assignments.
 
 No new thread, model substitution or routing failure occurred. Assignments and
 successful runs do not establish billing or quota consumption.
+
+## Explicit Luna startup after owner correction
+
+The owner correctly noted that this stretch had not used Luna. The lead checked
+capacity: seven threads remained (root, five running workers/reviewer, and the
+completed `s4_oracle` thread). An explicit bounded read-only selector-map launch
+requested `gpt-5.6-luna`, medium reasoning, with no inherited history.
+
+Startup failed with the exact tool error `agent thread limit reached`.
+The Luna agent did not run and produced no result or commit. Available tools
+provide no thread-close or existing-agent model-change operation; deferred tool
+metadata contained no such capability either. The failed launch was not retried,
+and the bounded task was not reassigned to Sol/Astra. This is a thread-capacity
+failure, not evidence of model/account quota exhaustion or billing consumption.
+The reserved-slot rule was not effectively maintained in the existing team;
+future team setup must allocate Luna before filling remaining thread capacity.
