@@ -6,6 +6,10 @@
 //! cannot be loaded. The execution driver routes ordinary nested frames around
 //! this host. SELFDESTRUCT and native dispatch remain explicit unavailable
 //! boundaries.
+//!
+//! During CALL-family opcode preparation only, the profile asks this host for
+//! metadata without referenced bytes. The driver discards that internal empty
+//! code carrier and loads validated code after Taraxa's pre-entry checks.
 
 use std::borrow::Cow;
 
@@ -33,6 +37,7 @@ use crate::{
         ExecutionTransaction,
     },
     journal::{ExecutionJournal, JournalError},
+    profile::DeferredCallCodeLoad,
 };
 
 /// A host-side failure that must abort the pending transaction/period.
@@ -68,6 +73,7 @@ pub struct JournalHost<'a, R, B> {
     block: &'a ExecutionBlockContext,
     transaction: &'a ExecutionTransaction,
     gas_params: GasParams,
+    defer_call_code_load: bool,
     fault: Option<HostError>,
 }
 
@@ -86,6 +92,7 @@ impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
             block,
             transaction,
             gas_params,
+            defer_call_code_load: false,
             fault: None,
         }
     }
@@ -106,7 +113,7 @@ impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
         &mut self,
         address: [u8; 20],
         load_code: bool,
-    ) -> Result<(AccountInfo, bool), LoadError> {
+    ) -> Result<(AccountInfo, bool, bool), LoadError> {
         let metadata = match self.journal.account_metadata(address) {
             Ok(metadata) => metadata,
             Err(error) => return self.fail(HostError::Journal(error)),
@@ -116,10 +123,13 @@ impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
             && metadata.balance.value() == &num_bigint::BigInt::default()
             && metadata.code_size == 0;
         let mut nonce = metadata.nonce.as_u64().unwrap_or(1);
+        let deferred_call_code = load_code && self.defer_call_code_load;
         let code_hash = if !metadata.exists {
             B256::ZERO
         } else if metadata.code_size == 0 {
             KECCAK_EMPTY
+        } else if deferred_call_code {
+            metadata.code_hash.map(B256::from).unwrap_or(B256::ZERO)
         } else {
             match metadata.code_hash {
                 Some(hash) => B256::from(hash),
@@ -130,7 +140,7 @@ impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
                 }
             }
         };
-        let code = if load_code {
+        let code = if load_code && !deferred_call_code {
             let bytes = match self.journal.account_code(address) {
                 Ok(bytes) => bytes,
                 Err(error) => return self.fail(HostError::Journal(error)),
@@ -159,7 +169,14 @@ impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
                 code,
             },
             !metadata.exists,
+            semantic_empty,
         ))
+    }
+}
+
+impl<R, B> DeferredCallCodeLoad for JournalHost<'_, R, B> {
+    fn set_call_code_load_deferred(&mut self, deferred: bool) {
+        self.defer_call_code_load = deferred;
     }
 }
 
@@ -317,16 +334,18 @@ impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> 
         load_code: bool,
         _skip_cold_load: bool,
     ) -> Result<AccountInfoLoad<'_>, LoadError> {
-        let (account, absent) = self.account_info(address.into_array(), load_code)?;
+        let (account, _absent, semantic_empty) =
+            self.account_info(address.into_array(), load_code)?;
         Ok(AccountInfoLoad {
             account: Cow::Owned(account),
             is_cold: false,
-            is_empty: absent,
+            is_empty: semantic_empty,
         })
     }
 
     fn load_account_code_hash(&mut self, address: Address) -> Option<StateLoad<B256>> {
-        let (account, absent) = self.account_info(address.into_array(), false).ok()?;
+        let (account, absent, _semantic_empty) =
+            self.account_info(address.into_array(), false).ok()?;
         Some(StateLoad::new(
             if absent {
                 B256::ZERO
