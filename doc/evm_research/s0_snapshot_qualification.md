@@ -57,8 +57,11 @@ size. The fixture also preserves exact account RLP and the exact selected physic
 S2 codec tests. Membership proof paths from the pinned roots have not yet been validated, so it is not evidence of
 complete state availability or a general absence rule.
 
-The head period-data, receipt and rewards-stat rows plus the prior root are hashed as a candidate replay bundle. The
-tool has not decoded all referenced transactions or proved that the complete inputs survive, and no replay was run.
+The initial qualifier hashed the head period-data, receipt and rewards-stat rows plus the prior root as a candidate
+replay bundle. A subsequent [bounded head-input qualification](s0_head_replay_inputs.md) decoded all 19 referenced
+regular transactions and their locations, verified signatures and transaction/receipt roots, and found no system
+references. That closes the selected period's transaction/receipt input check. Configuration, reward-vote inputs and
+complete prior-state closure remain unverified; no replay was run.
 
 ## Producer clues and remaining gaps
 
@@ -67,7 +70,7 @@ Both database logs report RocksDB 9.10.0, Git SHA `0`, and compile date `2026-01
 guarantee. The database identities are committed in the JSON evidence. Neither the logs nor the state configuration
 encode a Taraxa application revision.
 
-The task owner reports that the producer was likely node commit
+The task owner identifies their lite node as the producer and reports that it likely ran node commit
 `a0e85fe31eb03573cd92c165a5f81035cec9907e` (release/v1.14.1), whose EVM gitlink is
 `6c7e5338b22d5e596cc2365a88d1f94840e1ee1b`. This remains a candidate, not verified binary identity. At that source
 revision, FinalChain invokes an application RocksDB checkpoint followed serially by the state checkpoint at the same
