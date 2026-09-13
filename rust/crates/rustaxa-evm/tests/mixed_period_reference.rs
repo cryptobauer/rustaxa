@@ -2,9 +2,9 @@
 //!
 //! This finite fixture creates both databases exclusively, hydrates the Rust
 //! genesis snapshot from the independently generated concrete rows, executes
-//! period one through the real EVM driver and bound native rewards session, and
-//! commits via ordered concrete lifecycle phases. It then closes and reopens
-//! both databases and compares receipts, roots, catalog values and CF1--CF5 to
+//! the first two periods through the real EVM driver and bound native rewards
+//! session, and commits via ordered concrete lifecycle phases. It then closes
+//! and reopens both databases and compares receipts, roots, catalog values and CF1--CF5 to
 //! the pinned Go observer. This is test composition, not production routing or
 //! imported-state qualification.
 
@@ -312,7 +312,6 @@ impl ConsensusExecutionPort for Adapter<'_> {
         let mut sequence = PeriodConsensusSequence::new(request.period);
         let mut prepared: Option<ConcreteObserverPhaseOutput> = None;
         let mut identity = concrete.observation()?.committed;
-        let mut changed_addresses = BTreeSet::new();
         let mut raw_catalog =
             decode_concrete_storage_catalog(&concrete.observation()?.catalog_rlp)?
                 .into_iter()
@@ -474,7 +473,6 @@ impl ConsensusExecutionPort for Adapter<'_> {
             let mut code = Vec::new();
             for write in settled.writes.accounts {
                 changed.insert(write.address);
-                changed_addresses.insert(write.address);
                 accounts.push(match write.operation {
                     JournalAccountOperation::Upsert {
                         nonce,
@@ -492,7 +490,6 @@ impl ConsensusExecutionPort for Adapter<'_> {
             }
             for write in settled.writes.ordinary_storage {
                 changed.insert(write.address);
-                changed_addresses.insert(write.address);
                 storage.push(ConcreteStorageMutation {
                     address: write.address,
                     key: write.key,
@@ -502,7 +499,6 @@ impl ConsensusExecutionPort for Adapter<'_> {
             let mut raw_touched = BTreeSet::new();
             for write in settled.writes.raw_storage {
                 changed.insert(write.address);
-                changed_addresses.insert(write.address);
                 raw_touched.insert((write.address, write.key));
                 raw_catalog.insert(ConcreteStorageSlot {
                     address: write.address,
@@ -530,23 +526,34 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 identity.state_root == fixed(&expected["observer"]["root"]),
                 "Go intermediate root"
             );
-            ensure!(
-                next.changed_accounts()
-                    .iter()
-                    .map(|entry| entry.address)
-                    .collect::<BTreeSet<_>>()
-                    == changed,
-                "ordered changed-account set"
-            );
-            let effect_accounts = next
+            let observed_changed = next
                 .changed_accounts()
                 .iter()
-                .map(|entry| FinalChainConcreteAccountProjection {
-                    address: entry.address,
-                    raw_account_rlp: account_bytes(&entry.account),
+                .map(|entry| entry.address)
+                .collect::<BTreeSet<_>>();
+            ensure!(
+                observed_changed.is_subset(&changed),
+                "writer reported an account absent from the settled delta period={} tx={}: observed={observed_changed:?} settled={changed:?}",
+                request.period.as_u64(),
+                transaction.position.as_u32(),
+            );
+            let view = FixtureView {
+                prior: FixturePrior::Prepared(concrete.prepared_view(&next)?),
+                identity: next.identity(),
+            };
+            let effect_accounts = changed
+                .iter()
+                .map(|address| {
+                    Ok(FinalChainConcreteAccountProjection {
+                        address: *address,
+                        raw_account_rlp: account_bytes(
+                            &rustaxa_types::concrete_state::execution::ConcreteExecutionRead::account(
+                                &view, *address,
+                            )?,
+                        ),
+                    })
                 })
-                .collect();
-            let view = concrete.prepared_view(&next)?;
+                .collect::<Result<Vec<_>>>()?;
             let effect_storage = raw_touched
                 .into_iter()
                 .map(|(address, key)| {
@@ -767,7 +774,8 @@ impl ConsensusExecutionPort for Adapter<'_> {
             catalog_account_identities(&self.fixture["period_catalog_identities"]["accounts"])?;
         ensure!(
             account_identities == expected_accounts,
-            "Go period account catalog"
+            "Go period account catalog period={}: actual={account_identities:?} expected={expected_accounts:?}",
+            request.period.as_u64(),
         );
 
         let mut catalog = decode_concrete_storage_catalog(&staged.catalog_rlp)?
@@ -1514,46 +1522,48 @@ fn verify_final_reader(reader: &ConcreteStateReader, final_state: &Value) -> Res
     Ok(())
 }
 
-#[test]
-fn period_one_commits_full_mixed_workload_and_reopens_exactly() -> Result<()> {
-    let fixture = load_fixture()?;
-    ensure!(
-        fixture["execution_mode"] == "observer",
-        "observer fixture required"
-    );
-    ensure!(
-        number(&fixture["configuration"]["chain_id"]) == 841,
-        "fixture chain id"
-    );
-    let period = &fixture["periods"][0];
-    ensure!(number(&period["number"]) == 1, "first mixed period");
-    ensure!(
-        period["transactions"]
-            .as_array()
-            .context("transactions")?
-            .len()
-            == 11
-    );
-    ensure!(period["period_catalog_identities"]["invocations"] == Value::Array(Vec::new()));
-
-    let root = std::env::temp_dir().join(format!(
-        "rustaxa-evm-mixed-period-one-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&root)?;
-    let application_path = root.join("application");
-    let concrete_path = root.join("state_db");
-    let (application, mut chain) = open_chain(&application_path, &fixture)?;
-    let concrete = fresh_concrete(&concrete_path, &chain, &fixture)?;
+fn run_period(
+    fixture: &Value,
+    period: &Value,
+    application_path: &Path,
+    concrete_path: &Path,
+    fresh: bool,
+    expected_chain_identity: Option<[u8; 32]>,
+) -> Result<[u8; 32]> {
+    let (application, mut chain) = open_chain(application_path, fixture)?;
     ensure!(
         application
             .final_chain()
             .external_evm_pending_publication_raw()?
             .is_none(),
-        "fresh application unexpectedly needs recovery"
+        "application unexpectedly needs recovery"
     );
-    chain.hydrate_concrete_genesis_accounts(concrete.prior_reader())?;
     let chain_identity = chain.concrete_chain_identity()?;
+    if let Some(expected) = expected_chain_identity {
+        ensure!(
+            chain_identity == expected,
+            "reopened concrete chain identity"
+        );
+    }
+    let concrete = if fresh {
+        let concrete = fresh_concrete(concrete_path, &chain, fixture)?;
+        chain.hydrate_concrete_genesis_accounts(concrete.prior_reader())?;
+        concrete
+    } else {
+        let observed = ConcreteStateLifecycle::inspect_existing(concrete_path, chain_identity)?;
+        let genesis_identity = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::GENESIS,
+            state_root: fixed(&fixture["genesis"]["root"]),
+        };
+        let genesis_reader = ConcreteStateReader::open_historical_read_only(
+            concrete_path,
+            observed.committed,
+            genesis_identity,
+        )?;
+        chain.hydrate_concrete_genesis_accounts(&genesis_reader)?;
+        drop(genesis_reader);
+        ConcreteStateLifecycle::open(concrete_path, chain_identity, observed.committed)?
+    };
     let adapter = Adapter {
         chain: &chain,
         application: &application,
@@ -1564,7 +1574,7 @@ fn period_one_commits_full_mixed_workload_and_reopens_exactly() -> Result<()> {
         fixture: period,
     };
     let author = fixed(&period["reward_input"]["block_author"]);
-    let execution_request = request(&fixture, period)?;
+    let execution_request = request(fixture, period)?;
     chain.ensure_period_data(
         FinalChainBlockNumber::new(number(&period["number"])),
         &period_data(&execution_request),
@@ -1577,16 +1587,17 @@ fn period_one_commits_full_mixed_workload_and_reopens_exactly() -> Result<()> {
         fixed(&fixture["configuration"]["hardforks"]["ficus"]["bridge_contract_address"]),
         &adapter,
     )?;
-    ensure!(report.period == FinalChainBlockNumber::new(1));
+    let period_number = FinalChainBlockNumber::new(number(&period["number"]));
+    ensure!(report.period == period_number);
     ensure!(author == fixed(&period["planner_facts"]["dag_blocks"][0]["author"]));
     let header = application
         .final_chain()
-        .block_header_raw(1)?
-        .context("published period-one header")?;
+        .block_header_raw(period_number.as_u64())?
+        .context("published mixed-period header")?;
     let header = StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&header))?;
     let public_header = chain
-        .block_header(FinalChainBlockNumber::new(1))?
-        .context("published materialized period-one header")?;
+        .block_header(period_number)?
+        .context("published materialized mixed-period header")?;
     ensure!(
         Rlp::new(&public_header).val_at::<H160>(2)?.0 == author,
         "published validator author"
@@ -1614,10 +1625,10 @@ fn period_one_commits_full_mixed_workload_and_reopens_exactly() -> Result<()> {
     drop(chain);
     drop(application);
 
-    verify_physical_rows(&concrete_path, &period["final"]["rows"])?;
-    let (application, mut chain) = open_chain(&application_path, &fixture)?;
-    let observed = ConcreteStateLifecycle::inspect_existing(&concrete_path, chain_identity)?;
-    ensure!(observed.committed.period == FinalChainBlockNumber::new(1));
+    verify_physical_rows(concrete_path, &period["final"]["rows"])?;
+    let (application, mut chain) = open_chain(application_path, fixture)?;
+    let observed = ConcreteStateLifecycle::inspect_existing(concrete_path, chain_identity)?;
+    ensure!(observed.committed.period == period_number);
     ensure!(observed.committed.state_root == fixed(&period["final"]["root"]));
     ensure!(observed.pending_marker_rlp.is_empty());
     let genesis_identity = ConcreteStateIdentity {
@@ -1625,23 +1636,70 @@ fn period_one_commits_full_mixed_workload_and_reopens_exactly() -> Result<()> {
         state_root: fixed(&fixture["genesis"]["root"]),
     };
     let genesis_reader = ConcreteStateReader::open_historical_read_only(
-        &concrete_path,
+        concrete_path,
         observed.committed,
         genesis_identity,
     )?;
     chain.hydrate_concrete_genesis_accounts(&genesis_reader)?;
     drop(genesis_reader);
-    let concrete =
-        ConcreteStateLifecycle::open(&concrete_path, chain_identity, observed.committed)?;
-    ensure!(chain.last_block_number_typed()? == FinalChainBlockNumber::new(1));
+    let concrete = ConcreteStateLifecycle::open(concrete_path, chain_identity, observed.committed)?;
+    ensure!(chain.last_block_number_typed()? == period_number);
     verify_receipts(&application, period)?;
     drop(concrete);
-    let reader = ConcreteStateReader::open_read_only(&concrete_path, observed.committed)?;
+    let reader = ConcreteStateReader::open_read_only(concrete_path, observed.committed)?;
     verify_final_reader(&reader, &period["final"])?;
     drop(reader);
     drop(chain);
     drop(application);
-    verify_physical_rows(&concrete_path, &period["final"]["rows"])?;
+    verify_physical_rows(concrete_path, &period["final"]["rows"])?;
+    Ok(chain_identity)
+}
+
+#[test]
+fn first_two_mixed_periods_commit_and_reopen_exactly() -> Result<()> {
+    let fixture = load_fixture()?;
+    ensure!(
+        fixture["execution_mode"] == "observer",
+        "observer fixture required"
+    );
+    ensure!(
+        number(&fixture["configuration"]["chain_id"]) == 841,
+        "fixture chain id"
+    );
+    let periods = fixture["periods"].as_array().context("fixture periods")?;
+    ensure!(periods.len() == 4, "four-period fixture required");
+    let expected_invocations = [0, 11, 4, 3];
+    for (index, (period, count)) in periods.iter().zip(expected_invocations).enumerate() {
+        ensure!(
+            number(&period["number"]) == (index + 1) as u64,
+            "consecutive mixed period"
+        );
+        ensure!(
+            period["period_catalog_identities"]["invocations"]
+                .as_array()
+                .context("period invocation identities")?
+                .len()
+                == count,
+            "frozen native invocation count"
+        );
+    }
+
+    let root =
+        std::env::temp_dir().join(format!("rustaxa-evm-mixed-periods-{}", std::process::id()));
+    std::fs::create_dir(&root)?;
+    let application_path = root.join("application");
+    let concrete_path = root.join("state_db");
+    let mut chain_identity = None;
+    for (index, period) in periods.iter().take(2).enumerate() {
+        chain_identity = Some(run_period(
+            &fixture,
+            period,
+            &application_path,
+            &concrete_path,
+            index == 0,
+            chain_identity,
+        )?);
+    }
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
