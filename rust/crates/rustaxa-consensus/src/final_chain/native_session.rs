@@ -2422,12 +2422,12 @@ mod tests {
     }
 
     #[test]
-    fn bound_rewards_preserve_repeated_raw_rows_and_ordered_full_width_custody() {
+    fn bound_rewards_at_magnolia_activation_preserves_raw_order() {
         with_chain_config(
             "bound-rewards",
             FinalChainRewardsConfig {
                 committee_size: 1,
-                magnolia_period: FinalChainBlockNumber::GENESIS,
+                magnolia_period: 1.into(),
                 cornus_period: FinalChainBlockNumber::GENESIS,
                 fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
                 aspen_part_one_period: FinalChainBlockNumber::GENESIS,
