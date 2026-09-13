@@ -1,12 +1,14 @@
-# S2 compatible concrete reads: current-head milestone
+# S2 compatible concrete reads: bounded historical milestone
 
-Status: current committed-head account/storage/code reads implemented and validated in isolation. Historical identity
-selection, writer/update codecs, prepared commits, pruning evidence and production routing remain open parts of S2 and
-later slices.
+Status: committed-head and caller-identified historical account/storage/code reads implemented and validated in
+isolation. General historical coverage, writer/update codecs, prepared commits, pruning evidence and production
+routing remain open parts of S2 and later slices.
 
 `rustaxa-storage` now opens the existing separate `state_db` through RocksDB's read-only API. Construction requires the
-descriptor to exactly match a FinalChain-supplied period/root. It never creates a database or column family and does
-not adopt a moving latest descriptor. A future expected period is distinct from an identity mismatch.
+descriptor to exactly match a FinalChain-supplied committed period/root. The historical constructor additionally takes
+an older FinalChain period/root, rejects future requests and verifies every accessed path at that requested root. It
+does not infer retained ranges from the supplied identity. The reader never creates a database or column family and
+does not adopt a moving latest descriptor. A future expected period is distinct from an identity mismatch.
 
 The account codec preserves exact five-field physical RLP and arbitrary-width values emitted by the reference writer.
 The shared nonce domain rejects noncanonical leading-zero nonce bytes, and code-size decoding is likewise stricter than
@@ -32,14 +34,13 @@ logical membership/non-membership when a current account storage root exists; it
 Focused synthetic tests cover wide account values, exact commitments, current storage/code, live and tombstoned orphan
 rows, non-membership, unavailable history, identity mismatch and node/code corruption. A persisted branch/extension
 fixture emitted identically by both pinned Go references covers membership, non-membership and a missing path node.
-An opt-in test against the
-independent qualified snapshot copy verifies the complex DPoS account path, its referenced 3,000-byte code and the
-`total_supply` raw row/path at period `25,706,949`.
+An opt-in test against the independent qualified snapshot copy verifies the complex DPoS account path, its referenced
+3,000-byte code and the `total_supply` raw row/path at periods `25,706,949` and `25,706,948`.
 
-The current constructor intentionally accepts only the database descriptor identity. The prior root observed at
-period `25,706,948` is not exposed as a general historical reader until retained path/value coverage can be established.
-Code-row absence also remains `HistoryUnavailable`. The module is isolated from application routing and has no write,
-repair, migration, publication or protocol behavior.
+The historical constructor requires the exact current descriptor in addition to the requested older FinalChain
+identity. Successful sampled paths do not establish general period or keyspace retention; missing path dependencies
+and physical rows remain `HistoryUnavailable`. Code-row absence is also unavailable rather than proved absence. The
+module is isolated from application routing and has no write, repair, migration, publication or protocol behavior.
 
 The focused commands used for this milestone are:
 

@@ -24,8 +24,10 @@ const REQUIRED_COLUMNS: &[&str] = &["default", "1", "2", "3", "4", "5", "6", "7"
 /// Immutable reader for one verified concrete-state database generation.
 ///
 /// Construction opens an existing database with RocksDB's read-only API and
-/// requires its descriptor to equal the identity supplied by FinalChain. The
-/// handle never creates a database or column family. Account reads authenticate
+/// requires its descriptor to equal the committed identity supplied by
+/// FinalChain. An older requested identity is accepted only alongside that
+/// verified descriptor and remains subject to per-read proofs. The handle never
+/// creates a database or column family. Account reads authenticate
 /// one trie path against the pinned root. Storage reads expose the selected
 /// physical history row, including orphan rows retained outside a current
 /// account storage root. Callers may separately authenticate logical slot
@@ -53,6 +55,19 @@ impl ConcreteStateReader {
         path: impl AsRef<Path>,
         expected: ConcreteStateIdentity,
     ) -> Result<Self, ConcreteReadError> {
+        Self::open_historical_read_only(path, expected, expected)
+    }
+
+    /// Opens a reader pinned to an older FinalChain-supplied identity while
+    /// independently requiring the database's current descriptor to equal
+    /// `committed`. This does not assert broad historical retention: every read
+    /// must still resolve and authenticate its requested path, and missing
+    /// physical storage history remains unavailable.
+    pub fn open_historical_read_only(
+        path: impl AsRef<Path>,
+        committed: ConcreteStateIdentity,
+        requested: ConcreteStateIdentity,
+    ) -> Result<Self, ConcreteReadError> {
         let mut options = Options::default();
         options.create_if_missing(false);
         options.create_missing_column_families(false);
@@ -75,18 +90,33 @@ impl ConcreteStateReader {
             .map_err(io)?
             .ok_or_else(|| ConcreteReadError::Corrupt("concrete descriptor is missing".into()))?;
         let observed = decode_descriptor(&descriptor)?;
-        if expected.period.as_u64() > observed.period.as_u64() {
+        if committed.period.as_u64() > observed.period.as_u64() {
             return Err(ConcreteReadError::FuturePeriod {
-                requested: expected.period,
+                requested: committed.period,
                 committed: observed.period,
             });
         }
-        if expected != observed {
-            return Err(ConcreteReadError::IdentityMismatch { expected, observed });
+        if committed != observed {
+            return Err(ConcreteReadError::IdentityMismatch {
+                expected: committed,
+                observed,
+            });
+        }
+        if requested.period.as_u64() > committed.period.as_u64() {
+            return Err(ConcreteReadError::FuturePeriod {
+                requested: requested.period,
+                committed: committed.period,
+            });
+        }
+        if requested.period == committed.period && requested.state_root != committed.state_root {
+            return Err(ConcreteReadError::IdentityMismatch {
+                expected: requested,
+                observed: committed,
+            });
         }
         Ok(Self {
             db,
-            identity: observed,
+            identity: requested,
         })
     }
 
@@ -342,14 +372,14 @@ mod tests {
         let (storage_root, storage_node) = physical_leaf(storage_path, &storage_value, false);
         let code = vec![0x60, 0, 0x60, 1, 1];
         let code_hash = keccak256(&code);
-        let physical_account = physical_account(
+        let physical_account_bytes = physical_account(
             &[1; 40],
             &[2; 48],
             Some(storage_root),
             Some(code_hash),
             code.len() as u64,
         );
-        let account = decode_physical_account(&physical_account).unwrap();
+        let account = decode_physical_account(&physical_account_bytes).unwrap();
         let account_path = account_version_prefix(address);
         let (state_root, account_node) = physical_leaf(
             account_path,
@@ -357,12 +387,45 @@ mod tests {
             true,
         );
         let identity = ConcreteStateIdentity { period, state_root };
+        let prior_period = FinalChainBlockNumber::new(16);
+        let prior_physical_account = physical_account(
+            &[1; 40],
+            &[3; 48],
+            Some(storage_root),
+            Some(code_hash),
+            code.len() as u64,
+        );
+        let prior_account = decode_physical_account(&prior_physical_account).unwrap();
+        let (prior_root, prior_account_node) = physical_leaf(
+            account_path,
+            &account_commitment_rlp(&prior_account).unwrap(),
+            true,
+        );
+        let prior_identity = ConcreteStateIdentity {
+            period: prior_period,
+            state_root: prior_root,
+        };
 
         let mut database = TestDb::new();
         database.put_descriptor(identity);
         database.put("2", &state_root, &account_node);
-        database.put("3", &versioned_key(account_path, period), &physical_account);
+        database.put("2", &prior_root, &prior_account_node);
+        database.put(
+            "3",
+            &versioned_key(account_path, prior_period),
+            &prior_physical_account,
+        );
+        database.put(
+            "3",
+            &versioned_key(account_path, period),
+            &physical_account_bytes,
+        );
         database.put("4", &storage_root, &storage_node);
+        database.put(
+            "5",
+            &versioned_key(storage_version_prefix(address, slot), prior_period),
+            &storage_value,
+        );
         database.put(
             "5",
             &versioned_key(storage_version_prefix(address, slot), period),
@@ -381,7 +444,7 @@ mod tests {
         let ConcreteRead::Present(read_account) = reader.account(address).unwrap() else {
             panic!("account was not present")
         };
-        assert_eq!(read_account.physical_rlp, physical_account);
+        assert_eq!(read_account.physical_rlp, physical_account_bytes);
         assert_eq!(read_account.account.nonce.to_bytes(), vec![1; 40]);
         assert_eq!(
             read_account.account.balance.value().to_bytes_be(),
@@ -389,7 +452,7 @@ mod tests {
         );
         assert_eq!(
             reader.storage(address, slot).unwrap(),
-            ConcreteRead::Present(storage_value)
+            ConcreteRead::Present(storage_value.clone())
         );
         assert_eq!(
             reader.verify_storage_path(address, slot).unwrap(),
@@ -404,6 +467,22 @@ mod tests {
             ConcreteStoragePath::NonMember
         );
         assert_eq!(reader.code(code_hash).unwrap(), ConcreteRead::Present(code));
+
+        let historical = ConcreteStateReader::open_historical_read_only(
+            &database.path,
+            identity,
+            prior_identity,
+        )
+        .unwrap();
+        let ConcreteRead::Present(prior) = historical.account(address).unwrap() else {
+            panic!("prior account was not present")
+        };
+        assert_eq!(prior.physical_rlp, prior_physical_account);
+        assert_eq!(prior.account.balance.value().to_bytes_be(), vec![3; 48]);
+        assert_eq!(
+            historical.verify_storage_path(address, slot).unwrap(),
+            ConcreteStoragePath::Member(storage_value)
+        );
     }
 
     #[test]
@@ -597,6 +676,32 @@ mod tests {
         );
         assert_eq!(
             reader.verify_storage_path(address, total_supply).unwrap(),
+            ConcreteStoragePath::Member(decode_hex("237465dd4fbad4693966174c"))
+        );
+
+        let prior_identity = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(25_706_948),
+            state_root: decode_hex_32(
+                "926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2",
+            ),
+        };
+        let prior = ConcreteStateReader::open_historical_read_only(
+            Path::new(&path),
+            identity,
+            prior_identity,
+        )
+        .unwrap();
+        assert_eq!(ConcreteStateRead::identity(&prior), prior_identity);
+        let ConcreteRead::Present(prior_account) = prior.account(address).unwrap() else {
+            panic!("qualified prior DPoS account was not present")
+        };
+        assert_eq!(prior_account.physical_rlp, account.physical_rlp);
+        assert_eq!(
+            prior.storage(address, total_supply).unwrap(),
+            ConcreteRead::Present(decode_hex("237465dd4fbad4693966174c"))
+        );
+        assert_eq!(
+            prior.verify_storage_path(address, total_supply).unwrap(),
             ConcreteStoragePath::Member(decode_hex("237465dd4fbad4693966174c"))
         );
     }
