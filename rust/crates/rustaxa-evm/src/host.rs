@@ -41,8 +41,13 @@ pub enum HostError {
     Journal(JournalError),
     /// Canonical historical block data was unavailable or invalid.
     BlockHash(BlockHashReadError),
-    /// An arbitrary-width account nonce cannot be represented by REVM's host type.
-    NonceWidth { address: [u8; 20] },
+    /// SSTORE gas comparison cannot preserve an ordinary value wider than one EVM word.
+    StorageWordWidth {
+        /// Account containing the unsupported value.
+        address: [u8; 20],
+        /// Logical slot containing the unsupported value.
+        key: ConcreteStorageKey,
+    },
     /// SELFDESTRUCT lifecycle parity is not implemented in this bounded host.
     SelfDestructUnavailable,
 }
@@ -105,10 +110,11 @@ impl<'a, R: ConcreteStateRead, B: BlockHashRead> JournalHost<'a, R, B> {
             Ok(metadata) => metadata,
             Err(error) => return self.fail(HostError::Journal(error)),
         };
-        let nonce = match metadata.nonce.as_u64() {
-            Some(nonce) => nonce,
-            None => return self.fail(HostError::NonceWidth { address }),
-        };
+        let balance = U256::from_be_bytes(metadata.balance.low_word());
+        let semantic_empty = metadata.nonce.is_zero()
+            && metadata.balance.value() == &num_bigint::BigInt::default()
+            && metadata.code_size == 0;
+        let mut nonce = metadata.nonce.as_u64().unwrap_or(1);
         let code_hash = if !metadata.exists {
             B256::ZERO
         } else if metadata.code_size == 0 {
@@ -132,9 +138,20 @@ impl<'a, R: ConcreteStateRead, B: BlockHashRead> JournalHost<'a, R, B> {
         } else {
             None
         };
+        // REVM uses AccountInfo::is_empty for EXTCODEHASH. Preserve the
+        // reference's full-width EIP-161 test when a wide nonce/balance projects
+        // to zero in the bounded host representation.
+        if metadata.exists
+            && !semantic_empty
+            && nonce == 0
+            && balance.is_zero()
+            && code_hash == KECCAK_EMPTY
+        {
+            nonce = 1;
+        }
         Ok((
             AccountInfo {
-                balance: U256::from_be_bytes(metadata.balance.low_word()),
+                balance,
                 nonce,
                 code_hash,
                 account_id: None,
@@ -244,6 +261,9 @@ impl<R: ConcreteStateRead, B: BlockHashRead> Host for JournalHost<'_, R, B> {
             Ok(values) => values,
             Err(error) => return self.fail(HostError::Journal(error)),
         };
+        if original.bits() > 256 || present.bits() > 256 {
+            return self.fail(HostError::StorageWordWidth { address, key });
+        }
         if let Err(error) = self
             .journal
             .set_ordinary_storage(address, key, big_uint(value))
