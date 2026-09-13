@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Direct Cacti address 0x0100 RequiredGas/Run over exact-length, signature-scalar and public-key boundaries; no EVM admission, registry, fork activation, frame, state or production-routing claim",
+  "sha256": {
+    "public": "3ca09018b2cc09e304d549d8a388e2555bd118f1f4708bf938091562a1a1cded",
+    "local": "3ca09018b2cc09e304d549d8a388e2555bd118f1f4708bf938091562a1a1cded"
+  },
+  "exporter_sha256": "40f235654cb234e9869110224a3352c3c3dad91bd270338700a03231aac2b028"
+}
