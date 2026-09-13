@@ -27,8 +27,8 @@ use rustaxa_types::concrete_state::{
 
 use super::codec::{corrupt, decode_descriptor};
 use super::writer::{
-    ConcreteStateMutationBatch, ConcreteStateWriter, PreparedConcreteState, REQUIRED_COLUMNS,
-    RowKey, encode_descriptor,
+    ConcreteObserverPhaseDelta, ConcreteStateMutationBatch, ConcreteStateWriter,
+    PreparedConcreteState, PreparedConcreteView, REQUIRED_COLUMNS, RowKey, encode_descriptor,
 };
 
 const PROVENANCE_KEY: &[u8] = b"rustaxa_concrete_state_provenance_v1";
@@ -61,6 +61,40 @@ pub struct ConcreteCommitApproval {
     pub catalog_hash: [u8; 32],
 }
 
+/// One exact account row emitted by a successful ordered observer phase.
+/// A tombstone records an actual main-trie deletion. `Absent` is never emitted
+/// as a change because a missing-path delete is a no-op.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConcreteObserverAccountChange {
+    pub address: [u8; 20],
+    pub account: ConcreteRead<ConcreteAccountRecord>,
+}
+
+/// Sealed result of one successful ordered observer phase.
+///
+/// The public identity and account rows can feed application projection. Private
+/// writer and sequence fields prevent a result from selecting another lifecycle,
+/// marker, or phase for a prepared read or final commit.
+#[derive(Debug)]
+pub struct ConcreteObserverPhaseOutput {
+    identity: ConcreteStateIdentity,
+    accounts: Vec<ConcreteObserverAccountChange>,
+    writer_id: u64,
+    sequence: u64,
+}
+
+impl ConcreteObserverPhaseOutput {
+    /// Returns the root and period derived after this exact observer phase.
+    pub fn identity(&self) -> ConcreteStateIdentity {
+        self.identity
+    }
+
+    /// Borrows exact physical account rows changed by this phase.
+    pub fn changed_accounts(&self) -> &[ConcreteObserverAccountChange] {
+        &self.accounts
+    }
+}
+
 /// One opened concrete lifecycle generation. The contained writer and its
 /// prepared rows remain private so callers cannot bypass marker/provenance
 /// validation on the atomic commit path.
@@ -73,6 +107,8 @@ pub struct ConcreteStateLifecycle {
     pending: Option<FinalChainConcreteExecutionMarker>,
     pending_rlp: Vec<u8>,
     intermediate_content: BTreeMap<RowKey, Vec<u8>>,
+    observer_prepared: Option<PreparedConcreteState>,
+    legacy_prepared: bool,
     poisoned: bool,
 }
 
@@ -167,6 +203,8 @@ impl ConcreteStateLifecycle {
             pending: loaded.pending,
             pending_rlp: loaded.pending_rlp,
             intermediate_content: BTreeMap::new(),
+            observer_prepared: None,
+            legacy_prepared: false,
             poisoned: false,
         })
     }
@@ -231,6 +269,73 @@ impl ConcreteStateLifecycle {
         &self.writer
     }
 
+    /// Applies one settled observer phase to the latest unpublished prepared
+    /// root and physical overlay. Storage operations run in supplied order.
+    /// On failure the preceding phase remains current and readable.
+    ///
+    /// A durable execution marker must already be staged, and all phases remain
+    /// in its single consecutive period. This method writes no database rows.
+    pub fn apply_observer_phase(
+        &mut self,
+        delta: ConcreteObserverPhaseDelta,
+    ) -> Result<ConcreteObserverPhaseOutput, ConcreteReadError> {
+        self.ensure_usable()?;
+        if self.legacy_prepared {
+            return Err(corrupt(
+                "ordered observer phases cannot follow cumulative preparation",
+            ));
+        }
+        let marker = self
+            .pending
+            .as_ref()
+            .ok_or_else(|| corrupt("concrete execution marker is not staged"))?;
+        let next_period = FinalChainBlockNumber::new(marker.period);
+        let prepared = self.writer.prepare_observer_phase(
+            next_period,
+            self.observer_prepared.as_ref(),
+            delta,
+        )?;
+        let accounts = prepared
+            .changed_accounts()
+            .iter()
+            .map(|(address, account)| ConcreteObserverAccountChange {
+                address: *address,
+                account: account.clone(),
+            })
+            .collect();
+        let (writer_id, sequence) = prepared.token();
+        let output = ConcreteObserverPhaseOutput {
+            identity: prepared.next_identity(),
+            accounts,
+            writer_id,
+            sequence,
+        };
+        self.observer_prepared = Some(prepared);
+        Ok(output)
+    }
+
+    /// Borrows the fixed execution-only view selected by the latest phase
+    /// output. Advancing or discarding the lifecycle requires mutable access,
+    /// so the view cannot move while an execution journal borrows it.
+    pub fn prepared_view<'a>(
+        &'a self,
+        output: &ConcreteObserverPhaseOutput,
+    ) -> Result<PreparedConcreteView<'a>, ConcreteReadError> {
+        self.ensure_usable()?;
+        let prepared = self
+            .observer_prepared
+            .as_ref()
+            .ok_or_else(|| corrupt("no ordered observer phase is prepared"))?;
+        let (writer_id, sequence) = self.writer.prepared_token(prepared)?;
+        if output.writer_id != writer_id
+            || output.sequence != sequence
+            || output.identity != prepared.next_identity()
+        {
+            return Err(corrupt("ordered observer phase output is stale or foreign"));
+        }
+        self.writer.prepared_view(prepared)
+    }
+
     /// Durably stages exact canonical execution-marker bytes before execution.
     /// Repeating the same marker is idempotent; a different pending marker is
     /// rejected as ambiguous. A RocksDB write error poisons this handle because
@@ -273,7 +378,13 @@ impl ConcreteStateLifecycle {
         if self.pending.is_none() {
             return Err(corrupt("concrete execution marker is not staged"));
         }
+        if self.observer_prepared.is_some() {
+            return Err(corrupt(
+                "cumulative preparation cannot follow ordered observer phases",
+            ));
+        }
         let prepared = self.writer.prepare(next_period, mutations)?;
+        self.legacy_prepared = true;
         for (row, value) in &prepared.rows {
             if !matches!(row.column, "1" | "2" | "4") {
                 continue;
@@ -304,6 +415,43 @@ impl ConcreteStateLifecycle {
     /// the handle; callers reopen and let FinalChain publish application state
     /// only after independently validating the returned exact facts.
     pub fn commit_approved(
+        self,
+        prepared: PreparedConcreteState,
+        approval: ConcreteCommitApproval,
+    ) -> Result<ConcreteLifecycleObservation, ConcreteReadError> {
+        if self.observer_prepared.is_some() {
+            return Err(corrupt(
+                "ordered observer state requires its sealed phase output",
+            ));
+        }
+        self.commit_prepared(prepared, approval)
+    }
+
+    /// Atomically commits the latest ordered observer overlay through the same
+    /// marker, provenance, catalog, descriptor and synchronous write batch as
+    /// cumulative preparation. The sealed output must identify the latest phase;
+    /// an earlier or foreign output is rejected even when its root is equal.
+    pub fn commit_observer_approved(
+        mut self,
+        output: ConcreteObserverPhaseOutput,
+        approval: ConcreteCommitApproval,
+    ) -> Result<ConcreteLifecycleObservation, ConcreteReadError> {
+        self.ensure_usable()?;
+        let prepared = self
+            .observer_prepared
+            .take()
+            .ok_or_else(|| corrupt("no ordered observer phase is prepared"))?;
+        let (writer_id, sequence) = self.writer.prepared_token(&prepared)?;
+        if output.writer_id != writer_id
+            || output.sequence != sequence
+            || output.identity != prepared.next_identity()
+        {
+            return Err(corrupt("ordered observer phase output is stale or foreign"));
+        }
+        self.commit_prepared(prepared, approval)
+    }
+
+    fn commit_prepared(
         self,
         prepared: PreparedConcreteState,
         approval: ConcreteCommitApproval,
@@ -416,6 +564,8 @@ impl ConcreteStateLifecycle {
         self.pending = None;
         self.pending_rlp.clear();
         self.intermediate_content.clear();
+        self.observer_prepared = None;
+        self.legacy_prepared = false;
         Ok(())
     }
 
@@ -943,6 +1093,444 @@ mod tests {
             catalog_hash,
         };
         assert!(lifecycle.commit_approved(stale, approval).is_err());
+    }
+
+    #[test]
+    fn ordered_put_then_raw_delete_matches_pinned_tombstone() {
+        let path = TestPath::new();
+        let chain_id = [0x41; 32];
+        let address = address(0xaa);
+        let key = storage_key(1);
+        let mut lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain_id,
+            ConcreteStateMutationBatch {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address,
+                    record: account(1, 100),
+                }],
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let observed = lifecycle.observation().unwrap();
+        let (_marker, marker_rlp) = marker(&observed, 0x42);
+        lifecycle.stage_execution(&marker_rlp).unwrap();
+
+        let output = lifecycle
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                storage: vec![
+                    ConcreteStorageMutation {
+                        address,
+                        key,
+                        value: Some(vec![1]),
+                    },
+                    ConcreteStorageMutation {
+                        address,
+                        key,
+                        value: None,
+                    },
+                ],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            hex::encode(output.identity().state_root),
+            "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a"
+        );
+        assert_eq!(output.changed_accounts().len(), 1);
+        {
+            let view = lifecycle.prepared_view(&output).unwrap();
+            assert_eq!(
+                rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                    &view, address, key,
+                )
+                .unwrap(),
+                ConcreteRead::Tombstone
+            );
+            assert!(matches!(
+                rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                    &view,
+                    address,
+                    storage_key(9),
+                ),
+                Err(ConcreteReadError::HistoryUnavailable(identity)) if identity == output.identity()
+            ));
+        }
+
+        let fixture = ordered_fixture();
+        assert_eq!(
+            prepared_columns(lifecycle.observer_prepared.as_ref().unwrap()),
+            fixture["ordered_put_raw_delete"]["columns"]
+        );
+        lifecycle.discard_execution(&marker_rlp).unwrap();
+        assert!(lifecycle.prepared_view(&output).is_err());
+    }
+
+    #[test]
+    fn ordered_delete_recreate_preserves_orphans_and_commits_atomically() {
+        let path = TestPath::new();
+        let chain_id = [0x51; 32];
+        let address = address(0xaa);
+        let key_one = storage_key(1);
+        let key_two = storage_key(2);
+        let mut lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain_id,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let observed = lifecycle.observation().unwrap();
+        let (marker, marker_rlp) = marker(&observed, 0x52);
+        lifecycle.stage_execution(&marker_rlp).unwrap();
+
+        let seed = lifecycle
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address,
+                    record: account(1, 100),
+                }],
+                storage: vec![ConcreteStorageMutation {
+                    address,
+                    key: key_one,
+                    value: Some(vec![0x11]),
+                }],
+                code: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            hex::encode(seed.identity().state_root),
+            "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+        );
+
+        let deleted = lifecycle
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![ConcreteAccountMutation::Delete { address }],
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(lifecycle.prepared_view(&seed).is_err());
+        assert_eq!(
+            hex::encode(deleted.identity().state_root),
+            "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+        );
+        {
+            let deleted_view = lifecycle.prepared_view(&deleted).unwrap();
+            assert_eq!(
+                rustaxa_types::concrete_state::execution::ConcreteExecutionRead::account(
+                    &deleted_view,
+                    address,
+                )
+                .unwrap(),
+                ConcreteRead::Tombstone
+            );
+            assert_eq!(
+                rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                    &deleted_view,
+                    address,
+                    key_one,
+                )
+                .unwrap(),
+                ConcreteRead::Present(vec![0x11])
+            );
+        }
+
+        let recreated = lifecycle
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                accounts: vec![ConcreteAccountMutation::Upsert {
+                    address,
+                    record: account(2, 90),
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            hex::encode(recreated.identity().state_root),
+            "d20632b3bf474f10287ff869a0b80dd489127e5410ad726052766f2dd4460a8f"
+        );
+        {
+            let recreated_view = lifecycle.prepared_view(&recreated).unwrap();
+            assert_eq!(
+                rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                    &recreated_view,
+                    address,
+                    key_one,
+                )
+                .unwrap(),
+                ConcreteRead::Present(vec![0x11])
+            );
+        }
+
+        let contradictory = lifecycle.apply_observer_phase(ConcreteObserverPhaseDelta {
+            accounts: vec![ConcreteAccountMutation::Delete { address }],
+            storage: vec![ConcreteStorageMutation {
+                address,
+                key: key_two,
+                value: Some(vec![0x22]),
+            }],
+            ..Default::default()
+        });
+        assert!(contradictory.is_err());
+        assert!(lifecycle.prepared_view(&recreated).is_ok());
+
+        let final_phase = lifecycle
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                storage: vec![ConcreteStorageMutation {
+                    address,
+                    key: key_two,
+                    value: Some(vec![0x22]),
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            hex::encode(final_phase.identity().state_root),
+            "e3e9fcb0c82680f256eba6c039c343bbe2966558caf353a276ef5e3abde87840"
+        );
+        {
+            let final_view = lifecycle.prepared_view(&final_phase).unwrap();
+            for (key, value) in [(key_one, 0x11), (key_two, 0x22)] {
+                assert_eq!(
+                    rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                        &final_view,
+                        address,
+                        key,
+                    )
+                    .unwrap(),
+                    ConcreteRead::Present(vec![value])
+                );
+            }
+        }
+        let fixture = ordered_fixture();
+        assert_eq!(
+            prepared_columns(lifecycle.observer_prepared.as_ref().unwrap()),
+            fixture["delete_recreate"][3]["columns"]
+        );
+
+        let orphan_delete = lifecycle
+            .apply_observer_phase(ConcreteObserverPhaseDelta {
+                storage: vec![ConcreteStorageMutation {
+                    address,
+                    key: key_one,
+                    value: None,
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(orphan_delete.identity(), final_phase.identity());
+        assert!(orphan_delete.changed_accounts().is_empty());
+        assert!(lifecycle.prepared_view(&final_phase).is_err());
+        {
+            let orphan_view = lifecycle.prepared_view(&orphan_delete).unwrap();
+            assert_eq!(
+                rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                    &orphan_view,
+                    address,
+                    key_one,
+                )
+                .unwrap(),
+                ConcreteRead::Present(vec![0x11])
+            );
+        }
+        assert_eq!(
+            prepared_columns(lifecycle.observer_prepared.as_ref().unwrap()),
+            fixture["delete_recreate"][3]["columns"]
+        );
+
+        let catalog = vec![
+            ConcreteStorageSlot {
+                address,
+                key: key_one.0,
+            },
+            ConcreteStorageSlot {
+                address,
+                key: key_two.0,
+            },
+        ];
+        let approval = approval(&marker, &marker_rlp, orphan_delete.identity(), &catalog);
+        let committed = lifecycle
+            .commit_observer_approved(orphan_delete, approval)
+            .unwrap();
+        assert_eq!(
+            committed.committed.state_root,
+            hex_hash("e3e9fcb0c82680f256eba6c039c343bbe2966558caf353a276ef5e3abde87840")
+        );
+
+        let reopened =
+            ConcreteStateLifecycle::open(&path.0, chain_id, committed.committed).unwrap();
+        assert_eq!(
+            reopened.prior_reader().storage(address, key_one).unwrap(),
+            ConcreteRead::Present(vec![0x11])
+        );
+        assert_eq!(
+            reopened.prior_reader().storage(address, key_two).unwrap(),
+            ConcreteRead::Present(vec![0x22])
+        );
+    }
+
+    #[test]
+    fn observer_outputs_are_lifecycle_bound_and_preparation_modes_do_not_mix() {
+        let path_a = TestPath::new();
+        let path_b = TestPath::new();
+        let path_c = TestPath::new();
+        let mut observer_a = staged_empty_lifecycle(&path_a, [0x61; 32], 0x62);
+        let mut observer_b = staged_empty_lifecycle(&path_b, [0x63; 32], 0x64);
+        let output_a = observer_a
+            .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        let output_b = observer_b
+            .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+            .unwrap();
+        assert!(observer_a.prepared_view(&output_b).is_err());
+        assert!(
+            observer_a
+                .prepare(
+                    FinalChainBlockNumber::new(1),
+                    ConcreteStateMutationBatch::default(),
+                )
+                .is_err()
+        );
+        assert!(observer_a.prepared_view(&output_a).is_ok());
+
+        let mut cumulative = staged_empty_lifecycle(&path_c, [0x65; 32], 0x66);
+        cumulative
+            .prepare(
+                FinalChainBlockNumber::new(1),
+                ConcreteStateMutationBatch::default(),
+            )
+            .unwrap();
+        assert!(
+            cumulative
+                .apply_observer_phase(ConcreteObserverPhaseDelta::default())
+                .is_err()
+        );
+    }
+
+    fn ordered_fixture() -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "../../../../../experiments/evm_feasibility/fixtures/ordered_overlay.json"
+        ))
+        .unwrap()
+    }
+
+    fn prepared_columns(prepared: &PreparedConcreteState) -> serde_json::Value {
+        let mut columns = serde_json::Map::new();
+        for name in ["code", "main_nodes", "accounts", "storage_nodes", "slots"] {
+            columns.insert(
+                name.to_owned(),
+                serde_json::Value::Object(Default::default()),
+            );
+        }
+        for (row, value) in &prepared.rows {
+            let (name, key) = match row.column {
+                "1" => ("code", row.key.as_slice()),
+                "2" => ("main_nodes", row.key.as_slice()),
+                "3" => {
+                    assert_eq!(row.key.len(), 40);
+                    assert_eq!(
+                        row.key[32..],
+                        prepared.next_identity().period.as_u64().to_be_bytes()
+                    );
+                    ("accounts", &row.key[..32])
+                }
+                "4" => ("storage_nodes", row.key.as_slice()),
+                "5" => {
+                    assert_eq!(row.key.len(), 40);
+                    assert_eq!(
+                        row.key[32..],
+                        prepared.next_identity().period.as_u64().to_be_bytes()
+                    );
+                    ("slots", &row.key[..32])
+                }
+                column => panic!("unexpected prepared column {column}"),
+            };
+            columns[name].as_object_mut().unwrap().insert(
+                hex::encode(key),
+                serde_json::Value::String(hex::encode(value)),
+            );
+        }
+        serde_json::Value::Object(columns)
+    }
+
+    fn marker(
+        observed: &ConcreteLifecycleObservation,
+        seed: u8,
+    ) -> (FinalChainConcreteExecutionMarker, Vec<u8>) {
+        let marker = FinalChainConcreteExecutionMarker {
+            identity: observed.identity,
+            generation: observed.generation + 1,
+            plan_hash: [seed; 32],
+            period: observed.committed.period.as_u64() + 1,
+            prior_state: lifecycle_state(observed.committed),
+            transactions_hash: [seed.wrapping_add(1); 32],
+            rewards_hash: [seed.wrapping_add(2); 32],
+        };
+        let rlp = encode_concrete_execution_marker(&marker);
+        (marker, rlp)
+    }
+
+    fn staged_empty_lifecycle(
+        path: &TestPath,
+        chain_id: [u8; 32],
+        marker_seed: u8,
+    ) -> ConcreteStateLifecycle {
+        let mut lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
+            &path.0,
+            chain_id,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let observed = lifecycle.observation().unwrap();
+        let (_, marker_rlp) = marker(&observed, marker_seed);
+        lifecycle.stage_execution(&marker_rlp).unwrap();
+        lifecycle
+    }
+
+    fn approval(
+        marker: &FinalChainConcreteExecutionMarker,
+        marker_rlp: &[u8],
+        committed: ConcreteStateIdentity,
+        catalog: &[ConcreteStorageSlot],
+    ) -> ConcreteCommitApproval {
+        let catalog_rlp = encode_concrete_storage_catalog(catalog.iter().copied());
+        let catalog_hash = concrete_storage_slot_catalog_hash(catalog.iter().copied());
+        let projection_hash = concrete_state_bytes_digest(b"ordered observer projection");
+        let provenance = FinalChainConcreteStateProvenance {
+            identity: marker.identity,
+            generation: marker.generation,
+            plan_hash: marker.plan_hash,
+            committed_state: lifecycle_state(committed),
+            transactions_hash: marker.transactions_hash,
+            rewards_hash: marker.rewards_hash,
+            projection_hash,
+            catalog_hash,
+        };
+        ConcreteCommitApproval {
+            marker_rlp: marker_rlp.to_vec(),
+            provenance_rlp: encode_concrete_state_provenance(&provenance),
+            catalog_rlp,
+            projection_hash,
+            catalog_hash,
+        }
+    }
+
+    fn address(last: u8) -> [u8; 20] {
+        let mut address = [0; 20];
+        address[19] = last;
+        address
+    }
+
+    fn storage_key(last: u8) -> rustaxa_types::concrete_state::ConcreteStorageKey {
+        let mut key = [0; 32];
+        key[31] = last;
+        rustaxa_types::concrete_state::ConcreteStorageKey(key)
+    }
+
+    fn hex_hash(value: &str) -> [u8; 32] {
+        hex::decode(value).unwrap().try_into().unwrap()
     }
 
     fn account(nonce: u64, balance: u64) -> ConcreteAccountRecord {

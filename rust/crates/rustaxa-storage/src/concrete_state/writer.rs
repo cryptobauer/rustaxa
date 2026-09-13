@@ -30,6 +30,7 @@ use super::trie_writer::{IncrementalTrie, TrieWriteStore};
 const DESCRIPTOR_KEY: &[u8] = b"last_committed_descriptor";
 pub(super) const REQUIRED_COLUMNS: &[&str] = &["default", "1", "2", "3", "4", "5", "6", "7", "8"];
 static NEXT_WRITER_ID: AtomicU64 = AtomicU64::new(1);
+type OrderedStorageChanges = BTreeMap<[u8; 20], Vec<(ConcreteStorageKey, Option<Vec<u8>>)>>;
 
 /// One account-row change. Storage roots in upsert records are never trusted:
 /// the writer preserves the authenticated prior root or replaces it with the
@@ -130,6 +131,20 @@ pub struct ConcreteStateMutationBatch {
     pub code: Vec<ConcreteCodeInsertion>,
 }
 
+/// One settled observer phase applied in the exact supplied slot order.
+///
+/// Account and code keys must be unique. Storage operations may repeat a
+/// logical key because ordinary writes precede raw writes and both operations
+/// can affect the compatible trie and physical tombstone outcome. Empty live
+/// bytes are invalid; use `value: None` for deletion. The caller supplies
+/// logical keys, never pre-hashed trie or database keys.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ConcreteObserverPhaseDelta {
+    pub accounts: Vec<ConcreteAccountMutation>,
+    pub storage: Vec<ConcreteStorageMutation>,
+    pub code: Vec<ConcreteCodeInsertion>,
+}
+
 /// Validated, deterministic compatible rows for one unpublished generation.
 /// Fields and construction stay private so callers cannot forge a root/write
 /// pairing or retarget rows to another writer/database generation.
@@ -139,7 +154,44 @@ pub struct PreparedConcreteState {
     next: ConcreteStateIdentity,
     writer_id: u64,
     sequence: u64,
+    changed_accounts: Vec<([u8; 20], ConcreteRead<ConcreteAccountRecord>)>,
     pub(super) rows: BTreeMap<RowKey, Vec<u8>>,
+}
+
+/// Immutable borrowed execution view of one unpublished prepared phase.
+///
+/// Construction and lifetime remain lifecycle-controlled. Reads use the exact
+/// prepared root and in-memory physical rows before the pinned durable prior.
+/// Missing durable physical history remains unavailable. This view cannot be
+/// used as a committed-state reader and exposes no mutation or publication API.
+pub struct PreparedConcreteView<'a> {
+    writer: &'a ConcreteStateWriter,
+    prepared: &'a PreparedConcreteState,
+}
+
+impl rustaxa_types::concrete_state::execution::ConcreteExecutionRead for PreparedConcreteView<'_> {
+    fn identity(&self) -> ConcreteStateIdentity {
+        self.prepared.next
+    }
+
+    fn account(
+        &self,
+        address: [u8; 20],
+    ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
+        self.writer.prepared_account(self.prepared, address)
+    }
+
+    fn storage(
+        &self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        self.writer.prepared_storage(self.prepared, address, key)
+    }
+
+    fn code(&self, code_hash: [u8; 32]) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        self.writer.prepared_code(self.prepared, code_hash)
+    }
 }
 
 impl PreparedConcreteState {
@@ -152,6 +204,14 @@ impl PreparedConcreteState {
     /// Number of compatible column-family rows staged by this preparation.
     pub fn row_count(&self) -> usize {
         self.rows.len()
+    }
+
+    pub(super) fn changed_accounts(&self) -> &[([u8; 20], ConcreteRead<ConcreteAccountRecord>)] {
+        &self.changed_accounts
+    }
+
+    pub(super) fn token(&self) -> (u64, u64) {
+        (self.writer_id, self.sequence)
     }
 }
 
@@ -237,37 +297,7 @@ impl ConcreteStateWriter {
         mutations: ConcreteStateMutationBatch,
         genesis: bool,
     ) -> Result<PreparedConcreteState, ConcreteReadError> {
-        if genesis {
-            if self.prior.period != FinalChainBlockNumber::GENESIS
-                || self.prior.state_root != empty_trie_root()
-                || self.db.get(DESCRIPTOR_KEY).map_err(io)?.is_some()
-            {
-                return Err(corrupt(
-                    "genesis preparation requires a fresh descriptorless database",
-                ));
-            }
-        } else {
-            if self.prior.period.checked_next() != Some(next_period) {
-                return Err(corrupt(
-                    "prepared state period must immediately follow its prior",
-                ));
-            }
-            if current_identity(&self.db)? != self.prior {
-                return Err(corrupt("concrete descriptor changed after writer open"));
-            }
-        }
-        if self.persisted_sequence.get().is_some() {
-            return Err(corrupt(
-                "this writer already staged unpublished rows for its prior",
-            ));
-        }
-        let sequence = self
-            .sequence
-            .get()
-            .checked_add(1)
-            .ok_or_else(|| corrupt("concrete writer preparation sequence overflow"))?;
-        self.sequence.set(sequence);
-
+        self.validate_preparation_base(next_period, None, genesis)?;
         let mut account_changes = BTreeMap::new();
         for mutation in mutations.accounts {
             if account_changes
@@ -277,23 +307,120 @@ impl ConcreteStateWriter {
                 return Err(corrupt("duplicate account mutation"));
             }
         }
-        let mut storage_changes: BTreeMap<[u8; 20], BTreeMap<ConcreteStorageKey, Option<Vec<u8>>>> =
-            BTreeMap::new();
+        let mut storage_changes = OrderedStorageChanges::new();
         for mutation in mutations.storage {
-            if matches!(mutation.value, Some(ref value) if value.is_empty()) {
-                return Err(corrupt(
-                    "empty live storage bytes must use a delete mutation",
-                ));
-            }
-            if storage_changes
-                .entry(mutation.address)
-                .or_default()
-                .insert(mutation.key, mutation.value)
-                .is_some()
-            {
+            validate_storage_value(&mutation.value)?;
+            let slots = storage_changes.entry(mutation.address).or_default();
+            if slots.iter().any(|(key, _)| *key == mutation.key) {
                 return Err(corrupt("duplicate storage mutation"));
             }
+            slots.push((mutation.key, mutation.value));
         }
+        let code_changes = normalize_code_insertions(mutations.code)?;
+        self.prepare_from_base(
+            next_period,
+            None,
+            account_changes,
+            storage_changes,
+            code_changes,
+        )
+    }
+
+    /// Applies one ordered observer phase to the supplied base, or to the
+    /// durable prior for the first phase. Rows remain unpublished and in memory.
+    /// Repeated storage keys are processed in supplied order.
+    pub(super) fn prepare_observer_phase(
+        &self,
+        next_period: FinalChainBlockNumber,
+        base: Option<&PreparedConcreteState>,
+        delta: ConcreteObserverPhaseDelta,
+    ) -> Result<PreparedConcreteState, ConcreteReadError> {
+        self.validate_preparation_base(next_period, base, false)?;
+        let mut account_changes = BTreeMap::new();
+        for mutation in delta.accounts {
+            if account_changes
+                .insert(mutation.address(), mutation)
+                .is_some()
+            {
+                return Err(corrupt("duplicate account mutation"));
+            }
+        }
+        let mut storage_changes = OrderedStorageChanges::new();
+        for mutation in delta.storage {
+            validate_storage_value(&mutation.value)?;
+            storage_changes
+                .entry(mutation.address)
+                .or_default()
+                .push((mutation.key, mutation.value));
+        }
+        let code_changes = normalize_code_insertions(delta.code)?;
+        self.prepare_from_base(
+            next_period,
+            base,
+            account_changes,
+            storage_changes,
+            code_changes,
+        )
+    }
+
+    fn validate_preparation_base(
+        &self,
+        next_period: FinalChainBlockNumber,
+        base: Option<&PreparedConcreteState>,
+        genesis: bool,
+    ) -> Result<(), ConcreteReadError> {
+        if genesis {
+            if base.is_some()
+                || self.prior.period != FinalChainBlockNumber::GENESIS
+                || self.prior.state_root != empty_trie_root()
+                || self.db.get(DESCRIPTOR_KEY).map_err(io)?.is_some()
+            {
+                return Err(corrupt(
+                    "genesis preparation requires a fresh descriptorless database",
+                ));
+            }
+        } else {
+            if current_identity(&self.db)? != self.prior {
+                return Err(corrupt("concrete descriptor changed after writer open"));
+            }
+            match base {
+                Some(prepared) => {
+                    self.validate_prepared(prepared)?;
+                    if prepared.next.period != next_period {
+                        return Err(corrupt(
+                            "observer phases must remain in one prepared period",
+                        ));
+                    }
+                }
+                None if self.prior.period.checked_next() != Some(next_period) => {
+                    return Err(corrupt(
+                        "prepared state period must immediately follow its prior",
+                    ));
+                }
+                None => {}
+            }
+        }
+        if self.persisted_sequence.get().is_some() {
+            return Err(corrupt(
+                "this writer already staged unpublished rows for its prior",
+            ));
+        }
+        Ok(())
+    }
+
+    fn prepare_from_base(
+        &self,
+        next_period: FinalChainBlockNumber,
+        base: Option<&PreparedConcreteState>,
+        mut account_changes: BTreeMap<[u8; 20], ConcreteAccountMutation>,
+        storage_changes: OrderedStorageChanges,
+        code_changes: BTreeMap<[u8; 32], Vec<u8>>,
+    ) -> Result<PreparedConcreteState, ConcreteReadError> {
+        let sequence = self
+            .sequence
+            .get()
+            .checked_add(1)
+            .ok_or_else(|| corrupt("concrete writer preparation sequence overflow"))?;
         for address in storage_changes.keys() {
             if matches!(
                 account_changes.get(address),
@@ -304,18 +431,6 @@ impl ConcreteStateWriter {
                 ));
             }
         }
-        let mut code_changes = BTreeMap::new();
-        for insertion in mutations.code {
-            if keccak256(&insertion.code) != insertion.code_hash {
-                return Err(corrupt("code bytes do not match their Keccak-256 key"));
-            }
-            if code_changes
-                .insert(insertion.code_hash, insertion.code)
-                .is_some()
-            {
-                return Err(corrupt("duplicate code insertion"));
-            }
-        }
 
         let storage_touched = storage_changes.keys().copied().collect::<BTreeSet<_>>();
         let touched_accounts = account_changes
@@ -324,12 +439,13 @@ impl ConcreteStateWriter {
             .chain(storage_changes.keys().copied())
             .collect::<BTreeSet<_>>();
         for address in touched_accounts {
-            self.verify_prior_account(address)?;
+            self.verify_account_at(base, address)?;
         }
 
-        let mut rows = BTreeMap::new();
+        let base_identity = base.map_or(self.prior, |prepared| prepared.next);
+        let mut rows = base.map_or_else(BTreeMap::new, |prepared| prepared.rows.clone());
         for (address, slots) in storage_changes {
-            let prior_record = self.select_account(address)?;
+            let prior_record = self.select_account_at(base, address)?;
             let explicit = account_changes.get(&address);
             let base_record = match explicit {
                 Some(ConcreteAccountMutation::Upsert { record, .. }) => {
@@ -343,16 +459,17 @@ impl ConcreteStateWriter {
                 .as_ref()
                 .and_then(|record| record.account.storage_root)
                 .unwrap_or_else(empty_trie_root);
-            let store = DbTrieStore {
-                db: &self.db,
-                identity: self.prior,
+            let store = PreparedTrieStore {
+                writer: self,
+                prepared: base,
+                identity: base_identity,
                 node_column: "4",
                 value_column: "5",
                 address: Some(address),
             };
-            let mut any_changed = false;
-            for key in slots.keys() {
-                let path = storage_trie_path(*key);
+            let unique_keys = slots.iter().map(|(key, _)| *key).collect::<BTreeSet<_>>();
+            for key in unique_keys {
+                let path = storage_trie_path(key);
                 let proof = verify_path(
                     &store,
                     prior_storage_root,
@@ -363,19 +480,17 @@ impl ConcreteStateWriter {
                     TrieSchema::Storage,
                 )?;
                 if let PathProof::Member(proved) = proof {
-                    let selected = select_version(
-                        &self.db,
-                        "5",
-                        storage_prefix_for_path(address, path),
-                        self.prior.period,
-                    )?;
+                    let selected =
+                        store.value_for_prefix(storage_prefix_for_path(address, path))?;
                     if selected.as_deref() != Some(proved.as_slice()) {
                         return Err(corrupt(
-                            "prior storage trie member differs from its physical version",
+                            "prepared storage trie member differs from its physical version",
                         ));
                     }
                 }
             }
+
+            let mut any_changed = false;
             let mut trie =
                 IncrementalTrie::new(&store, "4", TrieSchema::Storage, prior_storage_root);
             for (key, value) in slots {
@@ -389,7 +504,7 @@ impl ConcreteStateWriter {
                 };
                 if changed {
                     any_changed = true;
-                    insert_row(
+                    merge_prepared_row(
                         &mut rows,
                         "5",
                         versioned_key(storage_version_prefix(address, key), next_period).to_vec(),
@@ -399,7 +514,7 @@ impl ConcreteStateWriter {
             }
             let commit = trie.commit()?;
             for (hash, node) in commit.nodes {
-                insert_row(&mut rows, "4", hash.to_vec(), node)?;
+                merge_prepared_row(&mut rows, "4", hash.to_vec(), node)?;
             }
             if explicit.is_some() || any_changed {
                 let root = (commit.root != empty_trie_root()).then_some(commit.root);
@@ -418,34 +533,41 @@ impl ConcreteStateWriter {
             }
             if let ConcreteAccountMutation::Upsert { record, .. } = mutation {
                 let prior_root = self
-                    .select_account(*address)?
+                    .select_account_at(base, *address)?
                     .and_then(|prior| prior.account.storage_root);
                 *record = replace_storage_root(record, prior_root)?;
             }
         }
 
-        let main_store = DbTrieStore {
-            db: &self.db,
-            identity: self.prior,
+        let main_store = PreparedTrieStore {
+            writer: self,
+            prepared: base,
+            identity: base_identity,
             node_column: "2",
             value_column: "3",
             address: None,
         };
-        let mut main =
-            IncrementalTrie::new(&main_store, "2", TrieSchema::Account, self.prior.state_root);
+        let mut main = IncrementalTrie::new(
+            &main_store,
+            "2",
+            TrieSchema::Account,
+            base_identity.state_root,
+        );
+        let mut changed_account_addresses = Vec::new();
         for (address, mutation) in account_changes {
             let path = account_version_prefix(address);
             let value = match mutation {
                 ConcreteAccountMutation::Upsert { record, .. } => {
                     validate_record(&record)?;
-                    self.validate_code_reference(&record, &code_changes)?;
+                    self.validate_code_reference_at(&record, &code_changes, base)?;
                     main.put(path, record.physical_rlp.clone())?;
                     Some(record.physical_rlp)
                 }
                 ConcreteAccountMutation::Delete { .. } => main.delete(path)?.then(Vec::new),
             };
             if let Some(value) = value {
-                insert_row(
+                changed_account_addresses.push(address);
+                merge_prepared_row(
                     &mut rows,
                     "3",
                     versioned_key(path, next_period).to_vec(),
@@ -455,17 +577,18 @@ impl ConcreteStateWriter {
         }
         let main_commit = main.commit()?;
         for (hash, node) in main_commit.nodes {
-            insert_row(&mut rows, "2", hash.to_vec(), node)?;
+            merge_prepared_row(&mut rows, "2", hash.to_vec(), node)?;
         }
         for (code_hash, code) in code_changes {
-            if let Some(existing) = self.get("1", &code_hash)?
+            if let Some(existing) = self.code_at(base, code_hash)?
                 && existing != code
             {
                 return Err(corrupt("immutable code key already has different bytes"));
             }
-            insert_row(&mut rows, "1", code_hash.to_vec(), code)?;
+            merge_prepared_row(&mut rows, "1", code_hash.to_vec(), code)?;
         }
-        Ok(PreparedConcreteState {
+
+        let mut prepared = PreparedConcreteState {
             prior: self.prior,
             next: ConcreteStateIdentity {
                 period: next_period,
@@ -473,8 +596,27 @@ impl ConcreteStateWriter {
             },
             writer_id: self.writer_id,
             sequence,
+            changed_accounts: Vec::new(),
             rows,
-        })
+        };
+        for address in changed_account_addresses {
+            self.verify_account_at(Some(&prepared), address)?;
+            let row = prepared
+                .rows
+                .get(&RowKey {
+                    column: "3",
+                    key: versioned_key(account_version_prefix(address), next_period).to_vec(),
+                })
+                .ok_or_else(|| corrupt("prepared account change has no physical row"))?;
+            let account = if row.is_empty() {
+                ConcreteRead::Tombstone
+            } else {
+                ConcreteRead::Present(decode_physical_account(row)?)
+            };
+            prepared.changed_accounts.push((address, account));
+        }
+        self.sequence.set(sequence);
+        Ok(prepared)
     }
 
     /// Persists CF1-CF5 content and version rows for `prepared`, without moving
@@ -558,24 +700,61 @@ impl ConcreteStateWriter {
         address: [u8; 20],
     ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
         self.validate_prepared(prepared)?;
-        let path = account_version_prefix(address);
-        let row = RowKey {
-            column: "3",
-            key: versioned_key(path, prepared.next.period).to_vec(),
-        };
-        if let Some(value) = prepared.rows.get(&row) {
-            return if value.is_empty() {
-                Ok(ConcreteRead::Tombstone)
-            } else {
-                decode_physical_account(value).map(ConcreteRead::Present)
-            };
-        }
-        self.verify_prior_account(address)?;
-        match select_version(&self.db, "3", path, self.prior.period)? {
+        self.verify_account_at(Some(prepared), address)?;
+        match self.select_value_at(Some(prepared), "3", account_version_prefix(address))? {
             Some(value) if value.is_empty() => Ok(ConcreteRead::Tombstone),
             Some(value) => decode_physical_account(&value).map(ConcreteRead::Present),
             None => Ok(ConcreteRead::Absent),
         }
+    }
+
+    /// Borrows an execution-only reader for an exact validated preparation.
+    pub(super) fn prepared_view<'a>(
+        &'a self,
+        prepared: &'a PreparedConcreteState,
+    ) -> Result<PreparedConcreteView<'a>, ConcreteReadError> {
+        self.validate_prepared(prepared)?;
+        Ok(PreparedConcreteView {
+            writer: self,
+            prepared,
+        })
+    }
+
+    pub(super) fn prepared_token(
+        &self,
+        prepared: &PreparedConcreteState,
+    ) -> Result<(u64, u64), ConcreteReadError> {
+        self.validate_prepared(prepared)?;
+        Ok((prepared.writer_id, prepared.sequence))
+    }
+
+    fn prepared_storage(
+        &self,
+        prepared: &PreparedConcreteState,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        self.validate_prepared(prepared)?;
+        match self.select_value_at(Some(prepared), "5", storage_version_prefix(address, key))? {
+            Some(value) if value.is_empty() => Ok(ConcreteRead::Tombstone),
+            Some(value) => Ok(ConcreteRead::Present(value)),
+            None => Err(ConcreteReadError::HistoryUnavailable(prepared.next)),
+        }
+    }
+
+    fn prepared_code(
+        &self,
+        prepared: &PreparedConcreteState,
+        code_hash: [u8; 32],
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        self.validate_prepared(prepared)?;
+        let Some(code) = self.code_at(Some(prepared), code_hash)? else {
+            return Err(ConcreteReadError::HistoryUnavailable(prepared.next));
+        };
+        if keccak256(&code) != code_hash {
+            return Err(corrupt("code bytes do not match their Keccak-256 key"));
+        }
+        Ok(ConcreteRead::Present(code))
     }
 
     /// Returns the database path this handle is pinned to.
@@ -607,16 +786,12 @@ impl ConcreteStateWriter {
         Ok(())
     }
 
-    fn select_account(
+    fn select_account_at(
         &self,
+        prepared: Option<&PreparedConcreteState>,
         address: [u8; 20],
     ) -> Result<Option<ConcreteAccountRecord>, ConcreteReadError> {
-        match select_version(
-            &self.db,
-            "3",
-            account_version_prefix(address),
-            self.prior.period,
-        )? {
+        match self.select_value_at(prepared, "3", account_version_prefix(address))? {
             Some(value) if !value.is_empty() => decode_physical_account(&value).map(Some),
             _ => Ok(None),
         }
@@ -638,24 +813,34 @@ impl ConcreteStateWriter {
     }
 
     fn verify_prior_account(&self, address: [u8; 20]) -> Result<(), ConcreteReadError> {
+        self.verify_account_at(None, address)
+    }
+
+    fn verify_account_at(
+        &self,
+        prepared: Option<&PreparedConcreteState>,
+        address: [u8; 20],
+    ) -> Result<(), ConcreteReadError> {
         let path = account_version_prefix(address);
-        let store = DbTrieStore {
-            db: &self.db,
-            identity: self.prior,
+        let identity = prepared.map_or(self.prior, |prepared| prepared.next);
+        let store = PreparedTrieStore {
+            writer: self,
+            prepared,
+            identity,
             node_column: "2",
             value_column: "3",
             address: None,
         };
         let proof = verify_path(
             &store,
-            self.prior.state_root,
+            identity.state_root,
             path,
             "2",
             "3",
             |path| path,
             TrieSchema::Account,
         )?;
-        let selected = select_version(&self.db, "3", path, self.prior.period)?;
+        let selected = store.value_for_prefix(path)?;
         match (proof, selected) {
             (PathProof::Member(proved), Some(selected)) if proved == selected => Ok(()),
             (PathProof::Member(_), _) => Err(corrupt(
@@ -676,10 +861,45 @@ impl ConcreteStateWriter {
         self.db.get_cf(&handle, key).map_err(io)
     }
 
-    fn validate_code_reference(
+    fn select_value_at(
+        &self,
+        prepared: Option<&PreparedConcreteState>,
+        column: &'static str,
+        prefix: [u8; 32],
+    ) -> Result<Option<Vec<u8>>, ConcreteReadError> {
+        PreparedTrieStore {
+            writer: self,
+            prepared,
+            identity: prepared.map_or(self.prior, |prepared| prepared.next),
+            node_column: if column == "3" { "2" } else { "4" },
+            value_column: column,
+            address: None,
+        }
+        .value_for_prefix(prefix)
+    }
+
+    fn code_at(
+        &self,
+        prepared: Option<&PreparedConcreteState>,
+        code_hash: [u8; 32],
+    ) -> Result<Option<Vec<u8>>, ConcreteReadError> {
+        if let Some(prepared) = prepared {
+            let row = RowKey {
+                column: "1",
+                key: code_hash.to_vec(),
+            };
+            if let Some(code) = prepared.rows.get(&row) {
+                return Ok(Some(code.clone()));
+            }
+        }
+        self.get("1", &code_hash)
+    }
+
+    fn validate_code_reference_at(
         &self,
         record: &ConcreteAccountRecord,
         staged: &BTreeMap<[u8; 32], Vec<u8>>,
+        prepared: Option<&PreparedConcreteState>,
     ) -> Result<(), ConcreteReadError> {
         if record.account.code_size == 0 {
             return Ok(());
@@ -691,7 +911,7 @@ impl ConcreteStateWriter {
         let code = match staged.get(&hash) {
             Some(code) => code.clone(),
             None => self
-                .get("1", &hash)?
+                .code_at(prepared, hash)?
                 .ok_or_else(|| corrupt("account references unavailable code bytes"))?,
         };
         if code.len() as u64 != record.account.code_size || keccak256(&code) != hash {
@@ -714,24 +934,55 @@ impl ConcreteStateWriter {
     }
 }
 
-struct DbTrieStore<'a> {
-    db: &'a DB,
+struct PreparedTrieStore<'a> {
+    writer: &'a ConcreteStateWriter,
+    prepared: Option<&'a PreparedConcreteState>,
     identity: ConcreteStateIdentity,
     node_column: &'static str,
     value_column: &'static str,
     address: Option<[u8; 20]>,
 }
 
-impl TrieWriteStore for DbTrieStore<'_> {
+impl PreparedTrieStore<'_> {
+    fn value_for_prefix(&self, prefix: [u8; 32]) -> Result<Option<Vec<u8>>, ConcreteReadError> {
+        if let Some(prepared) = self.prepared {
+            let row = RowKey {
+                column: self.value_column,
+                key: versioned_key(prefix, prepared.next.period).to_vec(),
+            };
+            if let Some(value) = prepared.rows.get(&row) {
+                return Ok(Some(value.clone()));
+            }
+        }
+        select_version(
+            &self.writer.db,
+            self.value_column,
+            prefix,
+            self.writer.prior.period,
+        )
+    }
+}
+
+impl TrieWriteStore for PreparedTrieStore<'_> {
     fn node(&self, column: &str, hash: [u8; 32]) -> Result<Option<Vec<u8>>, ConcreteReadError> {
         if column != self.node_column {
             return Err(corrupt("trie requested an unexpected node column"));
         }
+        if let Some(prepared) = self.prepared {
+            let row = RowKey {
+                column: self.node_column,
+                key: hash.to_vec(),
+            };
+            if let Some(node) = prepared.rows.get(&row) {
+                return Ok(Some(node.clone()));
+            }
+        }
         let handle = self
+            .writer
             .db
             .cf_handle(column)
             .ok_or_else(|| corrupt("trie node column is missing"))?;
-        self.db.get_cf(&handle, hash).map_err(io)
+        self.writer.db.get_cf(&handle, hash).map_err(io)
     }
 
     fn value(&self, key: [u8; 32]) -> Result<Option<Vec<u8>>, ConcreteReadError> {
@@ -739,11 +990,11 @@ impl TrieWriteStore for DbTrieStore<'_> {
             Some(address) => storage_prefix_for_path(address, key),
             None => key,
         };
-        select_version(self.db, self.value_column, prefix, self.identity.period)
+        self.value_for_prefix(prefix)
     }
 }
 
-impl PhysicalTrieStore for DbTrieStore<'_> {
+impl PhysicalTrieStore for PreparedTrieStore<'_> {
     fn identity(&self) -> ConcreteStateIdentity {
         self.identity
     }
@@ -761,7 +1012,7 @@ impl PhysicalTrieStore for DbTrieStore<'_> {
         if column != self.value_column || period != self.identity.period {
             return Err(corrupt("trie proof requested an unexpected value view"));
         }
-        select_version(self.db, column, prefix, period)
+        self.value_for_prefix(prefix)
             .map(|selected| selected.map(|value| SelectedVersion { value }))
     }
 }
@@ -814,7 +1065,34 @@ fn validate_record(record: &ConcreteAccountRecord) -> Result<(), ConcreteReadErr
     Ok(())
 }
 
-fn insert_row(
+fn validate_storage_value(value: &Option<Vec<u8>>) -> Result<(), ConcreteReadError> {
+    if matches!(value, Some(value) if value.is_empty()) {
+        return Err(corrupt(
+            "empty live storage bytes must use a delete mutation",
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_code_insertions(
+    insertions: Vec<ConcreteCodeInsertion>,
+) -> Result<BTreeMap<[u8; 32], Vec<u8>>, ConcreteReadError> {
+    let mut code_changes = BTreeMap::new();
+    for insertion in insertions {
+        if keccak256(&insertion.code) != insertion.code_hash {
+            return Err(corrupt("code bytes do not match their Keccak-256 key"));
+        }
+        if code_changes
+            .insert(insertion.code_hash, insertion.code)
+            .is_some()
+        {
+            return Err(corrupt("duplicate code insertion"));
+        }
+    }
+    Ok(code_changes)
+}
+
+fn merge_prepared_row(
     rows: &mut BTreeMap<RowKey, Vec<u8>>,
     column: &'static str,
     key: Vec<u8>,
@@ -822,7 +1100,9 @@ fn insert_row(
 ) -> Result<(), ConcreteReadError> {
     let row = RowKey { column, key };
     match rows.insert(row, value.clone()) {
-        Some(previous) if previous != value => Err(corrupt("prepared rows contain a key conflict")),
+        Some(previous) if matches!(column, "1" | "2" | "4") && previous != value => Err(corrupt(
+            "prepared content-addressed rows contain a key conflict",
+        )),
         _ => Ok(()),
     }
 }
