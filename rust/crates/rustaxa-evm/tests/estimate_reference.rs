@@ -1,5 +1,62 @@
 use rustaxa_evm::estimate::{EstimateError, EstimateProbe, estimate_gas};
 
+#[test]
+fn matches_extracted_cpp_search_results_and_probe_order() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/estimate_reference.json"
+    ))
+    .unwrap();
+    for case in fixture["cases"].as_array().unwrap() {
+        let scenario = case["scenario"].as_u64().unwrap();
+        let cap = match scenario {
+            1 => 0,
+            2 => 1,
+            3 => u64::MAX,
+            _ => 100,
+        };
+        let mut probes = Vec::new();
+        let result = estimate_gas(cap, |gas| {
+            probes.push(gas);
+            Ok::<_, ()>(match scenario {
+                0 if gas < 61 => EstimateProbe::CodeFailure {
+                    error: "execution reverted".into(),
+                },
+                0 => EstimateProbe::Success { gas_used: 61 },
+                1 | 2 => EstimateProbe::Success { gas_used: 0 },
+                3 => EstimateProbe::Success {
+                    gas_used: u64::MAX - 1,
+                },
+                4 => EstimateProbe::ConsensusFailure {
+                    error: "nonce too low".into(),
+                },
+                5 => EstimateProbe::CodeFailure {
+                    error: "execution reverted: denied".into(),
+                },
+                6 if gas == 70 => EstimateProbe::ConsensusFailure {
+                    error: "future block".into(),
+                },
+                6 => EstimateProbe::Success { gas_used: 40 },
+                7 if gas < 60 => EstimateProbe::CodeFailure {
+                    error: "out of gas".into(),
+                },
+                7 => EstimateProbe::Success { gas_used: 1 },
+                _ => unreachable!(),
+            })
+        });
+        assert_eq!(serde_json::json!(probes), case["probes"], "case {scenario}");
+        if let Some(expected) = case["result"].as_u64() {
+            assert_eq!(result, Ok(expected), "case {scenario}");
+        } else {
+            let error = match result.unwrap_err() {
+                EstimateError::ConsensusFailure { error }
+                | EstimateError::CodeFailure { error } => error,
+                error => panic!("unexpected error {error:?}"),
+            };
+            assert_eq!(error, case["error"].as_str().unwrap(), "case {scenario}");
+        }
+    }
+}
+
 fn threshold_probe(
     threshold: u64,
     transcript: &mut Vec<u64>,

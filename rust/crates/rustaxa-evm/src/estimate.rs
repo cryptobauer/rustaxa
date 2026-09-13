@@ -50,7 +50,7 @@ pub enum EstimateError<E> {
 /// known lower bound, while a consensus failure terminates immediately with
 /// its exact string. Callback errors are propagated as
 /// [`EstimateError::Callback`]. Initial code failures terminate because there
-/// is no successful lower-bound probe to search from.
+/// is no known successful upper bound to search from.
 ///
 /// The initial successful probe must not consume more than `gas_cap`; such a
 /// result is [`EstimateError::OutOfGas`]. The search stops when the interval is

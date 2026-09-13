@@ -10,6 +10,7 @@ pub mod contracts;
 pub mod curve_precompiles;
 pub mod driver;
 pub mod envelope;
+pub mod estimate;
 pub mod frame;
 pub mod host;
 pub mod input;
