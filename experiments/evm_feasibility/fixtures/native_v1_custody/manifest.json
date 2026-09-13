@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Actual StateTransition V1 undelegate/confirm custody, ordered raw-write instrumentation, Cornus/Cacti locks and Magnolia/Ficus cleanup boundaries; no production routing claim",
+  "instrumentation": {
+    "target": "taraxa/state/state_evm/account.go",
+    "sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+    "observer_sha256": "d6e0276bb4342b886d68168dad0d74e0ae53b39a9bc2456495b010530dfd76ec",
+    "insertion": "synchronous copy-only observer before SetStateRawIrreversibly mutation body"
+  },
+  "support_sha256": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60",
+  "public_local_byte_identical": true,
+  "sha256": {
+    "public": "81e61b2635fd466df5eb4524845f7dd028152edae3f9efcec1e768ed18cd3a45",
+    "local": "81e61b2635fd466df5eb4524845f7dd028152edae3f9efcec1e768ed18cd3a45"
+  },
+  "exporter_sha256": "4e8227c57133f09354d585367ac9be2fa1baa15ef6e0726d7b42d9089a9f7cec"
+}
