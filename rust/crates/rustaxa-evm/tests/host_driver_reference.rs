@@ -9,9 +9,9 @@ use revm::{
 };
 use rustaxa_evm::{
     contracts::{
-        BlockHashRead, BlockHashReadError, CodeExecutionStatus, ExecutionBlockContext,
-        ExecutionGasPrice, ExecutionTransaction, ExecutionTransactionKind, ExecutionValue,
-        TransactionExecutionResult,
+        BlockHashRead, BlockHashReadError, CodeExecutionError, CodeExecutionStatus,
+        ExecutionBlockContext, ExecutionGasPrice, ExecutionTransaction, ExecutionTransactionKind,
+        ExecutionValue, TransactionExecutionResult,
     },
     driver::{NativeAddressClassifier, execute_top_level_call, execute_top_level_create},
     envelope::EnvelopeRules,
@@ -472,6 +472,65 @@ fn extcodehash_uses_full_width_eip161_emptiness() {
         panic!("must execute")
     };
     assert_eq!(result.output, revm::primitives::KECCAK_EMPTY.to_vec());
+}
+
+#[test]
+fn ef01_prefixes_remain_legacy_invalid_opcodes() {
+    for code in [vec![0xef, 0x01], {
+        let mut valid_7702_shape = vec![0xef, 0x01, 0x00];
+        valid_7702_shape.extend_from_slice(&[0x44; 20]);
+        valid_7702_shape
+    }] {
+        let code_hash = keccak256(&code).0;
+        let mut accounts = BTreeMap::new();
+        accounts.insert(
+            SENDER,
+            ReaderAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::new(BigUint::from(1_000_000_u64)),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+            },
+        );
+        accounts.insert(
+            TARGET,
+            ReaderAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::default(),
+                storage_root: None,
+                code_hash: Some(code_hash),
+                code_size: code.len() as u64,
+            },
+        );
+        let mut codes = BTreeMap::new();
+        codes.insert(code_hash, ConcreteRead::Present(code));
+        let mut journal = ExecutionJournal::new(MemoryReader {
+            accounts,
+            storage: BTreeMap::new(),
+            codes,
+            code_error: None,
+            code_reads: Cell::new(0),
+        });
+        let result = execute_top_level_call(
+            &mut journal,
+            &BlockHashes,
+            &NoNative,
+            &test_block(),
+            &call_transaction(TARGET),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )
+        .unwrap();
+        let TransactionExecutionResult::Executed(result) = result else {
+            panic!("must execute")
+        };
+        assert_eq!(
+            result.status,
+            CodeExecutionStatus::Failure(CodeExecutionError::InvalidOpcode(0xef))
+        );
+        assert_eq!(result.gas_used, FinalChainGas::new(100_000));
+    }
 }
 
 #[test]

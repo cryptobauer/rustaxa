@@ -134,7 +134,7 @@ impl<'a, R: ConcreteStateRead, B: BlockHashRead> JournalHost<'a, R, B> {
                 Ok(bytes) => bytes,
                 Err(error) => return self.fail(HostError::Journal(error)),
             };
-            Some(Bytecode::new_raw(bytes.into()))
+            Some(Bytecode::new_legacy(bytes.into()))
         } else {
             None
         };
