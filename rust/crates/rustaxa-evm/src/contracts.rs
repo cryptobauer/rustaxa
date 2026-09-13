@@ -516,6 +516,12 @@ pub trait NativeJournalRead {
 /// ordinary checkpoint lane and therefore revert with the containing frame.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeOrdinaryAccountMutation {
+    /// Ensure existence without dirtying an existing account, matching a zero debit.
+    /// Creating an absent account remains an ordinary rollback effect.
+    EnsureExists {
+        address: [u8; 20],
+        expected_exists: bool,
+    },
     /// Replace a balance after validating current existence and value.
     Balance {
         address: [u8; 20],

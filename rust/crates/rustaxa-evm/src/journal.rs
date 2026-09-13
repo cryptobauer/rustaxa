@@ -672,13 +672,27 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
     ///
     /// Each effect observes all prior effects in the slice. A mismatch aborts
     /// the pending period; callers must not reuse the partially advanced
-    /// journal. `Touch` can establish existence before a first nonce change.
+    /// journal. `EnsureExists` preserves zero-debit semantics without touching
+    /// an existing empty account. `Touch` applies the separate zero-credit rule;
+    /// either can establish existence before a later nonce/balance effect.
     pub fn apply_native_account_mutations(
         &mut self,
         mutations: &[NativeOrdinaryAccountMutation],
     ) -> Result<(), JournalError> {
         for mutation in mutations {
             match mutation {
+                NativeOrdinaryAccountMutation::EnsureExists {
+                    address,
+                    expected_exists,
+                } => {
+                    let account = self.account(*address)?;
+                    self.expect_native(
+                        *address,
+                        account.exists == *expected_exists,
+                        NativeAccountField::Existence,
+                    )?;
+                    self.ensure_account(*address)?;
+                }
                 NativeOrdinaryAccountMutation::Touch {
                     address,
                     expected_exists,

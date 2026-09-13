@@ -649,3 +649,83 @@ fn installed_code_hash_matches_reference_code_row() {
         ConcreteRead::Present(code)
     );
 }
+
+#[test]
+fn native_ensure_exists_preserves_zero_debit_lifecycle() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/journal_local.json"
+    ))
+    .unwrap();
+    for exists in [false, true] {
+        for reverted in [false, true] {
+            let mut state = MemoryState::from_case(&fixture[0]);
+            state.exists = exists;
+            state.nonce = FinalChainNonce::zero();
+            state.balance = ConcreteAccountBalance::default();
+            state.storage_root = None;
+            state.storage.clear();
+            // RIPEMD makes an accidental zero-credit touch visible even on rollback.
+            state.address = [0; 20];
+            state.address[19] = 3;
+            let address = state.address;
+            let mut native = ExecutionJournal::new(state.clone());
+            let checkpoint = native.checkpoint();
+            native
+                .apply_native_account_mutations(&[NativeOrdinaryAccountMutation::EnsureExists {
+                    address,
+                    expected_exists: exists,
+                }])
+                .unwrap();
+            assert!(native.account_metadata(address).unwrap().exists);
+            if reverted {
+                native.revert_checkpoint(checkpoint).unwrap();
+            } else {
+                native.commit_checkpoint(checkpoint).unwrap();
+            }
+            let result = native.settle_transaction().unwrap();
+            if exists || reverted {
+                assert!(
+                    result.writes.accounts.is_empty(),
+                    "existing={exists}, reverted={reverted}"
+                );
+            } else {
+                assert_eq!(result.writes.accounts.len(), 1);
+                assert_eq!(
+                    result.writes.accounts[0].operation,
+                    JournalAccountOperation::Delete
+                );
+            }
+            let mut debit = ExecutionJournal::new(state.clone());
+            let checkpoint = debit.checkpoint();
+            debit
+                .subtract_balance(address, &BigUint::default())
+                .unwrap();
+            if reverted {
+                debit.revert_checkpoint(checkpoint).unwrap();
+            } else {
+                debit.commit_checkpoint(checkpoint).unwrap();
+            }
+            assert_eq!(result, debit.settle_transaction().unwrap());
+            let mut stale = ExecutionJournal::new(state);
+            assert!(
+                stale
+                    .apply_native_account_mutations(&[
+                        NativeOrdinaryAccountMutation::EnsureExists {
+                            address,
+                            expected_exists: !exists
+                        }
+                    ])
+                    .is_err()
+            );
+            assert_eq!(stale.account_metadata(address).unwrap().exists, exists);
+            assert!(
+                stale
+                    .settle_transaction()
+                    .unwrap()
+                    .writes
+                    .accounts
+                    .is_empty()
+            );
+        }
+    }
+}
