@@ -1,0 +1,540 @@
+//! Focused comparisons between the typed driver observer and pinned Go rows.
+
+use std::{cell::Cell, collections::BTreeMap, fs, path::PathBuf};
+
+use num_bigint::BigUint;
+use revm::{interpreter::InstructionResult, primitives::keccak256};
+use rustaxa_evm::{
+    contracts::{
+        BlockHashRead, BlockHashReadError, ExecutionBlockContext, ExecutionGasPrice,
+        ExecutionTransaction, ExecutionTransactionKind, ExecutionValue,
+    },
+    driver::{
+        ExecutionDriverError, NativeAddressClassifier, execute_top_level_call_with_trace,
+        execute_top_level_create_with_trace,
+    },
+    envelope::EnvelopeRules,
+    host::HostError,
+    journal::ExecutionJournal,
+    profile::TaraxaProfile,
+    trace::{TraceCollector, TraceEvent, TraceOpcode, TraceOpcodePhase},
+};
+use rustaxa_types::{
+    FinalChainBlockNumber, FinalChainGas, FinalChainNonce, FinalChainTransactionPosition,
+    concrete_state::{
+        ConcreteAccount, ConcreteAccountBalance, ConcreteAccountRecord, ConcreteRead,
+        ConcreteReadError, ConcreteStateIdentity, ConcreteStateRead, ConcreteStorageKey,
+    },
+};
+use serde_json::Value;
+
+const SENDER: [u8; 20] = address(0xaa);
+
+const fn address(suffix: u8) -> [u8; 20] {
+    let mut address = [0; 20];
+    address[19] = suffix;
+    address
+}
+
+#[derive(Clone)]
+struct ReaderAccount {
+    nonce: FinalChainNonce,
+    balance: ConcreteAccountBalance,
+    storage_root: Option<[u8; 32]>,
+    code_hash: Option<[u8; 32]>,
+    code_size: u64,
+}
+
+struct MemoryReader {
+    accounts: BTreeMap<[u8; 20], ReaderAccount>,
+    storage: BTreeMap<([u8; 20], ConcreteStorageKey), Vec<u8>>,
+    codes: BTreeMap<[u8; 32], ConcreteRead<Vec<u8>>>,
+    code_reads: Cell<usize>,
+}
+
+impl ConcreteStateRead for MemoryReader {
+    fn identity(&self) -> ConcreteStateIdentity {
+        ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(7),
+            state_root: [0x77; 32],
+        }
+    }
+
+    fn account(
+        &self,
+        address: [u8; 20],
+    ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
+        let Some(account) = self.accounts.get(&address) else {
+            return Ok(ConcreteRead::Absent);
+        };
+        Ok(ConcreteRead::Present(ConcreteAccountRecord {
+            account: ConcreteAccount {
+                nonce: account.nonce.clone(),
+                balance: account.balance.clone(),
+                storage_root: account.storage_root,
+                code_hash: account.code_hash,
+                code_size: account.code_size,
+            },
+            physical_rlp: vec![0xc0],
+        }))
+    }
+
+    fn storage(
+        &self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        Ok(self
+            .storage
+            .get(&(address, key))
+            .cloned()
+            .map_or(ConcreteRead::Absent, ConcreteRead::Present))
+    }
+
+    fn code(&self, hash: [u8; 32]) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        self.code_reads.set(self.code_reads.get() + 1);
+        Ok(self
+            .codes
+            .get(&hash)
+            .cloned()
+            .unwrap_or(ConcreteRead::Absent))
+    }
+}
+
+struct BlockHashes;
+
+impl BlockHashRead for BlockHashes {
+    fn block_hash(&self, number: FinalChainBlockNumber) -> Result<[u8; 32], BlockHashReadError> {
+        Ok([number.as_u64() as u8; 32])
+    }
+}
+
+struct MissingBlockHashes;
+
+impl BlockHashRead for MissingBlockHashes {
+    fn block_hash(&self, number: FinalChainBlockNumber) -> Result<[u8; 32], BlockHashReadError> {
+        Err(BlockHashReadError::HistoryUnavailable(number))
+    }
+}
+
+struct NoNative;
+
+impl NativeAddressClassifier for NoNative {
+    fn is_native_address(&self, _period: FinalChainBlockNumber, _address: [u8; 20]) -> bool {
+        false
+    }
+}
+
+fn fixture() -> Value {
+    serde_json::from_str(&fs::read_to_string(fixture_path()).unwrap()).unwrap()
+}
+
+fn fixture_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../experiments/evm_feasibility/fixtures/trace_public.json")
+}
+
+fn scenario<'a>(fixture: &'a Value, name: &str) -> &'a Value {
+    fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == name)
+        .unwrap()
+}
+
+fn account_code(fixture: &Value, suffix: &str) -> Vec<u8> {
+    fixture["state_before"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|account| account["address"].as_str().unwrap().ends_with(suffix))
+        .and_then(|account| account["code"].as_str())
+        .map(|code| hex::decode(code).unwrap())
+        .unwrap()
+}
+
+fn decimal(value: &str) -> BigUint {
+    BigUint::parse_bytes(value.as_bytes(), 10).unwrap()
+}
+
+fn reader(fixture: &Value, target: [u8; 20], code: Vec<u8>, slot: Option<u8>) -> MemoryReader {
+    let sender_row = fixture["state_before"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|account| account["address"] == "00000000000000000000000000000000000000aa")
+        .unwrap();
+    let sender_nonce = decimal(sender_row["nonce"].as_str().unwrap());
+    let code_hash = keccak256(&code).0;
+    let accounts = BTreeMap::from([
+        (
+            SENDER,
+            ReaderAccount {
+                nonce: FinalChainNonce::from_bytes(&sender_nonce.to_bytes_be()).unwrap(),
+                balance: ConcreteAccountBalance::new(decimal(
+                    sender_row["balance"].as_str().unwrap(),
+                )),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+            },
+        ),
+        (
+            target,
+            ReaderAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::new(BigUint::from(if target == address(0xbb) {
+                    50_u8
+                } else if target == address(0xcc) {
+                    11_u8
+                } else {
+                    0_u8
+                })),
+                storage_root: slot.map(|_| [0x44; 32]),
+                code_hash: Some(code_hash),
+                code_size: code.len() as u64,
+            },
+        ),
+    ]);
+    let storage = slot.map_or_else(BTreeMap::new, |value| {
+        BTreeMap::from([((target, ConcreteStorageKey([0; 32])), vec![value])])
+    });
+    MemoryReader {
+        accounts,
+        storage,
+        codes: BTreeMap::from([(code_hash, ConcreteRead::Present(code))]),
+        code_reads: Cell::new(0),
+    }
+}
+
+fn transaction(fixture: &Value, target: Option<[u8; 20]>, input: Vec<u8>) -> ExecutionTransaction {
+    let stored = fixture["state_before"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|account| account["address"] == "00000000000000000000000000000000000000aa")
+        .unwrap();
+    let nonce = decimal(stored["nonce"].as_str().unwrap()) + BigUint::from(1_u8);
+    ExecutionTransaction {
+        position: FinalChainTransactionPosition::from(0_u32),
+        hash: [0x11; 32],
+        sender: SENDER,
+        receiver: target,
+        nonce: FinalChainNonce::from_bytes(&nonce.to_bytes_be()).unwrap(),
+        gas_price: ExecutionGasPrice::new(BigUint::from(2_u8)),
+        gas_limit: FinalChainGas::new(100_000),
+        value: ExecutionValue::new(BigUint::from(3_u8)),
+        input,
+        canonical_rlp: None,
+        kind: if target.is_some() {
+            ExecutionTransactionKind::Call
+        } else {
+            ExecutionTransactionKind::Create
+        },
+    }
+}
+
+fn block() -> ExecutionBlockContext {
+    ExecutionBlockContext {
+        period: FinalChainBlockNumber::new(8),
+        author: [0; 20],
+        timestamp: 0,
+        gas_limit: FinalChainGas::new(1_000_000),
+        chain_id: 1,
+        difficulty: BigUint::default(),
+    }
+}
+
+fn opcode_rows(collector: &TraceCollector) -> Vec<&TraceOpcode> {
+    collector
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            TraceEvent::Opcode(opcode) => Some(opcode),
+            TraceEvent::FrameEnter(_) | TraceEvent::FrameExit(_) => None,
+        })
+        .collect()
+}
+
+fn expected_word(value: &Value) -> [u8; 32] {
+    hex::decode(value.as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap()
+}
+
+fn expected_opcode(name: &str) -> u8 {
+    match name {
+        "STOP" => 0x00,
+        "ADD" => 0x01,
+        "ADDRESS" => 0x30,
+        "BALANCE" => 0x31,
+        "ORIGIN" => 0x32,
+        "RETURNDATACOPY" => 0x3e,
+        "MSTORE" => 0x52,
+        "SLOAD" => 0x54,
+        "SSTORE" => 0x55,
+        "PUSH1" => 0x60,
+        "PUSH32" => 0x7f,
+        "DUP1" => 0x80,
+        "RETURN" => 0xf3,
+        "REVERT" => 0xfd,
+        other => panic!("unmapped fixture opcode {other}"),
+    }
+}
+
+fn compare_struct_rows(actual: &[&TraceOpcode], expected: &Value, fault: InstructionResult) {
+    let expected = expected["outputs"]["struct"]["result"][0]["structLogs"]
+        .as_array()
+        .unwrap();
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert_eq!(actual.pc, expected["pc"].as_u64().unwrap());
+        assert_eq!(
+            actual.opcode,
+            expected_opcode(expected["op"].as_str().unwrap())
+        );
+        assert_eq!(actual.gas, expected["gas"].as_u64().unwrap());
+        assert_eq!(actual.gas_cost, expected["gasCost"].as_u64().unwrap());
+        assert_eq!(actual.depth, expected["depth"].as_u64().unwrap() as u16);
+        assert_eq!(actual.refund, 0);
+        assert_eq!(
+            actual.stack,
+            expected["stack"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(expected_word)
+                .collect::<Vec<_>>()
+        );
+        let memory = expected["memory"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|word| hex::decode(word.as_str().unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(actual.memory, memory);
+        assert_eq!(
+            actual.phase,
+            if expected.get("error").is_some() {
+                TraceOpcodePhase::Fault(fault)
+            } else {
+                TraceOpcodePhase::BeforeExecution
+            }
+        );
+    }
+}
+
+#[test]
+fn unsupported_gas_failure_emits_no_guessed_fault_row() {
+    let fixture = fixture();
+    let target = address(0xdd);
+    let code = hex::decode("6000600055").unwrap();
+    let mut journal = ExecutionJournal::new(reader(&fixture, target, code, None));
+    let mut collector = TraceCollector::default();
+    let mut transaction = transaction(&fixture, Some(target), vec![]);
+    transaction.gas_limit = FinalChainGas::new(21_008);
+
+    let error = execute_top_level_call_with_trace(
+        &mut journal,
+        &BlockHashes,
+        &NoNative,
+        &block(),
+        &transaction,
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+        &mut collector,
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        ExecutionDriverError::TraceFactUnavailable {
+            opcode: 0x55,
+            result: InstructionResult::OutOfGas,
+        }
+    );
+    let rows = opcode_rows(&collector);
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row.opcode == 0x60));
+}
+
+#[test]
+fn unsupported_nested_call_emits_no_guessed_call_row() {
+    let fixture = fixture();
+    let target = address(0xee);
+    let code = hex::decode("6000600060006000600060006000f100").unwrap();
+    let mut journal = ExecutionJournal::new(reader(&fixture, target, code, None));
+    let mut collector = TraceCollector::default();
+
+    let error = execute_top_level_call_with_trace(
+        &mut journal,
+        &BlockHashes,
+        &NoNative,
+        &block(),
+        &transaction(&fixture, Some(target), vec![]),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+        &mut collector,
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        ExecutionDriverError::TraceFactUnavailable {
+            opcode: 0xf1,
+            result: InstructionResult::Suspend,
+        }
+    );
+    let rows = opcode_rows(&collector);
+    assert_eq!(rows.len(), 7);
+    assert!(rows.iter().all(|row| row.opcode == 0x60));
+}
+
+#[test]
+fn host_failure_keeps_exact_error_and_emits_no_opcode_row() {
+    let fixture = fixture();
+    let target = address(0xef);
+    let code = hex::decode("60004000").unwrap();
+    let mut journal = ExecutionJournal::new(reader(&fixture, target, code, None));
+    let mut collector = TraceCollector::default();
+
+    let error = execute_top_level_call_with_trace(
+        &mut journal,
+        &MissingBlockHashes,
+        &NoNative,
+        &block(),
+        &transaction(&fixture, Some(target), vec![]),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+        &mut collector,
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        ExecutionDriverError::Host(HostError::BlockHash(
+            BlockHashReadError::HistoryUnavailable(FinalChainBlockNumber::new(0))
+        ))
+    );
+    let rows = opcode_rows(&collector);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].opcode, 0x60);
+}
+
+#[test]
+fn storage_call_matches_pinned_go_opcode_facts() {
+    let fixture = fixture();
+    let expected = scenario(&fixture, "storage_call");
+    let target = address(0xbb);
+    let code = account_code(&fixture, "bb");
+    let mut journal = ExecutionJournal::new(reader(&fixture, target, code, Some(7)));
+    let mut collector = TraceCollector::default();
+
+    execute_top_level_call_with_trace(
+        &mut journal,
+        &BlockHashes,
+        &NoNative,
+        &block(),
+        &transaction(&fixture, Some(target), vec![]),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+        &mut collector,
+    )
+    .unwrap();
+
+    let rows = opcode_rows(&collector);
+    compare_struct_rows(&rows, expected, InstructionResult::Revert);
+    assert_eq!(rows[6].opcode, 0x55);
+    assert_eq!(rows[6].attempted_sstore.unwrap().value[31], 8);
+    assert_eq!(collector.attempted_storage()[&target][&[0; 32]][31], 8);
+}
+
+#[test]
+fn revert_and_return_bounds_match_pinned_go_duplicate_fault_rows() {
+    let fixture = fixture();
+    for (name, target, fault) in [
+        ("revert", address(0xcc), InstructionResult::Revert),
+        (
+            "return_bounds",
+            {
+                let mut target = [0; 20];
+                target[18] = 0xab;
+                target[19] = 0xcd;
+                target
+            },
+            InstructionResult::OutOfOffset,
+        ),
+    ] {
+        let code = account_code(&fixture, if name == "revert" { "cc" } else { "abcd" });
+        let mut journal = ExecutionJournal::new(reader(&fixture, target, code, None));
+        let mut collector = TraceCollector::default();
+
+        execute_top_level_call_with_trace(
+            &mut journal,
+            &BlockHashes,
+            &NoNative,
+            &block(),
+            &transaction(&fixture, Some(target), vec![]),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+            &mut collector,
+        )
+        .unwrap();
+
+        compare_struct_rows(&opcode_rows(&collector), scenario(&fixture, name), fault);
+    }
+}
+
+#[test]
+fn create_initcode_matches_pinned_go_opcode_facts() {
+    let fixture = fixture();
+    let initcode = hex::decode(
+        "7f602a60005260206000f3000000000000000000000000000000000000000000600052600a6000f3",
+    )
+    .unwrap();
+    let mut accounts = BTreeMap::new();
+    let sender_row = fixture["state_before"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|account| account["address"] == "00000000000000000000000000000000000000aa")
+        .unwrap();
+    let nonce = decimal(sender_row["nonce"].as_str().unwrap());
+    accounts.insert(
+        SENDER,
+        ReaderAccount {
+            nonce: FinalChainNonce::from_bytes(&nonce.to_bytes_be()).unwrap(),
+            balance: ConcreteAccountBalance::new(decimal(sender_row["balance"].as_str().unwrap())),
+            storage_root: None,
+            code_hash: None,
+            code_size: 0,
+        },
+    );
+    let mut journal = ExecutionJournal::new(MemoryReader {
+        accounts,
+        storage: BTreeMap::new(),
+        codes: BTreeMap::new(),
+        code_reads: Cell::new(0),
+    });
+    let mut collector = TraceCollector::default();
+
+    execute_top_level_create_with_trace(
+        &mut journal,
+        &BlockHashes,
+        &NoNative,
+        &block(),
+        &transaction(&fixture, None, initcode),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+        &mut collector,
+    )
+    .unwrap();
+
+    compare_struct_rows(
+        &opcode_rows(&collector),
+        scenario(&fixture, "create"),
+        InstructionResult::Revert,
+    );
+}

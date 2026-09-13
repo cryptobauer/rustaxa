@@ -53,6 +53,10 @@ use crate::{
     p256::{P256_VERIFY_ADDRESS, PreparedP256Call},
     profile::TaraxaProfile,
     stateless::{OriginalStatelessPrecompile, PreparedStatelessCall},
+    trace::{
+        AttemptedSstore, ExecutionTraceObserver, TraceEvent, TraceOpcode, TraceOpcodePhase,
+        TraceWord,
+    },
 };
 
 /// Kind of interpreter frame request not yet implemented by this bounded driver.
@@ -110,6 +114,40 @@ pub enum ExecutionDriverError {
     ReferenceInstructionPanic(u8),
     /// The final successful root frame retained a negative refund aggregate.
     NegativeRootRefund(i64),
+    /// The bounded observer cannot prove the reference facts for this instruction path.
+    TraceFactUnavailable {
+        /// Opcode whose fact boundary is unsupported.
+        opcode: u8,
+        /// REVM result observed without interpreting it as a Go trace cost.
+        result: InstructionResult,
+    },
+    /// An admitted instruction's actual gas movement could not form an exact cost.
+    TraceGasInconsistent {
+        /// Opcode whose gas facts were inconsistent.
+        opcode: u8,
+        /// Gas before the instruction.
+        before: u64,
+        /// Gas after the instruction.
+        after: u64,
+    },
+    /// The traced interpreter exposed a refund value Go cannot represent.
+    TraceNegativeRefund {
+        /// Opcode at the capture boundary.
+        opcode: u8,
+        /// Negative REVM refund aggregate.
+        refund: i64,
+    },
+    /// The interpreter memory shrank across an opcode capture boundary.
+    TraceMemoryShrank {
+        /// Opcode at the capture boundary.
+        opcode: u8,
+        /// Memory length before execution.
+        before: usize,
+        /// Memory length after execution.
+        after: usize,
+    },
+    /// A driver depth cannot be represented by the pinned Go callback type.
+    TraceDepthOverflow(usize),
 }
 
 /// Application/profile-owned classification of native/precompile addresses.
@@ -431,6 +469,63 @@ pub fn execute_top_level_call<
         &admitted,
         profile,
         None,
+        None,
+    )
+}
+
+/// Executes and settles one ordinary top-level CALL while collecting exact trace facts.
+///
+/// The observer sees facts from the same interpreter invocation used for the
+/// returned execution result. This bounded entry point emits opcode rows only
+/// and supports admitted ordinary opcodes plus the reviewed REVERT and
+/// RETURNDATACOPY fault paths.
+/// It returns [`ExecutionDriverError::TraceFactUnavailable`] before fabricating
+/// facts for gas-admission failures or nested CALL/CREATE opcodes whose reference
+/// cost boundary is not yet witnessed. The caller must discard the journal and
+/// collector after such an error.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_top_level_call_with_trace<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    N: NativeAddressClassifier,
+    O: ExecutionTraceObserver,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    native_addresses: &N,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+    observer: &mut O,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    if transaction.kind != ExecutionTransactionKind::Call || transaction.receiver.is_none() {
+        return Err(ExecutionDriverError::UnsupportedTransactionKind(
+            transaction.kind,
+        ));
+    }
+    let admission = admit(
+        journal,
+        transaction,
+        envelope_rules,
+        IntrinsicGasSchedule::PINNED,
+    )?;
+    let EnvelopeAdmission::Admitted(admitted) = admission else {
+        let EnvelopeAdmission::Rejected(result) = admission else {
+            unreachable!()
+        };
+        return Ok(TransactionExecutionResult::ConsensusFailure(result));
+    };
+    execute_admitted_call(
+        journal,
+        block_hashes,
+        native_addresses,
+        block,
+        transaction,
+        &admitted,
+        profile,
+        None,
+        Some(observer),
     )
 }
 
@@ -496,6 +591,7 @@ pub fn execute_top_level_call_with_native<
             sequence: native_sequence,
             stateless_sequence: TransactionStatelessSequence::default(),
         }),
+        None,
     )
 }
 
@@ -544,6 +640,59 @@ pub fn execute_top_level_create<
         &admitted,
         profile,
         None,
+        None,
+    )
+}
+
+/// Executes and settles one ordinary top-level CREATE while collecting trace facts.
+///
+/// This observes the existing initcode interpreter and retains its one-based
+/// depth and exact opcode rows. Nested CALL/CREATE opcode tracing and
+/// gas-admission failures remain explicit unsupported trace facts under the same
+/// discard requirement as [`execute_top_level_call_with_trace`].
+#[allow(clippy::too_many_arguments)]
+pub fn execute_top_level_create_with_trace<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    N: NativeAddressClassifier,
+    O: ExecutionTraceObserver,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    native_addresses: &N,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+    observer: &mut O,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    if transaction.kind != ExecutionTransactionKind::Create || transaction.receiver.is_some() {
+        return Err(ExecutionDriverError::UnsupportedTransactionKind(
+            transaction.kind,
+        ));
+    }
+    let admission = admit(
+        journal,
+        transaction,
+        envelope_rules,
+        IntrinsicGasSchedule::PINNED,
+    )?;
+    let EnvelopeAdmission::Admitted(admitted) = admission else {
+        let EnvelopeAdmission::Rejected(result) = admission else {
+            unreachable!()
+        };
+        return Ok(TransactionExecutionResult::ConsensusFailure(result));
+    };
+    execute_admitted_create(
+        journal,
+        block_hashes,
+        native_addresses,
+        block,
+        transaction,
+        &admitted,
+        profile,
+        None,
+        Some(observer),
     )
 }
 
@@ -604,6 +753,7 @@ pub fn execute_top_level_create_with_native<
             sequence: native_sequence,
             stateless_sequence: TransactionStatelessSequence::default(),
         }),
+        None,
     )
 }
 
@@ -621,6 +771,7 @@ fn execute_admitted_create<
     admitted: &AdmittedTransaction,
     profile: TaraxaProfile,
     mut native: Option<NativeExecution<'_>>,
+    observer: Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     let attempted = create_address(
         transaction.sender,
@@ -680,6 +831,7 @@ fn execute_admitted_create<
         admitted,
         profile,
         &mut native,
+        observer,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -753,6 +905,7 @@ fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAd
     admitted: &AdmittedTransaction,
     profile: TaraxaProfile,
     mut native: Option<NativeExecution<'_>>,
+    observer: Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     let target = transaction.receiver.expect("call receiver checked");
     let route = classify_native(
@@ -904,6 +1057,7 @@ fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAd
         admitted,
         profile,
         &mut native,
+        observer,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -975,6 +1129,123 @@ struct ActiveFrame {
     last_opcode: u8,
 }
 
+struct TraceBeforeOpcode {
+    pc: u64,
+    opcode: u8,
+    gas: u64,
+    depth: usize,
+    state_address: [u8; 20],
+    stack: Vec<TraceWord>,
+    memory: Vec<u8>,
+}
+
+fn trace_depth(depth: usize) -> Result<u16, ExecutionDriverError> {
+    let depth = depth
+        .checked_add(1)
+        .ok_or(ExecutionDriverError::TraceDepthOverflow(depth))?;
+    u16::try_from(depth).map_err(|_| ExecutionDriverError::TraceDepthOverflow(depth))
+}
+
+fn trace_stack(stack: &revm::interpreter::Stack) -> Vec<TraceWord> {
+    stack
+        .data()
+        .iter()
+        .map(|word| word.to_be_bytes::<32>())
+        .collect()
+}
+
+fn attempted_sstore(opcode: u8, stack: &[TraceWord]) -> Option<AttemptedSstore> {
+    (opcode == 0x55 && stack.len() >= 2).then(|| AttemptedSstore {
+        key: stack[stack.len() - 1],
+        value: stack[stack.len() - 2],
+    })
+}
+
+fn trace_refund(
+    opcode: u8,
+    interpreter: &Interpreter<EthInterpreter>,
+) -> Result<u64, ExecutionDriverError> {
+    let refund = interpreter.gas.refunded();
+    u64::try_from(refund).map_err(|_| ExecutionDriverError::TraceNegativeRefund { opcode, refund })
+}
+
+fn observe_opcode_step(
+    observer: &mut dyn ExecutionTraceObserver,
+    interpreter: &Interpreter<EthInterpreter>,
+    before: TraceBeforeOpcode,
+    step: Result<(), InstructionResult>,
+) -> Result<(), ExecutionDriverError> {
+    let fault = match step {
+        Ok(())
+        | Err(
+            InstructionResult::Stop | InstructionResult::Return | InstructionResult::SelfDestruct,
+        ) => None,
+        Err(InstructionResult::Revert) => Some(InstructionResult::Revert),
+        Err(InstructionResult::OutOfOffset) if before.opcode == 0x3e => {
+            Some(InstructionResult::OutOfOffset)
+        }
+        Err(result) => {
+            return Err(ExecutionDriverError::TraceFactUnavailable {
+                opcode: before.opcode,
+                result,
+            });
+        }
+    };
+    let after_gas = interpreter.gas.remaining();
+    let gas_cost =
+        before
+            .gas
+            .checked_sub(after_gas)
+            .ok_or(ExecutionDriverError::TraceGasInconsistent {
+                opcode: before.opcode,
+                before: before.gas,
+                after: after_gas,
+            })?;
+    let refund = trace_refund(before.opcode, interpreter)?;
+    let after_memory_len = interpreter.memory.len();
+    if after_memory_len < before.memory.len() {
+        return Err(ExecutionDriverError::TraceMemoryShrank {
+            opcode: before.opcode,
+            before: before.memory.len(),
+            after: after_memory_len,
+        });
+    }
+    let mut expanded_memory = before.memory;
+    expanded_memory.resize(after_memory_len, 0);
+    let attempted_write = attempted_sstore(before.opcode, &before.stack);
+    observer.observe(TraceEvent::Opcode(TraceOpcode {
+        pc: before.pc,
+        opcode: before.opcode,
+        gas: before.gas,
+        gas_cost,
+        depth: trace_depth(before.depth)?,
+        state_address: before.state_address,
+        stack: before.stack,
+        memory: expanded_memory,
+        refund,
+        phase: TraceOpcodePhase::BeforeExecution,
+        attempted_sstore: attempted_write,
+    }));
+    if let Some(fault) = fault {
+        let stack = trace_stack(&interpreter.stack);
+        let attempted_sstore = attempted_sstore(before.opcode, &stack);
+        observer.observe(TraceEvent::Opcode(TraceOpcode {
+            pc: before.pc,
+            opcode: before.opcode,
+            gas: before.gas,
+            gas_cost,
+            depth: trace_depth(before.depth)?,
+            state_address: before.state_address,
+            stack,
+            memory: interpreter.memory.context_memory().to_vec(),
+            refund,
+            phase: TraceOpcodePhase::Fault(fault),
+            attempted_sstore,
+        }));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifier>(
     journal: &mut ExecutionJournal<R>,
@@ -988,6 +1259,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
     admitted: &AdmittedTransaction,
     profile: TaraxaProfile,
     native: &mut Option<NativeExecution<'_>>,
+    mut observer: Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<(revm::interpreter::InterpreterResult, u8), ExecutionDriverError> {
     let mut interpreter = Interpreter::<EthInterpreter>::new(
         SharedMemory::new(),
@@ -1023,6 +1295,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                 transaction,
                 profile,
                 &mut active.last_opcode,
+                &mut observer,
             ) {
                 Ok(action) => action,
                 Err(error) => {
@@ -1130,6 +1403,7 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
     transaction: &ExecutionTransaction,
     profile: TaraxaProfile,
     last_opcode: &mut u8,
+    observer: &mut Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<InterpreterAction, ExecutionDriverError> {
     let (table, costs) = profile.execution_instruction_table::<JournalHost<'_, R, B>>();
     let mut host = JournalHost::new(
@@ -1141,7 +1415,33 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
     );
     loop {
         *last_opcode = interpreter.bytecode.opcode();
-        match interpreter.step(&table, &costs, &mut host) {
+        let trace_before = observer.as_ref().map(|_| TraceBeforeOpcode {
+            pc: interpreter.bytecode.pc() as u64,
+            opcode: *last_opcode,
+            gas: interpreter.gas.remaining(),
+            depth: interpreter.input.depth,
+            state_address: interpreter.input.target_address.into_array(),
+            stack: trace_stack(&interpreter.stack),
+            memory: interpreter.memory.context_memory().to_vec(),
+        });
+        let step = interpreter.step(&table, &costs, &mut host);
+        if let Some(before) = trace_before {
+            if let Some(error) = host.take_error() {
+                return Err(ExecutionDriverError::Host(error));
+            }
+            if step == Err(InstructionResult::FatalExternalError) && *last_opcode == 0x3e {
+                return Err(ExecutionDriverError::ReferenceInstructionPanic(0x3e));
+            }
+            observe_opcode_step(
+                observer
+                    .as_deref_mut()
+                    .expect("trace snapshot has observer"),
+                interpreter,
+                before,
+                step,
+            )?;
+        }
+        match step {
             Ok(()) => {
                 if let Some(error) = host.take_error() {
                     return Err(ExecutionDriverError::Host(error));

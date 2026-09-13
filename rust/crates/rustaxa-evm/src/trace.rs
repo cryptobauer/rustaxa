@@ -57,7 +57,7 @@ pub struct TraceOpcode {
     pub gas: u64,
     /// Reference-visible cost for this capture row.
     pub gas_cost: u64,
-    /// Zero-based interpreter depth; serializers may apply their own convention.
+    /// One-based depth emitted by the Go `CaptureState` callback.
     pub depth: u16,
     /// Account whose storage context the instruction uses.
     pub state_address: TraceAddress,
@@ -93,7 +93,7 @@ pub enum TraceFrameKind {
 /// Facts available when one interpreter frame begins.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraceFrameEnter {
-    /// Zero-based interpreter depth.
+    /// One-based execution-frame depth.
     pub depth: u16,
     /// Call or creation scheme.
     pub kind: TraceFrameKind,
@@ -118,7 +118,7 @@ pub struct TraceFrameEnter {
 /// Facts available when one interpreter frame ends.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraceFrameExit {
-    /// Zero-based interpreter depth.
+    /// One-based execution-frame depth.
     pub depth: u16,
     /// Gas supplied at frame entry.
     pub supplied_gas: u64,
