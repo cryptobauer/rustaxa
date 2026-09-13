@@ -7,6 +7,7 @@
 //! changes frame or transaction semantics.
 
 use revm::{
+    bytecode::opcode::{CALL, CALLCODE, DELEGATECALL, STATICCALL},
     context_interface::{
         Host,
         cfg::{GasId, GasParams},
@@ -110,6 +111,42 @@ impl TaraxaProfile {
         }
         (table, costs)
     }
+
+    /// Builds the driver table that defers CALL-family target code bytes.
+    ///
+    /// Account metadata remains authoritative during opcode gas calculation.
+    /// The driver must load and validate the referenced bytes after Taraxa's
+    /// depth and balance pre-entry checks and before starting a child frame.
+    #[must_use]
+    pub(crate) fn execution_instruction_table<H: Host + DeferredCallCodeLoad>(
+        &self,
+    ) -> (InstructionTable<EthInterpreter, H>, [u16; 256]) {
+        let (mut table, costs) = self.instruction_table::<H>();
+        table[CALL as usize] = Instruction::new(call_with_deferred_code::<CALL, H>);
+        table[CALLCODE as usize] = Instruction::new(call_with_deferred_code::<CALLCODE, H>);
+        table[DELEGATECALL as usize] = Instruction::new(call_with_deferred_code::<DELEGATECALL, H>);
+        table[STATICCALL as usize] = Instruction::new(call_with_deferred_code::<STATICCALL, H>);
+        (table, costs)
+    }
+}
+
+/// Host control used only while a CALL-family opcode prepares its frame action.
+pub(crate) trait DeferredCallCodeLoad {
+    /// Selects metadata-only target loading for the current CALL instruction.
+    fn set_call_code_load_deferred(&mut self, deferred: bool);
+}
+
+fn call_with_deferred_code<const KIND: u8, H: Host + DeferredCallCodeLoad>(
+    ctx: InstructionContext<'_, H, EthInterpreter>,
+) -> InstructionExecResult {
+    let InstructionContext { interpreter, host } = ctx;
+    host.set_call_code_load_deferred(true);
+    let result = instructions::contract::call::<KIND, EthInterpreter, H>(InstructionContext {
+        interpreter,
+        host,
+    });
+    host.set_call_code_load_deferred(false);
+    result
 }
 
 /// Executes PUSH0 under its local Taraxa availability rule.

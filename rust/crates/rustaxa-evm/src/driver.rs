@@ -6,11 +6,11 @@
 //! gas/refunds once. Native dispatch and SELFDESTRUCT remain typed unavailable
 //! boundaries.
 //!
-//! REVM loads a CALL target's known bytecode while building the frame action,
-//! before this driver applies Taraxa's depth and balance pre-entry checks. A
-//! missing or corrupt referenced code row can therefore surface as an
-//! infrastructure error before a pre-entry rejection; complete concrete code
-//! coverage is required for this bounded composition.
+//! CALL-family opcode preparation reads authoritative account metadata while
+//! deferring referenced code bytes. The driver applies Taraxa's depth and
+//! balance pre-entry checks first, then loads and validates code before any
+//! child interpreter starts. EXTCODE operations continue to use the host's
+//! immediate authoritative code path.
 
 use num_bigint::BigInt;
 use revm::{
@@ -617,7 +617,7 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
     profile: TaraxaProfile,
     last_opcode: &mut u8,
 ) -> Result<InterpreterAction, ExecutionDriverError> {
-    let (table, costs) = profile.instruction_table::<JournalHost<'_, R, B>>();
+    let (table, costs) = profile.execution_instruction_table::<JournalHost<'_, R, B>>();
     let mut host = JournalHost::new(
         journal,
         block_hashes,
@@ -720,7 +720,13 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
         return Err(error.into());
     }
 
-    let (code_hash, code) = inputs.known_bytecode;
+    let code = match journal.account_code(code_address) {
+        Ok(code) => code,
+        Err(error) => {
+            journal.revert_checkpoint(checkpoint)?;
+            return Err(error.into());
+        }
+    };
     if code.is_empty() {
         journal.commit_checkpoint(checkpoint)?;
         insert_call_result(
@@ -737,9 +743,10 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
         value
     };
     let child_memory = parent.interpreter.memory.new_child_context();
+    let code_hash = revm::primitives::keccak256(&code);
     let mut interpreter = Interpreter::<EthInterpreter>::new(
         child_memory,
-        ExtBytecode::new_with_hash(code, code_hash),
+        ExtBytecode::new_with_hash(Bytecode::new_legacy(Bytes::from(code)), code_hash),
         InputsImpl {
             target_address: inputs.target_address,
             bytecode_address: Some(inputs.bytecode_address),
