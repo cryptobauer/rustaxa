@@ -4,6 +4,11 @@ Date: 2026-09-13. Milestone 10 remains **in progress**, not accepted. The earlie
 mixed-period milestone 09 stays complete within its synthetic four-period scope;
 the broader implementation plan 08 remains open.
 
+The owner requested a pause/checkpoint for a fresh session with Luna capacity.
+The [restart checkpoint](n6_restart_checkpoint.md) is the current handoff authority:
+validated feature state and five separately pushed unintegrated branches are saved.
+Earlier active-task descriptions below are historical until the next session resumes.
+
 ## Integrated evidence
 
 - Estimation preserves the extracted C++ search policy, with explicit rejection

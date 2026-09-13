@@ -211,3 +211,17 @@ future team setup must allocate Luna before filling remaining thread capacity.
 
 These existing assigned threads ran; the explicit Luna startup failure remains
 recorded above and was not retried or substituted. No quota/billing inference.
+
+
+## Owner-requested immediate restart checkpoint
+
+All existing agents stopped new work and saved clean worktrees. The exact commits,
+remote checkpoint branches, validation limits and restart procedure are in
+[n6_restart_checkpoint.md](n6_restart_checkpoint.md). The feature branch remains
+at validated implementation `19e9e7e59` plus documentation. Source-reviewed epoch
+transport and its C++ test adaptation are saved separately as `db8ec5e4d` because
+the fast gate found missing epoch fields in three EVM Rust fixture files. Its
+37 domain and eight C++ tests passed; workspace acceptance remains pending.
+
+Luna must start first in the fresh team. The failed old-session launch did not
+run, and no helper result or billing inference is attributed to Luna.

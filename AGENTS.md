@@ -167,6 +167,7 @@ Use `make cpp-intersection-list` before applying a carry-back patch and verify i
 ## Agent capacity and quota management
 
 - Reserve one available agent slot for Luna’s bounded tasks.
+- On fresh team startup, launch and confirm Luna’s bounded worker before filling the remaining agent slots.
 - Reuse existing agents for related work. Close completed threads when supported; do not assume a finished task releases its slot.
 - Before spawning, check capacity and explicitly select the assigned model. Confirm successful startup before reporting that work was delegated.
 - Distinguish thread-capacity errors from model/account usage limits. Do not repeatedly retry an unchanged failure.
