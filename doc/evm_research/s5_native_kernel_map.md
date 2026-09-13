@@ -90,15 +90,19 @@ ordinary, raw or log effects.
 
 Every successful `invoke` boundary consumes its quote and advances the port-call sequence, whether it returns
 `Completed` or `InsufficientGas`; lazy semantic/read caches prepared for reference behavior may survive. An integrity
-error aborts the period. A pre-fix nested call rejected by the frame host never calls `NativeExecutionPort::prepare`
-and does not consume this port-call sequence. The executor assigns `NativeInvocationId.sequence` when it actually
-enters the port and separately retains the rejected call in its execution trace.
+error aborts the period and poisons the session against reuse. A pre-fix nested DPoS call does enter preparation: the Go
+`RequiredGas` path initializes its preparation cache and returns the normal method quote. After gas admission, Go
+`Run` rejects nonzero EVM depth before its business-state initialization, raw reads, nonpayable check and kernel. The
+terminal rejection consumes the quote and port-call sequence. The executor assigns `NativeInvocationId.sequence` when
+it enters the port and maps its frame depth to the Go `EVM.GetDepth()` value used by this check.
 
 For the first step, the session admits only the DPoS address, `CALL` and `STATICCALL`, and the decoded
-`SetCommission` variant. The executor performs the historical pre-fix nested-call admission before `prepare`; the Go
-fixture proves that this rejection has zero kernel calls. `CALLCODE`, `DELEGATECALL`, DPoS reads, other mutations and
-slashing return an explicit unsupported adapter error in this bounded test route. They cannot fall through to
-`FinalChain::call`.
+`SetCommission` variant. Before `FixRedelegateBlockNum`, a request with nonzero Go-compatible EVM depth prepares the
+normal 20,000 quote and returns the exact `only top-level calls are allowed` contract failure from invocation, with no
+raw reads or kernel call. For a nonzero-value nested request, `RequiredGas` first returns the post-Cornus nonpayable
+quote of zero, then the nested-call rejection takes precedence in `Run`. `CALLCODE`, `DELEGATECALL`, DPoS reads, other
+mutations and slashing return an explicit unsupported adapter error in this bounded test route. They cannot fall
+through to `FinalChain::call`.
 
 Preparation performs these operations without changing business state:
 
@@ -107,16 +111,16 @@ Preparation performs these operations without changing business state:
 2. Apply the existing fork-aware nonpayable/selector policy and call `decode_dpos_transaction_for_execution`. Require
    exactly `SetCommission { owner: caller, validator, commission }` for this first implementation.
 3. Compute action gas through the same helper used by `dpos_call_required_gas`. The expected quote for the fixture is
-   20,000. Post-Cornus `setCommission` with any nonzero full-width value instead prepares a terminal nonpayable result
-   with required gas zero. Its `invoke` returns the exact contract failure with zero native gas and no
-   kernel/account/raw/log effects. The child-frame failure rolls back the frame-owned CALL value. Pre-Cornus behavior
-   is outside this first adapter and remains explicitly unsupported rather than silently applying the post-Cornus rule.
-4. Short-circuit a terminal nonpayable request or `supplied_gas < required_gas` after binding the quote. These paths do
-   not read validator/owner raw rows or validate their domain state, because the reference exits before the business
-   storage kernel. They consume the quote at `invoke` with no business effects.
-5. Only for a zero-value request with sufficient supplied gas, read the current validator row at native logical key
-   `keccak256(0x0000 || validator)` and the owner row at `keccak256(0x0003 || validator)` from the raw lane. Decode the
-   validator row as the fork-selected RLP shape and compare stake, commission, last commission-change block,
+   20,000. Post-Cornus `setCommission` with any nonzero full-width value instead has a required-gas quote of zero.
+   Pre-Cornus behavior is outside this first adapter and remains explicitly unsupported rather than silently applying
+   the post-Cornus rule.
+4. Short-circuit `supplied_gas < required_gas` after binding the quote. Once gas is admitted, reject a pre-fix nonzero
+   depth before the nonpayable terminal. Otherwise, a nonzero value invokes the exact `Method is not payable` contract
+   failure with zero native gas. All three paths avoid validator/owner raw reads and the business kernel, consume the
+   quote at `invoke`, and emit no account/raw/log effects. The child frame owns CALL-value rollback.
+5. Only for an admitted top-level zero-value request with sufficient supplied gas, read the current validator row at
+   native logical key `keccak256(0x0000 || validator)` and the owner row at `keccak256(0x0003 || validator)` from the raw
+   lane. Decode the validator row as the fork-selected RLP shape and compare stake, commission, last commission-change block,
    reward-reference head and, when present, undelegation count with the staged snapshot. The owner row is not RLP:
    require exactly 20 raw bytes equal to staged `metadata.owner`. Reject absence, tombstone, malformed validator RLP,
    malformed owner length or any raw/domain mismatch as an integrity error.
@@ -230,7 +234,7 @@ The six real EVM cases establish:
 | Parent REVERT after successful CALL | The same validator put and storage root survive; log disappears, parent reports `execution reverted`, and ordinary account root follows rollback |
 | Wrong owner | Kernel runs and returns false; no raw write or log; accepted native action gas is consumed |
 | Commission 10,001 | Kernel returns false; no raw write or log; accepted native action gas is consumed |
-| Before nested-call fix | Host returns false before the kernel; the probe observes zero kernel calls and no raw write/log |
+| Before nested-call fix | Preparation quotes and charges 20,000; `Run` rejects nested depth before raw business reads/the kernel, so the probe observes zero kernel calls and no raw write/log |
 | STATICCALL | Historical profile permits the mutation: the same raw put and log occur, with 41,760 total gas |
 
 The disposable Rust probe calls `decode_dpos_transaction_for_execution` and

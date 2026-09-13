@@ -29,7 +29,7 @@ own [lockfile](../../experiments/evm_feasibility/native.Cargo.lock).
 | Successful native CALL followed by parent REVERT | Native raw mutation survives; emitted log disappears; gas, parent error and roots agree |
 | Wrong owner | Kernel rejects mutation; no write/log; caller's result and charged gas agree |
 | Commission above 10,000 | Kernel rejects mutation; no write/log; caller's result and charged gas agree |
-| Before nested-call fix | Host rejects nested DPoS admission before invoking the kernel; unused action gas is still returned |
+| Before nested-call fix | `RequiredGas` quotes and EVM charges 20,000; `Run` rejects nested depth before raw business reads or the kernel |
 | STATICCALL mutation | Reference accepts the native mutation despite static execution; Rust test preserves that historical behavior |
 
 The serializer writes only the touched validator row. It encodes the mutated existing
