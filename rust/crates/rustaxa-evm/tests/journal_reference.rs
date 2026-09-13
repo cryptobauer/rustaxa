@@ -31,9 +31,11 @@ const KEY: ConcreteStorageKey = ConcreteStorageKey({
 
 #[derive(Clone)]
 struct MemoryState {
+    address: [u8; 20],
     exists: bool,
     nonce: FinalChainNonce,
     balance: ConcreteAccountBalance,
+    storage_root: Option<[u8; 32]>,
     storage: BTreeMap<([u8; 20], ConcreteStorageKey), Vec<u8>>,
 }
 
@@ -44,6 +46,7 @@ impl MemoryState {
             storage.insert((ADDRESS, KEY), vec![0x11]);
         }
         Self {
+            address: ADDRESS,
             exists: case["exists"].as_bool().expect("exists boolean"),
             nonce: FinalChainNonce::from_u64(if case["exists"].as_bool().unwrap() {
                 1
@@ -55,6 +58,7 @@ impl MemoryState {
             } else {
                 BigUint::default()
             }),
+            storage_root: case["exists"].as_bool().unwrap().then_some([0x33; 32]),
             storage,
         }
     }
@@ -71,6 +75,7 @@ impl MemoryState {
                     self.exists = false;
                     self.nonce = FinalChainNonce::zero();
                     self.balance = ConcreteAccountBalance::default();
+                    self.storage_root = None;
                     self.storage
                         .retain(|(address, _), _| address != &write.address);
                 }
@@ -95,6 +100,9 @@ impl MemoryState {
                 }
             }
         }
+        if self.exists {
+            self.storage_root = (!self.storage.is_empty()).then_some([0x44; 32]);
+        }
     }
 }
 
@@ -110,14 +118,14 @@ impl ConcreteStateRead for MemoryState {
         &self,
         address: [u8; 20],
     ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
-        if address != ADDRESS || !self.exists {
+        if address != self.address || !self.exists {
             return Ok(ConcreteRead::Absent);
         }
         Ok(ConcreteRead::Present(ConcreteAccountRecord {
             account: ConcreteAccount {
                 nonce: self.nonce.clone(),
                 balance: self.balance.clone(),
-                storage_root: None,
+                storage_root: self.storage_root,
                 code_hash: None,
                 code_size: 0,
             },
@@ -284,6 +292,181 @@ fn ordered_native_touch_establishes_account_before_nonce_effect() {
     assert_eq!(state.nonce, FinalChainNonce::from_u64(1));
 }
 
+#[test]
+fn journal_matches_mutator_edge_oracle() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/journal_mutators_local.json"
+    ))
+    .expect("parse mutator fixture");
+    let cases = fixture.as_array().expect("fixture array");
+    assert_eq!(cases.len(), 8);
+
+    for case in cases {
+        let address: [u8; 20] = parse_hex(case["address"].as_str().unwrap())
+            .try_into()
+            .expect("20-byte address");
+        let before = &case["before"];
+        let raw_before = &before["raw"];
+        let mut storage = BTreeMap::new();
+        if raw_before["present"].as_bool().unwrap() {
+            storage.insert(
+                (address, KEY),
+                parse_hex(raw_before["bytes"].as_str().unwrap()),
+            );
+        }
+        let mut state = MemoryState {
+            address,
+            exists: before["exists"].as_bool().unwrap(),
+            nonce: parse_nonce(&before["nonce"]),
+            balance: ConcreteAccountBalance::new(parse_biguint(&before["balance"], "balance")),
+            storage_root: before["exists"].as_bool().unwrap().then_some([0x66; 32]),
+            storage,
+        };
+        let mut journal = ExecutionJournal::new(state.clone());
+        match case["case"].as_str().unwrap() {
+            "storage-noop-leading-zero" => journal
+                .set_ordinary_storage(address, KEY, BigUint::from(17_u8))
+                .unwrap(),
+            "empty-by-balance" => journal
+                .set_balance(address, ExecutionBalance::default())
+                .unwrap(),
+            "existing-empty-touch" => journal.touch_account(address).unwrap(),
+            "existing-empty-raw" => journal
+                .set_raw_storage(
+                    address,
+                    KEY,
+                    NativeRawOperation::Put(NativeRawValue::new(vec![0x44]).unwrap()),
+                )
+                .unwrap(),
+            "empty-code-noop" => journal.set_code(address, [0x77; 32], Vec::new()).unwrap(),
+            "reverted-new" => {
+                let checkpoint = journal.checkpoint();
+                journal
+                    .set_nonce(address, FinalChainNonce::from_u64(1))
+                    .unwrap();
+                journal.revert_checkpoint(checkpoint).unwrap();
+            }
+            "nonce-decrease" => assert_eq!(
+                journal.set_nonce(address, FinalChainNonce::zero()),
+                Err(rustaxa_evm::journal::JournalError::NonceDecrease)
+            ),
+            "ripemd-touch-revert" => {
+                let checkpoint = journal.checkpoint();
+                journal.touch_account(address).unwrap();
+                journal.revert_checkpoint(checkpoint).unwrap();
+            }
+            other => panic!("unknown mutator case {other}"),
+        }
+
+        let settled = journal.settle_transaction().expect("settle mutator");
+        if matches!(
+            case["case"].as_str().unwrap(),
+            "storage-noop-leading-zero" | "empty-code-noop" | "reverted-new" | "nonce-decrease"
+        ) {
+            assert_eq!(settled.writes, JournalWritePlan::default());
+        }
+        state.apply(settled.writes);
+        let reopened = ExecutionJournal::new(state);
+        let expected = &case["reopened"];
+        let account = reopened.account(address).unwrap();
+        assert_eq!(account.exists, expected["exists"].as_bool().unwrap());
+        assert_eq!(account.nonce, parse_nonce(&expected["nonce"]));
+        assert_eq!(
+            account.balance.value(),
+            &BigInt::from(parse_biguint(&expected["balance"], "balance"))
+        );
+        let raw = reopened.raw_storage(address, KEY).unwrap();
+        if expected["raw"]["present"].as_bool().unwrap() {
+            assert_eq!(
+                raw,
+                ConcreteRead::Present(parse_hex(expected["raw"]["bytes"].as_str().unwrap()))
+            );
+        } else {
+            assert!(matches!(
+                raw,
+                ConcreteRead::Absent | ConcreteRead::Tombstone
+            ));
+        }
+    }
+}
+
+#[test]
+fn journal_matches_reverse_nested_and_nil_root_oracle() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/journal_extended_local.json"
+    ))
+    .expect("parse extended fixture");
+    let cases = fixture.as_array().expect("fixture array");
+    assert_eq!(cases.len(), 10);
+
+    for case in cases {
+        let before = &case["before"];
+        let mut storage = BTreeMap::new();
+        if before["raw"]["present"].as_bool().unwrap() {
+            storage.insert(
+                (ADDRESS, KEY),
+                parse_hex(before["raw"]["bytes"].as_str().unwrap()),
+            );
+        }
+        let mut state = MemoryState {
+            address: ADDRESS,
+            exists: before["exists"].as_bool().unwrap(),
+            nonce: parse_nonce(&before["nonce"]),
+            balance: ConcreteAccountBalance::new(parse_biguint(&before["balance"], "balance")),
+            storage_root: (before["exists"].as_bool().unwrap()
+                && !case["nil_root"].as_bool().unwrap())
+            .then_some([0x88; 32]),
+            storage,
+        };
+        let mut journal = ExecutionJournal::new(state.clone());
+        assert_observation(&journal, before);
+        let mut checkpoints = Vec::new();
+        for step in case["steps"].as_array().unwrap() {
+            match step["op"].as_str().unwrap() {
+                "snapshot" => checkpoints.push(journal.checkpoint()),
+                "revert" => journal
+                    .revert_checkpoint(checkpoints.pop().expect("checkpoint for revert"))
+                    .unwrap(),
+                "nonce" => journal
+                    .set_nonce(ADDRESS, parse_nonce(&step["value"]))
+                    .unwrap(),
+                "ordinary" => journal
+                    .set_ordinary_storage(ADDRESS, KEY, parse_biguint(&step["value"], "ordinary"))
+                    .unwrap(),
+                "raw" => {
+                    let value = parse_hex(step["value"].as_str().unwrap());
+                    let operation = if value.is_empty() {
+                        NativeRawOperation::Delete
+                    } else {
+                        NativeRawOperation::Put(NativeRawValue::new(value).unwrap())
+                    };
+                    journal.set_raw_storage(ADDRESS, KEY, operation).unwrap();
+                }
+                "transient" => {
+                    let mut value = [0_u8; 32];
+                    value[31] = u8::from_str_radix(step["value"].as_str().unwrap(), 16).unwrap();
+                    journal.set_transient_storage(ADDRESS, KEY, value);
+                }
+                "refund" => journal.add_refund(step["value"].as_u64().unwrap()).unwrap(),
+                "log" => journal.push_log(ExecutionLog {
+                    address: ADDRESS,
+                    topics: Vec::new(),
+                    data: parse_hex(step["value"].as_str().unwrap()),
+                }),
+                other => panic!("unknown extended operation {other}"),
+            }
+            assert_observation(&journal, &step["view"]);
+        }
+        while let Some(checkpoint) = checkpoints.pop() {
+            journal.commit_checkpoint(checkpoint).unwrap();
+        }
+        let settled = journal.settle_transaction().unwrap();
+        assert_transaction_reset(&journal, &case["after_transaction"]);
+        state.apply(settled.writes);
+        assert_observation(&ExecutionJournal::new(state), &case["reopened"]);
+    }
+}
+
 fn assert_observation(journal: &ExecutionJournal<MemoryState>, expected: &Value) {
     let account = journal.account(ADDRESS).expect("read account");
     assert_eq!(account.exists, expected["exists"].as_bool().unwrap());
@@ -355,4 +538,13 @@ fn parse_hex(value: &str) -> Vec<u8> {
             u8::from_str_radix(text, 16).expect("hex byte")
         })
         .collect()
+}
+
+fn parse_nonce(value: &Value) -> FinalChainNonce {
+    let value = parse_biguint(value, "nonce");
+    if value == BigUint::default() {
+        FinalChainNonce::zero()
+    } else {
+        FinalChainNonce::from_bytes(&value.to_bytes_be()).expect("canonical nonce")
+    }
 }
