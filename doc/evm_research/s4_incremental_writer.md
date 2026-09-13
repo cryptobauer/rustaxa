@@ -15,6 +15,13 @@ paths, derives storage and main roots, and returns a writer-bound
 during mutation, including a surviving hashed sibling resolved for branch
 collapse, is rehashed before its topology or value is trusted.
 
+`prepared_account` exposes one exact five-field account row from the latest
+prepared overlay over the same RocksDB handle, or falls back to an authenticated
+prior row. It preserves present, tombstone, and proved-absent outcomes and
+validates writer/prior/sequence binding. This gives the executor composition an
+account projection view without opening a second conflicting RocksDB handle or
+presenting prepared data as published state.
+
 `persist_contents` atomically stages only compatible CF1-CF5 content, node, and
 version rows. It does not change `last_committed_descriptor`, provenance,
 catalog, pending-publication, or application metadata. Prepared values are
