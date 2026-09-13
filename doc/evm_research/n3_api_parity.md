@@ -71,12 +71,18 @@ returns typed results and the fixed state identity, with no prepared mutations
 or publication capability. Native calls fail explicitly pending their adapter.
 
 The actual pinned Go DryRunner runs over an in-memory DB seeded through its
-real incremental TrieSink. Both references produce identical five-case fixtures,
+real incremental TrieSink. Both references produce identical six-case fixtures,
 including a stored nonce above 256 bits, ignored stale and 512-bit supplied
 nonces, storage-changing/value-bearing calls, a reason-bearing revert, CREATE
-and the zero-address gas-payment exception. Reference state observations before
+the zero-address gas-payment exception, and a return-data bounds failure. Reference state observations before
 and after repeated calls are identical. Rust compares status, gas, output and
 creation addresses. Exact RPC revert-string presentation is not yet implemented.
+
+The return-data bounds case maps REVM `OutOfOffset` to the typed
+`ReturnDataOutOfBounds` execution failure. Combined invalid-source and
+unaffordable-memory cases remain an explicit gap: Go charges memory expansion
+before bounds checking, while the default REVM opcode checks bounds first.
+This fixture does not establish parity for that precedence.
 
 An integrated gas-search test runs seven fresh Rust simulations against the same
 Go-derived state. Every probe sees the original slot seven and privately writes
@@ -94,3 +100,45 @@ Sol authored the independent public API oracle and initial comparisons in
 tests. The fixture manifest records exact hashes and source pins. This is
 immutable in-memory state evidence; persisted historical API/reopen tests,
 native simulation, traces and complete RPC behavior remain required.
+
+
+## Trace reference and required observer boundary
+
+`trace_reference.py` runs the actual `TraceRunner.Trace` from both immutable
+pins over the API oracle's committed trie. Seven scenarios cover storage,
+ordered prefix plus two targets, preserved stale nonce, revert, creation,
+empty code and return-data bounds. Each runs the structured logger and the
+OpenEthereum `trace`, `vmTrace`, combined and neither-selected configurations.
+Both pins emit identical artifacts and leave committed observations unchanged.
+This is reference evidence; a Rust trace implementation is still open.
+
+Unlike `DryRunner.Apply`, tracing starts at `max(block - 1, 0)` and preserves
+the supplied nonce. Prefix and target transactions share a disposable block
+state in order; the logger resets per target. Structured output includes
+`gas`, `failed`, `returnValue` and `structLogs`; each opcode records PC, opcode,
+pre-charge gas, computed cost, depth, stack, expanded memory and the logger's
+per-address attempted-SSTORE map. That map is not a committed storage snapshot
+and is not rolled back with execution. Error fields preserve Go JSON shape.
+
+Sources: `state_dry_runner/trace_runner.go`, `core/vm/logger.go` and
+`core/vm/oelogger.go` in the pinned Go tree. `Debug.cpp:parse_tracking_parms`
+accepts a nonempty array, recognizes `trace` and `vmTrace`, and currently ignores
+`stateDiff` and other strings. Selecting neither causes the actual Go tracer to
+panic through its nil result pointer in all seven scenarios. The oracle catches
+and records that panic outside the unchanged entrypoint. Rust must expose an
+explicit unsupported/reference-failure outcome rather than fabricate successful
+trace output; no original C++/Go fix or production policy change is authorized.
+
+Implementation must add an optional typed observer to the existing frame driver
+and profile opcode-cost boundary, preserving the unobserved execution path.
+Capture CALL/CREATE entry/exit, pre-op state plus charged dynamic cost, fault
+ordering, SELFDESTRUCT and journal facts without rereading them as committed
+state. Structured and OpenEthereum serializers consume those facts; neither
+may execute a second interpreter to guess costs. Native calls must use the same
+sequence/private native session as traced period execution. Historical reopen,
+missing dependencies, nested revert/static/delegate/native calls and exact JSON
+comparison are still required before N3 acceptance.
+
+```sh
+python3 experiments/evm_feasibility/trace_reference.py
+```

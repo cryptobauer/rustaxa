@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "sha256": {
+    "public": "253617f4588898f2f5f6422c952c997d0e857e9543ab9b2961d471fae882c1f0",
+    "local": "253617f4588898f2f5f6422c952c997d0e857e9543ab9b2961d471fae882c1f0"
+  },
+  "source_sha256": {
+    "api_reference.go": "ca1bffec8a9845b4bff6d818fb57b7ab0fdfa5bd116bca6e98421b4c86ee3052",
+    "trace_reference.go": "1796cf62028768f0efc7a4cf6ed7ac4e0519249ac435a0817d8a2c928f35ba9e"
+  },
+  "scope": "actual TraceRunner, seven ordinary scenarios and five tracer modes; no Rust parity claimed by this oracle alone"
+}
