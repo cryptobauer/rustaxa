@@ -80,6 +80,7 @@ pub(crate) fn consensus_final_chain_config_from_ffi(
     genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
     genesis_dpos_config: rustaxa_ffi::GenesisDposConfig,
     rewards_config: rustaxa_ffi::FinalChainRewardsConfig,
+    ficus_activation_period: u64,
 ) -> Result<ConsensusFinalChainConfig, anyhow::Error> {
     let genesis_accounts = genesis_accounts
         .into_iter()
@@ -95,6 +96,7 @@ pub(crate) fn consensus_final_chain_config_from_ffi(
         genesis_accounts,
         genesis_validators,
         genesis_dpos: genesis_dpos_config_from_ffi(genesis_dpos_config)?,
+        ficus_activation_period: ficus_activation_period.into(),
         rewards: rustaxa_consensus::FinalChainRewardsConfig {
             committee_size: rewards_config.committee_size,
             magnolia_period: rewards_config.magnolia_period.into(),
