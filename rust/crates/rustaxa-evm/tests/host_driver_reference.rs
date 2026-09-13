@@ -538,7 +538,7 @@ fn ef01_prefixes_remain_legacy_invalid_opcodes() {
 }
 
 #[test]
-fn sstore_rejects_wide_gas_comparison_before_mutation() {
+fn sstore_preserves_wide_gas_relations_and_writes_the_evm_word() {
     let mut reader = reader_with_account(TARGET, None, 0);
     reader.accounts.get_mut(&TARGET).unwrap().storage_root = Some([0x44; 32]);
     let key = ConcreteStorageKey([0_u8; 32]);
@@ -555,19 +555,18 @@ fn sstore_rejects_wide_gas_comparison_before_mutation() {
             &transaction,
             TaraxaProfile::new(false).gas_params(),
         );
-        assert!(
-            host.sstore_skip_cold_load(Address::from(TARGET), U256::ZERO, U256::from(1_u8), false)
-                .is_err()
-        );
-        assert_eq!(
-            host.take_error(),
-            Some(HostError::StorageWordWidth {
-                address: TARGET,
-                key
-            })
-        );
+        let result = host
+            .sstore_skip_cold_load(Address::from(TARGET), U256::ZERO, U256::from(1_u8), false)
+            .unwrap();
+        assert!(result.data.is_original_eq_present());
+        assert!(!result.data.is_original_eq_new());
+        assert!(!result.data.is_original_zero());
+        assert_eq!(host.take_error(), None);
     }
-    assert_eq!(journal.ordinary_storage(TARGET, key).unwrap().1, wide);
+    assert_eq!(
+        journal.ordinary_storage(TARGET, key).unwrap(),
+        (wide, BigUint::from(1_u8))
+    );
 }
 
 #[test]

@@ -47,13 +47,6 @@ pub enum HostError {
     Journal(JournalError),
     /// Canonical historical block data was unavailable or invalid.
     BlockHash(BlockHashReadError),
-    /// SSTORE gas comparison cannot preserve an ordinary value wider than one EVM word.
-    StorageWordWidth {
-        /// Account containing the unsupported value.
-        address: [u8; 20],
-        /// Logical slot containing the unsupported value.
-        key: ConcreteStorageKey,
-    },
     /// SELFDESTRUCT lifecycle parity is not implemented in this bounded host.
     SelfDestructUnavailable,
 }
@@ -279,9 +272,6 @@ impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> 
             Ok(values) => values,
             Err(error) => return self.fail(HostError::Journal(error)),
         };
-        if original.bits() > 256 || present.bits() > 256 {
-            return self.fail(HostError::StorageWordWidth { address, key });
-        }
         if let Err(error) = self
             .journal
             .set_ordinary_storage(address, key, big_uint(value))
@@ -289,11 +279,7 @@ impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> 
             return self.fail(HostError::Journal(error));
         }
         Ok(StateLoad::new(
-            SStoreResult {
-                original_value: low_word(original),
-                present_value: low_word(present),
-                new_value: value,
-            },
+            sstore_gas_values(original, present, value),
             false,
         ))
     }
@@ -367,4 +353,51 @@ fn low_word(value: BigUint) -> U256 {
     let mut word = [0_u8; 32];
     word[32 - (bytes.len() - tail)..].copy_from_slice(&bytes[tail..]);
     U256::from_be_bytes(word)
+}
+
+/// Projects full-width Taraxa storage into REVM's gas-only relation carrier.
+///
+/// REVM's SSTORE accounting observes only zero/nonzero state and pairwise
+/// equality among the original, present and new values. Narrow inputs retain
+/// their exact words. If either stored value is wider than the EVM stack, each
+/// distinct nonzero full-width value receives a distinct nonzero word while
+/// numeric zero remains zero. The journal separately stores the actual new EVM
+/// word, so these representatives never become account state.
+fn sstore_gas_values(original: BigUint, present: BigUint, new_value: StorageValue) -> SStoreResult {
+    if original.bits() <= 256 && present.bits() <= 256 {
+        return SStoreResult {
+            original_value: low_word(original),
+            present_value: low_word(present),
+            new_value,
+        };
+    }
+
+    let zero = BigUint::default();
+    let new = big_uint(new_value);
+    let original_value = if original == zero {
+        U256::ZERO
+    } else {
+        U256::from(1_u8)
+    };
+    let present_value = if present == zero {
+        U256::ZERO
+    } else if present == original {
+        original_value
+    } else {
+        U256::from(2_u8)
+    };
+    let new_value = if new == zero {
+        U256::ZERO
+    } else if new == original {
+        original_value
+    } else if new == present {
+        present_value
+    } else {
+        U256::from(3_u8)
+    };
+    SStoreResult {
+        original_value,
+        present_value,
+        new_value,
+    }
 }
