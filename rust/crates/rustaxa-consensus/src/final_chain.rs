@@ -50,7 +50,7 @@ use k256::ecdsa::VerifyingKey;
 use k256::elliptic_curve::{Group, PrimeField, sec1::ToEncodedPoint};
 use k256::{ProjectivePoint, Scalar};
 use keccak_hasher::KeccakHasher;
-use num_bigint::BigUint;
+use num_bigint::{BigInt, BigUint};
 use rlp::Rlp;
 use rustaxa_storage::{
     FINAL_CHAIN_BLOOM_INDEX_LEVELS, FINAL_CHAIN_BLOOM_INDEX_SIZE, FinalChainExecutionStatus,
@@ -76,6 +76,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 use triehash::ordered_trie_root;
+
+use self::native_session::account::{DposAccountPort, transfer_dpos_contract_balance};
 
 mod native_admission;
 pub mod native_session;
@@ -3986,7 +3988,7 @@ impl FinalChain {
     /// account snapshot is persisted with final-chain visibility.
     fn credit_post_magnolia_dpos_fee_rewards(
         &self,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         fee_rewards_by_validator: &BTreeMap<[u8; 20], DposTokenAmount>,
     ) -> Result<(), anyhow::Error> {
         let reward = fee_rewards_by_validator.values().try_fold(
@@ -4000,15 +4002,14 @@ impl FinalChain {
         if reward.is_zero() {
             return Ok(());
         }
-        let account = accounts
-            .entry(DPOS_CONTRACT_ADDRESS)
-            .or_insert_with(empty_account);
-        let balance = *account.balance.as_u256();
-        account.balance.replace_after_mutation(
-            balance
-                .checked_add(reward.as_u256())
-                .ok_or_else(|| anyhow::anyhow!("DPoS contract fee reward balance overflow"))?,
-        );
+        accounts
+            .add_balance(
+                DPOS_CONTRACT_ADDRESS,
+                &BigUint::from_bytes_be(&u256_to_big_endian(reward.as_u256())),
+            )
+            .map_err(|error| {
+                anyhow::anyhow!("DPoS contract fee reward balance overflow: {error}")
+            })?;
         Ok(())
     }
 
@@ -4021,22 +4022,21 @@ impl FinalChain {
     /// are not included in `total_minted_reward`.
     fn credit_dpos_contract_minted_rewards(
         &self,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         total_minted_reward: DposTokenAmount,
     ) -> Result<(), anyhow::Error> {
         let total_minted_reward = total_minted_reward.as_u256();
         if total_minted_reward.is_zero() {
             return Ok(());
         }
-        let account = accounts
-            .entry(DPOS_CONTRACT_ADDRESS)
-            .or_insert_with(empty_account);
-        let balance = *account.balance.as_u256();
-        account.balance.replace_after_mutation(
-            balance
-                .checked_add(total_minted_reward)
-                .ok_or_else(|| anyhow::anyhow!("DPoS contract minted reward balance overflow"))?,
-        );
+        accounts
+            .add_balance(
+                DPOS_CONTRACT_ADDRESS,
+                &BigUint::from_bytes_be(&u256_to_big_endian(total_minted_reward)),
+            )
+            .map_err(|error| {
+                anyhow::anyhow!("DPoS contract minted reward balance overflow: {error}")
+            })?;
         Ok(())
     }
 
@@ -6964,7 +6964,7 @@ impl FinalChain {
     fn apply_dpos_delegator_reward_claim(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         validator: [u8; 20],
         delegator: [u8; 20],
     ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
@@ -6983,7 +6983,7 @@ impl FinalChain {
     fn apply_dpos_delegator_reward_claim_with_cursor(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         validator: [u8; 20],
         delegator: [u8; 20],
         move_cursor: bool,
@@ -7028,12 +7028,13 @@ impl FinalChain {
             }
             Err(error) => return Err(error.into()),
         };
-        let dpos_contract_balance = *accounts
-            .entry(DPOS_CONTRACT_ADDRESS)
-            .or_insert_with(empty_account)
-            .balance
-            .as_u256();
-        if reward_exact > BigUint::from_bytes_be(&u256_to_big_endian(dpos_contract_balance)) {
+        // Preserve the legacy HashMap kernel's materializing balance read while
+        // allowing the staged full-width port to treat a zero reward as a true
+        // no-effect path, matching the Go `reward > 0` guard.
+        let dpos_contract_balance = accounts.account(DPOS_CONTRACT_ADDRESS)?.balance;
+        if reward_exact != BigUint::default()
+            && dpos_contract_balance < BigInt::from(reward_exact.clone())
+        {
             anyhow::bail!(
                 "Rust FinalChain::finalize DPoS contract balance insufficient for reward claim"
             );
@@ -7057,21 +7058,12 @@ impl FinalChain {
             return Ok(Vec::new());
         }
 
-        let dpos_account = accounts
-            .entry(DPOS_CONTRACT_ADDRESS)
-            .or_insert_with(empty_account);
-        dpos_account.balance.replace_after_mutation(
-            dpos_contract_balance
-                .checked_sub(reward.as_u256())
-                .ok_or_else(|| anyhow::anyhow!("DPoS contract reward underflow"))?,
-        );
-        let delegator_account = accounts.entry(delegator).or_insert_with(empty_account);
-        let current_delegator_balance = *delegator_account.balance.as_u256();
-        delegator_account.balance.replace_after_mutation(
-            current_delegator_balance
-                .checked_add(reward.as_u256())
-                .ok_or_else(|| anyhow::anyhow!("DPoS delegator reward overflow"))?,
-        );
+        transfer_dpos_contract_balance(
+            accounts,
+            delegator,
+            &reward_exact,
+            "Rust FinalChain::finalize DPoS contract balance insufficient for reward claim",
+        )?;
         Ok(vec![dpos_rewards_claimed_log(
             delegator, validator, reward,
         )?])
@@ -7654,7 +7646,7 @@ impl FinalChain {
     fn apply_dpos_delegate(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: Vec<u8>,
@@ -7961,7 +7953,7 @@ impl FinalChain {
     fn apply_dpos_undelegate_v2(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: Vec<u8>,
@@ -8021,7 +8013,7 @@ impl FinalChain {
     fn apply_dpos_confirm_undelegate_v2(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         delegator: [u8; 20],
         validator: [u8; 20],
         id: u64,
@@ -8038,12 +8030,8 @@ impl FinalChain {
             ));
         }
         let amount = entry.amount.as_u256();
-        let dpos_contract_balance = *accounts
-            .entry(DPOS_CONTRACT_ADDRESS)
-            .or_insert_with(empty_account)
-            .balance
-            .as_u256();
-        if dpos_contract_balance < amount {
+        let amount_exact = BigUint::from_bytes_be(&u256_to_big_endian(amount));
+        if accounts.account(DPOS_CONTRACT_ADDRESS)?.balance < BigInt::from(amount_exact.clone()) {
             anyhow::bail!("DPoS contract balance insufficient for undelegation V2 confirmation");
         }
         remove_undelegation_v2(snapshot, delegator, validator, id);
@@ -8061,19 +8049,12 @@ impl FinalChain {
         {
             remove_dpos_validator(snapshot, validator, false)?;
         }
-        let dpos_account = accounts
-            .entry(DPOS_CONTRACT_ADDRESS)
-            .or_insert_with(empty_account);
-        dpos_account
-            .balance
-            .replace_after_mutation(dpos_contract_balance - amount);
-        let delegator_account = accounts.entry(delegator).or_insert_with(empty_account);
-        let delegator_balance = *delegator_account.balance.as_u256();
-        delegator_account.balance.replace_after_mutation(
-            delegator_balance
-                .checked_add(amount)
-                .ok_or_else(|| anyhow::anyhow!("DPoS undelegation V2 confirmation overflow"))?,
-        );
+        accounts.subtract_balance(DPOS_CONTRACT_ADDRESS, &amount_exact)?;
+        accounts
+            .add_balance(delegator, &amount_exact)
+            .map_err(|error| {
+                anyhow::anyhow!("DPoS undelegation V2 confirmation overflow: {error}")
+            })?;
         Ok(DposApplyOutcome::success(vec![
             dpos_undelegate_confirmed_v2_log(delegator, validator, id, amount)?,
         ]))
@@ -8337,7 +8318,7 @@ impl FinalChain {
     fn remove_dpos_delegation_stake(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         delegator: [u8; 20],
         validator: [u8; 20],
         remove_amount: U256,

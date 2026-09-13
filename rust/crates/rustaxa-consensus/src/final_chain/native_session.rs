@@ -11,6 +11,10 @@
 use super::*;
 use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteStorageKey};
 
+pub(super) mod account;
+
+pub use account::{FinalChainNativeAccount, FinalChainNativeOrdinaryMutation};
+
 /// Arbitrary-width unsigned value carried by a native child call.
 ///
 /// Payability checks use the complete value. This first session does not
