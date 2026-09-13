@@ -51,6 +51,36 @@ pub enum JournalError {
         /// Field whose expectation did not match.
         field: NativeAccountField,
     },
+    /// A live account references code without a physical hash.
+    MissingCodeHash {
+        /// Account containing the invalid reference.
+        address: JournalAddress,
+    },
+    /// Referenced code bytes are absent or tombstoned.
+    ReferencedCodeMissing {
+        /// Account containing the reference.
+        address: JournalAddress,
+        /// Missing code hash.
+        code_hash: [u8; 32],
+    },
+    /// Referenced code length differs from the declared account size.
+    CodeSizeMismatch {
+        /// Account containing the reference.
+        address: JournalAddress,
+        /// Declared size.
+        declared: u64,
+        /// Loaded size.
+        actual: usize,
+    },
+    /// Referenced code bytes do not hash to the account's code hash.
+    CodeHashMismatch {
+        /// Account containing the reference.
+        address: JournalAddress,
+        /// Declared code hash.
+        declared: [u8; 32],
+        /// Hash of loaded bytes.
+        actual: [u8; 32],
+    },
 }
 
 impl std::fmt::Display for JournalError {
@@ -76,6 +106,21 @@ pub enum NativeAccountField {
     Balance,
     /// Arbitrary-width nonce.
     Nonce,
+}
+
+/// Current account metadata needed by the interpreter host.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalAccountMetadata {
+    /// Whether the account currently exists.
+    pub exists: bool,
+    /// Exact arbitrary-width nonce retained outside REVM account metadata.
+    pub nonce: FinalChainNonce,
+    /// Signed arbitrary-width balance; EVM opcodes use its low word.
+    pub balance: ExecutionBalance,
+    /// Physical/staged code hash; absent differs from empty-code hash.
+    pub code_hash: Option<[u8; 32]>,
+    /// Declared code byte length.
+    pub code_size: u64,
 }
 
 /// Final ordinary account operation produced by transaction settlement.
@@ -369,6 +414,47 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
     /// Reads current account existence, nonce and signed balance.
     pub fn account(&self, address: JournalAddress) -> Result<NativeJournalAccount, JournalError> {
         self.current_account(address).map_err(JournalError::from)
+    }
+
+    /// Reads current account metadata without narrowing nonce or balance.
+    pub fn account_metadata(
+        &self,
+        address: JournalAddress,
+    ) -> Result<JournalAccountMetadata, JournalError> {
+        let account = self.current_account_state(address)?;
+        Ok(JournalAccountMetadata {
+            exists: account.exists,
+            nonce: account.nonce,
+            balance: account.balance,
+            code_hash: account.code_hash,
+            code_size: account.code_size,
+        })
+    }
+
+    /// Loads and validates current code for one account.
+    ///
+    /// Absent accounts and existing zero-code accounts both return empty bytes;
+    /// callers retain their distinct existence/hash facts from
+    /// [`Self::account_metadata`]. Missing, corrupt, wrong-size or wrong-hash
+    /// referenced code aborts execution as infrastructure failure.
+    pub fn account_code(&self, address: JournalAddress) -> Result<Vec<u8>, JournalError> {
+        let account = self.current_account_state(address)?;
+        if !account.exists || account.code_size == 0 {
+            return Ok(Vec::new());
+        }
+        if let Some(code) = account.code {
+            return validate_code(address, account.code_hash, account.code_size, code);
+        }
+        let code_hash = account
+            .code_hash
+            .ok_or(JournalError::MissingCodeHash { address })?;
+        let code = match self.reader.code(code_hash)? {
+            ConcreteRead::Present(code) => code,
+            ConcreteRead::Absent | ConcreteRead::Tombstone => {
+                return Err(JournalError::ReferencedCodeMissing { address, code_hash });
+            }
+        };
+        validate_code(address, Some(code_hash), account.code_size, code)
     }
 
     /// Creates/touches an account through the ordinary rollback lane.
@@ -865,14 +951,21 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         &self,
         address: JournalAddress,
     ) -> Result<NativeJournalAccount, ConcreteReadError> {
-        let account = match self.accounts.get(&address) {
-            Some(account) => account.clone(),
-            None => read_account(self.reader.account(address)?),
-        };
+        let account = self.current_account_state(address)?;
         Ok(NativeJournalAccount {
             exists: account.exists,
             nonce: account.nonce,
             balance: account.balance,
+        })
+    }
+
+    fn current_account_state(
+        &self,
+        address: JournalAddress,
+    ) -> Result<JournalAccount, ConcreteReadError> {
+        Ok(match self.accounts.get(&address) {
+            Some(account) => account.clone(),
+            None => read_account(self.reader.account(address)?),
         })
     }
 }
@@ -938,4 +1031,29 @@ fn ripemd_address() -> JournalAddress {
     let mut address = [0_u8; 20];
     address[19] = 3;
     address
+}
+
+fn validate_code(
+    address: JournalAddress,
+    code_hash: Option<[u8; 32]>,
+    declared_size: u64,
+    code: Vec<u8>,
+) -> Result<Vec<u8>, JournalError> {
+    if code.len() as u64 != declared_size {
+        return Err(JournalError::CodeSizeMismatch {
+            address,
+            declared: declared_size,
+            actual: code.len(),
+        });
+    }
+    let declared = code_hash.ok_or(JournalError::MissingCodeHash { address })?;
+    let actual: [u8; 32] = revm::primitives::keccak256(&code).into();
+    if actual != declared {
+        return Err(JournalError::CodeHashMismatch {
+            address,
+            declared,
+            actual,
+        });
+    }
+    Ok(code)
 }
