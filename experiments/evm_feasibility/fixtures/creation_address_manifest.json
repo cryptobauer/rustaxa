@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Synthetic crypto.CreateAddress nonce-boundary vectors; no frame, state, DB, or routing claim",
+  "sha256": {
+    "public": "c82d031896cc90e7bb1c7aebc785665152b9f2ff45e70bc7e48f832599c60136",
+    "local": "c82d031896cc90e7bb1c7aebc785665152b9f2ff45e70bc7e48f832599c60136"
+  },
+  "exporter_sha256": "ee03713ef806565c589d5b5a279a37e4a39c028ef01ce5fc3c5f8780e21055ad"
+}
