@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "sha256": {
+    "public": "7422f906c93514ccdf0b922cb0592faaff045ca450f1da15438529f9088023a2",
+    "local": "7422f906c93514ccdf0b922cb0592faaff045ca450f1da15438529f9088023a2"
+  },
+  "source_sha256": {
+    "mcopy_reference.go": "30348a8c622bc1b21726c07328d1783ef0ef491deea228ba3993b74fc9042baf",
+    "returndata_reference.go": "e6337a99f6b9c009584d71c662116bfb873b245cbcd5cc6d7afbb220898f993f"
+  },
+  "scope": "actual EVM.Main, 23 RETURNDATACOPY programs in each of three phases, including source bounds, gas/memory overflow and observed reference panics"
+}

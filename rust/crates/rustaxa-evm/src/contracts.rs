@@ -228,6 +228,8 @@ pub enum CodeExecutionError {
     InvalidJump,
     /// RETURNDATACOPY requested bytes outside the last call's return buffer.
     ReturnDataOutOfBounds,
+    /// Go could not represent an opcode memory size as rounded 64-bit bytes.
+    GasUintOverflow,
     /// A native contract returned its exact compatibility failure.
     Native(NativeContractFailure),
 }

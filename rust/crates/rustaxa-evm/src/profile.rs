@@ -4,7 +4,8 @@
 //! enables Taraxa's independently activated additions: PUSH0 and the legacy
 //! transient aliases in Californicum, MCOPY in Ficus, and the newer transient
 //! aliases in Cacti. Callers keep their normal `Host` implementation; this
-//! module neither owns state nor changes frame or transaction semantics.
+//! module neither owns state nor changes frame or transaction semantics. It also
+//! preserves Taraxa RETURNDATACOPY validation/gas ordering and overflow outcomes.
 
 use revm::{
     bytecode::opcode::{CALL, CALLCODE, DELEGATECALL, STATICCALL},
@@ -13,11 +14,13 @@ use revm::{
         cfg::{GasId, GasParams},
     },
     interpreter::{
-        Instruction, InstructionContext, InstructionExecResult, InstructionTable, Interpreter,
+        Instruction, InstructionContext, InstructionExecResult, InstructionResult,
+        InstructionTable, Interpreter,
         instructions::{self, gas_table_spec},
         interpreter::EthInterpreter,
+        interpreter_types::ReturnData,
     },
-    primitives::hardfork::SpecId,
+    primitives::{U256, hardfork::SpecId},
 };
 
 /// Taraxa instruction-table phase selected by the application hardfork schedule.
@@ -152,6 +155,9 @@ impl TaraxaProfile {
         costs[0xb4] = 100;
 
         table[0x55] = Instruction::new(sstore::<H>);
+        table[0x3e] = Instruction::new(returndatacopy::<H>);
+        // Go validates stack and memory sizing before charging even base gas.
+        costs[0x3e] = 0;
 
         if self.ficus() {
             table[0x5e] = Instruction::new(mcopy::<H>);
@@ -190,6 +196,73 @@ impl TaraxaProfile {
         costs[0xff] = 0;
         (table, costs)
     }
+}
+
+/// Copies return data with Taraxa's memory/gas-before-source-bounds ordering.
+///
+/// Memory size uses Go's wrapping 256-bit addition, followed by checked 64-bit
+/// word rounding. The driver translates this opcode's `InvalidOperandOOG` into
+/// the distinct Go gas-overflow error. After gas admission, source bounds still
+/// apply to zero-length copies. A wrapping destination which would panic in Go
+/// returns `FatalExternalError`; the driver aborts the session explicitly.
+fn returndatacopy<H: Host>(
+    ctx: InstructionContext<'_, H, EthInterpreter>,
+) -> InstructionExecResult {
+    let interpreter = ctx.interpreter;
+    let [destination, source, length] = interpreter
+        .stack
+        .popn::<3>()
+        .ok_or(InstructionResult::StackUnderflow)?;
+    let memory_end = if length == U256::ZERO {
+        U256::ZERO
+    } else {
+        destination.wrapping_add(length)
+    };
+    let memory_end = u64::try_from(memory_end).map_err(|_| InstructionResult::InvalidOperandOOG)?;
+    let memory_size = memory_end
+        .div_ceil(32)
+        .checked_mul(32)
+        .ok_or(InstructionResult::InvalidOperandOOG)?;
+    // Go's memoryGasCost rejects this range before its quadratic multiplication.
+    if memory_size > 0x00ff_ffff_ffe0 {
+        return Err(InstructionResult::OutOfGas);
+    }
+    let length = u64::try_from(length).map_err(|_| InstructionResult::OutOfGas)?;
+    let copy_cost = ctx
+        .host
+        .gas_params()
+        .copy_cost(length as usize)
+        .checked_add(3)
+        .ok_or(InstructionResult::OutOfGas)?;
+    if !interpreter.gas.record_regular_cost(copy_cost) {
+        return Err(InstructionResult::OutOfGas);
+    }
+    // Expand from the already validated modular size, not the original offset.
+    interpreter.resize_memory(ctx.host.gas_params(), 0, memory_size as usize)?;
+    let source = u64::try_from(source).map_err(|_| InstructionResult::OutOfOffset)?;
+    let end = source
+        .checked_add(length)
+        .ok_or(InstructionResult::OutOfOffset)?;
+    if end > interpreter.return_data.buffer().len() as u64 {
+        return Err(InstructionResult::OutOfOffset);
+    }
+    if length == 0 {
+        return Ok(());
+    }
+    let destination = destination.as_limbs()[0];
+    let Some(end) = destination.checked_add(length) else {
+        return Err(InstructionResult::FatalExternalError);
+    };
+    if end > interpreter.memory.len() as u64 {
+        return Err(InstructionResult::FatalExternalError);
+    }
+    interpreter.memory.set_data(
+        destination as usize,
+        source as usize,
+        length as usize,
+        interpreter.return_data.buffer(),
+    );
+    Ok(())
 }
 
 /// Executes MCOPY under Taraxa's local Ficus activation.

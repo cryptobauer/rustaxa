@@ -106,6 +106,8 @@ pub enum ExecutionDriverError {
     PendingFrameUnavailable(PendingFrameKind),
     /// REVM returned a terminal category that has no reviewed Taraxa mapping yet.
     UnsupportedTerminal(String),
+    /// The pinned reference would panic for this opcode; discard the session.
+    ReferenceInstructionPanic(u8),
     /// The final successful root frame retained a negative refund aggregate.
     NegativeRootRefund(i64),
 }
@@ -1146,6 +1148,9 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
                 }
             }
             Err(result) => {
+                if result == InstructionResult::FatalExternalError && *last_opcode == 0x3e {
+                    return Err(ExecutionDriverError::ReferenceInstructionPanic(0x3e));
+                }
                 if let Some(error) = host.take_error() {
                     return Err(ExecutionDriverError::Host(error));
                 }
@@ -1646,6 +1651,7 @@ fn map_terminal(
     let mapped = match result {
         I::Stop | I::Return | I::SelfDestruct => None,
         I::Revert => Some(CodeExecutionError::Revert),
+        I::InvalidOperandOOG if opcode == 0x3e => Some(CodeExecutionError::GasUintOverflow),
         I::OutOfGas
         | I::MemoryOOG
         | I::MemoryLimitOOG

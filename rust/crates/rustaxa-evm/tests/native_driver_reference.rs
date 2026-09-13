@@ -1,7 +1,8 @@
 //! Driver/native boundary checks for explicit opt-in consensus-native routing.
 //!
-//! These tests use a scripted port to isolate frame bookkeeping. They do not
-//! register production addresses or claim compatibility for a native kernel.
+//! A scripted consensus port isolates frame bookkeeping. Pinned Go fixtures
+//! additionally cover stateless primitive/frame integration and RETURNDATACOPY
+//! ordering. These tests do not register any production route.
 
 use std::{
     collections::BTreeMap,
@@ -1441,5 +1442,89 @@ fn falcon_frame_dispatch_matches_reference_errors_gas_and_value() {
             assert!(port.invocations.lock().unwrap().is_empty());
             assert_eq!(sequence.next_sequence(), 0);
         }
+    }
+}
+
+/// Complete Go EVM executions pin return-copy ordering across all local phases.
+#[test]
+fn return_data_copy_matches_go_memory_bounds_gas_and_reference_panics() {
+    use rustaxa_evm::profile::TaraxaPhase;
+    let public: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/returndata_public.json"
+    ))
+    .unwrap();
+    let local: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/returndata_local.json"
+    ))
+    .unwrap();
+    assert_eq!(public, local);
+    let rows = public["returndata"].as_array().unwrap();
+    assert_eq!(rows.len(), 69);
+    for row in rows {
+        let phase = match row["phase"].as_str().unwrap() {
+            "californicum" => TaraxaPhase::Californicum,
+            "ficus" => TaraxaPhase::Ficus,
+            "cacti" => TaraxaPhase::Cacti,
+            _ => unreachable!(),
+        };
+        let code = hex::decode(row["code"].as_str().unwrap()).unwrap();
+        let mut journal = journal_with_parent(code);
+        let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+        let mut sequence = PeriodConsensusSequence::new(block().period);
+        let mut request = transaction(PARENT, ExecutionValue::default());
+        request.gas_limit = row["gas_limit"].as_u64().unwrap().into();
+        let result = execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![primitive_address(4)]),
+            &AddressSet(Vec::new()),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &request,
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::for_phase(phase),
+        );
+        if !row["panic"].as_str().unwrap().is_empty() {
+            assert_eq!(
+                result,
+                Err(ExecutionDriverError::ReferenceInstructionPanic(0x3e)),
+                "{}",
+                row["name"]
+            );
+            continue;
+        }
+        let TransactionExecutionResult::Executed(result) = result.unwrap() else {
+            panic!("reference admission")
+        };
+        let status = match row["execution_error"].as_str().unwrap() {
+            "" => CodeExecutionStatus::Success,
+            "return data out of bounds" => {
+                CodeExecutionStatus::Failure(CodeExecutionError::ReturnDataOutOfBounds)
+            }
+            "out of gas" => CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas),
+            "gas uint64 overflow" => {
+                CodeExecutionStatus::Failure(CodeExecutionError::GasUintOverflow)
+            }
+            "stack underflow (0 <=> 3)" => {
+                CodeExecutionStatus::Failure(CodeExecutionError::StackUnderflow)
+            }
+            error => panic!("unhandled reference error {error}"),
+        };
+        assert_eq!(result.status, status, "{}", row["name"]);
+        assert_eq!(
+            result.gas_used.as_u64(),
+            row["gas_used"].as_u64().unwrap(),
+            "{}",
+            row["name"]
+        );
+        assert_eq!(
+            hex::encode(result.output),
+            row["output"].as_str().unwrap(),
+            "{}",
+            row["name"]
+        );
+        assert!(port.invocations.lock().unwrap().is_empty());
+        assert_eq!(sequence.next_sequence(), 0);
     }
 }
