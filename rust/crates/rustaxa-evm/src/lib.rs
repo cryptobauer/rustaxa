@@ -8,6 +8,7 @@
 
 pub mod contracts;
 pub mod envelope;
+pub mod frame;
 pub mod input;
 pub mod journal;
 pub mod profile;

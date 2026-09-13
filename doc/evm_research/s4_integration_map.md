@@ -21,13 +21,33 @@ identity and generation-zero provenance under the existing policy, then use
 enabled. Derive the chain identity from the same concrete configuration. The
 markerless imported light snapshot does not authorize this bootstrap.
 
-The first period should include a transfer and an actual storage-changing
-contract call. An all-transfer period can stay on the native path after an empty
+The selected fixture starts with a funded ordinary sender and no contract code
+at genesis. Period one includes a transfer and CREATE whose initcode writes
+storage and installs a small runtime; after reopening, period two calls that
+runtime with a different slot value. This avoids seeding concrete genesis code
+that the existing `GenesisAccount` input cannot represent in FinalChain's native
+snapshot. An all-transfer period can stay on the native path after an empty
 system plan, so it is insufficient evidence of the new executor composition.
 System-transaction facts must come from the chosen fixture's real bridge/pillar
 configuration; an empty plan is an observed planner result, not an adapter
 shortcut. Rewards likewise need verified native execution or a real
 configuration that proves the selected effects neutral.
+
+The bounded fixture uses no validators, configured yield zero, transaction gas
+price zero, and no activated corrections. Magnolia and Cornus are active from
+zero; Aspen part two, Cacti and redelegation fixes are beyond the two fixture
+periods. Each period supplies a real DAG fact containing its transaction hashes,
+no certificate votes, and a block gas limit of 1,000,000. The bridge account is
+actually absent and neither period is a pillar period. These conditions must be
+asserted by the adapter, not inferred from an empty rewards response.
+
+FinalChain computes the actual `FinalChainEvmRewardsRequest.distribution_stats`;
+the adapter encodes those bytes with the existing rewards-input codec. Commit
+preparation independently runs the existing reward/native projection kernels,
+including the configured-yield-zero path, before authorizing persistence. A
+neutral proposed rewards root is valid only after that check. The full prior
+native storage catalog remains present even when no native row changes. This
+fixture does not establish nonzero rewards or native execution parity.
 
 ## Exact reports and persistence
 
