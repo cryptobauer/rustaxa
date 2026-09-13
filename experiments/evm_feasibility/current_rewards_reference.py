@@ -107,9 +107,10 @@ def main() -> None:
         "references": REVISIONS,
         "go_version": subprocess.check_output(["go", "version"]).decode().strip(),
         "scope": (
-            "Synthetic Aspen2 activation with two ordered singleton-validator distributions; actual "
-            "DistributeRewards/EndBlockCall and unnormalized raw-write trace; no multi-entry Go map order, "
-            "snapshot, jailed cleanup, redelegation fix, physical-retention, persistence, or production claim"
+            "Synthetic Aspen2 activation, disabled-yield EndBlock flush, and two actual multi-entry Go "
+            "validator-map orders with unnormalized raw traces and complete logical/physical row comparison; "
+            "no canonical Go map order, snapshot, jailed cleanup, redelegation fix, general physical-retention, "
+            "persistence, or production claim"
         ),
         "public_local_identical": artifacts["public"] == artifacts["local"],
         "sha256": {label: hashlib.sha256(data).hexdigest() for label, data in artifacts.items()},

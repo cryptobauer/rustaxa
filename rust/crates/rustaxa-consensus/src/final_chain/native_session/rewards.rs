@@ -5,13 +5,14 @@
 //! validators. It reuses FinalChain's reward planner as
 //! semantic authority, reconstructs the pinned Go helper's intermediate write
 //! order, and checks that reconstruction reaches the planner's complete DPoS
-//! result. Go iterates each distribution's validator map in runtime map order;
-//! Rust's decoded map is ordered by validator address, so exact raw parity is
-//! only claimed when a distribution contains at most one validator. Reward-row
-//! changes commute for distinct validators and yield/supply writes surround the
-//! whole map loop, making the final semantic state identical for every such map
-//! order. Ordinary custody effects remain full-width and raw effects retain
-//! repeated writes to the same validator-rewards row.
+//! result. Go iterates each distribution's validator map in runtime map order,
+//! while Rust chooses decoded address order as one valid execution order.
+//! Per-validator reward rows are disjoint, non-negative account additions and
+//! minted totals commute, and yield/supply writes surround the whole map loop;
+//! the final logical state and root are therefore order-independent even though
+//! intermediate raw and account mutations are not canonical. Ordinary custody
+//! effects remain full-width and raw effects retain repeated writes to the same
+//! validator-rewards row.
 
 use super::account::{DposAccountPort, StagedDposAccountPort};
 use super::raw::FinalChainNativeRawTrace;
@@ -34,16 +35,17 @@ impl FinalChainNativeSession<'_> {
     /// Finishes one bound session through rewards and deferred DPoS end-block writes.
     ///
     /// The opaque plan must belong to this exact request and pending period. The
-    /// current adapter accepts Magnolia reward periods, ordered zero-or-more
-    /// distribution rows, at most one validator per enabled-yield row for exact
-    /// Go raw-order parity, no jailed-validator cleanup, and no redelegation
-    /// correction at this height. A zero configured yield skips distributions
-    /// exactly as `StateTransition::DistributeRewards` does, while retaining
-    /// deferred end-block writes. Fixed-yield and Aspen part-two supply
-    /// transitions are reconstructed when rewards are enabled. Any state-read,
-    /// planner, reconstruction, or raw-integrity error aborts the session and
-    /// exposes no result. Successful completion consumes the session phase and
-    /// cannot be repeated.
+    /// current adapter accepts Magnolia reward periods and ordered zero-or-more
+    /// distribution rows with any number of validators, with no jailed-validator
+    /// cleanup or redelegation correction at this height. A zero configured
+    /// yield skips distributions exactly as `StateTransition::DistributeRewards`
+    /// does, while retaining deferred end-block writes. Enabled rewards emit
+    /// validator rows in Rust address order, one of the Go map loop's valid
+    /// permutations; callers must treat intermediate order as noncanonical.
+    /// Fixed-yield and Aspen part-two supply transitions are reconstructed. Any
+    /// state-read, planner, reconstruction, or raw-integrity error aborts the
+    /// session and exposes no result. Successful completion consumes the session
+    /// phase and cannot be repeated.
     pub fn finish_rewards(
         &mut self,
         plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
@@ -105,13 +107,6 @@ impl FinalChainNativeSession<'_> {
         let distributions = decode_rewards_block_distributions(&plan.distribution_stats)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
         let rewards_enabled = self.final_chain.rewards_config.yield_percentage != 0;
-        if rewards_enabled
-            && distributions
-                .iter()
-                .any(|stats| stats.validators_stats.len() > 1)
-        {
-            return Err(FinalChainNativeSessionError::RewardsScopeUnsupported);
-        }
 
         let mut trace = FinalChainNativeRawTrace::new(state);
         self.validate_deferred_origins(&mut trace)?;
@@ -667,6 +662,9 @@ mod tests {
         0x1a, 0x64, 0x2f, 0x0e, 0x3c, 0x3a, 0xf5, 0x45, 0xe7, 0xac, 0xbd, 0x38, 0xb0, 0x72, 0x51,
         0xb3, 0x99, 0x09, 0x14, 0xf1,
     ];
+    const MISSING_AUTHOR: [u8; 20] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x51,
+    ];
     type RewardRows = BTreeMap<([u8; 20], [u8; 32]), ConcreteRead<Vec<u8>>>;
 
     #[derive(Default)]
@@ -833,22 +831,34 @@ mod tests {
         validator: [u8; 20],
         fee: u64,
     ) -> RewardsStatsPeriodRlp {
-        let mut validator_stats = rlp::RlpStream::new_list(3);
-        validator_stats.append(&1_u32);
-        validator_stats.append(&10_u64);
-        validator_stats.append(&U256::from(fee));
-        let mut validator_row = rlp::RlpStream::new_list(2);
-        validator_row.append(&H160::from(validator));
-        validator_row.append_raw(&validator_stats.out(), 1);
-        let mut validators = rlp::RlpStream::new_list(1);
-        validators.append_raw(&validator_row.out(), 1);
+        distributions_rlp(period, author, &[(validator, fee)], 1, 10)
+    }
+
+    fn distributions_rlp(
+        period: u64,
+        author: [u8; 20],
+        validator_fees: &[([u8; 20], u64)],
+        total_dag_blocks_count: u32,
+        total_votes_weight: u64,
+    ) -> RewardsStatsPeriodRlp {
+        let mut validators = rlp::RlpStream::new_list(validator_fees.len());
+        for (validator, fee) in validator_fees {
+            let mut validator_stats = rlp::RlpStream::new_list(3);
+            validator_stats.append(&1_u32);
+            validator_stats.append(&10_u64);
+            validator_stats.append(&U256::from(*fee));
+            let mut validator_row = rlp::RlpStream::new_list(2);
+            validator_row.append(&H160::from(*validator));
+            validator_row.append_raw(&validator_stats.out(), 1);
+            validators.append_raw(&validator_row.out(), 1);
+        }
         let mut block = rlp::RlpStream::new_list(6);
         block.append(&H160::from(author));
         block.append(&10_u32);
         block.append_raw(&validators.out(), 1);
-        block.append(&1_u32);
-        block.append(&10_u64);
-        block.append(&10_u64);
+        block.append(&total_dag_blocks_count);
+        block.append(&total_votes_weight);
+        block.append(&total_votes_weight);
         RewardsStatsPeriodRlp {
             period,
             data: block.out().to_vec(),
@@ -904,6 +914,24 @@ mod tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
+    }
+
+    fn hex_decode(value: &str) -> Vec<u8> {
+        let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
+        assert!(remainder.is_empty());
+        pairs
+            .iter()
+            .map(|chunk| {
+                u8::from_str_radix(std::str::from_utf8(chunk).unwrap(), 16)
+                    .expect("fixture contains hexadecimal bytes")
+            })
+            .collect()
+    }
+
+    fn fixed_hex<const N: usize>(value: &str) -> [u8; N] {
+        hex_decode(value)
+            .try_into()
+            .unwrap_or_else(|_| panic!("fixture hexadecimal value is not {N} bytes"))
     }
 
     #[test]
@@ -1019,6 +1047,138 @@ mod tests {
                 outcome.dpos_snapshot.commission_rewards[&VALIDATOR_TWO].as_u256(),
                 U256::from(30)
             );
+        });
+    }
+
+    #[test]
+    fn multi_validator_map_uses_one_observed_go_order_and_same_final_state() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../experiments/evm_feasibility/fixtures/current_rewards_public.json"
+        )))
+        .unwrap();
+        let permutations = &fixture["multi_validator_permutations"];
+        assert_eq!(permutations["same_final_logical_state_and_root"], true);
+        let variants = permutations["observed_variants"].as_array().unwrap();
+        assert_eq!(variants.len(), 2);
+        assert_ne!(
+            variants[0]["validator_iteration_order"],
+            variants[1]["validator_iteration_order"]
+        );
+        assert_eq!(
+            variants[0]["after"]["descriptor"]["root"],
+            variants[1]["after"]["descriptor"]["root"]
+        );
+        assert_eq!(
+            variants[0]["after"]["dpos_account"]["balance"],
+            variants[1]["after"]["dpos_account"]["balance"]
+        );
+        assert_eq!(permutations["physical_rows_equal"], true);
+        assert!(
+            permutations["physical_row_variance"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|column| column["only_left"].as_array().unwrap().is_empty()
+                    && column["only_right"].as_array().unwrap().is_empty()
+                    && column["different_values"].as_array().unwrap().is_empty())
+        );
+
+        with_current_reward_chain(|chain| {
+            let reward_plan = plan(vec![distributions_rlp(
+                1,
+                MISSING_AUTHOR,
+                &[(VALIDATOR_ONE, 11), (VALIDATOR_TWO, 17)],
+                2,
+                20,
+            )]);
+            let mut session = chain
+                .begin_native_session_bound(
+                    reward_plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            let state = RewardState::from_snapshot(&session.dpos_state);
+            let outcome = session.finish_rewards(&reward_plan, &state).unwrap();
+
+            let rust_order = variants
+                .iter()
+                .find(|variant| {
+                    variant["validator_iteration_order"]
+                        == serde_json::json!([hex_bytes(VALIDATOR_ONE), hex_bytes(VALIDATOR_TWO)])
+                })
+                .expect("Go runs observed Rust address order");
+            let expected_writes = rust_order["ordered_raw_writes"].as_array().unwrap();
+            assert_eq!(outcome.raw_mutations.len(), expected_writes.len());
+            for (actual, expected) in outcome.raw_mutations.iter().zip(expected_writes) {
+                assert_eq!(hex_bytes(actual.address), expected["address"]);
+                assert_eq!(hex_bytes(actual.key.0), expected["key"]);
+                assert_eq!(hex_bytes(mutation_value(actual)), expected["value"]);
+            }
+            assert_eq!(
+                outcome.total_reward.as_u256().to_string(),
+                rust_order["total_minted"]
+            );
+            let final_balances = outcome
+                .account_mutations
+                .iter()
+                .map(|mutation| match mutation {
+                    FinalChainNativeOrdinaryMutation::BalanceReplace { replacement, .. } => {
+                        replacement.clone()
+                    }
+                    mutation => panic!("unexpected multi-validator mutation: {mutation:?}"),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                final_balances,
+                [3_011_u64, 3_028, 3_082]
+                    .into_iter()
+                    .map(BigInt::from)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                final_balances.last().unwrap().to_string(),
+                rust_order["after"]["dpos_account"]["balance"]
+            );
+            let AspenSupplyState::Migrated {
+                total_supply,
+                current_yield,
+            } = &outcome.dpos_snapshot.aspen_supply_state
+            else {
+                panic!("multi-validator Aspen rewards migrate supply")
+            };
+            assert_eq!(total_supply.as_u256(), U256::from(5_054));
+            assert_eq!(current_yield.as_u64(), 200_000);
+            assert_eq!(
+                outcome.dpos_snapshot.delegator_rewards[&VALIDATOR_ONE].as_u256(),
+                U256::from(27)
+            );
+            assert_eq!(
+                outcome.dpos_snapshot.commission_rewards[&VALIDATOR_ONE].as_u256(),
+                U256::from(11)
+            );
+            assert_eq!(
+                outcome.dpos_snapshot.delegator_rewards[&VALIDATOR_TWO].as_u256(),
+                U256::from(21)
+            );
+            assert_eq!(
+                outcome.dpos_snapshot.commission_rewards[&VALIDATOR_TWO].as_u256(),
+                U256::from(23)
+            );
+
+            let canonical =
+                canonical_concrete_precompile_storage(&outcome.dpos_snapshot, true).unwrap();
+            for slot in rust_order["after"]["slots"].as_array().unwrap() {
+                let key = fixed_hex::<32>(slot["key"].as_str().unwrap());
+                let expected = hex_decode(slot["value"].as_str().unwrap());
+                let actual = canonical
+                    .get(&(DPOS_CONTRACT_ADDRESS, key))
+                    .and_then(|values| values.first())
+                    .cloned()
+                    .unwrap_or_default();
+                assert_eq!(actual, expected, "{}", slot["name"]);
+            }
         });
     }
 

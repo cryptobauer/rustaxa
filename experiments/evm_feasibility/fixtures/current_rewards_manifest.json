@@ -5,13 +5,13 @@
     "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
   },
   "go_version": "go version go1.24.4 linux/amd64",
-  "scope": "Synthetic Aspen2 activation with two ordered singleton-validator distributions; actual DistributeRewards/EndBlockCall and unnormalized raw-write trace; no multi-entry Go map order, snapshot, jailed cleanup, redelegation fix, physical-retention, persistence, or production claim",
+  "scope": "Synthetic Aspen2 activation, disabled-yield EndBlock flush, and two actual multi-entry Go validator-map orders with unnormalized raw traces and complete logical/physical row comparison; no canonical Go map order, snapshot, jailed cleanup, redelegation fix, general physical-retention, persistence, or production claim",
   "public_local_identical": true,
   "sha256": {
-    "public": "d571930523c442d9d561526e67750052e1de5c3487304de4905bbe56740460e6",
-    "local": "d571930523c442d9d561526e67750052e1de5c3487304de4905bbe56740460e6"
+    "public": "850e86e8d428c9ecb35365288fd096edaa315c02d76987a10751d0b7acac4271",
+    "local": "850e86e8d428c9ecb35365288fd096edaa315c02d76987a10751d0b7acac4271"
   },
-  "exporter_sha256": "607ec29debfd34b5b0acae75000f1170b34e1cdb1bb0dd2971471341d013f1b2",
+  "exporter_sha256": "a20da8a357a47de85ea329f639d041e70da895eaad3807a7dd205243a43d2201",
   "trace_patch": {
     "target": "taraxa/state/state_evm/account.go",
     "sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568"
