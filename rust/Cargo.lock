@@ -2956,11 +2956,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ethereum-types",
+ "hex",
  "k256",
  "num-bigint",
  "rlp 0.6.1",
  "rocksdb",
  "rustaxa-types",
+ "serde_json",
  "thiserror",
  "tiny-keccak",
 ]

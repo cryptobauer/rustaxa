@@ -81,6 +81,12 @@ cargo test -p rustaxa-storage concrete_state::
 13 passed; 0 failed; 1 ignored (qualified copied-snapshot test)
 ```
 
+Lead integration also passed the repository fast gate (the storage package has
+114 passing tests and one explicitly ignored copied-snapshot test) and the
+required `rust_storage_tests` build with `--parallel 12` and all four bridge
+tests. The qualified snapshot read gate was already exercised separately in S2;
+these writer checks use disposable synthetic databases.
+
 The documented Spark helper was attempted for the bounded mapping task but was
 unavailable due its service usage limit. Mapping and implementation continued
 with the assigned lead model; this does not weaken the pinned byte comparisons.
@@ -96,7 +102,7 @@ disposable reopen test and is not callable by production code.
 Imported database raw-history coverage remains unresolved. The writer does not
 turn a missing retained physical row into semantic zero or add markerless
 bootstrap provenance. Full journal projection, per-transaction roots,
-native/reward application, C++ bridge validation, recovery, fault injection,
+native/reward application, recovery, fault injection,
 and differential replay remain outside this prerequisite.
 
 Because this prerequisite intentionally adds no pending-generation metadata, a

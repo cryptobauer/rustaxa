@@ -3847,7 +3847,13 @@ fn validate_concrete_execution_results(
     Ok(())
 }
 
-fn encode_external_evm_receipt(result: &FinalChainEvmTransactionResult) -> Vec<u8> {
+/// Encodes the existing five-field FinalChain receipt from execution facts.
+///
+/// Preserves status, gas, cumulative gas, ordered logs and the optional created
+/// address. This is the stored receipt shape, not the six-field StateAPI
+/// execution-result encoding. It does not validate gas/status consistency or
+/// authorize publication; the existing session validator checks the report.
+pub fn encode_external_evm_receipt(result: &FinalChainEvmTransactionResult) -> Vec<u8> {
     let mut stream = rlp::RlpStream::new_list(5);
     stream.append(&result.status);
     stream.append(&result.gas_used.as_u64());

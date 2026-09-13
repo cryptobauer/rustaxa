@@ -59,8 +59,10 @@ state/provenance. A transaction execution report alone cannot authorize commit.
 
 Reuse the public StateAPI encoders in `concrete_state_projection` for the
 seven-field execution transaction, six-field result and ordered rewards-input
-list. Signed wire RLP is not the StateAPI transaction encoding. Existing fake
-session-test projection helpers do not establish valid application integration:
+list. Signed wire RLP is not the StateAPI transaction encoding.
+The existing `encode_external_evm_receipt` is also public for composition; it
+produces the distinct five-field stored receipt without duplicating the codec.
+Existing fake session-test projection helpers do not establish valid application integration:
 they use synthetic roots and omit facts needed by the full validator.
 
 At concrete commit, require the exact accepted intent and verify the durable
