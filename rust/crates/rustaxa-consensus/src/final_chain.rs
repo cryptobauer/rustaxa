@@ -1150,6 +1150,11 @@ pub struct FinalChain {
     /// Hardfork and interval rules used by Rust rewards-stat planning during
     /// native finalization.
     rewards_config: FinalChainRewardsConfig,
+    /// First period where Ficus-specific native DPoS serialization is active.
+    ///
+    /// `FinalChainBlockNumber::MAX` disables the rule for constructors that do
+    /// not receive the production application configuration.
+    ficus_activation_period: FinalChainBlockNumber,
     /// Mutable reward-stat interval cache used by native finalization.
     ///
     /// The runtime is loaded from persisted `BlockRewardsStats` rows on startup
@@ -1442,6 +1447,16 @@ impl FinalChain {
         self.genesis_timestamp
     }
 
+    /// Reports whether Ficus-native DPoS rules apply to `period`.
+    ///
+    /// The activation boundary is inclusive. `FinalChainBlockNumber::MAX` is
+    /// the explicit disabled sentinel, so it never activates even when queried
+    /// with the largest representable period.
+    pub(crate) fn ficus_active_at(&self, period: FinalChainBlockNumber) -> bool {
+        self.ficus_activation_period != FinalChainBlockNumber::MAX
+            && period >= self.ficus_activation_period
+    }
+
     /// Constructs the Rust FinalChain state from effective genesis accounts and validators.
     ///
     /// `genesis_accounts` must already reflect the balances left after genesis
@@ -1460,7 +1475,34 @@ impl FinalChain {
         genesis_dpos_config: GenesisDposConfig,
         rewards_config: FinalChainRewardsConfig,
     ) -> Result<Self> {
-        Self::new_with_genesis_state_root(
+        Self::new_with_rewards_config_and_ficus_activation(
+            storage,
+            block_gas_limit,
+            genesis_timestamp,
+            genesis_accounts,
+            genesis_validators,
+            genesis_dpos_config,
+            rewards_config,
+            FinalChainBlockNumber::MAX,
+        )
+    }
+
+    /// Constructs FinalChain with explicit Ficus native-DPoS activation.
+    ///
+    /// Inputs otherwise match [`Self::new_with_rewards_config`]. The inclusive
+    /// `ficus_activation_period` governs only the bounded native DPoS
+    /// serialization predicate; `FinalChainBlockNumber::MAX` disables it.
+    pub fn new_with_rewards_config_and_ficus_activation(
+        storage: Arc<Storage>,
+        block_gas_limit: FinalChainGas,
+        genesis_timestamp: u64,
+        genesis_accounts: Vec<GenesisAccount>,
+        genesis_validators: Vec<GenesisValidator>,
+        genesis_dpos_config: GenesisDposConfig,
+        rewards_config: FinalChainRewardsConfig,
+        ficus_activation_period: FinalChainBlockNumber,
+    ) -> Result<Self> {
+        Self::new_with_genesis_state_root_and_ficus_activation(
             storage,
             block_gas_limit,
             genesis_timestamp,
@@ -1470,6 +1512,7 @@ impl FinalChain {
             genesis_validators,
             genesis_dpos_config,
             rewards_config,
+            ficus_activation_period,
         )
     }
 
@@ -1489,6 +1532,39 @@ impl FinalChain {
         genesis_validators: Vec<GenesisValidator>,
         genesis_dpos_config: GenesisDposConfig,
         rewards_config: FinalChainRewardsConfig,
+    ) -> Result<Self> {
+        Self::new_with_genesis_state_root_and_ficus_activation(
+            storage,
+            block_gas_limit,
+            genesis_timestamp,
+            genesis_state_root,
+            enforce_genesis_state_root,
+            genesis_accounts,
+            genesis_validators,
+            genesis_dpos_config,
+            rewards_config,
+            FinalChainBlockNumber::MAX,
+        )
+    }
+
+    /// Constructs FinalChain with a concrete genesis root and explicit Ficus activation.
+    ///
+    /// Inputs and root-validation errors match [`Self::new_with_genesis_state_root`].
+    /// `ficus_activation_period` is immutable for the resulting chain, applies
+    /// inclusively to native DPoS serialization, and uses
+    /// `FinalChainBlockNumber::MAX` as its disabled sentinel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_genesis_state_root_and_ficus_activation(
+        storage: Arc<Storage>,
+        block_gas_limit: FinalChainGas,
+        genesis_timestamp: u64,
+        genesis_state_root: ethereum_types::H256,
+        enforce_genesis_state_root: bool,
+        genesis_accounts: Vec<GenesisAccount>,
+        genesis_validators: Vec<GenesisValidator>,
+        genesis_dpos_config: GenesisDposConfig,
+        rewards_config: FinalChainRewardsConfig,
+        ficus_activation_period: FinalChainBlockNumber,
     ) -> Result<Self> {
         let mut rewards_config = rewards_config;
         let genesis_accounts: HashMap<[u8; 20], Account> = genesis_accounts
@@ -1718,6 +1794,7 @@ impl FinalChain {
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
             rewards_config,
+            ficus_activation_period,
             rewards_stats_runtime: Mutex::new(FinalChainRewardsStatsRuntimeState {
                 durable_head: rewards_stats_runtime_head,
                 generation: 0,
@@ -18499,6 +18576,46 @@ mod tests {
         drop(boundary_storage);
         let _ = std::fs::remove_dir_all(zero_path);
         let _ = std::fs::remove_dir_all(boundary_path);
+    }
+
+    #[test]
+    fn ficus_native_activation_is_inclusive_and_max_is_disabled() {
+        let boundary_path = temp_db_path("ficus-native-activation-boundary");
+        let boundary_storage = Arc::new(Storage::new(Config::new(boundary_path.clone())).unwrap());
+        let boundary = FinalChain::new_with_rewards_config_and_ficus_activation(
+            boundary_storage.clone(),
+            0.into(),
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig::default(),
+            7.into(),
+        )
+        .unwrap();
+        assert!(!boundary.ficus_active_at(6.into()));
+        assert!(boundary.ficus_active_at(7.into()));
+
+        let disabled_path = temp_db_path("ficus-native-activation-disabled");
+        let disabled_storage = Arc::new(Storage::new(Config::new(disabled_path.clone())).unwrap());
+        let disabled = FinalChain::new_with_rewards_config(
+            disabled_storage.clone(),
+            0.into(),
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig::default(),
+        )
+        .unwrap();
+        assert!(!disabled.ficus_active_at(FinalChainBlockNumber::MAX));
+
+        drop(boundary);
+        drop(boundary_storage);
+        drop(disabled);
+        drop(disabled_storage);
+        let _ = std::fs::remove_dir_all(boundary_path);
+        let _ = std::fs::remove_dir_all(disabled_path);
     }
 
     #[test]

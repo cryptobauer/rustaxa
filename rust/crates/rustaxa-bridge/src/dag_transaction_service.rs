@@ -187,6 +187,7 @@ pub fn create_consensus_application(
             final_chain_genesis_validators,
             final_chain_genesis_dpos_config,
             final_chain_rewards_config,
+            pbft_config.ficus_activation_period,
         )?,
         consensus: ConsensusApplicationConfig {
             dag_transaction: DagTransactionServiceConfig {
