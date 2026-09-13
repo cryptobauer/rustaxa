@@ -14,11 +14,11 @@ import pathlib
 import subprocess
 import tempfile
 
-from reference import REVISIONS
+from reference import REVISIONS, ROOT
 
 HERE = pathlib.Path(__file__).resolve().parent
 SOURCE = pathlib.Path(
-    os.environ.get("TARAXA_EVM_SOURCE", "/workspaces/rustaxa-evm/submodules/taraxa-evm")
+    os.environ.get("TARAXA_EVM_SOURCE", ROOT / "submodules/taraxa-evm")
 )
 GO_SOURCE = HERE / "api_reference.go"
 
@@ -87,9 +87,11 @@ def main() -> None:
             "sha256",
             "exporter_sha256",
         ):
-            assert saved[field] == manifest[field], f"API reference manifest mismatch: {field}"
+            if saved[field] != manifest[field]:
+                raise RuntimeError(f"API reference manifest mismatch: {field}")
         for label, data in artifacts.items():
-            assert data == (fixtures / f"api_{label}.json").read_bytes(), f"API fixture mismatch: {label}"
+            if data != (fixtures / f"api_{label}.json").read_bytes():
+                raise RuntimeError(f"API fixture mismatch: {label}")
     print("Both pinned DryRunner references executed and " + ("recorded" if args.record else "reproduced"))
     print("Public/local identical:", differences["byte_identical"])
 

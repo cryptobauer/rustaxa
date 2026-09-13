@@ -7,7 +7,7 @@
 //! Calls are pure and produce no account, raw-storage or log effects.
 
 use num_bigint::{BigInt, BigUint, Sign};
-use revm::precompile::{bls12_381, PrecompileHalt};
+use revm::precompile::{PrecompileHalt, bls12_381};
 use rustaxa_types::FinalChainGas;
 
 use crate::contracts::{

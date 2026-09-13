@@ -226,6 +226,8 @@ pub enum CodeExecutionError {
     CodeDepositOutOfGas,
     /// A jump destination was invalid.
     InvalidJump,
+    /// RETURNDATACOPY requested bytes outside the last call's return buffer.
+    ReturnDataOutOfBounds,
     /// A native contract returned its exact compatibility failure.
     Native(NativeContractFailure),
 }

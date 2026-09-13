@@ -34,8 +34,8 @@
     "semantic_note": "The bounded DryRunner source and outputs are identical at the public/local pins. The local pin additionally contains concrete-state lifecycle work outside this public API fixture."
   },
   "sha256": {
-    "public": "2de2df36b79533bda539cf34744c2c7dad4970e11f4b3d68e46f348cd777ca9d",
-    "local": "2de2df36b79533bda539cf34744c2c7dad4970e11f4b3d68e46f348cd777ca9d"
+    "public": "02a255ffebd05e5ddee494f64833b336fabc580487a3260a83cefb5e9561993a",
+    "local": "02a255ffebd05e5ddee494f64833b336fabc580487a3260a83cefb5e9561993a"
   },
-  "exporter_sha256": "204228401a9e410be52728305a31547ef8cc0d09947f0403ab9a00239f9d03d8"
+  "exporter_sha256": "ca1bffec8a9845b4bff6d818fb57b7ab0fdfa5bd116bca6e98421b4c86ee3052"
 }

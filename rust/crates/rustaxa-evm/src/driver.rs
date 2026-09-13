@@ -5,8 +5,9 @@
 //! drives nested ordinary CALL/CREATE frames iteratively, and settles interpreter
 //! gas/refunds once. The default entry points keep native dispatch unavailable;
 //! explicit opt-in entry points accept a consensus-native port and period-local
-//! sequence. They also route reviewed stateless addresses 1–9 and Cacti P-256 without using
-//! that port or sequence. SELFDESTRUCT uses the journal-owned historical lifecycle.
+//! sequence. They also route stateless addresses 1–9 and profile-selected BLS,
+//! P-256 and Falcon without using that port or sequence. SELFDESTRUCT uses the
+//! journal-owned historical lifecycle.
 //!
 //! CALL-family opcode preparation reads authoritative account metadata while
 //! deferring referenced code bytes. The driver applies Taraxa's depth and
@@ -30,6 +31,7 @@ use revm::{
 use rustaxa_types::{FinalChainGas, concrete_state::execution::ConcreteExecutionRead};
 
 use crate::{
+    bls::{BlsPrecompile, BlsRegistry, PreparedBlsCall},
     contracts::{
         BlockHashRead, CodeExecutionError, CodeExecutionStatus, ExecutionBlockContext,
         ExecutionTransaction, ExecutionTransactionKind, ExecutionValue, NativeCallKind,
@@ -42,6 +44,7 @@ use crate::{
         AdmittedTransaction, EnvelopeAdmission, EnvelopeError, EnvelopeRules, FrameSettlement,
         FrameSettlementStatus, IntrinsicGasSchedule, admit, settle,
     },
+    falcon::{FALCON_VERIFY_ADDRESS, PreparedFalconCall},
     frame::{CreateScheme, create_address, settle_code_deposit},
     host::{HostError, JournalHost},
     journal::{ExecutionJournal, JournalCheckpoint, JournalError},
@@ -153,11 +156,23 @@ impl TransactionStatelessSequence {
     }
 }
 
+fn bls_registry(profile: TaraxaProfile) -> Option<BlsRegistry> {
+    if profile.cacti() {
+        Some(BlsRegistry::Cacti)
+    } else if profile.ficus() {
+        Some(BlsRegistry::Ficus)
+    } else {
+        None
+    }
+}
+
 fn is_reviewed_stateless_address(address: [u8; 20], profile: TaraxaProfile) -> bool {
     OriginalStatelessPrecompile::at_address(address).is_some()
         || (address[..19] == [0; 19] && address[19] == 5)
         || OriginalCurvePrecompile::at_address(address).is_some()
-        || (profile.cacti() && address == P256_VERIFY_ADDRESS)
+        || (profile.cacti() && matches!(address, P256_VERIFY_ADDRESS | FALCON_VERIFY_ADDRESS))
+        || bls_registry(profile)
+            .is_some_and(|registry| BlsPrecompile::at_address(registry, address).is_some())
 }
 
 fn validate_native_period(
@@ -214,6 +229,7 @@ fn native_frame_status(outcome: &NativeFrameOutcome) -> FrameSettlementStatus {
 
 fn invoke_stateless(
     invocation: StatelessInvocation,
+    profile: TaraxaProfile,
 ) -> Result<NativeFrameOutcome, ExecutionDriverError> {
     let expected = invocation.clone();
     let (quote, result) = if OriginalStatelessPrecompile::at_address(invocation.contract).is_some()
@@ -229,9 +245,23 @@ fn invoke_stateless(
         let quote = prepared.quote();
         let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
         (quote, result)
+    } else if invocation.contract == FALCON_VERIFY_ADDRESS {
+        let prepared =
+            PreparedFalconCall::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
     } else if invocation.contract == P256_VERIFY_ADDRESS {
         let prepared =
             PreparedP256Call::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    } else if let Some(registry) = bls_registry(profile)
+        .filter(|registry| BlsPrecompile::at_address(*registry, invocation.contract).is_some())
+    {
+        let prepared = PreparedBlsCall::prepare(registry, invocation)
+            .map_err(ExecutionDriverError::Stateless)?;
         let quote = prepared.quote();
         let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
         (quote, result)
@@ -407,8 +437,9 @@ pub fn execute_top_level_call<
 /// `all_native_addresses` is the complete native/precompile set for the period;
 /// `consensus_native_addresses` is the subset owned by `native_port`. An address
 /// selected only by the complete set uses a reviewed stateless helper at exact
-/// addresses 1–9 and Cacti P-256; other such addresses remain unavailable. The full classifier
-/// owns historical activation, including whether Ficus enables address 9. Overlap
+/// addresses 1–9 and profile-selected BLS, P-256 and Falcon; other such addresses
+/// remain unavailable. The full classifier owns historical activation, including
+/// whether Ficus enables address 9. Overlap
 /// between consensus and reviewed stateless addresses is an integrity error.
 /// The caller owns one [`PeriodConsensusSequence`] for the pending period and must
 /// discard the journal, port and sequence together after any returned error.
@@ -812,19 +843,22 @@ fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAd
                     return Err(error);
                 }
             };
-            Some(invoke_stateless(StatelessInvocation {
-                id,
-                period: block.period,
-                depth: 0,
-                kind: NativeCallKind::Call,
-                is_static: false,
-                caller: transaction.sender,
-                contract: target,
-                state_address: target,
-                value: transaction.value.clone(),
-                input: transaction.input.clone(),
-                supplied_gas: admitted.action_gas,
-            }))
+            Some(invoke_stateless(
+                StatelessInvocation {
+                    id,
+                    period: block.period,
+                    depth: 0,
+                    kind: NativeCallKind::Call,
+                    is_static: false,
+                    caller: transaction.sender,
+                    contract: target,
+                    state_address: target,
+                    value: transaction.value.clone(),
+                    input: transaction.input.clone(),
+                    supplied_gas: admitted.action_gas,
+                },
+                profile,
+            ))
         }
         NativeRoute::Ordinary | NativeRoute::Unsupported => None,
     };
@@ -1254,19 +1288,22 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
                     return Err(error);
                 }
             };
-            Some(invoke_stateless(StatelessInvocation {
-                id,
-                period: block.period,
-                depth: u16::try_from(child_depth).expect("bounded frame depth"),
-                kind: native_call_kind(inputs.scheme),
-                is_static: inputs.is_static,
-                caller: inputs.caller.into_array(),
-                contract: code_address,
-                state_address: inputs.target_address.into_array(),
-                value: ExecutionValue::new(full_value.clone()),
-                input: input.to_vec(),
-                supplied_gas: FinalChainGas::new(inputs.gas_limit),
-            }))
+            Some(invoke_stateless(
+                StatelessInvocation {
+                    id,
+                    period: block.period,
+                    depth: u16::try_from(child_depth).expect("bounded frame depth"),
+                    kind: native_call_kind(inputs.scheme),
+                    is_static: inputs.is_static,
+                    caller: inputs.caller.into_array(),
+                    contract: code_address,
+                    state_address: inputs.target_address.into_array(),
+                    value: ExecutionValue::new(full_value.clone()),
+                    input: input.to_vec(),
+                    supplied_gas: FinalChainGas::new(inputs.gas_limit),
+                },
+                profile,
+            ))
         }
         NativeRoute::Ordinary | NativeRoute::Unsupported => None,
     };
@@ -1627,6 +1664,7 @@ fn map_terminal(
         I::CreateCollision => Some(CodeExecutionError::CreateCollision),
         I::CreateContractSizeLimit => Some(CodeExecutionError::ContractSize),
         I::InvalidJump => Some(CodeExecutionError::InvalidJump),
+        I::OutOfOffset => Some(CodeExecutionError::ReturnDataOutOfBounds),
         other => {
             return Err(ExecutionDriverError::UnsupportedTerminal(format!(
                 "{other:?}"

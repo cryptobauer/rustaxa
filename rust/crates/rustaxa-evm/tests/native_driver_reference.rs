@@ -689,6 +689,88 @@ fn primitive_address(number: u8) -> [u8; 20] {
 }
 
 #[test]
+fn bls_frame_dispatch_preserves_both_registries_outputs_and_errors() {
+    use rustaxa_evm::profile::TaraxaPhase;
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/bls/public.json"
+    ))
+    .unwrap();
+    for row in fixture["bls"].as_array().unwrap() {
+        let target = primitive_address(row["address"].as_u64().unwrap().try_into().unwrap());
+        let phase = match row["registry"].as_str().unwrap() {
+            "ficus" => TaraxaPhase::Ficus,
+            "cacti" => TaraxaPhase::Cacti,
+            _ => unreachable!(),
+        };
+        let mut tx = transaction(target, ExecutionValue::new(BigUint::from(7_u8)));
+        tx.gas_price = ExecutionGasPrice::new(BigUint::default());
+        tx.input = if row["repeat"].is_object() {
+            hex::decode(row["repeat"]["element"].as_str().unwrap())
+                .unwrap()
+                .repeat(row["repeat"]["count"].as_u64().unwrap().try_into().unwrap())
+        } else {
+            hex::decode(row["input"].as_str().unwrap()).unwrap()
+        };
+        let intrinsic = rustaxa_types::transaction::intrinsic_gas(&tx.input, false).unwrap();
+        let quote = row["required_gas"].as_u64().unwrap();
+        tx.gas_limit = (intrinsic + quote + 100).into();
+        let mut context = block();
+        context.gas_limit = 10_000_000_u64.into();
+        let mut journal = journal_without_parent();
+        let mut port = ScriptedPort::completed(NativeStatus::Success, vec![0xff]);
+        let mut sequence = PeriodConsensusSequence::new(context.period);
+        let result = execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![target]),
+            &AddressSet(Vec::new()),
+            &mut port,
+            &mut sequence,
+            &context,
+            &tx,
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::for_phase(phase),
+        )
+        .unwrap();
+        let TransactionExecutionResult::Executed(result) = result else {
+            panic!(
+                "BLS admission: {} {} {result:?}",
+                row["registry"], row["name"]
+            )
+        };
+        let error = row["error"].as_str().unwrap();
+        assert_eq!(
+            result.status,
+            if error.is_empty() {
+                CodeExecutionStatus::Success
+            } else {
+                CodeExecutionStatus::Failure(CodeExecutionError::Native(NativeContractFailure {
+                    error: error.into(),
+                }))
+            },
+            "{} {}",
+            row["registry"],
+            row["name"]
+        );
+        assert_eq!(
+            result.output,
+            hex::decode(row["output"].as_str().unwrap()).unwrap()
+        );
+        assert_eq!(result.gas_used.as_u64(), intrinsic + quote);
+        if error.is_empty() {
+            assert_eq!(
+                journal.account(target).unwrap().balance.value(),
+                &num_bigint::BigInt::from(7)
+            );
+        } else {
+            assert!(!journal.account(target).unwrap().exists);
+        }
+        assert!(port.invocations.lock().unwrap().is_empty());
+        assert_eq!(sequence.next_sequence(), 0);
+    }
+}
+
+#[test]
 fn cacti_p256_frame_preserves_quotes_value_and_consensus_sequence() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../experiments/evm_feasibility/fixtures/p256/public.json"
@@ -1268,4 +1350,96 @@ fn blake_activation_remains_owned_by_the_supplied_classifier() {
     assert_eq!(result.gas_used.as_u64(), 21_000);
     assert!(port.invocations.lock().unwrap().is_empty());
     assert_eq!(sequence.next_sequence(), 0);
+}
+
+#[test]
+fn falcon_frame_dispatch_matches_reference_errors_gas_and_value() {
+    use rustaxa_evm::falcon::FALCON_VERIFY_ADDRESS;
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/falcon/public.json"
+    ))
+    .unwrap();
+    for row in fixture["falcon"].as_array().unwrap() {
+        let target = FALCON_VERIFY_ADDRESS;
+        let quote = row["required_gas"].as_u64().unwrap();
+        for gas in [quote - 1, quote, quote + 1] {
+            let mut tx = transaction(target, ExecutionValue::new(BigUint::from(7_u8)));
+            tx.input = hex::decode(row["input"].as_str().unwrap()).unwrap();
+            let intrinsic = rustaxa_types::transaction::intrinsic_gas(&tx.input, false).unwrap();
+            tx.gas_limit = (intrinsic + gas).into();
+            let mut journal = journal_without_parent();
+            let mut port = ScriptedPort::completed(NativeStatus::Success, vec![0xff]);
+            let mut sequence = PeriodConsensusSequence::new(block().period);
+            let result = execute_top_level_call_with_native(
+                &mut journal,
+                &NoHistory,
+                &AddressSet(vec![target]),
+                &AddressSet(Vec::new()),
+                &mut port,
+                &mut sequence,
+                &block(),
+                &tx,
+                EnvelopeRules { cornus: true },
+                TaraxaProfile::new(true),
+            );
+            if gas >= quote && !row["panic"].as_str().unwrap().is_empty() {
+                assert_eq!(
+                    result,
+                    Err(ExecutionDriverError::Stateless(
+                        rustaxa_evm::contracts::NativePortError::Infrastructure(
+                            "Falcon reference ABI would panic".into()
+                        )
+                    ))
+                );
+                assert!(port.invocations.lock().unwrap().is_empty());
+                assert_eq!(sequence.next_sequence(), 0);
+                // Infrastructure errors abort the containing execution session;
+                // they must not become a normal receipt or a usable continuation.
+                drop(journal);
+                continue;
+            }
+            let TransactionExecutionResult::Executed(result) = result.unwrap() else {
+                panic!("Falcon admission")
+            };
+            let error = row["error"].as_str().unwrap();
+            if gas < quote {
+                assert_eq!(
+                    result.status,
+                    CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas)
+                );
+                assert_eq!(result.gas_used.as_u64(), intrinsic);
+                assert!(result.output.is_empty());
+            } else {
+                assert_eq!(
+                    result.status,
+                    if error.is_empty() {
+                        CodeExecutionStatus::Success
+                    } else {
+                        CodeExecutionStatus::Failure(CodeExecutionError::Native(
+                            NativeContractFailure {
+                                error: error.into(),
+                            },
+                        ))
+                    },
+                    "{}",
+                    row["name"]
+                );
+                assert_eq!(result.gas_used.as_u64(), intrinsic + quote);
+                assert_eq!(
+                    result.output,
+                    hex::decode(row["output"].as_str().unwrap()).unwrap()
+                );
+            }
+            if gas >= quote && error.is_empty() {
+                assert_eq!(
+                    journal.account(target).unwrap().balance.value(),
+                    &num_bigint::BigInt::from(7)
+                );
+            } else {
+                assert!(!journal.account(target).unwrap().exists);
+            }
+            assert!(port.invocations.lock().unwrap().is_empty());
+            assert_eq!(sequence.next_sequence(), 0);
+        }
+    }
 }

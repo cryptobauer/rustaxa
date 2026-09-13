@@ -6,11 +6,13 @@
 //! depends on this crate. Integration is selectable only by isolated tests
 //! until a separately authorized and validated routing change.
 
+pub mod bls;
 pub mod contracts;
 pub mod curve_precompiles;
 pub mod driver;
 pub mod envelope;
 pub mod estimate;
+pub mod falcon;
 pub mod frame;
 pub mod host;
 pub mod input;

@@ -93,6 +93,9 @@ cargo clippy --manifest-path rust/Cargo.toml -p rustaxa-evm \
   --lib --test bls_reference --no-deps -- -D warnings
 ```
 
-This establishes bounded direct primitive parity. Historical period
-classification, frame gas settlement, persisted execution, broad resource
-limits and production routing remain integration and acceptance work.
+The Ficus/Cacti profile-selected frame route is now integrated. All 210 rows
+also run through funded top-level frames with exact output/error/quoted gas,
+value credit or rollback, no consensus-port calls and no consensus-sequence
+consumption. The independent reviewer approved the corrected GLV primitive;
+final shared integration review remains open. Persisted native execution and
+broad resource limits remain acceptance work; production routing is unauthorized.

@@ -25,6 +25,8 @@ import (
 
 const apiPeriod types.BlockNum = 7
 
+var apiReturnBounds = common.HexToAddress("0x000000000000000000000000000000000000abcd")
+
 var (
 	apiSender = common.HexToAddress("0x00000000000000000000000000000000000000aa")
 	apiTarget = common.HexToAddress("0x00000000000000000000000000000000000000bb")
@@ -145,6 +147,12 @@ func apiSeed() *apiMemory {
 		Account: state_db.Account{Nonce: big.NewInt(1), Balance: big.NewInt(11), CodeHash: &revertHash, CodeSize: uint64(len(revertCode))},
 		Code:    revertCode, CodeDirty: true,
 	})
+	boundsCode := common.FromHex("0x6001600060003e00")
+	boundsHash := crypto.Keccak256Hash(boundsCode)
+	seed(&apiReturnBounds, state_evm.AccountChange{
+		Account: state_db.Account{Nonce: big.NewInt(1), Balance: big.NewInt(0), CodeHash: &boundsHash, CodeSize: uint64(len(boundsCode))},
+		Code:    boundsCode, CodeDirty: true,
+	})
 	memory.descriptor = state_db.StateDescriptor{BlockNum: apiPeriod, StateRoot: sink.Commit()}
 	return memory
 }
@@ -176,7 +184,7 @@ type apiStateObservation struct {
 func apiObserve(memory *apiMemory) apiStateObservation {
 	reader := state_db.ExtendedReader{Reader: memory}
 	observation := apiStateObservation{Period: uint64(memory.descriptor.BlockNum), Root: apiHex(memory.descriptor.StateRoot[:])}
-	for _, address := range []common.Address{apiSender, apiTarget, apiRevert, common.ZeroAddress, apiEmpty} {
+	for _, address := range []common.Address{apiSender, apiTarget, apiRevert, apiReturnBounds, common.ZeroAddress, apiEmpty} {
 		row := apiAccountObservation{Address: apiHex(address[:])}
 		reader.GetRawAccount(&address, func(encoded []byte) {
 			account := state_db.DecodeAccountFromTrie(encoded)
@@ -278,6 +286,7 @@ func main() {
 		{"call_revert_reason", vm.Transaction{From: apiSender, To: &apiRevert, Nonce: big.NewInt(3), GasPrice: big.NewInt(3), Gas: 100_000, Value: big.NewInt(17)}},
 		{"create_large_nonce", vm.Transaction{From: apiSender, Nonce: wideSupplied, GasPrice: big.NewInt(1), Gas: 150_000, Value: big.NewInt(25), Input: apiInitCode()}},
 		{"zero_sender_fee_exempt", vm.Transaction{From: common.ZeroAddress, To: &apiEmpty, Nonce: wideSupplied, GasPrice: big.NewInt(999), Gas: 30_000, Value: big.NewInt(0)}},
+		{"return_data_out_of_bounds", vm.Transaction{From: apiSender, To: &apiReturnBounds, Nonce: big.NewInt(0), GasPrice: big.NewInt(1), Gas: 100_000, Value: big.NewInt(0)}},
 	}
 	cases := make([]apiCase, 0, len(transactions))
 	for _, item := range transactions {

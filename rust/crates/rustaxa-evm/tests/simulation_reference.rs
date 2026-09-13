@@ -341,11 +341,13 @@ fn compare_execution(name: &str, actual: &TransactionExecutionResult, expected: 
     let error = expected["execution_error"].as_str().unwrap();
     assert_eq!(
         actual.status,
-        if error.is_empty() {
-            CodeExecutionStatus::Success
-        } else {
-            assert!(error.starts_with("execution reverted"), "{name}: {error}");
-            CodeExecutionStatus::Failure(CodeExecutionError::Revert)
+        match error {
+            "" => CodeExecutionStatus::Success,
+            "return data out of bounds" =>
+                CodeExecutionStatus::Failure(CodeExecutionError::ReturnDataOutOfBounds),
+            "execution reverted: oracle boom" =>
+                CodeExecutionStatus::Failure(CodeExecutionError::Revert),
+            error => panic!("unexpected reference error {name}: {error}"),
         },
         "{name}: status"
     );
