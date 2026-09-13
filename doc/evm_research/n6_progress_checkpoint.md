@@ -55,11 +55,11 @@ remain recorded in milestone 10; they were not silently reassigned.
 
 ## Resume at the coupled dependencies
 
-1. Finish independent review of the final integrated corrections. Implement the
-   already specified RETURNDATACOPY override: Go computes/charges memory and copy
-   cost before source bounds, unlike the default REVM opcode. Preserve the
-   Istanbul table and local Ficus/Cacti overrides; compare combined errors against
-   both pinned references before claiming that gap closed.
+1. Finish independent review of the final integrated corrections. The
+   [RETURNDATACOPY override](s3_returndatacopy.md) is now implemented with 69
+   dual-pin full-frame cases, including overflow and reference-panic handling.
+   Bounded ordinary persisted historical query/simulation/reopen and missing-
+   dependency tests are also implemented; full N3 remains open.
 2. Extend the Rust native session with staged query ownership and delayed reads,
    then compose disposable native simulation and repeated estimation. A hybrid
    query against unchanged FinalChain state would misread earlier native writes.
@@ -97,3 +97,14 @@ remain recorded in milestone 10; they were not silently reassigned.
 The original `/tmp/snapshot-litenode` remains preserved. The likely producer
 commit remains owner-reported, and the exact executable and capture procedure
 remain unknown. All copied-state results retain those provenance limits.
+
+
+Continuation handoffs, exact model-request status and distinct capacity/usage
+blockers are recorded in [the agent ledger](n6_agent_handoffs.md). No unchanged
+routing failure was retried and no substitute helper was launched for Luna.
+
+
+The continuation commits are `f7e3fa49f` (return-data copy ordering) and
+`00195b807` (persisted historical API isolation). The fast gate, 23 native-driver
+and eight simulation tests, strict affected-target clippy and dual-pin exporter
+reproduction passed. Independent review and the remaining N2–N6 work remain open.

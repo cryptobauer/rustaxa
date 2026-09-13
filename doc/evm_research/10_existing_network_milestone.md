@@ -101,7 +101,8 @@ or a single snapshot limits the evidence available.
   Ficus MCOPY implemented; Falcon integration and remaining stateful-native
   coverage remain under validation. Ordered Aspen2 reward phases implemented.
 - N3: [gas-search and ordinary simulation evidence](n3_api_parity.md) implemented;
-  native simulation, full historical API/trace/reopen acceptance remain open.
+  ordinary persisted historical reads/simulation/reopen now have bounded evidence;
+  native simulation and full historical API/trace acceptance remain open.
 - N4: [copied-head transaction preflight](n4_replay_preflight.md) passes for 19
   transactions, exact receipts and transaction-only derivation of the retained
   root; bootstrap and qualification of the terminal rewards/system inputs remain open.
