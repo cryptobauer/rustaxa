@@ -173,7 +173,7 @@
     },
     "transaction_locations": {
       "continuity_verified": false,
-      "malformed_rows": 0,
+      "period_field_decode_failures": 0,
       "observed_max": 25706949,
       "observed_min": 25644235,
       "rows": 758544

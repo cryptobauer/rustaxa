@@ -8,7 +8,7 @@ coverage, reference-binary reopen, or production adoption. The compact machine-r
 
 The supplied `/tmp/snapshot-litenode` was never opened through RocksDB. `cp -a --reflink=always` first failed because
 the overlay filesystem does not support reflinks; the incomplete destination was removed. The usable copy was then
-created with `cp -a --reflink=never` under the task worktree's ignored `.snapshot-work/` directory. Source and copy
+created with `cp -a --reflink=never` under the task worktree's local untracked `.snapshot-work/` directory. Source and copy
 have distinct `CURRENT` inodes and no regular file with link count greater than one.
 
 The deterministic full-content manifests cover 1,100,450 regular files and 9,826,980,174 logical bytes apiece. Both
@@ -43,7 +43,7 @@ The following are observed key extrema, not claims of contiguous coverage:
 | FinalChain headers | not counted | 0 | 25,706,949 | head header decoded |
 | Period data | not counted | 25,645,235 | 25,706,949 | head row hashed |
 | Receipts by period | not counted | 21,552,343 | 25,706,949 | head row hashed |
-| Transaction locations | 758,544 | 25,644,235 | 25,706,949 | zero malformed sampled by full CF scan |
+| Transaction locations | 758,544 | 25,644,235 | 25,706,949 | zero period-field decode failures in full CF scan |
 | Main value versions | 3,641,535 | 0 | 25,706,949 | zero malformed keys; zero tombstone rows |
 | Storage value versions | 11,107,986 | 0 | 25,706,947 | zero malformed keys; 258,133 tombstone rows |
 
@@ -77,3 +77,13 @@ record the interval between those calls.
 The unavailable producer binary identity, exact capture invocation/timing, continuity, trie closure, complete replay
 inputs, intended reference-binary reopen, and full historical/activation coverage remain explicit qualification gaps.
 They constrain later claims but do not block the bounded S2 physical codec/read work recorded here.
+
+## Post-run tool review
+
+The evidence retains the qualifier source hash from the original run committed in `297d28843`.
+Subsequent guard fixes resolve database child paths, reject report/manifest outputs within either input tree,
+and create new outputs exclusively. The genesis helper also refuses outputs within its build inputs or the
+supplied snapshot. These guards were checked with small synthetic filesystem tests; the full content scans
+were not repeated. Invalid integer-comparator key widths now abort explicitly instead of applying an
+incompatible fallback order. Transaction-location evidence describes only decoding the period field;
+complete location row/key/position/system-flag validation was not performed.

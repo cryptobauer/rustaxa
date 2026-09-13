@@ -9,6 +9,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tiny_keccak::{Hasher, Keccak};
 
@@ -107,7 +108,7 @@ struct ScanRange {
     rows: u64,
     first_period: Option<u64>,
     last_period: Option<u64>,
-    malformed_rows: u64,
+    period_field_decode_failures: u64,
 }
 
 #[derive(Serialize, Default)]
@@ -200,15 +201,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("usage: rustaxa-snapshot-qualifier SNAPSHOT_COPY OUTPUT_JSON".into());
     }
     let canonical = fs::canonicalize(&input)?;
-    if canonical == fs::canonicalize(SUPPLIED_EVIDENCE)? || canonical.starts_with(SUPPLIED_EVIDENCE)
-    {
-        return Err(
-            "refusing to open the supplied evidence snapshot; pass an independent copy".into(),
-        );
+    let protected = fs::canonicalize(SUPPLIED_EVIDENCE)?;
+    let app_path = fs::canonicalize(canonical.join("db/db"))?;
+    let state_path = fs::canonicalize(canonical.join("db/state_db"))?;
+    for path in [&canonical, &app_path, &state_path] {
+        refuse_protected(path, &protected)?;
     }
-
-    let app_path = canonical.join("db/db");
-    let state_path = canonical.join("db/state_db");
+    let output = validate_output(&output, &[&protected, &canonical, &app_path, &state_path])?;
     let (app, app_columns) = open_read_only(&app_path, true)?;
     let (state, state_columns) = open_read_only(&state_path, false)?;
 
@@ -428,7 +427,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         gaps,
     };
-    fs::write(output, serde_json::to_vec_pretty(&report)?)?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?
+        .write_all(&serde_json::to_vec_pretty(&report)?)?;
     Ok(())
 }
 
@@ -448,7 +451,12 @@ fn open_read_only(
                 "taraxa.UintComparator",
                 Box::new(|a: &[u8], b: &[u8]| match (a.try_into(), b.try_into()) {
                     (Ok(a), Ok(b)) => u64::from_le_bytes(a).cmp(&u64::from_le_bytes(b)),
-                    _ => a.cmp(b),
+                    _ => {
+                        // Unwinding across RocksDB's C callback is not supported. Refuse
+                        // corrupt keys explicitly rather than inventing an incompatible order.
+                        eprintln!("invalid key width for taraxa.UintComparator");
+                        std::process::abort();
+                    }
                 }),
             );
         }
@@ -546,7 +554,7 @@ fn scan_transaction_locations(db: &DB) -> Result<ScanRange, Box<dyn std::error::
                     Some(report.first_period.map_or(period, |old| old.min(period)));
                 report.last_period = Some(report.last_period.map_or(period, |old| old.max(period)));
             }
-            Err(_) => report.malformed_rows += 1,
+            Err(_) => report.period_field_decode_failures += 1,
         }
     }
     Ok(report)
@@ -734,4 +742,71 @@ fn keccak256(bytes: &[u8]) -> [u8; 32] {
     hasher.update(bytes);
     hasher.finalize(&mut out);
     out
+}
+
+/// Refuse canonical database paths within the preserved evidence tree before opening.
+fn refuse_protected(path: &Path, protected: &Path) -> std::io::Result<()> {
+    if path.starts_with(protected) {
+        return Err(std::io::Error::other(
+            "refusing supplied evidence; pass an independent copy",
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve an existing parent and reject report paths in any input tree or existing file.
+/// Exclusive creation at publication also prevents overwriting symlink/hardlink aliases.
+fn validate_output(output: &Path, protected: &[&Path]) -> std::io::Result<PathBuf> {
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let resolved = fs::canonicalize(parent)?.join(
+        output
+            .file_name()
+            .ok_or_else(|| std::io::Error::other("report needs a filename"))?,
+    );
+    for root in protected {
+        refuse_protected(&resolved, root)?;
+    }
+    match fs::symlink_metadata(&resolved) {
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "report already exists",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    Ok(resolved)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn outputs_and_database_aliases_preserve_inputs() {
+        let root = env::temp_dir().join(format!("snapshot-qualifier-paths-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let original = root.join("original");
+        fs::create_dir(&original).unwrap();
+        let current = original.join("CURRENT");
+        fs::write(&current, b"unchanged").unwrap();
+        assert!(validate_output(&current, &[&original]).is_err());
+        let linked = root.join("linked");
+        fs::hard_link(&current, &linked).unwrap();
+        assert!(validate_output(&linked, &[&original]).is_err());
+        #[cfg(unix)]
+        {
+            let alias = root.join("alias");
+            std::os::unix::fs::symlink(&original, &alias).unwrap();
+            assert!(refuse_protected(&fs::canonicalize(&alias).unwrap(), &original).is_err());
+            assert!(validate_output(&alias.join("new"), &[&original]).is_err());
+        }
+        assert!(validate_output(&root.join("report.json"), &[&original]).is_ok());
+        assert_eq!(fs::read(&current).unwrap(), b"unchanged");
+        fs::remove_dir_all(root).unwrap();
+    }
 }

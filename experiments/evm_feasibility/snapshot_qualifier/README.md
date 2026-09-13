@@ -17,7 +17,9 @@ CARGO_TARGET_DIR=.snapshot-work/cargo-target cargo run --locked \
   .snapshot-work/snapshot-litenode-copy .snapshot-work/snapshot_qualification_raw.json
 ```
 
-The qualifier refuses `/tmp/snapshot-litenode` and its descendants. It lists and opens every column family read-only,
+Use fresh output paths: the tools refuse existing report, manifest, object and executable files.
+The qualifier resolves database child paths and refuses `/tmp/snapshot-litenode` and its descendants.
+Report and manifest outputs must remain outside both input trees. It lists and opens every column family read-only,
 pins the application head and state descriptor, compares their roots, records observed key extrema, and exports exact
 physical fixtures. Extrema do not establish continuity. Root-node presence does not establish trie closure, and
 physical version rows are not treated as membership proofs.

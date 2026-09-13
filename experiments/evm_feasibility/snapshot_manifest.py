@@ -28,12 +28,26 @@ def files(root):
                 raise RuntimeError(f"unsupported snapshot entry: {path}")
 
 
+def validate_outputs(roots, outputs):
+    """Resolve inputs and reject existing or aliased outputs before any write."""
+    roots = [pathlib.Path(root).resolve(strict=True) for root in roots]
+    outputs = [pathlib.Path(output).resolve() for output in outputs]
+    if len(set(outputs)) != len(outputs):
+        raise ValueError("manifest outputs must be distinct")
+    for output in outputs:
+        if any(output.is_relative_to(root) for root in roots):
+            raise ValueError(f"output is inside an input tree: {output}")
+        if output.exists() or output.is_symlink():
+            raise FileExistsError(output)
+    return roots, outputs
+
+
 def manifest(root, output):
-    root = pathlib.Path(root).resolve(strict=True)
+    (root,), (output,) = validate_outputs([root], [output])
     count = 0
     byte_count = 0
     aggregate = hashlib.sha256()
-    with pathlib.Path(output).open("wb") as destination:
+    with pathlib.Path(output).open("xb") as destination:
         for path in sorted(files(root), key=lambda item: item.relative_to(root).as_posix()):
             digest = hashlib.sha256()
             with path.open("rb") as source:
@@ -59,12 +73,15 @@ def main():
     parser.add_argument("--compare")
     parser.add_argument("--compare-manifest")
     args = parser.parse_args()
-    source = manifest(args.source, args.source_manifest)
-    result = {"source": source}
     if bool(args.compare) != bool(args.compare_manifest):
         parser.error("--compare and --compare-manifest must be supplied together")
+    roots = [args.source] + ([args.compare] if args.compare else [])
+    outputs = [args.source_manifest] + ([args.compare_manifest] if args.compare else [])
+    roots, outputs = validate_outputs(roots, outputs)
+    source = manifest(roots[0], outputs[0])
+    result = {"source": source}
     if args.compare:
-        compared = manifest(args.compare, args.compare_manifest)
+        compared = manifest(roots[1], outputs[1])
         result["compared"] = compared
         result["equal"] = source == compared
         if not result["equal"]:

@@ -11,6 +11,8 @@ import pathlib
 import shlex
 import subprocess
 
+from snapshot_manifest import validate_outputs
+
 
 HERE = pathlib.Path(__file__).resolve().parent
 SOURCE = HERE / "snapshot_mainnet_genesis.cpp"
@@ -34,9 +36,15 @@ def main():
     target = build / "programs/taraxad/CMakeFiles/taraxad.dir"
     flags_path = target / "flags.make"
     link_path = target / "link.txt"
-    output = pathlib.Path(args.output).resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output = pathlib.Path(args.output).absolute()
     object_path = output.with_suffix(".o")
+    _, (output, object_path) = validate_outputs(
+        [build, HERE, pathlib.Path("/tmp/snapshot-litenode")], [output, object_path]
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Reserve both outputs exclusively before invoking tools that overwrite -o paths.
+    with output.open("xb"), object_path.open("xb"):
+        pass
 
     link = shlex.split(link_path.read_text())
     compiler = link[0]
