@@ -155,12 +155,7 @@ pub fn admit<R: ConcreteStateRead>(
             account.balance.value().to_biguint().unwrap_or_default() / transaction.gas_price.value()
         };
         let charged = &available * transaction.gas_price.value();
-        journal.set_balance(
-            sender,
-            crate::contracts::ExecutionBalance::new(
-                account.balance.value().clone() - BigInt::from(charged),
-            ),
-        )?;
+        journal.subtract_balance(sender, &charged)?;
         if rules.cornus && transaction.nonce >= sender_nonce {
             journal.set_nonce(sender, transaction.nonce.next())?;
         }
@@ -174,10 +169,7 @@ pub fn admit<R: ConcreteStateRead>(
         )));
     }
 
-    journal.set_balance(
-        sender,
-        crate::contracts::ExecutionBalance::new(account.balance.value().clone() - gas_fee_signed),
-    )?;
+    journal.subtract_balance(sender, &gas_fee)?;
 
     if transaction.nonce < sender_nonce {
         return Ok(EnvelopeAdmission::Rejected(consensus_result(
@@ -228,6 +220,9 @@ pub fn settle<R: ConcreteStateRead>(
     admitted: &AdmittedTransaction,
     frame: FrameSettlement,
 ) -> Result<TransactionExecutionResult, EnvelopeError> {
+    if admitted.action_gas > admitted.gas_limit || admitted.gas_limit != transaction.gas_limit {
+        return Err(EnvelopeError::GasInvariant);
+    }
     if frame.status == FrameSettlementStatus::InsufficientBalanceForTransfer {
         return Ok(TransactionExecutionResult::ConsensusFailure(
             ConsensusFailureResult {
@@ -256,14 +251,8 @@ pub fn settle<R: ConcreteStateRead>(
         .gas_limit
         .checked_sub(gas_left)
         .expect("settled gas left cannot exceed gas cap");
-    let sender = journal.account(transaction.sender)?;
     let refunded_fee = transaction.gas_price.value() * BigUint::from(gas_left.as_u64());
-    journal.set_balance(
-        transaction.sender,
-        crate::contracts::ExecutionBalance::new(
-            sender.balance.value().clone() + BigInt::from(refunded_fee),
-        ),
-    )?;
+    journal.add_balance(transaction.sender, &refunded_fee)?;
 
     let status = match frame.status {
         FrameSettlementStatus::Success => CodeExecutionStatus::Success,
