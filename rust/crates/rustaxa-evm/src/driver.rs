@@ -3,8 +3,9 @@
 //! This driver composes the reviewed envelope, profile and journal for an
 //! ordinary top-level CALL or CREATE. It executes real REVM legacy bytecode,
 //! drives nested ordinary CALL/CREATE frames iteratively, and settles interpreter
-//! gas/refunds once. Native dispatch and SELFDESTRUCT remain typed unavailable
-//! boundaries.
+//! gas/refunds once. The default entry points keep native dispatch unavailable;
+//! explicit opt-in entry points accept a consensus-native port and period-local
+//! sequence. Stateless native dispatch and SELFDESTRUCT remain unavailable.
 //!
 //! CALL-family opcode preparation reads authoritative account metadata while
 //! deferring referenced code bytes. The driver applies Taraxa's depth and
@@ -29,8 +30,9 @@ use rustaxa_types::{FinalChainGas, concrete_state::execution::ConcreteExecutionR
 
 use crate::{
     contracts::{
-        BlockHashRead, CodeExecutionError, ExecutionBlockContext, ExecutionTransaction,
-        ExecutionTransactionKind, TransactionExecutionResult,
+        BlockHashRead, CodeExecutionError, CodeExecutionStatus, ExecutionBlockContext,
+        ExecutionTransaction, ExecutionTransactionKind, ExecutionValue, NativeCallKind,
+        NativeExecutionPort, NativeInvocation, NativeInvocationId, TransactionExecutionResult,
     },
     envelope::{
         AdmittedTransaction, EnvelopeAdmission, EnvelopeError, EnvelopeRules, FrameSettlement,
@@ -39,6 +41,7 @@ use crate::{
     frame::{CreateScheme, create_address, settle_code_deposit},
     host::{HostError, JournalHost},
     journal::{ExecutionJournal, JournalCheckpoint, JournalError},
+    native::{NativeAdapterError, NativeFrameOutcome, invoke_native},
     profile::TaraxaProfile,
 };
 
@@ -66,6 +69,19 @@ pub enum ExecutionDriverError {
     UnsupportedTransactionKind(ExecutionTransactionKind),
     /// A native/precompile target requires the later typed native dispatcher.
     NativeCallUnavailable { address: [u8; 20] },
+    /// A consensus-native classifier selected an address outside the complete native set.
+    NativeClassifierMismatch { address: [u8; 20] },
+    /// The period-local native sequence was used with another pending period.
+    NativeSequencePeriod {
+        /// Period bound to the sequence owner.
+        expected: rustaxa_types::FinalChainBlockNumber,
+        /// Period supplied by the execution block.
+        observed: rustaxa_types::FinalChainBlockNumber,
+    },
+    /// The period-local consensus-native sequence cannot advance further.
+    NativeSequenceOverflow,
+    /// Native preparation, execution or effect application failed.
+    Native(NativeAdapterError),
     /// REVM yielded a malformed or explicitly unsupported frame action.
     PendingFrameUnavailable(PendingFrameKind),
     /// REVM returned a terminal category that has no reviewed Taraxa mapping yet.
@@ -82,6 +98,63 @@ pub trait NativeAddressClassifier {
         period: rustaxa_types::FinalChainBlockNumber,
         address: [u8; 20],
     ) -> bool;
+}
+
+struct NativeExecution<'a> {
+    consensus_addresses: &'a dyn NativeAddressClassifier,
+    port: &'a mut dyn NativeExecutionPort,
+    sequence: &'a mut PeriodConsensusSequence,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeRoute {
+    Ordinary,
+    Consensus,
+    Unsupported,
+}
+
+fn validate_native_period(
+    sequence: &PeriodConsensusSequence,
+    period: rustaxa_types::FinalChainBlockNumber,
+) -> Result<(), ExecutionDriverError> {
+    if sequence.period != period {
+        return Err(ExecutionDriverError::NativeSequencePeriod {
+            expected: sequence.period,
+            observed: period,
+        });
+    }
+    Ok(())
+}
+
+fn classify_native<N: NativeAddressClassifier>(
+    all_native_addresses: &N,
+    native: Option<&NativeExecution<'_>>,
+    period: rustaxa_types::FinalChainBlockNumber,
+    address: [u8; 20],
+) -> Result<NativeRoute, ExecutionDriverError> {
+    let all_native = all_native_addresses.is_native_address(period, address);
+    let consensus_native = native.is_some_and(|execution| {
+        execution
+            .consensus_addresses
+            .is_native_address(period, address)
+    });
+    if consensus_native && !all_native {
+        return Err(ExecutionDriverError::NativeClassifierMismatch { address });
+    }
+    Ok(if consensus_native {
+        NativeRoute::Consensus
+    } else if all_native {
+        NativeRoute::Unsupported
+    } else {
+        NativeRoute::Ordinary
+    })
+}
+
+fn native_frame_status(outcome: &NativeFrameOutcome) -> FrameSettlementStatus {
+    match &outcome.status {
+        CodeExecutionStatus::Success => FrameSettlementStatus::Success,
+        CodeExecutionStatus::Failure(error) => FrameSettlementStatus::CodeFailure(error.clone()),
+    }
 }
 
 impl std::fmt::Display for ExecutionDriverError {
@@ -101,6 +174,66 @@ impl From<EnvelopeError> for ExecutionDriverError {
 impl From<JournalError> for ExecutionDriverError {
     fn from(error: JournalError) -> Self {
         Self::Journal(error)
+    }
+}
+
+impl From<NativeAdapterError> for ExecutionDriverError {
+    fn from(error: NativeAdapterError) -> Self {
+        Self::Native(error)
+    }
+}
+
+/// Monotonic consensus-native invocation identity within one pending period.
+///
+/// Frame checkpoints never rewind this owner. Depth/funds pre-entry rejection
+/// does not allocate an identity; quote out-of-gas and normal native failure do.
+#[derive(Debug, Eq, PartialEq)]
+pub struct PeriodConsensusSequence {
+    period: rustaxa_types::FinalChainBlockNumber,
+    next_sequence: u64,
+}
+
+impl PeriodConsensusSequence {
+    /// Starts a zero-based sequence for `period`.
+    #[must_use]
+    pub const fn new(period: rustaxa_types::FinalChainBlockNumber) -> Self {
+        Self {
+            period,
+            next_sequence: 0,
+        }
+    }
+
+    /// Returns the pending period this sequence belongs to.
+    #[must_use]
+    pub const fn period(&self) -> rustaxa_types::FinalChainBlockNumber {
+        self.period
+    }
+
+    /// Returns the sequence that the next reached consensus-native call receives.
+    #[must_use]
+    pub const fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    fn allocate(
+        &mut self,
+        period: rustaxa_types::FinalChainBlockNumber,
+        transaction: rustaxa_types::FinalChainTransactionPosition,
+    ) -> Result<NativeInvocationId, ExecutionDriverError> {
+        if period != self.period {
+            return Err(ExecutionDriverError::NativeSequencePeriod {
+                expected: self.period,
+                observed: period,
+            });
+        }
+        let sequence = self.next_sequence;
+        self.next_sequence = sequence
+            .checked_add(1)
+            .ok_or(ExecutionDriverError::NativeSequenceOverflow)?;
+        Ok(NativeInvocationId {
+            transaction,
+            sequence,
+        })
     }
 }
 
@@ -148,6 +281,67 @@ pub fn execute_top_level_call<
         transaction,
         &admitted,
         profile,
+        None,
+    )
+}
+
+/// Executes a top-level CALL with an explicit consensus-native port.
+///
+/// `all_native_addresses` is the complete native/precompile set for the period;
+/// `consensus_native_addresses` is the subset owned by `native_port`. An address
+/// selected only by the complete set remains explicitly unavailable. The caller
+/// owns one [`PeriodConsensusSequence`] for the whole pending period and must
+/// discard the journal, port and sequence together after any returned error.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_top_level_call_with_native<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_port: &mut P,
+    native_sequence: &mut PeriodConsensusSequence,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_native_period(native_sequence, block.period)?;
+    if transaction.kind != ExecutionTransactionKind::Call || transaction.receiver.is_none() {
+        return Err(ExecutionDriverError::UnsupportedTransactionKind(
+            transaction.kind,
+        ));
+    }
+    let admission = admit(
+        journal,
+        transaction,
+        envelope_rules,
+        IntrinsicGasSchedule::PINNED,
+    )?;
+    let EnvelopeAdmission::Admitted(admitted) = admission else {
+        let EnvelopeAdmission::Rejected(result) = admission else {
+            unreachable!()
+        };
+        return Ok(TransactionExecutionResult::ConsensusFailure(result));
+    };
+    execute_admitted_call(
+        journal,
+        block_hashes,
+        all_native_addresses,
+        block,
+        transaction,
+        &admitted,
+        profile,
+        Some(NativeExecution {
+            consensus_addresses: consensus_native_addresses,
+            port: native_port,
+            sequence: native_sequence,
+        }),
     )
 }
 
@@ -195,9 +389,69 @@ pub fn execute_top_level_create<
         transaction,
         &admitted,
         profile,
+        None,
     )
 }
 
+/// Executes top-level CREATE initcode with an explicit consensus-native port.
+///
+/// The classifiers and period-local sequence have the same invariants as
+/// [`execute_top_level_call_with_native`]. CREATE itself is ordinary; this port
+/// is available only to CALL-family actions yielded by its initcode descendants.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_top_level_create_with_native<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    A: NativeAddressClassifier,
+    C: NativeAddressClassifier,
+    P: NativeExecutionPort,
+>(
+    journal: &mut ExecutionJournal<R>,
+    block_hashes: &B,
+    all_native_addresses: &A,
+    consensus_native_addresses: &C,
+    native_port: &mut P,
+    native_sequence: &mut PeriodConsensusSequence,
+    block: &ExecutionBlockContext,
+    transaction: &ExecutionTransaction,
+    envelope_rules: EnvelopeRules,
+    profile: TaraxaProfile,
+) -> Result<TransactionExecutionResult, ExecutionDriverError> {
+    validate_native_period(native_sequence, block.period)?;
+    if transaction.kind != ExecutionTransactionKind::Create || transaction.receiver.is_some() {
+        return Err(ExecutionDriverError::UnsupportedTransactionKind(
+            transaction.kind,
+        ));
+    }
+    let admission = admit(
+        journal,
+        transaction,
+        envelope_rules,
+        IntrinsicGasSchedule::PINNED,
+    )?;
+    let EnvelopeAdmission::Admitted(admitted) = admission else {
+        let EnvelopeAdmission::Rejected(result) = admission else {
+            unreachable!()
+        };
+        return Ok(TransactionExecutionResult::ConsensusFailure(result));
+    };
+    execute_admitted_create(
+        journal,
+        block_hashes,
+        all_native_addresses,
+        block,
+        transaction,
+        &admitted,
+        profile,
+        Some(NativeExecution {
+            consensus_addresses: consensus_native_addresses,
+            port: native_port,
+            sequence: native_sequence,
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_admitted_create<
     R: ConcreteExecutionRead,
     B: BlockHashRead,
@@ -210,6 +464,7 @@ fn execute_admitted_create<
     transaction: &ExecutionTransaction,
     admitted: &AdmittedTransaction,
     profile: TaraxaProfile,
+    mut native: Option<NativeExecution<'_>>,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     let attempted = create_address(
         transaction.sender,
@@ -268,6 +523,7 @@ fn execute_admitted_create<
         Vec::new(),
         admitted,
         profile,
+        &mut native,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -331,6 +587,7 @@ fn execute_admitted_create<
     .map_err(Into::into)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifier>(
     journal: &mut ExecutionJournal<R>,
     block_hashes: &B,
@@ -339,13 +596,18 @@ fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAd
     transaction: &ExecutionTransaction,
     admitted: &AdmittedTransaction,
     profile: TaraxaProfile,
+    mut native: Option<NativeExecution<'_>>,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     let target = transaction.receiver.expect("call receiver checked");
-    if native_addresses.is_native_address(block.period, target) {
+    let route = classify_native(native_addresses, native.as_ref(), block.period, target)?;
+    if route == NativeRoute::Unsupported {
         return Err(ExecutionDriverError::NativeCallUnavailable { address: target });
     }
     let target_metadata = journal.account_metadata(target)?;
-    if !target_metadata.exists && transaction.value.value() == &num_bigint::BigUint::default() {
+    if route == NativeRoute::Ordinary
+        && !target_metadata.exists
+        && transaction.value.value() == &num_bigint::BigUint::default()
+    {
         return settle(
             journal,
             transaction,
@@ -379,8 +641,71 @@ fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAd
         )
         .map_err(Into::into);
     }
+    let native_id = if route == NativeRoute::Consensus {
+        match native
+            .as_mut()
+            .expect("consensus route has native execution")
+            .sequence
+            .allocate(block.period, transaction.position)
+        {
+            Ok(id) => Some(id),
+            Err(error) => {
+                journal.revert_checkpoint(checkpoint)?;
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
     journal.subtract_balance(transaction.sender, transaction.value.value())?;
     journal.add_balance(target, transaction.value.value())?;
+    if route == NativeRoute::Consensus {
+        let invocation = NativeInvocation {
+            id: native_id.expect("consensus route allocated identity"),
+            period: block.period,
+            depth: 0,
+            kind: NativeCallKind::Call,
+            is_static: false,
+            caller: transaction.sender,
+            contract: target,
+            state_address: target,
+            value: transaction.value.clone(),
+            input: transaction.input.clone(),
+            supplied_gas: admitted.action_gas,
+        };
+        let outcome = match invoke_native(
+            journal,
+            native
+                .as_mut()
+                .expect("consensus route has native execution")
+                .port,
+            &invocation,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                journal.revert_checkpoint(checkpoint)?;
+                return Err(error.into());
+            }
+        };
+        let status = native_frame_status(&outcome);
+        if outcome.status == CodeExecutionStatus::Success {
+            journal.commit_checkpoint(checkpoint)?;
+        } else {
+            journal.revert_checkpoint(checkpoint)?;
+        }
+        return settle(
+            journal,
+            transaction,
+            admitted,
+            FrameSettlement {
+                status,
+                gas_left: outcome.gas_left,
+                output: outcome.output,
+                attempted_contract_address: None,
+            },
+        )
+        .map_err(Into::into);
+    }
     let code = journal.account_code(target)?;
     let (result, opcode) = match run_revm(
         journal,
@@ -393,6 +718,7 @@ fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAd
         transaction.input.clone(),
         admitted,
         profile,
+        &mut native,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -476,6 +802,7 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
     input: Vec<u8>,
     admitted: &AdmittedTransaction,
     profile: TaraxaProfile,
+    native: &mut Option<NativeExecution<'_>>,
 ) -> Result<(revm::interpreter::InterpreterResult, u8), ExecutionDriverError> {
     let mut interpreter = Interpreter::<EthInterpreter>::new(
         SharedMemory::new(),
@@ -569,6 +896,8 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
                     profile,
                     frames.last_mut().expect("call parent exists"),
                     *inputs,
+                    transaction.position,
+                    native,
                 ) {
                     Ok(child) => child,
                     Err(error) => {
@@ -646,6 +975,7 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
     journal: &mut ExecutionJournal<R>,
     native_addresses: &N,
@@ -653,6 +983,8 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
     profile: TaraxaProfile,
     parent: &mut ActiveFrame,
     inputs: CallInputs,
+    transaction_position: rustaxa_types::FinalChainTransactionPosition,
+    native: &mut Option<NativeExecution<'_>>,
 ) -> Result<Option<ActiveFrame>, ExecutionDriverError> {
     let input = if inputs.input.is_empty() {
         Bytes::new()
@@ -686,13 +1018,20 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
     }
 
     let code_address = inputs.bytecode_address.into_array();
-    if native_addresses.is_native_address(block.period, code_address) {
+    let route = classify_native(
+        native_addresses,
+        native.as_ref(),
+        block.period,
+        code_address,
+    )?;
+    if route == NativeRoute::Unsupported {
         return Err(ExecutionDriverError::NativeCallUnavailable {
             address: code_address,
         });
     }
     let metadata = journal.account_metadata(code_address)?;
-    if inputs.scheme == RevmCallScheme::Call
+    if route == NativeRoute::Ordinary
+        && inputs.scheme == RevmCallScheme::Call
         && value == num_bigint::BigUint::default()
         && !metadata.exists
     {
@@ -720,6 +1059,64 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
         return Err(error.into());
     }
 
+    let full_value = if inputs.scheme == RevmCallScheme::DelegateCall {
+        parent.full_value.clone()
+    } else {
+        value
+    };
+    if route == NativeRoute::Consensus {
+        let id = match native
+            .as_mut()
+            .expect("consensus route has native execution")
+            .sequence
+            .allocate(block.period, transaction_position)
+        {
+            Ok(id) => id,
+            Err(error) => {
+                journal.revert_checkpoint(checkpoint)?;
+                return Err(error);
+            }
+        };
+        let invocation = NativeInvocation {
+            id,
+            period: block.period,
+            depth: u16::try_from(child_depth).expect("bounded frame depth"),
+            kind: native_call_kind(inputs.scheme),
+            is_static: inputs.is_static,
+            caller: inputs.caller.into_array(),
+            contract: code_address,
+            state_address: inputs.target_address.into_array(),
+            value: ExecutionValue::new(full_value),
+            input: input.to_vec(),
+            supplied_gas: FinalChainGas::new(inputs.gas_limit),
+        };
+        let outcome = match invoke_native(
+            journal,
+            native
+                .as_mut()
+                .expect("consensus route has native execution")
+                .port,
+            &invocation,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                journal.revert_checkpoint(checkpoint)?;
+                return Err(error.into());
+            }
+        };
+        if outcome.status == CodeExecutionStatus::Success {
+            journal.commit_checkpoint(checkpoint)?;
+        } else {
+            journal.revert_checkpoint(checkpoint)?;
+        }
+        insert_native_call_result(
+            &mut parent.interpreter,
+            outcome,
+            inputs.return_memory_offset,
+        );
+        return Ok(None);
+    }
+
     let code = match journal.account_code(code_address) {
         Ok(code) => code,
         Err(error) => {
@@ -737,11 +1134,6 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
         return Ok(None);
     }
 
-    let full_value = if inputs.scheme == RevmCallScheme::DelegateCall {
-        parent.full_value.clone()
-    } else {
-        value
-    };
     let child_memory = parent.interpreter.memory.new_child_context();
     let code_hash = revm::primitives::keccak256(&code);
     let mut interpreter = Interpreter::<EthInterpreter>::new(
@@ -943,6 +1335,35 @@ fn insert_call_result(
         );
     }
     handle_reservoir_remaining_gas(result, parent.gas.tracker_mut(), child.gas.tracker_mut());
+}
+
+fn insert_native_call_result(
+    parent: &mut Interpreter<EthInterpreter>,
+    outcome: NativeFrameOutcome,
+    return_memory: std::ops::Range<usize>,
+) {
+    let success = outcome.status == CodeExecutionStatus::Success;
+    let copy_len = return_memory.len().min(outcome.output.len());
+    parent.return_data.set_buffer(Bytes::from(outcome.output));
+    let _ = parent
+        .stack
+        .push(if success { U256::from(1) } else { U256::ZERO });
+    if success && copy_len != 0 {
+        parent.memory.set(
+            return_memory.start,
+            &parent.return_data.buffer()[..copy_len],
+        );
+    }
+    parent.gas.erase_cost(outcome.gas_left.as_u64());
+}
+
+const fn native_call_kind(scheme: RevmCallScheme) -> NativeCallKind {
+    match scheme {
+        RevmCallScheme::Call => NativeCallKind::Call,
+        RevmCallScheme::CallCode => NativeCallKind::CallCode,
+        RevmCallScheme::DelegateCall => NativeCallKind::DelegateCall,
+        RevmCallScheme::StaticCall => NativeCallKind::StaticCall,
+    }
 }
 
 fn insert_create_result(
