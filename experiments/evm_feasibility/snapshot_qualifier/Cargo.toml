@@ -11,8 +11,10 @@ anyhow = "1"
 ethereum-types = { version = "0.16", features = ["rlp"] }
 hex = "0.4"
 keccak-hasher = "0.15.3"
+num-bigint = "0.4"
 rlp = "0.6"
 rocksdb = { version = "0.24", default-features = false, features = ["lz4"] }
+rustaxa-evm = { path = "../../../rust/crates/rustaxa-evm" }
 rustaxa-storage = { path = "../../../rust/crates/rustaxa-storage" }
 rustaxa-types = { path = "../../../rust/crates/rustaxa-types" }
 serde = { version = "1", features = ["derive"] }
