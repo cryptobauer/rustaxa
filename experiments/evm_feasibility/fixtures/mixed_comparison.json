@@ -1,0 +1,56 @@
+{
+  "limits": "The public pin has no concrete observer API. CF2-only set differences are retained content-addressed nodes; all shared CF2 bytes, all other rows, final roots, execution, rewards, accounts, and complete native storage by hashed trie path must agree.",
+  "local_batched_vs_local_observer": {
+    "final_latest": {
+      "left_only_cf2_keys": [],
+      "right_only_cf2_keys": [
+        "795dfa3785a8c8f981e32eae37b5fa3f91aaeaa46edc7b434a3b656282425326"
+      ],
+      "shared_cf2_rows": 9
+    },
+    "final_physical": {
+      "left_only_cf2_keys": [],
+      "right_only_cf2_keys": [
+        "795dfa3785a8c8f981e32eae37b5fa3f91aaeaa46edc7b434a3b656282425326"
+      ],
+      "shared_cf2_rows": 9
+    },
+    "final_semantics_and_roots_equal": true,
+    "genesis_latest": {
+      "left_only_cf2_keys": [],
+      "right_only_cf2_keys": [],
+      "shared_cf2_rows": 6
+    },
+    "genesis_physical": {
+      "left_only_cf2_keys": [],
+      "right_only_cf2_keys": [],
+      "shared_cf2_rows": 6
+    },
+    "transaction_and_rewards_equal": true
+  },
+  "public_batched_vs_local_batched": {
+    "final_latest": {
+      "left_only_cf2_keys": [],
+      "right_only_cf2_keys": [],
+      "shared_cf2_rows": 9
+    },
+    "final_physical": {
+      "left_only_cf2_keys": [],
+      "right_only_cf2_keys": [],
+      "shared_cf2_rows": 9
+    },
+    "final_semantics_and_roots_equal": true,
+    "genesis_latest": {
+      "left_only_cf2_keys": [],
+      "right_only_cf2_keys": [],
+      "shared_cf2_rows": 6
+    },
+    "genesis_physical": {
+      "left_only_cf2_keys": [],
+      "right_only_cf2_keys": [],
+      "shared_cf2_rows": 6
+    },
+    "transaction_and_rewards_equal": true
+  },
+  "schema": 1
+}
