@@ -90,20 +90,12 @@ pub(in crate::final_chain) trait DposAccountPort {
 /// native invocation. Successful callers consume the mutations; failed replay
 /// discards this scratch state. It must never be reused as the next invocation's
 /// account source or as publication authority.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the next reviewed staged-dispatch phase")
-)]
 #[derive(Debug)]
 pub(super) struct StagedDposAccountPort {
     accounts: BTreeMap<[u8; 20], FinalChainNativeAccount>,
     mutations: Vec<FinalChainNativeOrdinaryMutation>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the next reviewed staged-dispatch phase")
-)]
 impl StagedDposAccountPort {
     /// Builds one invocation-local overlay.
     ///
