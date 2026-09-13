@@ -24,3 +24,4 @@ pub mod profile;
 pub mod revert;
 pub mod simulation;
 pub mod stateless;
+pub mod trace;
