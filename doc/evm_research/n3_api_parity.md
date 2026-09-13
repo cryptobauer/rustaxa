@@ -1,7 +1,6 @@
 # N3 API implementation evidence
 
-Status: gas-search kernel implemented; ordinary simulation implementation and
-reference qualification in progress. Full N3 remains open, including native
+Status: gas-search kernel and bounded ordinary simulation implemented. Full N3 remains open, including native
 simulation, historical query composition, trace schemas and persisted API tests.
 
 ## Existing ownership and contracts
@@ -62,3 +61,36 @@ Luna implemented the kernel in `task/evm-api-estimate` from `68d23f19f`; the lea
 corrected/reviewed edge expectations and supplied the independent C++ extraction.
 Independent Astra review approved source/contracts and the reference comparison.
 This proves search policy only, not EVM execution, RPC routing or probe isolation.
+
+## Ordinary simulation and probe isolation
+
+`rustaxa-evm::simulation::simulate_ordinary` borrows a committed reader, requires
+the block period to match, overrides the private request nonce with stored nonce
+plus one, and runs the existing CALL/CREATE driver in a disposable journal. It
+returns typed results and the fixed state identity, with no prepared mutations
+or publication capability. Native calls fail explicitly pending their adapter.
+
+The actual pinned Go DryRunner runs over an in-memory DB seeded through its
+real incremental TrieSink. Both references produce identical five-case fixtures,
+including a stored nonce above 256 bits, ignored stale and 512-bit supplied
+nonces, storage-changing/value-bearing calls, a reason-bearing revert, CREATE
+and the zero-address gas-payment exception. Reference state observations before
+and after repeated calls are identical. Rust compares status, gas, output and
+creation addresses. Exact RPC revert-string presentation is not yet implemented.
+
+An integrated gas-search test runs seven fresh Rust simulations against the same
+Go-derived state. Every probe sees the original slot seven and privately writes
+eight; no probe sees another's write. Accounts, slots and code remain unchanged.
+Other tests reject period mismatch before reading and preserve corrupt/unavailable
+sender failures instead of converting them to an empty account.
+
+```sh
+python3 experiments/evm_feasibility/api_reference.py
+cargo test --manifest-path rust/Cargo.toml -p rustaxa-evm --test simulation_reference
+```
+
+Sol authored the independent public API oracle and initial comparisons in
+`task/evm-api-oracle`; Astra authored the facade and integrated probe/negative
+tests. The fixture manifest records exact hashes and source pins. This is
+immutable in-memory state evidence; persisted historical API/reopen tests,
+native simulation, traces and complete RPC behavior remain required.

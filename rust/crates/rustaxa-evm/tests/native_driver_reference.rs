@@ -689,6 +689,188 @@ fn primitive_address(number: u8) -> [u8; 20] {
 }
 
 #[test]
+fn cacti_p256_frame_preserves_quotes_value_and_consensus_sequence() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/p256/public.json"
+    ))
+    .unwrap();
+    let target = rustaxa_evm::p256::P256_VERIFY_ADDRESS;
+    for row in fixture["p256"].as_array().unwrap() {
+        for action_gas in [6_899_u64, 6_900, 6_901] {
+            let mut tx = transaction(target, ExecutionValue::new(BigUint::from(7_u8)));
+            tx.input = hex::decode(row["input"].as_str().unwrap()).unwrap();
+            let intrinsic = rustaxa_types::transaction::intrinsic_gas(&tx.input, false).unwrap();
+            tx.gas_limit = (intrinsic + action_gas).into();
+            let mut journal = journal_without_parent();
+            let mut port = ScriptedPort::completed(NativeStatus::Success, vec![0xff]);
+            let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+            let result = execute_top_level_call_with_native(
+                &mut journal,
+                &NoHistory,
+                &AddressSet(vec![target]),
+                &AddressSet(Vec::new()),
+                &mut port,
+                &mut sequence,
+                &block(),
+                &tx,
+                EnvelopeRules { cornus: true },
+                TaraxaProfile::new(true),
+            )
+            .unwrap();
+            let TransactionExecutionResult::Executed(result) = result else {
+                panic!("admitted frame")
+            };
+            if action_gas < 6_900 {
+                assert_eq!(
+                    result.status,
+                    CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas)
+                );
+                assert_eq!(result.gas_used.as_u64(), intrinsic);
+                assert!(!journal.account(target).unwrap().exists);
+            } else {
+                assert_eq!(result.status, CodeExecutionStatus::Success);
+                assert_eq!(result.gas_used.as_u64(), intrinsic + 6_900);
+                assert_eq!(
+                    result.output,
+                    hex::decode(row["output"].as_str().unwrap()).unwrap()
+                );
+                assert_eq!(
+                    journal.account(target).unwrap().balance.value(),
+                    &num_bigint::BigInt::from(7)
+                );
+            }
+            assert!(port.invocations.lock().unwrap().is_empty());
+            assert_eq!(sequence.next_sequence(), 0);
+            assert!(
+                journal
+                    .settle_transaction()
+                    .unwrap()
+                    .native_invocations
+                    .is_empty()
+            );
+        }
+    }
+}
+
+#[test]
+fn p256_routing_requires_cacti_and_rejects_consensus_overlap() {
+    let target = rustaxa_evm::p256::P256_VERIFY_ADDRESS;
+    for (cacti, all, consensus, expected) in [
+        (
+            false,
+            vec![target],
+            vec![],
+            Some(ExecutionDriverError::NativeCallUnavailable { address: target }),
+        ),
+        (
+            true,
+            vec![target],
+            vec![target],
+            Some(ExecutionDriverError::NativeClassifierOverlap { address: target }),
+        ),
+        // Before activation an unregistered empty address is an ordinary call.
+        (false, vec![], vec![], None),
+    ] {
+        let mut journal = journal_without_parent();
+        let mut port = ScriptedPort::completed(NativeStatus::Success, vec![0xff]);
+        let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+        let result = execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(all),
+            &AddressSet(consensus),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &transaction(target, ExecutionValue::default()),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(cacti),
+        );
+        if let Some(expected) = expected {
+            assert_eq!(result, Err(expected));
+        } else {
+            let TransactionExecutionResult::Executed(result) = result.unwrap() else {
+                panic!("ordinary call")
+            };
+            assert_eq!(result.status, CodeExecutionStatus::Success);
+            assert!(result.output.is_empty());
+        }
+        assert!(port.invocations.lock().unwrap().is_empty());
+        assert_eq!(sequence.next_sequence(), 0);
+    }
+}
+
+#[test]
+fn nested_p256_executes_each_call_kind_without_consensus_dispatch() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/p256/public.json"
+    ))
+    .unwrap();
+    let row = fixture["p256"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "valid")
+        .unwrap();
+    let input = hex::decode(row["input"].as_str().unwrap()).unwrap();
+    let expected = hex::decode(row["output"].as_str().unwrap()).unwrap();
+    let target = rustaxa_evm::p256::P256_VERIFY_ADDRESS;
+    for opcode in [0xf1_u8, 0xf2, 0xf4, 0xfa] {
+        // Copy the actual Go signature input from code into memory, execute
+        // the child, and return both its 32-byte output and CALL success flag.
+        let mut code = vec![0x61, 0, 160, 0x61, 0, 0, 0x60, 0, 0x39];
+        code.extend_from_slice(&[0x60, 32, 0x60, 0, 0x60, 160, 0x60, 0]);
+        if opcode == 0xf1 || opcode == 0xf2 {
+            code.extend_from_slice(&[0x60, 0]);
+        }
+        code.push(0x73);
+        code.extend_from_slice(&target);
+        code.extend_from_slice(&[
+            0x61, 0x1a, 0xf4, opcode, 0x60, 32, 0x52, 0x60, 64, 0x60, 0, 0xf3,
+        ]);
+        let offset = u16::try_from(code.len()).unwrap().to_be_bytes();
+        code[4..6].copy_from_slice(&offset);
+        code.extend_from_slice(&input);
+        let mut journal = journal_with_parent(code);
+        let mut port = ScriptedPort::completed(NativeStatus::Success, vec![0xff]);
+        let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+        let result = execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![target]),
+            &AddressSet(Vec::new()),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &transaction(PARENT, ExecutionValue::default()),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(true),
+        )
+        .unwrap();
+        let TransactionExecutionResult::Executed(result) = result else {
+            panic!("parent admitted")
+        };
+        assert_eq!(
+            result.status,
+            CodeExecutionStatus::Success,
+            "opcode {opcode:x}"
+        );
+        assert_eq!(
+            &result.output[..32],
+            expected.as_slice(),
+            "opcode {opcode:x}"
+        );
+        assert_eq!(
+            &result.output[32..],
+            &[vec![0; 31], vec![1]].concat(),
+            "opcode {opcode:x}"
+        );
+        assert!(port.invocations.lock().unwrap().is_empty());
+        assert_eq!(sequence.next_sequence(), 0);
+    }
+}
+
+#[test]
 fn stateless_top_level_calls_match_primitive_fixtures_without_consensus_facts() {
     let original: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../experiments/evm_feasibility/fixtures/stateless_public.json"

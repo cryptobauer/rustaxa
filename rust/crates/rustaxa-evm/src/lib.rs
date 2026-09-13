@@ -17,5 +17,7 @@ pub mod input;
 pub mod journal;
 pub mod modexp;
 pub mod native;
+pub mod p256;
 pub mod profile;
+pub mod simulation;
 pub mod stateless;

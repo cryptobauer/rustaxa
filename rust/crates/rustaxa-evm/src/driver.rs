@@ -5,8 +5,8 @@
 //! drives nested ordinary CALL/CREATE frames iteratively, and settles interpreter
 //! gas/refunds once. The default entry points keep native dispatch unavailable;
 //! explicit opt-in entry points accept a consensus-native port and period-local
-//! sequence. They also route the reviewed stateless addresses 1–9 without using
-//! that port or sequence. SELFDESTRUCT remains unavailable.
+//! sequence. They also route reviewed stateless addresses 1–9 and Cacti P-256 without using
+//! that port or sequence. SELFDESTRUCT uses the journal-owned historical lifecycle.
 //!
 //! CALL-family opcode preparation reads authoritative account metadata while
 //! deferring referenced code bytes. The driver applies Taraxa's depth and
@@ -47,6 +47,7 @@ use crate::{
     journal::{ExecutionJournal, JournalCheckpoint, JournalError},
     modexp::PreparedModexpCall,
     native::{NativeAdapterError, NativeFrameOutcome, invoke_native},
+    p256::{P256_VERIFY_ADDRESS, PreparedP256Call},
     profile::TaraxaProfile,
     stateless::{OriginalStatelessPrecompile, PreparedStatelessCall},
 };
@@ -152,10 +153,11 @@ impl TransactionStatelessSequence {
     }
 }
 
-fn is_reviewed_stateless_address(address: [u8; 20]) -> bool {
+fn is_reviewed_stateless_address(address: [u8; 20], profile: TaraxaProfile) -> bool {
     OriginalStatelessPrecompile::at_address(address).is_some()
         || (address[..19] == [0; 19] && address[19] == 5)
         || OriginalCurvePrecompile::at_address(address).is_some()
+        || (profile.cacti() && address == P256_VERIFY_ADDRESS)
 }
 
 fn validate_native_period(
@@ -176,6 +178,7 @@ fn classify_native<N: NativeAddressClassifier>(
     native: Option<&NativeExecution<'_>>,
     period: rustaxa_types::FinalChainBlockNumber,
     address: [u8; 20],
+    profile: TaraxaProfile,
 ) -> Result<NativeRoute, ExecutionDriverError> {
     let all_native = all_native_addresses.is_native_address(period, address);
     let consensus_native = native.is_some_and(|execution| {
@@ -186,7 +189,8 @@ fn classify_native<N: NativeAddressClassifier>(
     if consensus_native && !all_native {
         return Err(ExecutionDriverError::NativeClassifierMismatch { address });
     }
-    let stateless = native.is_some() && all_native && is_reviewed_stateless_address(address);
+    let stateless =
+        native.is_some() && all_native && is_reviewed_stateless_address(address, profile);
     if consensus_native && stateless {
         return Err(ExecutionDriverError::NativeClassifierOverlap { address });
     }
@@ -222,6 +226,12 @@ fn invoke_stateless(
     } else if invocation.contract[..19] == [0; 19] && invocation.contract[19] == 5 {
         let prepared =
             PreparedModexpCall::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    } else if invocation.contract == P256_VERIFY_ADDRESS {
+        let prepared =
+            PreparedP256Call::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
         let quote = prepared.quote();
         let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
         (quote, result)
@@ -397,7 +407,7 @@ pub fn execute_top_level_call<
 /// `all_native_addresses` is the complete native/precompile set for the period;
 /// `consensus_native_addresses` is the subset owned by `native_port`. An address
 /// selected only by the complete set uses a reviewed stateless helper at exact
-/// addresses 1–9; other such addresses remain unavailable. The full classifier
+/// addresses 1–9 and Cacti P-256; other such addresses remain unavailable. The full classifier
 /// owns historical activation, including whether Ficus enables address 9. Overlap
 /// between consensus and reviewed stateless addresses is an integrity error.
 /// The caller owns one [`PeriodConsensusSequence`] for the pending period and must
@@ -712,7 +722,13 @@ fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAd
     mut native: Option<NativeExecution<'_>>,
 ) -> Result<TransactionExecutionResult, ExecutionDriverError> {
     let target = transaction.receiver.expect("call receiver checked");
-    let route = classify_native(native_addresses, native.as_ref(), block.period, target)?;
+    let route = classify_native(
+        native_addresses,
+        native.as_ref(),
+        block.period,
+        target,
+        profile,
+    )?;
     if route == NativeRoute::Unsupported {
         return Err(ExecutionDriverError::NativeCallUnavailable { address: target });
     }
@@ -1156,6 +1172,7 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
         native.as_ref(),
         block.period,
         code_address,
+        profile,
     )?;
     if route == NativeRoute::Unsupported {
         return Err(ExecutionDriverError::NativeCallUnavailable {
@@ -1572,37 +1589,6 @@ fn unwind_active_frames<R: ConcreteExecutionRead>(
     Ok(())
 }
 
-#[cfg(test)]
-mod stateless_sequence_tests {
-    use super::*;
-
-    #[test]
-    fn transaction_stateless_sequence_is_zero_based_monotonic_and_checked() {
-        let transaction = rustaxa_types::FinalChainTransactionPosition::new(9);
-        let mut sequence = TransactionStatelessSequence::default();
-        assert_eq!(
-            sequence.allocate(transaction).unwrap(),
-            StatelessInvocationId {
-                transaction,
-                ordinal: 0,
-            }
-        );
-        assert_eq!(
-            sequence.allocate(transaction).unwrap(),
-            StatelessInvocationId {
-                transaction,
-                ordinal: 1,
-            }
-        );
-        sequence.next_ordinal = u64::MAX;
-        assert_eq!(
-            sequence.allocate(transaction),
-            Err(ExecutionDriverError::StatelessOrdinalOverflow)
-        );
-        assert_eq!(sequence.next_ordinal, u64::MAX);
-    }
-}
-
 fn low_word_bytes(value: &num_bigint::BigUint) -> [u8; 32] {
     let bytes = value.to_bytes_be();
     let low = &bytes[bytes.len().saturating_sub(32)..];
@@ -1648,4 +1634,35 @@ fn map_terminal(
         }
     };
     Ok(mapped)
+}
+
+#[cfg(test)]
+mod stateless_sequence_tests {
+    use super::*;
+
+    #[test]
+    fn transaction_stateless_sequence_is_zero_based_monotonic_and_checked() {
+        let transaction = rustaxa_types::FinalChainTransactionPosition::new(9);
+        let mut sequence = TransactionStatelessSequence::default();
+        assert_eq!(
+            sequence.allocate(transaction).unwrap(),
+            StatelessInvocationId {
+                transaction,
+                ordinal: 0,
+            }
+        );
+        assert_eq!(
+            sequence.allocate(transaction).unwrap(),
+            StatelessInvocationId {
+                transaction,
+                ordinal: 1,
+            }
+        );
+        sequence.next_ordinal = u64::MAX;
+        assert_eq!(
+            sequence.allocate(transaction),
+            Err(ExecutionDriverError::StatelessOrdinalOverflow)
+        );
+        assert_eq!(sequence.next_ordinal, u64::MAX);
+    }
 }

@@ -4,7 +4,8 @@
 //! `state_dry_runner.DryRunner.Apply` entrypoint. These tests rebuild its exact
 //! account/code/slot seed as an immutable Rust reader, compare ordinary CALL
 //! and CREATE results, prove supplied nonces are ignored, and ensure identity
-//! mismatches fail before any state read. RPC defaults, estimates, traces,
+//! mismatches fail before any state read. Fresh estimator probes are composed here.
+//! RPC defaults, full RPC estimate behavior, traces,
 //! native calls, persistence, and production routing are outside this test.
 
 use std::{cell::Cell, collections::BTreeMap};
@@ -37,6 +38,7 @@ struct FixtureReader {
     storage: BTreeMap<([u8; 20], ConcreteStorageKey), Vec<u8>>,
     codes: BTreeMap<[u8; 32], Vec<u8>>,
     account_reads: Cell<usize>,
+    account_error: Option<ConcreteReadError>,
 }
 
 impl FixtureReader {
@@ -83,6 +85,7 @@ impl FixtureReader {
             storage,
             codes,
             account_reads: Cell::new(0),
+            account_error: None,
         }
     }
 }
@@ -97,6 +100,9 @@ impl ConcreteStateRead for FixtureReader {
         address: [u8; 20],
     ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
         self.account_reads.set(self.account_reads.get() + 1);
+        if let Some(error) = &self.account_error {
+            return Err(error.clone());
+        }
         Ok(self
             .accounts
             .get(&address)
@@ -251,6 +257,81 @@ fn period_mismatch_fails_before_reading_the_sender() {
     .unwrap_err();
     assert!(matches!(error, SimulationError::StatePeriodMismatch { .. }));
     assert_eq!(reader.account_reads.get(), 0);
+}
+
+#[test]
+fn gas_search_uses_a_fresh_simulation_for_each_probe() {
+    use rustaxa_evm::estimate::{EstimateProbe, estimate_gas};
+    let fixture = fixture("public");
+    let reader = FixtureReader::from_fixture(&fixture);
+    let original_accounts = reader.accounts.clone();
+    let original_storage = reader.storage.clone();
+    let original_code = reader.codes.clone();
+    let case = &fixture["cases"][0];
+    let mut tx = transaction(case);
+    let mut probes = Vec::new();
+    let estimate = estimate_gas(tx.gas_limit.as_u64(), |gas| {
+        probes.push(gas);
+        tx.gas_limit = gas.into();
+        let result = simulate_ordinary(
+            &reader,
+            &NoHistory,
+            &NoNative,
+            &block(&fixture),
+            &tx,
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )?;
+        let TransactionExecutionResult::Executed(executed) = result.execution else {
+            panic!("funded fixture must pass admission")
+        };
+        assert_eq!(executed.status, CodeExecutionStatus::Success);
+        // The contract increments the committed slot from seven to eight. A
+        // leaked journal would expose nine (and different SSTORE gas) next time.
+        assert_eq!(
+            &executed.output[..32],
+            &bytes(&case["output"]["return"])[..32]
+        );
+        assert_eq!(result.state, reader.identity);
+        Ok::<_, SimulationError>(EstimateProbe::Success {
+            gas_used: executed.gas_used.as_u64(),
+        })
+    })
+    .unwrap();
+    assert_eq!(estimate, 29_373);
+    assert_eq!(
+        probes,
+        [100_000, 64_126, 46_189, 37_220, 32_736, 30_494, 29_373]
+    );
+    assert_eq!(reader.accounts, original_accounts);
+    assert_eq!(reader.storage, original_storage);
+    assert_eq!(reader.codes, original_code);
+}
+
+#[test]
+fn unavailable_or_corrupt_sender_is_not_simulated_as_an_empty_account() {
+    let fixture = fixture("public");
+    let mut reader = FixtureReader::from_fixture(&fixture);
+    for error in [
+        ConcreteReadError::HistoryUnavailable(reader.identity),
+        ConcreteReadError::Corrupt("sender encoding".into()),
+    ] {
+        reader.account_error = Some(error.clone());
+        assert_eq!(
+            simulate_ordinary(
+                &reader,
+                &NoHistory,
+                &NoNative,
+                &block(&fixture),
+                &transaction(&fixture["cases"][0]),
+                EnvelopeRules { cornus: true },
+                TaraxaProfile::new(false),
+            ),
+            Err(SimulationError::Sender(
+                rustaxa_evm::journal::JournalError::State(error)
+            ))
+        );
+    }
 }
 
 fn compare_execution(name: &str, actual: &TransactionExecutionResult, expected: &Value) {

@@ -1,22 +1,13 @@
 //! Differential P-256 primitive coverage against both pinned Go revisions.
 //!
-//! The source module is included directly so this independently owned slice
-//! can validate before the lead adds the shared crate export and frame route.
-//! Registry activation and frame settlement remain separate integration gates.
-
-mod contracts {
-    pub use rustaxa_evm::contracts::*;
-}
-
-#[path = "../src/p256.rs"]
-mod p256;
+//! Registry activation and frame settlement use separate integration tests.
 
 use num_bigint::BigUint;
-use p256::{P256_VERIFY_ADDRESS, P256_VERIFY_GAS, PreparedP256Call};
 use rustaxa_evm::contracts::{
     ExecutionValue, NativeCallKind, NativeInvocationResult, NativeStatus, StatelessInvocation,
     StatelessInvocationId,
 };
+use rustaxa_evm::p256::{P256_VERIFY_ADDRESS, P256_VERIFY_GAS, PreparedP256Call};
 use serde_json::Value;
 
 fn corpus() -> Value {
