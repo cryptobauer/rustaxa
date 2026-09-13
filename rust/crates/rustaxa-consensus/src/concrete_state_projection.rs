@@ -174,6 +174,13 @@ pub fn decode_concrete_state_projection(
             !transaction_effect.transaction_rlp.is_empty(),
             "concrete transaction effect payload is empty"
         );
+        ensure!(
+            transaction_effect
+                .invocations
+                .iter()
+                .all(|invocation| invocation.transaction_index == index),
+            "concrete invocation transaction index does not match containing effect"
+        );
         transaction_effects.push(transaction_effect);
     }
 
@@ -188,6 +195,12 @@ pub fn decode_concrete_state_projection(
         concatenated == invocations,
         "concrete invocation transcript does not match transaction effects"
     );
+    for (sequence, invocation) in invocations.iter().enumerate() {
+        ensure!(
+            invocation.sequence == sequence as u64,
+            "concrete invocation sequence is not contiguous from zero"
+        );
+    }
     let rewards_input = rlp.val_at(11)?;
     let catalog_hash = fixed::<32>(&rlp.at(12)?, "projection catalog hash")?;
     ensure!(
@@ -576,6 +589,98 @@ pub fn encode_concrete_rewards_input(stats: &[RewardsStatsPeriodRlp]) -> Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ordering_projection() -> FinalChainConcreteStateProjection {
+        let state = |period, root| FinalChainConcreteState {
+            period,
+            root: [root; 32],
+        };
+        let invocation = |transaction_index, sequence| FinalChainConcreteInvocation {
+            transaction_index,
+            sequence,
+            contract: crate::final_chain::DPOS_CONTRACT_ADDRESS,
+            ..Default::default()
+        };
+        let effects = vec![
+            FinalChainConcreteTransactionEffect {
+                index: 0,
+                transaction_rlp: vec![1],
+                execution_result_rlp: vec![2],
+                intermediate_state: state(2, 4),
+                invocations: vec![invocation(0, 0)],
+                ..Default::default()
+            },
+            FinalChainConcreteTransactionEffect {
+                index: 1,
+                transaction_rlp: vec![3],
+                execution_result_rlp: vec![4],
+                intermediate_state: state(2, 5),
+                invocations: Vec::new(),
+                ..Default::default()
+            },
+            FinalChainConcreteTransactionEffect {
+                index: 2,
+                transaction_rlp: vec![5],
+                execution_result_rlp: vec![6],
+                intermediate_state: state(2, 6),
+                invocations: vec![invocation(2, 1)],
+                ..Default::default()
+            },
+        ];
+        FinalChainConcreteStateProjection {
+            identity: FinalChainConcreteIdentity {
+                policy_version: FINAL_CHAIN_CONCRETE_PROJECTION_VERSION,
+                database_id: [1; 32],
+                chain_id: [2; 32],
+            },
+            prior_state: state(1, 3),
+            post_transaction_state: state(2, 7),
+            post_rewards_state: state(2, 8),
+            transaction_effects: effects.clone(),
+            invocations: effects
+                .into_iter()
+                .flat_map(|effect| effect.invocations)
+                .collect(),
+            catalog_hash: concrete_storage_catalog_hash(&[]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn concrete_invocation_ordering_binds_effect_and_global_sequence() {
+        let projection = ordering_projection();
+        let encoded = encode_concrete_state_projection(&projection);
+        assert_eq!(
+            decode_concrete_state_projection(&encoded).unwrap(),
+            projection
+        );
+        let mut wrong_effect = projection.clone();
+        wrong_effect.transaction_effects[0].invocations[0].transaction_index = 1;
+        wrong_effect.invocations[0].transaction_index = 1;
+        let error =
+            decode_concrete_state_projection(&encode_concrete_state_projection(&wrong_effect))
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("transaction index does not match containing effect")
+        );
+        for sequence in [1, 2] {
+            let mut invalid = projection.clone();
+            invalid.transaction_effects[0].invocations[0].sequence = sequence;
+            invalid.invocations[0].sequence = sequence;
+            assert!(
+                decode_concrete_state_projection(&encode_concrete_state_projection(&invalid))
+                    .is_err()
+            );
+        }
+        let mut reset = projection.clone();
+        reset.transaction_effects[2].invocations[0].sequence = 0;
+        reset.invocations[1].sequence = 0;
+        assert!(
+            decode_concrete_state_projection(&encode_concrete_state_projection(&reset)).is_err()
+        );
+    }
 
     #[test]
     fn concrete_pair_rejects_unrelated_committed_descriptor() {
