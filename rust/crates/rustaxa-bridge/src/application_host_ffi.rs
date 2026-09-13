@@ -146,6 +146,7 @@ pub mod application_host_ffi {
     }
     struct HostFinalChainPreflightReport {
         request_id: [u8; 32],
+        state_api_epoch: u64,
         committed_period: u64,
         committed_state_root: [u8; 32],
         concrete_provenance_rlp: Vec<u8>,
@@ -174,6 +175,7 @@ pub mod application_host_ffi {
         data: Vec<u8>,
     }
     struct HostFinalChainExecutionRequest {
+        expected_state_api_epoch: u64,
         concrete_marker_rlp: Vec<u8>,
         block_author: [u8; 20],
         timestamp: u64,
@@ -201,11 +203,13 @@ pub mod application_host_ffi {
         consensus_error: String,
     }
     struct HostFinalChainExecutionReport {
+        state_api_epoch: u64,
         post_transaction_state_root: [u8; 32],
         cumulative_gas_used: u64,
         results: Vec<HostFinalChainTransactionResult>,
     }
     struct HostFinalChainRewardsRequest {
+        expected_state_api_epoch: u64,
         concrete_marker_rlp: Vec<u8>,
         distribution_stats: Vec<HostRewardsStatsPeriod>,
     }
@@ -214,24 +218,32 @@ pub mod application_host_ffi {
         data: Vec<u8>,
     }
     struct HostFinalChainRewardsReport {
+        state_api_epoch: u64,
         post_rewards_state_root: [u8; 32],
         concrete_projection_rlp: Vec<u8>,
         concrete_projection_hash: [u8; 32],
         total_reward: Vec<u8>,
     }
     struct HostFinalChainStateCommitRequest {
+        expected_state_api_epoch: u64,
         concrete_marker_rlp: Vec<u8>,
         concrete_projection_rlp: Vec<u8>,
         concrete_projection_hash: [u8; 32],
         concrete_provenance_rlp: Vec<u8>,
     }
     struct HostFinalChainStateCommitReport {
+        state_api_epoch: u64,
         concrete_provenance_rlp: Vec<u8>,
         committed_state_found: bool,
         status: u8,
         committed_period: u64,
         committed_state_root: [u8; 32],
         error_code: String,
+    }
+    /// Exact staged marker plus the live StateAPI instance expected to discard it.
+    struct HostFinalChainDiscardRequest {
+        concrete_marker_rlp: Vec<u8>,
+        expected_state_api_epoch: u64,
     }
     struct HostFinalChainFinalizeTask {
         pbft_block_rlp: Vec<u8>,
@@ -402,7 +414,7 @@ pub mod application_host_ffi {
         #[cxx_name = "consensusDiscardFinalChainState"]
         fn consensus_discard_final_chain_state(
             self: &ExternalEvmPort,
-            concrete_marker: &CanonicalBytes,
+            request: &HostFinalChainDiscardRequest,
         ) -> Result<HostFinalChainPreflightReport>;
         #[cxx_name = "consensusLoadPillarAnchorState"]
         fn consensus_load_pillar_anchor_state(

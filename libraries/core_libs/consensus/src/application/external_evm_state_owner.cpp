@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <iterator>
 #include <stdexcept>
@@ -20,6 +21,13 @@
 
 namespace taraxa {
 namespace {
+
+uint64_t nextStateApiEpoch() {
+  static std::atomic<uint64_t> next_epoch{1};
+  const auto epoch = next_epoch.fetch_add(1, std::memory_order_relaxed);
+  if (!epoch) throw std::overflow_error("StateAPI runtime epoch exhausted");
+  return epoch;
+}
 
 constexpr uint8_t kFinalChainEvmLifecycleStatusCommitted = 0;
 constexpr uint8_t kFinalChainEvmLifecycleStatusRejected = 2;
@@ -172,6 +180,7 @@ rustaxa::FinalChainRewardsConfig makeFinalChainRewardsConfig(const FullNodeConfi
 ExternalEvmStateOwner::ExternalEvmStateOwner(const FullNodeConfig& config)
     : state_api_([this](EthBlockNumber block_number) { return blockHash(block_number); }, config.genesis.state,
                  config.opts_final_chain, {(config.db_path / "state_db").string()}),
+      state_api_epoch_(nextStateApiEpoch()),
       bridge_contract_address_(config.genesis.state.hardforks.ficus_hf.bridge_contract_address) {}
 
 ExternalEvmStateOwner::~ExternalEvmStateOwner() = default;
@@ -205,6 +214,7 @@ rustaxa::HostFinalChainPreflightReport ExternalEvmStateOwner::loadCommittedState
   report.request_id = request.request_id;
   try {
     const std::scoped_lock lock(mutex_);
+    report.state_api_epoch = state_api_epoch_;
     report.concrete_provenance_rlp = toRustBytes(state_api_.activate_concrete_root_policy(
         h256(request.concrete_chain_identity.data(), h256::ConstructFromPointer)));
     if (const auto pending = state_api_.get_pending_concrete_execution()) {
@@ -269,6 +279,9 @@ rustaxa::HostFinalChainExecutionReport ExternalEvmStateOwner::executeTransaction
   h256 post_transaction_state_root;
   {
     const std::scoped_lock lock(mutex_);
+    if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
+      throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
+    }
     ensureReadableLocked();
     state_api_.stage_concrete_execution(fromRustBytes(request.concrete_marker_rlp));
     const auto& execution = state_api_.execute_transactions({toAddress(request.block_author), request.block_gas_limit,
@@ -282,6 +295,7 @@ rustaxa::HostFinalChainExecutionReport ExternalEvmStateOwner::executeTransaction
   }
 
   rustaxa::HostFinalChainExecutionReport report{};
+  report.state_api_epoch = request.expected_state_api_epoch;
   report.post_transaction_state_root = toArray(post_transaction_state_root);
   gas_t cumulative_gas_used = 0;
   report.results.reserve(execution_results.size());
@@ -326,6 +340,10 @@ rustaxa::HostFinalChainRewardsReport ExternalEvmStateOwner::distributeRewards(
     rewards_stats.push_back(util::rlp_dec<rewards::BlockStats>(dev::RLP(value)));
   }
   const std::scoped_lock lock(mutex_);
+  if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
+    throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
+  }
+  report.state_api_epoch = state_api_epoch_;
   const auto pending_marker = state_api_.get_pending_concrete_execution();
   if (!pending_marker || *pending_marker != fromRustBytes(request.concrete_marker_rlp)) {
     throw DbException("FINAL_CHAIN_CONCRETE_REWARDS_MARKER_MISMATCH");
@@ -345,6 +363,10 @@ rustaxa::HostFinalChainStateCommitReport ExternalEvmStateOwner::commitState(
   report.status = kFinalChainEvmLifecycleStatusCommitted;
   try {
     const std::scoped_lock lock(mutex_);
+    if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
+      throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
+    }
+    report.state_api_epoch = state_api_epoch_;
     const auto pending_marker = state_api_.get_pending_concrete_execution();
     if (!pending_marker || *pending_marker != fromRustBytes(request.concrete_marker_rlp) ||
         state_api_.get_concrete_state_projection() != fromRustBytes(request.concrete_projection_rlp)) {
@@ -365,11 +387,16 @@ rustaxa::HostFinalChainStateCommitReport ExternalEvmStateOwner::commitState(
 }
 
 rustaxa::HostFinalChainPreflightReport ExternalEvmStateOwner::discardState(
-    const rustaxa::CanonicalBytes& concrete_marker) {
+    const rustaxa::HostFinalChainDiscardRequest& request) {
   rustaxa::HostFinalChainPreflightReport report{};
   try {
     const std::scoped_lock lock(mutex_);
-    state_api_.discard_concrete_execution(fromRustBytes(concrete_marker.data));
+    if (!request.expected_state_api_epoch || request.expected_state_api_epoch != state_api_epoch_) {
+      throw DbException("FINAL_CHAIN_STATE_API_EPOCH_MISMATCH");
+    }
+    state_api_.discard_concrete_execution(fromRustBytes(request.concrete_marker_rlp));
+    state_api_epoch_ = nextStateApiEpoch();
+    report.state_api_epoch = state_api_epoch_;
     const auto descriptor = state_api_.get_last_committed_state_descriptor();
     report.committed_period = descriptor.blk_num;
     report.committed_state_root = toArray(descriptor.state_root);
