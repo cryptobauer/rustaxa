@@ -1,14 +1,16 @@
 # S5 native result application
 
 Status: reviewed result-to-journal adapter for the existing S1 native port.
-This adds no native address registration or driver routing and does not claim
-business-kernel, native ABI or persisted native-period parity.
+The adapter itself adds no native address registration and does not claim
+business-kernel, native ABI or persisted native-period parity. Explicit opt-in
+CALL/CREATE driver entry points now apply these results to native frames.
 
 `rustaxa-evm/src/native.rs` prepares and invokes one operation through
 `NativeExecutionPort`. Quote identity is checked before invocation, and the
 returned funding/charged-gas facts are validated before journal effects. The
-port still owns exact request/quote binding, sequence ordering and staged kernel
-state. The caller's frame owns its checkpoint, call-value transfer, nonce rules
+driver allocates period-bound consensus invocation identities; the port validates
+their ordering and owns exact request/quote binding and staged kernel state.
+The caller's frame owns its checkpoint, call-value transfer, nonce rules
 and success/failure settlement.
 
 The adapter applies ordered ordinary mutations through the existing journal,
@@ -39,6 +41,15 @@ cargo clippy --locked --manifest-path rust/Cargo.toml -p rustaxa-evm --lib --tes
 make rewrite-validate-fast
 ```
 
-The [staged native kernel](s5_native_kernel_map.md), full dispatcher/frame
-integration and [ordered concrete overlay](s4_ordered_overlay_map.md) remain
-separate work. Production routing and protocol changes remain unauthorized.
+The opt-in driver checks that the consensus-native classifier is a subset of the
+full native registry. Classified stateless addresses remain explicitly unavailable
+in this route. Consensus sequence advances after generic depth/funds admission,
+including quote underfunding and native business failure, and survives enclosing
+ordinary rollback. Native failures retain returndata and unused gas but do not
+copy bytes into the CALL output region. Nine targeted driver tests cover these
+rules, full-width DELEGATECALL context and native calls during CREATE initcode.
+
+The [staged setCommission kernel](s5_native_kernel_implementation.md) and
+[ordered concrete overlay](s4_ordered_overlay_evidence.md) are separate components;
+complete native-period composition and remaining native methods remain open.
+Production routing and protocol changes remain unauthorized.

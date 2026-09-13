@@ -1,8 +1,9 @@
 //! Apply a staged native result through the existing execution journal lanes.
 //!
 //! The frame opens the checkpoint, moves call value and settles the returned
-//! status. The native port owns ordered invocation identities and staged kernel
-//! state. This adapter owns neither operation and cannot register a precompile,
+//! status. The driver allocates ordered invocation identities; the native port
+//! validates them and owns staged kernel state. This adapter owns neither
+//! operation and cannot register a precompile,
 //! choose consensus inputs or publish state. Any integrity failure aborts the
 //! pending period; a partially advanced journal/session must not be retried.
 
