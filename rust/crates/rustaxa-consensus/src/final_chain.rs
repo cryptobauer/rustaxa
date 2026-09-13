@@ -100,6 +100,40 @@ enum StoredDposTokenAmountEncoding {
 #[cfg(test)]
 mod concrete_projection_tests {
     use super::*;
+
+    #[test]
+    fn empty_calldata_kind_tracks_sequential_code_creation_and_deletion() {
+        let address = [7; 20];
+        let mut accounts = HashMap::new();
+        let transfer = FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER;
+        assert!(concrete_native_envelope_kind(
+            transfer,
+            Some(address),
+            &accounts
+        ));
+        let mut created = empty_account();
+        created.code_size = 1;
+        created.code_hash = [8; 32];
+        accounts.insert(address, created);
+        assert!(!concrete_native_envelope_kind(
+            transfer,
+            Some(address),
+            &accounts
+        ));
+        assert!(concrete_native_envelope_kind(
+            FINAL_CHAIN_EXECUTION_TX_KIND_DPOS_CONTRACT,
+            Some(address),
+            &accounts
+        ));
+        accounts.remove(&address);
+        assert!(concrete_native_envelope_kind(
+            transfer,
+            Some(address),
+            &accounts
+        ));
+        assert!(!concrete_native_envelope_kind(transfer, None, &accounts));
+    }
+
     use rlp::RlpStream;
     use rustaxa_storage::Config;
     use rustaxa_types::GenesisValidatorMetadata;
@@ -5347,12 +5381,11 @@ impl FinalChain {
                     replay.replay_context(context, invocation)?;
                 }
             }
-            let is_native_envelope = matches!(
-                transaction.kind,
-                FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER
-                    | FINAL_CHAIN_EXECUTION_TX_KIND_DPOS_CONTRACT
-                    | FINAL_CHAIN_EXECUTION_TX_KIND_SLASHING_CONTRACT
-            );
+            // The marker-bound kind is a calldata/address planning hint. Empty
+            // calldata can execute code created by an earlier transaction, so
+            // use the sequential account state before selecting native replay.
+            let is_native_envelope =
+                concrete_native_envelope_kind(transaction.kind, transaction.receiver, &accounts);
             if is_native_envelope {
                 let accounts_before = accounts.clone();
                 let dpos_before = dpos_snapshot.clone();
@@ -13708,6 +13741,26 @@ fn dpos_vdf_sortition_max_vote_count(
         "genesis DPoS VDF sortition maximum vote count does not fit into u64"
     );
     Ok(votes.as_u64())
+}
+
+/// Selects full native envelope validation without changing marker-bound input
+/// kinds. Only plain transfers to accounts without code use the transfer kernel;
+/// explicit consensus-native addresses retain their dedicated envelope checks.
+fn concrete_native_envelope_kind(
+    kind: u8,
+    receiver: Option<[u8; 20]>,
+    accounts: &HashMap<[u8; 20], Account>,
+) -> bool {
+    match kind {
+        FINAL_CHAIN_EXECUTION_TX_KIND_DPOS_CONTRACT
+        | FINAL_CHAIN_EXECUTION_TX_KIND_SLASHING_CONTRACT => true,
+        FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER => receiver.is_some_and(|address| {
+            accounts
+                .get(&address)
+                .is_none_or(|account| account.code_size == 0)
+        }),
+        _ => false,
+    }
 }
 
 fn affordable_gas(account: &Account, gas_price: U256, gas_limit: FinalChainGas) -> FinalChainGas {
