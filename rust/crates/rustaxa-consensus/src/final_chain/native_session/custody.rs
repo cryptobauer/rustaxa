@@ -647,7 +647,7 @@ impl FinalChainNativeSession<'_> {
         Ok(())
     }
 
-    fn put_validator(
+    pub(super) fn put_validator(
         &self,
         before: &DposSnapshot,
         after: &DposSnapshot,
@@ -686,7 +686,7 @@ impl FinalChainNativeSession<'_> {
     }
 }
 
-fn map_kernel_error(error: anyhow::Error) -> FinalChainNativeSessionError {
+pub(super) fn map_kernel_error(error: anyhow::Error) -> FinalChainNativeSessionError {
     match error.downcast::<FinalChainNativeStateReadError>() {
         Ok(error) => FinalChainNativeSessionError::StateRead(error),
         Err(error) => FinalChainNativeSessionError::Domain(error.to_string()),
@@ -698,7 +698,7 @@ fn domain(error: impl std::fmt::Display) -> FinalChainNativeSessionError {
 }
 
 #[derive(Clone)]
-enum ExpectedRaw {
+pub(super) enum ExpectedRaw {
     Exact(Vec<u8>),
     OneOf(Vec<Vec<u8>>),
     Empty,
@@ -733,7 +733,7 @@ impl ExpectedRaw {
     }
 }
 
-fn checked_put(
+pub(super) fn checked_put(
     trace: &mut FinalChainNativeRawTrace<'_>,
     key: ConcreteStorageKey,
     expected: ExpectedRaw,
@@ -749,12 +749,14 @@ fn checked_put(
     trace.put(DPOS_CONTRACT_ADDRESS, key, replacement)
 }
 
-struct NodeTrace {
+pub(super) struct NodeTrace {
     nodes: BTreeMap<NodeKey, Node>,
 }
 
 impl NodeTrace {
-    fn new(snapshot: &DposSnapshot) -> std::result::Result<Self, FinalChainNativeSessionError> {
+    pub(super) fn new(
+        snapshot: &DposSnapshot,
+    ) -> std::result::Result<Self, FinalChainNativeSessionError> {
         Ok(Self {
             nodes: snapshot
                 .reward_reference_graph
@@ -765,11 +767,11 @@ impl NodeTrace {
         })
     }
 
-    fn contains(&self, validator: [u8; 20], block: u64) -> bool {
+    pub(super) fn contains(&self, validator: [u8; 20], block: u64) -> bool {
         self.nodes.contains_key(&NodeKey { validator, block })
     }
 
-    fn decrement_and_write(
+    pub(super) fn decrement_and_write(
         &mut self,
         validator: [u8; 20],
         block: u64,
@@ -808,7 +810,7 @@ impl NodeTrace {
         Ok(())
     }
 
-    fn write_final(
+    pub(super) fn write_final(
         &mut self,
         validator: [u8; 20],
         block: u64,
@@ -845,7 +847,7 @@ fn delegation(snapshot: &DposSnapshot, validator: [u8; 20], delegator: [u8; 20])
         .map(StoredDposTokenAmount::as_u256)
 }
 
-fn encode_delegation(
+pub(super) fn encode_delegation(
     snapshot: &DposSnapshot,
     validator: [u8; 20],
     delegator: [u8; 20],
@@ -868,7 +870,7 @@ fn encode_node(node: &Node) -> Vec<u8> {
     row.out().to_vec()
 }
 
-fn put_rewards(
+pub(super) fn put_rewards(
     before: &DposSnapshot,
     after: &DposSnapshot,
     validator: [u8; 20],
@@ -1152,7 +1154,7 @@ fn validator_vrf_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 4], &validator]))
 }
 
-fn delegation_key(validator: [u8; 20], delegator: [u8; 20]) -> ConcreteStorageKey {
+pub(super) fn delegation_key(validator: [u8; 20], delegator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[2, 0], &validator, &delegator]))
 }
 

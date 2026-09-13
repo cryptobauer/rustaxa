@@ -1,0 +1,27 @@
+{
+  "exporter_sha256": "4c8d57a2524bca911e037bcd2f2257070aa12b4e01b558956a572c5a7b5513be",
+  "go_version": "go version go1.24.4 linux/amd64",
+  "harness_sha256": "f0e08017ae984073c0ac9af8e6fa013cdb0903bbcdec1ff387581c58a06927ae",
+  "instrumentation": {
+    "insertion": "synchronous copy-only observer before irreversible raw mutation body",
+    "observer_sha256": "739435d3b15fca029de8b92c5bcb07eddbc745801828644358ee6b25e403dad5",
+    "sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+    "target": "taraxa/state/state_evm/account.go"
+  },
+  "public_local_byte_identical": true,
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "schema": 1,
+  "scope": "actual live StateTransition reward distribution followed by nonzero and zero-repeat delegator/commission claims; exact errors, logs and raw writes; zero-stake commission and Rust publication/reopen are excluded",
+  "sha256": {
+    "local": "6c91750e2988ad60185e412689004374f4dfeb90a1a8953b2b9d12947718f445",
+    "public": "6c91750e2988ad60185e412689004374f4dfeb90a1a8953b2b9d12947718f445"
+  },
+  "support_sha256": {
+    "native_cancel_reward_reference.go": "394408c2b91827885489f4f723ebdf4aa55275631c43a9118093ca992db63ada",
+    "native_simulation_reference.go": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60",
+    "native_v1_custody_reference.go": "4e8227c57133f09354d585367ac9be2fa1baa15ef6e0726d7b42d9089a9f7cec"
+  }
+}

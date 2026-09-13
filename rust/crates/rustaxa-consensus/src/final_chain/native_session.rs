@@ -13,6 +13,7 @@ use super::*;
 use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteStorageKey};
 
 pub(super) mod account;
+pub(super) mod claims;
 pub(super) mod context_replay;
 pub(super) mod custody;
 mod query;
@@ -21,6 +22,8 @@ pub(super) mod rewards;
 
 #[cfg(test)]
 mod cancel_custody_reference_tests;
+#[cfg(test)]
+mod claims_reference_tests;
 #[cfg(test)]
 mod v1_custody_reference_tests;
 
@@ -234,6 +237,8 @@ pub enum FinalChainNativeSessionError {
     PendingPeriodMismatch,
     /// This first adapter does not implement pre-Cornus native behavior.
     PreCornusUnsupported,
+    /// Reward-claim storage behavior outside the source-proven staged slice.
+    ClaimsScopeUnsupported,
     /// Historical simulation requested state beyond the committed finalized head.
     HistoricalPeriodNotFinalized {
         /// Historical period requested by the simulation caller.
@@ -544,7 +549,9 @@ impl FinalChainNativeSession<'_> {
             | DposTransaction::CancelUndelegate { .. }
             | DposTransaction::UndelegateV2 { .. }
             | DposTransaction::ConfirmUndelegateV2 { .. }
-            | DposTransaction::CancelUndelegateV2 { .. } => None,
+            | DposTransaction::CancelUndelegateV2 { .. }
+            | DposTransaction::ClaimRewards { .. }
+            | DposTransaction::ClaimCommissionRewards { .. } => None,
             transaction if query::is_query(transaction) => {
                 let admission = match self.final_chain.native_invocation_admission(
                     transaction,
@@ -731,7 +738,11 @@ impl FinalChainNativeSession<'_> {
                 self.invoke_set_commission(prepared, quote, state)
             }
             PreparedKind::SelectedCustody(transaction) => {
-                self.invoke_selected_custody(transaction, quote, state)
+                if claims::is_claim(&transaction) {
+                    self.invoke_selected_claim(transaction, quote, state)
+                } else {
+                    self.invoke_selected_custody(transaction, quote, state)
+                }
             }
             PreparedKind::Query {
                 transaction,
