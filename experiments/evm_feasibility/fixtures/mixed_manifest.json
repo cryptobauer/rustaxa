@@ -1,0 +1,21 @@
+{
+  "artifacts_sha256": {
+    "mixed_comparison.json": "dd1bffcc31d4122b3f4f44ab38d69cfb48dd3a9abf06177d0019c840097139bc",
+    "mixed_local_batched.json": "35bb06bea72c6a74b504a4c6e41bd9c8c5a331df4415a1c3ef2a627f19e35808",
+    "mixed_local_observer.json": "88670c334b16b68fa85bbff0d570d4aca612a62cc1941d40c291f47aa52e0e54",
+    "mixed_public_batched.json": "35bb06bea72c6a74b504a4c6e41bd9c8c5a331df4415a1c3ef2a627f19e35808"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "runner_sha256": "29becbb456051534db74e10bffc6f4f8e19d0a442a19e0cb3ea8023227c98cd5",
+  "schema": 1,
+  "scope": "Synthetic StateTransition genesis plus one signed fee/reward-bearing period; public/local batched and local concrete-observer comparison; incremental memory TrieSink rows, no RocksDB/header/production claim",
+  "source_sha256": {
+    "mixed_period_reference.go": "8d3d595ac502302653c063cc3f28e5eb39da1daf42b0bd6bfaab1b94f0615db7",
+    "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08"
+  }
+}
