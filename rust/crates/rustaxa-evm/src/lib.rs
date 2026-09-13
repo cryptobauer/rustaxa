@@ -7,3 +7,4 @@
 //! until a separately authorized and validated routing change.
 
 pub mod contracts;
+pub mod input;

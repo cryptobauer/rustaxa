@@ -158,3 +158,11 @@ crate. Independent source-to-contract review resolved eight initial findings
 before S3 was released. The [additive journal oracle](journal_contract_evidence.md)
 provides dual-reference rollback/physical-byte inputs for S3; it does not count
 as a passing Rust journal implementation.
+
+The isolated executor's `input` module reuses `LegacyTransactionEnvelope` for application-selected
+signed and explicitly authorized system inputs. It retains canonical RLP, hash, sender and order,
+and widens existing wire values into the reviewed execution domain. Chain admission and system
+selection remain with the application. Intrinsic-gas and affordability failures stay in the
+execution envelope so the adapter does not bypass historical fee settlement. Targeted tests cover
+signed creation, unsigned rejection in signed mode, maximum wire values and low intrinsic gas.
+This adapter is independently reviewed and is not production routing.

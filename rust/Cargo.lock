@@ -2939,8 +2939,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ethereum-types",
+ "k256",
  "num-bigint",
  "revm",
+ "rlp 0.6.1",
  "rustaxa-consensus",
  "rustaxa-storage",
  "rustaxa-types",
