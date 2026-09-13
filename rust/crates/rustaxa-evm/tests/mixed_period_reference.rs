@@ -13,7 +13,7 @@ mod mixed_genesis;
 #[path = "support/mixed_native.rs"]
 mod mixed_native;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use ethereum_types::{H160, H256, U256};
 use k256::ecdsa::SigningKey;
 use num_bigint::BigUint;
@@ -22,12 +22,12 @@ use rlp::{Rlp, RlpStream};
 use rustaxa_consensus::concrete_state_projection::*;
 use rustaxa_consensus::final_chain_execution::*;
 use rustaxa_consensus::{
+    ConsensusExecutionPort, FinalChain, PillarAnchorStateReport, PillarAnchorStateRequest,
+    RewardCertVoteFact,
     native_projection_context::{
         FinalChainNativeInvocationContext, FinalChainNativeProjectionContext,
         FinalChainNativeRewardsContext,
     },
-    ConsensusExecutionPort, FinalChain, PillarAnchorStateReport, PillarAnchorStateRequest,
-    RewardCertVoteFact,
 };
 use rustaxa_evm::{
     contracts::{
@@ -37,11 +37,11 @@ use rustaxa_evm::{
         TransactionExecutionResult,
     },
     driver::{
-        execute_top_level_call_with_native, execute_top_level_create_with_native,
-        NativeAddressClassifier, PeriodConsensusSequence,
+        NativeAddressClassifier, PeriodConsensusSequence, execute_top_level_call_with_native,
+        execute_top_level_create_with_native,
     },
     envelope::EnvelopeRules,
-    input::{decode_legacy_input, LegacyInputKind},
+    input::{LegacyInputKind, decode_legacy_input},
     journal::{ExecutionJournal, JournalAccountOperation},
     profile::TaraxaProfile,
 };
@@ -1856,3 +1856,6 @@ fn four_mixed_periods_commit_and_reopen_exactly() -> Result<()> {
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[path = "support/mixed_recovery.rs"]
+mod mixed_recovery;
