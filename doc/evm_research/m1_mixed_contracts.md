@@ -162,3 +162,35 @@ is made that every raw mutation in an arbitrary account survives all EVM rollbac
 The aggregate eligible-vote and delegated-amount raw rows flush at Go `EndBlockCall`, not
 after each invocation or `PrepareIntermediateRoot`. Integration must preserve this deferred
 write behavior rather than require every semantic change to have an immediate raw row.
+
+
+## Frozen four-period oracle checkpoint
+
+The full signed workload is committed separately in
+[`mixed_workload_manifest.json`](../../experiments/evm_feasibility/fixtures/mixed_workload_manifest.json).
+Reproduce its three execution modes with:
+
+```sh
+python3 experiments/evm_feasibility/mixed_period_reference.py --scenario full
+```
+
+Both pinned batched modes agree exactly. Observer execution agrees on transaction results,
+refunds, raw setter calls, and all period roots. Extra retained observer trie nodes in CF2
+and CF4 are individually enumerated in `mixed_workload_comparison.json`; all shared values
+and CF1/CF3/CF5 agree. The exporter also compares disposable instrumented runs against
+unmodified runs for each pin/mode, including every physical row. Instrumentation observes
+actual raw setter arguments and the existing refund counter/capped refund calculation;
+source hashes and exact patch guards are recorded in the manifest.
+
+| Period | Final root | Fees | Minted reward |
+| --- | --- | ---: | ---: |
+| 1 | `d8a479bcb7d6fb672765f896de5a55f6fdb0bc6516cfdeabf9cefd3db9bb16eb` | 1023841 | 200 |
+| 2 | `d832fad26291666644757ca978fcac8b79ea8ee2bc4d5fc49a9d513b07b14ac4` | 465332 | 400 |
+| 3 | `325ffabe30e52065700b55d9f7e8ec3fd8fa300c02d4f6eae90acf26df7c157c` | 270922 | 200 |
+| 4 | `03bab8ff86115723ea140a6797f672cd8e781c12bb611ae9d313043c7ff28fd5` | 175019 | 200 |
+
+The deletion observation occurs after the period-two commit/reopen. Reading the deleted
+account again in the same observer period exposes a pinned-Go pending-empty-account RLP
+limitation after intermediate preparation; this corpus does not claim that path is covered.
+The reference remains an in-memory TransitionState/TrieSink row oracle, not a Go RocksDB
+reopen result. Rust persisted integration and mixed-state recovery remain acceptance gates.
