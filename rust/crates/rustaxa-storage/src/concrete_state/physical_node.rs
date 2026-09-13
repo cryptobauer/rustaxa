@@ -1,0 +1,511 @@
+//! Verification of one key path through Taraxa's persisted trie-node encoding.
+//!
+//! Taraxa stores 16-child branches and may replace a leaf's physical value with
+//! a hash hint. Verification reconstructs the canonical 17-child/hash-value
+//! encoding along one requested path and authenticates it against the pinned
+//! root. Hashed sibling subtrees remain unopened; embedded siblings are decoded
+//! because their canonical bytes contribute directly to an ancestor hash.
+
+use rlp::{Rlp, RlpStream};
+use rustaxa_types::FinalChainBlockNumber;
+use rustaxa_types::concrete_state::{ConcreteReadError, ConcreteStateIdentity};
+
+use super::codec::{account_commitment_rlp, corrupt, keccak256};
+
+#[derive(Clone, Copy)]
+pub(crate) enum TrieSchema {
+    Account,
+    Storage,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum PathProof {
+    Member(Vec<u8>),
+    NonMember,
+}
+
+pub(crate) struct SelectedVersion {
+    pub(crate) value: Vec<u8>,
+}
+
+pub(crate) trait PhysicalTrieStore {
+    fn identity(&self) -> ConcreteStateIdentity;
+    fn node(&self, column: &str, hash: [u8; 32]) -> Result<Option<Vec<u8>>, ConcreteReadError>;
+    fn value(
+        &self,
+        column: &str,
+        prefix: [u8; 32],
+        period: FinalChainBlockNumber,
+    ) -> Result<Option<SelectedVersion>, ConcreteReadError>;
+}
+
+/// Authenticates membership or non-membership for one already-hashed trie key.
+pub(crate) fn verify_path<S: PhysicalTrieStore>(
+    store: &S,
+    root: [u8; 32],
+    path: [u8; 32],
+    node_column: &str,
+    value_column: &str,
+    value_prefix: impl Fn([u8; 32]) -> [u8; 32] + Copy,
+    schema: TrieSchema,
+) -> Result<PathProof, ConcreteReadError> {
+    if root == super::codec::empty_trie_root() {
+        return Ok(PathProof::NonMember);
+    }
+    let raw = store
+        .node(node_column, root)?
+        .ok_or_else(|| ConcreteReadError::HistoryUnavailable(store.identity()))?;
+    let context = Context {
+        store,
+        target: bytes_to_nibbles(path),
+        node_column,
+        value_column,
+        value_prefix,
+        schema,
+    };
+    let verified = context.node(&raw, &[], true, 0)?;
+    if keccak256(&verified.canonical) != root {
+        return Err(corrupt("physical trie root hash mismatch"));
+    }
+    verified
+        .proof
+        .ok_or_else(|| corrupt("physical trie path produced no proof outcome"))
+}
+
+struct Context<'a, S, F> {
+    store: &'a S,
+    target: [u8; 64],
+    node_column: &'a str,
+    value_column: &'a str,
+    value_prefix: F,
+    schema: TrieSchema,
+}
+
+struct VerifiedNode {
+    canonical: Vec<u8>,
+    proof: Option<PathProof>,
+}
+
+impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> Context<'_, S, F> {
+    fn child(
+        &self,
+        raw: &[u8],
+        prefix: &[u8],
+        follows_target: bool,
+        depth: usize,
+    ) -> Result<VerifiedNode, ConcreteReadError> {
+        let physical_is_list = exact_rlp(raw, "physical trie child")?.is_list();
+        let mut verified = self.node(raw, prefix, follows_target, depth)?;
+        if physical_is_list && verified.canonical.len() >= 32 {
+            verified.canonical = rlp::encode(&keccak256(&verified.canonical).as_slice()).to_vec();
+        }
+        Ok(verified)
+    }
+
+    fn node(
+        &self,
+        raw: &[u8],
+        prefix: &[u8],
+        follows_target: bool,
+        depth: usize,
+    ) -> Result<VerifiedNode, ConcreteReadError> {
+        if depth > 128 || prefix.len() > 64 {
+            return Err(corrupt("physical trie path exceeds its depth bound"));
+        }
+        let rlp = exact_rlp(raw, "physical trie node")?;
+        if !rlp.is_list() {
+            return self.reference(&rlp, raw, prefix, follows_target, depth);
+        }
+        match rlp.item_count().map_err(corrupt)? {
+            16 => self.branch(&rlp, prefix, follows_target, depth),
+            1 | 2 => self.short(&rlp, prefix, follows_target, depth),
+            _ => Err(corrupt("physical trie node has invalid list arity")),
+        }
+    }
+
+    fn reference(
+        &self,
+        rlp: &Rlp<'_>,
+        raw: &[u8],
+        prefix: &[u8],
+        follows_target: bool,
+        depth: usize,
+    ) -> Result<VerifiedNode, ConcreteReadError> {
+        let reference = rlp.data().map_err(corrupt)?;
+        if reference.is_empty() {
+            return Ok(VerifiedNode {
+                canonical: vec![0x80],
+                proof: follows_target.then_some(PathProof::NonMember),
+            });
+        }
+        let hash: [u8; 32] = reference
+            .try_into()
+            .map_err(|_| corrupt("physical trie reference must be empty or 32 bytes"))?;
+        if !follows_target {
+            return Ok(VerifiedNode {
+                canonical: raw.to_vec(),
+                proof: None,
+            });
+        }
+        let child = self
+            .store
+            .node(self.node_column, hash)?
+            .ok_or_else(|| ConcreteReadError::HistoryUnavailable(self.store.identity()))?;
+        let verified = self.node(&child, prefix, true, depth + 1)?;
+        let computed = keccak256(&verified.canonical);
+        if computed != hash {
+            return Err(corrupt(format!(
+                "physical trie child hash mismatch at nibble depth {}: expected {}, computed {}",
+                prefix.len(),
+                hex_hash(hash),
+                hex_hash(computed)
+            )));
+        }
+        Ok(VerifiedNode {
+            canonical: raw.to_vec(),
+            proof: verified.proof,
+        })
+    }
+
+    fn branch(
+        &self,
+        rlp: &Rlp<'_>,
+        prefix: &[u8],
+        follows_target: bool,
+        depth: usize,
+    ) -> Result<VerifiedNode, ConcreteReadError> {
+        if follows_target && prefix.len() >= self.target.len() {
+            return Err(corrupt("physical branch extends past a complete key"));
+        }
+        let selected = follows_target.then(|| self.target[prefix.len()] as usize);
+        let mut stream = RlpStream::new_list(17);
+        let mut proof = None;
+        for index in 0..16 {
+            let child_follows = selected == Some(index);
+            let mut child_prefix = prefix.to_vec();
+            child_prefix.push(index as u8);
+            let child = self.child(
+                rlp.at(index).map_err(corrupt)?.as_raw(),
+                &child_prefix,
+                child_follows,
+                depth + 1,
+            )?;
+            if child_follows {
+                proof = child.proof;
+            }
+            stream.append_raw(&child.canonical, 1);
+        }
+        stream.append_empty_data();
+        Ok(VerifiedNode {
+            canonical: stream.out().to_vec(),
+            proof,
+        })
+    }
+
+    fn short(
+        &self,
+        rlp: &Rlp<'_>,
+        prefix: &[u8],
+        follows_target: bool,
+        depth: usize,
+    ) -> Result<VerifiedNode, ConcreteReadError> {
+        let count = rlp.item_count().map_err(corrupt)?;
+        let compact = rlp.at(0).map_err(corrupt)?.data().map_err(corrupt)?;
+        let (terminal, part) = decode_compact(compact)?;
+        let mut leaf_path = prefix.to_vec();
+        leaf_path.extend_from_slice(&part);
+        if leaf_path.len() > 64 {
+            return Err(corrupt("physical short-node key exceeds 32 bytes"));
+        }
+        let matches = self.target[prefix.len()..].starts_with(&part);
+        if terminal {
+            if leaf_path.len() != 64 {
+                return Err(corrupt("physical leaf key is not 32 bytes"));
+            }
+            let leaf_key = nibbles_to_bytes(&leaf_path)?;
+            let selected = self
+                .store
+                .value(
+                    self.value_column,
+                    (self.value_prefix)(leaf_key),
+                    self.store.identity().period,
+                )?
+                .ok_or_else(|| ConcreteReadError::HistoryUnavailable(self.store.identity()))?;
+            if selected.value.is_empty() {
+                return Err(corrupt("physical trie references a tombstoned value"));
+            }
+            let content = if count == 2 {
+                rlp.at(1).map_err(corrupt)?.data().map_err(corrupt)?
+            } else {
+                &[]
+            };
+            if !content.is_empty() && content.len() != 32 && content.len() > 8 {
+                return Err(corrupt("physical leaf has invalid inline value width"));
+            }
+            if !content.is_empty() && content.len() <= 8 && content != selected.value {
+                return Err(corrupt("physical inline leaf and versioned value differ"));
+            }
+            let commitment = match self.schema {
+                TrieSchema::Account => account_commitment_rlp(
+                    &super::codec::decode_physical_account(&selected.value)?,
+                )?,
+                TrieSchema::Storage => rlp::encode(&selected.value).to_vec(),
+            };
+            let mut stream = RlpStream::new_list(2);
+            stream.append(&compact);
+            stream.append(&commitment);
+            let canonical = stream.out().to_vec();
+            if content.len() == 32 && keccak256(&canonical).as_slice() != content {
+                return Err(corrupt("physical leaf hash hint does not match its value"));
+            }
+            let exact_target = follows_target && matches && leaf_path.as_slice() == self.target;
+            return Ok(VerifiedNode {
+                canonical,
+                proof: follows_target.then_some({
+                    if exact_target {
+                        PathProof::Member(selected.value)
+                    } else {
+                        PathProof::NonMember
+                    }
+                }),
+            });
+        }
+        if count != 2 {
+            return Err(corrupt("physical extension node has no child"));
+        }
+        let child_follows = follows_target && matches;
+        let child = self.child(
+            rlp.at(1).map_err(corrupt)?.as_raw(),
+            &leaf_path,
+            child_follows,
+            depth + 1,
+        )?;
+        let mut stream = RlpStream::new_list(2);
+        stream.append(&compact);
+        stream.append_raw(&child.canonical, 1);
+        Ok(VerifiedNode {
+            canonical: stream.out().to_vec(),
+            proof: if follows_target && !matches {
+                Some(PathProof::NonMember)
+            } else {
+                child.proof
+            },
+        })
+    }
+}
+
+fn decode_compact(bytes: &[u8]) -> Result<(bool, Vec<u8>), ConcreteReadError> {
+    let Some(first) = bytes.first().copied() else {
+        return Err(corrupt("physical short-node compact key is empty"));
+    };
+    let flag = first >> 4;
+    if flag > 3 || flag & 1 == 0 && first & 0x0f != 0 {
+        return Err(corrupt("physical short-node compact key has invalid flags"));
+    }
+    let mut output = Vec::with_capacity(bytes.len() * 2);
+    if flag & 1 != 0 {
+        output.push(first & 0x0f);
+    }
+    for byte in &bytes[1..] {
+        output.extend([byte >> 4, byte & 0x0f]);
+    }
+    Ok((flag & 2 != 0, output))
+}
+
+fn bytes_to_nibbles(bytes: [u8; 32]) -> [u8; 64] {
+    let mut output = [0_u8; 64];
+    for (index, byte) in bytes.into_iter().enumerate() {
+        output[index * 2] = byte >> 4;
+        output[index * 2 + 1] = byte & 0x0f;
+    }
+    output
+}
+
+fn nibbles_to_bytes(nibbles: &[u8]) -> Result<[u8; 32], ConcreteReadError> {
+    if nibbles.len() != 64 || nibbles.iter().any(|nibble| *nibble > 0x0f) {
+        return Err(corrupt("physical trie key has invalid nibbles"));
+    }
+    let mut output = [0_u8; 32];
+    for index in 0..32 {
+        output[index] = nibbles[index * 2] << 4 | nibbles[index * 2 + 1];
+    }
+    Ok(output)
+}
+
+fn exact_rlp<'a>(bytes: &'a [u8], label: &str) -> Result<Rlp<'a>, ConcreteReadError> {
+    let rlp = Rlp::new(bytes);
+    if rlp.payload_info().map_err(corrupt)?.total() != bytes.len() {
+        return Err(corrupt(format!("{label} has trailing bytes")));
+    }
+    Ok(rlp)
+}
+
+fn hex_hash(hash: [u8; 32]) -> String {
+    use std::fmt::Write;
+
+    let mut output = String::with_capacity(64);
+    for byte in hash {
+        write!(output, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use rustaxa_types::concrete_state::ConcreteStateIdentity;
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct MemoryStore {
+        identity: ConcreteStateIdentity,
+        nodes: BTreeMap<[u8; 32], Vec<u8>>,
+        values: BTreeMap<[u8; 32], Vec<u8>>,
+    }
+
+    impl PhysicalTrieStore for MemoryStore {
+        fn identity(&self) -> ConcreteStateIdentity {
+            self.identity
+        }
+
+        fn node(
+            &self,
+            _column: &str,
+            hash: [u8; 32],
+        ) -> Result<Option<Vec<u8>>, ConcreteReadError> {
+            Ok(self.nodes.get(&hash).cloned())
+        }
+
+        fn value(
+            &self,
+            _column: &str,
+            prefix: [u8; 32],
+            _period: FinalChainBlockNumber,
+        ) -> Result<Option<SelectedVersion>, ConcreteReadError> {
+            Ok(self
+                .values
+                .get(&prefix)
+                .cloned()
+                .map(|value| SelectedVersion { value }))
+        }
+    }
+
+    #[test]
+    fn verifies_pinned_go_branch_extension_and_nonmembership_fixture() {
+        // public.json node_history[2], emitted by both pinned Go references.
+        let root =
+            decode_hex_32("acde2a8675590a1f104ae5db7c4ab5ef0be55ebdd63b6b63f0aa5474fd5620dc");
+        let mut store = MemoryStore {
+            identity: ConcreteStateIdentity {
+                period: FinalChainBlockNumber::new(1),
+                state_root: root,
+            },
+            nodes: BTreeMap::new(),
+            values: BTreeMap::new(),
+        };
+        for (hash, node) in [
+            (
+                "11eec08482c5316b7562422fade7059df9794c5b5fc0eddfe52d985f6d00b146",
+                "f843a1200100000000000000000000000000000000000000000000000000000000000001a011eec08482c5316b7562422fade7059df9794c5b5fc0eddfe52d985f6d00b146",
+            ),
+            (
+                "1b174252b29aa58b9c5446f818d6a89f1987b3502d5ec8fc0bb0807433eaaf15",
+                "f89680f842a02000000000000000000000000000000000000000000000000000000000000001a0f9aa104e4c11dab9f96b33feb13e7ef0d37e8bcf2d6920172bc6d1c60392167bf842a02000000000000000000000000000000000000000000000000000000000000002a0a9d2c714abcf26a6371624afc6baf84e67dd9287f8f1408b07b99a30d5ed2b6e80808080808080808080808080",
+            ),
+            (
+                "5469ad332e5de42c6030829cfaad5080425441be8066edfaaf63d6bf90d06150",
+                "e210a01b174252b29aa58b9c5446f818d6a89f1987b3502d5ec8fc0bb0807433eaaf15",
+            ),
+            (
+                "acde2a8675590a1f104ae5db7c4ab5ef0be55ebdd63b6b63f0aa5474fd5620dc",
+                "f873a01b174252b29aa58b9c5446f818d6a89f1987b3502d5ec8fc0bb0807433eaaf158080808080808080808080808080f842a031000000000000000000000000000000000000000000000000000000000000f1a0593d9d0f1d5cc62870cc75287b06bc5c1cb3b78cc91bd783234ee39d9f6ede14",
+            ),
+        ] {
+            store.nodes.insert(decode_hex_32(hash), decode_hex(node));
+        }
+        for (key, value) in [
+            (
+                "0100000000000000000000000000000000000000000000000000000000000001",
+                "01",
+            ),
+            (
+                "0200000000000000000000000000000000000000000000000000000000000002",
+                "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            (
+                "f1000000000000000000000000000000000000000000000000000000000000f1",
+                "03",
+            ),
+        ] {
+            store.values.insert(decode_hex_32(key), decode_hex(value));
+        }
+
+        for key in store.values.keys().copied() {
+            assert!(matches!(
+                verify_path(
+                    &store,
+                    root,
+                    key,
+                    "nodes",
+                    "values",
+                    |path| path,
+                    TrieSchema::Storage
+                ),
+                Ok(PathProof::Member(_))
+            ));
+        }
+        let missing =
+            decode_hex_32("0300000000000000000000000000000000000000000000000000000000000003");
+        assert_eq!(
+            verify_path(
+                &store,
+                root,
+                missing,
+                "nodes",
+                "values",
+                |path| path,
+                TrieSchema::Storage,
+            )
+            .unwrap(),
+            PathProof::NonMember
+        );
+
+        let mut incomplete = store.clone();
+        incomplete.nodes.remove(&decode_hex_32(
+            "1b174252b29aa58b9c5446f818d6a89f1987b3502d5ec8fc0bb0807433eaaf15",
+        ));
+        assert_eq!(
+            verify_path(
+                &incomplete,
+                root,
+                decode_hex_32("0100000000000000000000000000000000000000000000000000000000000001"),
+                "nodes",
+                "values",
+                |path| path,
+                TrieSchema::Storage,
+            ),
+            Err(ConcreteReadError::HistoryUnavailable(store.identity))
+        );
+    }
+
+    fn decode_hex(input: &str) -> Vec<u8> {
+        assert_eq!(input.len() % 2, 0);
+        (0..input.len())
+            .step_by(2)
+            .map(|index| {
+                let digit = |value: u8| match value {
+                    b'0'..=b'9' => value - b'0',
+                    b'a'..=b'f' => value - b'a' + 10,
+                    _ => panic!("invalid fixture hex"),
+                };
+                digit(input.as_bytes()[index]) << 4 | digit(input.as_bytes()[index + 1])
+            })
+            .collect()
+    }
+
+    fn decode_hex_32(input: &str) -> [u8; 32] {
+        decode_hex(input).try_into().unwrap()
+    }
+}

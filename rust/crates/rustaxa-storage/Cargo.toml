@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.100"
 ethereum-types = { version = "0.16.0", features = ["rlp"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
+num-bigint = "0.4"
 rlp = "0.6"
 rustaxa-types = { path = "../rustaxa-types" }
 thiserror = "2.0.17"
