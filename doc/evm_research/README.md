@@ -17,6 +17,10 @@ Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qua
 [S1 contracts](s1_contracts.md), [S2 compatible reads](s2_compatible_reads.md),
 [the bounded S3 execution core](s3_execution_core.md), and
 [the first persisted S4 FinalChain path](s4_persisted_period.md).
+The latter includes bounded interrupted-publication recovery. S5 adds the
+[four original stateless helpers](s5_original_stateless.md) and
+[native result application](s5_native_journal.md); native kernels, dispatcher
+integration and the general ordered writer remain separate implementation work.
 
 ## Research phases
 
@@ -80,7 +84,7 @@ All 12 isolated tests and the six-case native overlay comparison pass; both Go r
 The [decision matrix](07_direction_decision.md#evidence-closure-and-implementation-acceptance) carries E1–E12 forward
 as implementation and release acceptance criteria, with explicit evidence limits. The subsequent S4 implementation
 adds an incremental writer and a bounded atomic persisted path. Complete execution, full historical replay, API
-parity, interrupted recovery, import/pruning and performance acceptance remain open. These are not a reason to
+parity, full recovery/import/pruning and performance acceptance remain open. These are not a reason to
 repeat engine-selection research.
 
 The official endpoint attempts failed during research. A task-owner-supplied mainnet light snapshot is now available
@@ -88,6 +92,9 @@ locally with both database directories. [Qualification](s0_snapshot_qualificatio
 establishes matching mainnet genesis and paired period/root at 25,706,949, with bounded prior-period reads.
 The owner identifies their lite node and likely producer commit; exact binary/capture provenance and full retained
 historical coverage remain unresolved. The original snapshot is preserved.
+The [head-input qualification](s0_head_replay_inputs.md) verifies the head period's
+19 ordered transactions and receipts against the stored header roots, while
+leaving configuration, reward-vote inputs and prior-state closure unqualified for replay.
 Full historical replay remains an acceptance gap. No network parity, performance or delivery-duration claim is made.
 
 ## Evidence labels

@@ -2,9 +2,9 @@
 
 The isolated `rustaxa-evm` crate now exposes a canonical-input adapter, a wide
 transaction envelope, a concrete journal, a host-generic instruction profile and
-a bounded top-level CALL/CREATE driver. Production routing is unchanged. Nested
-frame/native dispatch, complete period execution and persisted executor parity
-remain open.
+an iterative ordinary CALL/CREATE frame driver. Production routing is unchanged.
+Native dispatch, SELFDESTRUCT, wide SSTORE comparisons, general period execution
+and full persisted executor parity remain open.
 
 The journal preserves signed intermediate balances, arbitrary-width nonces,
 ordinary/raw visibility, irreversible raw and transient effects, nested ordinary
@@ -43,7 +43,9 @@ zero-value calls. Application-supplied native classification rejects native
 dispatch as unavailable. CREATE retains arbitrary-width RLP nonce derivation,
 creator/child nonce ordering, collision checks, initcode storage writes and
 runtime code deposit. Pre-entry child failures return gas; exceptional child
-failures consume it. Infrastructure and unsupported-operation errors require
+failures consume it. Nested CALL/CALLCODE/DELEGATECALL/STATICCALL and CREATE/CREATE2
+use an explicit interpreter stack and immediate-parent refund propagation.
+Infrastructure and unsupported-operation errors require
 discarding the pending execution, never publishing a partial journal.
 
 ## Evidence and validation limits
@@ -57,8 +59,8 @@ discarding the pending execution, never publishing a partial journal.
   refund-cap arithmetic.
 - Six opcode cases and eleven seeded SSTORE sequences execute actual REVM
   instructions against narrow fixture hosts and compare Go gas/refund/state.
-  The SSTORE corpus's nested STATICCALL parent remains evidence for the upcoming
-  frame driver, not an executed comparison in this milestone.
+  The nested driver also executes the SSTORE corpus's STATICCALL parent and
+  compares its storage-change rejection with the pinned reference.
 - The actual top-level CALL driver executes the Go SSTORE set/clear case through
   admission, interpreter, journal and refund settlement: 21,412 charged gas and
   19,800 refund units before settlement. Ten host/driver tests cover this path,
@@ -67,6 +69,13 @@ discarding the pending execution, never publishing a partial journal.
   55/56/65/257-byte nonces. The CREATE driver also matches the independent
   [two-period S4 oracle](s4_persisted_period.md), including exact execution gas
   and the integrated persisted roots, receipts and physical history.
+- Eight nested-frame tests include all 16 existing creation rows, nested
+  transient revert, static SSTORE rejection, CALLCODE/DELEGATECALL context,
+  signed refunds through enclosing rollback, exactly 1,025 active bytecode
+  entries at the depth boundary, stipend return after pre-entry funds rejection,
+  and prefix-only return-memory copying. The current eager CALL code-loading
+  limitation still requires complete code coverage for pre-entry ordering;
+  it is a follow-up boundary, not full failure-order parity.
 - The repository fast gate, affected storage-package tests and required four
   storage bridge tests pass. The explicit independent-snapshot reader gate passes
   at head 25,706,949 and prior period 25,706,948. That gate is read evidence only.
@@ -74,4 +83,4 @@ discarding the pending execution, never publishing a partial journal.
 The snapshot original remains preserved. No broad replay, fault campaign,
 reference-binary reopen or operational gate was run. The first complete
 persisted path is covered by [the bounded S4 composition](s4_persisted_period.md);
-general frame/native and full historical coverage remain open.
+general native/execution and full historical coverage remain open.
