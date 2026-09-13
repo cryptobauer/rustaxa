@@ -24,7 +24,11 @@ pub use lifecycle::{
     ConcreteCommitApproval, ConcreteLifecycleObservation, ConcreteObserverAccountChange,
     ConcreteObserverPhaseOutput, ConcreteStateLifecycle,
 };
-pub use reader::{ConcreteCheckpointReaders, ConcreteStateReader, ConcreteStoragePath};
+pub use reader::{
+    ConcreteCheckpointReaders, ConcreteStateReader, ConcreteStorageInventory,
+    ConcreteStorageInventoryEntry, ConcreteStorageInventoryError, ConcreteStorageInventoryLimits,
+    ConcreteStorageInventoryResource, ConcreteStoragePath,
+};
 pub use writer::{
     ConcreteAccountMutation, ConcreteCodeInsertion, ConcreteObserverPhaseDelta,
     ConcreteStateMutationBatch, ConcreteStateWriter, ConcreteStorageMutation,

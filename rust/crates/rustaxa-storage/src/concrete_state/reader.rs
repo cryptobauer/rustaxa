@@ -15,7 +15,8 @@ use super::codec::{
     storage_prefix_for_path, storage_trie_path, storage_version_prefix, versioned_key,
 };
 use super::physical_node::{
-    PathProof, PhysicalTrieStore, SelectedVersion, TrieSchema, verify_path,
+    InventoryError, InventoryLimits, InventoryResource, PathProof, PhysicalTrieStore,
+    SelectedVersion, TrieSchema, inventory_storage_trie, verify_path,
 };
 
 const DESCRIPTOR_KEY: &[u8] = b"last_committed_descriptor";
@@ -62,6 +63,74 @@ pub enum ConcreteStoragePath {
     Member(Vec<u8>),
     NonMember,
 }
+
+/// Explicit ceilings for one authenticated storage-trie inventory.
+///
+/// Nodes include hashed and embedded decoded trie nodes. Leaves count live storage paths,
+/// and value bytes count the exact selected physical values retained in the result. Zero is
+/// a valid limit. Exceeding any limit fails without returning a partial inventory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConcreteStorageInventoryLimits {
+    pub max_nodes: u64,
+    pub max_leaves: u64,
+    pub max_value_bytes: u64,
+}
+
+/// One authenticated live storage leaf keyed by its irreversible trie path hash.
+///
+/// `hashed_path` is `keccak256(logical_key)`. The inventory cannot invert it or infer the
+/// native/EVM meaning of an unknown key. `value` preserves the exact selected physical bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConcreteStorageInventoryEntry {
+    pub hashed_path: [u8; 32],
+    pub value: Vec<u8>,
+}
+
+/// Complete authenticated live storage leaves for one account at one exact identity.
+///
+/// Success proves coverage of the live trie rooted at `storage_root`. It does not prove
+/// all-ever historical keys, deleted slots, semantic catalog completeness, or linkage of a
+/// caller-supplied historical identity to a finalized header. Entries are sorted by hashed
+/// path. A present account without a storage root has a complete empty inventory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConcreteStorageInventory {
+    pub identity: ConcreteStateIdentity,
+    pub address: [u8; 20],
+    pub storage_root: Option<[u8; 32]>,
+    pub nodes_visited: u64,
+    pub value_bytes: u64,
+    pub entries: Vec<ConcreteStorageInventoryEntry>,
+}
+
+/// Resource whose caller-supplied inventory ceiling was exceeded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConcreteStorageInventoryResource {
+    Nodes,
+    Leaves,
+    ValueBytes,
+}
+
+/// Fail-closed outcome for an authenticated storage inventory.
+///
+/// Read errors preserve identity and integrity diagnostics. Limit errors report the first
+/// required count that exceeded its ceiling; neither error exposes partial entries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConcreteStorageInventoryError {
+    Read(ConcreteReadError),
+    LimitExceeded {
+        resource: ConcreteStorageInventoryResource,
+        limit: u64,
+        required: u64,
+    },
+}
+
+impl std::fmt::Display for ConcreteStorageInventoryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "concrete storage inventory: {self:?}")
+    }
+}
+
+impl std::error::Error for ConcreteStorageInventoryError {}
 
 impl ConcreteStateReader {
     /// Opens `state_db` read-only and pins `expected`. Existing column-family
@@ -247,6 +316,23 @@ impl ConcreteCheckpointReaders {
         read_code(&self.db, identity, code_hash)
     }
 
+    /// Returns every authenticated live storage leaf for one account and exact identity.
+    ///
+    /// Account absence and tombstones remain distinct in [`ConcreteRead`]. Only complete
+    /// inventories are returned; reaching a resource ceiling or missing any referenced node
+    /// or selected value is an error.
+    pub fn storage_inventory_at(
+        &self,
+        identity: ConcreteStateIdentity,
+        address: [u8; 20],
+        limits: ConcreteStorageInventoryLimits,
+    ) -> Result<ConcreteRead<ConcreteStorageInventory>, ConcreteStorageInventoryError> {
+        let pinned = self
+            .pinned(identity)
+            .map_err(ConcreteStorageInventoryError::Read)?;
+        storage_inventory(&pinned, address, limits)
+    }
+
     fn pinned(
         &self,
         identity: ConcreteStateIdentity,
@@ -258,6 +344,70 @@ impl ConcreteCheckpointReaders {
             db: &self.db,
             identity,
         })
+    }
+}
+
+fn storage_inventory<S: PhysicalTrieStore>(
+    store: &S,
+    address: [u8; 20],
+    limits: ConcreteStorageInventoryLimits,
+) -> Result<ConcreteRead<ConcreteStorageInventory>, ConcreteStorageInventoryError> {
+    let record = match read_account(store, address).map_err(ConcreteStorageInventoryError::Read)? {
+        ConcreteRead::Present(record) => record,
+        ConcreteRead::Absent => return Ok(ConcreteRead::Absent),
+        ConcreteRead::Tombstone => return Ok(ConcreteRead::Tombstone),
+    };
+    let Some(root) = record.account.storage_root else {
+        return Ok(ConcreteRead::Present(ConcreteStorageInventory {
+            identity: store.identity(),
+            address,
+            storage_root: None,
+            nodes_visited: 0,
+            value_bytes: 0,
+            entries: Vec::new(),
+        }));
+    };
+    let inventory = inventory_storage_trie(
+        store,
+        root,
+        |leaf_path| storage_prefix_for_path(address, leaf_path),
+        InventoryLimits {
+            max_nodes: limits.max_nodes,
+            max_leaves: limits.max_leaves,
+            max_value_bytes: limits.max_value_bytes,
+        },
+    )
+    .map_err(map_inventory_error)?;
+    Ok(ConcreteRead::Present(ConcreteStorageInventory {
+        identity: store.identity(),
+        address,
+        storage_root: Some(root),
+        nodes_visited: inventory.nodes_visited,
+        value_bytes: inventory.value_bytes,
+        entries: inventory
+            .entries
+            .into_iter()
+            .map(|(hashed_path, value)| ConcreteStorageInventoryEntry { hashed_path, value })
+            .collect(),
+    }))
+}
+
+fn map_inventory_error(error: InventoryError) -> ConcreteStorageInventoryError {
+    match error {
+        InventoryError::Read(error) => ConcreteStorageInventoryError::Read(error),
+        InventoryError::LimitExceeded {
+            resource,
+            limit,
+            required,
+        } => ConcreteStorageInventoryError::LimitExceeded {
+            resource: match resource {
+                InventoryResource::Nodes => ConcreteStorageInventoryResource::Nodes,
+                InventoryResource::Leaves => ConcreteStorageInventoryResource::Leaves,
+                InventoryResource::ValueBytes => ConcreteStorageInventoryResource::ValueBytes,
+            },
+            limit,
+            required,
+        },
     }
 }
 
@@ -863,6 +1013,88 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_inventory_returns_only_complete_authenticated_live_leaves() {
+        let period = FinalChainBlockNumber::new(17);
+        let address = [0x42; 20];
+        let slot = ConcreteStorageKey([0x24; 32]);
+        let storage_value = vec![1, 3, 3, 7];
+        let hashed_path = storage_trie_path(slot);
+        let (storage_root, storage_node) = physical_leaf(hashed_path, &storage_value, false);
+        let account_bytes = physical_account(&[1], &[2], Some(storage_root), None, 0);
+        let account = decode_physical_account(&account_bytes).unwrap();
+        let account_path = account_version_prefix(address);
+        let (state_root, account_node) = physical_leaf(
+            account_path,
+            &account_commitment_rlp(&account).unwrap(),
+            true,
+        );
+        let identity = ConcreteStateIdentity { period, state_root };
+        let mut database = TestDb::new();
+        database.put_descriptor(identity);
+        database.put("2", &state_root, &account_node);
+        database.put("3", &versioned_key(account_path, period), &account_bytes);
+        database.put("4", &storage_root, &storage_node);
+        database.put(
+            "5",
+            &versioned_key(storage_version_prefix(address, slot), period),
+            &storage_value,
+        );
+        database.close();
+
+        let readers =
+            ConcreteCheckpointReaders::open_read_only(&database.path, identity, [identity])
+                .unwrap();
+        let limits = ConcreteStorageInventoryLimits {
+            max_nodes: 1,
+            max_leaves: 1,
+            max_value_bytes: storage_value.len() as u64,
+        };
+        assert_eq!(
+            readers.storage_inventory_at(identity, address, limits),
+            Ok(ConcreteRead::Present(ConcreteStorageInventory {
+                identity,
+                address,
+                storage_root: Some(storage_root),
+                nodes_visited: 1,
+                value_bytes: storage_value.len() as u64,
+                entries: vec![ConcreteStorageInventoryEntry {
+                    hashed_path,
+                    value: storage_value,
+                }],
+            }))
+        );
+        assert_eq!(
+            readers.storage_inventory_at(
+                identity,
+                address,
+                ConcreteStorageInventoryLimits {
+                    max_nodes: 0,
+                    ..limits
+                },
+            ),
+            Err(ConcreteStorageInventoryError::LimitExceeded {
+                resource: ConcreteStorageInventoryResource::Nodes,
+                limit: 0,
+                required: 1,
+            })
+        );
+        let unlisted = ConcreteStateIdentity {
+            period,
+            state_root: [0x55; 32],
+        };
+        assert_eq!(
+            readers.storage_inventory_at(unlisted, address, limits),
+            Err(ConcreteStorageInventoryError::Read(
+                ConcreteReadError::HistoryUnavailable(unlisted)
+            ))
+        );
+        assert_eq!(
+            readers.storage_inventory_at(identity, [0x99; 20], limits),
+            Ok(ConcreteRead::Absent)
+        );
+    }
+
+    #[test]
     fn proves_absence_preserves_tombstones_and_rejects_unavailable_code() {
         let identity = ConcreteStateIdentity {
             period: FinalChainBlockNumber::new(9),
@@ -1080,6 +1312,55 @@ mod tests {
         assert_eq!(
             prior.verify_storage_path(address, total_supply).unwrap(),
             ConcreteStoragePath::Member(decode_hex("237465dd4fbad4693966174c"))
+        );
+
+        let checkpoints = ConcreteCheckpointReaders::open_read_only(
+            Path::new(&path),
+            identity,
+            [prior_identity, identity],
+        )
+        .unwrap();
+        let ConcreteRead::Present(inventory) = checkpoints
+            .storage_inventory_at(
+                identity,
+                address,
+                ConcreteStorageInventoryLimits {
+                    max_nodes: 50_000,
+                    max_leaves: 50_000,
+                    max_value_bytes: 32 * 1024 * 1024,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("qualified DPoS account was not present for inventory")
+        };
+        assert_eq!(inventory.identity, identity);
+        assert_eq!(inventory.address, address);
+        assert_eq!(inventory.storage_root, account.account.storage_root);
+        assert_eq!(inventory.nodes_visited, 31_164);
+        assert_eq!(inventory.entries.len(), 23_278);
+        assert_eq!(inventory.value_bytes, 259_077);
+        let mut inventory_encoding = Vec::new();
+        for entry in &inventory.entries {
+            inventory_encoding.extend_from_slice(&entry.hashed_path);
+            inventory_encoding.extend_from_slice(&(entry.value.len() as u64).to_be_bytes());
+            inventory_encoding.extend_from_slice(&entry.value);
+        }
+        let inventory_digest = keccak256(&inventory_encoding);
+        assert_eq!(
+            inventory_digest,
+            decode_hex_32("8183fbc4a15113b0b6b85ce5603e2ea449fc43b12bb531bdb48a9596776bd93f")
+        );
+        assert!(inventory.entries.iter().any(|entry| {
+            entry.hashed_path == storage_trie_path(total_supply)
+                && entry.value == decode_hex("237465dd4fbad4693966174c")
+        }));
+        eprintln!(
+            "qualified DPoS live inventory: nodes={}, leaves={}, value_bytes={}, digest={:x}",
+            inventory.nodes_visited,
+            inventory.entries.len(),
+            inventory.value_bytes,
+            ethereum_types::H256(inventory_digest),
         );
     }
 

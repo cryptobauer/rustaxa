@@ -12,6 +12,43 @@ use rustaxa_types::concrete_state::{ConcreteReadError, ConcreteStateIdentity};
 
 use super::codec::{account_commitment_rlp, corrupt, keccak256};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InventoryResource {
+    Nodes,
+    Leaves,
+    ValueBytes,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum InventoryError {
+    Read(ConcreteReadError),
+    LimitExceeded {
+        resource: InventoryResource,
+        limit: u64,
+        required: u64,
+    },
+}
+
+impl From<ConcreteReadError> for InventoryError {
+    fn from(error: ConcreteReadError) -> Self {
+        Self::Read(error)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct InventoryLimits {
+    pub(crate) max_nodes: u64,
+    pub(crate) max_leaves: u64,
+    pub(crate) max_value_bytes: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct Inventory {
+    pub(crate) nodes_visited: u64,
+    pub(crate) value_bytes: u64,
+    pub(crate) entries: Vec<([u8; 32], Vec<u8>)>,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum TrieSchema {
     Account,
@@ -70,6 +107,255 @@ pub(crate) fn verify_path<S: PhysicalTrieStore>(
     verified
         .proof
         .ok_or_else(|| corrupt("physical trie path produced no proof outcome"))
+}
+
+/// Traverses and authenticates every live leaf under one storage root.
+///
+/// A successful result is complete for that root. Resource exhaustion and any missing or
+/// malformed dependency return an error and never expose the partially accumulated entries.
+pub(crate) fn inventory_storage_trie<S: PhysicalTrieStore>(
+    store: &S,
+    root: [u8; 32],
+    value_prefix: impl Fn([u8; 32]) -> [u8; 32] + Copy,
+    limits: InventoryLimits,
+) -> Result<Inventory, InventoryError> {
+    if root == super::codec::empty_trie_root() {
+        return Ok(Inventory {
+            nodes_visited: 0,
+            value_bytes: 0,
+            entries: Vec::new(),
+        });
+    }
+    let raw = store
+        .node("4", root)?
+        .ok_or_else(|| ConcreteReadError::HistoryUnavailable(store.identity()))?;
+    let mut context = InventoryContext {
+        store,
+        value_prefix,
+        limits,
+        nodes_visited: 0,
+        value_bytes: 0,
+        entries: std::collections::BTreeMap::new(),
+    };
+    let canonical = context.node(&raw, &[], 0)?;
+    if keccak256(&canonical) != root {
+        return Err(
+            ConcreteReadError::Corrupt("physical storage trie root hash mismatch".into()).into(),
+        );
+    }
+    Ok(Inventory {
+        nodes_visited: context.nodes_visited,
+        value_bytes: context.value_bytes,
+        entries: context.entries.into_iter().collect(),
+    })
+}
+
+struct InventoryContext<'a, S, F> {
+    store: &'a S,
+    value_prefix: F,
+    limits: InventoryLimits,
+    nodes_visited: u64,
+    value_bytes: u64,
+    entries: std::collections::BTreeMap<[u8; 32], Vec<u8>>,
+}
+
+impl<S: PhysicalTrieStore, F: Fn([u8; 32]) -> [u8; 32] + Copy> InventoryContext<'_, S, F> {
+    fn child(
+        &mut self,
+        raw: &[u8],
+        prefix: &[u8],
+        depth: usize,
+    ) -> Result<Vec<u8>, InventoryError> {
+        let physical_is_list = exact_rlp(raw, "physical trie child")?.is_list();
+        let canonical = self.node(raw, prefix, depth)?;
+        if physical_is_list && canonical.len() >= 32 {
+            Ok(rlp::encode(&keccak256(&canonical).as_slice()).to_vec())
+        } else {
+            Ok(canonical)
+        }
+    }
+
+    fn node(&mut self, raw: &[u8], prefix: &[u8], depth: usize) -> Result<Vec<u8>, InventoryError> {
+        if depth > 128 || prefix.len() > 64 {
+            return Err(corrupt("physical trie inventory exceeds its depth bound").into());
+        }
+        let rlp = exact_rlp(raw, "physical trie node")?;
+        if !rlp.is_list() {
+            return self.reference(&rlp, raw, prefix, depth);
+        }
+        self.nodes_visited = self.nodes_visited.checked_add(1).ok_or_else(|| {
+            ConcreteReadError::Corrupt("physical trie inventory node count overflow".into())
+        })?;
+        self.enforce_limit(
+            InventoryResource::Nodes,
+            self.limits.max_nodes,
+            self.nodes_visited,
+        )?;
+        match rlp.item_count().map_err(corrupt)? {
+            16 => self.branch(&rlp, prefix, depth),
+            1 | 2 => self.short(&rlp, prefix, depth),
+            _ => Err(corrupt("physical trie node has invalid list arity").into()),
+        }
+    }
+
+    fn reference(
+        &mut self,
+        rlp: &Rlp<'_>,
+        raw: &[u8],
+        prefix: &[u8],
+        depth: usize,
+    ) -> Result<Vec<u8>, InventoryError> {
+        let reference = rlp.data().map_err(corrupt)?;
+        if reference.is_empty() {
+            return Ok(vec![0x80]);
+        }
+        let hash: [u8; 32] = reference
+            .try_into()
+            .map_err(|_| corrupt("physical trie reference must be empty or 32 bytes"))?;
+        let child = self
+            .store
+            .node("4", hash)?
+            .ok_or_else(|| ConcreteReadError::HistoryUnavailable(self.store.identity()))?;
+        let canonical = self.node(&child, prefix, depth + 1)?;
+        let computed = keccak256(&canonical);
+        if computed != hash {
+            return Err(corrupt(format!(
+                "physical trie child hash mismatch at nibble depth {}: expected {}, computed {}",
+                prefix.len(),
+                hex_hash(hash),
+                hex_hash(computed)
+            ))
+            .into());
+        }
+        Ok(raw.to_vec())
+    }
+
+    fn branch(
+        &mut self,
+        rlp: &Rlp<'_>,
+        prefix: &[u8],
+        depth: usize,
+    ) -> Result<Vec<u8>, InventoryError> {
+        if prefix.len() >= 64 {
+            return Err(corrupt("physical branch extends past a complete key").into());
+        }
+        let mut stream = RlpStream::new_list(17);
+        for index in 0..16 {
+            let mut child_prefix = prefix.to_vec();
+            child_prefix.push(index as u8);
+            let child = self.child(
+                rlp.at(index).map_err(corrupt)?.as_raw(),
+                &child_prefix,
+                depth + 1,
+            )?;
+            stream.append_raw(&child, 1);
+        }
+        stream.append_empty_data();
+        Ok(stream.out().to_vec())
+    }
+
+    fn short(
+        &mut self,
+        rlp: &Rlp<'_>,
+        prefix: &[u8],
+        depth: usize,
+    ) -> Result<Vec<u8>, InventoryError> {
+        let count = rlp.item_count().map_err(corrupt)?;
+        let compact = rlp.at(0).map_err(corrupt)?.data().map_err(corrupt)?;
+        let (terminal, part) = decode_compact(compact)?;
+        let mut leaf_path = prefix.to_vec();
+        leaf_path.extend_from_slice(&part);
+        if leaf_path.len() > 64 {
+            return Err(corrupt("physical short-node key exceeds 32 bytes").into());
+        }
+        if terminal {
+            if leaf_path.len() != 64 {
+                return Err(corrupt("physical leaf key is not 32 bytes").into());
+            }
+            let leaf_key = nibbles_to_bytes(&leaf_path)?;
+            let selected = self
+                .store
+                .value(
+                    "5",
+                    (self.value_prefix)(leaf_key),
+                    self.store.identity().period,
+                )?
+                .ok_or_else(|| ConcreteReadError::HistoryUnavailable(self.store.identity()))?;
+            if selected.value.is_empty() {
+                return Err(corrupt("physical trie references a tombstoned value").into());
+            }
+            let content = if count == 2 {
+                rlp.at(1).map_err(corrupt)?.data().map_err(corrupt)?
+            } else {
+                &[]
+            };
+            if !content.is_empty() && content.len() != 32 && content.len() > 8 {
+                return Err(corrupt("physical leaf has invalid inline value width").into());
+            }
+            if !content.is_empty() && content.len() <= 8 && content != selected.value {
+                return Err(corrupt("physical inline leaf and versioned value differ").into());
+            }
+            let commitment = rlp::encode(&selected.value).to_vec();
+            let mut stream = RlpStream::new_list(2);
+            stream.append(&compact);
+            stream.append(&commitment);
+            let canonical = stream.out().to_vec();
+            if content.len() == 32 && keccak256(&canonical).as_slice() != content {
+                return Err(corrupt("physical leaf hash hint does not match its value").into());
+            }
+
+            let required_leaves = (self.entries.len() as u64).checked_add(1).ok_or_else(|| {
+                ConcreteReadError::Corrupt("physical trie inventory leaf count overflow".into())
+            })?;
+            self.enforce_limit(
+                InventoryResource::Leaves,
+                self.limits.max_leaves,
+                required_leaves,
+            )?;
+            let value_len = u64::try_from(selected.value.len()).map_err(|_| {
+                ConcreteReadError::Corrupt("physical trie inventory value width overflow".into())
+            })?;
+            let required_bytes = self.value_bytes.checked_add(value_len).ok_or_else(|| {
+                ConcreteReadError::Corrupt("physical trie inventory value-byte overflow".into())
+            })?;
+            self.enforce_limit(
+                InventoryResource::ValueBytes,
+                self.limits.max_value_bytes,
+                required_bytes,
+            )?;
+            if self.entries.insert(leaf_key, selected.value).is_some() {
+                return Err(
+                    corrupt("physical trie inventory contains a duplicate leaf path").into(),
+                );
+            }
+            self.value_bytes = required_bytes;
+            return Ok(canonical);
+        }
+        if count != 2 {
+            return Err(corrupt("physical extension node has no child").into());
+        }
+        let child = self.child(rlp.at(1).map_err(corrupt)?.as_raw(), &leaf_path, depth + 1)?;
+        let mut stream = RlpStream::new_list(2);
+        stream.append(&compact);
+        stream.append_raw(&child, 1);
+        Ok(stream.out().to_vec())
+    }
+
+    fn enforce_limit(
+        &self,
+        resource: InventoryResource,
+        limit: u64,
+        required: u64,
+    ) -> Result<(), InventoryError> {
+        if required > limit {
+            return Err(InventoryError::LimitExceeded {
+                resource,
+                limit,
+                required,
+            });
+        }
+        Ok(())
+    }
 }
 
 struct Context<'a, S, F> {
@@ -472,6 +758,81 @@ mod tests {
             PathProof::NonMember
         );
 
+        let expected_entries = store
+            .values
+            .iter()
+            .map(|(key, value)| (*key, value.clone()))
+            .collect::<Vec<_>>();
+        let expected_value_bytes = expected_entries
+            .iter()
+            .map(|(_, value)| value.len() as u64)
+            .sum();
+        let inventory = inventory_storage_trie(
+            &store,
+            root,
+            |path| path,
+            InventoryLimits {
+                max_nodes: 32,
+                max_leaves: 3,
+                max_value_bytes: expected_value_bytes,
+            },
+        )
+        .unwrap();
+        assert_eq!(inventory.entries, expected_entries);
+        assert_eq!(inventory.value_bytes, expected_value_bytes);
+        assert!(inventory.nodes_visited > inventory.entries.len() as u64);
+        assert_eq!(
+            inventory_storage_trie(
+                &store,
+                root,
+                |path| path,
+                InventoryLimits {
+                    max_nodes: 0,
+                    max_leaves: 3,
+                    max_value_bytes: expected_value_bytes,
+                },
+            ),
+            Err(InventoryError::LimitExceeded {
+                resource: InventoryResource::Nodes,
+                limit: 0,
+                required: 1,
+            })
+        );
+        assert!(matches!(
+            inventory_storage_trie(
+                &store,
+                root,
+                |path| path,
+                InventoryLimits {
+                    max_nodes: 32,
+                    max_leaves: 2,
+                    max_value_bytes: expected_value_bytes,
+                },
+            ),
+            Err(InventoryError::LimitExceeded {
+                resource: InventoryResource::Leaves,
+                limit: 2,
+                required: 3,
+            })
+        ));
+        assert!(matches!(
+            inventory_storage_trie(
+                &store,
+                root,
+                |path| path,
+                InventoryLimits {
+                    max_nodes: 32,
+                    max_leaves: 3,
+                    max_value_bytes: expected_value_bytes - 1,
+                },
+            ),
+            Err(InventoryError::LimitExceeded {
+                resource: InventoryResource::ValueBytes,
+                limit,
+                required,
+            }) if limit == expected_value_bytes - 1 && required > limit
+        ));
+
         let mut incomplete = store.clone();
         incomplete.nodes.remove(&decode_hex_32(
             "1b174252b29aa58b9c5446f818d6a89f1987b3502d5ec8fc0bb0807433eaaf15",
@@ -487,6 +848,21 @@ mod tests {
                 TrieSchema::Storage,
             ),
             Err(ConcreteReadError::HistoryUnavailable(store.identity))
+        );
+        assert_eq!(
+            inventory_storage_trie(
+                &incomplete,
+                root,
+                |path| path,
+                InventoryLimits {
+                    max_nodes: 32,
+                    max_leaves: 3,
+                    max_value_bytes: expected_value_bytes,
+                },
+            ),
+            Err(InventoryError::Read(ConcreteReadError::HistoryUnavailable(
+                store.identity
+            )))
         );
     }
 
