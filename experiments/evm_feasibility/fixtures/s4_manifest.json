@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Synthetic direct two-period Go EVM/TransitionState/TrieSink execution with signed chain-841 inputs, FinalChain receipt RLP, and exact PendingBlockState physical-key projection; no application headers, rewards, RocksDB open, or production-routing claim",
+  "sha256": {
+    "public": "fa3d56b28a9e1582c27c9cbf9a33ee015da4baf077cf779810e4e21a0c0041d3",
+    "local": "fa3d56b28a9e1582c27c9cbf9a33ee015da4baf077cf779810e4e21a0c0041d3"
+  },
+  "exporter_sha256": "369fd96d78cc00c87989ffa93f272cdf9e18ad686b16b87a4e22c3ddc9b78295"
+}
