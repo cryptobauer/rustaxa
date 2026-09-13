@@ -20,9 +20,13 @@ pub use codec::{
     account_commitment_rlp, account_version_prefix, decode_physical_account,
     storage_version_prefix, versioned_key,
 };
-pub use lifecycle::{ConcreteCommitApproval, ConcreteLifecycleObservation, ConcreteStateLifecycle};
+pub use lifecycle::{
+    ConcreteCommitApproval, ConcreteLifecycleObservation, ConcreteObserverAccountChange,
+    ConcreteObserverPhaseOutput, ConcreteStateLifecycle,
+};
 pub use reader::{ConcreteStateReader, ConcreteStoragePath};
 pub use writer::{
-    ConcreteAccountMutation, ConcreteCodeInsertion, ConcreteStateMutationBatch,
-    ConcreteStateWriter, ConcreteStorageMutation, PreparedConcreteState,
+    ConcreteAccountMutation, ConcreteCodeInsertion, ConcreteObserverPhaseDelta,
+    ConcreteStateMutationBatch, ConcreteStateWriter, ConcreteStorageMutation,
+    PreparedConcreteState, PreparedConcreteView,
 };
