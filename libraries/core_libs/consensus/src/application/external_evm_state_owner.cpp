@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -24,9 +25,12 @@ namespace {
 
 uint64_t nextStateApiEpoch() {
   static std::atomic<uint64_t> next_epoch{1};
-  const auto epoch = next_epoch.fetch_add(1, std::memory_order_relaxed);
-  if (!epoch) throw std::overflow_error("StateAPI runtime epoch exhausted");
-  return epoch;
+  auto epoch = next_epoch.load(std::memory_order_relaxed);
+  while (epoch) {
+    const auto successor = epoch == std::numeric_limits<uint64_t>::max() ? 0 : epoch + 1;
+    if (next_epoch.compare_exchange_weak(epoch, successor, std::memory_order_relaxed)) return epoch;
+  }
+  throw std::overflow_error("StateAPI runtime epoch exhausted");
 }
 
 constexpr uint8_t kFinalChainEvmLifecycleStatusCommitted = 0;
