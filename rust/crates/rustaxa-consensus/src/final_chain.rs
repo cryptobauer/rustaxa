@@ -7465,7 +7465,7 @@ impl FinalChain {
     fn apply_dpos_delegator_reward_claim_for_contract(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         validator: [u8; 20],
         delegator: [u8; 20],
     ) -> Result<DposApplyOutcome, anyhow::Error> {
@@ -7595,7 +7595,7 @@ impl FinalChain {
     fn apply_dpos_commission_reward_claim(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         owner: [u8; 20],
         validator: [u8; 20],
         block_number: FinalChainBlockNumber,
@@ -7625,12 +7625,9 @@ impl FinalChain {
             .get(&validator)
             .map(StoredDposTokenAmount::amount)
             .unwrap_or_default();
-        let dpos_contract_balance = *accounts
-            .entry(DPOS_CONTRACT_ADDRESS)
-            .or_insert_with(empty_account)
-            .balance
-            .as_u256();
-        if reward.as_u256() > dpos_contract_balance {
+        let reward_exact = BigUint::from_bytes_be(&u256_to_big_endian(reward.as_u256()));
+        let dpos_contract_balance = accounts.account(DPOS_CONTRACT_ADDRESS)?.balance;
+        if BigInt::from(reward_exact.clone()) > dpos_contract_balance {
             anyhow::bail!(
                 "Rust FinalChain::finalize DPoS contract balance insufficient for commission reward claim"
             );
@@ -7639,23 +7636,15 @@ impl FinalChain {
         snapshot
             .commission_rewards
             .insert(validator, StoredDposTokenAmount::default());
-        if !reward.is_zero() {
-            let dpos_account = accounts
-                .entry(DPOS_CONTRACT_ADDRESS)
-                .or_insert_with(empty_account);
-            dpos_account.balance.replace_after_mutation(
-                dpos_contract_balance
-                    .checked_sub(reward.as_u256())
-                    .ok_or_else(|| anyhow::anyhow!("DPoS contract commission reward underflow"))?,
-            );
-            let owner_account = accounts.entry(owner).or_insert_with(empty_account);
-            let current_owner_balance = *owner_account.balance.as_u256();
-            owner_account.balance.replace_after_mutation(
-                current_owner_balance
-                    .checked_add(reward.as_u256())
-                    .ok_or_else(|| anyhow::anyhow!("DPoS commission reward overflow"))?,
-            );
-        }
+        // The native contract invokes `SubBalance` and `AddBalance` even for a
+        // zero commission pool. The account port preserves those lifecycle
+        // operations for staged execution and the legacy map implementation.
+        transfer_dpos_contract_balance(
+            accounts,
+            owner,
+            &reward_exact,
+            "Rust FinalChain::finalize DPoS contract balance insufficient for commission reward claim",
+        )?;
 
         if is_zero_stake
             && (!self.magnolia_active(block_number)
