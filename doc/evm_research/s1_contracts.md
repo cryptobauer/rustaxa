@@ -5,8 +5,9 @@ task worktrees start on `task/evm-s0` and `task/evm-execution`. No production
 dependency or routing to `rustaxa-evm` is installed. General application and
 concrete RocksDB layout remain unchanged.
 
-Status: shared reader contracts and unlinked preflight composition implemented;
-execution/native settlement contracts are being reviewed before S1 closes.
+Status: S1 contracts and unlinked preflight composition complete, independently
+reviewed and validated. S2/S3 implementation can proceed under these interfaces;
+this is not execution, persistence or production-routing acceptance.
 
 ## Ownership and dependency direction
 
@@ -82,6 +83,23 @@ and `state_db_rocksdb/db.go`, reviewed independently against the Rust contract.
   from irreversible raw/semantic changes and must not charge gas or transfer
   call value a second time.
 
+The typed native port receives a current-journal read view and separates mutable
+reference cache preparation from gas-admitted business invocation. Preparation
+must bind every invocation field; matching the invocation ID alone is insufficient.
+Native ordinary effects include ordered balance, nonce and touch operations;
+implicit account creation must precede a dependent nonce effect. Native failure
+payloads and attempted creation addresses survive the exact reference error path.
+Empty raw puts are rejected because the reference represents them as deletion.
+Native cache lifetime remains distinct from journal rollback, including caches
+that survive removal of a newly created account.
+
+Negative intermediate balance word projection follows the pinned uint256
+conversion modulo 2^256. A negative terminal balance is explicitly unsupported
+at the unsigned persistence boundary: Go's physical account encoder ignores an
+RLP negative-integer error and can produce malformed output. Rejecting that
+boundary is not claimed as terminal Go parity; S3/S4 must prove the relevant
+reachability/settlement before claiming complete execution compatibility.
+
 Source: pinned Go `state_evm/{account,transition_state}.go`,
 `state_transition/trie_sink.go` and `core/vm/evm.go`;
 dual-reference raw rollback/native/creation fixtures under
@@ -132,3 +150,11 @@ refusal/request identity. Existing workspace Clippy warnings and the inventory
 guard's missing retired shim-directory diagnostic remain; both structural
 guards pass. No storage implementation or C++ changed in this chunk, so no
 storage bridge build, expensive differential, or upstream C++ audit is claimed.
+
+Final S1 validation also passes `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-evm` (four contract tests and the composition test) and a fresh
+`make rewrite-validate-fast` after linking the reviewed contracts into the new
+crate. Independent source-to-contract review resolved eight initial findings
+before S3 was released. The [additive journal oracle](journal_contract_evidence.md)
+provides dual-reference rollback/physical-byte inputs for S3; it does not count
+as a passing Rust journal implementation.
