@@ -382,6 +382,181 @@ mod concrete_projection_tests {
     }
 
     #[test]
+    fn concrete_storage_transition_accepts_only_exact_removed_iterable_zero_count() {
+        let path = temp_db_path("removed-iterable-zero-count");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x31; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let before = final_chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        // Cross the same persistence boundary as a period reopen. The current
+        // snapshot schema must retain the live iterable identity before its
+        // final member is removed in the following period.
+        let before = decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&before).unwrap()).unwrap();
+        assert_eq!(before.delegator_validators[&validator], vec![validator]);
+
+        let mut after = before.clone();
+        after.delegator_validators.remove(&validator);
+        after
+            .delegations
+            .get_mut(&validator)
+            .unwrap()
+            .remove(&validator);
+        after
+            .delegation_reward_cursors
+            .get_mut(&validator)
+            .unwrap()
+            .remove(&validator);
+
+        let before_storage = canonical_concrete_precompile_storage(&before, true).unwrap();
+        let after_storage = canonical_concrete_precompile_storage(&after, true).unwrap();
+        let mut rows = before_storage
+            .keys()
+            .chain(after_storage.keys())
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|key| {
+                !concrete_storage_values_equivalent(before_storage.get(key), after_storage.get(key))
+            })
+            .map(|(contract, key)| FinalChainConcreteStorageProjection {
+                contract,
+                key,
+                value: after_storage
+                    .get(&(contract, key))
+                    .and_then(|values| values.first())
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        let count_key = concrete_storage_key(&[&[2, 1], &validator, &[1]]);
+        let count = rows
+            .iter_mut()
+            .find(|row| row.contract == DPOS_CONTRACT_ADDRESS && row.key == count_key)
+            .unwrap();
+        assert!(count.value.is_empty());
+        count.value = vec![0; 4];
+
+        validate_concrete_precompile_storage_transition(&before, &after, true, &rows, "TEST")
+            .unwrap();
+
+        for invalid in [vec![0; 3], vec![1, 0, 0, 0]] {
+            let mut invalid_rows = rows.clone();
+            invalid_rows
+                .iter_mut()
+                .find(|row| row.key == count_key)
+                .unwrap()
+                .value = invalid;
+            let error = validate_concrete_precompile_storage_transition(
+                &before,
+                &after,
+                true,
+                &invalid_rows,
+                "TEST",
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("FINAL_CHAIN_CONCRETE_STORAGE_TOMBSTONE_MISMATCH")
+            );
+        }
+
+        let delegation_key = concrete_storage_key(&[&[2, 0], &validator, &validator]);
+        let mut unrelated_zero = rows.clone();
+        unrelated_zero
+            .iter_mut()
+            .find(|row| row.key == delegation_key)
+            .unwrap()
+            .value = vec![0; 4];
+        let error = validate_concrete_precompile_storage_transition(
+            &before,
+            &after,
+            true,
+            &unrelated_zero,
+            "TEST",
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_CONCRETE_STORAGE_TOMBSTONE_MISMATCH")
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn concrete_iterable_count_keys_cover_all_persisted_dpos_families() {
+        let path = temp_db_path("iterable-count-key-families");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![],
+            U256::one(),
+            U256::one(),
+            U256::one(),
+        );
+        let mut snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+            .unwrap();
+        let delegator = [0x41; 20];
+        let validator = [0x42; 20];
+        snapshot
+            .delegator_validators
+            .insert(delegator, vec![validator]);
+        snapshot.undelegations.insert(
+            delegator,
+            vec![DposUndelegation {
+                validator,
+                amount: StoredDposTokenAmount::default(),
+                block: 1,
+            }],
+        );
+        snapshot.undelegations_v2.insert(
+            delegator,
+            vec![DposValidatorUndelegationsV2 {
+                validator,
+                entries: vec![DposUndelegationV2Entry {
+                    id: 1,
+                    amount: StoredDposTokenAmount::default(),
+                    block: 1,
+                }],
+            }],
+        );
+
+        let keys = canonical_concrete_iterable_count_keys(&snapshot);
+        for prefix in [vec![2, 1], vec![3, 1], vec![3, 2]] {
+            assert!(keys.contains(&(
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&prefix, &delegator, &[1]]),
+            )));
+        }
+        assert!(keys.contains(&(
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[3, 3], &delegator, &validator, &[1]]),
+        )));
+        assert!(keys.contains(&(
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[0, 5], &[1]]),
+        )));
+        assert!(!keys.contains(&(DPOS_CONTRACT_ADDRESS, [0xa5; 32])));
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn concrete_transaction_storage_rejects_untouched_row_drift() {
         let path = temp_db_path("untouched-storage-drift");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -9851,6 +10026,49 @@ fn insert_concrete_iterable_map(
     }
 }
 
+/// Returns the concrete count-row identities for every iterable map represented
+/// by `snapshot`.
+///
+/// The compact semantic snapshot drops a per-owner iterable entry after its
+/// final item is removed. The pinned Go map retains that entry's count row as
+/// four little-endian zero bytes, so transition validation must remember the
+/// exact count identities represented by the prior snapshot. This helper does
+/// not infer prefixes from arbitrary raw rows and therefore cannot authorize an
+/// unrelated zero-valued write.
+fn canonical_concrete_iterable_count_keys(
+    snapshot: &DposSnapshot,
+) -> BTreeSet<([u8; 20], [u8; 32])> {
+    let mut keys = BTreeSet::from([(
+        DPOS_CONTRACT_ADDRESS,
+        concrete_storage_key(&[&[0, 5], &[1]]),
+    )]);
+    for delegator in snapshot.delegator_validators.keys() {
+        keys.insert((
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[2, 1], delegator, &[1]]),
+        ));
+    }
+    for delegator in snapshot.undelegations.keys() {
+        keys.insert((
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[3, 1], delegator, &[1]]),
+        ));
+    }
+    for (delegator, validators) in &snapshot.undelegations_v2 {
+        keys.insert((
+            DPOS_CONTRACT_ADDRESS,
+            concrete_storage_key(&[&[3, 2], delegator, &[1]]),
+        ));
+        for validator in validators {
+            keys.insert((
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[3, 3], delegator, &validator.validator, &[1]]),
+            ));
+        }
+    }
+    keys
+}
+
 /// Reconstructs every live DPoS/slashing raw row represented by a native
 /// snapshot. Historical removed iterable-map prefixes are intentionally not
 /// synthesized: their preimages are absent from the compact snapshot and the
@@ -10185,6 +10403,7 @@ fn validate_concrete_precompile_storage_transition_with_deferred_counters(
     boundary: &str,
     transient_rows: Option<&BTreeSet<([u8; 20], [u8; 32])>>,
 ) -> Result<(), anyhow::Error> {
+    let before_iterable_count_keys = canonical_concrete_iterable_count_keys(before);
     let before = canonical_concrete_precompile_storage(before, extended_validator_active)?;
     let after = canonical_concrete_precompile_storage(after, extended_validator_active)?;
     let actual = rows
@@ -10213,9 +10432,14 @@ fn validate_concrete_precompile_storage_transition_with_deferred_counters(
                 "FINAL_CHAIN_CONCRETE_STORAGE_VALUE_MISMATCH:{boundary}"
             );
         } else {
+            let retained_zero_iterable_count = before.contains_key(key)
+                && before_iterable_count_keys.contains(key)
+                && *value == [0_u8; 4];
             anyhow::ensure!(
-                (before.contains_key(key) || transient_rows.is_some_and(|rows| rows.contains(key)))
-                    && value.is_empty(),
+                ((before.contains_key(key)
+                    || transient_rows.is_some_and(|rows| rows.contains(key)))
+                    && value.is_empty())
+                    || retained_zero_iterable_count,
                 "FINAL_CHAIN_CONCRETE_STORAGE_TOMBSTONE_MISMATCH:{boundary}"
             );
         }
