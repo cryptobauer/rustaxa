@@ -98,14 +98,17 @@ or a single snapshot limits the evidence available.
 - N1: in progress; [contracts and source inventory](n1_existing_network_contracts.md)
   record actual worktrees, profile/native gaps and existing-state constraints.
 - N2: in progress; P-256 primitive and frame integration implemented, BLS and
-  Ficus MCOPY implemented; Falcon integration and remaining stateful-native
-  coverage remain under validation. Ordered Aspen2 reward phases implemented.
+  Ficus MCOPY and Falcon implemented with independent scoped review; remaining
+  stateful-native coverage remains under validation. Ordered Aspen2 reward phases implemented.
 - N3: [gas-search and ordinary simulation evidence](n3_api_parity.md) implemented;
   ordinary persisted historical reads/simulation/reopen now have bounded evidence;
-  native simulation and full historical API/trace acceptance remain open.
+  the disposable native simulation facade is implemented and reviewed; actual
+  native business parity and full historical API/trace acceptance remain open.
 - N4: [copied-head transaction preflight](n4_replay_preflight.md) passes for 19
   transactions, exact receipts and transaction-only derivation of the retained
-  root; bootstrap and qualification of the terminal rewards/system inputs remain open.
+  root; [identity-pinned checkpoint readers](n4_checkpoint_readers.md) are
+  implemented and reviewed. Bootstrap and qualification of terminal
+  rewards/system inputs remain open.
 - N5–N6: open; no integrated milestone completion claimed. The
   [progress checkpoint](n6_progress_checkpoint.md) records validated chunks,
   interrupted assignments and remaining acceptance work.

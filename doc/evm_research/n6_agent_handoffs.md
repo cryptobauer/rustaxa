@@ -41,3 +41,9 @@ routing observations, not verified account quota or billing facts.
 | Actual native DryRunner oracle | Existing assigned `gpt-5.6-sol`, no new model request | Yes; startup confirmed | Implementing actual Go staged-delegation/current-query/delayed-eligibility fixture. No routing failure observed. |
 | Multi-validator rewards | Existing assigned `gpt-5.6-sol`, no new model request | Yes; startup confirmed | Resumed related rewards work; zero-yield patch already integrated as `6228744df`. Designing permutation and commutativity evidence. No routing failure observed. |
 | Native simulation facade | Existing lead session; no model request | Lead worked locally | Added consuming factory composition and lifetime/sequence test. Independent reviewer approved ownership boundary; strict clippy and fast gate passed (24 native-driver/eight simulation tests). Actual native oracle remains separate. |
+
+State reader handoff: worker commit `b73a25da8` integrated as `4ff0cf8af`.
+Requested existing Sol worker ran successfully; Astra reviewer approved the
+read-only API and historical error identity. Eight focused reader tests, the
+fast gate and all four required Rust-enabled C++ storage bridge tests passed.
+The authenticated inventory is the worker's next separate slice.
