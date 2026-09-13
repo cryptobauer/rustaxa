@@ -358,13 +358,19 @@ func seedNativeSimulation() nativeSimulationSeed {
 	return nativeSimulationSeed{database: database, config: config, wrapper: created.NewContractAddr}
 }
 
+type nativeSimulationLog struct {
+	Address string   `json:"address"`
+	Topics  []string `json:"topics"`
+	Data    string   `json:"data"`
+}
+
 type nativeSimulationOutput struct {
-	EffectiveNonce string   `json:"effective_nonce"`
-	GasUsed        uint64   `json:"gas_used"`
-	ConsensusError string   `json:"consensus_error"`
-	ExecutionError string   `json:"execution_error"`
-	Return         string   `json:"return"`
-	Logs           []string `json:"logs"`
+	EffectiveNonce string                `json:"effective_nonce"`
+	GasUsed        uint64                `json:"gas_used"`
+	ConsensusError string                `json:"consensus_error"`
+	ExecutionError string                `json:"execution_error"`
+	Return         string                `json:"return"`
+	Logs           []nativeSimulationLog `json:"logs"`
 }
 
 type nativeSimulationCase struct {
@@ -382,13 +388,17 @@ type nativeSimulationCase struct {
 func runNativeSimulation(runner *state_dry_runner.DryRunner, block *vm.Block, name string, transaction vm.Transaction) nativeSimulationCase {
 	suppliedNonce := new(big.Int).Set(transaction.Nonce)
 	result := runner.Apply(block, &transaction)
-	logs := make([]string, len(result.Logs))
+	logs := make([]nativeSimulationLog, len(result.Logs))
 	for index, log := range result.Logs {
-		encoded, err := json.Marshal(log)
-		if err != nil {
-			panic(err)
+		topics := make([]string, len(log.Topics))
+		for topicIndex, topic := range log.Topics {
+			topics[topicIndex] = hex.EncodeToString(topic[:])
 		}
-		logs[index] = string(encoded)
+		logs[index] = nativeSimulationLog{
+			Address: hex.EncodeToString(log.Address[:]),
+			Topics:  topics,
+			Data:    hex.EncodeToString(log.Data),
+		}
 	}
 	return nativeSimulationCase{
 		Name: name, To: hex.EncodeToString(transaction.To[:]), SuppliedNonce: suppliedNonce.String(),

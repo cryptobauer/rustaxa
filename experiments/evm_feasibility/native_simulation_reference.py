@@ -60,6 +60,14 @@ def validate(label: str, data: bytes) -> dict:
         raise RuntimeError(f"{label}: staged/delayed query words changed")
     if not successful["logs"]:
         raise RuntimeError(f"{label}: delegate emitted no log")
+    delegated = successful["logs"][0]
+    if (
+        delegated["address"] != "00" * 19 + "fe"
+        or len(delegated["topics"]) != 3
+        or any(len(topic) != 64 for topic in delegated["topics"])
+        or delegated["data"] != f"{25:064x}"
+    ):
+        raise RuntimeError(f"{label}: typed Delegated log changed")
     if successful != cases["repeat_delegate_then_queries"]["output"]:
         raise RuntimeError(f"{label}: repeated wrapper result differs")
     expected_errors = {
@@ -115,7 +123,7 @@ def main() -> None:
         ),
         "fixture_schema": {
             "state_before/state_after.seed_rows": "column plus physical key/value, including period suffixes for versioned trie columns",
-            "cases[].output": "exact DryRunner effective nonce, gas, consensus/execution errors, return bytes and JSON-encoded logs",
+            "cases[].output": "exact DryRunner effective nonce, gas, consensus/execution errors, return bytes and typed hex address/topics/data logs",
             "current/delayed": "DPoS facts at H and effective H-delegation_delay",
         },
         "public_local_byte_identical": artifacts["public"] == artifacts["local"],

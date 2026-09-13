@@ -8,15 +8,15 @@
   "scope": "Actual state_dry_runner.DryRunner.Apply at synthetic historical H=1 over versioned trie state: ordinary wrapper delegate plus current/delayed DPoS queries, repeated disposal, malformed and missing-record errors, full-width nonce, gas/log/output observations; no RPC or production routing claim",
   "fixture_schema": {
     "state_before/state_after.seed_rows": "column plus physical key/value, including period suffixes for versioned trie columns",
-    "cases[].output": "exact DryRunner effective nonce, gas, consensus/execution errors, return bytes and JSON-encoded logs",
+    "cases[].output": "exact DryRunner effective nonce, gas, consensus/execution errors, return bytes and typed hex address/topics/data logs",
     "current/delayed": "DPoS facts at H and effective H-delegation_delay"
   },
   "public_local_byte_identical": true,
   "sha256": {
-    "public": "7f11cc726e489b63917cfa46357fd6f02120cb2f92f31d8b497b69f9b260ae1e",
-    "local": "7f11cc726e489b63917cfa46357fd6f02120cb2f92f31d8b497b69f9b260ae1e"
+    "public": "044166ea142336fbde81c65625f1ebded0b30c1551490202e71f03669edca9ec",
+    "local": "044166ea142336fbde81c65625f1ebded0b30c1551490202e71f03669edca9ec"
   },
-  "exporter_sha256": "c3b0a8c8ef03e53d6de62862a629e551da0f4d4980276eb8688402487f5748ef",
+  "exporter_sha256": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60",
   "exact_errors": {
     "malformed_get_total_delegation": "abi: cannot marshal in to go type: length insufficient 0 require 32",
     "missing_get_validator": "Validator does not exist",
