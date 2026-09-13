@@ -5,20 +5,20 @@
 use num_bigint::BigUint;
 use rustaxa_evm::{
     contracts::{
-        ExecutionValue, NativeCallKind, NativeInvocation, NativeInvocationId,
-        NativeInvocationResult, NativeStatus,
+        ExecutionValue, NativeCallKind, NativeInvocationResult, NativeStatus, StatelessInvocation,
+        StatelessInvocationId,
     },
     stateless::{OriginalStatelessPrecompile, PreparedStatelessCall},
 };
 use serde_json::Value;
 
-fn invocation(row: &Value, gas: u64, kind: NativeCallKind) -> NativeInvocation {
+fn invocation(row: &Value, gas: u64, kind: NativeCallKind) -> StatelessInvocation {
     let mut address = [0; 20];
     address[19] = row["address"].as_u64().unwrap().try_into().unwrap();
-    NativeInvocation {
-        id: NativeInvocationId {
+    StatelessInvocation {
+        id: StatelessInvocationId {
             transaction: 3_u32.into(),
-            sequence: 7,
+            ordinal: 7,
         },
         period: 25_706_949_u64.into(),
         depth: 2,

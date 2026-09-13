@@ -325,7 +325,7 @@ pub trait BlockHashRead {
     fn block_hash(&self, number: FinalChainBlockNumber) -> Result<[u8; 32], BlockHashReadError>;
 }
 
-/// Monotonic identity of a native call within one pending period execution.
+/// Monotonic identity of a consensus-native call in one pending period.
 ///
 /// The identity is for ordering and audit facts. It does not authorize retries,
 /// cache outcomes or substitute for validating returned raw/domain mutations.
@@ -333,8 +333,22 @@ pub trait BlockHashRead {
 pub struct NativeInvocationId {
     /// Ordered transaction containing the call.
     pub transaction: FinalChainTransactionPosition,
-    /// Zero-based call sequence across the pending period.
+    /// Zero-based DPoS/slashing sequence across the pending period. Stateless
+    /// precompiles never occupy this concrete-observer sequence.
     pub sequence: u64,
+}
+
+/// Identity of a stateless precompile attempt within one top-level execution.
+///
+/// This identity binds pure-operation quotes only. It cannot enter the consensus
+/// port or select a persisted concrete invocation. Frame rollback does not rewind
+/// the ordinal; a new top-level execution starts its own ordinal at zero.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct StatelessInvocationId {
+    /// Ordered transaction containing this top-level execution.
+    pub transaction: FinalChainTransactionPosition,
+    /// Zero-based stateless attempt ordinal within that execution.
+    pub ordinal: u64,
 }
 
 /// CALL-family operation that reached a native contract address.
@@ -352,9 +366,9 @@ pub enum NativeCallKind {
 
 /// Immutable facts used to quote and execute one native invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NativeInvocation {
-    /// Monotonic period-local identity.
-    pub id: NativeInvocationId,
+pub struct NativeInvocation<I = NativeInvocationId> {
+    /// Identity in the selected consensus or stateless namespace.
+    pub id: I,
     /// Historical period used to select native rules and encodings.
     pub period: FinalChainBlockNumber,
     /// Zero-based frame depth.
@@ -379,12 +393,25 @@ pub struct NativeInvocation {
 
 /// Prepared gas requirement bound to one exact native invocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeGasQuote {
+pub struct NativeGasQuote<I = NativeInvocationId> {
     /// Invocation whose historical native preparation produced this quote.
-    pub invocation: NativeInvocationId,
+    pub invocation: I,
     /// Gas charged when the quoted native invocation is admitted.
     pub required_gas: FinalChainGas,
 }
+
+/// Complete immutable stateless facts, with a distinct quote-identity namespace.
+///
+/// ```compile_fail
+/// use rustaxa_evm::contracts::{NativeInvocation, StatelessInvocation};
+/// fn cannot_enter_consensus_port(value: StatelessInvocation) -> NativeInvocation {
+///     value
+/// }
+/// ```
+pub type StatelessInvocation = NativeInvocation<StatelessInvocationId>;
+
+/// Gas quote bound to a stateless attempt, never to a consensus invocation.
+pub type StatelessGasQuote = NativeGasQuote<StatelessInvocationId>;
 
 /// Exact compatibility failure returned by a native business method.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -656,10 +683,10 @@ impl std::error::Error for NativeResultValidationError {}
 
 impl NativeInvocationResult {
     /// Validates gas admission/charging before the frame applies any returned effect.
-    pub fn validate(
+    pub fn validate<I: Eq>(
         &self,
-        invocation: &NativeInvocation,
-        quote: NativeGasQuote,
+        invocation: &NativeInvocation<I>,
+        quote: NativeGasQuote<I>,
     ) -> Result<(), NativeResultValidationError> {
         if quote.invocation != invocation.id {
             return Err(NativeResultValidationError::InvocationMismatch);

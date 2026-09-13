@@ -11,8 +11,8 @@ use revm::precompile::{hash, identity, secp256k1};
 use rustaxa_types::FinalChainGas;
 
 use crate::contracts::{
-    NativeGasQuote, NativeInvocation, NativeInvocationResult, NativeOutcome, NativePortError,
-    NativeStatus,
+    NativeInvocationResult, NativeOutcome, NativePortError, NativeStatus, StatelessGasQuote,
+    StatelessInvocation,
 };
 
 /// One of the four original primitives shared by every pinned Taraxa registry.
@@ -70,9 +70,9 @@ impl OriginalStatelessPrecompile {
 /// sequence validation; this primitive helper cannot publish or advance them.
 #[derive(Debug)]
 pub struct PreparedStatelessCall {
-    invocation: NativeInvocation,
+    invocation: StatelessInvocation,
     primitive: OriginalStatelessPrecompile,
-    quote: NativeGasQuote,
+    quote: StatelessGasQuote,
 }
 
 impl PreparedStatelessCall {
@@ -80,12 +80,12 @@ impl PreparedStatelessCall {
     /// Unsupported code addresses and unrepresentable host lengths/gas return
     /// an infrastructure/domain error without effects. Caller/static/value facts
     /// stay bound even though these four pure primitives do not inspect them.
-    pub fn prepare(invocation: NativeInvocation) -> Result<Self, NativePortError> {
+    pub fn prepare(invocation: StatelessInvocation) -> Result<Self, NativePortError> {
         let primitive =
             OriginalStatelessPrecompile::at_address(invocation.contract).ok_or_else(|| {
                 NativePortError::Domain("unsupported original stateless address".into())
             })?;
-        let quote = NativeGasQuote {
+        let quote = StatelessGasQuote {
             invocation: invocation.id,
             required_gas: primitive.required_gas(invocation.input.len())?,
         };
@@ -97,12 +97,12 @@ impl PreparedStatelessCall {
     }
 
     /// Borrows the exact invocation owned by this prepared operation.
-    pub fn invocation(&self) -> &NativeInvocation {
+    pub fn invocation(&self) -> &StatelessInvocation {
         &self.invocation
     }
 
     /// Returns the immutable quote for frame admission/result validation.
-    pub fn quote(&self) -> NativeGasQuote {
+    pub fn quote(&self) -> StatelessGasQuote {
         self.quote
     }
 

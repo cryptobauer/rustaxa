@@ -109,6 +109,14 @@ separate steps.
 The typed native port receives a current-journal read view and separates mutable
 reference cache preparation from gas-admitted business invocation. Preparation
 must bind every invocation field; matching the invocation ID alone is insufficient.
+`NativeInvocationId` names only the period's consensus-native sequence: pinned Go
+`evm.go` records DPoS/slashing calls, while `state_transition.go` carries their
+count between transactions. Stateless calls use `StatelessInvocationId` with a
+transaction-local ordinal. Invocation and gas-quote payloads share a generic
+shape but retain distinct ID types; `NativeExecutionPort` accepts only consensus
+IDs. A compile-fail contract check prevents passing stateless facts to that port.
+Neither namespace rewinds with an ordinary frame rollback. Stateless helpers
+cannot advance or leave gaps in the persisted consensus invocation sequence.
 Native ordinary effects include ordered balance, nonce and touch operations;
 implicit account creation must precede a dependent nonce effect. Native failure
 payloads and attempted creation addresses survive the exact reference error path.

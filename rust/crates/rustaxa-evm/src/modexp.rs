@@ -10,8 +10,8 @@ use num_bigint::BigUint;
 use rustaxa_types::FinalChainGas;
 
 use crate::contracts::{
-    NativeGasQuote, NativeInvocation, NativeInvocationResult, NativeOutcome, NativePortError,
-    NativeStatus,
+    NativeInvocationResult, NativeOutcome, NativePortError, NativeStatus, StatelessGasQuote,
+    StatelessInvocation,
 };
 
 fn header(input: &[u8], offset: usize) -> BigUint {
@@ -99,19 +99,19 @@ fn operand(input: &[u8], offset: u64, length: u64) -> Result<Vec<u8>, NativePort
 /// still validates period/sequence and owns child-gas and frame settlement.
 #[derive(Debug)]
 pub struct PreparedModexpCall {
-    invocation: NativeInvocation,
-    quote: NativeGasQuote,
+    invocation: StatelessInvocation,
+    quote: StatelessGasQuote,
 }
 
 impl PreparedModexpCall {
     /// Owns and quotes an address-5 invocation. Other code addresses return a
     /// domain error without effects. Missing input bytes are right-padded with
     /// zero; full-width length arithmetic saturates only the final gas to u64.
-    pub fn prepare(invocation: NativeInvocation) -> Result<Self, NativePortError> {
+    pub fn prepare(invocation: StatelessInvocation) -> Result<Self, NativePortError> {
         if invocation.contract[..19] != [0; 19] || invocation.contract[19] != 5 {
             return Err(NativePortError::Domain("unsupported modexp address".into()));
         }
-        let quote = NativeGasQuote {
+        let quote = StatelessGasQuote {
             invocation: invocation.id,
             required_gas: quote(&invocation.input),
         };
@@ -119,12 +119,12 @@ impl PreparedModexpCall {
     }
 
     /// Borrows every exact input fact retained by this preparation.
-    pub fn invocation(&self) -> &NativeInvocation {
+    pub fn invocation(&self) -> &StatelessInvocation {
         &self.invocation
     }
 
     /// Returns the bound quote for gas admission and outcome validation.
-    pub fn quote(&self) -> NativeGasQuote {
+    pub fn quote(&self) -> StatelessGasQuote {
         self.quote
     }
 
