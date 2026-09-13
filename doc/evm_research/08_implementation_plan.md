@@ -107,8 +107,9 @@ Implementation update (2026-09-13): [S1 contracts](s1_contracts.md) are implemen
 independently reviewed and pass focused tests plus the repository fast gate.
 S0 has independently copied and content-hashed the supplied snapshot and verified
 matching mainnet genesis and paired period/root at 25,706,949; retained trie/replay
-coverage and capture provenance remain qualification work. S2/S3 proceed under
-the reviewed contracts. The [S4 integration map](s4_integration_map.md) identifies
+coverage and capture provenance remain qualification work. The [S2 bounded reader](s2_compatible_reads.md) and [S3 core](s3_execution_core.md)
+now pass their focused gates; full execution/persistence and broad historical
+coverage remain open under the reviewed contracts. The [S4 integration map](s4_integration_map.md) identifies
 existing application APIs and remaining persisted-path dependencies. Production routing remains unauthorized.
 
 | Slice | Dependencies / agent | Deliverable and exit criterion |
