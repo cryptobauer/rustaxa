@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Direct Ficus 11..19 and Cacti 11..17 BLS RequiredGas/Run; bounded arithmetic, length, field, subgroup, infinity and MSM discount cases; no EVM admission, historical classifier, frame settlement, state or routing claim",
+  "large_msm": "128 and 129 infinity-point/zero-scalar pairs only; rows store the exact element plus repeat count instead of duplicating zero bytes",
+  "sha256": {
+    "public": "723ca701d3f423a9ddc21518483561e0440f1349f21eb2033bedb31a8d3b67a2",
+    "local": "723ca701d3f423a9ddc21518483561e0440f1349f21eb2033bedb31a8d3b67a2"
+  },
+  "exporter_sha256": "887392017b12991748ce5b704ce3074bb720a6a4d1ac4d37dc15311d443752e0"
+}
