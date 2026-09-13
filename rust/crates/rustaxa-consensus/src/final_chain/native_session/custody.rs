@@ -1,15 +1,18 @@
 //! Ordered raw serialization for the first staged DPoS custody mutations.
 //!
-//! The semantic transition reuses FinalChain's existing delegate, V2
-//! undelegate, and V2 confirmation kernels. This module independently emits
+//! The semantic transition reuses FinalChain's existing delegate and V1/V2
+//! undelegation and confirmation kernels. This module independently emits
 //! the pinned Go storage-wrapper call order from the semantic state before and
 //! after that transition. Aggregate vote and delegated-amount rows remain
-//! deferred to [`FinalChainNativeSession::finish_rewards`]. V2 confirmation
+//! deferred to [`FinalChainNativeSession::finish_rewards`]. V1/V2 confirmation
 //! rewrites a surviving validator only once the immutable FinalChain Ficus
 //! boundary is active, matching the reference's conditional storage call. The
 //! bounded pre-Ficus check covers that omitted operation only: the reference
 //! leaves a stale persisted undelegation count there, while Rust derives it
 //! from the live queue, so later-call and reopen parity remain outside scope.
+//! Snapshots with more than `u16::MAX` concurrent undelegations for one
+//! validator also remain outside this adapter: the existing Rust kernel rejects
+//! that invalid counter state instead of reproducing the reference's wrap.
 
 use super::account::StagedDposAccountPort;
 use super::raw::FinalChainNativeRawTrace;
@@ -53,6 +56,28 @@ impl FinalChainNativeSession<'_> {
                 delegator,
                 validator,
                 amount,
+                self.pending_period,
+            ),
+            DposTransaction::Undelegate {
+                delegator,
+                validator,
+                amount,
+            } => self.final_chain.apply_dpos_undelegate(
+                &mut next,
+                &mut accounts,
+                delegator,
+                validator,
+                amount,
+                self.pending_period,
+            ),
+            DposTransaction::ConfirmUndelegate {
+                delegator,
+                validator,
+            } => self.final_chain.apply_dpos_confirm_undelegate(
+                &mut next,
+                &mut accounts,
+                delegator,
+                validator,
                 self.pending_period,
             ),
             DposTransaction::ConfirmUndelegateV2 {
@@ -129,6 +154,15 @@ impl FinalChainNativeSession<'_> {
                 validator,
                 ..
             } => self.serialize_undelegate_v2(*delegator, *validator, before, after, trace),
+            DposTransaction::Undelegate {
+                delegator,
+                validator,
+                ..
+            } => self.serialize_undelegate_v1(*delegator, *validator, before, after, trace),
+            DposTransaction::ConfirmUndelegate {
+                delegator,
+                validator,
+            } => self.serialize_confirm_v1(*delegator, *validator, before, after, trace),
             DposTransaction::ConfirmUndelegateV2 {
                 delegator,
                 validator,
@@ -210,6 +244,30 @@ impl FinalChainNativeSession<'_> {
         after: &DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        self.serialize_undelegate_principal(delegator, validator, before, after, trace)?;
+        create_v2_queue(before, after, delegator, validator, trace)
+    }
+
+    fn serialize_undelegate_v1(
+        &self,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        before: &DposSnapshot,
+        after: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        self.serialize_undelegate_principal(delegator, validator, before, after, trace)?;
+        create_v1_queue(before, after, delegator, validator, trace)
+    }
+
+    fn serialize_undelegate_principal(
+        &self,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        before: &DposSnapshot,
+        after: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
         let mut nodes = NodeTrace::new(before)?;
         let current_block = before
             .reward_reference_graph
@@ -263,8 +321,120 @@ impl FinalChainNativeSession<'_> {
 
         nodes.write_final(validator, current_block, after, trace)?;
         self.put_validator(before, after, validator, trace)?;
-        put_rewards(before, after, validator, trace)?;
-        create_v2_queue(before, after, delegator, validator, trace)
+        put_rewards(before, after, validator, trace)
+    }
+
+    fn serialize_confirm_v1(
+        &self,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        before: &DposSnapshot,
+        after: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        let entry = find_undelegation(before, delegator, validator)
+            .ok_or_else(|| domain("successful V1 confirmation lost its prior queue entry"))?;
+        checked_put(
+            trace,
+            undelegation_v1_key(delegator, validator),
+            ExpectedRaw::Exact(encode_undelegation_v1(entry)),
+            Vec::new(),
+            "confirmed V1 undelegation",
+        )?;
+
+        let before_entries = before
+            .undelegations
+            .get(&delegator)
+            .cloned()
+            .unwrap_or_default();
+        let validators = before_entries
+            .iter()
+            .map(|entry| entry.validator.to_vec())
+            .collect::<Vec<_>>();
+        remove_iterable(
+            trace,
+            &undelegation_v1_validators_prefix(delegator),
+            &validators,
+            &validator,
+        )?;
+
+        if after.total_stakes.contains_key(&validator) {
+            if self.final_chain.ficus_active_at(self.pending_period) {
+                self.put_validator(before, after, validator, trace)
+            } else {
+                Ok(())
+            }
+        } else if before.total_stakes.contains_key(&validator) {
+            self.serialize_deleted_validator(validator, before, trace)
+        } else {
+            // A pre-Magnolia full undelegation may already have removed the
+            // validator while retaining its V1 custody object. Go skips the
+            // Magnolia validator branch when that legacy object is confirmed.
+            Ok(())
+        }
+    }
+
+    fn serialize_deleted_validator(
+        &self,
+        validator: [u8; 20],
+        before: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        let metadata = before
+            .validator_metadata
+            .get(&validator)
+            .ok_or_else(|| domain("successful validator deletion lost its prior metadata"))?;
+        let vrf_key = before
+            .vrf_keys
+            .get(&validator)
+            .ok_or_else(|| domain("successful validator deletion lost its prior VRF key"))?;
+        checked_put(
+            trace,
+            validator_key(validator),
+            ExpectedRaw::OneOf(self.validator_input_encodings(before, validator)?),
+            Vec::new(),
+            "deleted validator",
+        )?;
+        checked_put(
+            trace,
+            validator_info_key(validator),
+            ExpectedRaw::Exact(encode_validator_info(metadata)),
+            Vec::new(),
+            "deleted validator info",
+        )?;
+        checked_put(
+            trace,
+            validator_owner_key(validator),
+            ExpectedRaw::Exact(metadata.owner.to_vec()),
+            Vec::new(),
+            "deleted validator owner",
+        )?;
+        checked_put(
+            trace,
+            validator_vrf_key(validator),
+            ExpectedRaw::Exact(vrf_key.to_vec()),
+            Vec::new(),
+            "deleted validator VRF key",
+        )?;
+        checked_put(
+            trace,
+            rewards_key(validator),
+            ExpectedRaw::Exact(encode_rewards(before, validator)),
+            Vec::new(),
+            "deleted validator rewards",
+        )?;
+        let validators = before
+            .validator_order
+            .iter()
+            .map(|address| address.to_vec())
+            .collect::<Vec<_>>();
+        remove_iterable(trace, &[0, 5], &validators, &validator)?;
+        let mut nodes = NodeTrace::new(before)?;
+        let head = before
+            .reward_reference_graph
+            .read_validator_head(&validator)
+            .map_err(domain)?;
+        nodes.decrement_and_write(validator, head, trace)
     }
 
     fn serialize_confirm_v2(
@@ -664,6 +834,43 @@ fn create_v2_queue(
     Ok(())
 }
 
+fn create_v1_queue(
+    before: &DposSnapshot,
+    after: &DposSnapshot,
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    trace: &mut FinalChainNativeRawTrace<'_>,
+) -> std::result::Result<(), FinalChainNativeSessionError> {
+    let entry = find_undelegation(after, delegator, validator)
+        .ok_or_else(|| domain("new V1 undelegation entry is absent"))?;
+    checked_put(
+        trace,
+        undelegation_v1_key(delegator, validator),
+        ExpectedRaw::Empty,
+        encode_undelegation_v1(entry),
+        "new V1 undelegation",
+    )?;
+    let validators = before
+        .undelegations
+        .get(&delegator)
+        .into_iter()
+        .flatten()
+        .map(|entry| entry.validator.to_vec())
+        .collect::<Vec<_>>();
+    create_iterable(
+        trace,
+        &undelegation_v1_validators_prefix(delegator),
+        &validators,
+        validator.to_vec(),
+    )
+}
+
+fn encode_undelegation_v1(entry: &DposUndelegation) -> Vec<u8> {
+    let mut row = rlp::RlpStream::new_list(2);
+    row.append(&entry.amount.as_u256()).append(&entry.block);
+    row.out().to_vec()
+}
+
 fn encode_undelegation_v2(entry: &DposUndelegationV2Entry) -> Vec<u8> {
     let mut base = rlp::RlpStream::new_list(2);
     base.append(&entry.amount.as_u256()).append(&entry.block);
@@ -786,8 +993,20 @@ fn validator_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &validator]))
 }
 
+fn validator_info_key(validator: [u8; 20]) -> ConcreteStorageKey {
+    ConcreteStorageKey(concrete_storage_key(&[&[0, 1], &validator]))
+}
+
 fn rewards_key(validator: [u8; 20]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &validator]))
+}
+
+fn validator_owner_key(validator: [u8; 20]) -> ConcreteStorageKey {
+    ConcreteStorageKey(concrete_storage_key(&[&[0, 3], &validator]))
+}
+
+fn validator_vrf_key(validator: [u8; 20]) -> ConcreteStorageKey {
+    ConcreteStorageKey(concrete_storage_key(&[&[0, 4], &validator]))
 }
 
 fn delegation_key(validator: [u8; 20], delegator: [u8; 20]) -> ConcreteStorageKey {
@@ -812,12 +1031,20 @@ fn undelegation_v2_key(delegator: [u8; 20], validator: [u8; 20], id: u64) -> Con
     ]))
 }
 
+fn undelegation_v1_key(delegator: [u8; 20], validator: [u8; 20]) -> ConcreteStorageKey {
+    ConcreteStorageKey(concrete_storage_key(&[&[3, 0], &validator, &delegator]))
+}
+
 fn delegator_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
     [&[2, 1][..], &delegator].concat()
 }
 
 fn undelegation_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
     [&[3, 2][..], &delegator].concat()
+}
+
+fn undelegation_v1_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
+    [&[3, 1][..], &delegator].concat()
 }
 
 fn undelegation_ids_prefix(delegator: [u8; 20], validator: [u8; 20]) -> Vec<u8> {
@@ -838,4 +1065,11 @@ fn iterable_position_key(prefix: &[u8], item: &[u8]) -> ConcreteStorageKey {
 
 fn iterable_count_key(prefix: &[u8]) -> ConcreteStorageKey {
     ConcreteStorageKey(concrete_storage_key(&[prefix, &[1]]))
+}
+
+fn encode_validator_info(metadata: &DposValidatorMetadata) -> Vec<u8> {
+    let mut row = rlp::RlpStream::new_list(2);
+    row.append(&metadata.description.as_slice())
+        .append(&metadata.endpoint.as_slice());
+    row.out().to_vec()
 }

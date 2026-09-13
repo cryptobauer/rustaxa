@@ -8123,10 +8123,18 @@ impl FinalChain {
         Ok(())
     }
 
+    /// Applies one legacy V1 undelegation to the supplied semantic and account views.
+    ///
+    /// Business-invalid validator, delegation, amount, and duplicate-queue
+    /// states return status-zero outcomes without effects. Successful execution
+    /// claims accrued rewards through `accounts`, removes principal, creates the
+    /// single V1 queue entry at the selected locking-period boundary, and emits
+    /// the legacy logs. State/account invariants and arithmetic failures are
+    /// returned as hard errors.
     fn apply_dpos_undelegate(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: Vec<u8>,
@@ -8181,10 +8189,18 @@ impl FinalChain {
         Ok(DposApplyOutcome::success(logs))
     }
 
+    /// Confirms one mature legacy V1 undelegation against exact account state.
+    ///
+    /// Missing and locked entries are status-zero contract failures. A success
+    /// removes the queue entry, applies the Magnolia validator cleanup rule,
+    /// transfers custody from the DPoS contract to the delegator through the
+    /// supplied account port, and emits the confirmation log. Insufficient
+    /// custody, account arithmetic, and snapshot inconsistencies are hard
+    /// errors and expose no successful semantic outcome.
     fn apply_dpos_confirm_undelegate(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         delegator: [u8; 20],
         validator: [u8; 20],
         block_number: FinalChainBlockNumber,
@@ -8200,12 +8216,8 @@ impl FinalChain {
             ));
         }
         let amount = entry.amount.as_u256();
-        let dpos_contract_balance = *accounts
-            .entry(DPOS_CONTRACT_ADDRESS)
-            .or_insert_with(empty_account)
-            .balance
-            .as_u256();
-        if dpos_contract_balance < amount {
+        let amount_exact = BigUint::from_bytes_be(&u256_to_big_endian(amount));
+        if accounts.account(DPOS_CONTRACT_ADDRESS)?.balance < BigInt::from(amount_exact.clone()) {
             anyhow::bail!("DPoS contract balance insufficient for undelegation confirmation");
         }
         remove_undelegation(snapshot, delegator, validator).ok_or_else(|| {
@@ -8225,22 +8237,15 @@ impl FinalChain {
         {
             remove_dpos_validator(snapshot, validator, false)?;
         }
-        let dpos_contract = accounts
-            .entry(DPOS_CONTRACT_ADDRESS)
-            .or_insert_with(empty_account);
-        dpos_contract
-            .balance
-            .replace_after_mutation(dpos_contract_balance - amount);
-        let delegator_account = accounts.entry(delegator).or_insert_with(empty_account);
-        delegator_account.balance.replace_after_mutation(
-            delegator_account
-                .balance
-                .as_u256()
-                .checked_add(amount)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("DPoS undelegation confirmation balance overflow")
-                })?,
-        );
+        // Load the recipient before the port-specific addition so authoritative
+        // staged read failures retain their typed error. Once loaded, only the
+        // bounded legacy map can fail addition, and that failure preserves the
+        // historical V1 overflow diagnostic below.
+        accounts.account(delegator)?;
+        accounts.subtract_balance(DPOS_CONTRACT_ADDRESS, &amount_exact)?;
+        accounts
+            .add_balance(delegator, &amount_exact)
+            .map_err(|_| anyhow::anyhow!("DPoS undelegation confirmation balance overflow"))?;
         Ok(DposApplyOutcome::success(vec![
             dpos_undelegate_confirmed_log(delegator, validator, amount)?,
         ]))

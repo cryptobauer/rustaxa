@@ -1,9 +1,9 @@
 //! Ordered, unpublished execution of selected FinalChain native mutations.
 //!
 //! This module exposes consensus-owned staged sessions for DPoS reads and the
-//! post-Cornus `setCommission`, `delegate`, `undelegateV2`, and
-//! `confirmUndelegateV2` mutations. Sessions reuse existing decoders, gas policy
-//! and business kernels. Pending execution advances from the finalized parent;
+//! selected `setCommission`, `delegate`, V1/V2 `undelegate`, and V1/V2
+//! confirmation mutations. Sessions reuse existing decoders, gas policy and
+//! business kernels. Pending execution advances from the finalized parent;
 //! historical simulation starts from an exact finalized snapshot behind a
 //! wrapper that cannot finish rewards or publish. Transaction fees, CALL value
 //! transfer, nonces, frame rollback, receipts, and publication remain outside
@@ -534,9 +534,10 @@ impl FinalChainNativeSession<'_> {
                 *amount = request.value.value().to_bytes_be();
                 None
             }
-            DposTransaction::UndelegateV2 { .. } | DposTransaction::ConfirmUndelegateV2 { .. } => {
-                None
-            }
+            DposTransaction::Undelegate { .. }
+            | DposTransaction::ConfirmUndelegate { .. }
+            | DposTransaction::UndelegateV2 { .. }
+            | DposTransaction::ConfirmUndelegateV2 { .. } => None,
             transaction if query::is_query(transaction) => {
                 let admission = match self.final_chain.native_invocation_admission(
                     transaction,
@@ -2370,6 +2371,445 @@ mod tests {
                                 )
                         )
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn selected_v1_custody_preserves_queue_errors_and_full_width_accounts() {
+        with_chain_ficus(
+            "selected-v1-custody",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let wide_contract = (BigInt::from(1_u8) << 300_usize) + BigInt::from(10_000_u64);
+                let wide_nonce = FinalChainNonce::from_bytes(&[0xff; 33]).unwrap();
+                let initial_delegator = -((BigInt::from(1_u8) << 280_usize) + BigInt::from(7_u8));
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([
+                        (
+                            DPOS_CONTRACT_ADDRESS,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: FinalChainNonce::zero(),
+                                balance: wide_contract.clone(),
+                            },
+                        ),
+                        (
+                            VALIDATOR,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: wide_nonce,
+                                balance: initial_delegator.clone(),
+                            },
+                        ),
+                    ]),
+                );
+
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &undelegate);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                assert!(outcome.output.is_empty());
+                assert!(outcome.account_mutations.is_empty());
+                let queue_key =
+                    ConcreteStorageKey(concrete_storage_key(&[&[3, 0], &VALIDATOR, &VALIDATOR]));
+                let queue = outcome
+                    .raw_mutations
+                    .iter()
+                    .find(|mutation| mutation.key == queue_key)
+                    .expect("V1 undelegation object write is present");
+                assert!(matches!(
+                    &queue.operation,
+                    FinalChainNativeRawOperation::Put(value)
+                        if value.as_bytes() == [0xc4, 0x82, 0x01, 0xf4, 0x01]
+                ));
+                assert_eq!(
+                    outcome.raw_mutations[outcome.raw_mutations.len() - 4..]
+                        .iter()
+                        .map(|mutation| mutation.key)
+                        .collect::<Vec<_>>(),
+                    vec![
+                        queue_key,
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &[3, 1],
+                            &VALIDATOR,
+                            &[2],
+                            &1_u32.to_le_bytes(),
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[
+                            &[3, 1],
+                            &VALIDATOR,
+                            &[2],
+                            &VALIDATOR,
+                        ])),
+                        ConcreteStorageKey(concrete_storage_key(&[&[3, 1], &VALIDATOR, &[1],])),
+                    ]
+                );
+                apply_raw_mutations(&state, &outcome);
+
+                let duplicate = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(1)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let duplicate = invoke_custody(&mut session, &state, &duplicate);
+                assert_eq!(
+                    duplicate.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Undelegation already exist".to_owned(),
+                    }
+                );
+                assert!(duplicate.account_mutations.is_empty());
+                assert!(duplicate.raw_mutations.is_empty());
+                assert!(duplicate.logs.is_empty());
+
+                let confirm = custody_request(
+                    2,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let confirmed = invoke_custody(&mut session, &state, &confirm);
+                assert_eq!(confirmed.status, FinalChainNativeStatus::Success);
+                assert_eq!(confirmed.raw_mutations[0].key, queue_key);
+                assert_eq!(
+                    confirmed.account_mutations,
+                    vec![
+                        FinalChainNativeOrdinaryMutation::BalanceReplace {
+                            address: DPOS_CONTRACT_ADDRESS,
+                            expected_exists: true,
+                            expected: wide_contract.clone(),
+                            replacement: &wide_contract - BigInt::from(500_u64),
+                        },
+                        FinalChainNativeOrdinaryMutation::BalanceReplace {
+                            address: VALIDATOR,
+                            expected_exists: true,
+                            expected: initial_delegator.clone(),
+                            replacement: &initial_delegator + BigInt::from(500_u64),
+                        },
+                    ]
+                );
+                assert_eq!(confirmed.raw_mutations.len(), 5);
+                assert_eq!(confirmed.logs.len(), 1);
+
+                let missing = custody_request(
+                    3,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let missing = invoke_custody(&mut session, &state, &missing);
+                assert_eq!(
+                    missing.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Undelegation does not exist".to_owned(),
+                    }
+                );
+                assert!(missing.account_mutations.is_empty());
+                assert!(missing.raw_mutations.is_empty());
+                assert!(missing.logs.is_empty());
+            },
+        );
+    }
+
+    #[test]
+    fn selected_v1_locked_confirmation_has_no_effects() {
+        with_chain_config_and_ficus(
+            "selected-v1-locked",
+            FinalChainRewardsConfig {
+                magnolia_period: FinalChainBlockNumber::GENESIS,
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                cornus_delegation_locking_period: 2,
+                cacti_period: FinalChainBlockNumber::MAX,
+                ..Default::default()
+            },
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(10_000_u64),
+                        },
+                    )]),
+                );
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &undelegate);
+                apply_raw_mutations(&state, &outcome);
+
+                let confirm = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let confirmed = invoke_custody(&mut session, &state, &confirm);
+                assert_eq!(
+                    confirmed.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Undelegation is not yet ready to be withdrawn".to_owned(),
+                    }
+                );
+                assert!(confirmed.account_mutations.is_empty());
+                assert!(confirmed.raw_mutations.is_empty());
+                assert!(confirmed.logs.is_empty());
+                assert_eq!(state.account_reads.get(), 1);
+            },
+        );
+    }
+
+    #[test]
+    fn selected_v1_confirmation_preserves_recipient_state_read_error() {
+        with_chain_ficus(
+            "selected-v1-recipient-read-error",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let initial = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(10_000_u64),
+                        },
+                    )]),
+                );
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                assert_eq!(
+                    invoke_custody(&mut session, &initial, &undelegate).status,
+                    FinalChainNativeStatus::Success
+                );
+
+                let missing_recipient = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(10_000_u64),
+                        },
+                    )]),
+                );
+                let confirm = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let quote = session.prepare(&confirm, &missing_recipient).unwrap();
+                assert_eq!(
+                    session
+                        .invoke(&confirm, quote, &missing_recipient)
+                        .unwrap_err(),
+                    FinalChainNativeSessionError::StateRead(
+                        FinalChainNativeStateReadError::Invariant(format!(
+                            "fixture account is unavailable: {VALIDATOR:?}"
+                        ))
+                    )
+                );
+                assert_eq!(missing_recipient.account_reads.get(), 2);
+            },
+        );
+    }
+
+    #[test]
+    fn selected_v1_terminal_confirmation_deletes_validator_in_source_order() {
+        with_chain_ficus(
+            "selected-v1-terminal",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([
+                        (
+                            DPOS_CONTRACT_ADDRESS,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::from(10_000_u64),
+                            },
+                        ),
+                        (
+                            VALIDATOR,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::default(),
+                            },
+                        ),
+                    ]),
+                );
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(10_000)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &undelegate);
+                apply_raw_mutations(&state, &outcome);
+
+                let confirm = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let confirmed = invoke_custody(&mut session, &state, &confirm);
+                assert_eq!(confirmed.status, FinalChainNativeStatus::Success);
+                let expected_prefix = vec![
+                    ConcreteStorageKey(concrete_storage_key(&[&[3, 0], &VALIDATOR, &VALIDATOR])),
+                    ConcreteStorageKey(concrete_storage_key(&[
+                        &[3, 1],
+                        &VALIDATOR,
+                        &[2],
+                        &1_u32.to_le_bytes(),
+                    ])),
+                    ConcreteStorageKey(concrete_storage_key(&[
+                        &[3, 1],
+                        &VALIDATOR,
+                        &[2],
+                        &VALIDATOR,
+                    ])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[3, 1], &VALIDATOR, &[1]])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &VALIDATOR])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[0, 1], &VALIDATOR])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[0, 3], &VALIDATOR])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[0, 4], &VALIDATOR])),
+                    ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &VALIDATOR])),
+                ];
+                assert_eq!(
+                    confirmed.raw_mutations[..expected_prefix.len()]
+                        .iter()
+                        .map(|mutation| mutation.key)
+                        .collect::<Vec<_>>(),
+                    expected_prefix
+                );
+                assert_eq!(confirmed.raw_mutations.len(), 13);
+                assert!(
+                    confirmed
+                        .raw_mutations
+                        .iter()
+                        .enumerate()
+                        .all(|(index, mutation)| matches!(index, 3 | 11)
+                            || mutation.operation == FinalChainNativeRawOperation::Delete)
+                );
+                assert_eq!(confirmed.account_mutations.len(), 2);
+                assert_eq!(confirmed.logs.len(), 1);
+            },
+        );
+    }
+
+    #[test]
+    fn selected_v1_confirmation_accepts_pre_magnolia_deleted_validator() {
+        with_chain_ficus(
+            "selected-v1-legacy-deleted-validator",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let mut legacy = session.dpos_state.clone();
+                let mut legacy_contract = empty_account();
+                legacy_contract
+                    .balance
+                    .replace_after_mutation(U256::from(10_000_u64));
+                let mut legacy_accounts = HashMap::from([(DPOS_CONTRACT_ADDRESS, legacy_contract)]);
+                let outcome = chain
+                    .apply_dpos_undelegate(
+                        &mut legacy,
+                        &mut legacy_accounts,
+                        VALIDATOR,
+                        VALIDATOR,
+                        U256::from(10_000_u64).to_big_endian().to_vec(),
+                        1.into(),
+                    )
+                    .unwrap();
+                assert_eq!(outcome.status_code, 1);
+                remove_dpos_validator(&mut legacy, VALIDATOR, true).unwrap();
+                assert!(!legacy.total_stakes.contains_key(&VALIDATOR));
+                assert!(find_undelegation(&legacy, VALIDATOR, VALIDATOR).is_some());
+                session.dpos_state = legacy.clone();
+
+                let state = RawState::from_snapshot(
+                    &legacy,
+                    BTreeMap::from([
+                        (
+                            DPOS_CONTRACT_ADDRESS,
+                            FinalChainNativeAccount {
+                                exists: true,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::from(10_000_u64),
+                            },
+                        ),
+                        (
+                            VALIDATOR,
+                            FinalChainNativeAccount {
+                                exists: false,
+                                nonce: FinalChainNonce::zero(),
+                                balance: BigInt::default(),
+                            },
+                        ),
+                    ]),
+                );
+                let confirm = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CONFIRM_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let confirmed = invoke_custody(&mut session, &state, &confirm);
+                assert_eq!(confirmed.status, FinalChainNativeStatus::Success);
+                assert_eq!(confirmed.raw_mutations.len(), 4);
+                assert!(confirmed.raw_mutations.iter().all(|mutation| {
+                    mutation.key != ConcreteStorageKey(concrete_storage_key(&[&[0, 0], &VALIDATOR]))
+                }));
+                assert_eq!(confirmed.account_mutations.len(), 2);
+                assert_eq!(confirmed.logs.len(), 1);
             },
         );
     }
