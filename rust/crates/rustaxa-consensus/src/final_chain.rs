@@ -77,6 +77,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use triehash::ordered_trie_root;
 
+pub mod native_session;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StoredDposTokenAmountEncoding {
     Fixed32,
