@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Synthetic Aspen2 activation with two ordered singleton-validator distributions; actual DistributeRewards/EndBlockCall and unnormalized raw-write trace; no multi-entry Go map order, snapshot, jailed cleanup, redelegation fix, physical-retention, persistence, or production claim",
+  "public_local_identical": true,
+  "sha256": {
+    "public": "be477c3ebd18e71f573f37167decc2daf4c1541dec1c9a438cc1c5ca5c1e2f8f",
+    "local": "be477c3ebd18e71f573f37167decc2daf4c1541dec1c9a438cc1c5ca5c1e2f8f"
+  },
+  "exporter_sha256": "235dbc6c6c0f7ec8aeeb5bf4b91b67f5218f8e4d3bdcae6f6b038dccc19f0524",
+  "trace_patch": {
+    "target": "taraxa/state/state_evm/account.go",
+    "sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568"
+  }
+}
