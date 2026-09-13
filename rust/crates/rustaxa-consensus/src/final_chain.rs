@@ -79,6 +79,9 @@ use triehash::ordered_trie_root;
 
 use self::native_session::account::{DposAccountPort, transfer_dpos_contract_balance};
 
+#[cfg(test)]
+mod mixed_genesis_tests;
+
 mod native_admission;
 pub mod native_session;
 
@@ -9639,7 +9642,13 @@ fn insert_concrete_iterable_map(
         insert_concrete_storage_value(
             storage,
             DPOS_CONTRACT_ADDRESS,
-            concrete_storage_key(&[prefix, &[0], &position.to_le_bytes()]),
+            // The pinned Go DPoS constructors give these prefixes spare capacity.
+            // IterableMapReader.Init appends the item discriminator (0), then
+            // appends the position discriminator (2) to the same backing slice,
+            // overwriting the former. Existing DPoS rows therefore use 2 for
+            // both item-at-position and position-by-item keys. Preserve that
+            // observed layout; this is not a generic iterable-map key scheme.
+            concrete_storage_key(&[prefix, &[2], &position.to_le_bytes()]),
             item.clone(),
         );
         insert_concrete_storage_value(
