@@ -1,0 +1,57 @@
+{
+  "artifacts_sha256": {
+    "mixed_workload_comparison.json": "574a8f92a05505db9a0b8a7ad6b2ec5c4e1a90d002fbf4ba97324e5639e16ab9",
+    "mixed_workload_local_batched.json": "55a2a44f9d51bb20e3697aea95fdfa826b39086b8f512982bef605ccdf212430",
+    "mixed_workload_local_observer.json": "6daf47bb7b403c7833d99df92665e5cbac1a9244b5b1979ae4c82404e8fbf8aa",
+    "mixed_workload_public_batched.json": "55a2a44f9d51bb20e3697aea95fdfa826b39086b8f512982bef605ccdf212430"
+  },
+  "gas_refund_trace_patch": {
+    "allowed_original_sha256": [
+      "4389d46cc6fef3159c0da9fb3f548d9515aa555a2af85124824625c2c3f3e121",
+      "9d63e0f58b3c2b32987f0979b88a30cccd294787eb7f5c8d45cc2ca1cbe5882f"
+    ],
+    "injected_helper_sha256": "d337be83c3c7158239aa5df65749625ba31d6f623e33fa2a79c658b1f5c77bad",
+    "insertion_sha256": "0e536a506740d7e8ebf509c58513dfe0bed6c0fa723a067ab4a1268fae1fc60e",
+    "needle_required_count": 1,
+    "needle_sha256": "ec233d008a2dc7bbfb1ce0a36f65665da3295c22c04691650006fcb8020aa86d",
+    "original_sha256": {
+      "local": "9d63e0f58b3c2b32987f0979b88a30cccd294787eb7f5c8d45cc2ca1cbe5882f",
+      "public": "4389d46cc6fef3159c0da9fb3f548d9515aa555a2af85124824625c2c3f3e121"
+    },
+    "patched_target_sha256": {
+      "local": "197fccccef7612105c3d6734b7d1cb6ced0c48914470acce87735f09c3b6b76f",
+      "public": "f57ab0b117166a2782302a1869e37a4e8d5c17ff8a9b6ace9acd0da343813793"
+    },
+    "target": "core/vm/evm.go"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "raw_write_trace_patch": {
+    "injected_helper_sha256": "326f98fe4fd4d6c2e62160d23d0c36f094561a6aada803b94248b6b8c420ed11",
+    "insertion_sha256": "a0c7306b14cdd199495242693b40d67b18113a38cbfcfeee71dae724122ef909",
+    "needle_required_count": 1,
+    "needle_sha256": "bfa34b5bf59d05f312a191044b39d36c9ba61e8a92129a295f78d27abe444ed4",
+    "original_sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+    "patched_target_sha256": "ece20b8f31c04715b2cb4d8648dcdd939637f870236b8463081986ab607cc117",
+    "target": "taraxa/state/state_evm/account.go"
+  },
+  "references": {
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
+  },
+  "runner_sha256": "ed24e9131582c236d57f61e93f8714344fedbd2211317894990a96cff1b26304",
+  "schema": 1,
+  "scope": "Four signed periods covering storage lifecycle, nested rollback, consensus-native and stateless calls, delegation custody, rewards, and close/reopen continuation; incremental memory TrieSink rows, no RocksDB, application header, production route, or reconstructed-root claim",
+  "source_sha256": {
+    "mixed_period_reference.go": "a14a6e58a6a304fbeffa48cf399e0373960312dad439f7e54f512efde4f10512",
+    "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08",
+    "mixed_period_trace_disabled.go": "26d48b9958d8627fd10a31c5180a8e43baab0a982a3f4af381a91f77e0bb285b",
+    "mixed_period_trace_enabled.go": "790d51736766a0c79c7fd3d2f579b77e4dc47a242b00e02c27e8dd2d3819bc47",
+    "mixed_period_workload.go": "a0105c9e932e13ef80a62aa22f3c380d14ad6167827abd783a00678984149149"
+  },
+  "untraced_artifacts_sha256": {
+    "mixed_workload_local_batched.json": "dfcf6e9b8c3c36362fdb1614177e6c2a98948d347363c6e0a0d8f116e64fe843",
+    "mixed_workload_local_observer.json": "1905da68c2824ffbcd0b8f2eea1012459b74deb9956ceeb2fc3ee273b9e10fc6",
+    "mixed_workload_public_batched.json": "dfcf6e9b8c3c36362fdb1614177e6c2a98948d347363c6e0a0d8f116e64fe843"
+  }
+}

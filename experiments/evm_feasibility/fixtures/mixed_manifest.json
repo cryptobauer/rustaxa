@@ -10,12 +10,15 @@
     "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418",
     "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b"
   },
-  "runner_sha256": "29becbb456051534db74e10bffc6f4f8e19d0a442a19e0cb3ea8023227c98cd5",
+  "runner_sha256": "ed24e9131582c236d57f61e93f8714344fedbd2211317894990a96cff1b26304",
   "schema": 1,
   "scope": "Synthetic StateTransition genesis plus one signed fee/reward-bearing period; public/local batched and local concrete-observer comparison; incremental memory TrieSink rows, no RocksDB/header/production claim",
   "source_sha256": {
-    "mixed_period_reference.go": "8d3d595ac502302653c063cc3f28e5eb39da1daf42b0bd6bfaab1b94f0615db7",
+    "mixed_period_reference.go": "a14a6e58a6a304fbeffa48cf399e0373960312dad439f7e54f512efde4f10512",
     "mixed_period_reference_local.go": "ef5cf4a24da0ae79f6733df12a1f4a57c28ea033277153b1e5669dd8eb861fd1",
-    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08"
+    "mixed_period_reference_public.go": "348174b8081eae20d4443c8d989f4e3b90e71fdfae929da556a7b95728e51a08",
+    "mixed_period_trace_disabled.go": "26d48b9958d8627fd10a31c5180a8e43baab0a982a3f4af381a91f77e0bb285b",
+    "mixed_period_trace_enabled.go": "790d51736766a0c79c7fd3d2f579b77e4dc47a242b00e02c27e8dd2d3819bc47",
+    "mixed_period_workload.go": "a0105c9e932e13ef80a62aa22f3c380d14ad6167827abd783a00678984149149"
   }
 }
