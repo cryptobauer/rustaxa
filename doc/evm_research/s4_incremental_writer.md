@@ -1,7 +1,8 @@
 # S4 incremental concrete writer prerequisite
 
-Status: bounded storage prerequisite implemented and targeted locally; durable
-publication and application composition remain open, so S4 is not complete.
+Status: incremental writer and atomic lifecycle implemented and integrated in
+the [bounded persisted S4 path](s4_persisted_period.md). General recovery/import,
+historical coverage and production acceptance remain open.
 
 ## Implemented boundary
 
@@ -68,8 +69,9 @@ The incremental trie encoder preserves the reference distinctions:
 - a contradictory account-delete plus storage-mutation batch is rejected rather
   than presented as the Go account flush behavior.
 
-No EVM crate, C++ path, new column family, metadata key, database bootstrap, or
-production route was added.
+The storage module adds no EVM dependency, C++ path, new column family, new
+metadata key or production route. Lifecycle bootstrap is restricted to exclusively
+created fresh databases.
 
 ## Bounded evidence
 
@@ -108,7 +110,7 @@ cargo test -p rustaxa-storage concrete_state::
 ```
 
 Lead integration also passed the repository fast gate (the storage package has
-114 passing tests and one explicitly ignored copied-snapshot test) and the
+117 passing tests and one explicitly ignored copied-snapshot test) and the
 required `rust_storage_tests` build with `--parallel 12` and all four bridge
 tests. The qualified snapshot read gate was already exercised separately in S2;
 these writer checks use disposable synthetic databases.
@@ -117,18 +119,17 @@ The documented Spark helper was attempted for the bounded mapping task but was
 unavailable due its service usage limit. Mapping and implementation continued
 with the assigned lead model; this does not weaken the pinned byte comparisons.
 
-## Remaining S4 work
+## Integrated path and remaining coverage
 
-FinalChain still needs to consume the accepted execution/journal plan, bind it
-to `PreparedConcreteState`, and drive this lifecycle through the persisted
-period composition. The private descriptor helper used by the earlier writer
-reopen test is not callable by production code.
+The [persisted S4 composition](s4_persisted_period.md) now drives this lifecycle
+through existing FinalChain ownership with real execution, per-transaction roots
+and verified neutral rewards. The private descriptor helper used by the earlier
+writer reopen test is not callable by production code.
 
 Imported database raw-history coverage remains unresolved. The writer does not
 turn a missing retained physical row into semantic zero or add markerless
-bootstrap provenance. Full journal projection, per-transaction roots,
-native/reward application, recovery, fault injection,
-and differential replay remain outside this prerequisite.
+bootstrap provenance. General native/reward execution, interrupted recovery,
+fault injection and broad differential replay remain outside the bounded fixture.
 
 Because this prerequisite intentionally adds no pending-generation metadata, a
 process restart after `persist_contents` cannot distinguish abandoned future

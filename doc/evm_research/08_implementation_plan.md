@@ -110,7 +110,10 @@ matching mainnet genesis and paired period/root at 25,706,949; retained trie/rep
 coverage and capture provenance remain qualification work. The [S2 bounded reader](s2_compatible_reads.md) and [S3 core](s3_execution_core.md)
 now pass their focused gates; full execution/persistence and broad historical
 coverage remain open under the reviewed contracts. The [S4 integration map](s4_integration_map.md) identifies
-existing application APIs and remaining persisted-path dependencies. Production routing remains unauthorized.
+existing application APIs. The [first persisted S4 path](s4_persisted_period.md)
+executes signed transfer/CREATE/reopened-CALL inputs through those owners and
+checks pinned Go results, roots, receipts and CF1–CF5 history. Full S3/S5 execution
+coverage and later acceptance gates remain open. Production routing remains unauthorized.
 
 | Slice | Dependencies / agent | Deliverable and exit criterion |
 | --- | --- | --- |

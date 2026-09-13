@@ -64,14 +64,14 @@ discarding the pending execution, never publishing a partial journal.
   19,800 refund units before settlement. Ten host/driver tests cover this path,
   wide-value behavior, code validation, native refusal and legacy bytecode.
 - CREATE address fixtures include five pinned Go cases with zero and
-  55/56/65/257-byte nonces. The CREATE driver currently has a synthetic initcode
-  storage/runtime test; its exact execution gas and persisted roots still await
-  the independent two-period S4 oracle.
+  55/56/65/257-byte nonces. The CREATE driver also matches the independent
+  [two-period S4 oracle](s4_persisted_period.md), including exact execution gas
+  and the integrated persisted roots, receipts and physical history.
 - The repository fast gate, affected storage-package tests and required four
   storage bridge tests pass. The explicit independent-snapshot reader gate passes
   at head 25,706,949 and prior period 25,706,948. That gate is read evidence only.
 
 The snapshot original remains preserved. No broad replay, fault campaign,
 reference-binary reopen or operational gate was run. The first complete
-persisted path still requires the writer/lifecycle and native/reward composition
-listed in [the S4 integration map](s4_integration_map.md).
+persisted path is covered by [the bounded S4 composition](s4_persisted_period.md);
+general frame/native and full historical coverage remain open.

@@ -13,6 +13,11 @@ flow, current Go ownership, database roles, and what REVM concretely replaces.
 The [implementation plan](08_implementation_plan.md) fixes the existing-layout compatibility constraint, records
 the supplied mainnet snapshot, and assigns implementation slices to agents/models, including a focused Spark helper.
 
+Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qualification.md),
+[S1 contracts](s1_contracts.md), [S2 compatible reads](s2_compatible_reads.md),
+[the bounded S3 execution core](s3_execution_core.md), and
+[the first persisted S4 FinalChain path](s4_persisted_period.md).
+
 ## Research phases
 
 | Phase | Deliverable | Status |
@@ -73,13 +78,16 @@ No upstream REVM patch was required by these probes.
 
 All 12 isolated tests and the six-case native overlay comparison pass; both Go references reproduce exactly.
 The [decision matrix](07_direction_decision.md#evidence-closure-and-implementation-acceptance) carries E1–E12 forward
-as implementation and release acceptance criteria, with explicit evidence limits. A complete executor, incremental
-writer, full historical replay, API parity, durable recovery, import/pruning and performance validation remain to be
-implemented and tested. These are not a reason to repeat engine-selection research.
+as implementation and release acceptance criteria, with explicit evidence limits. The subsequent S4 implementation
+adds an incremental writer and a bounded atomic persisted path. Complete execution, full historical replay, API
+parity, interrupted recovery, import/pruning and performance acceptance remain open. These are not a reason to
+repeat engine-selection research.
 
 The official endpoint attempts failed during research. A task-owner-supplied mainnet light snapshot is now available
-locally with both database directories; its [metadata inventory](snapshot_inventory.json) does not yet establish
-paired identity/root or retained historical coverage. The implementation plan starts with qualification of this data.
+locally with both database directories. [Qualification](s0_snapshot_qualification.md) on an independent copy
+establishes matching mainnet genesis and paired period/root at 25,706,949, with bounded prior-period reads.
+The owner identifies their lite node and likely producer commit; exact binary/capture provenance and full retained
+historical coverage remain unresolved. The original snapshot is preserved.
 Full historical replay remains an acceptance gap. No network parity, performance or delivery-duration claim is made.
 
 ## Evidence labels

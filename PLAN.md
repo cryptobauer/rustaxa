@@ -11,8 +11,11 @@ The [direction decision](doc/evm_research/07_direction_decision.md) closes archi
 Rustaxa-owned transaction/frame/host layer over REVM interpreter components, reuse existing Rust native kernels,
 and retain the concrete RocksDB format initially. Its E1–E12 acceptance matrix and bounded implementation sequence
 apply before any separately authorized production cutover. The [implementation plan](doc/evm_research/08_implementation_plan.md)
-records the task-owner decision to preserve the general database layout, the supplied mainnet light snapshot awaiting
-qualification, and agent/model assignments. Full historical replay coverage remains a release-validation gap.
+records the task-owner decision to preserve the general database layout, the supplied mainnet light snapshot and
+agent/model assignments. Snapshot qualification now proves a paired head and bounded prior reads; the
+[first persisted S4 path](doc/evm_research/s4_persisted_period.md) checks synthetic execution through existing Rust
+FinalChain ownership, atomic concrete persistence and continuation after reopen. Full historical replay coverage
+remains a release-validation gap.
 
 ## Objectives
 

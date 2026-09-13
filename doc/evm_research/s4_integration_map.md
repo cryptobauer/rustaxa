@@ -1,8 +1,9 @@
 # S4 isolated persisted-period integration map
 
-Status: preparatory API map, independently reviewed; the persisted execution
-path is not implemented or qualified yet. The S1 descriptor-only composition
-must remain a refusal test until real S2/S3 state and execution can replace it.
+Status: the [bounded persisted path](s4_persisted_period.md) now implements this
+map for a synthetic transfer/CREATE/reopened-CALL fixture. The S1 descriptor-only
+composition remains a refusal test for unqualified imported state. General
+native, frame, historical and recovery coverage remains open.
 
 Use the existing `execute_final_chain_application_task` entry point in
 `rustaxa-consensus/src/final_chain_execution.rs`. It already owns preflight,
