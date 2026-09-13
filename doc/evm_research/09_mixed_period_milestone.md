@@ -130,7 +130,7 @@ Use the assignments in the implementation plan, with one writer per assigned fil
   New payable operations must use task-oriented ports into consensus-owned kernels.
 - State worker (Sol): concrete writer/read/lifecycle changes and focused persistence tests.
   Reuse sealed phase outputs and borrowed prepared views; no reader publication authority.
-- Supporting helper (Spark when available): bounded fixture export/manifest tooling and
+- Supporting helper (Luna fallback approved 2026-09-13; Spark quota exhausted): bounded fixture export/manifest tooling and
   mechanical wiring after inputs and expected semantics are settled. Semantic oracle
   design and approval remain with lead/reviewer; Terra can perform read-only maps.
 - Independent reviewer (Astra or Sol): reference behavior, rollback/cache ownership,

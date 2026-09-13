@@ -22,6 +22,10 @@ exact persistence and bounded reopen/recovery under the existing Rust owners.
 Its [acceptance evidence](doc/evm_research/mixed_period_evidence.md) records validation,
 a successful RPC rerun after one unresolved stall, and remaining broader implementation gates.
 
+The active [existing-network execution and API parity milestone](doc/evm_research/10_existing_network_milestone.md)
+couples execution/native coverage with historical APIs, qualified existing-state replay and recovery.
+Its implementation and targeted validation are authorized; production routing remains separate.
+
 ## Objectives
 
 - Keep upstream C++ sync practical through a pure-C++ validation gate.

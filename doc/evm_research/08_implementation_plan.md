@@ -127,7 +127,7 @@ complete this broader S0–S8 plan or authorize production routing.
 
 | Slice | Dependencies / agent | Deliverable and exit criterion |
 | --- | --- | --- |
-| S0: qualify snapshot | State worker; Spark may build inventory/export helpers | Independent working copy, identities, pair/root checks, retained-range manifest, useful exported fixtures and explicit gaps. No original mutation |
+| S0: qualify snapshot | State worker; Luna may build bounded inventory/export helpers | Independent working copy, identities, pair/root checks, retained-range manifest, useful exported fixtures and explicit gaps. No original mutation |
 | S1: contracts and test composition | Lead; independent reviewer | Exact module/file ownership, typed interfaces and rollback/publication invariants; unlinked Rust test composition using existing handles. Snapshot-dependent bootstrap details follow S0 |
 | S2: compatible reads/codecs | S1; state worker, S0 for real-data gate | Account/slot/code/physical-node codecs and versioned reads; synthetic and qualified snapshot comparisons, corrupt/missing/tombstone cases; no layout changes |
 | S3: transaction/profile/frame core | S1; execution worker | General wide-value envelope and mixed profile; calls/creation/value/gas/errors and journals. Compare pinned envelope, frame, storage and transient cases, then expand E1–E3 |
@@ -148,40 +148,36 @@ Do not broaden a validated slice's claim beyond the actual reference configurati
 
 ## Next grouped milestone
 
-The task owner selected [persisted mixed-period parity](09_mixed_period_milestone.md)
-as the next larger milestone at baseline `1c3f650b5`. Its M1–M6 slices compose
-contract lifecycle, staged native/custody operations, nonzero fees/rewards and
-bounded reopen/recovery through existing Rust ownership. The document fixes the
-workload, acceptance evidence and exclusions; it is a plan, not a completion claim
-for S5/S6/S7 or authorization for production routing.
+The [persisted mixed-period milestone](09_mixed_period_milestone.md) is complete for its
+bounded corpus. The task owner authorized [existing-network execution and API parity](10_existing_network_milestone.md)
+on 2026-09-13 at baseline `48dd3173b`. This groups execution/native completeness with
+historical query/simulation, qualified existing-state bootstrap/replay, and publication/recovery.
+It advances S0/S2/S3/S5/S6/S7 together; S8 operational qualification and production routing
+remain separate. The new milestone's acceptance conditions cannot be waived by synthetic parity.
 
 ## Agent and model assignments
 
-Start with one lead and two implementation workers; use an independent reviewer at contract and integration boundaries.
-A supporting worker is added only for a task that can run independently. These are initial project assignments, not
-Rustaxa model benchmark results or a commitment to maximum concurrency.
+Start with one lead and two implementation workers; add independent review at contract and
+integration boundaries and a helper only for work that can proceed independently.
 
 | Role | Model / reasoning | Assignment |
 | --- | --- | --- |
-| Lead / integration owner | `gpt-6-astra`, high; increase for a demonstrated hard problem | S1, shared contracts, composition, sequencing, task/branch ownership, final review and integration |
-| Execution worker | `gpt-5.6-sol`, high | S3, assigned S4/S5 execution modules and E1–E4 behavior |
-| State worker | `gpt-5.6-sol`, high | S0/S2, incremental writer, persistence and S7 recovery |
-| Independent reviewer | `gpt-6-astra` or `gpt-5.6-sol`, high | Reference-to-implementation checks, hidden narrowing/rollback defects, serialization, durability and missing tests |
-| Focused coding helper | `gpt-5.3-codex-spark`, supported default/medium setting | Fixture/report tooling, small adapters with settled contracts, localized compiler fixes and repetitive wiring |
-| Exploration/documentation helper | `gpt-5.6-terra`, medium; Luna for clear repetitive tasks | Read-only code maps, evidence inventories, documentation and well-specified supporting changes |
+| Lead / integration owner | `gpt-6-astra`, high | Shared contracts, composition, sequencing, integration and evidence |
+| Execution worker | `gpt-5.6-sol`, high | Execution/native semantics and reference compatibility |
+| State worker | `gpt-5.6-sol`, high | Compatible reads, bootstrap, persistence and recovery |
+| Independent reviewer | `gpt-6-astra` or `gpt-5.6-sol`, high | Original-reference comparison, invariants and required evidence |
+| Focused helper | `gpt-5.6-luna`, medium for maps/mechanical work; high for bounded implementation | Code maps, fixture/report tooling, settled adapters and tests with independently established expectations |
 
-Spark is appropriate when inputs, owned files, expected behavior and targeted checks are already explicit. Do not
-assign it sole ownership of historical semantics, trie design, cryptographic compatibility or recovery decisions.
-Sol/Astra reviews consensus-sensitive helper output against the reference. Escalate ambiguous tasks rather than
-letting the helper invent a new policy. All models have the same test requirements; a faster model does not imply
-permission to skip tests. Choose models by observed completion quality and rework, not assumed token-price savings.
+The task owner approved Luna as the Spark fallback on 2026-09-13 because Spark quota is
+exhausted. Explicitly select Luna through a configurable role; Spark-fixed specialist roles
+cannot provide this substitution. Historical evidence keeps the actual model used at that time.
+This changes project assignments, not global Codex settings.
 
-Official [model guidance](https://learn.chatgpt.com/docs/models) describes Spark as a text-only research preview for
-fast coding iteration and notes client/account-dependent availability. The
-[subagent guidance](https://learn.chatgpt.com/docs/agent-configuration/subagents) supports per-agent model/reasoning
-choices. Check the active tool's model/role support when dispatching: if Spark is exposed only through a fixed
-Rust/C++ specialist role, use it for a fitting task; otherwise report the unavailable selection and use the assigned
-Sol/Terra worker. Do not silently label another model as Spark. This plan does not modify global Codex configuration.
+Each helper handoff specifies files, inputs, outputs, invariants and checks. Sol/Astra reviews
+consensus-sensitive changes against the reference. Historical policy, trie design, cryptographic
+compatibility, oracle expectations and recovery decisions remain with lead/implementation owners.
+Escalate ambiguous work. Assess Luna's first patches by correctness and review rework; there is
+no repository benchmark establishing equivalence to Spark. All models retain the same test gates.
 
 ## Branching, integration and validation
 
@@ -206,6 +202,6 @@ subsystem/smoke gate. Ask the task owner before expensive repository-wide or sto
 fault campaigns or sustained operational workloads. Prepare exact commands, dataset identity and scope first. Record
 failed and skipped requirements explicitly; aggregate exit success cannot stand in for an unavailable required test.
 
-The immediate next implementation work is S0 qualification and S1 contracts, followed by parallel S2/S3. Layout
+The immediate next implementation work follows the active grouped milestone. Layout
 consolidation and further engine surveys are not prerequisites. Snapshot qualification, remaining historical coverage
 and production acceptance remain explicit gates; no duration or throughput estimate is claimed by this plan.

@@ -11,13 +11,17 @@ Start with the [architecture overview](architecture_overview.md) for the DAG/PBF
 flow, current Go ownership, database roles, and what REVM concretely replaces.
 
 The [implementation plan](08_implementation_plan.md) fixes the existing-layout compatibility constraint, records
-the supplied mainnet snapshot, and assigns implementation slices to agents/models, including a focused Spark helper.
+the supplied mainnet snapshot, and assigns implementation slices to agents/models, including the approved Luna fallback for bounded helper tasks.
 
 The [persisted mixed-period milestone](09_mixed_period_milestone.md) is complete for
 its declared synthetic corpus: four signed periods of contract/native execution,
 nonzero economics, exact persistence and bounded recovery through existing Rust owners.
 The [acceptance evidence](mixed_period_evidence.md) records M1–M6, validation and remaining
 limits; the broader S0–S8 implementation plan remains open.
+
+The active [existing-network execution and API parity milestone](10_existing_network_milestone.md)
+couples execution/native completeness, historical queries/simulation, existing-state bootstrap/replay
+and publication/recovery. Implementation is authorized; production routing remains disabled.
 
 Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qualification.md),
 [S1 contracts](s1_contracts.md), [S2 compatible reads](s2_compatible_reads.md),
