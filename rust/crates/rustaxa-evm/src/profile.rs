@@ -1,10 +1,10 @@
-//! Bounded Taraxa instruction and gas configuration for the REVM interpreter.
+//! Taraxa instruction and gas configuration for the REVM interpreter.
 //!
 //! The profile starts from Istanbul rather than a later Ethereum hardfork. It
-//! enables only the Taraxa opcodes evidenced by the pinned Go fixtures: PUSH0,
-//! the legacy transient aliases, and the Cacti transient aliases. Callers keep
-//! their normal `Host` implementation; this module neither owns state nor
-//! changes frame or transaction semantics.
+//! enables Taraxa's independently activated additions: PUSH0 and the legacy
+//! transient aliases in Californicum, MCOPY in Ficus, and the newer transient
+//! aliases in Cacti. Callers keep their normal `Host` implementation; this
+//! module neither owns state nor changes frame or transaction semantics.
 
 use revm::{
     bytecode::opcode::{CALL, CALLCODE, DELEGATECALL, STATICCALL},
@@ -20,32 +20,82 @@ use revm::{
     primitives::hardfork::SpecId,
 };
 
-/// The historical Taraxa rules covered by the pinned single-frame opcode fixtures.
+/// Taraxa instruction-table phase selected by the application hardfork schedule.
 ///
-/// `cacti` controls whether the newer transient aliases at opcodes `0x5c` and
-/// `0x5d` are available. The legacy aliases at `0xb3` and `0xb4`, and PUSH0 at
-/// `0x5f`, are available in both configurations. This is intentionally not a
-/// general fork schedule or a claim that all historical Taraxa rules are known.
+/// Each phase includes the previous phase. This enum names only instruction and
+/// precompile-table generations; it does not activate unrelated DPoS, envelope,
+/// gas-limit or Ethereum fork behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TaraxaPhase {
+    /// Original Californicum instruction table.
+    #[default]
+    Californicum,
+    /// Ficus inherits Californicum and adds MCOPY at opcode `0x5e`.
+    Ficus,
+    /// Cacti inherits Ficus, adds transient aliases at `0x5c` and `0x5d`, and
+    /// selects Cacti-era stateless registry additions during driver integration.
+    Cacti,
+}
+
+/// Historical Taraxa interpreter profile for one selected instruction phase.
+///
+/// Every phase retains PUSH0 at `0x5f` and the legacy transient aliases at
+/// `0xb3`/`0xb4`. Ficus and Cacti add MCOPY; Cacti additionally adds the newer
+/// transient aliases. All remaining instructions and gas parameters retain the
+/// reviewed Istanbul/Californicum base.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TaraxaProfile {
-    cacti: bool,
+    phase: TaraxaPhase,
 }
 
 impl TaraxaProfile {
     /// Creates the bounded profile for one execution under the supplied Cacti state.
     ///
-    /// The input selects only the `0x5c`/`0x5d` aliases. It has no effect on the
-    /// base Istanbul instruction set, host behavior, frame rollback, or any
-    /// unlisted opcode.
+    /// This compatibility creator maps `false` to Californicum and `true` to
+    /// Cacti, including Cacti's inherited Ficus MCOPY instruction. New callers
+    /// that must select Ficus directly use [`Self::for_phase`]. It has no effect
+    /// on host behavior, frame rollback, or any unlisted opcode.
     #[must_use]
     pub const fn new(cacti: bool) -> Self {
-        Self { cacti }
+        Self {
+            phase: if cacti {
+                TaraxaPhase::Cacti
+            } else {
+                TaraxaPhase::Californicum
+            },
+        }
     }
 
-    /// Returns whether the Cacti transient aliases are installed.
+    /// Creates a profile for an explicit Taraxa instruction-table phase.
+    ///
+    /// Fork-height selection remains with the caller. The phase affects only
+    /// the cumulative instruction additions documented by [`TaraxaPhase`].
+    #[must_use]
+    pub const fn for_phase(phase: TaraxaPhase) -> Self {
+        Self { phase }
+    }
+
+    /// Returns the exact Taraxa instruction-table phase.
+    #[must_use]
+    pub const fn phase(self) -> TaraxaPhase {
+        self.phase
+    }
+
+    /// Returns whether Ficus instruction additions are installed.
+    ///
+    /// Cacti inherits Ficus, so this is true for both phases.
+    #[must_use]
+    pub const fn ficus(self) -> bool {
+        matches!(self.phase, TaraxaPhase::Ficus | TaraxaPhase::Cacti)
+    }
+
+    /// Returns whether the Cacti execution generation is selected.
+    ///
+    /// In this table it installs the Cacti transient aliases. Driver integration
+    /// also uses the result to select Cacti-era stateless registry additions.
     #[must_use]
     pub const fn cacti(self) -> bool {
-        self.cacti
+        matches!(self.phase, TaraxaPhase::Cacti)
     }
 
     /// Returns Istanbul dynamic gas parameters with the five pinned SSTORE values.
@@ -103,7 +153,12 @@ impl TaraxaProfile {
 
         table[0x55] = Instruction::new(sstore::<H>);
 
-        if self.cacti {
+        if self.ficus() {
+            table[0x5e] = Instruction::new(mcopy::<H>);
+            costs[0x5e] = 3;
+        }
+
+        if self.cacti() {
             table[0x5c] = Instruction::new(transient_load::<H>);
             table[0x5d] = Instruction::new(transient_store::<H>);
             costs[0x5c] = 100;
@@ -135,6 +190,23 @@ impl TaraxaProfile {
         costs[0xff] = 0;
         (table, costs)
     }
+}
+
+/// Executes MCOPY under Taraxa's local Ficus activation.
+///
+/// REVM guards its implementation with Cancun. The wrapper admits that guard
+/// only for this instruction and restores Istanbul on success and every error;
+/// it does not expose another Cancun instruction or gas rule.
+fn mcopy<H: Host>(ctx: InstructionContext<'_, H, EthInterpreter>) -> InstructionExecResult {
+    let prior = ctx.interpreter.runtime_flag.spec_id;
+    ctx.interpreter.runtime_flag.spec_id = SpecId::CANCUN;
+    let interpreter = ctx.interpreter;
+    let result = instructions::memory::mcopy(InstructionContext {
+        interpreter,
+        host: ctx.host,
+    });
+    interpreter.runtime_flag.spec_id = prior;
+    result
 }
 
 /// Execution-only host control that separates SELFDESTRUCT quote from mutation.

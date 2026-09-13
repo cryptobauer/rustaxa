@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "EVM-level Californicum/Ficus/Cacti MCOPY activation, overlap, memory expansion, zero-length wide offset, stack and gas boundaries; no state, native registry, publication or production-routing claim",
+  "transaction_gas_limit": 100000,
+  "transaction_intrinsic_gas": 21000,
+  "sha256": {
+    "public": "50746041f981a4a8441f9dd515f9aec5f1f446d04f78d097e6a3deed25523100",
+    "local": "50746041f981a4a8441f9dd515f9aec5f1f446d04f78d097e6a3deed25523100"
+  },
+  "exporter_sha256": "30348a8c622bc1b21726c07328d1783ef0ef491deea228ba3993b74fc9042baf"
+}

@@ -9,7 +9,7 @@ use revm::{
     interpreter::{Gas, InstructionResult, Interpreter, InterpreterAction},
     primitives::{U256, hardfork::SpecId},
 };
-use rustaxa_evm::profile::TaraxaProfile;
+use rustaxa_evm::profile::{TaraxaPhase, TaraxaProfile};
 
 /// Runs the six direct Go single-frame fixtures through the host-generic table.
 ///
@@ -113,7 +113,7 @@ fn bounded_profile_matches_direct_go_opcode_fixtures() {
 /// Confirms the profile runtime rejects unlisted newer instructions and keeps its
 /// base spec after both success and error exits from locally admitted aliases.
 #[test]
-fn bounded_profile_keeps_newer_opcodes_unavailable_and_restores_after_errors() {
+fn bounded_profile_keeps_unlisted_opcodes_unavailable_and_restores_after_errors() {
     let profile = TaraxaProfile::new(true);
     let (table, costs) = profile.instruction_table::<ProbeHost>();
 
@@ -121,12 +121,6 @@ fn bounded_profile_keeps_newer_opcodes_unavailable_and_restores_after_errors() {
         (
             "BASEFEE",
             [0x48, 0x00].as_slice(),
-            false,
-            InstructionResult::NotActivated,
-        ),
-        (
-            "MCOPY",
-            [0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x5e, 0x00].as_slice(),
             false,
             InstructionResult::NotActivated,
         ),
@@ -167,4 +161,24 @@ fn bounded_profile_keeps_newer_opcodes_unavailable_and_restores_after_errors() {
             "{name} must restore the bounded runtime base"
         );
     }
+
+    let profile = TaraxaProfile::for_phase(TaraxaPhase::Californicum);
+    let (table, costs) = profile.instruction_table::<ProbeHost>();
+    let mut host = ProbeHost {
+        price: U256::from(1),
+        gas: profile.gas_params(),
+        native_load: false,
+        slots: Some(Default::default()),
+        transient: Some(Default::default()),
+    };
+    let code = [0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x5e, 0x00];
+    let mut interpreter =
+        Interpreter::default().with_bytecode(Bytecode::new_raw(code.to_vec().into()));
+    interpreter.gas = Gas::new(79_000);
+    profile.configure_interpreter(&mut interpreter);
+    let InterpreterAction::Return(result) = interpreter.run_plain(&table, &costs, &mut host) else {
+        panic!("Californicum MCOPY unexpectedly requested a frame");
+    };
+    assert_eq!(result.result, InstructionResult::NotActivated);
+    assert_eq!(interpreter.runtime_flag.spec_id, SpecId::ISTANBUL);
 }
