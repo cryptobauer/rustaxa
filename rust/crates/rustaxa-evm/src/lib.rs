@@ -5,3 +5,5 @@
 //! storage implements the shared concrete read ports. No production crate
 //! depends on this crate. Integration is selectable only by isolated tests
 //! until a separately authorized and validated routing change.
+
+pub mod contracts;

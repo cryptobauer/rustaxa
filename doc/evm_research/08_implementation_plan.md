@@ -103,6 +103,13 @@ Before implementation workers diverge, document these invariants as typed contra
 All slices start as TODO except the S0 filesystem inventory. Each closes with its own evidence and Conventional Commit;
 completion means the listed behavior and required validation pass, not merely that code compiles.
 
+Implementation update (2026-09-13): [S1 contracts](s1_contracts.md) are implemented,
+independently reviewed and pass focused tests plus the repository fast gate.
+S0 has independently copied and content-hashed the supplied snapshot and verified
+matching mainnet genesis and paired period/root at 25,706,949; retained trie/replay
+coverage and capture provenance remain qualification work. S2/S3 proceed under
+the reviewed contracts. Production routing remains unauthorized.
+
 | Slice | Dependencies / agent | Deliverable and exit criterion |
 | --- | --- | --- |
 | S0: qualify snapshot | State worker; Spark may build inventory/export helpers | Independent working copy, identities, pair/root checks, retained-range manifest, useful exported fixtures and explicit gaps. No original mutation |
