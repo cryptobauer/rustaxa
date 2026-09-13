@@ -158,6 +158,54 @@ rewrite-derived caches that this pre-Rust snapshot was not expected to contain.
 Their absence is an importer input, rather than evidence that the authenticated
 legacy concrete rows were pruned.
 
+## Owner-reported validator candidate
+
+The snapshot owner supplied
+`0xfbb85d00ca77b0d49da4f71a91de552bce88b083` as an uncertain candidate for
+their producer validator address. This is owner-reported provenance, not a
+verified producer identity. No private key is needed or used for the state
+cross-check, and validator membership does not prove that this validator
+created, ran, or exported the snapshot. The retained head PBFT author is the
+different address `0xa6cec53b4d7920709f05ca1f7ac0d66338d29cb9`.
+
+A temporary read-only point probe with source SHA-256
+`ba6ef974297a2f6a6257b07a931c66bdffa0f2c16a5ebe9dd53a5542629d7063`
+opened only the qualified copy and pinned period 25,706,949 and state root
+`b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227`.
+The global validator iterable map authenticated the candidate at one-based
+position 128. Its reverse and forward iterable rows agreed. The exact logical
+keys were:
+
+- position by validator:
+  `5a48c40f7a0db86e77facc73a338b7d303d0ca37bc9ab0076e0b1c7f2e0ec6be`;
+- validator at position 128:
+  `634cff04eb2d3d263206e30d949eef029317db184545f623c4ae5465078992f2`;
+- validator record:
+  `5b8e315f16952aff7ca13007c4813d87be8a96a165e5217c930f49996b1ac91a`;
+- owner:
+  `904a7f86687f97a6a2fc08030315526545fd4fa4c4857f94d8feeee843eb1b37`;
+  and
+- VRF key:
+  `2d008eec95c11cd911bf30bdfeee52a733937c8dc06ba59948cc0b05d3460ce9`.
+
+Every DPoS row was both physically selected and authenticated as a trie member.
+The exact extended validator record was
+`d8d6893635c9adc5dea000008201f483e30e5684014dadb580`. Its nested legacy
+fields decode to stake `0x3635c9adc5dea00000`
+(`1,000,000,000,000,000,000,000`), commission 500, last commission-change
+period 14,880,342, and reward-reference head 21,867,957. The extended
+undelegation count is zero. The owner row is
+`6165c85193ab6b67daa21863d8bfa07b14ed8293`, and the 32-byte VRF row is
+`a3e7ec4f11a739e610fc2b54737788f0e68768522292591796b86611fc3593fb`.
+
+The candidate's derived slashing jail logical key is
+`69cc4d2688c3064ff2b2bad547e85886110492bfdd5c3ca3eb1d6bfe8a1013ae`.
+Its logical trie path authenticated as a non-member at the head. The raw
+version selector reported `HistoryUnavailable` because no physical version row
+exists for that key; the authenticated path result establishes current
+non-membership without converting the raw-history error into a fabricated
+absence.
+
 ## Semantic reconstruction audit
 
 The Rust canonical projection describes how a complete `DposSnapshot` maps to
