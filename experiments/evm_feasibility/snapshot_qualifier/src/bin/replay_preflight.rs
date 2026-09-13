@@ -27,7 +27,10 @@ use rustaxa_evm::envelope::EnvelopeRules;
 use rustaxa_evm::input::{LegacyInputKind, decode_legacy_input};
 use rustaxa_evm::journal::{ExecutionJournal, JournalAccountOperation, JournalWritePlan};
 use rustaxa_evm::profile::TaraxaProfile;
-use rustaxa_storage::{Column, ConcreteStateReader, FinalChainRepository, TransactionRepository};
+use rustaxa_storage::{
+    Column, ConcreteAccountMutation, ConcreteStateMutationBatch, ConcreteStateReader,
+    FinalChainRepository, HistoricalConcretePreparation, TransactionRepository,
+};
 use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp;
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
@@ -70,6 +73,7 @@ struct Report {
     outcomes: Vec<Outcome>,
     receipt_row_sha256: String,
     receipt_row_exact_match: bool,
+    transaction_root_preparation: RootPreparation,
     total_gas_used: u64,
     header_gas_used: u64,
     qualification: Qualification,
@@ -176,10 +180,24 @@ struct Qualification {
     demanded_prior_state_reads_authenticated: bool,
     exact_receipts_reproduced: bool,
     touched_read_closure_qualified: bool,
+    transaction_only_state_root_reproduced: bool,
     reward_transition_qualified: bool,
     concrete_writer_bootstrap_qualified: bool,
     final_state_root_reproduced: bool,
     publication_authorized: bool,
+}
+
+#[derive(Serialize)]
+struct RootPreparation {
+    mode: &'static str,
+    mutation_accounts: usize,
+    calculated_rows: usize,
+    changed_account_summaries: usize,
+    derived_root_hex: String,
+    retained_head_root_hex: String,
+    roots_match: bool,
+    database_mutated: bool,
+    includes_rewards: bool,
 }
 
 #[derive(Default)]
@@ -273,7 +291,18 @@ struct MainnetNativeClassifier {
 impl NativeAddressClassifier for MainnetNativeClassifier {
     fn is_native_address(&self, _: FinalChainBlockNumber, address: [u8; 20]) -> bool {
         self.checks.borrow_mut().push(address);
-        address[..19] == [0; 19] && matches!(address[19], 1..=9 | 0xee | 0xfe)
+        if address[..18] != [0; 18] {
+            return false;
+        }
+        matches!(
+            u16::from_be_bytes([address[18], address[19]]),
+            0x0001..=0x0009
+                | 0x000b..=0x0011
+                | 0x00ee
+                | 0x00fe
+                | 0x0100
+                | 0xfa1c
+        )
     }
 }
 
@@ -441,6 +470,48 @@ fn main() -> Result<()> {
         });
     }
 
+    let account_mutations = overlay
+        .iter()
+        .map(|(address, value)| match value {
+            ConcreteRead::Present(record) => Ok(ConcreteAccountMutation::Upsert {
+                address: *address,
+                record: record.clone(),
+            }),
+            ConcreteRead::Tombstone => Ok(ConcreteAccountMutation::Delete { address: *address }),
+            ConcreteRead::Absent => bail!(
+                "memory overlay retained an absent account mutation at {}",
+                hex::encode(address)
+            ),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mutation_accounts = account_mutations.len();
+    let historical = HistoricalConcretePreparation::open_read_only(
+        &state_path,
+        current_identity,
+        prior_identity,
+    )?;
+    let prepared = historical.prepare(
+        FinalChainBlockNumber::new(TARGET_PERIOD),
+        ConcreteStateMutationBatch {
+            accounts: account_mutations,
+            ..Default::default()
+        },
+    )?;
+    let derived_root = prepared.next_identity().state_root;
+    let retained_root = current_header.state_root.0;
+    let roots_match = derived_root == retained_root;
+    let root_preparation = RootPreparation {
+        mode: "HistoricalConcretePreparation over RocksDB read-only handle",
+        mutation_accounts,
+        calculated_rows: prepared.row_count(),
+        changed_account_summaries: prepared.changed_accounts().len(),
+        derived_root_hex: hex::encode(derived_root),
+        retained_head_root_hex: hex::encode(retained_root),
+        roots_match,
+        database_mutated: false,
+        includes_rewards: false,
+    };
+
     let all_receipts_match = outcomes.iter().all(|outcome| outcome.exact_receipt_match);
     let recorder = recorder.into_inner();
     let dependencies = Dependencies {
@@ -465,7 +536,7 @@ fn main() -> Result<()> {
         schema: 1,
         tool_source_sha256: sha256_hex(include_bytes!("replay_preflight.rs")),
         input_copy: input.display().to_string(),
-        open_mode: "RocksDB read-only repositories and ConcreteStateReader::open_historical_read_only",
+        open_mode: "RocksDB read-only repositories, ConcreteStateReader, and HistoricalConcretePreparation",
         period: TARGET_PERIOD,
         prior_period,
         prior_root_hex: hex::encode(prior_identity.state_root),
@@ -485,6 +556,7 @@ fn main() -> Result<()> {
         outcomes,
         receipt_row_sha256: sha256_hex(&receipts_rlp),
         receipt_row_exact_match: all_receipts_match,
+        transaction_root_preparation: root_preparation,
         total_gas_used: cumulative,
         header_gas_used: current_header.gas_used.as_u64(),
         qualification: Qualification {
@@ -492,6 +564,7 @@ fn main() -> Result<()> {
             demanded_prior_state_reads_authenticated: true,
             exact_receipts_reproduced: all_receipts_match,
             touched_read_closure_qualified: all_receipts_match,
+            transaction_only_state_root_reproduced: roots_match,
             reward_transition_qualified: false,
             concrete_writer_bootstrap_qualified: false,
             final_state_root_reproduced: false,
@@ -499,10 +572,10 @@ fn main() -> Result<()> {
         },
         open_dependencies: vec![
             "Reward transition still needs exact producer-compatible rewards inputs and prior weighted vote/certificate facts.",
-            "ConcreteStateWriter opens only the committed current descriptor and prepares current+1; replay from this historical prior root needs an authorized disposable adoption or historical-preparation contract.",
+            "HistoricalConcretePreparation derives this transaction-only root through a read-only handle but deliberately exposes no prepared rows, persistence token, lifecycle approval, or publication operation.",
             "The legacy snapshot is markerless for Rust lifecycle/provenance and already has a nonzero head; current lifecycle pairing accepts first application pairing only at head zero, so existing-head bootstrap remains unsupported.",
             "Current multi-validator Aspen2 native-session behavior remains unsupported and is not exercised by this transfer-only period.",
-            "The memory overlay proves transaction sequencing and receipts but does not update storage roots, derive the final trie root, write a descriptor, or authorize publication.",
+            "The matching derived root contains only the ordinary transaction account mutations; without qualified reward effects it is not a complete final-state transition claim.",
             "The candidate mainnet configuration bytes are qualified separately, while the exact producer binary remains unverified; these transfers do not execute bytecode that could observe block context.",
         ],
     };
@@ -587,27 +660,44 @@ fn apply_account_writes(
                 code_hash,
                 code_size,
             } => {
-                let (storage_root, physical_rlp) = match previous {
-                    ConcreteRead::Present(record) => {
-                        (record.account.storage_root, record.physical_rlp)
-                    }
-                    ConcreteRead::Absent | ConcreteRead::Tombstone => (None, Vec::new()),
+                let storage_root = match previous {
+                    ConcreteRead::Present(record) => record.account.storage_root,
+                    ConcreteRead::Absent | ConcreteRead::Tombstone => None,
+                };
+                let account = ConcreteAccount {
+                    nonce: nonce.clone(),
+                    balance: balance.clone(),
+                    storage_root,
+                    code_hash: *code_hash,
+                    code_size: *code_size,
                 };
                 ConcreteRead::Present(ConcreteAccountRecord {
-                    account: ConcreteAccount {
-                        nonce: nonce.clone(),
-                        balance: balance.clone(),
-                        storage_root,
-                        code_hash: *code_hash,
-                        code_size: *code_size,
-                    },
-                    physical_rlp,
+                    physical_rlp: encode_physical_account(&account),
+                    account,
                 })
             }
         };
         overlay.insert(write.address, next);
     }
     Ok(())
+}
+
+fn encode_physical_account(account: &ConcreteAccount) -> Vec<u8> {
+    let nonce = account.nonce.to_bytes();
+    let balance = account.balance.value().to_bytes_be();
+    let mut stream = RlpStream::new_list(5);
+    stream.append(&nonce.as_slice());
+    stream.append(&balance.as_slice());
+    match account.storage_root {
+        Some(root) => stream.append(&root.as_slice()),
+        None => stream.append_empty_data(),
+    };
+    match account.code_hash {
+        Some(hash) => stream.append(&hash.as_slice()),
+        None => stream.append_empty_data(),
+    };
+    stream.append(&account.code_size);
+    stream.out().to_vec()
 }
 
 fn encode_receipt(
@@ -810,10 +900,21 @@ mod tests {
     #[test]
     fn native_classifier_is_exact_and_period_independent() {
         let classifier = MainnetNativeClassifier::default();
-        assert!(classifier.is_native_address(
-            1_u64.into(),
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]
-        ));
+        for value in (1..=9)
+            .chain(0x0b..=0x11)
+            .chain([0xee, 0xfe, 0x0100, 0xfa1c])
+        {
+            assert!(classifier.is_native_address(1_u64.into(), low_address(value)));
+        }
+        for value in [0, 0x0a, 0x12, 0x13, 0xef, 0xff, 0x0101, 0xfa1b, 0xfa1d] {
+            assert!(!classifier.is_native_address(1_u64.into(), low_address(value)));
+        }
         assert!(!classifier.is_native_address(1_u64.into(), [0x11; 20]));
+    }
+
+    fn low_address(value: u16) -> [u8; 20] {
+        let mut address = [0; 20];
+        address[18..].copy_from_slice(&value.to_be_bytes());
+        address
     }
 }

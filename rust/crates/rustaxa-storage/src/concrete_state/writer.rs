@@ -169,6 +169,175 @@ pub struct PreparedConcreteView<'a> {
     prepared: &'a PreparedConcreteState,
 }
 
+/// One exact account result derived by historical read-only preparation.
+///
+/// The value is an in-memory summary of a changed account at the derived root.
+/// It neither asserts persistence nor carries a writer, row plan, preparation
+/// token, lifecycle approval, or publication authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoricalConcreteAccountChange {
+    address: [u8; 20],
+    value: ConcreteRead<ConcreteAccountRecord>,
+}
+
+impl HistoricalConcreteAccountChange {
+    /// Returns the unhashed account address selected by the mutation batch.
+    pub fn address(&self) -> [u8; 20] {
+        self.address
+    }
+
+    /// Borrows the exact derived account result and physical RLP, if present.
+    pub fn value(&self) -> &ConcreteRead<ConcreteAccountRecord> {
+        &self.value
+    }
+}
+
+/// Read-only result of deriving one period from a retained historical root.
+///
+/// The identity and account values describe an in-memory incremental-trie
+/// calculation. Row count is diagnostic only. This type contains no rows,
+/// writer identity, sequence, persistence method, or commit approval.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoricalConcretePreparationSummary {
+    next: ConcreteStateIdentity,
+    row_count: usize,
+    changed_accounts: Vec<HistoricalConcreteAccountChange>,
+}
+
+impl HistoricalConcretePreparationSummary {
+    /// Returns the identity derived from the historical root and supplied mutations.
+    pub fn next_identity(&self) -> ConcreteStateIdentity {
+        self.next
+    }
+
+    /// Returns the number of compatible rows calculated but never persisted.
+    pub fn row_count(&self) -> usize {
+        self.row_count
+    }
+
+    /// Borrows exact read summaries for accounts changed by the calculation.
+    pub fn changed_accounts(&self) -> &[HistoricalConcreteAccountChange] {
+        &self.changed_accounts
+    }
+}
+
+/// Read-only incremental preparation over a retained historical state root.
+///
+/// Opening independently pins the durable current descriptor and an older
+/// base identity. The database uses RocksDB's read-only API. Preparation reuses
+/// the compatible incremental writer while keeping its prepared rows and token
+/// private; only a root and changed-account summaries escape. Missing or corrupt
+/// trie/value/code dependencies fail closed. Construction verifies one
+/// deterministic account path against the base root, so even an empty mutation
+/// batch cannot bless an arbitrary historical root; touched paths authenticate
+/// their complete demanded closure.
+///
+/// This surface deliberately cannot persist or publish:
+///
+/// ```compile_fail
+/// use rustaxa_storage::{HistoricalConcretePreparation, ConcreteStateMutationBatch};
+/// use rustaxa_types::FinalChainBlockNumber;
+///
+/// fn cannot_publish(handle: &HistoricalConcretePreparation) {
+///     let summary = handle
+///         .prepare(FinalChainBlockNumber::new(1), ConcreteStateMutationBatch::default())
+///         .unwrap();
+///     handle.persist_contents(&summary).unwrap();
+/// }
+/// ```
+pub struct HistoricalConcretePreparation {
+    writer: ConcreteStateWriter,
+}
+
+impl HistoricalConcretePreparation {
+    /// Opens existing columns read-only and pins current and historical identities.
+    ///
+    /// `committed` must exactly equal the durable descriptor. `historical` may
+    /// be older, but cannot be future; when periods match, roots must match.
+    /// A deterministic account proof must authenticate against the historical root.
+    pub fn open_read_only(
+        path: impl AsRef<Path>,
+        committed: ConcreteStateIdentity,
+        historical: ConcreteStateIdentity,
+    ) -> Result<Self, ConcreteReadError> {
+        let path = path.as_ref();
+        let db = open_existing_database(path, true)?;
+        let observed = current_identity(&db)?;
+        if committed.period.as_u64() > observed.period.as_u64() {
+            return Err(ConcreteReadError::FuturePeriod {
+                requested: committed.period,
+                committed: observed.period,
+            });
+        }
+        if committed != observed {
+            return Err(ConcreteReadError::IdentityMismatch {
+                expected: committed,
+                observed,
+            });
+        }
+        if historical.period.as_u64() > committed.period.as_u64() {
+            return Err(ConcreteReadError::FuturePeriod {
+                requested: historical.period,
+                committed: committed.period,
+            });
+        }
+        if historical.period == committed.period && historical.state_root != committed.state_root {
+            return Err(ConcreteReadError::IdentityMismatch {
+                expected: historical,
+                observed: committed,
+            });
+        }
+        let writer = ConcreteStateWriter {
+            db,
+            path: path.to_path_buf(),
+            prior: historical,
+            durable_prior: committed,
+            writer_id: NEXT_WRITER_ID.fetch_add(1, Ordering::Relaxed),
+            sequence: Cell::new(0),
+            persisted_sequence: Cell::new(None),
+        };
+        // Authenticate one deterministic path so an empty batch cannot return a
+        // caller-injected root without resolving and checking its physical node.
+        writer.verify_prior_account([0; 20])?;
+        Ok(Self { writer })
+    }
+
+    /// Returns the durable descriptor independently pinned when the handle opened.
+    pub fn committed_identity(&self) -> ConcreteStateIdentity {
+        self.writer.durable_prior
+    }
+
+    /// Returns the retained historical identity used as the preparation base.
+    pub fn historical_identity(&self) -> ConcreteStateIdentity {
+        self.writer.prior
+    }
+
+    /// Derives exactly the next historical period without mutating RocksDB.
+    ///
+    /// The next period must immediately follow the historical base. Account,
+    /// storage, and code mutations retain normal writer validation. Returned
+    /// account values and root have no durable or publication authority.
+    pub fn prepare(
+        &self,
+        next_period: FinalChainBlockNumber,
+        mutations: ConcreteStateMutationBatch,
+    ) -> Result<HistoricalConcretePreparationSummary, ConcreteReadError> {
+        let prepared = self.writer.prepare(next_period, mutations)?;
+        Ok(HistoricalConcretePreparationSummary {
+            next: prepared.next_identity(),
+            row_count: prepared.row_count(),
+            changed_accounts: prepared
+                .changed_accounts()
+                .iter()
+                .map(|(address, value)| HistoricalConcreteAccountChange {
+                    address: *address,
+                    value: value.clone(),
+                })
+                .collect(),
+        })
+    }
+}
+
 impl rustaxa_types::concrete_state::execution::ConcreteExecutionRead for PreparedConcreteView<'_> {
     fn identity(&self) -> ConcreteStateIdentity {
         self.prepared.next
@@ -228,6 +397,7 @@ pub struct ConcreteStateWriter {
     pub(super) db: DB,
     path: PathBuf,
     prior: ConcreteStateIdentity,
+    durable_prior: ConcreteStateIdentity,
     writer_id: u64,
     sequence: Cell<u64>,
     persisted_sequence: Cell<Option<u64>>,
@@ -241,22 +411,7 @@ impl ConcreteStateWriter {
         prior: ConcreteStateIdentity,
     ) -> Result<Self, ConcreteReadError> {
         let path = path.as_ref();
-        let mut options = Options::default();
-        options.create_if_missing(false);
-        options.create_missing_column_families(false);
-        let columns = DB::list_cf(&options, path).map_err(io)?;
-        let present = columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
-        for required in REQUIRED_COLUMNS {
-            if !present.contains(required) {
-                return Err(corrupt(format!(
-                    "concrete state column family {required:?} is missing"
-                )));
-            }
-        }
-        let descriptors = columns
-            .iter()
-            .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
-        let db = DB::open_cf_descriptors(&options, path, descriptors).map_err(io)?;
+        let db = open_existing_database(path, false)?;
         let observed = current_identity(&db)?;
         if observed != prior {
             return Err(ConcreteReadError::IdentityMismatch {
@@ -268,6 +423,7 @@ impl ConcreteStateWriter {
             db,
             path: path.to_path_buf(),
             prior,
+            durable_prior: prior,
             writer_id: NEXT_WRITER_ID.fetch_add(1, Ordering::Relaxed),
             sequence: Cell::new(0),
             persisted_sequence: Cell::new(None),
@@ -380,7 +536,7 @@ impl ConcreteStateWriter {
                 ));
             }
         } else {
-            if current_identity(&self.db)? != self.prior {
+            if current_identity(&self.db)? != self.durable_prior {
                 return Err(corrupt("concrete descriptor changed after writer open"));
             }
             match base {
@@ -627,6 +783,7 @@ impl ConcreteStateWriter {
         &self,
         prepared: &PreparedConcreteState,
     ) -> Result<(), ConcreteReadError> {
+        self.ensure_durable_prior()?;
         if prepared.writer_id != self.writer_id
             || prepared.prior != self.prior
             || prepared.sequence != self.sequence.get()
@@ -636,7 +793,7 @@ impl ConcreteStateWriter {
                 "prepared state is stale, foreign, or already persisted",
             ));
         }
-        if current_identity(&self.db)? != self.prior {
+        if current_identity(&self.db)? != self.durable_prior {
             return Err(corrupt("cannot stage rows after descriptor changed"));
         }
         let mut batch = WriteBatch::default();
@@ -652,6 +809,7 @@ impl ConcreteStateWriter {
         batch: &mut WriteBatch,
         genesis: bool,
     ) -> Result<(), ConcreteReadError> {
+        self.ensure_durable_prior()?;
         if prepared.writer_id != self.writer_id
             || prepared.prior != self.prior
             || prepared.sequence != self.sequence.get()
@@ -666,7 +824,7 @@ impl ConcreteStateWriter {
                     "fresh database acquired a descriptor before genesis commit",
                 ));
             }
-        } else if current_identity(&self.db)? != self.prior {
+        } else if current_identity(&self.db)? != self.durable_prior {
             return Err(corrupt("cannot use prepared rows after descriptor changed"));
         }
         for (row, value) in &prepared.rows {
@@ -770,6 +928,10 @@ impl ConcreteStateWriter {
                 period: FinalChainBlockNumber::GENESIS,
                 state_root: empty_trie_root(),
             },
+            durable_prior: ConcreteStateIdentity {
+                period: FinalChainBlockNumber::GENESIS,
+                state_root: empty_trie_root(),
+            },
             writer_id: NEXT_WRITER_ID.fetch_add(1, Ordering::Relaxed),
             sequence: Cell::new(0),
             persisted_sequence: Cell::new(None),
@@ -806,8 +968,17 @@ impl ConcreteStateWriter {
                 "prepared state is stale or belongs to another writer",
             ));
         }
-        if current_identity(&self.db)? != self.prior {
+        if current_identity(&self.db)? != self.durable_prior {
             return Err(corrupt("prepared state prior is no longer the descriptor"));
+        }
+        Ok(())
+    }
+
+    fn ensure_durable_prior(&self) -> Result<(), ConcreteReadError> {
+        if self.prior != self.durable_prior {
+            return Err(corrupt(
+                "historical read-only preparation cannot persist compatible rows",
+            ));
         }
         Ok(())
     }
@@ -1104,6 +1275,29 @@ fn merge_prepared_row(
             "prepared content-addressed rows contain a key conflict",
         )),
         _ => Ok(()),
+    }
+}
+
+fn open_existing_database(path: &Path, read_only: bool) -> Result<DB, ConcreteReadError> {
+    let mut options = Options::default();
+    options.create_if_missing(false);
+    options.create_missing_column_families(false);
+    let columns = DB::list_cf(&options, path).map_err(io)?;
+    let present = columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    for required in REQUIRED_COLUMNS {
+        if !present.contains(required) {
+            return Err(corrupt(format!(
+                "concrete state column family {required:?} is missing"
+            )));
+        }
+    }
+    let descriptors = columns
+        .iter()
+        .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
+    if read_only {
+        DB::open_cf_descriptors_read_only(&options, path, descriptors, false).map_err(io)
+    } else {
+        DB::open_cf_descriptors(&options, path, descriptors).map_err(io)
     }
 }
 
@@ -1527,6 +1721,135 @@ mod tests {
         assert_eq!(current_identity(&writer.db).unwrap(), genesis);
     }
 
+    #[test]
+    fn historical_read_only_preparation_reproduces_retained_next_root() {
+        let database = TestDb::new();
+        let address = [0x41; 20];
+        let (first, second, second_account) = seed_two_periods(&database, address);
+
+        let historical =
+            HistoricalConcretePreparation::open_read_only(&database.path, second, first).unwrap();
+        assert_eq!(historical.committed_identity(), second);
+        assert_eq!(historical.historical_identity(), first);
+        let summary = historical
+            .prepare(
+                second.period,
+                ConcreteStateMutationBatch {
+                    accounts: vec![ConcreteAccountMutation::Upsert {
+                        address,
+                        record: second_account.clone(),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(summary.next_identity(), second);
+        assert!(summary.row_count() > 0);
+        assert_eq!(summary.changed_accounts().len(), 1);
+        assert_eq!(summary.changed_accounts()[0].address(), address);
+        assert_eq!(
+            summary.changed_accounts()[0].value(),
+            &ConcreteRead::Present(second_account)
+        );
+        let inaccessible_prepared = historical
+            .writer
+            .prepare(second.period, ConcreteStateMutationBatch::default())
+            .unwrap();
+        assert!(
+            historical
+                .writer
+                .persist_contents(&inaccessible_prepared)
+                .is_err()
+        );
+        drop(historical);
+
+        let reader = ConcreteStateReader::open_read_only(&database.path, second).unwrap();
+        assert_eq!(ConcreteStateRead::identity(&reader), second);
+    }
+
+    #[test]
+    fn historical_open_rejects_identity_mismatch_and_future_base() {
+        let database = TestDb::new();
+        let address = [0x42; 20];
+        let (first, second, _) = seed_two_periods(&database, address);
+        let wrong_current = ConcreteStateIdentity {
+            period: second.period,
+            state_root: [0x77; 32],
+        };
+        assert!(matches!(
+            HistoricalConcretePreparation::open_read_only(&database.path, wrong_current, first),
+            Err(ConcreteReadError::IdentityMismatch { .. })
+        ));
+        let wrong_same_period_base = ConcreteStateIdentity {
+            period: second.period,
+            state_root: [0x88; 32],
+        };
+        assert!(matches!(
+            HistoricalConcretePreparation::open_read_only(
+                &database.path,
+                second,
+                wrong_same_period_base
+            ),
+            Err(ConcreteReadError::IdentityMismatch { .. })
+        ));
+        let future = ConcreteStateIdentity {
+            period: second.period.checked_next().unwrap(),
+            state_root: [0x99; 32],
+        };
+        assert!(matches!(
+            HistoricalConcretePreparation::open_read_only(&database.path, second, future),
+            Err(ConcreteReadError::FuturePeriod { .. })
+        ));
+    }
+
+    #[test]
+    fn historical_open_rejects_missing_and_corrupt_root_even_for_noop() {
+        let database = TestDb::new();
+        let genesis = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::GENESIS,
+            state_root: empty_trie_root(),
+        };
+        let missing = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::GENESIS,
+            state_root: [0x55; 32],
+        };
+        assert!(matches!(
+            HistoricalConcretePreparation::open_read_only(&database.path, genesis, missing),
+            Err(ConcreteReadError::IdentityMismatch { .. })
+        ));
+
+        let address = [0x43; 20];
+        let (first, second, _) = seed_two_periods(&database, address);
+        let missing = ConcreteStateIdentity {
+            period: first.period,
+            state_root: [0x55; 32],
+        };
+        assert!(matches!(
+            HistoricalConcretePreparation::open_read_only(&database.path, second, missing),
+            Err(ConcreteReadError::HistoryUnavailable(identity)) if identity == missing
+        ));
+
+        let corrupt = ConcreteStateIdentity {
+            period: first.period,
+            state_root: [0x66; 32],
+        };
+        let mut options = Options::default();
+        options.create_if_missing(false);
+        options.create_missing_column_families(false);
+        let columns = DB::list_cf(&options, &database.path).unwrap();
+        let descriptors = columns
+            .iter()
+            .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
+        let db = DB::open_cf_descriptors(&options, &database.path, descriptors).unwrap();
+        let nodes = db.cf_handle("2").unwrap();
+        db.put_cf(&nodes, corrupt.state_root, [1, 2, 3]).unwrap();
+        drop(db);
+        assert!(matches!(
+            HistoricalConcretePreparation::open_read_only(&database.path, second, corrupt),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+    }
+
     fn account(
         nonce: u64,
         balance: u64,
@@ -1556,6 +1879,61 @@ mod tests {
             },
             physical_rlp: stream.out().to_vec(),
         }
+    }
+
+    fn seed_two_periods(
+        database: &TestDb,
+        address: [u8; 20],
+    ) -> (
+        ConcreteStateIdentity,
+        ConcreteStateIdentity,
+        ConcreteAccountRecord,
+    ) {
+        let genesis = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::GENESIS,
+            state_root: empty_trie_root(),
+        };
+        let writer = ConcreteStateWriter::open(&database.path, genesis).unwrap();
+        let prepared = writer
+            .prepare(
+                FinalChainBlockNumber::new(1),
+                ConcreteStateMutationBatch {
+                    accounts: vec![ConcreteAccountMutation::Upsert {
+                        address,
+                        record: account(0, 100, None, None, 0),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        writer.persist_contents(&prepared).unwrap();
+        writer
+            .publish_descriptor_for_reopen_test(&prepared)
+            .unwrap();
+        let first = prepared.next_identity();
+        drop(writer);
+
+        let second_account = account(1, 90, None, None, 0);
+        let writer = ConcreteStateWriter::open(&database.path, first).unwrap();
+        let prepared = writer
+            .prepare(
+                FinalChainBlockNumber::new(2),
+                ConcreteStateMutationBatch {
+                    accounts: vec![ConcreteAccountMutation::Upsert {
+                        address,
+                        record: second_account.clone(),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        writer.persist_contents(&prepared).unwrap();
+        writer
+            .publish_descriptor_for_reopen_test(&prepared)
+            .unwrap();
+        let second = prepared.next_identity();
+        drop(writer);
+        (first, second, second_account)
     }
 
     fn assert_hex_row(writer: &ConcreteStateWriter, column: &str, key: &str, value: &str) {

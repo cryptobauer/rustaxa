@@ -17,8 +17,10 @@ pub use concrete_state::{
     ConcreteLifecycleObservation, ConcreteObserverAccountChange, ConcreteObserverPhaseDelta,
     ConcreteObserverPhaseOutput, ConcreteStateLifecycle, ConcreteStateMutationBatch,
     ConcreteStateReader, ConcreteStateWriter, ConcreteStorageMutation, ConcreteStoragePath,
-    PreparedConcreteState, PreparedConcreteView, account_commitment_rlp, account_version_prefix,
-    decode_physical_account, storage_version_prefix, versioned_key,
+    HistoricalConcreteAccountChange, HistoricalConcretePreparation,
+    HistoricalConcretePreparationSummary, PreparedConcreteState, PreparedConcreteView,
+    account_commitment_rlp, account_version_prefix, decode_physical_account,
+    storage_version_prefix, versioned_key,
 };
 pub use config::Column;
 pub use config::Config;

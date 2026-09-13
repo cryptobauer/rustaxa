@@ -28,5 +28,6 @@ pub use reader::{ConcreteStateReader, ConcreteStoragePath};
 pub use writer::{
     ConcreteAccountMutation, ConcreteCodeInsertion, ConcreteObserverPhaseDelta,
     ConcreteStateMutationBatch, ConcreteStateWriter, ConcreteStorageMutation,
-    PreparedConcreteState, PreparedConcreteView,
+    HistoricalConcreteAccountChange, HistoricalConcretePreparation,
+    HistoricalConcretePreparationSummary, PreparedConcreteState, PreparedConcreteView,
 };

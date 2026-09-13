@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "tool_source_sha256": "030a1e34e059eca2d087c2770063b8171d88186f2527ae35fbf7375765190008",
+  "tool_source_sha256": "0cbcc3c97cea6eed0784be84fafbf401a43ceb6ae2e3bfc647ccde2c386ee66c",
   "input_copy": "/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy",
-  "open_mode": "RocksDB read-only repositories and ConcreteStateReader::open_historical_read_only",
+  "open_mode": "RocksDB read-only repositories, ConcreteStateReader, and HistoricalConcretePreparation",
   "period": 25706949,
   "prior_period": 25706948,
   "prior_root_hex": "926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2",
@@ -811,6 +811,17 @@
   ],
   "receipt_row_sha256": "a0cf47cce427e5517939c1eeaefc347184899e5fef60d6a580db109d30260aa1",
   "receipt_row_exact_match": true,
+  "transaction_root_preparation": {
+    "mode": "HistoricalConcretePreparation over RocksDB read-only handle",
+    "mutation_accounts": 20,
+    "calculated_rows": 116,
+    "changed_account_summaries": 20,
+    "derived_root_hex": "b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227",
+    "retained_head_root_hex": "b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227",
+    "roots_match": true,
+    "database_mutated": false,
+    "includes_rewards": false
+  },
   "total_gas_used": 399000,
   "header_gas_used": 399000,
   "qualification": {
@@ -818,6 +829,7 @@
     "demanded_prior_state_reads_authenticated": true,
     "exact_receipts_reproduced": true,
     "touched_read_closure_qualified": true,
+    "transaction_only_state_root_reproduced": true,
     "reward_transition_qualified": false,
     "concrete_writer_bootstrap_qualified": false,
     "final_state_root_reproduced": false,
@@ -825,10 +837,10 @@
   },
   "open_dependencies": [
     "Reward transition still needs exact producer-compatible rewards inputs and prior weighted vote/certificate facts.",
-    "ConcreteStateWriter opens only the committed current descriptor and prepares current+1; replay from this historical prior root needs an authorized disposable adoption or historical-preparation contract.",
+    "HistoricalConcretePreparation derives this transaction-only root through a read-only handle but deliberately exposes no prepared rows, persistence token, lifecycle approval, or publication operation.",
     "The legacy snapshot is markerless for Rust lifecycle/provenance and already has a nonzero head; current lifecycle pairing accepts first application pairing only at head zero, so existing-head bootstrap remains unsupported.",
     "Current multi-validator Aspen2 native-session behavior remains unsupported and is not exercised by this transfer-only period.",
-    "The memory overlay proves transaction sequencing and receipts but does not update storage roots, derive the final trie root, write a descriptor, or authorize publication.",
+    "The matching derived root contains only the ordinary transaction account mutations; without qualified reward effects it is not a complete final-state transition claim.",
     "The candidate mainnet configuration bytes are qualified separately, while the exact producer binary remains unverified; these transfers do not execute bytecode that could observe block context."
   ]
 }
