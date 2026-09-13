@@ -60,9 +60,10 @@ impl ConcreteStateReader {
 
     /// Opens a reader pinned to an older FinalChain-supplied identity while
     /// independently requiring the database's current descriptor to equal
-    /// `committed`. This does not assert broad historical retention: every read
-    /// must still resolve and authenticate its requested path, and missing
-    /// physical storage history remains unavailable.
+    /// `committed`. This does not attest the caller-supplied historical identity
+    /// or assert broad retention. Account and explicit logical-path reads still
+    /// authenticate the requested root; raw slot selection remains independent,
+    /// and missing physical storage history remains unavailable.
     pub fn open_historical_read_only(
         path: impl AsRef<Path>,
         committed: ConcreteStateIdentity,
