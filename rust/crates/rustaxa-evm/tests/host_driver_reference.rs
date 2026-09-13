@@ -252,6 +252,7 @@ fn create_executes_initcode_storage_and_installs_runtime() {
     let result = execute_top_level_create(
         &mut journal,
         &BlockHashes,
+        &NoNative,
         &ExecutionBlockContext {
             period: FinalChainBlockNumber::new(1),
             author: [0_u8; 20],

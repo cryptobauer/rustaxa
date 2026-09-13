@@ -332,6 +332,7 @@ fn signed_transfer_create_and_logical_continuation_call_match_go_results_and_mut
                 execute_top_level_create(
                     &mut journal,
                     &NoHistory,
+                    &NoNative,
                     &block,
                     &transaction,
                     EnvelopeRules { cornus: true },
