@@ -12,8 +12,15 @@ use super::*;
 use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteStorageKey};
 
 pub(super) mod account;
+pub(super) mod raw;
+pub(super) mod rewards;
 
 pub use account::{FinalChainNativeAccount, FinalChainNativeOrdinaryMutation};
+pub use raw::{
+    FinalChainNativeRawMutation, FinalChainNativeRawOperation, FinalChainNativeRawValue,
+    FinalChainNativeRawValueError,
+};
+pub use rewards::FinalChainNativeRewardsOutcome;
 
 /// Arbitrary-width unsigned value carried by a native child call.
 ///
@@ -104,6 +111,20 @@ pub struct FinalChainNativeGasQuote {
 /// same-period native puts and tombstones. Read errors abort the pending
 /// period; they are never converted to absence.
 pub trait FinalChainNativeStateRead {
+    /// Loads exact current ordinary-account facts for one native kernel read.
+    ///
+    /// The default keeps the original `setCommission`-only readers source
+    /// compatible. Account-consuming operations fail explicitly instead of
+    /// interpreting an unavailable read as an absent account.
+    fn account(
+        &self,
+        _address: [u8; 20],
+    ) -> std::result::Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+        Err(FinalChainNativeStateReadError::Invariant(
+            "current native account reads are unavailable".to_owned(),
+        ))
+    }
+
     /// Loads one native logical storage key from the current raw lane.
     fn raw_storage(
         &self,
@@ -135,19 +156,6 @@ impl From<ConcreteReadError> for FinalChainNativeStateReadError {
     }
 }
 
-/// Exact nonempty raw replacement produced by one native mutation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FinalChainNativeRawMutation {
-    /// Native contract whose storage trie owns the row.
-    pub address: [u8; 20],
-    /// Logical unhashed storage key.
-    pub key: ConcreteStorageKey,
-    /// Exact classified raw value observed during preparation.
-    pub expected: ConcreteRead<Vec<u8>>,
-    /// Exact nonempty replacement bytes.
-    pub replacement: Vec<u8>,
-}
-
 /// Contract-level status of one admitted native operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FinalChainNativeStatus {
@@ -173,6 +181,8 @@ pub struct FinalChainNativeOutcome {
     pub gas_used: FinalChainGas,
     /// Native return bytes.
     pub output: Vec<u8>,
+    /// Ordered ordinary account effects owned by the enclosing EVM frame.
+    pub account_mutations: Vec<FinalChainNativeOrdinaryMutation>,
     /// Ordered exact raw replacements. This is empty on business failure.
     pub raw_mutations: Vec<FinalChainNativeRawMutation>,
     /// Ordered EVM-compatible logs. These are empty on business failure.
@@ -236,6 +246,14 @@ pub enum FinalChainNativeSessionError {
     UnsupportedOperation,
     /// Current raw state could not be read safely.
     StateRead(FinalChainNativeStateReadError),
+    /// Rewards require the request identity retained by the bound constructor.
+    UnboundRewards,
+    /// The opaque rewards plan belongs to another request or period.
+    RewardsPlanMismatch,
+    /// The terminal rewards phase was already completed.
+    RewardsAlreadyFinished,
+    /// The prepared rewards profile is outside this first bounded adapter.
+    RewardsScopeUnsupported,
     /// Current raw bytes do not exactly encode the staged semantic state.
     RawIntegrity(String),
     /// Existing FinalChain state or kernel execution failed.
@@ -289,11 +307,15 @@ struct PreparedCall {
 /// ordinary EVM frame later rolls back.
 pub struct FinalChainNativeSession<'a> {
     final_chain: &'a FinalChain,
+    request_id: Option<[u8; 32]>,
     pending_period: FinalChainBlockNumber,
+    period_start_total_vote_count: u64,
+    period_start_amount_delegated: U256,
     next_sequence: u64,
     dpos_state: DposSnapshot,
     prepared: Option<PreparedCall>,
     aborted: bool,
+    finished_rewards: bool,
 }
 
 impl FinalChain {
@@ -305,6 +327,30 @@ impl FinalChain {
     /// authority or alter FinalChain snapshots.
     pub fn begin_native_session(
         &self,
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        self.begin_native_session_inner(None, pending_period, expected_parent)
+    }
+
+    /// Begins an unpublished native session bound to one exact external-EVM
+    /// application request.
+    ///
+    /// Invocation execution is identical to [`Self::begin_native_session`]. The
+    /// non-optional binding is retained for the terminal rewards phase, which
+    /// rejects a plan prepared for another request.
+    pub fn begin_native_session_bound(
+        &self,
+        request_id: [u8; 32],
+        pending_period: FinalChainBlockNumber,
+        expected_parent: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        self.begin_native_session_inner(Some(request_id), pending_period, expected_parent)
+    }
+
+    fn begin_native_session_inner(
+        &self,
+        request_id: Option<[u8; 32]>,
         pending_period: FinalChainBlockNumber,
         expected_parent: FinalChainBlockNumber,
     ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
@@ -328,13 +374,20 @@ impl FinalChain {
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
         self.advance_reward_reference_graph_block(&mut dpos_state, pending_period)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        let period_start_total_vote_count = dpos_state.total_vote_count;
+        let period_start_amount_delegated = total_staked_amount(&dpos_state)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
         Ok(FinalChainNativeSession {
             final_chain: self,
+            request_id,
             pending_period,
+            period_start_total_vote_count,
+            period_start_amount_delegated,
             next_sequence: 0,
             dpos_state,
             prepared: None,
             aborted: false,
+            finished_rewards: false,
         })
     }
 }
@@ -353,6 +406,9 @@ impl FinalChainNativeSession<'_> {
     ) -> std::result::Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
         if self.aborted {
             return Err(FinalChainNativeSessionError::Aborted);
+        }
+        if self.finished_rewards {
+            return Err(FinalChainNativeSessionError::RewardsAlreadyFinished);
         }
         if self.prepared.is_some() {
             return Err(FinalChainNativeSessionError::QuoteOutstanding);
@@ -452,6 +508,9 @@ impl FinalChainNativeSession<'_> {
         if self.aborted {
             return Err(FinalChainNativeSessionError::Aborted);
         }
+        if self.finished_rewards {
+            return Err(FinalChainNativeSessionError::RewardsAlreadyFinished);
+        }
         let Some(prepared) = self.prepared.as_ref() else {
             return Err(FinalChainNativeSessionError::NotPrepared);
         };
@@ -475,6 +534,7 @@ impl FinalChainNativeSession<'_> {
                     },
                     gas_used: quote.required_gas,
                     output: Vec::new(),
+                    account_mutations: Vec::new(),
                     raw_mutations: Vec::new(),
                     logs: Vec::new(),
                 },
@@ -486,6 +546,7 @@ impl FinalChainNativeSession<'_> {
                     },
                     gas_used: FinalChainGas::ZERO,
                     output: Vec::new(),
+                    account_mutations: Vec::new(),
                     raw_mutations: Vec::new(),
                     logs: Vec::new(),
                 },
@@ -560,7 +621,10 @@ impl FinalChainNativeSession<'_> {
                 address: DPOS_CONTRACT_ADDRESS,
                 key: prepared.validator_key,
                 expected: prepared.validator_read,
-                replacement,
+                operation: FinalChainNativeRawOperation::Put(
+                    FinalChainNativeRawValue::new(replacement)
+                        .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?,
+                ),
             });
             self.dpos_state = next_state;
         }
@@ -569,6 +633,7 @@ impl FinalChainNativeSession<'_> {
                 status,
                 gas_used: quote.required_gas,
                 output: outcome.code_retval,
+                account_mutations: Vec::new(),
                 raw_mutations,
                 logs: outcome
                     .logs
@@ -834,6 +899,7 @@ fn checked_undelegations_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethereum_types::H160;
     use rustaxa_storage::Config;
     use rustaxa_types::GenesisValidatorMetadata;
     use std::cell::{Cell, RefCell};
@@ -864,6 +930,7 @@ mod tests {
     #[derive(Default)]
     struct RawState {
         rows: RefCell<RawRows>,
+        accounts: BTreeMap<[u8; 20], FinalChainNativeAccount>,
         reads: Cell<usize>,
         fail_reads: bool,
     }
@@ -891,20 +958,63 @@ mod tests {
             }
         }
 
+        fn reward_fixture(total_vote_count: u64, amount_delegated: U256) -> Self {
+            let state = Self {
+                accounts: BTreeMap::from([(
+                    DPOS_CONTRACT_ADDRESS,
+                    FinalChainNativeAccount {
+                        exists: true,
+                        nonce: FinalChainNonce::zero(),
+                        balance: (BigInt::from(1_u8) << 300_usize) + BigInt::from(10_000_u64),
+                    },
+                )]),
+                ..Self::default()
+            };
+            state.set(
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[0, 2], &VALIDATOR]),
+                ConcreteRead::Present(vec![0xc2, 0x80, 0x80]),
+            );
+            state.set(
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[4]]),
+                ConcreteRead::Present(concrete_compact_u64(total_vote_count)),
+            );
+            state.set(
+                DPOS_CONTRACT_ADDRESS,
+                concrete_storage_key(&[&[5]]),
+                ConcreteRead::Present(concrete_u256_bytes(amount_delegated)),
+            );
+            state
+        }
+
         fn set(&self, address: [u8; 20], key: [u8; 32], value: ConcreteRead<Vec<u8>>) {
             self.rows.borrow_mut().insert((address, key), value);
         }
 
         fn apply(&self, mutation: &FinalChainNativeRawMutation) {
-            self.set(
-                mutation.address,
-                mutation.key.0,
-                ConcreteRead::Present(mutation.replacement.clone()),
-            );
+            let value = match &mutation.operation {
+                FinalChainNativeRawOperation::Put(value) => {
+                    ConcreteRead::Present(value.as_bytes().to_vec())
+                }
+                FinalChainNativeRawOperation::Delete => ConcreteRead::Present(Vec::new()),
+            };
+            self.set(mutation.address, mutation.key.0, value);
         }
     }
 
     impl FinalChainNativeStateRead for RawState {
+        fn account(
+            &self,
+            address: [u8; 20],
+        ) -> std::result::Result<FinalChainNativeAccount, FinalChainNativeStateReadError> {
+            self.accounts.get(&address).cloned().ok_or_else(|| {
+                FinalChainNativeStateReadError::Invariant(format!(
+                    "fixture account is unavailable: {address:?}"
+                ))
+            })
+        }
+
         fn raw_storage(
             &self,
             address: [u8; 20],
@@ -1061,7 +1171,12 @@ mod tests {
                 mutation.expected,
                 ConcreteRead::Present(LEGACY_VALIDATOR_100.to_vec())
             );
-            assert_eq!(mutation.replacement, EXTENDED_VALIDATOR_200);
+            assert_eq!(
+                mutation.operation,
+                FinalChainNativeRawOperation::Put(
+                    FinalChainNativeRawValue::new(EXTENDED_VALIDATOR_200.to_vec()).unwrap()
+                )
+            );
             assert_eq!(outcome.logs.len(), 1);
             assert_eq!(
                 outcome.logs[0],
@@ -1270,7 +1385,12 @@ mod tests {
                 let quote = session.prepare(&nested, &state).unwrap();
                 let outcome = completed(session.invoke(&nested, quote, &state).unwrap());
                 assert_eq!(outcome.status, FinalChainNativeStatus::Success);
-                assert_eq!(outcome.raw_mutations[0].replacement, EXTENDED_VALIDATOR_200);
+                assert_eq!(
+                    outcome.raw_mutations[0].operation,
+                    FinalChainNativeRawOperation::Put(
+                        FinalChainNativeRawValue::new(EXTENDED_VALIDATOR_200.to_vec()).unwrap()
+                    )
+                );
             },
         );
     }
@@ -1295,7 +1415,12 @@ mod tests {
                 let invocation = request(0, OWNER, 200, 20_000);
                 let quote = session.prepare(&invocation, &state).unwrap();
                 let outcome = completed(session.invoke(&invocation, quote, &state).unwrap());
-                assert_eq!(outcome.raw_mutations[0].replacement, LEGACY_VALIDATOR_200);
+                assert_eq!(
+                    outcome.raw_mutations[0].operation,
+                    FinalChainNativeRawOperation::Put(
+                        FinalChainNativeRawValue::new(LEGACY_VALIDATOR_200.to_vec()).unwrap()
+                    )
+                );
 
                 let extended_state = RawState::fixture();
                 extended_state.set(
@@ -1496,5 +1621,204 @@ mod tests {
             };
             replay_invocation(chain, &invocation).unwrap();
         });
+    }
+
+    #[test]
+    fn bound_rewards_preserve_repeated_raw_rows_and_ordered_full_width_custody() {
+        with_chain_config(
+            "bound-rewards",
+            FinalChainRewardsConfig {
+                committee_size: 1,
+                magnolia_period: FinalChainBlockNumber::GENESIS,
+                cornus_period: FinalChainBlockNumber::GENESIS,
+                fix_redelegate_block_num: FinalChainBlockNumber::GENESIS,
+                aspen_part_one_period: FinalChainBlockNumber::GENESIS,
+                aspen_part_two_period: FinalChainBlockNumber::MAX,
+                cacti_period: FinalChainBlockNumber::MAX,
+                max_block_author_reward_percent: 20,
+                dag_proposers_reward_percent: 50,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 1,
+                rewards_distribution_frequency: vec![(FinalChainBlockNumber::GENESIS, 1)],
+                ..Default::default()
+            },
+            |chain| {
+                let transaction_hash = H256::from([0x77; 32]);
+                let plan = chain
+                    .plan_external_evm_rewards_stats(
+                        [0x55; 32],
+                        FinalizedRewardsPeriodFact {
+                            period: 1,
+                            block_author: H160::from(VALIDATOR),
+                            blocks_per_year: 1,
+                            dpos_eligible_total_vote_count: 10,
+                            transactions: vec![RewardTransactionFact {
+                                hash: transaction_hash,
+                                gas_price: U256::one(),
+                                gas_used: 21_000_u64.into(),
+                            }],
+                            dag_blocks: vec![RewardDagBlockFact {
+                                author: H160::from(VALIDATOR),
+                                difficulty: 1,
+                                transaction_hashes: vec![transaction_hash],
+                            }],
+                            cert_votes: vec![RewardCertVoteFact {
+                                voter: H160::from(VALIDATOR),
+                                weight: 1,
+                                period: 1,
+                            }],
+                        },
+                    )
+                    .unwrap();
+                let state = RawState::reward_fixture(10, U256::from(10_000_u64));
+                let mut session = chain
+                    .begin_native_session_bound(
+                        [0x55; 32],
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+
+                let outcome = session.finish_rewards(&plan, &state).unwrap();
+
+                assert_eq!(outcome.total_reward.as_u256(), U256::from(2_000_u64));
+                let wide = (BigInt::from(1_u8) << 300_usize) + BigInt::from(10_000_u64);
+                assert_eq!(
+                    outcome.account_mutations,
+                    vec![
+                        FinalChainNativeOrdinaryMutation::BalanceReplace {
+                            address: DPOS_CONTRACT_ADDRESS,
+                            expected_exists: true,
+                            expected: wide.clone(),
+                            replacement: &wide + BigInt::from(21_000_u64),
+                        },
+                        FinalChainNativeOrdinaryMutation::BalanceReplace {
+                            address: DPOS_CONTRACT_ADDRESS,
+                            expected_exists: true,
+                            expected: &wide + BigInt::from(21_000_u64),
+                            replacement: &wide + BigInt::from(23_000_u64),
+                        },
+                    ]
+                );
+                assert_eq!(outcome.raw_mutations.len(), 3);
+                let reward_key = ConcreteStorageKey(concrete_storage_key(&[&[0, 2], &VALIDATOR]));
+                assert_eq!(outcome.raw_mutations[0].key, reward_key);
+                assert_eq!(
+                    outcome.raw_mutations[0].expected,
+                    ConcreteRead::Present(vec![0xc2, 0x80, 0x80])
+                );
+                assert_eq!(outcome.raw_mutations[1].key, reward_key);
+                let mut bonus_row = rlp::RlpStream::new_list(2);
+                bonus_row.append(&U256::from(396_u64));
+                bonus_row.append(&U256::from(4_u64));
+                assert_eq!(
+                    outcome.raw_mutations[1].expected,
+                    ConcreteRead::Present(bonus_row.out().to_vec())
+                );
+                let puts = outcome
+                    .raw_mutations
+                    .iter()
+                    .map(|mutation| match &mutation.operation {
+                        FinalChainNativeRawOperation::Put(value) => value.as_bytes().to_vec(),
+                        FinalChainNativeRawOperation::Delete => Vec::new(),
+                    })
+                    .collect::<Vec<_>>();
+                let mut final_reward_row = rlp::RlpStream::new_list(2);
+                final_reward_row.append(&U256::from(1_980_u64));
+                final_reward_row.append(&U256::from(21_020_u64));
+                assert_eq!(puts[1], final_reward_row.out().to_vec());
+                assert_eq!(puts[2], vec![0x07, 0xd0]);
+                assert_eq!(
+                    session.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::RewardsAlreadyFinished)
+                );
+                assert_eq!(
+                    session.prepare(&request(0, OWNER, 200, 20_000), &state),
+                    Err(FinalChainNativeSessionError::RewardsAlreadyFinished)
+                );
+                let post_finish_request = request(0, OWNER, 200, 20_000);
+                assert_eq!(
+                    session.invoke(
+                        &post_finish_request,
+                        FinalChainNativeGasQuote {
+                            invocation: post_finish_request.id,
+                            required_gas: 20_000.into(),
+                        },
+                        &state,
+                    ),
+                    Err(FinalChainNativeSessionError::RewardsAlreadyFinished)
+                );
+
+                let mismatch_state = RawState::reward_fixture(10, U256::from(10_000_u64));
+                let mut mismatched = chain
+                    .begin_native_session_bound(
+                        [0x56; 32],
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    mismatched.finish_rewards(&plan, &mismatch_state),
+                    Err(FinalChainNativeSessionError::RewardsPlanMismatch)
+                );
+                assert_eq!(mismatch_state.reads.get(), 0);
+
+                let set_commission_state = RawState::fixture();
+                let mut outstanding = chain
+                    .begin_native_session_bound(
+                        [0x55; 32],
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+                let invocation = request(0, OWNER, 200, 20_000);
+                let outstanding_quote = outstanding
+                    .prepare(&invocation, &set_commission_state)
+                    .unwrap();
+                assert_eq!(
+                    outstanding.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::QuoteOutstanding)
+                );
+                assert_eq!(
+                    completed(
+                        outstanding
+                            .invoke(&invocation, outstanding_quote, &set_commission_state)
+                            .unwrap()
+                    )
+                    .status,
+                    FinalChainNativeStatus::Success
+                );
+
+                let mut unbound = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                assert_eq!(
+                    unbound.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::UnboundRewards)
+                );
+
+                let corrupt = RawState::reward_fixture(10, U256::from(10_000_u64));
+                corrupt.set(
+                    DPOS_CONTRACT_ADDRESS,
+                    concrete_storage_key(&[&[0, 2], &VALIDATOR]),
+                    ConcreteRead::Present(vec![0xff]),
+                );
+                let mut corrupt_session = chain
+                    .begin_native_session_bound(
+                        [0x55; 32],
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+                assert!(matches!(
+                    corrupt_session.finish_rewards(&plan, &corrupt),
+                    Err(FinalChainNativeSessionError::RawIntegrity(_))
+                ));
+                assert_eq!(
+                    corrupt_session.finish_rewards(&plan, &state),
+                    Err(FinalChainNativeSessionError::Aborted)
+                );
+            },
+        );
     }
 }
