@@ -164,6 +164,15 @@ The intersection helpers are intentionally narrow. `make cpp-intersection-list` 
 
 Use `make cpp-intersection-list` before applying a carry-back patch and verify it is the smallest set of upstream-owned files touched by `main`. Use `make cpp-reference-apply-intersection` after Rust feature work lands on `main` when those original-file changes need to be carried back to `cpp-reference`.
 
+## Agent capacity and quota management
+
+- Reserve one available agent slot for Luna’s bounded tasks.
+- Reuse existing agents for related work. Close completed threads when supported; do not assume a finished task releases its slot.
+- Before spawning, check capacity and explicitly select the assigned model. Confirm successful startup before reporting that work was delegated.
+- Distinguish thread-capacity errors from model/account usage limits. Do not repeatedly retry an unchanged failure.
+- If Luna cannot start, record the blocker. Do not silently substitute Sol or Astra for quota reasons.
+- At each slice handoff, record the requested model, whether the agent ran, its result or commit, and any routing failure. Do not infer billing or quota consumption from the assignment alone.
+
 ## Commit and PR Guidelines
 
 - Use Conventional Commits: `<type>(<scope>)!: <subject>`.
