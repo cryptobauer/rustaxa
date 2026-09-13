@@ -139,6 +139,15 @@ Map the existing [E1–E12 acceptance matrix](07_direction_decision.md#evidence-
 to slice evidence. A single light snapshot cannot close every activation replay or demonstrate live-network catch-up.
 Do not broaden a validated slice's claim beyond the actual reference configuration and retained history.
 
+## Next grouped milestone
+
+The task owner selected [persisted mixed-period parity](09_mixed_period_milestone.md)
+as the next larger milestone at baseline `1c3f650b5`. Its M1–M6 slices compose
+contract lifecycle, staged native/custody operations, nonzero fees/rewards and
+bounded reopen/recovery through existing Rust ownership. The document fixes the
+workload, acceptance evidence and exclusions; it is a plan, not a completion claim
+for S5/S6/S7 or authorization for production routing.
+
 ## Agent and model assignments
 
 Start with one lead and two implementation workers; use an independent reviewer at contract and integration boundaries.

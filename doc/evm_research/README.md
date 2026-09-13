@@ -13,6 +13,10 @@ flow, current Go ownership, database roles, and what REVM concretely replaces.
 The [implementation plan](08_implementation_plan.md) fixes the existing-layout compatibility constraint, records
 the supplied mainnet snapshot, and assigns implementation slices to agents/models, including a focused Spark helper.
 
+The next planned milestone is [persisted mixed-period parity](09_mixed_period_milestone.md):
+contract and native execution, nonzero economics, exact persistence and bounded recovery
+in one declared synthetic corpus through the existing Rust owners.
+
 Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qualification.md),
 [S1 contracts](s1_contracts.md), [S2 compatible reads](s2_compatible_reads.md),
 [the bounded S3 execution core](s3_execution_core.md),
