@@ -9,6 +9,7 @@ rlp = "0.6"
 anyhow = "1.0.100"
 rustaxa-types = { path = "../rustaxa-types" }
 num-bigint = "0.4.6"
+fn-dsa-vrfy = "=0.3.0"
 revm = { git = "https://github.com/bluealloy/revm.git", rev = "6014612c86f3690e4e9173a8c4deade396af398d", default-features = false, features = ["std"] }
 
 [dev-dependencies]

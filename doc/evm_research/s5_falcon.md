@@ -56,10 +56,10 @@ both pinned Go revisions:
 - public `6c7e5338b22d5e596cc2365a88d1f94840e1ee1b`;
 - local `bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418`.
 
-Their 33-row artifacts are byte-identical with SHA-256
-`0a2d8d4b9cb8a34951f1a4409eedf1ed021bf540be3c368364bfe5f300acd96d`.
+Their 40-row artifacts are byte-identical with SHA-256
+`96edbbcadfa67f1cddc09fc04483d107fc8cc15686f32783152c8f41139e92dd`.
 The exporter SHA-256 is
-`ab0beb5d67e7bcd4fa3b1a49f32b7b9e9437b2a6cc54570775dc8f7393f036b4`.
+`bd18c5ef68d929ae355f17b5b155ef0b0e03c8e31f50986c0b0ab6a72dd6e407`.
 The corpus covers empty and short input, the wrong selector, truncated headers,
 each zero/out-of-range offset, each zero/truncated length, wrong fixed field
 lengths, historical valid short and 257-byte messages, invalid signature/message,
@@ -68,7 +68,9 @@ fields, nonzero high offset and length bits, and accepted trailing bytes. It als
 distinguishes a signed message reconstructed by Go's four-byte right-padding from
 a field extending beyond that padding. It also proves that the signed `int`
 length edge can verify from the finite tail and records the unsigned-wrap panic
-as an explicit diagnostic fixture.
+as an explicit diagnostic fixture. Seven added cases pin the upfront all-offset
+zero check and the distinction between declared fixed-field lengths and clamped
+slice lengths, including cases where checking the next field would panic.
 
 The Rust test compares every row one gas below, exactly at, and one gas above its
 quote for CALL, CALLCODE, DELEGATECALL, and STATICCALL contexts. It validates the
@@ -86,7 +88,10 @@ cargo clippy --locked --manifest-path rust/Cargo.toml -p rustaxa-evm \
   --test falcon_reference --no-deps -- -D warnings
 ```
 
-The integration owner still must add the exact dependency, export the module,
-extend the Cacti-aware stateless classifier/driver, and run focused actual-frame
-gas/value/rollback tests. Those shared files are intentionally outside this
-kernel commit.
+The exact dependency, crate export and Cacti frame route are now integrated.
+Full top-level frame tests cover all 40 rows below/at/above the quote, value
+credit/rollback and zero consensus-sequence consumption. Reference panics become
+explicit infrastructure errors requiring the containing session to be discarded.
+The independent reviewer identified the final decoder findings before the agent
+quota was exhausted; the lead implemented the corrections and added Go witnesses.
+Independent closeout review of that final correction remains required.

@@ -64,7 +64,7 @@ fn falcon_matches_go_quotes_abi_crypto_and_failures() {
     assert_eq!(corpus["verifying_key_size"], 897);
     assert_eq!(corpus["method_selector"], "de8f50a1");
     let rows = corpus["falcon"].as_array().expect("Falcon row array");
-    assert_eq!(rows.len(), 33);
+    assert_eq!(rows.len(), 40);
 
     for row in rows {
         let required = row["required_gas"].as_u64().expect("required gas");

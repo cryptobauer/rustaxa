@@ -156,30 +156,45 @@ fn verify_abi(input: &[u8]) -> Result<[u8; 32], AbiFailure> {
     let Some(header) = input.get(..96) else {
         return Ok(result);
     };
-    let Some(signature) = dynamic(input, low_u64(&header[..32]))? else {
-        return Ok(result);
-    };
-    if signature.len() != signature_size(FN_DSA_LOGN_512) {
-        return Ok(result);
-    }
-    let Some(key) = dynamic(input, low_u64(&header[32..64]))? else {
-        return Ok(result);
-    };
-    if key.len() != vrfy_key_size(FN_DSA_LOGN_512) {
+    let signature_offset = low_u64(&header[..32]);
+    let key_offset = low_u64(&header[32..64]);
+    let message_offset = low_u64(&header[64..96]);
+    // Go rejects any zero offset before attempting even the signature slice.
+    if signature_offset == 0 || key_offset == 0 || message_offset == 0 {
         return Ok(result);
     }
-    let Some(message) = dynamic(input, low_u64(&header[64..96]))? else {
+    let Some(signature) = dynamic(input, signature_offset)? else {
         return Ok(result);
     };
-    let valid = VerifyingKeyStandard::decode(&key)
-        .is_some_and(|key| key.verify(&signature, &DOMAIN_NONE, &HASH_ID_RAW, &message));
+    if signature.declared_length != signature_size(FN_DSA_LOGN_512) as u64 {
+        return Ok(result);
+    }
+    let Some(key) = dynamic(input, key_offset)? else {
+        return Ok(result);
+    };
+    if key.declared_length != vrfy_key_size(FN_DSA_LOGN_512) as u64 {
+        return Ok(result);
+    }
+    let Some(message) = dynamic(input, message_offset)? else {
+        return Ok(result);
+    };
+    let valid = VerifyingKeyStandard::decode(&key.bytes).is_some_and(|key| {
+        key.verify(&signature.bytes, &DOMAIN_NONE, &HASH_ID_RAW, &message.bytes)
+    });
     if valid {
         result[31] = 0;
     }
     Ok(result)
 }
 
-fn dynamic(input: &[u8], offset: u64) -> Result<Option<Cow<'_, [u8]>>, AbiFailure> {
+// Keep the original length separate from getData's clamped/padded byte view.
+// Go validates fixed-size fields against the former after constructing the latter.
+struct AbiField<'a> {
+    bytes: Cow<'a, [u8]>,
+    declared_length: u64,
+}
+
+fn dynamic(input: &[u8], offset: u64) -> Result<Option<AbiField<'_>>, AbiFailure> {
     if offset == 0 {
         return Ok(None);
     }
@@ -194,7 +209,12 @@ fn dynamic(input: &[u8], offset: u64) -> Result<Option<Cow<'_, [u8]>>, AbiFailur
     if go_len(input) < declared_end {
         return Ok(None);
     }
-    go_data(input, offset.wrapping_add(32), length).map(Some)
+    go_data(input, offset.wrapping_add(32), length).map(|bytes| {
+        Some(AbiField {
+            bytes,
+            declared_length: length,
+        })
+    })
 }
 
 fn go_data(input: &[u8], start: u64, size: u64) -> Result<Cow<'_, [u8]>, AbiFailure> {

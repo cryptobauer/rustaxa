@@ -184,6 +184,43 @@ func main() {
 		inputCase{"wrapped-message-length-panic", setLowWord(rightPadded, 4+int(paddedMessageOffset), ^uint64(0)), true},
 	)
 
+	// All offsets are checked before any dynamic slice can panic.
+	badSignature := setLowWord(canonical, 4+int(signatureOffset), ^uint64(0))
+	cases = append(cases,
+		inputCase{"signature-panic-zero-key-offset", setLowWord(badSignature, 4+32, 0), false},
+		inputCase{"signature-panic-zero-message-offset", setLowWord(badSignature, 4+64, 0), false},
+		inputCase{"wrapped-signature-length-panic", badSignature, false},
+	)
+	// A clamped tail of the fixed size does not authorize a different declared
+	// length. Put each fixed-size field last and retain Go's four pad bytes.
+	signatureLast := falconABI(standard, []int{2, 1, 0}, 0, false, false, nil)
+	sigLastOffset := lowWord(signatureLast, 0)
+	signatureLast = signatureLast[:int(sigLastOffset)+32+len(standard.signature)]
+	keyLast := falconABI(standard, []int{2, 0, 1}, 0, false, false, nil)
+	keyLastOffset := lowWord(keyLast, 1)
+	keyLast = keyLast[:int(keyLastOffset)+32+len(standard.key)]
+	cases = append(cases,
+		inputCase{"signed-signature-length-fixed-tail", setLowWord(signatureLast, 4+int(sigLastOffset), uint64(1)<<63), false},
+		inputCase{"signed-key-length-fixed-tail", setLowWord(keyLast, 4+int(keyLastOffset), uint64(1)<<63), false},
+	)
+
+	signatureBoundary := falconABI(standard, []int{2, 1, 0}, 32, false, false, nil)
+	signatureBoundaryOffset := lowWord(signatureBoundary, 0)
+	signatureBoundary = signatureBoundary[:int(signatureBoundaryOffset)+32+len(standard.signature)]
+	signatureBoundary = setLowWord(signatureBoundary, 4+int(signatureBoundaryOffset), uint64(1)<<63)
+	signatureBoundary = setLowWord(signatureBoundary, 4+32, 96)
+	signatureBoundary = setLowWord(signatureBoundary, 4+96, ^uint64(0))
+	keyBoundary := falconABI(standard, []int{2, 0, 1}, 32, false, false, nil)
+	keyBoundaryOffset := lowWord(keyBoundary, 1)
+	keyBoundary = keyBoundary[:int(keyBoundaryOffset)+32+len(standard.key)]
+	keyBoundary = setLowWord(keyBoundary, 4+int(keyBoundaryOffset), uint64(1)<<63)
+	keyBoundary = setLowWord(keyBoundary, 4+64, 96)
+	keyBoundary = setLowWord(keyBoundary, 4+96, ^uint64(0))
+	cases = append(cases,
+		inputCase{"declared-signature-size-before-key-panic", signatureBoundary, false},
+		inputCase{"declared-key-size-before-message-panic", keyBoundary, false},
+	)
+
 	rows := make([]falconRow, 0, len(cases))
 	for _, item := range cases {
 		frame := vm.CallFrame{Input: item.input, Value: new(big.Int)}
