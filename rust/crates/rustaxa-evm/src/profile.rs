@@ -100,6 +100,8 @@ impl TaraxaProfile {
         costs[0xb3] = 100;
         costs[0xb4] = 100;
 
+        table[0x55] = Instruction::new(sstore::<H>);
+
         if self.cacti {
             table[0x5c] = Instruction::new(transient_load::<H>);
             table[0x5d] = Instruction::new(transient_store::<H>);
@@ -166,4 +168,34 @@ fn transient_load<H: Host>(
     ctx: InstructionContext<'_, H, EthInterpreter>,
 ) -> InstructionExecResult {
     transient::<false, H>(ctx)
+}
+
+/// Executes Taraxa's Istanbul net-SSTORE accounting without REVM's stipend sentry.
+///
+/// The pinned Go `gasSStore` implements EIP-1283 accounting but has no
+/// EIP-2200 stipend rejection. REVM's shared helper otherwise performs the
+/// required static check, stack handling, storage write, and base charge, so the
+/// wrapper temporarily selects a pre-Istanbul spec only for that common flow.
+/// Its accounting closure restores Istanbul for REVM's existing net cost/refund
+/// calculation, and both layers restore the caller's spec on every return path.
+fn sstore<H: Host>(ctx: InstructionContext<'_, H, EthInterpreter>) -> InstructionExecResult {
+    let prior = ctx.interpreter.runtime_flag.spec_id;
+    ctx.interpreter.runtime_flag.spec_id = SpecId::PETERSBURG;
+    let interpreter = ctx.interpreter;
+    let result = instructions::host::sstore_with_gas_accounting(
+        InstructionContext {
+            interpreter,
+            host: ctx.host,
+        },
+        |context, target, state_load| {
+            let flow_spec = context.interpreter.runtime_flag.spec_id;
+            context.interpreter.runtime_flag.spec_id = SpecId::ISTANBUL;
+            let result =
+                instructions::host::sstore_default_gas_accounting(context, target, state_load);
+            context.interpreter.runtime_flag.spec_id = flow_spec;
+            result
+        },
+    );
+    interpreter.runtime_flag.spec_id = prior;
+    result
 }
