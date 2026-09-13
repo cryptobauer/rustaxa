@@ -25,4 +25,5 @@ pub mod query_policy;
 pub mod revert;
 pub mod simulation;
 pub mod stateless;
+pub mod structured_trace;
 pub mod trace;
