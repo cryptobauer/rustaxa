@@ -124,17 +124,43 @@ func (m *memoryRows) exportPhysical() []map[string]string {
 	return exportRows(rows, func(key string) []byte { return []byte(key) })
 }
 
+func (m *memoryRows) physicalValue(column state_db.Column, key common.Hash, period uint64) ([]byte, bool) {
+	physicalKey := append([]byte(nil), key[:]...)
+	if column == state_db.COL_main_trie_value || column == state_db.COL_acc_trie_value {
+		version := make([]byte, 8)
+		binary.BigEndian.PutUint64(version, period)
+		physicalKey = append(physicalKey, version...)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	value, present := m.physical[column][string(physicalKey)]
+	return common.CopyBytes(value), present
+}
+
 type memoryPending struct {
-	rows   *memoryRows
-	number types.BlockNum
+	latest  *memoryLatest
+	number  types.BlockNum
+	pending [state_db.COL_COUNT]map[common.Hash][]byte
+	mu      sync.Mutex
 }
 
 func (p *memoryPending) Get(column state_db.Column, key *common.Hash, callback func([]byte)) {
-	p.rows.Get(column, key, callback)
+	p.mu.Lock()
+	value, present := p.pending[column][*key]
+	value = common.CopyBytes(value)
+	p.mu.Unlock()
+	if present {
+		callback(value)
+		return
+	}
+	historicalRows{latest: p.latest, period: p.latest.descriptor.BlockNum}.Get(column, key, callback)
 }
 
 func (p *memoryPending) Put(column state_db.Column, key *common.Hash, value []byte) {
-	p.rows.Put(column, key, value)
+	p.mu.Lock()
+	p.pending[column][*key] = common.CopyBytes(value)
+	p.mu.Unlock()
+	p.latest.rows.Put(column, key, value)
 }
 
 func (p *memoryPending) GetNumber() types.BlockNum { return p.number }
@@ -160,7 +186,11 @@ func (m *memoryLatest) GetCommittedDescriptor() state_db.StateDescriptor { retur
 func (m *memoryLatest) BeginPendingBlock() state_db.PendingBlockState {
 	number := m.descriptor.BlockNum + 1
 	m.rows.setPeriod(uint64(number))
-	m.pending = &memoryPending{rows: m.rows, number: number}
+	pending := &memoryPending{latest: m, number: number}
+	for column := range pending.pending {
+		pending.pending[column] = make(map[common.Hash][]byte)
+	}
+	m.pending = pending
 	return m.pending
 }
 
@@ -272,14 +302,14 @@ type signedTransaction struct {
 	ChainID uint64
 }
 
-func signTransaction(spec transactionSpec, sender common.Address) signedTransaction {
+func signTransaction(spec transactionSpec, sender common.Address, privateKey []byte) signedTransaction {
 	unsigned := unsignedLegacyTransaction{
 		Nonce: new(big.Int).SetUint64(spec.Nonce), GasPrice: new(big.Int).SetUint64(spec.GasPrice), Gas: spec.Gas,
 		To: spec.To, Value: new(big.Int).SetUint64(spec.Value), Input: spec.Input,
 		ChainID: new(big.Int).SetUint64(chainID), ZeroR: new(big.Int), ZeroS: new(big.Int),
 	}
 	digest := crypto.Keccak256Hash(rlp.MustEncodeToBytes(&unsigned))
-	signature, err := secp256k1.Sign(digest[:], testPrivateKey)
+	signature, err := secp256k1.Sign(digest[:], privateKey)
 	must(err)
 	publicKey, err := secp256k1.RecoverPubkey(digest[:], signature)
 	must(err)
@@ -470,8 +500,10 @@ func captureCatalog(reader state_db.ExtendedReader, identities catalogIdentities
 			"hashed_trie_path": hex.EncodeToString(hashedPath[:]), "present": false, "value": "",
 		}
 		reader.GetAccountStorage(&slot.Address, &slot.Key, func(value []byte) {
-			row["present"] = true
-			row["value"] = hex.EncodeToString(value)
+			if len(value) != 0 {
+				row["present"] = true
+				row["value"] = hex.EncodeToString(value)
+			}
 		})
 		slots[index] = row
 	}
@@ -490,8 +522,8 @@ func captureNativeCatalog(reader state_db.ExtendedReader, identities catalogIden
 	for _, slot := range identities.Slots {
 		present := false
 		reader.GetAccountStorage(&slot.Address, &slot.Key, func(value []byte) {
-			present = true
-			if slot.Address == address {
+			present = len(value) != 0
+			if present && slot.Address == address {
 				covered[crypto.Keccak256Hash(slot.Key[:])] = common.CopyBytes(value)
 			}
 		})
@@ -514,7 +546,7 @@ func captureNativeCatalog(reader state_db.ExtendedReader, identities catalogIden
 	absentAccounts := make([]string, 0)
 	for _, account := range identities.Accounts {
 		present := false
-		reader.GetRawAccount(&account, func([]byte) { present = true })
+		reader.GetRawAccount(&account, func(value []byte) { present = len(value) != 0 })
 		if !present {
 			absentAccounts = append(absentAccounts, hex.EncodeToString(account[:]))
 		}
@@ -644,7 +676,7 @@ func runWitness(mode string) map[string]any {
 
 	st.BeginBlock(&vm.BlockInfo{Author: validator, GasLimit: blockGas, Difficulty: new(big.Int)})
 	spec := transactionSpec{Name: "transfer", Nonce: 0, GasPrice: 1, Gas: transactionGas, To: &recipient, Value: 7}
-	signed := signTransaction(spec, sender)
+	signed := signTransaction(spec, sender, testPrivateKey)
 	tx := transactionFromSigned(spec, signed, sender)
 	result := st.ExecuteTransaction(&tx)
 	refund := st.GetEvmState().GetRefund()
@@ -835,6 +867,9 @@ func configurationJSON(cfg chain_config.ChainConfig, committeeSize uint64) map[s
 func observeAccountReader(reader state_db.ExtendedReader, address common.Address) map[string]any {
 	ret := map[string]any{"address": hex.EncodeToString(address[:]), "present": false, "raw_account": ""}
 	reader.GetRawAccount(&address, func(raw []byte) {
+		if len(raw) == 0 {
+			return
+		}
 		account := state_db.DecodeAccountFromTrie(raw)
 		ret["present"] = true
 		ret["raw_account"] = hex.EncodeToString(raw)
@@ -859,9 +894,17 @@ func observeAccounts(reader state_db.ExtendedReader) []map[string]any {
 
 func main() {
 	mode := flag.String("mode", "batched", "batched or observer")
+	scenario := flag.String("scenario", "initial", "initial or full")
 	flag.Parse()
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
+	if *scenario == "full" {
+		must(encoder.Encode(runFullWitness(*mode)))
+		return
+	}
+	if *scenario != "initial" {
+		panic("scenario must be initial or full")
+	}
 	must(encoder.Encode(runWitness(*mode)))
 }
 
