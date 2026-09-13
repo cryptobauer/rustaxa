@@ -19,6 +19,9 @@ mod query;
 pub(super) mod raw;
 pub(super) mod rewards;
 
+#[cfg(test)]
+mod v1_custody_reference_tests;
+
 pub use account::{FinalChainNativeAccount, FinalChainNativeOrdinaryMutation};
 pub use raw::{
     FinalChainNativeRawMutation, FinalChainNativeRawOperation, FinalChainNativeRawValue,
