@@ -275,3 +275,70 @@ blocks or vote. The authenticated validator-index entry establishes registration
 only; it does not establish eligibility or active consensus participation.
 The address remains an uncertain attribution to the node that created the
 snapshot. Creating a snapshot does not require producing consensus blocks.
+
+## Bounded partial inverse coverage at the head
+
+The experimental diagnostic in commit `61fe324e3` enumerates the global
+validator index, derives only fixed global and validator-scoped logical keys,
+and compares physically selected rows with the complete authenticated head
+inventory above. It applies the pinned native layout, including the aliased
+validator iterable discriminator `2`, nested extended validator records
+`[ValidatorV1, undelegations_count]`, raw compact fields 4 through 7, and the
+RLP-encoded field 8 yield. Known RLP rows require data rather than list items,
+complete child consumption, and exact canonical re-encoding. Metadata remains
+arbitrary bytes and is recorded as hex.
+
+The run used the same qualified copy, current identity, and 50,000-node,
+50,000-leaf, 32-MiB limits:
+
+```bash
+CARGO_TARGET_DIR=/tmp/rustaxa-snapshot-qualifier-target \
+  cargo run --locked \
+  --manifest-path experiments/evm_feasibility/snapshot_qualifier/Cargo.toml \
+  --bin native_inverse_coverage -- \
+  /tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy \
+  /tmp/n4_native_inverse_coverage_20260913.json
+```
+
+The checked-in exact report is
+[`n4_native_inverse_coverage.json`](n4_native_inverse_coverage.json). Its source
+SHA-256 is
+`51a839b52842726d8dcc4e5272dd91d35946c023a151769e685afaf17a8ddd68`,
+and the pretty-printed report file SHA-256 is
+`ddad1b38d51dac9eb29c080fae5cfe8516955422314b24e2af763cd30423a14f`.
+The report uses SHA-256 for its inventory and remainder digests; this is a
+separate deterministic encoding from the earlier Keccak-256 inventory digest.
+
+| Result | Rows | Exact value bytes |
+| --- | ---: | ---: |
+| Complete authenticated live DPoS inventory | 23,278 | 259,077 |
+| Known preimage, physically present, exact inventory match | 1,561 | 30,066 |
+| Unexplained live path | 21,717 | 229,011 |
+
+The matched and unexplained sets form an exact partition of the authenticated
+live inventory. The known matches comprise the validator count; 196 forward
+and 196 reverse index rows; and all 196 validator record, metadata, rewards,
+owner, and VRF rows. The diagnostic decoded 191 nested extended validator
+records and five legacy `ValidatorV1` records. Four fixed global fields were
+live and matched; `minted_tokens` was a physical tombstone whose hashed path
+was authenticated as non-live.
+
+For each validator, the record's reward-reference head derives one current
+reward-graph key. Of those rows, 184 were physically present and exact live
+inventory matches, six were tombstones at authenticated non-live paths, and six
+returned `HistoryUnavailable` at authenticated non-live paths. The last two
+categories remain distinct. Neither category is converted to physical absence,
+used as coverage, or assigned a default reward node. They also do not prove
+that every referenced physical row needed for native execution is available.
+
+The unexplained-path SHA-256 is
+`c79edaccd80838761942cbd0bd29d694e65092b44d9ca6cb11ce7e6a9264d46c`;
+the unexplained path/value encoding SHA-256 is
+`be993ceb40351b8284f6a156d3fefd14e514397f66f472e9f393a593c38e9aaf`.
+Candidate families that remain unresolved within the 21,717 unexplained DPoS
+rows include delegator-scoped rows, non-head reward graph nodes and cursors,
+and undelegation rows and indexes; hashed paths alone do not prove those
+classifications. Slashing preimages belong to the separate slashing-account
+inventory and remain additional unresolved work. The result does not establish
+semantic snapshot completeness, deleted-key history, adoption authority, or
+production routing.
