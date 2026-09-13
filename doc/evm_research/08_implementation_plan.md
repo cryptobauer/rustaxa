@@ -108,7 +108,8 @@ independently reviewed and pass focused tests plus the repository fast gate.
 S0 has independently copied and content-hashed the supplied snapshot and verified
 matching mainnet genesis and paired period/root at 25,706,949; retained trie/replay
 coverage and capture provenance remain qualification work. S2/S3 proceed under
-the reviewed contracts. Production routing remains unauthorized.
+the reviewed contracts. The [S4 integration map](s4_integration_map.md) identifies
+existing application APIs and remaining persisted-path dependencies. Production routing remains unauthorized.
 
 | Slice | Dependencies / agent | Deliverable and exit criterion |
 | --- | --- | --- |
