@@ -385,8 +385,10 @@ pub struct FinalChainEvmRewardsRequest {
 /// The expected head and runtime generation prevent a plan from being reused
 /// after another finalization advances either durable storage or the live
 /// rewards cache. The storage mutation remains session-owned until publication.
+/// External Rust leaves may borrow this opaque plan for staged native rewards;
+/// they cannot construct it, inspect its storage mutation, or publish it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FinalChainPreparedExternalEvmRewardsStatsPlan {
+pub struct FinalChainPreparedExternalEvmRewardsStatsPlan {
     pub(crate) request_id: [u8; 32],
     pub(crate) period: FinalChainBlockNumber,
     pub(crate) expected_prior_head: FinalChainBlockNumber,
