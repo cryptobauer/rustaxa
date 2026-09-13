@@ -7,10 +7,10 @@
   "observed_source": "taraxa/state/state_dry_runner/trace_runner.go",
   "observed_source_sha256": "12fcddf4955e963d91318e5d18725868ecb29f5c32ae32db0fa73b7d99f65efd",
   "api_support_sha256": "576433b5ba0de27fb17facd40d6006e54e1160620705e5f61ccbd7d1352c1587",
-  "exporter_sha256": "1d37b3a9bfa6bbb8051a6c31946c9ee3bf27ea52fff8370c8a02ff5063d216c9",
+  "exporter_sha256": "433901e62c6c82258e0203c2a6dc7f4d6797e02b93098054696095a7fd03ad90",
   "sha256": {
-    "public": "f8783e0a8cb0f5387c920280731eb8640fb60b482459bf4425615153009c3cd8",
-    "local": "f8783e0a8cb0f5387c920280731eb8640fb60b482459bf4425615153009c3cd8"
+    "public": "3f45909c672f1ba506dbb7e2d7ff8a6e415e04d74314eafc08ac00ab6bf2ad43",
+    "local": "3f45909c672f1ba506dbb7e2d7ff8a6e415e04d74314eafc08ac00ab6bf2ad43"
   },
-  "scope": "actual raw StructLogs via observer-only disposable export; four slot7 clear/restore/revert programs; no formatted trace API claim"
+  "scope": "actual raw StructLogs via observer-only disposable export; four slot7 clear/restore/revert programs and three sequential refund/transient cases; no formatted trace API claim"
 }

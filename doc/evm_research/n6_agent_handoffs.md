@@ -184,3 +184,30 @@ and the bounded task was not reassigned to Sol/Astra. This is a thread-capacity
 failure, not evidence of model/account quota exhaustion or billing consumption.
 The reserved-slot rule was not effectively maintained in the existing team;
 future team setup must allocate Luna before filling remaining thread capacity.
+
+
+## Sequence semantics and seeded native coverage
+
+- Astra lead corrected cumulative trace refunds using signed root deltas and
+  retained journal base, preserving ordinary transaction settlement. Independent
+  review approved the three actual Go sequence witnesses; ten driver tests and
+  strict affected clippy pass. Empty-code tracing no longer fabricates STOP.
+- Sol execution owner produced `6f5ab7500`, integrated as `193c628a2`, extracting
+  persisted API helpers without changing the eight simulation checks. The same
+  owner is implementing the one-journal structured runner. Review rejected a
+  proposed per-transaction reset before it reached implementation.
+- Sol native owner produced accrued-cancellation evidence `6091d6425f`, integrated
+  as `a65a73758`. Both three-period Go evidence and scoped two-period Rust semantic
+  composition are retained; actual scheduler publication/reopen remains open.
+- Sol state owner produced inverse code/evidence `61fe324e3`/`f903ef7d8`, integrated
+  as `1deb6f754`/`9a75b0c2a`. Root's six tests and qualified-copy report reproduction
+  passed byte-for-byte. Seeded delegation extension `8a6907daf`/`7c65c4ae3` is
+  integrated as `93e9b39a0`/`fcff94998`; independent review verified reported source
+  hashes and scope. It explains 2,065 live rows, leaving 21,213 unexplained.
+- Sol rewards owner produced epoch transport candidate `02cf73d84`, still held
+  for independent review corrections: failed discard may reset Go state despite
+  an error, and generic recovery paths must check the observed epoch. Scheduler
+  runtime remains a separate unaccepted slice. No candidate was integrated early.
+
+These existing assigned threads ran; the explicit Luna startup failure remains
+recorded above and was not retried or substituted. No quota/billing inference.

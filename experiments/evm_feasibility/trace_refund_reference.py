@@ -52,7 +52,7 @@ def main():
     manifest = {'schema':1,'references':REVISIONS,'observed_source':TRACE_PATH,'observed_source_sha256':TRACE_SHA,
                 'api_support_sha256':hashlib.sha256(api).hexdigest(), 'exporter_sha256':hashlib.sha256(exporter).hexdigest(),
                 'sha256':{label:hashlib.sha256(data).hexdigest() for label,data in artifacts.items()},
-                'scope':'actual raw StructLogs via observer-only disposable export; four slot7 clear/restore/revert programs; no formatted trace API claim'}
+                'scope':'actual raw StructLogs via observer-only disposable export; four slot7 clear/restore/revert programs and three sequential refund/transient cases; no formatted trace API claim'}
     artifacts['manifest'] = (json.dumps(manifest,indent=2)+'\n').encode()
     target = HERE/'fixtures/trace_refund'
     if args.record:

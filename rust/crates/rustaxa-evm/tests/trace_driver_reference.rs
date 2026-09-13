@@ -576,8 +576,14 @@ fn nonzero_refund_trace_facts_match_actual_go_logger() {
     ))
     .unwrap();
     assert_eq!(cases, local);
-    assert_eq!(cases.as_array().unwrap().len(), 4);
-    for case in cases.as_array().unwrap() {
+    let singles = cases
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|case| case.get("targets").is_none())
+        .collect::<Vec<_>>();
+    assert_eq!(singles.len(), 4);
+    for case in singles {
         assert_eq!(case["state_before"], case["state_after"]);
         let target = address(0xbb);
         let mut journal = ExecutionJournal::new(reader(
@@ -650,4 +656,230 @@ fn nonzero_refund_trace_facts_match_actual_go_logger() {
             );
         }
     }
+}
+
+/// Go retains storage originals, cumulative refunds and transient cells across
+/// prefix and target Main calls; only each target's logger is freshly allocated.
+#[test]
+fn sequential_trace_refunds_and_transient_state_match_go() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/trace_refund/public.json"
+    ))
+    .unwrap();
+    let sequences = cases
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|case| case.get("targets").is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(sequences.len(), 3);
+    for case in sequences {
+        let target = address(0xbb);
+        let mut journal = ExecutionJournal::new(reader(
+            case,
+            target,
+            hex::decode(case["code"].as_str().unwrap()).unwrap(),
+            Some(7),
+        ));
+        assert_eq!(
+            case["prefix_inputs"].as_array().unwrap().len(),
+            case["prefix_nonces"].as_array().unwrap().len()
+        );
+        assert_eq!(
+            case["target_inputs"].as_array().unwrap().len(),
+            case["target_nonces"].as_array().unwrap().len()
+        );
+        assert_eq!(
+            case["target_inputs"].as_array().unwrap().len(),
+            case["result"].as_array().unwrap().len()
+        );
+        let make_transaction = |input: &Value, nonce: &Value| {
+            let mut tx = transaction(
+                case,
+                Some(target),
+                hex::decode(input.as_str().unwrap()).unwrap(),
+            );
+            tx.nonce = FinalChainNonce::from_bytes(&decimal(nonce.as_str().unwrap()).to_bytes_be())
+                .unwrap();
+            tx
+        };
+        for (input, nonce) in case["prefix_inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(case["prefix_nonces"].as_array().unwrap())
+        {
+            rustaxa_evm::driver::execute_top_level_call(
+                &mut journal,
+                &BlockHashes,
+                &NoNative,
+                &block(),
+                &make_transaction(input, nonce),
+                EnvelopeRules { cornus: true },
+                TaraxaProfile::new(false),
+            )
+            .unwrap();
+        }
+        for ((input, nonce), expected) in case["target_inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(case["target_nonces"].as_array().unwrap())
+            .zip(case["result"].as_array().unwrap())
+        {
+            let mut collector = TraceCollector::default();
+            let result = execute_top_level_call_with_trace(
+                &mut journal,
+                &BlockHashes,
+                &NoNative,
+                &block(),
+                &make_transaction(input, nonce),
+                EnvelopeRules { cornus: true },
+                TaraxaProfile::new(false),
+                &mut collector,
+            )
+            .unwrap();
+            let TransactionExecutionResult::Executed(result) = result else {
+                panic!("sequence admission failed");
+            };
+            assert_eq!(
+                result.gas_used.as_u64(),
+                expected["gas"].as_u64().unwrap(),
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                result.status != CodeExecutionStatus::Success,
+                expected["failed"].as_bool().unwrap()
+            );
+            assert_eq!(hex::encode(&result.output), expected["returnValue"]);
+            let actual = opcode_rows(&collector);
+            let expected_rows = expected["structLogs"].as_array().unwrap();
+            assert_eq!(actual.len(), expected_rows.len());
+            for (actual, expected) in actual.iter().zip(expected_rows) {
+                assert_eq!(actual.pc, expected["pc"].as_u64().unwrap());
+                assert_eq!(actual.opcode as u64, expected["op"].as_u64().unwrap());
+                assert_eq!(actual.gas, expected["gas"].as_u64().unwrap());
+                assert_eq!(actual.gas_cost, expected["gasCost"].as_u64().unwrap());
+                assert_eq!(actual.refund, expected["refund"].as_u64().unwrap());
+                assert_eq!(actual.depth as u64, expected["depth"].as_u64().unwrap());
+                assert_eq!(
+                    actual.memory.len() as u64,
+                    expected["memSize"].as_u64().unwrap()
+                );
+                assert_eq!(base64(&actual.memory), expected["memory"]);
+                assert_eq!(actual.phase, TraceOpcodePhase::BeforeExecution);
+                let expected_stack = expected["stack"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| decimal(value.as_str().unwrap()))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    actual
+                        .stack
+                        .iter()
+                        .map(|word| BigUint::from_bytes_be(word))
+                        .collect::<Vec<_>>(),
+                    expected_stack
+                );
+            }
+            assert_eq!(
+                journal.refund(),
+                expected_rows.last().unwrap()["refund"].as_u64().unwrap()
+            );
+        }
+    }
+}
+
+/// Malformed caller-provided refund state must fail without committing the
+/// successful interpreter's storage effects or changing the prior counter.
+#[test]
+fn invalid_cumulative_refund_reverts_root_checkpoint() {
+    for (base, current, code, expected) in [
+        (
+            u64::MAX,
+            7_u8,
+            "600060005500",
+            ExecutionDriverError::Journal(rustaxa_evm::journal::JournalError::RefundOverflow),
+        ),
+        (
+            0,
+            0,
+            "600760005500",
+            ExecutionDriverError::NegativeRootRefund(-10_200),
+        ),
+    ] {
+        let fixture = fixture();
+        let target = address(0xbb);
+        let mut journal = ExecutionJournal::new(reader(
+            &fixture,
+            target,
+            hex::decode(code).unwrap(),
+            Some(7),
+        ));
+        let key = ConcreteStorageKey([0; 32]);
+        journal
+            .set_ordinary_storage(target, key, BigUint::from(current))
+            .unwrap();
+        journal.add_refund(base).unwrap();
+        let error = rustaxa_evm::driver::execute_top_level_call(
+            &mut journal,
+            &BlockHashes,
+            &NoNative,
+            &block(),
+            &transaction(&fixture, Some(target), vec![]),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(error, expected);
+        assert_eq!(journal.refund(), base);
+        assert_eq!(
+            journal.ordinary_storage(target, key).unwrap(),
+            (BigUint::from(7_u8), BigUint::from(current))
+        );
+    }
+}
+
+// Raw Go []byte JSON uses standard padded base64, unlike FormatLogs hex words.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+    for chunk in bytes.chunks(3) {
+        let word = ((chunk[0] as u32) << 16)
+            | ((chunk.get(1).copied().unwrap_or(0) as u32) << 8)
+            | chunk.get(2).copied().unwrap_or(0) as u32;
+        for index in 0..4 {
+            result.push(if index > chunk.len() {
+                '='
+            } else {
+                ALPHABET[((word >> (18 - 6 * index)) & 63) as usize] as char
+            });
+        }
+    }
+    result
+}
+
+#[test]
+fn empty_code_has_no_synthetic_stop_trace_row() {
+    let fixture = fixture();
+    let target = address(0xdd);
+    let mut source = reader(&fixture, target, vec![], None);
+    source.accounts.remove(&target);
+    let mut journal = ExecutionJournal::new(source);
+    let mut collector = TraceCollector::default();
+    let result = execute_top_level_call_with_trace(
+        &mut journal,
+        &BlockHashes,
+        &NoNative,
+        &block(),
+        &transaction(&fixture, Some(target), vec![]),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+        &mut collector,
+    )
+    .unwrap();
+    assert!(collector.events().is_empty());
+    compare_execution_json(&result, &collector, scenario(&fixture, "empty_code"));
 }

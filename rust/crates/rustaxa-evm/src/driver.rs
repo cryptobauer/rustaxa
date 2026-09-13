@@ -112,7 +112,7 @@ pub enum ExecutionDriverError {
     UnsupportedTerminal(String),
     /// The pinned reference would panic for this opcode; discard the session.
     ReferenceInstructionPanic(u8),
-    /// The final successful root frame retained a negative refund aggregate.
+    /// A successful root delta would make the cumulative journal refund negative.
     NegativeRootRefund(i64),
     /// The bounded observer cannot prove the reference facts for this instruction path.
     TraceFactUnavailable {
@@ -134,8 +134,10 @@ pub enum ExecutionDriverError {
     TraceNegativeRefund {
         /// Opcode at the capture boundary.
         opcode: u8,
-        /// Negative REVM refund aggregate.
+        /// Signed REVM refund delta for this root execution.
         refund: i64,
+        /// Cumulative refund retained before this root execution.
+        base_refund: u64,
     },
     /// The interpreter memory shrank across an opcode capture boundary.
     TraceMemoryShrank {
@@ -848,18 +850,9 @@ fn execute_admitted_create<
                 settle_code_deposit(output.clone(), FinalChainGas::new(gas_left), 24_576, 200);
             match deposit.result {
                 Ok(code) => {
-                    if result.gas.refunded() < 0 {
-                        journal.revert_checkpoint(checkpoint)?;
-                        return Err(ExecutionDriverError::NegativeRootRefund(
-                            result.gas.refunded(),
-                        ));
-                    }
                     gas_left = deposit.gas_remaining.as_u64();
                     journal.set_code(attempted, code)?;
-                    journal.commit_checkpoint(checkpoint)?;
-                    if result.gas.refunded() > 0 {
-                        journal.add_refund(result.gas.refunded() as u64)?;
-                    }
+                    commit_root_refund(journal, checkpoint, result.gas.refunded())?;
                     FrameSettlementStatus::Success
                 }
                 Err(error) => {
@@ -1068,16 +1061,7 @@ fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAd
 
     let status = match map_terminal(result.result, opcode) {
         Ok(None) => {
-            if result.gas.refunded() < 0 {
-                journal.revert_checkpoint(checkpoint)?;
-                return Err(ExecutionDriverError::NegativeRootRefund(
-                    result.gas.refunded(),
-                ));
-            }
-            journal.commit_checkpoint(checkpoint)?;
-            if result.gas.refunded() > 0 {
-                journal.add_refund(result.gas.refunded() as u64)?;
-            }
+            commit_root_refund(journal, checkpoint, result.gas.refunded())?;
             FrameSettlementStatus::Success
         }
         Ok(Some(error)) => {
@@ -1107,6 +1091,26 @@ fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAd
         },
     )
     .map_err(Into::into)
+}
+
+/// Applies the root-local refund delta under its still-open rollback checkpoint.
+/// Ordinary periods settle/reset between transactions; TraceRunner deliberately
+/// retains a cumulative counter, which can absorb a negative later root delta.
+fn commit_root_refund<R: ConcreteExecutionRead>(
+    journal: &mut ExecutionJournal<R>,
+    checkpoint: JournalCheckpoint,
+    delta: i64,
+) -> Result<(), ExecutionDriverError> {
+    if let Err(error) = journal.apply_refund_delta(delta) {
+        journal.revert_checkpoint(checkpoint)?;
+        return Err(if error == JournalError::RefundUnderflow {
+            ExecutionDriverError::NegativeRootRefund(delta)
+        } else {
+            error.into()
+        });
+    }
+    journal.commit_checkpoint(checkpoint)?;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1164,9 +1168,20 @@ fn attempted_sstore(opcode: u8, stack: &[TraceWord]) -> Option<AttemptedSstore> 
 fn trace_refund(
     opcode: u8,
     interpreter: &Interpreter<EthInterpreter>,
+    base_refund: u64,
 ) -> Result<u64, ExecutionDriverError> {
     let refund = interpreter.gas.refunded();
-    u64::try_from(refund).map_err(|_| ExecutionDriverError::TraceNegativeRefund { opcode, refund })
+    base_refund.checked_add_signed(refund).ok_or_else(|| {
+        if refund < 0 {
+            ExecutionDriverError::TraceNegativeRefund {
+                opcode,
+                refund,
+                base_refund,
+            }
+        } else {
+            JournalError::RefundOverflow.into()
+        }
+    })
 }
 
 fn observe_opcode_step(
@@ -1174,6 +1189,7 @@ fn observe_opcode_step(
     interpreter: &Interpreter<EthInterpreter>,
     before: TraceBeforeOpcode,
     step: Result<(), InstructionResult>,
+    base_refund: u64,
 ) -> Result<(), ExecutionDriverError> {
     let fault = match step {
         Ok(())
@@ -1201,7 +1217,7 @@ fn observe_opcode_step(
                 before: before.gas,
                 after: after_gas,
             })?;
-    let refund = trace_refund(before.opcode, interpreter)?;
+    let refund = trace_refund(before.opcode, interpreter, base_refund)?;
     let after_memory_len = interpreter.memory.len();
     if after_memory_len < before.memory.len() {
         return Err(ExecutionDriverError::TraceMemoryShrank {
@@ -1261,6 +1277,14 @@ fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifi
     native: &mut Option<NativeExecution<'_>>,
     mut observer: Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<(revm::interpreter::InterpreterResult, u8), ExecutionDriverError> {
+    // Go CALL skips interpreter entry for empty code; CREATE still executes
+    // empty initcode and observes STOP. Preserve that operation distinction.
+    if code.is_empty() && transaction.kind == ExecutionTransactionKind::Call {
+        return Ok((
+            immediate_result(InstructionResult::Stop, admitted.action_gas.as_u64()),
+            0,
+        ));
+    }
     let mut interpreter = Interpreter::<EthInterpreter>::new(
         SharedMemory::new(),
         ExtBytecode::new(Bytecode::new_legacy(Bytes::from(code))),
@@ -1405,6 +1429,7 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
     last_opcode: &mut u8,
     observer: &mut Option<&mut dyn ExecutionTraceObserver>,
 ) -> Result<InterpreterAction, ExecutionDriverError> {
+    let base_refund = journal.refund();
     let (table, costs) = profile.execution_instruction_table::<JournalHost<'_, R, B>>();
     let mut host = JournalHost::new(
         journal,
@@ -1439,6 +1464,7 @@ fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
                 interpreter,
                 before,
                 step,
+                base_refund,
             )?;
         }
         match step {

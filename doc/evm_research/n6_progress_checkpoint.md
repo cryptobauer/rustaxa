@@ -75,12 +75,14 @@ non-UTF-8 reasons and 17 independent decoder witnesses.
 1. Complete remaining stateful adapters and reward boundaries through existing
    Rust kernels. Scoped committed-parent jailed cleanup is integrated as
    `25c9e41e1`; it rejects unsupported cached-future and decreasing-duration
-   cases. General process-lifetime scheduler binding and paired V1/V2
-   cancellation are active implementation work.
+   cases. V1/V2 cancellation and scoped accrued-reward comparisons are
+   integrated; actual scheduler publication/reopen is still required. General
+   process-lifetime scheduler binding remains active implementation work.
 2. Add trace facts to the existing iterative frame driver and serializers over
    those facts. The reviewed typed collector is integrated as `7a005eae9` and
-   `d21d1769a`. Driver hooks have focused witnesses but remain under review for
-   frame settlement timing and exact host-error precedence. No second VM or
+   `d21d1769a`. Opcode hooks, default structured serialization and actual single-target
+   driver-to-JSON comparisons are integrated. Cumulative refund/empty-code fixes
+   have scoped sequence witnesses; the disposable TraceRunner is being connected. No second VM or
    production route is authorized.
 3. Replace full account-snapshot authority for an explicit offline checkpoint
    with authenticated concrete point reads plus a touched overlay. The reviewed
@@ -91,7 +93,10 @@ non-UTF-8 reasons and 17 independent decoder witnesses.
 4. Finish native semantic reconstruction and catalog qualification before
    adoption. All H-5..H headers/roots/native accounts and sampled paths are
    readable; no sampled dependency is missing. Full head DPoS and slashing live
-   inventories are authenticated. Lite pruning is not established as the cause
+   inventories are authenticated. Strict inverse decoding plus 290 known
+   validator/owner candidates explains 2,065 of 23,278 live DPoS rows; 21,213
+   remain unexplained. This is partial coverage, not native bootstrap authority.
+   Lite pruning is not established as the cause
    of the gap. Missing logical preimages, inverse decoding, exhaustive historical
    leaf-version checks and deleted-history/catalog policy remain distinct work.
 5. Only after those inputs close, implement offline paired adoption/recovery:

@@ -42,6 +42,8 @@ pub enum JournalError {
     Balance(BalanceConversionError),
     /// Refund arithmetic exceeded its unsigned domain.
     RefundOverflow,
+    /// A signed interpreter delta would make the cumulative refund negative.
+    RefundUnderflow,
     /// The reference rejects replacing a nonce with a smaller value.
     NonceDecrease,
     /// Native ordinary output was not based on the current journal state.
@@ -888,6 +890,21 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             .refund
             .checked_add(refund)
             .ok_or(JournalError::RefundOverflow)?;
+        Ok(())
+    }
+
+    /// Applies one successful root interpreter's signed refund change.
+    ///
+    /// A disposable trace sequence retains its cumulative counter between root
+    /// executions, so restoring earlier storage can legitimately debit it.
+    /// Underflow/overflow leaves the counter unchanged. Frame checkpoints still
+    /// own rollback, and ordinary transaction settlement still resets it.
+    pub(crate) fn apply_refund_delta(&mut self, delta: i64) -> Result<(), JournalError> {
+        self.refund = self.refund.checked_add_signed(delta).ok_or(if delta < 0 {
+            JournalError::RefundUnderflow
+        } else {
+            JournalError::RefundOverflow
+        })?;
         Ok(())
     }
 

@@ -310,3 +310,25 @@ formatted trace JSON authority or establish nested-frame refund behavior.
 python3 -O experiments/evm_feasibility/trace_refund_reference.py
 cargo test --locked --manifest-path rust/Cargo.toml -p rustaxa-evm --test trace_driver_reference --test trace_structured_reference
 ```
+
+
+## Disposable trace sequence refund lifetime
+
+The actual Go TraceRunner retains one BlockState across prefix and target
+`EVM.Main` calls. It does not perform normal transaction publication/flush resets.
+Rust must therefore preserve storage originals, cumulative refund, transient
+cells and other private journal facts while allocating a fresh logger per target.
+The driver now applies signed interpreter refund deltas to the checked cumulative
+journal counter under the root checkpoint. Negative deltas are valid when the
+retained aggregate remains nonnegative; arithmetic failure rolls back the root.
+Normal period execution still resets these facts at transaction settlement.
+
+Three additional raw-Go sequences prove prefix clear→restore→set, two-target
+clear→restore, and prefix TSTORE→target TLOAD returning nine. The tests compare
+per-target gas/status/output, raw refund snapshots, stack, memory and instruction
+facts. Prefix/target nonce strings preserve values above 256 bits. Original four
+single-target refund cases remain unchanged. A separate malformed-state test
+checks aggregate overflow/underflow rollback. Empty code skips interpreter entry,
+matching Go's empty log array instead of observing REVM's padded STOP instruction.
+These are runner prerequisites, not acceptance of native/nested/OpenEthereum
+traces or all cross-target log/suicide behavior.
