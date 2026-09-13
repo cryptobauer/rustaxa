@@ -226,6 +226,8 @@ pub enum CodeExecutionError {
     CodeDepositOutOfGas,
     /// A jump destination was invalid.
     InvalidJump,
+    /// A native contract returned its exact compatibility failure.
+    Native(NativeContractFailure),
 }
 
 /// Result status for a transaction that passed consensus-envelope admission.
@@ -250,8 +252,8 @@ pub struct ExecutedTransactionResult {
     pub gas_used: FinalChainGas,
     /// Return or revert bytes retained by the reference settlement rule.
     pub output: Vec<u8>,
-    /// Address created by a successful top-level creation.
-    pub new_contract_address: Option<[u8; 20]>,
+    /// Address attempted by top-level creation, including failed creation.
+    pub attempted_contract_address: Option<[u8; 20]>,
     /// Logs surviving frame settlement.
     pub logs: Vec<ExecutionLog>,
 }
@@ -278,6 +280,10 @@ pub struct ConsensusFailureResult {
     pub error: ConsensusFailure,
     /// Gas charged by the exact pre/post-activation envelope rule.
     pub gas_used: FinalChainGas,
+    /// Address derived before a top-level CREATE transfer/admission failure.
+    pub attempted_contract_address: Option<[u8; 20]>,
+    /// Compatibility output retained by the failed envelope path.
+    pub output: Vec<u8>,
 }
 
 /// Mutually exclusive terminal transaction outcomes.
@@ -371,42 +377,145 @@ pub struct NativeInvocation {
     pub supplied_gas: FinalChainGas,
 }
 
-/// Side-effect-free gas quote for one exact native invocation.
+/// Prepared gas requirement bound to one exact native invocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeGasQuote {
+    /// Invocation whose historical native preparation produced this quote.
+    pub invocation: NativeInvocationId,
     /// Gas charged when the quoted native invocation is admitted.
     pub required_gas: FinalChainGas,
 }
 
+/// Exact compatibility failure returned by a native business method.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeContractFailure {
+    /// Reference-compatible error payload retained for receipt/result mapping.
+    pub error: String,
+}
+
 /// Contract-level completion of a native business method.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeStatus {
     /// The method succeeded and its returned mutations are valid.
     Success,
     /// The method rejected input/state under normal contract semantics.
-    ContractFailure,
+    ContractFailure(NativeContractFailure),
 }
 
-/// One ordinary balance mutation produced by an existing native kernel.
-///
-/// Expected and replacement balances let the journal reject stale or duplicate
-/// kernel output. These mutations use the ordinary checkpoint lane and therefore
-/// revert with their frame even when associated native raw writes survive.
+/// Current authoritative account facts exposed by the execution journal.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NativeBalanceMutation {
-    /// Account whose ordinary balance changes.
-    pub address: [u8; 20],
-    /// Balance the adapter observed before the mutation.
-    pub expected: ExecutionBalance,
-    /// Balance after the native business transition.
-    pub replacement: ExecutionBalance,
+pub struct NativeJournalAccount {
+    /// Whether the account exists after all earlier journal operations.
+    pub exists: bool,
+    /// Current arbitrary-width account nonce.
+    pub nonce: FinalChainNonce,
+    /// Current signed execution balance.
+    pub balance: ExecutionBalance,
 }
+
+/// Failure while reading the authoritative current journal for native execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeJournalReadError {
+    /// The immutable concrete-state fallback could not be read safely.
+    State(ConcreteReadError),
+    /// Journal overlays and account lifecycle facts are inconsistent.
+    Invariant(String),
+}
+
+impl std::fmt::Display for NativeJournalReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "native journal read: {self:?}")
+    }
+}
+
+impl std::error::Error for NativeJournalReadError {}
+
+/// Narrow current-state view required by existing native kernels.
+///
+/// Reads include earlier ordinary mutations and frame rollbacks. Raw reads use
+/// the native lane rather than the ordinary storage overlay.
+pub trait NativeJournalRead {
+    /// Loads current existence, nonce and balance for one account.
+    fn account(&self, address: [u8; 20]) -> Result<NativeJournalAccount, NativeJournalReadError>;
+
+    /// Loads the current exact bytes in the native raw lane.
+    fn raw_storage(
+        &self,
+        address: [u8; 20],
+        key: &ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, NativeJournalReadError>;
+}
+
+/// One ordered ordinary-account mutation produced by a native kernel.
+///
+/// The journal validates and applies these variants sequentially. They use the
+/// ordinary checkpoint lane and therefore revert with the containing frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeOrdinaryAccountMutation {
+    /// Replace a balance after validating current existence and value.
+    Balance {
+        address: [u8; 20],
+        expected_exists: bool,
+        expected: ExecutionBalance,
+        replacement: ExecutionBalance,
+    },
+    /// Replace a nonce after validating current existence and value.
+    Nonce {
+        address: [u8; 20],
+        expected_exists: bool,
+        expected: FinalChainNonce,
+        replacement: FinalChainNonce,
+    },
+    /// Apply the reference account-touch/existence transition.
+    Touch {
+        address: [u8; 20],
+        expected_exists: bool,
+    },
+}
+
+/// Exact nonempty bytes for a native raw-storage put.
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeRawValue(Vec<u8>);
+
+impl NativeRawValue {
+    /// Constructs a put value; empty bytes are deletion in the reference.
+    pub fn new(value: Vec<u8>) -> Result<Self, NativeRawValueError> {
+        if value.is_empty() {
+            Err(NativeRawValueError)
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    /// Borrows the exact physical bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Returns the exact physical bytes.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+/// Empty bytes cannot be represented as a native raw-storage put.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeRawValueError;
+
+impl std::fmt::Display for NativeRawValueError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("empty native raw value denotes deletion")
+    }
+}
+
+impl std::error::Error for NativeRawValueError {}
 
 /// Exact native raw-storage operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeRawOperation {
     /// Store these exact bytes, including a nonempty all-zero count.
-    Put(Vec<u8>),
+    Put(NativeRawValue),
     /// Delete the row; this is distinct from storing zero bytes.
     Delete,
 }
@@ -441,8 +550,8 @@ pub struct NativeOutcome {
     pub gas_used: FinalChainGas,
     /// Contract return bytes.
     pub output: Vec<u8>,
-    /// Ordinary balance effects applied through the frame journal.
-    pub balance_mutations: Vec<NativeBalanceMutation>,
+    /// Ordered ordinary-account effects applied through the frame journal.
+    pub account_mutations: Vec<NativeOrdinaryAccountMutation>,
     /// Ordered historically irreversible raw effects.
     pub raw_mutations: Vec<NativeRawMutation>,
     /// Logs applied through the ordinary frame journal.
@@ -454,8 +563,8 @@ pub struct NativeOutcome {
 /// Result of the mutating native invocation phase.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeInvocationResult {
-    /// Supplied gas was below the current quote. The port made no semantic,
-    /// account, raw or log mutation.
+    /// Supplied gas was below the prepared quote. The port made no business,
+    /// account, raw or log mutation; reference-shaped preparation cache remains.
     InsufficientGas {
         /// Current required gas returned for settlement and diagnostics.
         required_gas: FinalChainGas,
@@ -479,8 +588,8 @@ pub enum NativePortError {
     },
     /// The quote changed before invocation or did not describe the request.
     QuoteMismatch,
-    /// Concrete raw state could not be read safely.
-    State(ConcreteReadError),
+    /// The authoritative current journal could not be read safely.
+    Journal(NativeJournalReadError),
     /// Native semantic state was unavailable or inconsistent.
     Domain(String),
     /// Physical adapter execution failed.
@@ -497,29 +606,38 @@ impl std::error::Error for NativePortError {}
 
 /// Staged FinalChain-native execution used by the EVM frame driver.
 ///
-/// [`NativeExecutionPort::quote`] is read-only. `invoke` must recompute or
-/// validate the quote against the same invocation before any side effect. When
-/// `supplied_gas < quote.required_gas`, it returns
-/// [`NativeInvocationResult::InsufficientGas`] without running the business
-/// kernel. A completed call advances the adapter's staged semantic state once;
-/// its ordinary balance/log effects are still applied by the EVM journal, while
-/// raw effects use the separate historical native lane. Any returned error
-/// aborts the pending period and exposes no partial mutation.
+/// [`NativeExecutionPort::prepare`] may perform the reference's lazy semantic
+/// cache initialization, but must not emit business/account/raw/log mutations.
+/// That reference-shaped cache is separate from journal account lifecycle and
+/// may survive frame rollback or removal of a newly created account. `invoke`
+/// validates the exact invocation and prepared quote. Insufficient gas prevents
+/// the business kernel and all returned mutations while retaining preparation
+/// cache. A completed call advances staged semantic state once and returns
+/// ordinary effects for the frame journal plus historically irreversible raw
+/// effects. Any integrity/infrastructure error aborts the whole pending period;
+/// exact native serialization and cache lifecycle remain an S5 adapter concern.
 pub trait NativeExecutionPort {
-    /// Computes required gas without changing semantic or concrete state.
-    fn quote(&self, invocation: &NativeInvocation) -> Result<NativeGasQuote, NativePortError>;
+    /// Prepares reference cache and computes gas against the authoritative journal.
+    fn prepare(
+        &mut self,
+        invocation: &NativeInvocation,
+        journal: &dyn NativeJournalRead,
+    ) -> Result<NativeGasQuote, NativePortError>;
 
-    /// Runs one sufficiently funded invocation or reports insufficient gas without mutation.
+    /// Runs one prepared invocation or reports insufficient gas without business mutation.
     fn invoke(
         &mut self,
         invocation: &NativeInvocation,
         quote: NativeGasQuote,
+        journal: &dyn NativeJournalRead,
     ) -> Result<NativeInvocationResult, NativePortError>;
 }
 
-/// Failure to reconcile a native result with its request and side-effect-free quote.
+/// Failure to reconcile a native result with its request and prepared quote.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeResultValidationError {
+    /// The quote was prepared for a different invocation identity.
+    InvocationMismatch,
     /// The result classified a funded call as insufficient or an unfunded call as completed.
     AdmissionMismatch,
     /// A completed call did not charge exactly the quoted required gas.
@@ -543,6 +661,9 @@ impl NativeInvocationResult {
         invocation: &NativeInvocation,
         quote: NativeGasQuote,
     ) -> Result<(), NativeResultValidationError> {
+        if quote.invocation != invocation.id {
+            return Err(NativeResultValidationError::InvocationMismatch);
+        }
         let sufficiently_funded = invocation.supplied_gas >= quote.required_gas;
         match self {
             Self::InsufficientGas { required_gas } => {
@@ -638,6 +759,7 @@ mod tests {
     #[test]
     fn native_result_validation_separates_gas_admission_from_execution() {
         let quote = NativeGasQuote {
+            invocation: native_invocation(20_000).id,
             required_gas: gas(20_000),
         };
         let insufficient = NativeInvocationResult::InsufficientGas {
@@ -654,10 +776,12 @@ mod tests {
         );
 
         let completed = NativeInvocationResult::Completed(NativeOutcome {
-            status: NativeStatus::ContractFailure,
+            status: NativeStatus::ContractFailure(NativeContractFailure {
+                error: "execution reverted".to_owned(),
+            }),
             gas_used: gas(20_000),
             output: Vec::new(),
-            balance_mutations: Vec::new(),
+            account_mutations: Vec::new(),
             raw_mutations: Vec::new(),
             logs: Vec::new(),
             diagnostic: None,
@@ -671,25 +795,26 @@ mod tests {
             completed.validate(&native_invocation(19_999), quote),
             Err(NativeResultValidationError::AdmissionMismatch)
         );
+
+        let wrong_quote = NativeGasQuote {
+            invocation: NativeInvocationId {
+                transaction: FinalChainTransactionPosition::from(0_u32),
+                sequence: 1,
+            },
+            required_gas: gas(20_000),
+        };
+        assert_eq!(
+            completed.validate(&native_invocation(20_000), wrong_quote),
+            Err(NativeResultValidationError::InvocationMismatch)
+        );
     }
 
     #[test]
-    fn code_and_consensus_failures_have_distinct_result_shapes() {
-        let code = TransactionExecutionResult::Executed(ExecutedTransactionResult {
-            status: CodeExecutionStatus::Failure(CodeExecutionError::Revert),
-            gas_used: gas(21_001),
-            output: vec![0xab],
-            new_contract_address: None,
-            logs: Vec::new(),
-        });
-        let consensus = TransactionExecutionResult::ConsensusFailure(ConsensusFailureResult {
-            error: ConsensusFailure::NonceTooLow,
-            gas_used: gas(60_000),
-        });
-        assert!(matches!(code, TransactionExecutionResult::Executed(_)));
-        assert!(matches!(
-            consensus,
-            TransactionExecutionResult::ConsensusFailure(_)
-        ));
+    fn native_raw_put_rejects_reference_deletion_encoding() {
+        assert_eq!(NativeRawValue::new(Vec::new()), Err(NativeRawValueError));
+        assert_eq!(
+            NativeRawValue::new(vec![0_u8]).expect("nonempty zero bytes are a value").as_bytes(),
+            &[0_u8]
+        );
     }
 }

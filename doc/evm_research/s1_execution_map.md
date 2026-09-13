@@ -89,7 +89,8 @@ should remain separated as follows.
 gas price, wide value, `FinalChainGas`, calldata/initcode, canonical bytes and
 kind/system facts. `BlockContext` owns period, author, timestamp, gas limit,
 chain id, difficulty and an application-owned block-hash port. `ExecutionResult`
-owns status, gas, output, optional created address, ordered logs, and separate
+owns status, gas, output, optional attempted creation address (including failed
+creation), ordered logs, and separate
 execution/code and consensus/admission errors. Errors are typed internally; text
 conversion occurs only at the current compatibility adapter.
 
@@ -123,32 +124,43 @@ NativeInvocation {
 }
     -> NativeOutcome {
          status, required_gas, gas_used, output, logs,
-         ordinary_account_mutations, ordered_raw_mutations,
-         semantic_state_token
+         ordered_ordinary_account_mutations, ordered_raw_mutations
        }
 ```
 
 The frame/envelope owner applies fees, value transfer, nonce changes, static and
 payability admission, action-gas settlement and account lifecycle exactly once.
 The native adapter owns ABI decoding, historical method availability, business
-state transition and exact serialization of touched rows. It returns ordered
-put/delete mutations and an opaque staged semantic-state successor; it never
-publishes FinalChain state or reenters a held FinalChain lock. Native ordinary
-account deltas (including token balance movement) are a separate part of the
-outcome: the executor applies them through the ordinary journal so frame revert
-can undo them, while the adapter retains the successful native semantic successor
-and raw mutations according to the historical irreversible lane. Logs likewise
-enter the ordinary frame journal. The historical native profile must permit the
-observed STATICCALL mutation and preserve native raw writes across own/outer
-frame revert while reverting their logs.
+state transition and exact serialization of touched rows. Its mutable prepare
+step may reproduce historical lazy cache preparation while emitting no business,
+account, raw or log mutation. The quote is bound to the exact invocation. If gas
+is insufficient, invocation does not run the business kernel, though the
+reference-shaped preparation cache may remain. Both phases read current account
+existence/nonce/balance and the native raw lane through a narrow journal port so
+earlier ordinary transfers and rollbacks are authoritative. The adapter never
+publishes FinalChain state or reenters a held FinalChain lock.
+
+Native ordinary account effects are an ordered enum of balance replacement,
+nonce replacement and touch/existence transitions, with expected current values
+where applicable. The executor validates and applies them sequentially through
+the ordinary journal so frame revert can undo them. Raw put values are nonempty
+by construction because empty bytes denote deletion in the reference. Native
+semantic cache lifetime is separate from journal account lifecycle: reference
+caches may survive undo or removal of a newly created raw account. Exact cache
+lifetime and native serialization remain the S5 consensus-adapter concern; S3
+must not invent an opaque successor identifier. Logs likewise enter the ordinary
+frame journal. The historical native profile must permit the observed STATICCALL
+mutation and preserve native raw writes across own/outer frame revert while
+reverting their logs. Contract failures retain their exact compatibility payload.
 
 `FrameDriver` handles CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE and
 CREATE2 yields. It owns checkpoints, value context, static propagation, depth,
 gas return/consumption, return-data insertion, child settlement and code deposit.
 CREATE derives its address from the caller and exact arbitrary-width nonce. The
-caller increment occurs before collision checking and before the child checkpoint,
-so child failure retains that increment; an enclosing frame revert can still
-remove it.
+attempted address remains in the result even when creation fails, including an
+insufficient-transfer envelope failure. The caller increment occurs before
+collision checking and before the child checkpoint, so child failure retains
+that increment; an enclosing frame revert can still remove it.
 
 `ExecutionProfile` is a Taraxa activation set and instruction/gas table, not an
 Ethereum `SpecId`. The REVM `SpecId` may select shared interpreter machinery, but
