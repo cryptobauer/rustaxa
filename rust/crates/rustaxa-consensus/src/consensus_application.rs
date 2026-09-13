@@ -132,11 +132,6 @@ pub struct ConsensusFinalChainConfig {
     pub genesis_dpos: GenesisDposConfig,
     /// Rewards, hardfork, supply, and locking policy for native finalization.
     pub rewards: FinalChainRewardsConfig,
-    /// First period where Ficus-specific native DPoS serialization is active.
-    ///
-    /// This is copied from the immutable PBFT configuration at the Rust bridge
-    /// boundary. `FinalChainBlockNumber::MAX` disables the compatibility rule.
-    pub ficus_activation_period: FinalChainBlockNumber,
 }
 
 /// Consumed native bootstrap for one complete consensus application.
@@ -201,6 +196,8 @@ impl ConsensusApplicationBootstrap {
                 )
             }
         };
+        // Both siblings use the same immutable fork policy already carried by
+        // the native bootstrap; no duplicate bridge/config authority is needed.
         let final_chain = Arc::new(
             FinalChain::new_with_genesis_state_root_and_ficus_activation(
                 storage.clone(),
@@ -212,7 +209,7 @@ impl ConsensusApplicationBootstrap {
                 self.final_chain.genesis_validators,
                 self.final_chain.genesis_dpos,
                 self.final_chain.rewards,
-                self.final_chain.ficus_activation_period,
+                self.consensus.pbft.ficus_activation_period.into(),
             )
             .context("CONSENSUS_APPLICATION_FINAL_CHAIN_RESTORE_FAILED")?,
         );
@@ -1557,7 +1554,6 @@ pub fn consensus_application_test_bootstrap(
                 aspen_part_one_period: u64::MAX.into(),
                 ..FinalChainRewardsConfig::default()
             },
-            ficus_activation_period: FinalChainBlockNumber::MAX,
         },
         consensus,
     }
@@ -1765,9 +1761,27 @@ mod tests {
                 genesis_validators: Vec::new(),
                 genesis_dpos: GenesisDposConfig::default(),
                 rewards: FinalChainRewardsConfig::default(),
-                ficus_activation_period: FinalChainBlockNumber::MAX,
             },
             consensus: deterministic_test_config(),
+        }
+    }
+
+    #[test]
+    fn native_bootstrap_shares_pbft_ficus_activation_with_final_chain() {
+        for activation in [10, u64::MAX] {
+            let path = temp_path("consensus_bootstrap_ficus_source");
+            let mut config = bootstrap(path.clone());
+            config.consensus.pbft.ficus_activation_period = activation;
+            let root = config.bootstrap().expect("root bootstraps");
+            let chain = root.final_chain_for_bridge();
+            assert!(!chain.ficus_active_at(9_u64.into()));
+            assert_eq!(chain.ficus_active_at(10_u64.into()), activation == 10);
+            assert_eq!(
+                chain.ficus_active_at(FinalChainBlockNumber::MAX),
+                activation == 10
+            );
+            drop(root);
+            fs::remove_dir_all(path).expect("remove fixture");
         }
     }
 
