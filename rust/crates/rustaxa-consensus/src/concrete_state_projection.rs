@@ -11,7 +11,11 @@ use anyhow::ensure;
 use rlp::{Rlp, RlpStream};
 use tiny_keccak::{Hasher, Keccak};
 
-use crate::{FinalChainEvmLog, FinalChainEvmLogTopic};
+use crate::rewards_stats::RewardsStatsPeriodRlp;
+use crate::{
+    FinalChainEvmLog, FinalChainEvmLogTopic, FinalChainEvmTransactionInput,
+    FinalChainEvmTransactionResult,
+};
 
 /// Concrete-root policy and projection codec version accepted by Rust.
 pub const FINAL_CHAIN_CONCRETE_PROJECTION_VERSION: u64 = 1;
@@ -670,6 +674,68 @@ fn fixed<const N: usize>(rlp: &Rlp<'_>, field: &str) -> anyhow::Result<[u8; N]> 
     let mut result = [0; N];
     result.copy_from_slice(bytes);
     Ok(result)
+}
+
+/// Encodes the StateAPI `vm.Transaction` value independently from the signed
+/// canonical transaction envelope. StateAPI records this seven-field execution
+/// input in each concrete per-transaction effect. The caller supplies an already
+/// selected transaction; this codec performs no admission or execution checks.
+/// The full nonce is preserved. An absent receiver is empty RLP data. Hash,
+/// signature, position and system classification are not StateAPI fields.
+pub fn encode_concrete_evm_transaction(transaction: &FinalChainEvmTransactionInput) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(7);
+    stream.append(&transaction.sender.as_slice());
+    stream.append(&transaction.gas_price.as_u256());
+    if let Some(receiver) = transaction.receiver {
+        stream.append(&receiver.as_slice());
+    } else {
+        stream.append_empty_data();
+    }
+    stream.append(&transaction.nonce.to_bytes());
+    stream.append(&transaction.value.as_u256());
+    stream.append(&transaction.gas_limit.as_u64());
+    stream.append(&transaction.data);
+    stream.out().to_vec()
+}
+
+/// Encodes the exact six-field StateAPI execution result, independently of the receipt.
+///
+/// Preserves output, attempted creation address, ordered logs/topics, gas used and
+/// both error payloads. No creation address encodes as twenty zero bytes. The
+/// caller remains responsible for validating status, cumulative gas and receipt
+/// consistency; none of those derived fields participates in this encoding.
+pub fn encode_concrete_execution_result(result: &FinalChainEvmTransactionResult) -> Vec<u8> {
+    let mut stream = RlpStream::new_list(6);
+    stream.append(&result.output);
+    stream.append(&result.new_contract_address.unwrap_or_default().as_slice());
+    stream.begin_list(result.logs.len());
+    for log in &result.logs {
+        stream.begin_list(3);
+        stream.append(&log.address.as_slice());
+        stream.begin_list(log.topics.len());
+        for topic in &log.topics {
+            stream.append(&topic.topic.as_slice());
+        }
+        stream.append(&log.data);
+    }
+    stream.append(&result.gas_used.as_u64());
+    stream.append(&result.code_error);
+    stream.append(&result.consensus_error);
+    stream.out().to_vec()
+}
+
+/// Encodes the ordered StateAPI rewards input as a list of canonical period-stat RLPs.
+///
+/// Inputs must already be validated `RewardsStatsPeriodRlp` values from the Rust
+/// rewards planner. This encoding preserves each inner value verbatim, including
+/// order; it does not decode, authorize, sort or recompute the supplied facts.
+/// Empty input yields the empty RLP list, with no C API wrapper structure.
+pub fn encode_concrete_rewards_input(stats: &[RewardsStatsPeriodRlp]) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(stats.len());
+    for stat in stats {
+        stream.append_raw(&stat.data, 1);
+    }
+    stream.out().to_vec()
 }
 
 #[cfg(test)]

@@ -2,7 +2,8 @@ use crate::concrete_state_projection::{
     FinalChainConcreteExecutionMarker, FinalChainConcreteState, FinalChainConcreteStateProvenance,
     concrete_state_bytes_digest, decode_concrete_execution_marker,
     decode_concrete_state_projection, decode_concrete_state_provenance,
-    encode_concrete_execution_marker, encode_concrete_state_provenance,
+    encode_concrete_execution_marker, encode_concrete_rewards_input,
+    encode_concrete_state_provenance,
 };
 use crate::final_chain::{
     DPOS_CONTRACT_ADDRESS, FinalChain, SLASHING_CONTRACT_ADDRESS,
@@ -4427,14 +4428,6 @@ fn commit_plan_post_rewards_root(
         .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_COMMIT_PLAN_MISSING"))
 }
 
-fn encode_concrete_rewards_input(stats: &[RewardsStatsPeriodRlp]) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(stats.len());
-    for stat in stats {
-        stream.append_raw(&stat.data, 1);
-    }
-    stream.out().to_vec()
-}
-
 fn validate_regular_transaction_count(count: usize) -> Result<(), &'static str> {
     u32::try_from(count)
         .map(|_| ())
@@ -4589,6 +4582,7 @@ fn execution_request_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::concrete_state_projection::encode_concrete_execution_result;
     use crate::concrete_state_projection::{
         FinalChainConcreteIdentity, FinalChainConcreteStateProjection,
         FinalChainConcreteTransactionEffect, concrete_storage_catalog_hash,
@@ -4675,26 +4669,6 @@ mod tests {
         let mut result = evm_result(tx, status, gas_used, cumulative_gas_used, Vec::new());
         result.receipt_rlp = encode_external_evm_receipt(&result);
         result
-    }
-
-    fn encode_concrete_execution_result(result: &FinalChainEvmTransactionResult) -> Vec<u8> {
-        let mut stream = RlpStream::new_list(6);
-        stream.append(&result.output);
-        stream.append(&result.new_contract_address.unwrap_or_default().as_slice());
-        stream.begin_list(result.logs.len());
-        for log in &result.logs {
-            stream.begin_list(3);
-            stream.append(&log.address.as_slice());
-            stream.begin_list(log.topics.len());
-            for topic in &log.topics {
-                stream.append(&topic.topic.as_slice());
-            }
-            stream.append(&log.data);
-        }
-        stream.append(&result.gas_used.as_u64());
-        stream.append(&result.code_error);
-        stream.append(&result.consensus_error);
-        stream.out().to_vec()
     }
 
     fn concrete_projection_for_report(

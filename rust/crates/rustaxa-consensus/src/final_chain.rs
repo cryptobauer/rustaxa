@@ -2,7 +2,7 @@ use crate::concrete_state_projection::{
     FINAL_CHAIN_CONCRETE_INVOCATION_NORMAL, FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
     FinalChainConcreteAccountProjection, FinalChainConcreteIdentity, FinalChainConcreteInvocation,
     FinalChainConcreteStateProjection, FinalChainConcreteStorageProjection,
-    decode_concrete_execution_marker,
+    decode_concrete_execution_marker, encode_concrete_evm_transaction,
 };
 use crate::dag::{
     DAG_VERIFY_DPOS_STATUS_ELIGIBLE, DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
@@ -10393,25 +10393,6 @@ fn apply_concrete_account_projection(
         );
     }
     Ok(())
-}
-
-/// Encodes the StateAPI `vm.Transaction` value independently from the signed
-/// canonical transaction envelope. StateAPI records this seven-field execution
-/// input in each concrete per-transaction effect.
-fn encode_concrete_evm_transaction(transaction: &FinalChainEvmTransactionInput) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(7);
-    stream.append(&transaction.sender.as_slice());
-    stream.append(&transaction.gas_price.as_u256());
-    if let Some(receiver) = transaction.receiver {
-        stream.append(&receiver.as_slice());
-    } else {
-        stream.append_empty_data();
-    }
-    stream.append(&transaction.nonce.to_bytes());
-    stream.append(&transaction.value.as_u256());
-    stream.append(&transaction.gas_limit.as_u64());
-    stream.append(&transaction.data);
-    stream.out().to_vec()
 }
 
 /// Validates the StateAPI execution result for a Rust-supported top-level

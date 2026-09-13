@@ -166,3 +166,11 @@ selection remain with the application. Intrinsic-gas and affordability failures 
 execution envelope so the adapter does not bypass historical fee settlement. Targeted tests cover
 signed creation, unsigned rejection in signed mode, maximum wire values and low intrinsic gas.
 This adapter is independently reviewed and is not production routing.
+
+S4 composition can reuse the public StateAPI transaction, execution-result and
+rewards-input encoders in `rustaxa-consensus::concrete_state_projection`. These
+encode the existing seven-field transaction, six-field execution result and
+ordered list of canonical rewards-stat values. The application still validates
+reports, replays native/reward effects and owns publication. Exposing the codecs
+does not expose commit authority or change production routing. Concrete-filter
+consensus tests pass after moving the existing implementations.

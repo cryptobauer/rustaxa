@@ -64,8 +64,10 @@ pub use concrete_state_projection::{
     FinalChainConcreteStorageProjection, FinalChainConcreteTransactionEffect,
     concrete_state_bytes_digest, concrete_storage_catalog_hash, decode_concrete_execution_marker,
     decode_concrete_state_projection, decode_concrete_state_provenance,
-    encode_concrete_execution_marker, encode_concrete_state_projection,
-    encode_concrete_state_provenance, validate_concrete_state_pair,
+    encode_concrete_evm_transaction, encode_concrete_execution_marker,
+    encode_concrete_execution_result, encode_concrete_rewards_input,
+    encode_concrete_state_projection, encode_concrete_state_provenance,
+    validate_concrete_state_pair,
 };
 pub use consensus_application::{
     ConsensusApplication, ConsensusApplicationBootstrap, ConsensusApplicationConfig,
