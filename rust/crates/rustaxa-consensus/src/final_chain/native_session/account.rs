@@ -8,6 +8,7 @@
 //! execution records exact `BigInt` replacements without narrowing them.
 
 use super::super::{Account, DPOS_CONTRACT_ADDRESS, FinalChainNonce, empty_account};
+use super::FinalChainNativeStateRead;
 use anyhow::{Result, anyhow, bail};
 use ethereum_types::U256;
 use num_bigint::{BigInt, BigUint, Sign};
@@ -90,13 +91,24 @@ pub(in crate::final_chain) trait DposAccountPort {
 /// native invocation. Successful callers consume the mutations; failed replay
 /// discards this scratch state. It must never be reused as the next invocation's
 /// account source or as publication authority.
-#[derive(Debug)]
-pub(super) struct StagedDposAccountPort {
+pub(super) struct StagedDposAccountPort<'a> {
+    state: Option<&'a dyn FinalChainNativeStateRead>,
     accounts: BTreeMap<[u8; 20], FinalChainNativeAccount>,
     mutations: Vec<FinalChainNativeOrdinaryMutation>,
 }
 
-impl StagedDposAccountPort {
+impl std::fmt::Debug for StagedDposAccountPort<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StagedDposAccountPort")
+            .field("has_current_state_reader", &self.state.is_some())
+            .field("accounts", &self.accounts)
+            .field("mutations", &self.mutations)
+            .finish()
+    }
+}
+
+impl<'a> StagedDposAccountPort<'a> {
     /// Builds one invocation-local overlay.
     ///
     /// Duplicate addresses are rejected. An absent row must also carry the
@@ -107,18 +119,29 @@ impl StagedDposAccountPort {
     ) -> Result<Self> {
         let mut indexed = BTreeMap::new();
         for (address, account) in accounts {
-            if !account.exists && (!account.nonce.is_zero() || account.balance != BigInt::default())
-            {
-                bail!("absent staged native account has nonzero state: {address:?}");
-            }
+            validate_account_fact(address, &account)?;
             if indexed.insert(address, account).is_some() {
                 bail!("duplicate staged native account context: {address:?}");
             }
         }
         Ok(Self {
+            state: None,
             accounts: indexed,
             mutations: Vec::new(),
         })
+    }
+
+    /// Builds an initially empty overlay that loads exact current journal facts
+    /// only when the selected kernel reaches an account operation.
+    ///
+    /// This preserves native business-error ordering: validator and queue
+    /// preflight failures do not require otherwise-unused account evidence.
+    pub(super) fn from_state(state: &'a dyn FinalChainNativeStateRead) -> Self {
+        Self {
+            state: Some(state),
+            accounts: BTreeMap::new(),
+            mutations: Vec::new(),
+        }
     }
 
     /// Consumes the scratch overlay and returns effects in reference call order.
@@ -127,13 +150,21 @@ impl StagedDposAccountPort {
     }
 
     fn current_mut(&mut self, address: [u8; 20]) -> Result<&mut FinalChainNativeAccount> {
+        if !self.accounts.contains_key(&address) {
+            let state = self
+                .state
+                .ok_or_else(|| anyhow!("staged native account context missing: {address:?}"))?;
+            let account = state.account(address).map_err(anyhow::Error::new)?;
+            validate_account_fact(address, &account)?;
+            self.accounts.insert(address, account);
+        }
         self.accounts
             .get_mut(&address)
             .ok_or_else(|| anyhow!("staged native account context missing: {address:?}"))
     }
 }
 
-impl DposAccountPort for StagedDposAccountPort {
+impl DposAccountPort for StagedDposAccountPort<'_> {
     fn account(&mut self, address: [u8; 20]) -> Result<FinalChainNativeAccount> {
         Ok(self.current_mut(address)?.clone())
     }
@@ -187,6 +218,13 @@ impl DposAccountPort for StagedDposAccountPort {
         account.balance = replacement;
         Ok(())
     }
+}
+
+fn validate_account_fact(address: [u8; 20], account: &FinalChainNativeAccount) -> Result<()> {
+    if !account.exists && (!account.nonce.is_zero() || account.balance != BigInt::default()) {
+        bail!("absent staged native account has nonzero state: {address:?}");
+    }
+    Ok(())
 }
 
 impl DposAccountPort for HashMap<[u8; 20], Account> {
