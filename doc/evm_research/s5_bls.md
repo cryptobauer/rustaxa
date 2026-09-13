@@ -42,6 +42,16 @@ primitives directly. Taraxa's pinned Go behavior differs in two places:
   the actual Go output for non-subgroup points, including large scalars where
   plain double-and-add is observably different.
 
+The GLV constants are derived from the pinned gnark source. With subgroup order
+`r` and eigenvalue `L = 228988810152649578064853576960394133503`,
+`r = L² + L + 1` and `floor(sqrt(r)) = L`. The lattice precomputation's strict
+greater-than loop does not execute, leaving basis vectors `V1 = (L, -1)` and
+`V2 = (1, L + 1)` with determinant `+r`. The adapter uses the corresponding
+signed `2^512 / r` rounded coefficients. Across the complete 256-bit input
+range the absolute split components remain below the subgroup order, so the Go
+conversion to field scalars introduces no further reduction before the two
+endomorphism products are composed.
+
 Input lengths are exact. Every 48-byte field element has 16 leading zero bytes
 in the 64-byte ABI slot and must be smaller than the BLS12-381 field modulus.
 The adapter preserves Go's distinct errors for top padding, noncanonical field
@@ -55,14 +65,16 @@ account mutations, raw mutations or logs.
 ## Evidence
 
 `bls_reference.go` executes `RequiredGas` and `Run` from the actual Ficus and
-Cacti maps at both immutable Go revisions. The 196-row corpus is identical at
+Cacti maps at both immutable Go revisions. The 210-row corpus is identical at
 public `6c7e5338b22d5e596cc2365a88d1f94840e1ee1b` and local
 `bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418`. It covers all nine semantic
 operations and both address layouts; valid arithmetic and maps; exact, short,
 long and trailing lengths; infinity; invalid top bytes; field modulus values;
 off-curve points; accepted non-subgroup add/multiply/MSM; rejected pairing
-subgroups; scalar reduction and gnark GLV behavior; pairing true/false; error
-order; and multi-exp discount entries 1, 2, 128 and the capped 129 case. Large
+subgroups; scalar reduction and gnark GLV behavior at `r - 1`, `r`, `r + 1`,
+`2r - 1`, `2r`, `2r + 1` and the maximum 256-bit scalar; mixed subgroup and
+non-subgroup MSM streams; pairing true/false; error order; and multi-exp
+discount entries 1, 2, 128 and the capped 129 case. Large
 discount rows contain only infinity points and zero scalars, stored compactly as
 an exact element plus repeat count.
 

@@ -7,7 +7,7 @@
 //! Calls are pure and produce no account, raw-storage or log effects.
 
 use num_bigint::{BigInt, BigUint, Sign};
-use revm::precompile::{PrecompileHalt, bls12_381};
+use revm::precompile::{bls12_381, PrecompileHalt};
 use rustaxa_types::FinalChainGas;
 
 use crate::contracts::{
@@ -521,23 +521,27 @@ fn g2_unsigned_mul(
 }
 
 fn split_go_scalar(input: &[u8; SCALAR_LENGTH]) -> (BigInt, BigInt) {
-    // These are gnark-crypto v0.12.1's BLS12-381 lattice values. Reproducing
-    // its GLV split matters for the historical Go behavior on on-curve points
-    // outside the prime subgroup, which single-multiply does not reject.
+    // gnark-crypto v0.12.1 derives these rather than publishing them. For the
+    // subgroup order r and eigenvalue L, r = L² + L + 1 and floor(sqrt(r)) = L.
+    // PrecomputeLattice's strictly-greater loop therefore does not run and its
+    // remaining statements give V1=(L,-1), V2=(1,L+1), determinant +r and the
+    // rounded 2^512/r coefficients below. The exact signs and vector order
+    // matter for on-curve points outside the subgroup: single-multiply accepts
+    // those points, and the endomorphism is not ordinary scalar reduction.
     let s = BigInt::from_biguint(Sign::Plus, BigUint::from_bytes_be(input));
     let v1 = [
-        BigInt::from(1_u8),
-        decimal_bigint("228988810152649578064853576960394133504"),
-    ];
-    let v2 = [
         decimal_bigint("228988810152649578064853576960394133503"),
         BigInt::from(-1_i8),
     ];
+    let v2 = [
+        BigInt::from(1_u8),
+        decimal_bigint("228988810152649578064853576960394133504"),
+    ];
     let b1 = decimal_bigint(
-        "255699135089535202043525422716183576215815630510683217819334674386498370757524",
+        "58552240701214274452021999096850125581542494224669441691648594964201968916268199467788850628613995194398422433283175",
     );
     let b2 = decimal_bigint(
-        "-58552240701214274452021999096850125581542494224669441691648594964201968916268199467788850628613995194398422433283173",
+        "-255699135089535202043525422716183576215815630510683217819334674386498370757523",
     );
     let k1 = (&s * b1) >> 512;
     let k2 = (-(&s * b2)) >> 512;

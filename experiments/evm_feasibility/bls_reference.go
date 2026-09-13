@@ -117,14 +117,32 @@ func main() {
 	g1Neg := encodeG1(g1Negative)
 	g2Neg := encodeG2(g2Negative)
 
-	// (0, 2) is on BLS12-381 G1 but outside the prime-order subgroup.
-	var two fp.Element
-	two.SetUint64(2)
-	g1WrongSubgroupPoint := bls12381.G1Affine{Y: two}
-	if !g1WrongSubgroupPoint.IsOnCurve() || g1WrongSubgroupPoint.IsInSubGroup() {
+	// Scan nonzero x coordinates for a deterministic on-curve G1 point outside
+	// the prime subgroup. Avoid the low-order (0,2) point because it can hide
+	// errors in GLV scalar-boundary witnesses.
+	var g1WrongSubgroupPoint bls12381.G1Affine
+	foundG1WrongSubgroup := false
+	for candidate := uint64(1); candidate < 1024; candidate++ {
+		var x, rhs, y fp.Element
+		x.SetUint64(candidate)
+		rhs.Square(&x).Mul(&rhs, &x).Add(&rhs, new(fp.Element).SetUint64(4))
+		if y.Sqrt(&rhs) == nil {
+			continue
+		}
+		point := bls12381.G1Affine{X: x, Y: y}
+		if point.IsOnCurve() && !point.IsInSubGroup() {
+			g1WrongSubgroupPoint = point
+			foundG1WrongSubgroup = true
+			break
+		}
+	}
+	if !foundG1WrongSubgroup {
 		panic("failed to construct G1 non-subgroup point")
 	}
 	g1WrongSubgroup := encodeG1(&g1WrongSubgroupPoint)
+
+	var two fp.Element
+	two.SetUint64(2)
 
 	// Scan small real x coordinates for the first square on the G2 twist. The
 	// first accepted candidate is deterministic and outside the prime subgroup.
@@ -173,6 +191,12 @@ func main() {
 	if _, ok := subgroupOrder.SetString("52435875175126190479447740508185965837690552500527637822603658699938581184513", 10); !ok {
 		panic("subgroup order")
 	}
+	orderMinusOne := new(big.Int).Sub(new(big.Int).Set(subgroupOrder), big.NewInt(1))
+	orderPlusOne := new(big.Int).Add(new(big.Int).Set(subgroupOrder), big.NewInt(1))
+	twiceOrder := new(big.Int).Mul(new(big.Int).Set(subgroupOrder), big.NewInt(2))
+	twiceOrderMinusOne := new(big.Int).Sub(new(big.Int).Set(twiceOrder), big.NewInt(1))
+	twiceOrderPlusOne := new(big.Int).Add(new(big.Int).Set(twiceOrder), big.NewInt(1))
+	maxScalar := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	add := func(name, operation string, ficusAddress byte, cactiAddress *byte, input []byte) {
 		rows = append(rows, blsOracleRow(name, "ficus", operation, ficusAddress, input))
 		if cactiAddress != nil {
@@ -212,12 +236,17 @@ func main() {
 		input []byte
 	}{
 		{"g1-mul-generator-two", append(clone(g1), scalar(big.NewInt(2))...)},
-		{"g1-mul-generator-order-plus-one", append(clone(g1), scalar(new(big.Int).Add(subgroupOrder, big.NewInt(1)))...)},
-		{"g1-mul-infinity-max", append(clone(g1Infinity), scalar(new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1)))...)},
+		{"g1-mul-generator-order-plus-one", append(clone(g1), scalar(orderPlusOne)...)},
+		{"g1-mul-infinity-max", append(clone(g1Infinity), scalar(maxScalar)...)},
 		{"g1-mul-non-subgroup-one", append(clone(g1WrongSubgroup), scalar(big.NewInt(1))...)},
 		{"g1-mul-non-subgroup-two", append(clone(g1WrongSubgroup), scalar(big.NewInt(2))...)},
-		{"g1-mul-non-subgroup-order-plus-one", append(clone(g1WrongSubgroup), scalar(new(big.Int).Add(subgroupOrder, big.NewInt(1)))...)},
-		{"g1-mul-non-subgroup-max", append(clone(g1WrongSubgroup), scalar(new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1)))...)},
+		{"g1-mul-non-subgroup-order-minus-one", append(clone(g1WrongSubgroup), scalar(orderMinusOne)...)},
+		{"g1-mul-non-subgroup-order", append(clone(g1WrongSubgroup), scalar(subgroupOrder)...)},
+		{"g1-mul-non-subgroup-order-plus-one", append(clone(g1WrongSubgroup), scalar(orderPlusOne)...)},
+		{"g1-mul-non-subgroup-twice-order-minus-one", append(clone(g1WrongSubgroup), scalar(twiceOrderMinusOne)...)},
+		{"g1-mul-non-subgroup-twice-order", append(clone(g1WrongSubgroup), scalar(twiceOrder)...)},
+		{"g1-mul-non-subgroup-twice-order-plus-one", append(clone(g1WrongSubgroup), scalar(twiceOrderPlusOne)...)},
+		{"g1-mul-non-subgroup-max", append(clone(g1WrongSubgroup), scalar(maxScalar)...)},
 		{"g1-mul-empty", nil},
 		{"g1-mul-short", make([]byte, 159)},
 		{"g1-mul-long", make([]byte, 161)},
@@ -232,8 +261,8 @@ func main() {
 	g1PairOne := append(clone(g1), scalar(big.NewInt(1))...)
 	g1PairTwo := append(clone(g1), scalar(big.NewInt(2))...)
 	g1PairWrongSubgroup := append(clone(g1WrongSubgroup), scalar(big.NewInt(1))...)
-	g1PairWrongSubgroupHigh := append(clone(g1WrongSubgroup), scalar(new(big.Int).Sub(subgroupOrder, big.NewInt(1)))...)
-	g1PairOrderPlusOne := append(clone(g1), scalar(new(big.Int).Add(subgroupOrder, big.NewInt(1)))...)
+	g1PairWrongSubgroupHigh := append(clone(g1WrongSubgroup), scalar(orderMinusOne)...)
+	g1PairOrderPlusOne := append(clone(g1), scalar(orderPlusOne)...)
 	for _, item := range []struct {
 		name  string
 		input []byte
@@ -243,6 +272,7 @@ func main() {
 		{"g1-multiexp-scalar-reduction", g1PairOrderPlusOne},
 		{"g1-multiexp-non-subgroup-one", g1PairWrongSubgroup},
 		{"g1-multiexp-non-subgroup-high", g1PairWrongSubgroupHigh},
+		{"g1-multiexp-mixed-subgroup-non-subgroup-high", append(clone(g1PairTwo), g1PairWrongSubgroupHigh...)},
 		{"g1-multiexp-empty", nil},
 		{"g1-multiexp-short", make([]byte, 159)},
 		{"g1-multiexp-trailing", make([]byte, 161)},
@@ -280,12 +310,17 @@ func main() {
 		input []byte
 	}{
 		{"g2-mul-generator-two", append(clone(g2), scalar(big.NewInt(2))...)},
-		{"g2-mul-generator-order-plus-one", append(clone(g2), scalar(new(big.Int).Add(subgroupOrder, big.NewInt(1)))...)},
-		{"g2-mul-infinity-max", append(clone(g2Infinity), scalar(new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1)))...)},
+		{"g2-mul-generator-order-plus-one", append(clone(g2), scalar(orderPlusOne)...)},
+		{"g2-mul-infinity-max", append(clone(g2Infinity), scalar(maxScalar)...)},
 		{"g2-mul-non-subgroup-one", append(clone(g2WrongSubgroup), scalar(big.NewInt(1))...)},
 		{"g2-mul-non-subgroup-two", append(clone(g2WrongSubgroup), scalar(big.NewInt(2))...)},
-		{"g2-mul-non-subgroup-order-plus-one", append(clone(g2WrongSubgroup), scalar(new(big.Int).Add(subgroupOrder, big.NewInt(1)))...)},
-		{"g2-mul-non-subgroup-max", append(clone(g2WrongSubgroup), scalar(new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1)))...)},
+		{"g2-mul-non-subgroup-order-minus-one", append(clone(g2WrongSubgroup), scalar(orderMinusOne)...)},
+		{"g2-mul-non-subgroup-order", append(clone(g2WrongSubgroup), scalar(subgroupOrder)...)},
+		{"g2-mul-non-subgroup-order-plus-one", append(clone(g2WrongSubgroup), scalar(orderPlusOne)...)},
+		{"g2-mul-non-subgroup-twice-order-minus-one", append(clone(g2WrongSubgroup), scalar(twiceOrderMinusOne)...)},
+		{"g2-mul-non-subgroup-twice-order", append(clone(g2WrongSubgroup), scalar(twiceOrder)...)},
+		{"g2-mul-non-subgroup-twice-order-plus-one", append(clone(g2WrongSubgroup), scalar(twiceOrderPlusOne)...)},
+		{"g2-mul-non-subgroup-max", append(clone(g2WrongSubgroup), scalar(maxScalar)...)},
 		{"g2-mul-empty", nil},
 		{"g2-mul-short", make([]byte, 287)},
 		{"g2-mul-long", make([]byte, 289)},
@@ -300,8 +335,8 @@ func main() {
 	g2PairOne := append(clone(g2), scalar(big.NewInt(1))...)
 	g2PairTwo := append(clone(g2), scalar(big.NewInt(2))...)
 	g2PairWrongSubgroup := append(clone(g2WrongSubgroup), scalar(big.NewInt(1))...)
-	g2PairWrongSubgroupHigh := append(clone(g2WrongSubgroup), scalar(new(big.Int).Sub(subgroupOrder, big.NewInt(1)))...)
-	g2PairOrderPlusOne := append(clone(g2), scalar(new(big.Int).Add(subgroupOrder, big.NewInt(1)))...)
+	g2PairWrongSubgroupHigh := append(clone(g2WrongSubgroup), scalar(orderMinusOne)...)
+	g2PairOrderPlusOne := append(clone(g2), scalar(orderPlusOne)...)
 	for _, item := range []struct {
 		name  string
 		input []byte
@@ -311,6 +346,7 @@ func main() {
 		{"g2-multiexp-scalar-reduction", g2PairOrderPlusOne},
 		{"g2-multiexp-non-subgroup-one", g2PairWrongSubgroup},
 		{"g2-multiexp-non-subgroup-high", g2PairWrongSubgroupHigh},
+		{"g2-multiexp-mixed-subgroup-non-subgroup-high", append(clone(g2PairTwo), g2PairWrongSubgroupHigh...)},
 		{"g2-multiexp-empty", nil},
 		{"g2-multiexp-short", make([]byte, 287)},
 		{"g2-multiexp-trailing", make([]byte, 289)},

@@ -184,7 +184,7 @@ fn registry_remap_is_exact_and_does_not_classify_history() {
 }
 
 #[test]
-fn corpus_pins_discount_cap_subgroups_infinity_and_field_checks() {
+fn corpus_pins_discount_cap_subgroups_scalar_boundaries_and_field_checks() {
     let corpus = corpus();
     let rows = corpus["bls"].as_array().unwrap();
 
@@ -217,6 +217,22 @@ fn corpus_pins_discount_cap_subgroups_infinity_and_field_checks() {
             ""
         );
         assert_eq!(
+            row(
+                rows,
+                registry,
+                "g1-multiexp-mixed-subgroup-non-subgroup-high"
+            )["error"],
+            ""
+        );
+        assert_eq!(
+            row(
+                rows,
+                registry,
+                "g2-multiexp-mixed-subgroup-non-subgroup-high"
+            )["error"],
+            ""
+        );
+        assert_eq!(
             row(rows, registry, "pairing-g1-non-subgroup")["error"],
             "g1 point is not on correct subgroup"
         );
@@ -235,6 +251,37 @@ fn corpus_pins_discount_cap_subgroups_infinity_and_field_checks() {
         assert_eq!(
             row(rows, registry, "map-g1-noncanonical-field")["error"],
             "invalid fp.Element encoding"
+        );
+    }
+
+    // Ficus single-multiply applies gnark's GLV split to non-subgroup points.
+    // Pin exact subgroup-order boundaries where a swapped lattice basis gives
+    // different coordinates even though nearby and maximum scalars may agree.
+    for group in ["g1", "g2"] {
+        let at_order = row(rows, "ficus", &format!("{group}-mul-non-subgroup-order"));
+        let at_twice_order = row(
+            rows,
+            "ficus",
+            &format!("{group}-mul-non-subgroup-twice-order"),
+        );
+        assert_eq!(at_order["error"], "");
+        assert_eq!(at_twice_order["error"], "");
+        assert_eq!(at_order["output"], at_twice_order["output"]);
+        assert_ne!(
+            at_order["output"],
+            row(
+                rows,
+                "ficus",
+                &format!("{group}-mul-non-subgroup-order-minus-one")
+            )["output"]
+        );
+        assert_ne!(
+            at_twice_order["output"],
+            row(
+                rows,
+                "ficus",
+                &format!("{group}-mul-non-subgroup-twice-order-plus-one")
+            )["output"]
         );
     }
 }
