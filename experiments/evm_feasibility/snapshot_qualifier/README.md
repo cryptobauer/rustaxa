@@ -13,7 +13,8 @@ python3 experiments/evm_feasibility/snapshot_manifest.py \
   >.snapshot-work/content-manifest-summary.json
 
 CARGO_TARGET_DIR=.snapshot-work/cargo-target cargo run --locked \
-  --manifest-path experiments/evm_feasibility/snapshot_qualifier/Cargo.toml -- \
+  --manifest-path experiments/evm_feasibility/snapshot_qualifier/Cargo.toml \
+  --bin rustaxa-snapshot-qualifier -- \
   .snapshot-work/snapshot-litenode-copy .snapshot-work/snapshot_qualification_raw.json
 ```
 
@@ -32,3 +33,23 @@ python3 experiments/evm_feasibility/snapshot_mainnet_genesis.py \
 
 The committed compact result lives in `doc/evm_research/snapshot_qualification.json`; the raw report and full content
 manifests remain local evidence.
+
+The bounded head replay-input helper uses the Rust storage repositories to
+point-read one fixed period, verifies ordered transaction and receipt roots
+against its typed FinalChain header, and opens the prior concrete descriptor.
+It does not replay the period or scan retained ranges:
+
+```bash
+CARGO_TARGET_DIR=.snapshot-work/cargo-target cargo run --locked \
+  --manifest-path experiments/evm_feasibility/snapshot_qualifier/Cargo.toml \
+  --bin head_replay_inputs -- \
+  .snapshot-work/snapshot-litenode-copy \
+  .snapshot-work/head_replay_inputs_rerun.json
+
+cmp .snapshot-work/head_replay_inputs_rerun.json \
+  doc/evm_research/s0_head_replay_inputs.json
+```
+
+The generated report separates the complete bounded head bundle from missing
+configuration, certificate-vote, and prior-state closure gates. It refuses to
+overwrite an output or place one inside either snapshot database.
