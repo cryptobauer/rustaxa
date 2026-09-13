@@ -413,6 +413,43 @@ pub type StatelessInvocation = NativeInvocation<StatelessInvocationId>;
 /// Gas quote bound to a stateless attempt, never to a consensus invocation.
 pub type StatelessGasQuote = NativeGasQuote<StatelessInvocationId>;
 
+/// Observed rollback disposition of a reached consensus-native call.
+/// These facts describe execution only and confer no publication authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsensusNativeDisposition {
+    /// Neither the native call nor an enclosing frame has reverted.
+    Normal,
+    /// The native call failed, including insufficient quoted action gas.
+    OwnFrameReverted,
+    /// A successful native call was enclosed by a subsequently reverted frame.
+    OuterFrameReverted,
+}
+
+/// Exact consensus-native execution facts retained across ordinary rollback.
+///
+/// Output and invocation-local logs retain their original bytes even when logs
+/// disappear from the receipt. Raw/semantic effects have their own lifetime;
+/// disposition does not assert that every such effect survived account deletion.
+/// Only validated, completed port attempts produce observations. Infrastructure
+/// failure aborts the whole pending execution instead of publishing partial facts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsensusNativeObservation {
+    /// Full invocation in the consensus-only identity namespace.
+    pub invocation: NativeInvocation,
+    /// Accepted native action quote, independent of CALL/envelope overhead.
+    pub required_gas: FinalChainGas,
+    /// Charged native action gas; zero when the quote was not funded.
+    pub gas_used: FinalChainGas,
+    /// Exact success or typed native/out-of-gas failure.
+    pub status: CodeExecutionStatus,
+    /// Native return bytes, retained even for a failed call.
+    pub output: Vec<u8>,
+    /// Invocation-local logs before own/enclosing frame rollback.
+    pub logs: Vec<ExecutionLog>,
+    /// Monotonic rollback classification; own failure is never overwritten.
+    pub disposition: ConsensusNativeDisposition,
+}
+
 /// Exact compatibility failure returned by a native business method.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeContractFailure {

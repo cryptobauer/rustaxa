@@ -17,8 +17,9 @@ use rustaxa_types::{
 use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
 
 use crate::contracts::{
-    BalanceConversionError, ExecutionBalance, ExecutionLog, NativeJournalAccount,
-    NativeJournalRead, NativeJournalReadError, NativeOrdinaryAccountMutation, NativeRawOperation,
+    BalanceConversionError, ConsensusNativeDisposition, ConsensusNativeObservation,
+    ExecutionBalance, ExecutionLog, NativeJournalAccount, NativeJournalRead,
+    NativeJournalReadError, NativeOrdinaryAccountMutation, NativeRawOperation,
 };
 
 /// Unhashed EVM account address.
@@ -206,6 +207,9 @@ pub struct SettledTransaction {
     pub refund: u64,
     /// Ordinary-then-raw persistence plan.
     pub writes: JournalWritePlan,
+    /// Ordered consensus-native facts, including rolled-back attempts/logs.
+    /// These are observations, not a committed-state projection or replay permit.
+    pub native_invocations: Vec<ConsensusNativeObservation>,
 }
 
 #[derive(Clone, Debug)]
@@ -266,6 +270,7 @@ struct CheckpointState {
     id: JournalCheckpoint,
     undo_len: usize,
     logs_len: usize,
+    native_invocations_len: usize,
     refund: u64,
 }
 
@@ -277,6 +282,7 @@ pub struct ExecutionJournal<R> {
     raw: BTreeMap<(JournalAddress, ConcreteStorageKey), NativeRawOperation>,
     transient: BTreeMap<(JournalAddress, ConcreteStorageKey), [u8; 32]>,
     logs: Vec<ExecutionLog>,
+    native_invocations: Vec<ConsensusNativeObservation>,
     refund: u64,
     undo: Vec<Undo>,
     checkpoints: Vec<CheckpointState>,
@@ -293,6 +299,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             raw: BTreeMap::new(),
             transient: BTreeMap::new(),
             logs: Vec::new(),
+            native_invocations: Vec::new(),
             refund: 0,
             undo: Vec::new(),
             checkpoints: Vec::new(),
@@ -313,6 +320,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             id,
             undo_len: self.undo.len(),
             logs_len: self.logs.len(),
+            native_invocations_len: self.native_invocations.len(),
             refund: self.refund,
         });
         id
@@ -403,11 +411,22 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             }
         }
         self.logs.truncate(state.logs_len);
+        for invocation in &mut self.native_invocations[state.native_invocations_len..] {
+            if invocation.disposition == ConsensusNativeDisposition::Normal {
+                invocation.disposition = ConsensusNativeDisposition::OuterFrameReverted;
+            }
+        }
         self.refund = state.refund;
         if self.checkpoints.is_empty() {
             self.undo.clear();
         }
         Ok(())
+    }
+
+    /// Retains one validated native fact before its caller settles the frame.
+    /// Only the consensus adapter can append; stateless helpers have no access.
+    pub(crate) fn record_native_invocation(&mut self, observation: ConsensusNativeObservation) {
+        self.native_invocations.push(observation);
     }
 
     /// Reads current account existence, nonce and signed balance.
@@ -862,6 +881,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             logs: std::mem::take(&mut self.logs),
             refund: std::mem::take(&mut self.refund),
             writes,
+            native_invocations: std::mem::take(&mut self.native_invocations),
         };
         self.accounts.clear();
         self.ordinary.clear();

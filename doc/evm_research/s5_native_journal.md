@@ -29,7 +29,24 @@ quote and preserves its exact native error payload. Frame integration must use
 those facts rather than burning gas through a generic bytecode-exception path.
 No transaction fee or CALL base cost is charged here.
 
-Six targeted tests use deliberately untrusted port results with the real journal.
+The journal also returns ordered `ConsensusNativeObservation` records at
+transaction settlement. Each retains the complete consensus invocation, accepted
+quote, actual native gas charge, typed status and original output/log bytes.
+Quote underfunding records zero charged gas and an own-frame failure. Native
+business failures retain that disposition through enclosing rollback. Checkpoints
+mark only successful observations created within their scope as outer-frame
+reverted; they never remove facts or mark an earlier call outside that scope.
+This follows the pinned Go concrete observer's ordering in `evm.go`; observations
+do not publish state or imply that every raw effect survives account deletion.
+
+Seven adapter tests now include scoped observation rollback and exactly-once
+transaction extraction. The six-case real kernel composition additionally checks
+the invocation facts, original successful log bytes after parent revert, native
+gas and source-defined rollback dispositions. Those disposition assertions are
+source-based observer checks; the existing dual-pin fixture records transaction
+results and raw state, not an exported invocation transcript.
+
+The adapter tests use deliberately untrusted port results with the real journal.
 They prove quote rejection before invocation, charged-gas rejection before
 effects, sequential raw put/delete/put handling, existing-account raw survival
 through failed-frame rollback, new-account raw removal on rollback, and retained

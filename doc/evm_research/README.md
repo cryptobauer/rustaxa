@@ -19,11 +19,14 @@ Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qua
 [the first persisted S4 FinalChain path](s4_persisted_period.md).
 The latter includes bounded interrupted-publication recovery. S5 adds the
 [four original stateless helpers](s5_original_stateless.md) and
-[native result application](s5_native_journal.md), plus a
+[MODEXP adapter](s5_modexp_oracle.md), plus
+[native frame/result handling](s5_native_journal.md) and a
 [staged setCommission kernel session](s5_native_kernel_implementation.md).
+The [six-case native composition](s5_native_composition.md) connects that session
+through the real frame driver and journal against both Go pins.
 The [ordered concrete overlay](s4_ordered_overlay_evidence.md) now also feeds the
-signed-period FinalChain composition. Dispatcher integration and remaining native
-methods remain separate implementation work.
+signed-period FinalChain composition. Stateless frame dispatch, remaining native
+methods and full native-period persistence remain separate implementation work.
 
 ## Research phases
 

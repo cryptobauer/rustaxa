@@ -241,10 +241,20 @@ fn completed_failure_preserves_exact_raw_order_through_frame_revert() {
         journal.raw_storage(EXISTING, KEY).unwrap(),
         ConcreteRead::Present(vec![0, 2])
     );
+    let settled = journal.settle_transaction().unwrap();
+    assert_eq!(settled.writes.raw_storage[0].operation, put(&[0, 2]));
+    assert_eq!(settled.native_invocations.len(), 1);
+    let fact = &settled.native_invocations[0];
+    assert_eq!(fact.invocation, request(EXISTING, 100));
+    assert_eq!(fact.status, completed.status);
+    assert_eq!(fact.output, completed.output);
+    assert_eq!(fact.logs, vec![log(EXISTING)]);
     assert_eq!(
-        journal.settle_transaction().unwrap().writes.raw_storage[0].operation,
-        put(&[0, 2])
+        fact.disposition,
+        ConsensusNativeDisposition::OwnFrameReverted
     );
+    assert_eq!(fact.required_gas.as_u64(), 10);
+    assert_eq!(fact.gas_used.as_u64(), 10);
 }
 
 #[test]
@@ -331,12 +341,72 @@ fn insufficient_native_gas_retains_all_supplied_child_gas() {
     assert_eq!(completed.gas_left.as_u64(), 9);
     assert_eq!(completed.required_gas.as_u64(), 10);
     assert!(completed.output.is_empty());
+    let settled = journal.settle_transaction().unwrap();
+    assert!(settled.writes.accounts.is_empty());
+    assert_eq!(settled.native_invocations.len(), 1);
+    let fact = &settled.native_invocations[0];
+    assert_eq!(fact.invocation, request(EXISTING, 9));
+    assert_eq!(fact.status, completed.status);
+    assert_eq!(
+        fact.disposition,
+        ConsensusNativeDisposition::OwnFrameReverted
+    );
+    assert_eq!(fact.required_gas.as_u64(), 10);
+    assert_eq!(fact.gas_used.as_u64(), 0);
+    assert!(fact.output.is_empty());
+    assert!(fact.logs.is_empty());
+}
+
+#[test]
+fn rollback_marks_only_successful_observations_inside_its_checkpoint() {
+    let mut journal = ExecutionJournal::new(Prior);
+    let invoke = |journal: &mut ExecutionJournal<Prior>, sequence: u64, success: bool| {
+        let mut request = request(EXISTING, 100);
+        request.id.sequence = sequence;
+        let mut result = outcome();
+        result.logs.push(log(EXISTING));
+        if !success {
+            result.status = NativeStatus::ContractFailure(NativeContractFailure {
+                error: "own failure".into(),
+            });
+        }
+        invoke_native(journal, &mut port(result), &request).unwrap();
+    };
+    let first = journal.checkpoint();
+    invoke(&mut journal, 0, true);
+    journal.commit_checkpoint(first).unwrap();
+    let outer = journal.checkpoint();
+    let child = journal.checkpoint();
+    invoke(&mut journal, 1, true);
+    journal.commit_checkpoint(child).unwrap();
+    let failed = journal.checkpoint();
+    invoke(&mut journal, 2, false);
+    journal.revert_checkpoint(failed).unwrap();
+    journal.revert_checkpoint(outer).unwrap();
+    let settled = journal.settle_transaction().unwrap();
+    assert_eq!(settled.logs, vec![log(EXISTING)]);
+    assert_eq!(
+        settled
+            .native_invocations
+            .iter()
+            .map(|fact| fact.disposition)
+            .collect::<Vec<_>>(),
+        vec![
+            ConsensusNativeDisposition::Normal,
+            ConsensusNativeDisposition::OuterFrameReverted,
+            ConsensusNativeDisposition::OwnFrameReverted
+        ]
+    );
+    for (sequence, fact) in settled.native_invocations.iter().enumerate() {
+        assert_eq!(fact.invocation.id.sequence, sequence as u64);
+        assert_eq!(fact.logs, vec![log(EXISTING)]);
+        assert_eq!(fact.output, vec![0xee]);
+    }
     assert!(
         journal
             .settle_transaction()
             .unwrap()
-            .writes
-            .accounts
+            .native_invocations
             .is_empty()
     );
 }

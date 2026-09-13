@@ -96,7 +96,7 @@ fn operand(input: &[u8], offset: u64, length: u64) -> Result<Vec<u8>, NativePort
 /// Preparation reads at most the header and exponent head and allocates no
 /// declared operand buffers. All invocation facts remain owned and bound even
 /// though the pure arithmetic ignores caller, value and static mode. The caller
-/// still validates period/sequence and owns child-gas and frame settlement.
+/// still validates period/stateless ordinal and owns child-gas and frame settlement.
 #[derive(Debug)]
 pub struct PreparedModexpCall {
     invocation: StatelessInvocation,

@@ -67,7 +67,7 @@ impl OriginalStatelessPrecompile {
 /// Preparation does no cryptographic work and does not read or mutate journal
 /// state. Consumption runs at most once and rejects insufficient gas before
 /// executing the primitive. The surrounding dispatcher still owns period and
-/// sequence validation; this primitive helper cannot publish or advance them.
+/// stateless-ordinal validation; this helper cannot publish or advance them.
 #[derive(Debug)]
 pub struct PreparedStatelessCall {
     invocation: StatelessInvocation,

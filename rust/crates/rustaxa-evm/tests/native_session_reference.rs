@@ -24,10 +24,10 @@ use rustaxa_consensus::{
 use rustaxa_evm::{
     contracts::{
         BlockHashRead, BlockHashReadError, CodeExecutionError, CodeExecutionStatus,
-        ExecutionBlockContext, ExecutionGasPrice, ExecutionLog, ExecutionTransaction,
-        ExecutionTransactionKind, ExecutionValue, NativeCallKind, NativeContractFailure,
-        NativeExecutionPort, NativeGasQuote, NativeInvocation, NativeInvocationId,
-        NativeInvocationResult, NativeJournalRead, NativeJournalReadError,
+        ConsensusNativeDisposition, ExecutionBlockContext, ExecutionGasPrice, ExecutionLog,
+        ExecutionTransaction, ExecutionTransactionKind, ExecutionValue, NativeCallKind,
+        NativeContractFailure, NativeExecutionPort, NativeGasQuote, NativeInvocation,
+        NativeInvocationId, NativeInvocationResult, NativeJournalRead, NativeJournalReadError,
         NativeOrdinaryAccountMutation, NativeOutcome, NativePortError, NativeRawMutation,
         NativeRawOperation, NativeRawValue, NativeStatus, TransactionExecutionResult,
     },
@@ -511,12 +511,18 @@ fn six_native_cases_match_both_go_pins_through_driver_journal_and_final_chain_ke
     .unwrap();
     assert_eq!(public["native_calls"], local["native_calls"]);
 
+    let success = public["native_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["case"] == "call-success")
+        .unwrap();
     for row in public["native_calls"].as_array().unwrap() {
-        run_case(row);
+        run_case(row, &fixture_logs(&success["logs"]));
     }
 }
 
-fn run_case(row: &Value) {
+fn run_case(row: &Value, success_logs: &[ExecutionLog]) {
     let state = FixtureState::from_case(row);
     let owner = address(row["owner"].as_str().unwrap());
     let path = temp_db_path(row["case"].as_str().unwrap());
@@ -633,6 +639,40 @@ fn run_case(row: &Value) {
     assert_native_invocation(row, &port);
 
     let settled = journal.settle_transaction().unwrap();
+    assert_eq!(settled.native_invocations.len(), 1);
+    let fact = &settled.native_invocations[0];
+    assert_eq!(fact.invocation, port.prepared[0].0);
+    assert_eq!(fact.required_gas.as_u64(), 20_000);
+    assert_eq!(fact.gas_used.as_u64(), 20_000);
+    assert!(fact.output.is_empty());
+    match row["case"].as_str().unwrap() {
+        "call-success" | "staticcall-mutation" => {
+            assert_eq!(fact.disposition, ConsensusNativeDisposition::Normal);
+            assert_eq!(fact.status, CodeExecutionStatus::Success);
+            assert_eq!(fact.logs, success_logs);
+        }
+        "call-parent-revert" => {
+            assert_eq!(
+                fact.disposition,
+                ConsensusNativeDisposition::OuterFrameReverted
+            );
+            assert_eq!(fact.status, CodeExecutionStatus::Success);
+            assert_eq!(fact.logs, success_logs);
+            assert!(settled.logs.is_empty());
+        }
+        "call-wrong-owner" | "call-overflow" | "call-before-fix" => {
+            assert_eq!(
+                fact.disposition,
+                ConsensusNativeDisposition::OwnFrameReverted
+            );
+            assert!(matches!(
+                fact.status,
+                CodeExecutionStatus::Failure(CodeExecutionError::Native(_))
+            ));
+            assert!(fact.logs.is_empty());
+        }
+        name => panic!("unrecognized native observation fixture {name}"),
+    }
     assert_eq!(settled.refund, 0, "{}", row["case"]);
     assert!(settled.writes.ordinary_storage.is_empty());
     assert_ordered_raw_writes(row, &settled.writes);

@@ -14,8 +14,9 @@ use rustaxa_types::{
 
 use crate::{
     contracts::{
-        CodeExecutionError, CodeExecutionStatus, NativeExecutionPort, NativeInvocation,
-        NativeInvocationResult, NativePortError, NativeResultValidationError, NativeStatus,
+        CodeExecutionError, CodeExecutionStatus, ConsensusNativeDisposition,
+        ConsensusNativeObservation, NativeExecutionPort, NativeInvocation, NativeInvocationResult,
+        NativePortError, NativeResultValidationError, NativeStatus,
     },
     journal::{ExecutionJournal, JournalError},
 };
@@ -93,6 +94,15 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
         .validate(invocation, quote)
         .map_err(NativeAdapterError::InvalidResult)?;
     let NativeInvocationResult::Completed(outcome) = result else {
+        journal.record_native_invocation(ConsensusNativeObservation {
+            invocation: invocation.clone(),
+            required_gas: quote.required_gas,
+            gas_used: 0_u64.into(),
+            status: CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas),
+            output: Vec::new(),
+            logs: Vec::new(),
+            disposition: ConsensusNativeDisposition::OwnFrameReverted,
+        });
         return Ok(NativeFrameOutcome {
             status: CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas),
             required_gas: quote.required_gas,
@@ -119,17 +129,31 @@ pub fn invoke_native<R: ConcreteExecutionRead, N: NativeExecutionPort + ?Sized>(
             .set_raw_storage(mutation.address, mutation.key, mutation.operation)
             .map_err(NativeAdapterError::Journal)?;
     }
+    let status = match outcome.status {
+        NativeStatus::Success => CodeExecutionStatus::Success,
+        NativeStatus::ContractFailure(error) => {
+            CodeExecutionStatus::Failure(CodeExecutionError::Native(error))
+        }
+    };
+    journal.record_native_invocation(ConsensusNativeObservation {
+        invocation: invocation.clone(),
+        required_gas: quote.required_gas,
+        gas_used: outcome.gas_used,
+        disposition: if status == CodeExecutionStatus::Success {
+            ConsensusNativeDisposition::Normal
+        } else {
+            ConsensusNativeDisposition::OwnFrameReverted
+        },
+        status: status.clone(),
+        output: outcome.output.clone(),
+        logs: outcome.logs.clone(),
+    });
     for log in outcome.logs {
         journal.push_log(log);
     }
     Ok(NativeFrameOutcome {
         required_gas: quote.required_gas,
-        status: match outcome.status {
-            NativeStatus::Success => CodeExecutionStatus::Success,
-            NativeStatus::ContractFailure(error) => {
-                CodeExecutionStatus::Failure(CodeExecutionError::Native(error))
-            }
-        },
+        status,
         // Result validation proves supplied >= quote and charged == quote.
         gas_left: (invocation.supplied_gas.as_u64() - quote.required_gas.as_u64()).into(),
         output: outcome.output,
