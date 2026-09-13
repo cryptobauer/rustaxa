@@ -64,7 +64,7 @@ fn falcon_matches_go_quotes_abi_crypto_and_failures() {
     assert_eq!(corpus["verifying_key_size"], 897);
     assert_eq!(corpus["method_selector"], "de8f50a1");
     let rows = corpus["falcon"].as_array().expect("Falcon row array");
-    assert_eq!(rows.len(), 40);
+    assert_eq!(rows.len(), 41);
 
     for row in rows {
         let required = row["required_gas"].as_u64().expect("required gas");
@@ -164,6 +164,10 @@ fn falcon_corpus_pins_noncanonical_abi_and_empty_message() {
     }
     assert_eq!(row("beyond-go-right-padding")["output"], invalid_word);
     assert_ne!(row("wrapped-message-length-panic")["panic"], "");
+    assert_eq!(
+        row("max-int-message-allocation-panic")["panic"],
+        "runtime error: makeslice: len out of range"
+    );
     for name in [
         "reordered-fields",
         "unaligned-fields",

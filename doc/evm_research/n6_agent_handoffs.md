@@ -22,3 +22,18 @@ Validation for these lead slices: all 23 native-driver tests and eight simulatio
 tests passed in `make rewrite-validate-fast`; affected-target strict clippy and
 formatting/whitespace checks passed. All three relevant exporters reproduced
 both pinned artifacts under Python `-O`. No expensive gate was requested or run.
+
+
+## Resumed continuation at `b717bde0b`
+
+The owner clarified that account usage remained available. A single retry on
+existing related threads succeeded; earlier tool error strings are historical
+routing observations, not verified account quota or billing facts.
+
+| Handoff | Requested model | Agent ran? | Result / routing status |
+| --- | --- | --- | --- |
+| Independent integrated review | Existing assigned `gpt-6-astra`, no new model request | Yes; startup confirmed | Approved scoped zero-yield, RETURNDATACOPY and persisted API changes; found Falcon MaxInt allocation blocker. Resumed follow-up review; no routing failure. |
+| Staged native queries and simulation session | Existing assigned `gpt-5.6-sol`, no new model request | Yes; startup confirmed | Refined current/staged versus frozen delayed-view contract; implementation underway. No routing failure. |
+| Concrete checkpoint reader and authenticated inventory | Existing assigned `gpt-5.6-sol`, no new model request | Yes; startup confirmed | Refined explicit identity, bounded traversal and native-catalog completeness contract; implementation underway. No routing failure. |
+| Reserved Luna bounded helper | Intended `gpt-5.6-luna`; no spawn request | No | Seven threads remain listed; no close-thread tool or free slot established. No substitute launched. |
+| Falcon allocation correction | Existing lead session; no model request | Lead worked locally | Added actual dual-pin MaxInt panic witness and fallible padding allocation; 41-row primitive and 23 native-driver tests plus fast gate passed; independent reviewer approved. |

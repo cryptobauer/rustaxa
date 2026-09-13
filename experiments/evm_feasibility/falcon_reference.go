@@ -182,6 +182,7 @@ func main() {
 	cases = append(cases,
 		inputCase{"signed-message-length-tail", setLowWord(rightPadded, 4+int(paddedMessageOffset), uint64(1)<<63), true},
 		inputCase{"wrapped-message-length-panic", setLowWord(rightPadded, 4+int(paddedMessageOffset), ^uint64(0)), true},
+		inputCase{"max-int-message-allocation-panic", setLowWord(rightPadded, 4+int(paddedMessageOffset), uint64(1)<<63-1), true},
 	)
 
 	// All offsets are checked before any dynamic slice can panic.

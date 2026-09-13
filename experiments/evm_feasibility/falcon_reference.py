@@ -105,6 +105,7 @@ def validate_artifact(label, data):
         "beyond-go-right-padding",
         "signed-message-length-tail",
         "wrapped-message-length-panic",
+        "max-int-message-allocation-panic",
         "invalid-signature",
         "invalid-message",
         "reordered-fields",

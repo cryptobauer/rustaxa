@@ -56,10 +56,10 @@ both pinned Go revisions:
 - public `6c7e5338b22d5e596cc2365a88d1f94840e1ee1b`;
 - local `bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418`.
 
-Their 40-row artifacts are byte-identical with SHA-256
-`96edbbcadfa67f1cddc09fc04483d107fc8cc15686f32783152c8f41139e92dd`.
+Their 41-row artifacts are byte-identical with SHA-256
+`4600f39d337401bad132b6fd37074de0f53ec8555f8ddaee25ea9d5e2969bc88`.
 The exporter SHA-256 is
-`bd18c5ef68d929ae355f17b5b155ef0b0e03c8e31f50986c0b0ab6a72dd6e407`.
+`5c2c326632ff1324f0d34a69dc861acc16942c28c4254e591bda129642e8aaf4`.
 The corpus covers empty and short input, the wrong selector, truncated headers,
 each zero/out-of-range offset, each zero/truncated length, wrong fixed field
 lengths, historical valid short and 257-byte messages, invalid signature/message,
@@ -89,9 +89,14 @@ cargo clippy --locked --manifest-path rust/Cargo.toml -p rustaxa-evm \
 ```
 
 The exact dependency, crate export and Cacti frame route are now integrated.
-Full top-level frame tests cover all 40 rows below/at/above the quote, value
+Full top-level frame tests cover all 41 rows below/at/above the quote, value
 credit/rollback and zero consensus-sequence consumption. Reference panics become
 explicit infrastructure errors requiring the containing session to be discarded.
-The independent reviewer identified the final decoder findings before the agent
-quota was exhausted; the lead implemented the corrections and added Go witnesses.
-Independent closeout review of that final correction remains required.
+The resumed independent reviewer approved the field-order corrections and found
+one additional allocation edge: a declared message length of `i64::MAX` passes
+Go's wrapped bounds check, then panics in `make`. The 41st dual-pin witness
+records `runtime error: makeslice: len out of range`. Rust reserves padding
+fallibly before copying or resizing, returning an infrastructure error on
+reservation failure. Independent closeout review approved this correction and
+the scoped shared dispatch integration. The 41-row primitive suite, all 23
+native-driver tests and `make rewrite-validate-fast` passed.

@@ -12,7 +12,7 @@ the broader implementation plan 08 remains open.
   cases and repeated seven-probe estimation compare exact execution results.
 - Ficus MCOPY, Cacti P-256, BLS registry remapping and historical Falcon kernels
   are implemented. BLS has 210 dual-pin cases, including independently reviewed
-  GLV scalar-boundary corrections. Falcon has 40 cases, including signed ABI
+  GLV scalar-boundary corrections. Falcon has 41 cases, including signed ABI
   length, declared-versus-clamped length and reference-panic distinctions.
   Both have full top-level frame gas/value/error tests. This does not close all
   stateful native selectors or historical frame/profile behavior.
@@ -43,11 +43,17 @@ campaign, production routing or protocol change was performed.
 Independent review approved the scoped estimator, ordinary simulation, P-256,
 MCOPY, corrected BLS, read-only historical preparation and ordered Aspen2 slice.
 The reviewer found the Falcon decoder issues; the final seven-case correction
-was implemented by the lead after worker quota exhaustion. Independent closeout
-review of that correction, zero-yield follow-up and final shared integration
-remains required. Passing fixtures are not a substitute for that review.
+was implemented by the lead after tool-reported worker routing failures. The
+reviewer subsequently resumed successfully and approved the zero-yield follow-up,
+RETURNDATACOPY ordering and persisted historical API isolation. Falcon field
+ordering passed review; one allocation edge required an additional Go witness
+and fallible Rust allocation. The reviewer approved that correction and the scoped shared integration;
+targeted Falcon/native-driver tests and the fast gate passed.
 
-The configured worker agents all reported a usage limit during the next slices.
+The configured worker tools previously reported usage-limit errors; this did
+not establish actual account quota exhaustion. After the owner clarified that
+usage remained available, the existing reviewer, native and state threads
+resumed successfully. No current routing failure was observed on those threads.
 Their partial work was inspected rather than discarded. No unreviewed worker
 output is treated as approval. Luna was approved as Spark's bounded fallback;
 an additional helper launch also hit the agent-thread limit. Model assignments
@@ -92,7 +98,7 @@ remain recorded in milestone 10; they were not silently reassigned.
 7. Add trace facts to the existing frame driver and serializers over those facts,
    then persisted historical API/reopen tests and integrated real-window recovery.
    Request approval for any expensive acceptance campaign using exact commands,
-   data and bounds. No acceptance item can be waived because quota is exhausted.
+   data and bounds. No acceptance item can be waived because an agent cannot start.
 
 The original `/tmp/snapshot-litenode` remains preserved. The likely producer
 commit remains owner-reported, and the exact executable and capture procedure

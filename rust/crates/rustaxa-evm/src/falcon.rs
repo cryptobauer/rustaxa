@@ -232,8 +232,16 @@ fn go_data(input: &[u8], start: u64, size: u64) -> Result<Cow<'_, [u8]>, AbiFail
     if signed_size < 0 || bytes.len() >= usize::try_from(signed_size).unwrap() {
         return Ok(Cow::Borrowed(bytes));
     }
-    let mut padded = bytes.to_vec();
-    padded.resize(usize::try_from(signed_size).unwrap(), 0);
+    let target_len = usize::try_from(signed_size).unwrap();
+    let mut padded = Vec::new();
+    // A wrapped ABI bound can request Go's make([]byte, MaxInt). Reserve
+    // fallibly before copying or padding so host allocation failure cannot
+    // abort the process instead of surfacing through the infrastructure port.
+    padded
+        .try_reserve_exact(target_len)
+        .map_err(|_| AbiFailure::ReferencePanic)?;
+    padded.extend_from_slice(bytes);
+    padded.resize(target_len, 0);
     Ok(Cow::Owned(padded))
 }
 
