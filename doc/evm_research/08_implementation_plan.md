@@ -118,6 +118,13 @@ also cover discard/retry before concrete commit and exact publication after lost
 acknowledgment, using read-only lifecycle inspection and existing application recovery.
 They do not close the S7 fault/import/pruning campaign. Production routing remains unauthorized.
 
+The [mixed-period milestone](09_mixed_period_milestone.md) now completes M1–M6 for its
+declared four-period corpus: contract/native custody, nonzero economics, exact persisted
+history, reopen and deterministic recovery/retry through existing Rust owners. Its
+[evidence matrix](mixed_period_evidence.md) records validation, the RPC rerun anomaly
+and remaining E1–E12 limits. This advances S4, selected S5 and bounded S6/S7; it does not
+complete this broader S0–S8 plan or authorize production routing.
+
 | Slice | Dependencies / agent | Deliverable and exit criterion |
 | --- | --- | --- |
 | S0: qualify snapshot | State worker; Spark may build inventory/export helpers | Independent working copy, identities, pair/root checks, retained-range manifest, useful exported fixtures and explicit gaps. No original mutation |

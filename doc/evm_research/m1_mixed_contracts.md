@@ -1,8 +1,9 @@
 # M1 mixed-period implementation handoff
 
-Status: in progress from `606d89c12`; the milestone is not complete. This file records
-actual ownership, initial workload and contracts under review. It accompanies
-[the M1–M6 milestone](09_mixed_period_milestone.md).
+Status: M1 contracts accepted and M1–M6 completed for the declared bounded corpus.
+This handoff preserves the initial checkpoints from `606d89c12`; later sections record
+their resolution. Current acceptance, validation and remaining limits are in
+[the final evidence](mixed_period_evidence.md) for [the milestone](09_mixed_period_milestone.md).
 
 ## Work ownership
 
@@ -15,11 +16,21 @@ actual ownership, initial workload and contracts under review. It accompanies
 | Helper / Terra | `/tmp/rustaxa-mixed-ordering`, `task/evm-mixed-ordering` | Projection decoder association/sequence validation and focused regressions |
 | Reviewer / Astra | read-only across worktrees | Independent reference, contract and integration review |
 
-All task worktrees start at `606d89c12`. Earlier isolated drafts have already been
+Initial task worktrees started at `606d89c12`. Earlier isolated drafts have already been
 recovered into the feature branch; they are preserved and must not be resumed or
 reapplied. Sol is available in this continuation. Spark completed a bounded source map,
 then hit its reported quota; the mechanical ordering task was explicitly reassigned to
 Terra. The lead alone owns `/build` and integration commits.
+
+Follow-on assignments retained one writer per file: Sol state owned the genesis/native
+support adapters and `mixed_period_reference.rs` in `task/evm-mixed-adapter` and
+`task/evm-mixed-period`; Sol execution owned `native_session/{account,raw,rewards,custody}.rs`
+and the explicitly handed-off iterable validator fix. Terra owned bootstrap support and
+Ficus configuration/boundary wiring in `task/evm-mixed-bootstrap`, `task/evm-ficus` and
+`task/evm-native-session-height`. The lead owned `support/mixed_recovery.rs`, shared
+projection/application integration and final configuration consolidation. Each dependent
+chunk was cherry-picked from its reviewed prerequisite; those commits are preserved in
+the feature-branch history. Independent review covered all integrated chunks.
 
 ## Initial reference witness
 
@@ -194,3 +205,12 @@ account again in the same observer period exposes a pinned-Go pending-empty-acco
 limitation after intermediate preparation; this corpus does not claim that path is covered.
 The reference remains an in-memory TransitionState/TrieSink row oracle, not a Go RocksDB
 reopen result. Rust persisted integration and mixed-state recovery remain acceptance gates.
+
+
+## Milestone closeout
+
+The composed four-period Rust path and M6 recovery/rejection tests are complete.
+See the [acceptance evidence](mixed_period_evidence.md) for the final matrix, exact
+validation, observed limits and retained E1–E12 work. Ficus ultimately comes directly
+from the existing native PBFT bootstrap configuration; duplicate bridge plumbing was
+removed, leaving the pre-milestone bridge surface unchanged.

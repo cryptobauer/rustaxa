@@ -15,10 +15,12 @@ records the task-owner decision to preserve the general database layout, the sup
 agent/model assignments. Snapshot qualification now proves a paired head and bounded prior reads; the
 [first persisted S4 path](doc/evm_research/s4_persisted_period.md) checks synthetic execution through existing Rust
 FinalChain ownership, atomic concrete persistence and continuation after reopen. Full historical replay coverage
-remains a release-validation gap. The next selected
-[mixed-period milestone](doc/evm_research/09_mixed_period_milestone.md) groups contract/native
-execution, nonzero economics, exact persistence and bounded reopen/recovery under the
-existing Rust owners; its M1–M6 acceptance criteria remain planned.
+remains a release-validation gap. The
+[mixed-period milestone](doc/evm_research/09_mixed_period_milestone.md) now completes
+M1–M6 for four signed synthetic periods of contract/native execution, nonzero economics,
+exact persistence and bounded reopen/recovery under the existing Rust owners.
+Its [acceptance evidence](doc/evm_research/mixed_period_evidence.md) records validation,
+a successful RPC rerun after one unresolved stall, and remaining broader implementation gates.
 
 ## Objectives
 

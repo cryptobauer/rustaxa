@@ -13,9 +13,11 @@ flow, current Go ownership, database roles, and what REVM concretely replaces.
 The [implementation plan](08_implementation_plan.md) fixes the existing-layout compatibility constraint, records
 the supplied mainnet snapshot, and assigns implementation slices to agents/models, including a focused Spark helper.
 
-The next planned milestone is [persisted mixed-period parity](09_mixed_period_milestone.md):
-contract and native execution, nonzero economics, exact persistence and bounded recovery
-in one declared synthetic corpus through the existing Rust owners.
+The [persisted mixed-period milestone](09_mixed_period_milestone.md) is complete for
+its declared synthetic corpus: four signed periods of contract/native execution,
+nonzero economics, exact persistence and bounded recovery through existing Rust owners.
+The [acceptance evidence](mixed_period_evidence.md) records M1–M6, validation and remaining
+limits; the broader S0–S8 implementation plan remains open.
 
 Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qualification.md),
 [S1 contracts](s1_contracts.md), [S2 compatible reads](s2_compatible_reads.md),
@@ -32,8 +34,9 @@ The [six-case native composition](s5_native_composition.md) connects that sessio
 through the real frame driver and journal against both Go pins.
 The [ordered concrete overlay](s4_ordered_overlay_evidence.md) now also feeds the
 signed-period FinalChain composition. The [stateless frame path](s5_stateless_frames.md)
-uses these reviewed helpers with separate quote identities. Remaining precompiles,
-native methods and full native-period persistence remain implementation work.
+uses these reviewed helpers with separate quote identities. The mixed milestone adds
+persisted selected-native custody and rewards; remaining precompiles, native methods,
+historical profiles and broader period/API coverage remain implementation work.
 
 ## Research phases
 

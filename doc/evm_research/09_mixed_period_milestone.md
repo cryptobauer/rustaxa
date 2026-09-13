@@ -1,7 +1,10 @@
 # Milestone: persisted mixed-period parity
 
-Status: implementation in progress; not accepted. The task owner authorized completion on
-2026-09-13. Current contracts and evidence: [M1 handoff](m1_mixed_contracts.md). Planning baseline: `1c3f650b5` on `feat/rust/evm-state-db`.
+Status: M1–M6 complete for the declared bounded corpus, independently reviewed on
+2026-09-13. Acceptance and remaining limits: [mixed-period evidence](mixed_period_evidence.md),
+including a recorded RPC stall followed by a successful bounded rerun.
+Contracts and oracle qualification: [M1 handoff](m1_mixed_contracts.md).
+Planning baseline: `1c3f650b5` on `feat/rust/evm-state-db`.
 This milestone groups reviewable implementation slices under the existing
 [implementation plan](08_implementation_plan.md); it does not replace its S0–S8 gates.
 
