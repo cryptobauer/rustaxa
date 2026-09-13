@@ -2,7 +2,7 @@
 //!
 //! This finite fixture creates both databases exclusively, hydrates the Rust
 //! genesis snapshot from the independently generated concrete rows, executes
-//! the first two periods through the real EVM driver and bound native rewards
+//! four periods through the real EVM driver and bound native rewards
 //! session, and commits via ordered concrete lifecycle phases. It then closes
 //! and reopens both databases and compares receipts, roots, catalog values and CF1--CF5 to
 //! the pinned Go observer. This is test composition, not production routing or
@@ -1522,6 +1522,143 @@ fn verify_final_reader(reader: &ConcreteStateReader, final_state: &Value) -> Res
     Ok(())
 }
 
+fn verify_historical_account(reader: &ConcreteStateReader, expected: &Value) -> Result<()> {
+    let actual = reader.account(fixed(&expected["address"]))?;
+    if expected["present"] == Value::Bool(true) {
+        let ConcreteRead::Present(actual) = actual else {
+            bail!("Go-present historical account is missing")
+        };
+        ensure!(
+            actual.physical_rlp == bytes(&expected["raw_account"]),
+            "historical account RLP"
+        );
+        if number(&expected["code_size"]) != 0 {
+            ensure!(
+                reader.code(fixed(&expected["code_hash"]))?
+                    == ConcreteRead::Present(bytes(&expected["code"])),
+                "historical code bytes"
+            );
+        }
+    } else {
+        ensure!(
+            matches!(actual, ConcreteRead::Absent | ConcreteRead::Tombstone),
+            "Go-absent historical account is present"
+        );
+    }
+    Ok(())
+}
+
+fn verify_historical_slot(reader: &ConcreteStateReader, expected: &Value) -> Result<()> {
+    let actual = reader.storage(
+        fixed(&expected["address"]),
+        ConcreteStorageKey(fixed(&expected["key"])),
+    )?;
+    ensure!(
+        actual == ConcreteRead::Present(bytes(&expected["raw_value"])),
+        "historical physical slot"
+    );
+    Ok(())
+}
+
+fn historical_reader(
+    path: &Path,
+    committed: ConcreteStateIdentity,
+    fixture: &Value,
+    period: usize,
+) -> Result<ConcreteStateReader> {
+    ConcreteStateReader::open_historical_read_only(
+        path,
+        committed,
+        ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(period as u64),
+            state_root: fixed(&fixture["periods"][period - 1]["final"]["root"]),
+        },
+    )
+    .map_err(Into::into)
+}
+
+fn verify_historical_reads(
+    path: &Path,
+    committed: ConcreteStateIdentity,
+    fixture: &Value,
+) -> Result<()> {
+    let head = committed.period.as_u64();
+    let expected = &fixture["historical_reads"];
+    let period_one = historical_reader(path, committed, fixture, 1)?;
+    verify_historical_account(&period_one, &expected["period_1_lifecycle_account"])?;
+    verify_historical_slot(&period_one, &expected["period_1_lifecycle_slot_0"])?;
+    verify_historical_slot(
+        &period_one,
+        &expected["restored_slot_contract"]["period_1_slot_0"],
+    )?;
+    verify_historical_slot(
+        &period_one,
+        &expected["restored_slot_contract"]["period_1_slot_1"],
+    )?;
+    verify_historical_account(&period_one, &expected["reverted_selfdestruct"]["child"])?;
+    verify_historical_account(
+        &period_one,
+        &expected["reverted_selfdestruct"]["beneficiary"],
+    )?;
+    drop(period_one);
+
+    if head >= 2 {
+        let period_two = historical_reader(path, committed, fixture, 2)?;
+        verify_historical_account(&period_two, &expected["period_2_lifecycle_account"])?;
+        // Raw physical history deliberately survives after the account is
+        // deleted and its logical trie path is absent.
+        verify_historical_slot(
+            &period_two,
+            &expected["period_2_orphaned_lifecycle_storage_row"],
+        )?;
+        verify_historical_account(
+            &period_two,
+            &expected["native_custody"]["dispatcher_period_2"],
+        )?;
+        drop(period_two);
+
+        let retained = &expected["retained_period_1_lifecycle_cf5"];
+        ensure!(
+            bytes(&retained["physical_key"])
+                == [
+                    bytes(&retained["logical_key"]),
+                    number(&retained["period"]).to_be_bytes().to_vec(),
+                ]
+                .concat(),
+            "retained CF5 physical-key layout"
+        );
+        let options = rocksdb::Options::default();
+        let columns = rocksdb::DB::list_cf(&options, path)?;
+        let descriptors = columns
+            .iter()
+            .map(|name| rocksdb::ColumnFamilyDescriptor::new(name, rocksdb::Options::default()));
+        let db = rocksdb::DB::open_cf_descriptors_read_only(&options, path, descriptors, false)?;
+        let cf5 = db.cf_handle("5").context("concrete CF5")?;
+        ensure!(
+            db.get_cf(cf5, bytes(&retained["physical_key"]))? == Some(bytes(&retained["value"])),
+            "retained period-one CF5 row"
+        );
+        drop(db);
+    }
+
+    if head >= 4 {
+        let period_four = historical_reader(path, committed, fixture, 4)?;
+        verify_historical_slot(
+            &period_four,
+            &expected["restored_slot_contract"]["period_4_slot_0"],
+        )?;
+        verify_historical_slot(
+            &period_four,
+            &expected["restored_slot_contract"]["period_4_slot_1"],
+        )?;
+        verify_historical_account(
+            &period_four,
+            &expected["native_custody"]["dispatcher_period_4"],
+        )?;
+    }
+    Ok(())
+}
+
 fn run_period(
     fixture: &Value,
     period: &Value,
@@ -1588,6 +1725,10 @@ fn run_period(
         &adapter,
     )?;
     let period_number = FinalChainBlockNumber::new(number(&period["number"]));
+    ensure!(
+        period["planner_facts"]["is_pillar_boundary"] == Value::Bool(false),
+        "mixed period unexpectedly configured as a pillar boundary"
+    );
     ensure!(report.period == period_number);
     ensure!(author == fixed(&period["planner_facts"]["dag_blocks"][0]["author"]));
     let header = application
@@ -1644,11 +1785,23 @@ fn run_period(
     drop(genesis_reader);
     let concrete = ConcreteStateLifecycle::open(concrete_path, chain_identity, observed.committed)?;
     ensure!(chain.last_block_number_typed()? == period_number);
+    let validator = fixed(&period["planner_facts"]["certificate_votes"][0]["validator"]);
+    ensure!(
+        chain.dpos_eligible_vote_count(period_number, validator)?
+            == number(&period["planner_facts"]["validator_eligible_vote_count"]),
+        "delayed validator vote count"
+    );
+    ensure!(
+        chain.dpos_eligible_total_vote_count(period_number)?
+            == number(&period["planner_facts"]["total_eligible_vote_count"]),
+        "delayed total vote count"
+    );
     verify_receipts(&application, period)?;
     drop(concrete);
     let reader = ConcreteStateReader::open_read_only(concrete_path, observed.committed)?;
     verify_final_reader(&reader, &period["final"])?;
     drop(reader);
+    verify_historical_reads(concrete_path, observed.committed, fixture)?;
     drop(chain);
     drop(application);
     verify_physical_rows(concrete_path, &period["final"]["rows"])?;
@@ -1656,7 +1809,7 @@ fn run_period(
 }
 
 #[test]
-fn first_two_mixed_periods_commit_and_reopen_exactly() -> Result<()> {
+fn four_mixed_periods_commit_and_reopen_exactly() -> Result<()> {
     let fixture = load_fixture()?;
     ensure!(
         fixture["execution_mode"] == "observer",
@@ -1690,7 +1843,7 @@ fn first_two_mixed_periods_commit_and_reopen_exactly() -> Result<()> {
     let application_path = root.join("application");
     let concrete_path = root.join("state_db");
     let mut chain_identity = None;
-    for (index, period) in periods.iter().take(2).enumerate() {
+    for (index, period) in periods.iter().enumerate() {
         chain_identity = Some(run_period(
             &fixture,
             period,
