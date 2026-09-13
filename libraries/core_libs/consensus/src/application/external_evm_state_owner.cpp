@@ -654,7 +654,7 @@ void ExternalEvmStateOwner::prune(EthBlockNumber block_number) {
   if (!first_header_to_keep) return;
   {
     const std::scoped_lock lock(mutex_);
-    if (state_api_.get_pending_concrete_execution()) throw DbException("FINAL_CHAIN_CONCRETE_STATE_STAGED");
+    ensureReadableLocked();
     const auto evm_head = state_api_.get_last_committed_state_descriptor().blk_num;
     if (evm_head >= first_header_to_keep->number) {
       std::vector<h256> roots_to_keep;
