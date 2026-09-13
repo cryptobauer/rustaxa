@@ -59,46 +59,44 @@ output is treated as approval. Luna was approved as Spark's bounded fallback;
 an additional helper launch also hit the agent-thread limit. Model assignments
 remain recorded in milestone 10; they were not silently reassigned.
 
-## Resume at the coupled dependencies
+## Current coupled work
 
-1. Finish independent review of the final integrated corrections. The
-   [RETURNDATACOPY override](s3_returndatacopy.md) is now implemented with 69
-   dual-pin full-frame cases, including overflow and reference-panic handling.
-   Bounded ordinary persisted historical query/simulation/reopen and missing-
-   dependency tests are also implemented; full N3 remains open.
-2. Extend the Rust native session with staged query ownership and delayed reads,
-   then compose disposable native simulation and repeated estimation. A hybrid
-   query against unchanged FinalChain state would misread earlier native writes.
-   Consume a fresh private native session, journal and period sequence together;
-   return no publication authority. The last worker created
-   `/tmp/rustaxa-evm-native-simulation` at `ddc013cad` but made no implementation.
-3. Complete the remaining stateful adapters and reward boundaries through the
-   existing Rust kernels. Multi-validator Go map iteration is nondeterministic:
-   compare actual permutations and prove final-state commutativity, while keeping
-   intermediate retained-node differences explicit. The recovered zero-yield
-   patch is separate from that still-unimplemented multi-validator work.
-4. Replace full account-snapshot authority for an explicit offline checkpoint
-   with authenticated concrete point reads plus a touched overlay. Sparse maps
-   must not inherit the existing API's absent-account semantics. On restart,
-   persist a checkpoint identity plus qualified deltas, not a sparse map labelled
-   as a complete snapshot. Normal production constructors remain untouched.
-5. Qualify native history and catalog authority before metadata adoption. The
-   current head needs DPoS state for H-5 through H, interval reward rows, cursor
-   inputs and corruption/redelegation facts. Traversing live indexed rows cannot
-   prove the current catalog's all-ever-tracked/deleted-slot lineage. Define an
-   explicit authenticated checkpoint baseline with unknown-slot rejection and
-   retention inventory, or obtain the missing historical evidence. Never set
-   existing completeness flags from a live-only traversal.
-6. Only after those inputs close, implement offline paired adoption/recovery:
+The historical native session, frozen delayed reads, consuming simulation facade
+and six-case persisted Go DryRunner comparison are integrated and reviewed
+(`46eaf2e9e`, `0a01539d9`, `8aff5384e`). The multi-validator reward-map slice is
+also integrated (`c535f4327`), with both observed Go orders and explicit bounded
+physical-inventory qualifications. V1 custody and its actual Go oracle are
+integrated as `71f6d9ab2` and `a6d800912`; direct Rust corpus assertions are the
+next additional check, alongside retained existing lifecycle tests.
+
+1. Complete remaining stateful adapters and reward boundaries through existing
+   Rust kernels. Jailed cleanup remains unintegrated: review found Go's cached
+   scheduling state and a Cacti jail-duration decrease can change whether a raw
+   write occurs. No unapproved reward implementation is treated as parity.
+2. Add trace facts to the existing iterative frame driver and serializers over
+   those facts. The execution owner is preparing a bounded structured-observer
+   contract against the existing actual Go TraceRunner corpus. No second VM or
+   production route is authorized.
+3. Replace full account-snapshot authority for an explicit offline checkpoint
+   with authenticated concrete point reads plus a touched overlay. The reviewed
+   checkpoint readers and live inventories exist; the state owner is preparing
+   the next account working-set boundary. Sparse maps must not acquire complete-
+   snapshot authority. Normal production constructors remain untouched.
+4. Finish native semantic reconstruction and catalog qualification before
+   adoption. All H-5..H headers/roots/native accounts and sampled paths are
+   readable; no sampled dependency is missing. Full head DPoS and slashing live
+   inventories are authenticated. Lite pruning is not established as the cause
+   of the gap. Missing logical preimages, inverse decoding, exhaustive historical
+   leaf-version checks and deleted-history/catalog policy remain distinct work.
+5. Only after those inputs close, implement offline paired adoption/recovery:
    exclusive ownership of both disposable DBs, durable application intent first,
    concrete provenance/catalog batch second, application checkpoint batch last,
-   exact idempotent resume and conflicting-marker rejection. This is a design
-   direction reviewed for constraints, not an approved adoption implementation.
-   The state worktree `/tmp/rustaxa-evm-bootstrap-recovery` remains clean.
-7. Add trace facts to the existing frame driver and serializers over those facts,
-   then persisted historical API/reopen tests and integrated real-window recovery.
-   Request approval for any expensive acceptance campaign using exact commands,
-   data and bounds. No acceptance item can be waived because an agent cannot start.
+   exact idempotent resume and conflicting-marker rejection. This remains a
+   design direction, not an implemented or accepted adoption path.
+6. Finish complete historical RPC policy, native estimation/traces and integrated
+   real-window recovery. Request approval for expensive acceptance campaigns
+   with exact commands/data/bounds. No acceptance item can be waived because an
+   agent cannot start or because a bounded synthetic fixture passes.
 
 The original `/tmp/snapshot-litenode` remains preserved. The likely producer
 commit remains owner-reported, and the exact executable and capture procedure

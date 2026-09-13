@@ -1,8 +1,9 @@
 # N3 API implementation evidence
 
-Status: gas search and bounded ordinary simulation, including persisted historical
-reads and reopen, are implemented. Full N3 remains open, including native
-simulation, complete historical API policy and Rust trace collection/serialization.
+Status: gas search, bounded ordinary simulation and staged native simulation
+are implemented, including persisted historical reads and reopen. Full N3
+remains open: complete native coverage, historical API policy and Rust trace
+collection/serialization.
 
 ## Existing ownership and contracts
 

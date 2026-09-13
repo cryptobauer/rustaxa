@@ -71,3 +71,28 @@ four native-simulation/support tests, four storage bridge tests and four focused
 FinalChain/account-query/result bridge tests passed. The master CMake switch
 remained `RUSTAXA_ENABLE:BOOL=ON`. Qualified-copy inventory reproduction passed
 with the exact recorded digest; no original snapshot writes occurred.
+
+
+## Active integration after owner status correction
+
+The lead previously ended turns while describing the milestone as ongoing.
+The owner correctly identified the lack of continued lead integration. The lead
+resumed actual work from clean `38dac469b`; no background-progress claim is made
+from the assignment alone.
+
+- Existing Sol V1 owner `1731b73f8` integrated as `71f6d9ab2`; independent source
+  review approved after preserving typed recipient account-read failures.
+- Existing Sol actual-Go oracle `49aac0745` integrated as `a6d800912`; both pins
+  reproduced under Python `-O`.
+- Lead validation passed: 37 native-session tests, all five existing V1 lifecycle
+  tests, `make rewrite-validate-fast`, Rust-enabled consensus bridge build with
+  12 jobs and four focused FinalChain/account-query/result bridge tests.
+- Related Sol threads resumed for direct V1 corpus assertions, bounded structured
+  trace design and concrete-backed account working-set design. Tool inventory
+  reports those threads running; implementation results remain pending.
+- Jailed cleanup candidates `70b34743e` and `7434d39b7` remain unintegrated.
+  Independent review found scheduler-lifetime and decreasing-Cacti-duration
+  mismatches; the rewards owner is correcting the scope and witnesses.
+
+No new agent was spawned; no Luna slot became available or substitute helper
+was assigned. No model/account quota conclusion follows from this handoff.
