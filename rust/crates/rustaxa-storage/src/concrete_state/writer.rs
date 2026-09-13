@@ -14,7 +14,8 @@ use rlp::{Rlp, RlpStream};
 use rocksdb::{ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch};
 use rustaxa_types::FinalChainBlockNumber;
 use rustaxa_types::concrete_state::{
-    ConcreteAccountRecord, ConcreteReadError, ConcreteStateIdentity, ConcreteStorageKey,
+    ConcreteAccountRecord, ConcreteRead, ConcreteReadError, ConcreteStateIdentity,
+    ConcreteStorageKey,
 };
 
 use super::codec::{
@@ -443,6 +444,36 @@ impl ConcreteStateWriter {
         Ok(())
     }
 
+    /// Reads one exact account row from `prepared`'s next-generation overlay,
+    /// falling back to the authenticated prior generation when this preparation
+    /// did not touch the address. The result is an in-memory execution view; it
+    /// does not assert that the next identity was persisted or published.
+    pub fn prepared_account(
+        &self,
+        prepared: &PreparedConcreteState,
+        address: [u8; 20],
+    ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
+        self.validate_prepared(prepared)?;
+        let path = account_version_prefix(address);
+        let row = RowKey {
+            column: "3",
+            key: versioned_key(path, prepared.next.period).to_vec(),
+        };
+        if let Some(value) = prepared.rows.get(&row) {
+            return if value.is_empty() {
+                Ok(ConcreteRead::Tombstone)
+            } else {
+                decode_physical_account(value).map(ConcreteRead::Present)
+            };
+        }
+        self.verify_prior_account(address)?;
+        match select_version(&self.db, "3", path, self.prior.period)? {
+            Some(value) if value.is_empty() => Ok(ConcreteRead::Tombstone),
+            Some(value) => decode_physical_account(&value).map(ConcreteRead::Present),
+            None => Ok(ConcreteRead::Absent),
+        }
+    }
+
     /// Returns the database path this handle is pinned to.
     pub fn path(&self) -> &Path {
         &self.path
@@ -461,6 +492,21 @@ impl ConcreteStateWriter {
             Some(value) if !value.is_empty() => decode_physical_account(&value).map(Some),
             _ => Ok(None),
         }
+    }
+
+    fn validate_prepared(&self, prepared: &PreparedConcreteState) -> Result<(), ConcreteReadError> {
+        if prepared.writer_id != self.writer_id
+            || prepared.prior != self.prior
+            || prepared.sequence != self.sequence.get()
+        {
+            return Err(corrupt(
+                "prepared state is stale or belongs to another writer",
+            ));
+        }
+        if current_identity(&self.db)? != self.prior {
+            return Err(corrupt("prepared state prior is no longer the descriptor"));
+        }
+        Ok(())
     }
 
     fn verify_prior_account(&self, address: [u8; 20]) -> Result<(), ConcreteReadError> {
@@ -766,6 +812,20 @@ mod tests {
             hex::encode(prepared.next_identity().state_root),
             "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
         );
+        let prepared_account = match writer.prepared_account(&prepared, address).unwrap() {
+            ConcreteRead::Present(record) => record,
+            other => panic!("expected prepared account, got {other:?}"),
+        };
+        assert_eq!(
+            prepared_account.account.storage_root,
+            Some(decode_hash(
+                "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c"
+            ))
+        );
+        assert_eq!(
+            writer.prepared_account(&prepared, [0x99; 20]).unwrap(),
+            ConcreteRead::Absent
+        );
         assert!(prepared.row_count() >= 5);
         writer.persist_contents(&prepared).unwrap();
         assert_hex_row(
@@ -905,6 +965,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(prepared.next_identity().state_root, empty_trie_root());
+        assert_eq!(
+            writer.prepared_account(&prepared, address).unwrap(),
+            ConcreteRead::Tombstone
+        );
         writer.persist_contents(&prepared).unwrap();
         assert_version_value(
             &writer,
@@ -1013,6 +1077,7 @@ mod tests {
                 ConcreteStateMutationBatch::default(),
             )
             .unwrap();
+        assert!(writer.prepared_account(&prepared, [0; 20]).is_err());
         assert!(writer.persist_contents(&prepared).is_err());
         writer.persist_contents(&newer).unwrap();
         assert!(writer.persist_contents(&newer).is_err());
@@ -1111,5 +1176,9 @@ mod tests {
             period: FinalChainBlockNumber::new(period),
             state_root: empty_trie_root(),
         }
+    }
+
+    fn decode_hash(hexadecimal: &str) -> [u8; 32] {
+        hex::decode(hexadecimal).unwrap().try_into().unwrap()
     }
 }
