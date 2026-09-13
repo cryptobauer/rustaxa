@@ -2,10 +2,10 @@
 //!
 //! This module exposes consensus-owned staged sessions for DPoS reads and the
 //! selected `setCommission`, `delegate`, V1/V2 `undelegate`, and V1/V2
-//! confirmation mutations. Sessions reuse existing decoders, gas policy and
-//! business kernels. Pending execution advances from the finalized parent;
-//! historical simulation starts from an exact finalized snapshot behind a
-//! wrapper that cannot finish rewards or publish. Transaction fees, CALL value
+//! confirmation and cancellation mutations. Sessions reuse existing decoders,
+//! gas policy and business kernels. Pending execution advances from the
+//! finalized parent; historical simulation starts from an exact finalized
+//! snapshot behind a wrapper that cannot finish rewards or publish. Transaction fees, CALL value
 //! transfer, nonces, frame rollback, receipts, and publication remain outside
 //! this boundary.
 
@@ -20,6 +20,8 @@ mod query;
 pub(super) mod raw;
 pub(super) mod rewards;
 
+#[cfg(test)]
+mod cancel_custody_reference_tests;
 #[cfg(test)]
 mod v1_custody_reference_tests;
 
@@ -541,8 +543,10 @@ impl FinalChainNativeSession<'_> {
             }
             DposTransaction::Undelegate { .. }
             | DposTransaction::ConfirmUndelegate { .. }
+            | DposTransaction::CancelUndelegate { .. }
             | DposTransaction::UndelegateV2 { .. }
-            | DposTransaction::ConfirmUndelegateV2 { .. } => None,
+            | DposTransaction::ConfirmUndelegateV2 { .. }
+            | DposTransaction::CancelUndelegateV2 { .. } => None,
             transaction if query::is_query(transaction) => {
                 let admission = match self.final_chain.native_invocation_admission(
                     transaction,
@@ -2652,6 +2656,108 @@ mod tests {
                     )
                 );
                 assert_eq!(missing_recipient.account_reads.get(), 2);
+            },
+        );
+    }
+
+    #[test]
+    fn selected_cancellation_preserves_full_width_reads_and_typed_read_errors() {
+        with_chain_ficus(
+            "selected-cancel-full-width",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let wide_balance = (BigInt::from(1_u8) << 300_usize) + BigInt::from(10_000_u64);
+                let wide_nonce = FinalChainNonce::from_bytes(&[0xff; 33]).unwrap();
+                let state = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: wide_nonce,
+                            balance: wide_balance,
+                        },
+                    )]),
+                );
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let outcome = invoke_custody(&mut session, &state, &undelegate);
+                assert_eq!(outcome.status, FinalChainNativeStatus::Success);
+                apply_raw_mutations(&state, &outcome);
+                let reads_before_cancel = state.account_reads.get();
+
+                let cancel = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CANCEL_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let canceled = invoke_custody(&mut session, &state, &cancel);
+                assert_eq!(canceled.status, FinalChainNativeStatus::Success);
+                assert!(canceled.account_mutations.is_empty());
+                assert_eq!(state.account_reads.get(), reads_before_cancel + 1);
+            },
+        );
+
+        with_chain_ficus(
+            "selected-cancel-read-error",
+            FinalChainBlockNumber::GENESIS,
+            |chain| {
+                let mut session = chain
+                    .begin_native_session(1.into(), FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let initial = RawState::from_snapshot(
+                    &session.dpos_state,
+                    BTreeMap::from([(
+                        DPOS_CONTRACT_ADDRESS,
+                        FinalChainNativeAccount {
+                            exists: true,
+                            nonce: FinalChainNonce::zero(),
+                            balance: BigInt::from(10_000_u64),
+                        },
+                    )]),
+                );
+                let undelegate = custody_request(
+                    0,
+                    VALIDATOR,
+                    0,
+                    address_amount_input(DPOS_UNDELEGATE_SELECTOR, VALIDATOR, U256::from(500)),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                assert_eq!(
+                    invoke_custody(&mut session, &initial, &undelegate).status,
+                    FinalChainNativeStatus::Success
+                );
+
+                let missing_account = RawState::from_snapshot(&session.dpos_state, BTreeMap::new());
+                let cancel = custody_request(
+                    1,
+                    VALIDATOR,
+                    0,
+                    address_word_input(DPOS_CANCEL_UNDELEGATE_SELECTOR, VALIDATOR),
+                    DPOS_UNDELEGATE_GAS,
+                );
+                let quote = session.prepare(&cancel, &missing_account).unwrap();
+                assert_eq!(
+                    session
+                        .invoke(&cancel, quote, &missing_account)
+                        .unwrap_err(),
+                    FinalChainNativeSessionError::StateRead(
+                        FinalChainNativeStateReadError::Invariant(format!(
+                            "fixture account is unavailable: {DPOS_CONTRACT_ADDRESS:?}"
+                        ))
+                    )
+                );
+                assert_eq!(missing_account.account_reads.get(), 1);
             },
         );
     }
