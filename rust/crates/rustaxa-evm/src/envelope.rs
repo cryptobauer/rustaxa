@@ -14,7 +14,7 @@ use crate::{
     },
     journal::{ExecutionJournal, JournalError},
 };
-use rustaxa_types::concrete_state::ConcreteStateRead;
+use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
 
 /// Historical envelope switches selected from the finalized period.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,7 +135,7 @@ impl From<JournalError> for EnvelopeError {
 }
 
 /// Applies up-front fee and nonce admission in reference order.
-pub fn admit<R: ConcreteStateRead>(
+pub fn admit<R: ConcreteExecutionRead>(
     journal: &mut ExecutionJournal<R>,
     transaction: &ExecutionTransaction,
     rules: EnvelopeRules,
@@ -214,7 +214,7 @@ pub fn admit<R: ConcreteStateRead>(
 }
 
 /// Settles action gas and refunds after an admitted top-level frame.
-pub fn settle<R: ConcreteStateRead>(
+pub fn settle<R: ConcreteExecutionRead>(
     journal: &mut ExecutionJournal<R>,
     transaction: &ExecutionTransaction,
     admitted: &AdmittedTransaction,

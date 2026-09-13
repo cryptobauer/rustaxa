@@ -24,7 +24,7 @@ use revm::{
 };
 use rustaxa_types::{
     FinalChainBlockNumber,
-    concrete_state::{ConcreteStateRead, ConcreteStorageKey},
+    concrete_state::{ConcreteStorageKey, execution::ConcreteExecutionRead},
 };
 
 use crate::{
@@ -71,7 +71,7 @@ pub struct JournalHost<'a, R, B> {
     fault: Option<HostError>,
 }
 
-impl<'a, R: ConcreteStateRead, B: BlockHashRead> JournalHost<'a, R, B> {
+impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
     /// Binds one interpreter to its transaction, block and journal authority.
     pub fn new(
         journal: &'a mut ExecutionJournal<R>,
@@ -163,7 +163,7 @@ impl<'a, R: ConcreteStateRead, B: BlockHashRead> JournalHost<'a, R, B> {
     }
 }
 
-impl<R: ConcreteStateRead, B: BlockHashRead> Host for JournalHost<'_, R, B> {
+impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> {
     fn basefee(&self) -> U256 {
         U256::ZERO
     }

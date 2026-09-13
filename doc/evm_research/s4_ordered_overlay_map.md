@@ -131,15 +131,17 @@ The view returns:
 - Code bytes from immutable staged content first and then the committed store,
   retaining hash and declared-size checks at the existing boundaries.
 
-The current [`ConcreteStateRead`](../../rust/crates/rustaxa-types/src/concrete_state.rs)
-explicitly promises committed access and excludes execution overlays. A general
-implementation must resolve this contract explicitly, rather than copy the finite
-test's fabricated reader identity. Prefer a narrow shared execution-read port
-with the same account/slot/code operations and a fixed view identity: existing
-committed readers can be adapted into it, while the prepared view implements it
-without becoming a public committed-state query surface. Keep concrete storage
-and execution independent through the shared domain crate. No second state
-manager or general database abstraction is needed.
+The existing [`ConcreteStateRead`](../../rust/crates/rustaxa-types/src/concrete_state.rs)
+promises committed access and excludes execution overlays. The new
+[`ConcreteExecutionRead`](../../rust/crates/rustaxa-types/src/concrete_state/execution.rs)
+resolves the execution boundary explicitly with the same account/slot/code
+operations and fixed-view identity. Existing committed readers adapt one-way;
+the future prepared view implements only the execution port, without becoming a
+public committed-state query surface. The execution journal, envelope, host and
+driver now use this port. Its nested module also avoids adding competing methods
+to existing committed-state wildcard imports. Storage and execution remain
+independent through the shared domain crate. No second state manager or general
+database abstraction is needed.
 
 Retain a private preparation sequence or phase token even when consecutive phases
 produce the same period/root. It distinguishes prepared ownership from canonical

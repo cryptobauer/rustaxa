@@ -25,7 +25,7 @@ use revm::{
     },
     primitives::{Address, Bytes, U256, hardfork::SpecId},
 };
-use rustaxa_types::{FinalChainGas, concrete_state::ConcreteStateRead};
+use rustaxa_types::{FinalChainGas, concrete_state::execution::ConcreteExecutionRead};
 
 use crate::{
     contracts::{
@@ -111,7 +111,7 @@ impl From<JournalError> for ExecutionDriverError {
 /// caller must discard the journal because envelope admission may already have
 /// changed its sender balance or nonce.
 pub fn execute_top_level_call<
-    R: ConcreteStateRead,
+    R: ConcreteExecutionRead,
     B: BlockHashRead,
     N: NativeAddressClassifier,
 >(
@@ -158,7 +158,7 @@ pub fn execute_top_level_call<
 /// runtime code. Infrastructure/unsupported errors abort the pending period;
 /// callers must discard the possibly admission-mutated journal.
 pub fn execute_top_level_create<
-    R: ConcreteStateRead,
+    R: ConcreteExecutionRead,
     B: BlockHashRead,
     N: NativeAddressClassifier,
 >(
@@ -198,7 +198,11 @@ pub fn execute_top_level_create<
     )
 }
 
-fn execute_admitted_create<R: ConcreteStateRead, B: BlockHashRead, N: NativeAddressClassifier>(
+fn execute_admitted_create<
+    R: ConcreteExecutionRead,
+    B: BlockHashRead,
+    N: NativeAddressClassifier,
+>(
     journal: &mut ExecutionJournal<R>,
     block_hashes: &B,
     native_addresses: &N,
@@ -327,7 +331,7 @@ fn execute_admitted_create<R: ConcreteStateRead, B: BlockHashRead, N: NativeAddr
     .map_err(Into::into)
 }
 
-fn execute_admitted_call<R: ConcreteStateRead, B: BlockHashRead, N: NativeAddressClassifier>(
+fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifier>(
     journal: &mut ExecutionJournal<R>,
     block_hashes: &B,
     native_addresses: &N,
@@ -461,7 +465,7 @@ struct ActiveFrame {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_revm<R: ConcreteStateRead, B: BlockHashRead, N: NativeAddressClassifier>(
+fn run_revm<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAddressClassifier>(
     journal: &mut ExecutionJournal<R>,
     block_hashes: &B,
     native_addresses: &N,
@@ -604,7 +608,7 @@ fn run_revm<R: ConcreteStateRead, B: BlockHashRead, N: NativeAddressClassifier>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_until_action<R: ConcreteStateRead, B: BlockHashRead>(
+fn run_until_action<R: ConcreteExecutionRead, B: BlockHashRead>(
     interpreter: &mut Interpreter<EthInterpreter>,
     journal: &mut ExecutionJournal<R>,
     block_hashes: &B,
@@ -642,7 +646,7 @@ fn run_until_action<R: ConcreteStateRead, B: BlockHashRead>(
     }
 }
 
-fn prepare_call_frame<R: ConcreteStateRead, N: NativeAddressClassifier>(
+fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
     journal: &mut ExecutionJournal<R>,
     native_addresses: &N,
     block: &ExecutionBlockContext,
@@ -760,7 +764,7 @@ fn prepare_call_frame<R: ConcreteStateRead, N: NativeAddressClassifier>(
     }))
 }
 
-fn prepare_create_frame<R: ConcreteStateRead>(
+fn prepare_create_frame<R: ConcreteExecutionRead>(
     journal: &mut ExecutionJournal<R>,
     profile: TaraxaProfile,
     parent: &mut ActiveFrame,
@@ -856,7 +860,7 @@ fn prepare_create_frame<R: ConcreteStateRead>(
     }))
 }
 
-fn settle_call_checkpoint<R: ConcreteStateRead>(
+fn settle_call_checkpoint<R: ConcreteExecutionRead>(
     journal: &mut ExecutionJournal<R>,
     checkpoint: JournalCheckpoint,
     result: InstructionResult,
@@ -869,7 +873,7 @@ fn settle_call_checkpoint<R: ConcreteStateRead>(
     Ok(())
 }
 
-fn settle_create_result<R: ConcreteStateRead>(
+fn settle_create_result<R: ConcreteExecutionRead>(
     journal: &mut ExecutionJournal<R>,
     checkpoint: JournalCheckpoint,
     attempted_address: [u8; 20],
@@ -967,7 +971,7 @@ fn spent_result(result: InstructionResult, gas_limit: u64) -> InterpreterResult 
     result
 }
 
-fn unwind_active_frames<R: ConcreteStateRead>(
+fn unwind_active_frames<R: ConcreteExecutionRead>(
     journal: &mut ExecutionJournal<R>,
     frames: &[ActiveFrame],
 ) -> Result<(), ExecutionDriverError> {

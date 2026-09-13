@@ -8,7 +8,7 @@
 use crate::{FinalChainBlockNumber, FinalChainNonce};
 use num_bigint::BigUint;
 
-/// Exact concrete generation observed by a reader; construction alone does not
+/// Exact concrete period/root observed by a reader; construction alone does not
 /// prove that a database contains this root or authorize adopting that database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConcreteStateIdentity {
@@ -65,7 +65,7 @@ pub struct ConcreteAccountRecord {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ConcreteStorageKey(pub [u8; 32]);
 
-/// Committed row lookup. Absence is only valid within proved retained coverage;
+/// Fixed-view row lookup. Absence is only valid within proved retained coverage;
 /// a tombstone is an actual selected empty version and must not resurrect an
 /// earlier value. Only the EVM semantic layer maps either to a zero value.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -135,3 +135,6 @@ pub trait ConcreteStateRead {
     /// turn an unavailable referenced code row into an empty program.
     fn code(&self, code_hash: [u8; 32]) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError>;
 }
+
+/// Fixed prepared/committed execution views, separate from public committed queries.
+pub mod execution;

@@ -48,6 +48,15 @@ without coverage is `HistoryUnavailable`, not an empty account. Confirmed
 pruning, selected tombstones, absence, malformed records, future periods,
 identity mismatch and I/O failures are distinct outcomes.
 
+The ordered-observer extension adds
+`concrete_state::execution::ConcreteExecutionRead` for fixed prepared execution
+views. Committed readers adapt one-way to this port; implementing it does not
+grant committed-query access. The journal, envelope, host and driver use this
+execution boundary. Prepared storage will borrow its owner to prevent phase
+advancement during reads and retain its own private sequence seal. Neither the
+view identity nor an overlay miss grants coverage, adoption or publication
+authority. See the [ordered overlay contract](s4_ordered_overlay_map.md).
+
 Accounts retain `FinalChainNonce`, arbitrary-width unsigned persisted balance,
 optional storage/code hashes and reference u64 code size. A separate record
 retains the exact five-field physical RLP. The four-field commitment encoder

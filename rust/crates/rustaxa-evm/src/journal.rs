@@ -3,7 +3,7 @@
 //! The journal keeps ordinary account/storage changes, native raw bytes and
 //! transient state in distinct lanes because the pinned Taraxa EVM gives them
 //! different read, rollback and persistence behavior. It reads immutable state
-//! through [`ConcreteStateRead`] and emits a typed write plan; it never writes a
+//! through [`ConcreteExecutionRead`] and emits a typed write plan; it never writes a
 //! database or publishes a FinalChain generation.
 
 use std::collections::BTreeMap;
@@ -11,11 +11,10 @@ use std::collections::BTreeMap;
 use num_bigint::{BigInt, BigUint};
 use rustaxa_types::{
     FinalChainNonce,
-    concrete_state::{
-        ConcreteAccountBalance, ConcreteRead, ConcreteReadError, ConcreteStateRead,
-        ConcreteStorageKey,
-    },
+    concrete_state::{ConcreteAccountBalance, ConcreteRead, ConcreteReadError, ConcreteStorageKey},
 };
+
+use rustaxa_types::concrete_state::execution::ConcreteExecutionRead;
 
 use crate::contracts::{
     BalanceConversionError, ExecutionBalance, ExecutionLog, NativeJournalAccount,
@@ -284,7 +283,7 @@ pub struct ExecutionJournal<R> {
     next_checkpoint: u64,
 }
 
-impl<R: ConcreteStateRead> ExecutionJournal<R> {
+impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
     /// Creates an empty transaction journal over one immutable concrete reader.
     pub fn new(reader: R) -> Self {
         Self {
@@ -970,7 +969,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
     }
 }
 
-impl<R: ConcreteStateRead> NativeJournalRead for ExecutionJournal<R> {
+impl<R: ConcreteExecutionRead> NativeJournalRead for ExecutionJournal<R> {
     fn account(
         &self,
         address: JournalAddress,
