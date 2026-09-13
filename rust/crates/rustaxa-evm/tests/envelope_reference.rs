@@ -303,6 +303,82 @@ fn intrinsic_overflow_is_a_consensus_failure_after_upfront_charge() {
     );
 }
 
+#[test]
+fn zero_debits_do_not_delete_existing_empty_sender() {
+    for (gas, price, balance, expected_error) in [
+        (20_000, 0, 0_u64, ConsensusFailure::IntrinsicGas),
+        (
+            60_000,
+            3,
+            1_u64,
+            ConsensusFailure::InsufficientBalanceForGas,
+        ),
+    ] {
+        let mut journal = ExecutionJournal::new(AccountReader {
+            address: SENDER,
+            nonce: FinalChainNonce::zero(),
+            balance: ConcreteAccountBalance::new(BigUint::from(balance)),
+            exists: true,
+        });
+        let transaction = transaction(SENDER, Some(TARGET), gas, price);
+        let EnvelopeAdmission::Rejected(failure) = admit(
+            &mut journal,
+            &transaction,
+            EnvelopeRules { cornus: false },
+            IntrinsicGasSchedule::PINNED,
+        )
+        .unwrap() else {
+            panic!("case must reject");
+        };
+        assert_eq!(failure.error, expected_error);
+        assert_eq!(
+            journal.settle_transaction().unwrap().writes,
+            rustaxa_evm::journal::JournalWritePlan::default()
+        );
+    }
+}
+
+#[test]
+fn refund_is_capped_and_credited_at_full_width_price() {
+    let mut journal = ExecutionJournal::new(AccountReader {
+        address: SENDER,
+        nonce: FinalChainNonce::zero(),
+        balance: ConcreteAccountBalance::new(BigUint::from(100_000_u64)),
+        exists: true,
+    });
+    let transaction = transaction(SENDER, Some(TARGET), 60_000, 1);
+    let EnvelopeAdmission::Admitted(admitted) = admit(
+        &mut journal,
+        &transaction,
+        EnvelopeRules { cornus: false },
+        IntrinsicGasSchedule::PINNED,
+    )
+    .unwrap() else {
+        panic!("case must admit");
+    };
+    journal.add_refund(20_000).unwrap();
+    let result = settle(
+        &mut journal,
+        &transaction,
+        &admitted,
+        FrameSettlement {
+            status: FrameSettlementStatus::Success,
+            gas_left: FinalChainGas::new(30_000),
+            output: Vec::new(),
+            attempted_contract_address: None,
+        },
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("case must execute");
+    };
+    assert_eq!(result.gas_used, FinalChainGas::new(15_000));
+    assert_eq!(
+        journal.account(SENDER).unwrap().balance.value(),
+        &85_000_u64.into()
+    );
+}
+
 fn transaction(
     sender: [u8; 20],
     receiver: Option<[u8; 20]>,
