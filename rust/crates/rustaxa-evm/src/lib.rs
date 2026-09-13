@@ -13,6 +13,7 @@ pub mod frame;
 pub mod host;
 pub mod input;
 pub mod journal;
+pub mod modexp;
 pub mod native;
 pub mod profile;
 pub mod stateless;
