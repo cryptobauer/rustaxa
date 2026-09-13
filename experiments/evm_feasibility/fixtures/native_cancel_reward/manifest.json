@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "One live actual StateTransition per V1/V2 witness, retaining both P1 undelegation, P2 reward, P3 cancellation and P1 undelegation+reward, P2 cancellation timings; all include ordered raw writes and logs; no injected underfunding, Rust publication, or reopen parity is claimed",
+  "instrumentation": {
+    "target": "taraxa/state/state_evm/account.go",
+    "sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+    "observer_sha256": "d6e0276bb4342b886d68168dad0d74e0ae53b39a9bc2456495b010530dfd76ec",
+    "insertion": "synchronous copy-only observer before irreversible raw mutation body"
+  },
+  "support_sha256": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60",
+  "v1_support_sha256": "4e8227c57133f09354d585367ac9be2fa1baa15ef6e0726d7b42d9089a9f7cec",
+  "public_local_byte_identical": true,
+  "sha256": {
+    "public": "df244ca36e97acb84418706916650e27f1788fe272842475670c4f5d7d06ea60",
+    "local": "df244ca36e97acb84418706916650e27f1788fe272842475670c4f5d7d06ea60"
+  },
+  "exporter_sha256": "394408c2b91827885489f4f723ebdf4aa55275631c43a9118093ca992db63ada",
+  "harness_sha256": "9f9f5e90cb6b2ba7364f46bfbc79c51c9ad96e4219cdf050eca3778b584e3db7"
+}
