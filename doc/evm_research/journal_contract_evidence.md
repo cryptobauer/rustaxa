@@ -40,3 +40,31 @@ evidence that the new Rust journal already passes. It covers one transaction and
 one checkpoint per case, ordinary-then-raw write order only, and memory reopen.
 Reverse write order, nested checkpoint stacks, cross-transaction caches, RocksDB
 reopen, historical replay and production execution remain separate gates.
+
+The additive `--extended` corpus records ten reverse-order, nested-checkpoint and
+nil-storage-root cases. Each mutation/checkpoint/revert includes a reference
+observation, followed by reset-only transaction facts and a joined TrieSink
+reopen. Nested cases revert the inner checkpoint; they do not prove every nested
+commit pattern. An existing account with no storage root can still expose a
+retained physical row through raw reads while ordinary committed reads return
+zero.
+
+The additive `--mutators` corpus records eight no-op and lifecycle cases. It
+confirms byte/root preservation for an equal-value ordinary write over a
+leading-zero raw value, empty code assignment, reverted new-account creation and
+a rejected decreasing nonce. Dirty existing empty accounts are removed,
+including a RIPEMD-address zero-balance touch followed by frame rollback. Only
+the deliberate nonce-decrease assertion may panic; other panics fail export.
+These are real reference account methods and trie writers, not replacement
+journal implementations.
+
+Both pinned revisions agree byte-for-byte on the new corpora. The original ten
+fixture outputs remain unchanged; their manifest's exporter hash tracks the
+expanded source. These fixtures extend the execution-worker regression targets;
+they do not establish same-block asynchronous visibility, persisted Rust roots,
+RocksDB reopening or complete frame/opcode parity.
+
+```bash
+python3 experiments/evm_feasibility/journal_reference.py --extended
+python3 experiments/evm_feasibility/journal_reference.py --mutators
+```

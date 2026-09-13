@@ -1,0 +1,718 @@
+[
+  {
+    "address": "00000000000000000000000000000000000000aa",
+    "after_frame": {
+      "balance": "100",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "17",
+      "original": "17",
+      "raw": {
+        "bytes": "0011",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "after_mutation": {
+      "balance": "100",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "17",
+      "original": "17",
+      "raw": {
+        "bytes": "0011",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "100",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "17",
+      "original": "17",
+      "raw": {
+        "bytes": "0011",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "storage-noop-leading-zero",
+    "panicked": false,
+    "prior_root": "042dddf63b7147e5a6f3c620009cceab18fb1a6b7599eae2fddb82065d06d39c",
+    "prior_rows": [
+      {},
+      {
+        "042dddf63b7147e5a6f3c620009cceab18fb1a6b7599eae2fddb82065d06d39c": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0042dddf63b7147e5a6f3c620009cceab18fb1a6b7599eae2fddb82065d06d39c"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a08ed5a6654467b942912d0db05ce92093e82a8c3193d31c2fecf8687c4bdf56368080"
+      },
+      {
+        "8ed5a6654467b942912d0db05ce92093e82a8c3193d31c2fecf8687c4bdf5636": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a08ed5a6654467b942912d0db05ce92093e82a8c3193d31c2fecf8687c4bdf5636"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "0011"
+      }
+    ],
+    "reopened": {
+      "balance": "100",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "17",
+      "original": "17",
+      "raw": {
+        "bytes": "0011",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "042dddf63b7147e5a6f3c620009cceab18fb1a6b7599eae2fddb82065d06d39c",
+    "rows": [
+      {},
+      {
+        "042dddf63b7147e5a6f3c620009cceab18fb1a6b7599eae2fddb82065d06d39c": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0042dddf63b7147e5a6f3c620009cceab18fb1a6b7599eae2fddb82065d06d39c"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a08ed5a6654467b942912d0db05ce92093e82a8c3193d31c2fecf8687c4bdf56368080"
+      },
+      {
+        "8ed5a6654467b942912d0db05ce92093e82a8c3193d31c2fecf8687c4bdf5636": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a08ed5a6654467b942912d0db05ce92093e82a8c3193d31c2fecf8687c4bdf5636"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "0011"
+      }
+    ]
+  },
+  {
+    "address": "00000000000000000000000000000000000000aa",
+    "after_frame": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "after_mutation": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "1",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "empty-by-balance",
+    "panicked": false,
+    "prior_root": "2f80c7935744489100fb04c8fe03ac88fa2b648e883a66ed9ae939fd1a05fd89",
+    "prior_rows": [
+      {},
+      {
+        "2f80c7935744489100fb04c8fe03ac88fa2b648e883a66ed9ae939fd1a05fd89": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a02f80c7935744489100fb04c8fe03ac88fa2b648e883a66ed9ae939fd1a05fd89"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "c58001808080"
+      },
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "0",
+      "code": "",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "rows": [
+      {},
+      {
+        "2f80c7935744489100fb04c8fe03ac88fa2b648e883a66ed9ae939fd1a05fd89": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a02f80c7935744489100fb04c8fe03ac88fa2b648e883a66ed9ae939fd1a05fd89"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": ""
+      },
+      {},
+      {}
+    ]
+  },
+  {
+    "address": "00000000000000000000000000000000000000aa",
+    "after_frame": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "after_mutation": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "existing-empty-touch",
+    "panicked": false,
+    "prior_root": "d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9",
+    "prior_rows": [
+      {},
+      {
+        "d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "c58080808080"
+      },
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "0",
+      "code": "",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "rows": [
+      {},
+      {
+        "d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": ""
+      },
+      {},
+      {}
+    ]
+  },
+  {
+    "address": "00000000000000000000000000000000000000aa",
+    "after_frame": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "44",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "after_mutation": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "44",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "existing-empty-raw",
+    "panicked": false,
+    "prior_root": "d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9",
+    "prior_rows": [
+      {},
+      {
+        "d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "c58080808080"
+      },
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "0",
+      "code": "",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "rows": [
+      {},
+      {
+        "d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": ""
+      },
+      {},
+      {}
+    ]
+  },
+  {
+    "address": "00000000000000000000000000000000000000aa",
+    "after_frame": {
+      "balance": "100",
+      "code": "6000",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "after_mutation": {
+      "balance": "100",
+      "code": "6000",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "100",
+      "code": "6000",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "empty-code-noop",
+    "panicked": false,
+    "prior_root": "d25e014574e07337dd1bff5ef8911e25b8a87ab717ccb0077ca02b8762814c14",
+    "prior_rows": [
+      {
+        "07ad118d6cc8642c86c03827f276d8b791a65e5c99a3845faf186be720a1455d": "6000"
+      },
+      {
+        "d25e014574e07337dd1bff5ef8911e25b8a87ab717ccb0077ca02b8762814c14": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0d25e014574e07337dd1bff5ef8911e25b8a87ab717ccb0077ca02b8762814c14"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e5016480a007ad118d6cc8642c86c03827f276d8b791a65e5c99a3845faf186be720a1455d02"
+      },
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "100",
+      "code": "6000",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "d25e014574e07337dd1bff5ef8911e25b8a87ab717ccb0077ca02b8762814c14",
+    "rows": [
+      {
+        "07ad118d6cc8642c86c03827f276d8b791a65e5c99a3845faf186be720a1455d": "6000"
+      },
+      {
+        "d25e014574e07337dd1bff5ef8911e25b8a87ab717ccb0077ca02b8762814c14": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0d25e014574e07337dd1bff5ef8911e25b8a87ab717ccb0077ca02b8762814c14"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e5016480a007ad118d6cc8642c86c03827f276d8b791a65e5c99a3845faf186be720a1455d02"
+      },
+      {},
+      {}
+    ]
+  },
+  {
+    "address": "00000000000000000000000000000000000000aa",
+    "after_frame": {
+      "balance": "0",
+      "code": "",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "after_mutation": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "0",
+      "code": "",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "reverted-new",
+    "panicked": false,
+    "prior_root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "prior_rows": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "0",
+      "code": "",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "rows": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ]
+  },
+  {
+    "address": "00000000000000000000000000000000000000aa",
+    "after_frame": {
+      "balance": "100",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "after_mutation": {
+      "balance": "100",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "100",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "nonce-decrease",
+    "panicked": true,
+    "prior_root": "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a",
+    "prior_rows": [
+      {},
+      {
+        "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "c50164808080"
+      },
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "100",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a",
+    "rows": [
+      {},
+      {
+        "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "c50164808080"
+      },
+      {},
+      {}
+    ]
+  },
+  {
+    "address": "0000000000000000000000000000000000000003",
+    "after_frame": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "after_mutation": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "ripemd-touch-revert",
+    "panicked": false,
+    "prior_root": "74330c42df466b53e544aea314215e54aca06d5e6cc4e2cd308dd49f70451583",
+    "prior_rows": [
+      {},
+      {
+        "74330c42df466b53e544aea314215e54aca06d5e6cc4e2cd308dd49f70451583": "f843a1205b70e80538acdabd6137353b0f9d8d149f4dba91e8be2e7946e409bfdbe685b9a074330c42df466b53e544aea314215e54aca06d5e6cc4e2cd308dd49f70451583"
+      },
+      {
+        "5b70e80538acdabd6137353b0f9d8d149f4dba91e8be2e7946e409bfdbe685b9": "c58080808080"
+      },
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "0",
+      "code": "",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "rows": [
+      {},
+      {
+        "74330c42df466b53e544aea314215e54aca06d5e6cc4e2cd308dd49f70451583": "f843a1205b70e80538acdabd6137353b0f9d8d149f4dba91e8be2e7946e409bfdbe685b9a074330c42df466b53e544aea314215e54aca06d5e6cc4e2cd308dd49f70451583"
+      },
+      {
+        "5b70e80538acdabd6137353b0f9d8d149f4dba91e8be2e7946e409bfdbe685b9": ""
+      },
+      {},
+      {}
+    ]
+  }
+]

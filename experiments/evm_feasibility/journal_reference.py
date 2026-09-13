@@ -21,7 +21,12 @@ HERE = pathlib.Path(__file__).resolve().parent
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--record", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--extended", action="store_true")
+    mode.add_argument("--mutators", action="store_true")
     args = parser.parse_args()
+    variant = "extended" if args.extended else "mutators" if args.mutators else ""
+    prefix = f"journal_{variant}" if variant else "journal"
     artifacts = {}
     source = HERE / "journal_reference.go"
     for label, revision in REVISIONS.items():
@@ -34,21 +39,21 @@ def main():
             command = tree / "cmd/journal-contracts"
             command.mkdir(parents=True)
             (command / "main.go").write_bytes(source.read_bytes())
-            artifacts[f"journal_{label}.json"] = subprocess.check_output(
-                ["go", "run", "-mod=readonly", "./cmd/journal-contracts"], cwd=tree
+            artifacts[f"{prefix}_{label}.json"] = subprocess.check_output(
+                ["go", "run", "-mod=readonly", "./cmd/journal-contracts"] + ([variant] if variant else []), cwd=tree
             )
-    if artifacts["journal_public.json"] != artifacts["journal_local.json"]:
+    if artifacts[f"{prefix}_public.json"] != artifacts[f"{prefix}_local.json"]:
         raise RuntimeError("pinned journal references disagree")
     manifest = {
         "schema": 1,
         "references": REVISIONS,
         "go_version": subprocess.check_output(["go", "version"], text=True).strip(),
-        "scope": "Ten synthetic journal/physical TrieSink cases; no EVM envelope, RocksDB or network replay",
+        "scope": ("Ten additive reverse-order/nested/nil-root journal cases" if args.extended else "Eight additive mutator/no-op/lifecycle journal cases" if args.mutators else "Ten synthetic journal/physical TrieSink cases") + "; no EVM envelope, RocksDB or network replay",
         "exporter_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "sha256": {name: hashlib.sha256(data).hexdigest() for name, data in artifacts.items()},
     }
     fixtures = HERE / "fixtures"
-    manifest_path = fixtures / "journal_manifest.json"
+    manifest_path = fixtures / f"{prefix}_manifest.json"
     if args.record:
         for name, data in artifacts.items():
             (fixtures / name).write_bytes(data)
