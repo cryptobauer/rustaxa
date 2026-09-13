@@ -3,11 +3,11 @@
 //! The fixture starts from exclusively created empty databases, executes signed
 //! transfer/creation inputs, closes both owners, then calls the created contract
 //! after recovery. No imported-state coverage or production routing is implied.
-//! The cumulative mutation adapter is deliberately limited to these three
-//! inputs: it does not implement account deletion after earlier slot writes or
-//! general raw/native same-block cache behavior. Intermediate views follow the
-//! concrete observer boundary; the oracle separately checks batched agreement
-//! for this finite fixture.
+//! Both the original cumulative adapter and ordered observer phases execute the
+//! same three inputs. Ordered execution borrows the lifecycle's prepared view
+//! between transactions; its final output selects the approved atomic commit.
+//! This fixture does not exercise native/raw cache behavior or account deletion.
+//! The oracle separately checks batched agreement for these finite inputs.
 
 use anyhow::{Result, bail, ensure};
 use ethereum_types::{H256, U256};
@@ -35,7 +35,10 @@ use rustaxa_storage::{
     ConcreteAccountMutation, ConcreteCodeInsertion, ConcreteStateMutationBatch,
     ConcreteStateReader, ConcreteStorageMutation, Config, PreparedConcreteState, Storage,
 };
-use rustaxa_storage::{ConcreteCommitApproval, ConcreteStateLifecycle};
+use rustaxa_storage::{
+    ConcreteCommitApproval, ConcreteObserverPhaseDelta, ConcreteObserverPhaseOutput,
+    ConcreteStateLifecycle, PreparedConcreteView,
+};
 use rustaxa_types::codec::rlp::concrete_lifecycle::decode_concrete_storage_catalog;
 use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp;
 use rustaxa_types::concrete_state::*;
@@ -97,18 +100,26 @@ fn record(
     }
 }
 
+/// A fixed durable or unpublished base; unpublished views expose execution
+/// reads only and cannot impersonate a committed descriptor.
+enum FixturePrior<'a> {
+    Committed(&'a dyn ConcreteStateRead),
+    Prepared(PreparedConcreteView<'a>),
+}
 /// Immutable per-transaction view over the fixture's exclusively created state.
 /// Missing physical slots are known absent only because this test owns the full
 /// finite creation/mutation history across both closes. No imported reader can
 /// obtain this capability. Account/code corruption continues to fail normally.
+/// The ordered path bypasses the cumulative adapter's account/slot/code caches.
 struct FixtureView<'a> {
-    prior: &'a dyn ConcreteStateRead,
+    prior: FixturePrior<'a>,
+    use_cache: bool,
     identity: ConcreteStateIdentity,
     accounts: &'a BTreeMap<[u8; 20], ConcreteRead<ConcreteAccountRecord>>,
     slots: &'a BTreeMap<([u8; 20], ConcreteStorageKey), ConcreteRead<Vec<u8>>>,
     code: &'a BTreeMap<[u8; 32], Vec<u8>>,
 }
-impl ConcreteStateRead for FixtureView<'_> {
+impl rustaxa_types::concrete_state::execution::ConcreteExecutionRead for FixtureView<'_> {
     fn identity(&self) -> ConcreteStateIdentity {
         self.identity
     }
@@ -116,31 +127,59 @@ impl ConcreteStateRead for FixtureView<'_> {
         &self,
         address: [u8; 20],
     ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
-        self.accounts
-            .get(&address)
+        self.use_cache
+            .then(|| self.accounts.get(&address))
+            .flatten()
             .cloned()
             .map(Ok)
-            .unwrap_or_else(|| self.prior.account(address))
+            .unwrap_or_else(|| match &self.prior {
+                FixturePrior::Committed(prior) => prior.account(address),
+                FixturePrior::Prepared(prior) => {
+                    rustaxa_types::concrete_state::execution::ConcreteExecutionRead::account(
+                        prior, address,
+                    )
+                }
+            })
     }
     fn storage(
         &self,
         address: [u8; 20],
         key: ConcreteStorageKey,
     ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
-        if let Some(value) = self.slots.get(&(address, key)) {
+        if let Some(value) = self
+            .use_cache
+            .then(|| self.slots.get(&(address, key)))
+            .flatten()
+        {
             return Ok(value.clone());
         }
-        match self.prior.storage(address, key) {
+        let result = match &self.prior {
+            FixturePrior::Committed(prior) => prior.storage(address, key),
+            FixturePrior::Prepared(prior) => {
+                rustaxa_types::concrete_state::execution::ConcreteExecutionRead::storage(
+                    prior, address, key,
+                )
+            }
+        };
+        match result {
             Err(ConcreteReadError::HistoryUnavailable(_)) => Ok(ConcreteRead::Absent),
             result => result,
         }
     }
     fn code(&self, hash: [u8; 32]) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
-        self.code
-            .get(&hash)
+        self.use_cache
+            .then(|| self.code.get(&hash))
+            .flatten()
             .cloned()
             .map(|value| Ok(ConcreteRead::Present(value)))
-            .unwrap_or_else(|| self.prior.code(hash))
+            .unwrap_or_else(|| match &self.prior {
+                FixturePrior::Committed(prior) => prior.code(hash),
+                FixturePrior::Prepared(prior) => {
+                    rustaxa_types::concrete_state::execution::ConcreteExecutionRead::code(
+                        prior, hash,
+                    )
+                }
+            })
     }
 }
 struct ChainHashes<'a>(&'a FinalChain);
@@ -162,8 +201,12 @@ impl NativeAddressClassifier for FixtureNatives {
         address[..19] == [0; 19] && matches!(address[19], 1..=8 | 0xee | 0xfe)
     }
 }
+enum FixturePrepared {
+    Cumulative(PreparedConcreteState),
+    Ordered(ConcreteObserverPhaseOutput),
+}
 struct Staged {
-    prepared: PreparedConcreteState,
+    prepared: FixturePrepared,
     projection: FinalChainConcreteStateProjection,
     provenance: Vec<u8>,
 }
@@ -184,6 +227,7 @@ struct Adapter<'a> {
     staged: RefCell<Option<Staged>>,
     fixture: &'a Value,
     interruption: CommitInterruption,
+    ordered: bool,
 }
 impl ConsensusExecutionPort for Adapter<'_> {
     fn load_final_chain_committed_state(
@@ -283,7 +327,13 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 "selected transaction identity"
             );
             let view = FixtureView {
-                prior: concrete.prior_reader(),
+                prior: match &prepared {
+                    Some(FixturePrepared::Ordered(output)) => {
+                        FixturePrior::Prepared(concrete.prepared_view(output)?)
+                    }
+                    _ => FixturePrior::Committed(concrete.prior_reader()),
+                },
+                use_cache: !self.ordered,
                 identity,
                 accounts: &accounts,
                 slots: &slots,
@@ -373,6 +423,11 @@ impl ConsensusExecutionPort for Adapter<'_> {
                     == bytes(&expected["state_api_execution_result_rlp"]),
                 "Go execution result bytes"
             );
+            if self.ordered {
+                account_changes.clear();
+                slot_changes.clear();
+                code_changes.clear();
+            }
             let mut changed = std::collections::BTreeSet::new();
             for write in settled.writes.accounts {
                 changed.insert(write.address);
@@ -425,22 +480,54 @@ impl ConsensusExecutionPort for Adapter<'_> {
                     },
                 );
             }
-            let next = concrete.prepare(
-                request.period,
-                ConcreteStateMutationBatch {
-                    accounts: account_changes.values().cloned().collect(),
-                    storage: slot_changes.values().cloned().collect(),
-                    code: code_changes.values().cloned().collect(),
-                },
-            )?;
-            identity = next.next_identity();
+            let batch = ConcreteStateMutationBatch {
+                accounts: account_changes.values().cloned().collect(),
+                storage: slot_changes.values().cloned().collect(),
+                code: code_changes.values().cloned().collect(),
+            };
+            let next = if self.ordered {
+                FixturePrepared::Ordered(concrete.apply_observer_phase(
+                    ConcreteObserverPhaseDelta {
+                        accounts: batch.accounts,
+                        storage: batch.storage,
+                        code: batch.code,
+                    },
+                )?)
+            } else {
+                FixturePrepared::Cumulative(concrete.prepare(request.period, batch)?)
+            };
+            identity = match &next {
+                FixturePrepared::Cumulative(next) => next.next_identity(),
+                FixturePrepared::Ordered(next) => next.identity(),
+            };
             ensure!(
                 identity.state_root == fixed::<32>(&expected["intermediate_root"]),
                 "Go intermediate root"
             );
+            if let FixturePrepared::Ordered(next) = &next {
+                ensure!(
+                    next.changed_accounts()
+                        .iter()
+                        .map(|change| change.address)
+                        .collect::<std::collections::BTreeSet<_>>()
+                        == changed,
+                    "ordered account projection set"
+                );
+            }
             let mut effect_accounts = Vec::new();
             for address in changed {
-                let account = concrete.prepared_account(&next, address)?;
+                let account = match &next {
+                    FixturePrepared::Cumulative(next) => {
+                        concrete.prepared_account(next, address)?
+                    }
+                    FixturePrepared::Ordered(next) => next
+                        .changed_accounts()
+                        .iter()
+                        .find(|change| change.address == address)
+                        .ok_or_else(|| anyhow::anyhow!("missing ordered account projection"))?
+                        .account
+                        .clone(),
+                };
                 effect_accounts.push(FinalChainConcreteAccountProjection {
                     address,
                     raw_account_rlp: match &account {
@@ -616,16 +703,21 @@ impl ConsensusExecutionPort for Adapter<'_> {
             bail!("fixture interrupted before concrete commit");
         }
         let catalog = concrete.observation()?.catalog_rlp;
-        let observed = concrete.commit_approved(
-            staged.prepared,
-            ConcreteCommitApproval {
-                marker_rlp: request.concrete_marker_rlp.clone(),
-                provenance_rlp: request.concrete_provenance_rlp.clone(),
-                catalog_rlp: catalog,
-                projection_hash: request.concrete_projection_hash,
-                catalog_hash: staged.projection.catalog_hash,
-            },
-        )?;
+        let approval = ConcreteCommitApproval {
+            marker_rlp: request.concrete_marker_rlp.clone(),
+            provenance_rlp: request.concrete_provenance_rlp.clone(),
+            catalog_rlp: catalog,
+            projection_hash: request.concrete_projection_hash,
+            catalog_hash: staged.projection.catalog_hash,
+        };
+        let observed = match staged.prepared {
+            FixturePrepared::Cumulative(prepared) => {
+                concrete.commit_approved(prepared, approval)?
+            }
+            FixturePrepared::Ordered(prepared) => {
+                concrete.commit_observer_approved(prepared, approval)?
+            }
+        };
         ensure!(
             observed.pending_marker_rlp.is_empty()
                 && observed.provenance_rlp == request.concrete_provenance_rlp,
@@ -942,6 +1034,7 @@ fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
             staged: RefCell::new(None),
             fixture: first,
             interruption,
+            ordered: false,
         };
         recover_final_chain_application_state(&chain, &adapter)?;
         let error = execute_final_chain_application_task(
@@ -1161,6 +1254,7 @@ fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
                 staged: RefCell::new(None),
                 fixture: period,
                 interruption: CommitInterruption::None,
+                ordered: false,
             };
             recover_final_chain_application_state(&chain, &adapter)?;
             let report = execute_final_chain_application_task(
@@ -1232,10 +1326,22 @@ fn verify_physical_rows(path: &Path, expected: &Value) -> Result<()> {
 
 #[test]
 fn signed_periods_commit_through_final_chain_and_continue_after_reopen() -> Result<()> {
+    run_signed_periods(false)
+}
+
+#[test]
+fn ordered_phases_commit_through_final_chain_and_continue_after_reopen() -> Result<()> {
+    run_signed_periods(true)
+}
+
+fn run_signed_periods(ordered: bool) -> Result<()> {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../../experiments/evm_feasibility/fixtures/s4_public.json"
     ))?;
-    let path = std::env::temp_dir().join(format!("rustaxa-evm-s4-period-{}", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "rustaxa-evm-s4-period-{ordered}-{}",
+        std::process::id()
+    ));
     std::fs::create_dir(&path)?;
     let application_path = path.join("application");
     let concrete_path = path.join("state_db");
@@ -1299,6 +1405,7 @@ fn signed_periods_commit_through_final_chain_and_continue_after_reopen() -> Resu
             staged: RefCell::new(None),
             fixture: period,
             interruption: CommitInterruption::None,
+            ordered,
         };
         recover_final_chain_application_state(&chain, &adapter)?;
         ensure!(

@@ -57,6 +57,16 @@ slot bytes, and every retained CF1–CF5 row. The finite complete-history read a
 private to these exclusively created fixture databases; it is not an imported-state
 coverage flag or a general period accumulator.
 
+The same signed-period fixture also runs through the
+[ordered observer overlay](s4_ordered_overlay_evidence.md). Each transaction submits
+only its settled delta, and the next transaction borrows the lifecycle's fixed
+prepared execution view. This path bypasses the old adapter's account, slot and
+code caches. Sealed phase output supplies the exact changed-account set and rows
+for projection, then selects the application-approved atomic commit. The original
+cumulative case and its assertions remain; both paths match the same Go intermediate
+roots, receipts, physical maps and close/reopen continuation. The private fresh-state
+absence knowledge remains a fixture-only wrapper around both read paths.
+
 ## Bounded interrupted publication
 
 Two additional synthetic cases interrupt the commit callback after the application
@@ -112,7 +122,9 @@ big-endian period suffix on CF3/CF5; it serializes/reloads those rows for contin
 It does not open Go RocksDB. Latest-view CF6/CF7, operational metadata and reference
 binary reopen are outside this row comparison. Neither batching-mode agreement nor
 the fresh-journal adapter generalizes to native/raw cache lifetimes, nested frames or
-account deletion after earlier slot writes. Those remain explicit next-slice work.
+account deletion after earlier slot writes. Separate ordered-overlay storage tests
+cover sequential slot deletion and account deletion/recreation; this signed-period
+fixture does not claim those execution or native-period cases.
 
 ## Reproduction and remaining gates
 

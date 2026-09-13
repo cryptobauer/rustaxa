@@ -21,8 +21,9 @@ The latter includes bounded interrupted-publication recovery. S5 adds the
 [four original stateless helpers](s5_original_stateless.md) and
 [native result application](s5_native_journal.md), plus a
 [staged setCommission kernel session](s5_native_kernel_implementation.md).
-Dispatcher integration, remaining native methods and the general ordered writer
-remain separate implementation work.
+The [ordered concrete overlay](s4_ordered_overlay_evidence.md) now also feeds the
+signed-period FinalChain composition. Dispatcher integration and remaining native
+methods remain separate implementation work.
 
 ## Research phases
 
