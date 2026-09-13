@@ -19,8 +19,10 @@ Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qua
 [the first persisted S4 FinalChain path](s4_persisted_period.md).
 The latter includes bounded interrupted-publication recovery. S5 adds the
 [four original stateless helpers](s5_original_stateless.md) and
-[native result application](s5_native_journal.md); native kernels, dispatcher
-integration and the general ordered writer remain separate implementation work.
+[native result application](s5_native_journal.md), plus a
+[staged setCommission kernel session](s5_native_kernel_implementation.md).
+Dispatcher integration, remaining native methods and the general ordered writer
+remain separate implementation work.
 
 ## Research phases
 
