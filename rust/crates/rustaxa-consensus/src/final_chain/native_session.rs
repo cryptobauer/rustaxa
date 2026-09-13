@@ -368,52 +368,34 @@ impl FinalChainNativeSession<'_> {
             _ => return Err(FinalChainNativeSessionError::UnsupportedOperation),
         };
 
-        let required_gas = if request.value.is_zero() {
-            let required = dpos_transaction_required_gas(
-                &transaction,
-                request.period,
-                self.final_chain.rewards_config.fix_claim_all_block_num,
-                self.final_chain.dpos_cornus_period,
-                None,
-            );
-            match required {
-                Ok(required) => required,
-                Err(error) => {
-                    self.aborted = true;
-                    return Err(FinalChainNativeSessionError::Domain(error.to_string()));
-                }
+        let admission = match self.final_chain.native_invocation_admission(
+            &transaction,
+            request.period,
+            request.depth,
+            request.value.value(),
+            request.supplied_gas,
+            None,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                self.aborted = true;
+                return Err(FinalChainNativeSessionError::Domain(error.to_string()));
             }
-        } else {
-            FinalChainGas::ZERO
         };
         let quote = FinalChainNativeGasQuote {
             invocation: request.id,
-            required_gas,
+            required_gas: admission.required_gas,
         };
-        if request.supplied_gas < required_gas {
+        if let Some(failure) = admission.failure {
+            use super::native_admission::NativeAdmissionFailure as Failure;
             self.prepared = Some(PreparedCall {
                 request: request.clone(),
                 quote,
-                kind: PreparedKind::InsufficientGas,
-            });
-            return Ok(quote);
-        }
-
-        if request.period < self.final_chain.rewards_config.fix_redelegate_block_num
-            && request.depth != 0
-        {
-            self.prepared = Some(PreparedCall {
-                request: request.clone(),
-                quote,
-                kind: PreparedKind::NestedCallRejected,
-            });
-            return Ok(quote);
-        }
-        if !request.value.is_zero() {
-            self.prepared = Some(PreparedCall {
-                request: request.clone(),
-                quote,
-                kind: PreparedKind::NonPayable,
+                kind: match failure {
+                    Failure::InsufficientGas => PreparedKind::InsufficientGas,
+                    Failure::NestedBeforeFix => PreparedKind::NestedCallRejected,
+                    Failure::NonPayable => PreparedKind::NonPayable,
+                },
             });
             return Ok(quote);
         }
@@ -1334,5 +1316,181 @@ mod tests {
                 );
             },
         );
+    }
+
+    fn replay_invocation(
+        chain: &FinalChain,
+        invocation: &FinalChainConcreteInvocation,
+    ) -> Result<()> {
+        let mut snapshot =
+            chain.dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)?;
+        chain.advance_reward_reference_graph_block(&mut snapshot, 1.into())?;
+        let mut gas_snapshot = snapshot.clone();
+        let mut accounts = chain.account_snapshot_map_at_block(FinalChainBlockNumber::GENESIS)?;
+        chain.replay_concrete_precompile_invocation(
+            1.into(),
+            invocation,
+            &mut snapshot,
+            &mut gas_snapshot,
+            &mut accounts,
+            FinalChainBlockNumber::GENESIS,
+            &mut None,
+            None,
+            &mut None,
+        )
+    }
+
+    #[test]
+    fn concrete_replay_shares_full_width_admission_and_exact_failure_text() {
+        with_chain("concrete-admission", 2.into(), |chain| {
+            let mut invocation = FinalChainConcreteInvocation {
+                transaction_index: 0,
+                sequence: 0,
+                depth: 1,
+                call_type: 0,
+                caller: OWNER,
+                contract: DPOS_CONTRACT_ADDRESS,
+                value: (BigUint::from(1_u8) << 264_usize).to_bytes_be(),
+                input: commission_input(VALIDATOR, 200),
+                output: Vec::new(),
+                supplied_gas: 0,
+                required_gas: 0,
+                gas_used: 0,
+                error: "only top-level calls are allowed".to_owned(),
+                logs: Vec::new(),
+                disposition: FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
+            };
+            replay_invocation(chain, &invocation).unwrap();
+            invocation.error = "Method is not payable".to_owned();
+            assert!(
+                replay_invocation(chain, &invocation)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("ERROR_MISMATCH")
+            );
+            invocation.depth = 0;
+            replay_invocation(chain, &invocation).unwrap();
+            invocation.value.clear();
+            invocation.depth = 1;
+            invocation.required_gas = DPOS_SET_COMMISSION_GAS;
+            invocation.supplied_gas = DPOS_SET_COMMISSION_GAS - 1;
+            invocation.error = "out of gas".to_owned();
+            replay_invocation(chain, &invocation).unwrap();
+            invocation.error = "only top-level calls are allowed".to_owned();
+            assert!(replay_invocation(chain, &invocation).is_err());
+            invocation.supplied_gas = DPOS_SET_COMMISSION_GAS;
+            invocation.gas_used = DPOS_SET_COMMISSION_GAS;
+            replay_invocation(chain, &invocation).unwrap();
+        });
+        with_chain("concrete-kernel-error", 0.into(), |chain| {
+            let mut invocation = FinalChainConcreteInvocation {
+                transaction_index: 0,
+                sequence: 0,
+                depth: 1,
+                call_type: 0,
+                caller: [0xab; 20],
+                contract: DPOS_CONTRACT_ADDRESS,
+                value: Vec::new(),
+                input: commission_input(VALIDATOR, 200),
+                output: Vec::new(),
+                supplied_gas: DPOS_SET_COMMISSION_GAS,
+                required_gas: DPOS_SET_COMMISSION_GAS,
+                gas_used: DPOS_SET_COMMISSION_GAS,
+                error: "This account is not owner of specified validator".to_owned(),
+                logs: Vec::new(),
+                disposition: FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
+            };
+            replay_invocation(chain, &invocation).unwrap();
+            invocation.error = "some other failure".to_owned();
+            assert!(
+                replay_invocation(chain, &invocation)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("ERROR_MISMATCH")
+            );
+        });
+    }
+
+    #[test]
+    fn concrete_replay_classifies_wide_delegate_without_low_word_aliasing() {
+        with_chain("concrete-wide-delegate", 0.into(), |chain| {
+            let mut input = DPOS_DELEGATE_SELECTOR.to_vec();
+            input.extend_from_slice(&[0; 12]);
+            input.extend_from_slice(&VALIDATOR);
+            let invocation = FinalChainConcreteInvocation {
+                transaction_index: 0,
+                sequence: 0,
+                depth: 0,
+                call_type: 0,
+                caller: OWNER,
+                contract: DPOS_CONTRACT_ADDRESS,
+                value: ((BigUint::from(1_u8) << 256_usize) + BigUint::from(7_u8)).to_bytes_be(),
+                input,
+                output: Vec::new(),
+                supplied_gas: DPOS_DELEGATE_GAS,
+                required_gas: DPOS_DELEGATE_GAS,
+                gas_used: DPOS_DELEGATE_GAS,
+                error: "Validator's max stake exceeded".to_owned(),
+                logs: Vec::new(),
+                disposition: FINAL_CHAIN_CONCRETE_INVOCATION_OWN_FRAME_REVERTED,
+            };
+            replay_invocation(chain, &invocation).unwrap();
+        });
+    }
+
+    #[test]
+    fn concrete_replay_normalizes_leading_zero_delegate_value() {
+        with_chain("concrete-leading-zero-delegate", 0.into(), |chain| {
+            let mut input = DPOS_DELEGATE_SELECTOR.to_vec();
+            input.extend_from_slice(&[0; 12]);
+            input.extend_from_slice(&VALIDATOR);
+            // Bind expected ordinary kernel output for amount seven, then
+            // replay the same numeric value with oversized leading-zero bytes.
+            let mut snapshot = chain.dpos_snapshot_at_finalized_block(0.into()).unwrap();
+            chain
+                .advance_reward_reference_graph_block(&mut snapshot, 1.into())
+                .unwrap();
+            let mut accounts = chain.account_snapshot_map_at_block(0.into()).unwrap();
+            let outcome = chain
+                .apply_dpos_delegate(&mut snapshot, &mut accounts, VALIDATOR, VALIDATOR, vec![7])
+                .unwrap();
+            assert_eq!(outcome.status_code, 1);
+            let mut value = vec![0; 40];
+            value.push(7);
+            let invocation = FinalChainConcreteInvocation {
+                transaction_index: 0,
+                sequence: 0,
+                depth: 0,
+                call_type: 0,
+                caller: VALIDATOR,
+                contract: DPOS_CONTRACT_ADDRESS,
+                value,
+                input,
+                output: outcome.code_retval,
+                supplied_gas: DPOS_DELEGATE_GAS,
+                required_gas: DPOS_DELEGATE_GAS,
+                gas_used: DPOS_DELEGATE_GAS,
+                error: String::new(),
+                logs: outcome
+                    .logs
+                    .into_iter()
+                    .map(|log| crate::final_chain_execution::FinalChainEvmLog {
+                        address: log.address,
+                        topics: log
+                            .topics
+                            .into_iter()
+                            .map(
+                                |topic| crate::final_chain_execution::FinalChainEvmLogTopic {
+                                    topic,
+                                },
+                            )
+                            .collect(),
+                        data: log.data,
+                    })
+                    .collect(),
+                disposition: FINAL_CHAIN_CONCRETE_INVOCATION_NORMAL,
+            };
+            replay_invocation(chain, &invocation).unwrap();
+        });
     }
 }

@@ -77,6 +77,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use triehash::ordered_trie_root;
 
+mod native_admission;
 pub mod native_session;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5418,27 +5419,57 @@ impl FinalChain {
                 self.dpos_cornus_period,
                 self.dpos_phalaenopsis_period,
             );
-            Self::inject_dpos_transaction_value(
-                &mut transaction,
-                rustaxa_types::FinalChainTransactionValue::try_from_be_slice(&invocation.value)?,
-            );
-            let required = dpos_transaction_required_gas(
-                &transaction,
-                block_number,
-                self.rewards_config.fix_claim_all_block_num,
-                self.dpos_cornus_period,
-                if matches!(transaction, DposTransaction::ClaimAllRewards { .. }) {
-                    Some(&*dpos_gas_snapshot)
-                } else {
-                    Some(&*dpos_snapshot)
-                },
-            )?;
+            let shared_admission = native_admission::supports_shared_admission(&transaction);
+            let admission = if shared_admission {
+                Some(self.native_invocation_admission(
+                    &transaction,
+                    block_number,
+                    invocation.depth,
+                    &BigUint::from_bytes_be(&invocation.value),
+                    invocation.supplied_gas.into(),
+                    Some(dpos_snapshot),
+                )?)
+            } else {
+                None
+            };
+            // Recognized terminal failures must not narrow value merely to
+            // reject it. Payable kernel arguments retain their full numeric value.
+            if shared_admission {
+                if let DposTransaction::Delegate { amount, .. } = &mut transaction {
+                    *amount = BigUint::from_bytes_be(&invocation.value).to_bytes_be();
+                }
+            } else {
+                Self::inject_dpos_transaction_value(
+                    &mut transaction,
+                    rustaxa_types::FinalChainTransactionValue::try_from_be_slice(
+                        &invocation.value,
+                    )?,
+                );
+            }
+            let required = match &admission {
+                Some(admission) => admission.required_gas,
+                None => dpos_transaction_required_gas(
+                    &transaction,
+                    block_number,
+                    self.rewards_config.fix_claim_all_block_num,
+                    self.dpos_cornus_period,
+                    if matches!(transaction, DposTransaction::ClaimAllRewards { .. }) {
+                        Some(&*dpos_gas_snapshot)
+                    } else {
+                        Some(&*dpos_snapshot)
+                    },
+                )?,
+            };
             anyhow::ensure!(
                 invocation.required_gas == required.as_u64(),
                 "FINAL_CHAIN_CONCRETE_INVOCATION_REQUIRED_GAS_MISMATCH"
             );
             let transaction_for_gas = transaction.clone();
-            let outcome = if invocation.supplied_gas < invocation.required_gas {
+            let outcome = if let Some(failure) = admission.and_then(|value| value.failure) {
+                DposApplyOutcome::mutation_contract_failure(DposContractError::LegacyMessage(
+                    failure.message().to_owned(),
+                ))
+            } else if invocation.supplied_gas < invocation.required_gas {
                 DposApplyOutcome::contract_failure()
             } else if Self::is_dpos_mutation_transaction(&transaction) {
                 self.apply_dpos_mutation_transaction(
@@ -5532,6 +5563,12 @@ impl FinalChain {
             outcome.status_code == u8::from(invocation.error.is_empty()),
             "FINAL_CHAIN_CONCRETE_INVOCATION_STATUS_MISMATCH"
         );
+        if let Some(error) = &outcome.contract_error {
+            anyhow::ensure!(
+                error.legacy_message() == invocation.error,
+                "FINAL_CHAIN_CONCRETE_INVOCATION_ERROR_MISMATCH"
+            );
+        }
         anyhow::ensure!(
             outcome.code_retval == invocation.output,
             "FINAL_CHAIN_CONCRETE_INVOCATION_OUTPUT_MISMATCH"
@@ -7628,7 +7665,13 @@ impl FinalChain {
             ));
         };
         let current_stake = stake.as_u256();
-        let add_amount = u256_from_big_endian(&amount);
+        let amount = BigUint::from_bytes_be(&amount);
+        if amount.bits() > 256 {
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::ValidatorsMaxStakeExceeded,
+            ));
+        }
+        let add_amount = u256_from_big_endian(&amount.to_bytes_be());
         let maximum_stake = self.dpos_validator_maximum_stake.as_u256();
         let Some(new_stake) = current_stake.checked_add(add_amount) else {
             return Ok(DposApplyOutcome::mutation_contract_failure(
