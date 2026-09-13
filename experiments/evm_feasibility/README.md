@@ -129,3 +129,12 @@ additive journal/TrieSink cases against both pinned references. It captures
 ordinary/raw overlap, rollback, new-account deletion, transaction-local resets,
 exact physical rows and memory reopen. See the [contract evidence](../../doc/evm_research/journal_contract_evidence.md)
 for scope and validation limits; existing research fixtures are unchanged.
+
+`python3 experiments/evm_feasibility/ordered_overlay_reference.py` reproduces
+the additive ordered-observer corpus. It drives the pinned Go `TrieSink`
+directly and records exact roots plus accumulated in-memory CF1-CF5-equivalent
+rows for ordinary put followed by raw delete, account deletion, recreation with
+a nil storage root, and a new storage root that retains the earlier physical
+orphan. `--record` refreshes the fixture only after both pinned references agree.
+The corpus does not open RocksDB, execute an EVM envelope, establish imported
+history coverage, publish application state, or authorize production routing.

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Synthetic direct TrieSink ordered ordinary/raw and account delete/recreate phases with exact accumulated memory rows; no EVM envelope, RocksDB, application publication, imported history, or production-routing claim",
+  "exporter_sha256": "82ca898dcdabd30fc0b1129587c52545034eed51cb4a2b15b69494bc57354616",
+  "sha256": {
+    "public": "b838ca31b575f2b0338ea59bf7e9e71bb9bc9d6596040d5a266c0e0f39612b3c",
+    "local": "b838ca31b575f2b0338ea59bf7e9e71bb9bc9d6596040d5a266c0e0f39612b3c"
+  }
+}
