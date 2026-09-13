@@ -86,6 +86,10 @@ mod mixed_genesis_tests;
 
 mod native_admission;
 pub mod native_session;
+use native_session::context_replay::{
+    validate_native_context_final_storage, validate_native_context_reward_accounts,
+    validate_native_context_transaction_storage,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StoredDposTokenAmountEncoding {
@@ -5188,11 +5192,12 @@ impl FinalChain {
     /// Independently replays a root-bound StateAPI projection into native
     /// DPoS/slashing state and an exact account snapshot.
     ///
-    /// Every invocation is replayed in concrete sequence, including writes the
-    /// legacy precompile intentionally leaves irreversible when its own or an
-    /// enclosing EVM frame reverts. Per-transaction account deltas are applied
-    /// only after the corresponding semantic replay, so a later invocation sees
-    /// the exact concrete balances/nonces produced by earlier arbitrary EVM.
+    /// Every invocation is replayed in concrete sequence. An optional bound
+    /// context retains exact current-frame reads and ordered native effects,
+    /// including raw writes surviving an enclosing ordinary-frame revert.
+    /// Surviving transaction account projections and terminal reward reads are
+    /// checked separately before the resulting candidate state can publish.
+    /// Without a context, the existing transaction-boundary replay is retained.
     pub(crate) fn external_evm_concrete_projection(
         &self,
         block_number: FinalChainBlockNumber,
@@ -5201,13 +5206,32 @@ impl FinalChain {
         projection: &FinalChainConcreteStateProjection,
         rewards_plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
         reported_total_reward: &[u8],
+        native_context: Option<
+            &crate::native_projection_context::FinalChainNativeProjectionContext,
+        >,
     ) -> Result<(Vec<u8>, Vec<u8>), anyhow::Error> {
         anyhow::ensure!(
             projection.transaction_effects.len() == transactions.len(),
             "FINAL_CHAIN_CONCRETE_TRANSACTION_EFFECT_COUNT_MISMATCH"
         );
         let head = self.last_block_number_typed()?;
+        let mut native_replay = native_context
+            .map(|context| self.begin_native_session_bound(context.request_id, block_number, head))
+            .transpose()?;
         let mut accounts = self.current_account_snapshot()?;
+        let bounded_native_code = if native_context.is_some() {
+            let account = accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_NATIVE_CONTEXT_ACCOUNT_MISSING"))?;
+            anyhow::ensure!(
+                account.code_size > 0,
+                "FINAL_CHAIN_NATIVE_CONTEXT_PREEXISTING_CODE_REQUIRED"
+            );
+            Some((account.code_hash, account.code_size))
+        } else {
+            None
+        };
+
         let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head)?;
         self.advance_reward_reference_graph_block(&mut dpos_snapshot, block_number)?;
         let mut dpos_gas_snapshot = dpos_snapshot.clone();
@@ -5237,6 +5261,15 @@ impl FinalChain {
                     && encode_concrete_evm_transaction(transaction) == effect.transaction_rlp,
                 "FINAL_CHAIN_CONCRETE_TRANSACTION_EFFECT_IDENTITY_MISMATCH"
             );
+            if let (Some(replay), Some(context)) = (&mut native_replay, native_context) {
+                for invocation in &effect.invocations {
+                    let index = usize::try_from(invocation.sequence)?;
+                    let context = context.invocations.get(index).ok_or_else(|| {
+                        anyhow::anyhow!("FINAL_CHAIN_NATIVE_CONTEXT_SEQUENCE_MISSING")
+                    })?;
+                    replay.replay_context(context, invocation)?;
+                }
+            }
             let is_native_envelope = matches!(
                 transaction.kind,
                 FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER
@@ -5289,55 +5322,91 @@ impl FinalChain {
                 let mut replay_accounts = accounts_before;
                 let mut replay_dpos = dpos_before;
                 let mut replay_gas_snapshot = dpos_gas_snapshot.clone();
-                for invocation in &effect.invocations {
-                    self.replay_concrete_precompile_invocation(
-                        block_number,
-                        invocation,
-                        &mut replay_dpos,
-                        &mut replay_gas_snapshot,
-                        &mut replay_accounts,
-                        head,
-                        &mut dpos_eligibility_read_snapshot,
-                        slashing_validator_snapshot.as_ref(),
-                        &mut slashing_read_snapshot,
-                    )?;
+                if let Some(replay) = &native_replay {
+                    replay_dpos = replay.projection_snapshot();
+                } else {
+                    for invocation in &effect.invocations {
+                        self.replay_concrete_precompile_invocation(
+                            block_number,
+                            invocation,
+                            &mut replay_dpos,
+                            &mut replay_gas_snapshot,
+                            &mut replay_accounts,
+                            head,
+                            &mut dpos_eligibility_read_snapshot,
+                            slashing_validator_snapshot.as_ref(),
+                            &mut slashing_read_snapshot,
+                        )?;
+                    }
                 }
                 anyhow::ensure!(
                     replay_dpos == execution.dpos_snapshot,
                     "FINAL_CHAIN_CONCRETE_NATIVE_DPOS_EFFECT_MISMATCH"
                 );
-
                 dpos_snapshot = execution.dpos_snapshot;
                 dpos_gas_snapshot = replay_gas_snapshot;
                 accounts = expected_accounts;
-                // Concrete account rows additionally carry exact code/storage
-                // roots, which Rust does not synthesize. They may update only
-                // after nonce/balance parity has been established above.
+                // Exact code/storage metadata follows nonce/balance parity.
                 apply_concrete_account_projection(&mut accounts, &effect.accounts)?;
             } else {
-                for invocation in &effect.invocations {
-                    self.replay_concrete_precompile_invocation(
-                        block_number,
-                        invocation,
-                        &mut dpos_snapshot,
-                        &mut dpos_gas_snapshot,
-                        &mut accounts,
-                        head,
-                        &mut dpos_eligibility_read_snapshot,
-                        slashing_validator_snapshot.as_ref(),
-                        &mut slashing_read_snapshot,
-                    )?;
+                if let Some(replay) = &native_replay {
+                    dpos_snapshot = replay.projection_snapshot();
+                } else {
+                    for invocation in &effect.invocations {
+                        self.replay_concrete_precompile_invocation(
+                            block_number,
+                            invocation,
+                            &mut dpos_snapshot,
+                            &mut dpos_gas_snapshot,
+                            &mut accounts,
+                            head,
+                            &mut dpos_eligibility_read_snapshot,
+                            slashing_validator_snapshot.as_ref(),
+                            &mut slashing_read_snapshot,
+                        )?;
+                    }
                 }
                 apply_concrete_account_projection(&mut accounts, &effect.accounts)?;
             }
-            validate_concrete_precompile_storage_transition(
-                &dpos_before_effect,
-                &dpos_snapshot,
-                !self.pre_magnolia_fee_reward_period(block_number),
-                &effect.storage,
-                "TRANSACTION",
-            )?;
+            if let Some(expected_code) = bounded_native_code {
+                let account = accounts
+                    .get(&DPOS_CONTRACT_ADDRESS)
+                    .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_NATIVE_CONTEXT_ACCOUNT_DELETED"))?;
+                anyhow::ensure!(
+                    (account.code_hash, account.code_size) == expected_code,
+                    "FINAL_CHAIN_NATIVE_CONTEXT_CODE_CHANGED"
+                );
+            }
+            if let Some(context) = native_context {
+                let transient_rows = validate_native_context_transaction_storage(context, effect)?;
+                validate_concrete_precompile_storage_transition_with_deferred_counters(
+                    &dpos_before_effect,
+                    &dpos_snapshot,
+                    !self.pre_magnolia_fee_reward_period(block_number),
+                    &effect.storage,
+                    "TRANSACTION",
+                    Some(&transient_rows),
+                )?;
+            } else {
+                validate_concrete_precompile_storage_transition(
+                    &dpos_before_effect,
+                    &dpos_snapshot,
+                    !self.pre_magnolia_fee_reward_period(block_number),
+                    &effect.storage,
+                    "TRANSACTION",
+                )?;
+            }
         }
+        if let Some(context) = native_context {
+            validate_native_context_reward_accounts(&accounts, &context.rewards.accounts)?;
+        }
+        let replayed_rewards = match (native_replay, native_context) {
+            (Some(replay), Some(context)) => {
+                Some(replay.replay_rewards_context(rewards_plan, &context.rewards)?)
+            }
+            (None, None) => None,
+            _ => anyhow::bail!("FINAL_CHAIN_NATIVE_CONTEXT_SESSION_MISMATCH"),
+        };
         let dpos_before_rewards = dpos_snapshot.clone();
         cleanup_slashing_jailed_validators(&mut dpos_snapshot, block_number);
 
@@ -5358,6 +5427,16 @@ impl FinalChain {
         merge_reward_map(&mut reward_deltas.commission_rewards, &fee_rewards)?;
         self.apply_dpos_reward_deltas(&mut dpos_snapshot, reward_deltas, supply_after)?;
         self.apply_redelegate_hardfork_corrections(&mut dpos_snapshot, block_number)?;
+        if let Some(replayed) = &replayed_rewards {
+            anyhow::ensure!(
+                replayed.dpos_snapshot == dpos_snapshot
+                    && replayed.total_reward == total_minted_reward,
+                "FINAL_CHAIN_NATIVE_REWARDS_CONTEXT_SEMANTIC_MISMATCH"
+            );
+        }
+        if let Some(context) = native_context {
+            validate_native_context_final_storage(context, &projection.storage)?;
+        }
         validate_concrete_precompile_final_storage(
             &dpos_before_rewards,
             &dpos_snapshot,
@@ -9856,7 +9935,10 @@ fn canonical_concrete_precompile_storage(
             for entry in &validator_entries.entries {
                 let id = entry.id.to_le_bytes();
                 id_items.push(id.to_vec());
-                let mut undelegation = rlp::RlpStream::new_list(3);
+                // Go embeds UndelegationV1 as a struct field. Its raw V2
+                // row is [[amount, block], id], not a flattened three-item list.
+                let mut undelegation = rlp::RlpStream::new_list(2);
+                undelegation.begin_list(2);
                 undelegation.append(&entry.amount.as_u256());
                 undelegation.append(&entry.block);
                 undelegation.append(&entry.id);
@@ -9972,6 +10054,27 @@ fn validate_concrete_precompile_storage_transition(
     rows: &[FinalChainConcreteStorageProjection],
     boundary: &str,
 ) -> Result<(), anyhow::Error> {
+    validate_concrete_precompile_storage_transition_with_deferred_counters(
+        before,
+        after,
+        extended_validator_active,
+        rows,
+        boundary,
+        None,
+    )
+}
+
+/// Validates selected staged-native transitions with the two Go end-block
+/// aggregate counters kept in their raw period-start state until rewards finish.
+/// Every other changed semantic row remains required at the transaction boundary.
+fn validate_concrete_precompile_storage_transition_with_deferred_counters(
+    before: &DposSnapshot,
+    after: &DposSnapshot,
+    extended_validator_active: bool,
+    rows: &[FinalChainConcreteStorageProjection],
+    boundary: &str,
+    transient_rows: Option<&BTreeSet<([u8; 20], [u8; 32])>>,
+) -> Result<(), anyhow::Error> {
     let before = canonical_concrete_precompile_storage(before, extended_validator_active)?;
     let after = canonical_concrete_precompile_storage(after, extended_validator_active)?;
     let actual = rows
@@ -9979,6 +10082,14 @@ fn validate_concrete_precompile_storage_transition(
         .map(|row| ((row.contract, row.key), row.value.as_slice()))
         .collect::<BTreeMap<_, _>>();
 
+    let deferred = [
+        (DPOS_CONTRACT_ADDRESS, concrete_storage_key(&[&[4]])),
+        (DPOS_CONTRACT_ADDRESS, concrete_storage_key(&[&[5]])),
+    ];
+    anyhow::ensure!(
+        transient_rows.is_none() || deferred.iter().all(|key| !actual.contains_key(key)),
+        "FINAL_CHAIN_CONCRETE_STORAGE_PREMATURE_AGGREGATE_WRITE:{boundary}"
+    );
     for (key, value) in &actual {
         anyhow::ensure!(
             key.0 == DPOS_CONTRACT_ADDRESS || key.0 == SLASHING_CONTRACT_ADDRESS,
@@ -9993,13 +10104,17 @@ fn validate_concrete_precompile_storage_transition(
             );
         } else {
             anyhow::ensure!(
-                before.contains_key(key) && value.is_empty(),
+                (before.contains_key(key) || transient_rows.is_some_and(|rows| rows.contains(key)))
+                    && value.is_empty(),
                 "FINAL_CHAIN_CONCRETE_STORAGE_TOMBSTONE_MISMATCH:{boundary}"
             );
         }
     }
 
     for key in before.keys().chain(after.keys()).collect::<BTreeSet<_>>() {
+        if transient_rows.is_some() && deferred.contains(key) {
+            continue;
+        }
         let changed = !concrete_storage_values_equivalent(before.get(key), after.get(key));
         anyhow::ensure!(
             !changed || actual.contains_key(key),

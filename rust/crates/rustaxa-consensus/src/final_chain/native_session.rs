@@ -12,6 +12,7 @@ use super::*;
 use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteStorageKey};
 
 pub(super) mod account;
+pub(super) mod context_replay;
 pub(super) mod raw;
 pub(super) mod rewards;
 

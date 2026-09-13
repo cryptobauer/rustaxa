@@ -16,9 +16,10 @@ use rustaxa_consensus::{
     FinalChain,
     native_session::{
         FinalChainNativeCallKind, FinalChainNativeGasQuote, FinalChainNativeInvocationId,
-        FinalChainNativeInvocationResult, FinalChainNativeOutcome, FinalChainNativeRequest,
-        FinalChainNativeSession, FinalChainNativeSessionError, FinalChainNativeStateRead,
-        FinalChainNativeStateReadError, FinalChainNativeStatus, FinalChainNativeValue,
+        FinalChainNativeInvocationResult, FinalChainNativeOutcome, FinalChainNativeRawOperation,
+        FinalChainNativeRequest, FinalChainNativeSession, FinalChainNativeSessionError,
+        FinalChainNativeStateRead, FinalChainNativeStateReadError, FinalChainNativeStatus,
+        FinalChainNativeValue,
     },
 };
 use rustaxa_evm::{
@@ -444,6 +445,10 @@ fn native_id(id: FinalChainNativeInvocationId) -> NativeInvocationId {
 }
 
 fn native_outcome(outcome: FinalChainNativeOutcome) -> Result<NativeOutcome, NativePortError> {
+    assert!(
+        outcome.account_mutations.is_empty(),
+        "setCommission must not produce ordinary account effects"
+    );
     let status = match outcome.status {
         FinalChainNativeStatus::Success => NativeStatus::Success,
         FinalChainNativeStatus::ContractFailure { error } => {
@@ -454,13 +459,18 @@ fn native_outcome(outcome: FinalChainNativeOutcome) -> Result<NativeOutcome, Nat
         .raw_mutations
         .into_iter()
         .map(|mutation| {
-            let value = NativeRawValue::new(mutation.replacement)
-                .map_err(|error| NativePortError::Infrastructure(error.to_string()))?;
+            let operation = match mutation.operation {
+                FinalChainNativeRawOperation::Put(value) => NativeRawOperation::Put(
+                    NativeRawValue::new(value.into_bytes())
+                        .map_err(|error| NativePortError::Infrastructure(error.to_string()))?,
+                ),
+                FinalChainNativeRawOperation::Delete => NativeRawOperation::Delete,
+            };
             Ok(NativeRawMutation {
                 address: mutation.address,
                 key: mutation.key,
                 expected: mutation.expected,
-                operation: NativeRawOperation::Put(value),
+                operation,
             })
         })
         .collect::<Result<Vec<_>, NativePortError>>()?;

@@ -13,6 +13,7 @@ pub(crate) mod dag_transaction_service;
 pub(crate) mod dpos_reward_graph;
 pub mod gas_pricer;
 pub mod maybe_broadcast_votes;
+pub mod native_projection_context;
 pub mod network_api;
 pub mod pbft_application_finalization;
 pub mod pbft_chain;

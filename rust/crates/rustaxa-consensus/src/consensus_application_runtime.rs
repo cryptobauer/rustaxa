@@ -481,6 +481,30 @@ pub trait ConsensusExecutionPort {
         bail!("CONSENSUS_FINAL_CHAIN_REWARDS_PORT_UNAVAILABLE")
     }
 
+    /// Applies the rewards boundary with an opaque application-owned native plan.
+    /// Legacy implementations retain the existing request-only operation. A
+    /// staged native adapter borrows the plan to finish its unpublished session;
+    /// the application retains all runtime and storage publication authority.
+    fn distribute_final_chain_rewards_with_native_plan(
+        &self,
+        request: &crate::FinalChainEvmRewardsRequest,
+        _plan: &crate::final_chain_execution::FinalChainPreparedExternalEvmRewardsStatsPlan,
+    ) -> Result<crate::FinalChainEvmRewardsReport> {
+        self.distribute_final_chain_rewards(request)
+    }
+
+    /// Supplies the optional Rust invocation context after rewards preparation.
+    /// The exact request/projection binding is validated before durable intent.
+    /// Staged-native implementations must fail if context is unavailable; legacy
+    /// leaves preserve their existing projection path by returning `None`.
+    fn final_chain_native_projection_context(
+        &self,
+        _request_id: [u8; 32],
+        _projection_hash: [u8; 32],
+    ) -> Result<Option<crate::native_projection_context::FinalChainNativeProjectionContext>> {
+        Ok(None)
+    }
+
     fn commit_final_chain_state(
         &self,
         _request: &crate::FinalChainExternalEvmStateCommitIntent,
@@ -537,6 +561,22 @@ impl<T: ConsensusExecutionPort> crate::FinalChainExecutionLeaf for T {
         request: &crate::FinalChainEvmRewardsRequest,
     ) -> Result<crate::FinalChainEvmRewardsReport> {
         self.distribute_final_chain_rewards(request)
+    }
+
+    fn distribute_rewards_with_native_plan(
+        &self,
+        request: &crate::FinalChainEvmRewardsRequest,
+        plan: &crate::final_chain_execution::FinalChainPreparedExternalEvmRewardsStatsPlan,
+    ) -> Result<crate::FinalChainEvmRewardsReport> {
+        self.distribute_final_chain_rewards_with_native_plan(request, plan)
+    }
+
+    fn native_projection_context(
+        &self,
+        request_id: [u8; 32],
+        projection_hash: [u8; 32],
+    ) -> Result<Option<crate::native_projection_context::FinalChainNativeProjectionContext>> {
+        self.final_chain_native_projection_context(request_id, projection_hash)
     }
 
     fn commit_staged_state(
