@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Synthetic Go EVM SELFDESTRUCT frames and logical transaction settlement; no trie persistence or production routing",
+  "sha256": {
+    "public": "5e7452f78585b2c714f045a7bdb0c15f4cbbb7870d8044a1357f119bffa02db6",
+    "local": "5e7452f78585b2c714f045a7bdb0c15f4cbbb7870d8044a1357f119bffa02db6"
+  },
+  "exporter_sha256": "9cd285898ae851a755322feb5c410027a8822f74e8c6149d2b67ce54254c9061"
+}

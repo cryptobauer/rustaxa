@@ -112,22 +112,64 @@ impl TaraxaProfile {
         (table, costs)
     }
 
-    /// Builds the driver table that defers CALL-family target code bytes.
+    /// Builds the driver table with Taraxa frame-admission ordering.
     ///
     /// Account metadata remains authoritative during opcode gas calculation.
     /// The driver must load and validate the referenced bytes after Taraxa's
     /// depth and balance pre-entry checks and before starting a child frame.
+    /// SELFDESTRUCT checks operands/static protection and computes gas facts
+    /// before charging its base cost and applying account mutation.
     #[must_use]
-    pub(crate) fn execution_instruction_table<H: Host + DeferredCallCodeLoad>(
+    pub(crate) fn execution_instruction_table<
+        H: Host + DeferredCallCodeLoad + DeferredSelfDestruct,
+    >(
         &self,
     ) -> (InstructionTable<EthInterpreter, H>, [u16; 256]) {
-        let (mut table, costs) = self.instruction_table::<H>();
+        let (mut table, mut costs) = self.instruction_table::<H>();
         table[CALL as usize] = Instruction::new(call_with_deferred_code::<CALL, H>);
         table[CALLCODE as usize] = Instruction::new(call_with_deferred_code::<CALLCODE, H>);
         table[DELEGATECALL as usize] = Instruction::new(call_with_deferred_code::<DELEGATECALL, H>);
         table[STATICCALL as usize] = Instruction::new(call_with_deferred_code::<STATICCALL, H>);
+        table[0xff] = Instruction::new(selfdestruct_after_gas::<H>);
+        // Go validates stack/static protection and loads quote facts first.
+        costs[0xff] = 0;
         (table, costs)
     }
+}
+
+/// Execution-only host control that separates SELFDESTRUCT quote from mutation.
+pub(crate) trait DeferredSelfDestruct {
+    /// Enables a read-only quote for the next SELFDESTRUCT opcode.
+    fn begin_selfdestruct(&mut self);
+    /// Discards the quote, applying its mutation only after successful gas admission.
+    fn finish_selfdestruct(
+        &mut self,
+        admitted: bool,
+    ) -> Result<(), revm::context_interface::host::LoadError>;
+}
+
+fn selfdestruct_after_gas<H: Host + DeferredSelfDestruct>(
+    ctx: InstructionContext<'_, H, EthInterpreter>,
+) -> InstructionExecResult {
+    let InstructionContext { interpreter, host } = ctx;
+    // Go validates operands before static-write protection.
+    if interpreter.stack.is_empty() {
+        return Err(revm::interpreter::InstructionResult::StackUnderflow);
+    }
+    host.begin_selfdestruct();
+    let mut result = instructions::host::selfdestruct(InstructionContext { interpreter, host });
+    if matches!(
+        result,
+        Err(revm::interpreter::InstructionResult::SelfDestruct)
+    ) && !interpreter.gas.record_regular_cost(5_000)
+    {
+        result = Err(revm::interpreter::InstructionResult::OutOfGas);
+    }
+    host.finish_selfdestruct(matches!(
+        result,
+        Err(revm::interpreter::InstructionResult::SelfDestruct)
+    ))?;
+    result
 }
 
 /// Host control used only while a CALL-family opcode prepares its frame action.

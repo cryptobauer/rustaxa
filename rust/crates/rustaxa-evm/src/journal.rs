@@ -6,7 +6,7 @@
 //! through [`ConcreteExecutionRead`] and emits a typed write plan; it never writes a
 //! database or publishes a FinalChain generation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use num_bigint::{BigInt, BigUint};
 use rustaxa_types::{
@@ -137,7 +137,7 @@ pub enum JournalAccountOperation {
         /// Exact reference code size.
         code_size: u64,
     },
-    /// Remove a modified EIP-161-empty account.
+    /// Remove a modified suicided or EIP-161-empty account.
     Delete,
 }
 
@@ -215,6 +215,7 @@ pub struct SettledTransaction {
 #[derive(Clone, Debug)]
 struct JournalAccount {
     exists: bool,
+    suicided: bool,
     mod_count: u32,
     times_touched: u32,
     nonce: FinalChainNonce,
@@ -240,6 +241,11 @@ struct StorageCell {
 
 #[derive(Clone, Debug)]
 enum Undo {
+    Suicide {
+        address: JournalAddress,
+        previous: bool,
+        balance: ExecutionBalance,
+    },
     Creation {
         address: JournalAddress,
         previous: Option<JournalAccount>,
@@ -261,7 +267,7 @@ enum Undo {
     Storage {
         address: JournalAddress,
         key: ConcreteStorageKey,
-        previous: Option<StorageCell>,
+        previous: StorageCell,
     },
 }
 
@@ -354,6 +360,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                         }
                     }
                     self.raw.retain(|(owner, _), _| owner != &address);
+                    self.ordinary.retain(|(owner, _), _| owner != &address);
                 }
                 Undo::Touch { address } => {
                     let account = self
@@ -379,6 +386,19 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                     account.balance = previous;
                     account.mod_count = account.mod_count.saturating_sub(1);
                 }
+                Undo::Suicide {
+                    address,
+                    previous,
+                    balance,
+                } => {
+                    let account = self
+                        .accounts
+                        .get_mut(&address)
+                        .expect("suicide account exists");
+                    account.suicided = previous;
+                    account.balance = balance;
+                    account.mod_count = account.mod_count.saturating_sub(1);
+                }
                 Undo::Code { address } => {
                     let account = self
                         .accounts
@@ -394,14 +414,12 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
                     key,
                     previous,
                 } => {
-                    match previous {
-                        Some(cell) => {
-                            self.ordinary.insert((address, key), cell);
-                        }
-                        None => {
-                            self.ordinary.remove(&(address, key));
-                        }
-                    }
+                    // Go restores the value in StorageDirty, even when the
+                    // first write was reverted. Emit it only if this account
+                    // later flushes for some surviving mutation.
+                    let mut previous = previous;
+                    previous.dirty = true;
+                    self.ordinary.insert((address, key), previous);
                     let account = self
                         .accounts
                         .get_mut(&address)
@@ -587,6 +605,47 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         )
     }
 
+    /// Applies the historical account suicide after opcode gas admission.
+    ///
+    /// Transfers the full signed balance before zeroing the source and marks it
+    /// for deletion at transaction settlement. Code, nonce and storage remain
+    /// visible until settlement. All changes use ordinary frame rollback; raw
+    /// and transient lanes retain their existing independent lifetimes. A missing
+    /// source only touches the beneficiary. Self-beneficiary transfer still ends
+    /// at zero. Read errors propagate before any mutation.
+    pub fn selfdestruct(
+        &mut self,
+        address: JournalAddress,
+        beneficiary: JournalAddress,
+    ) -> Result<(), JournalError> {
+        let source = self.load_account(address)?;
+        let destination = self.load_account(beneficiary)?;
+        if !source.exists || source.balance.value() == &BigInt::default() {
+            self.touch_account(beneficiary)?;
+        } else {
+            self.set_balance(
+                beneficiary,
+                ExecutionBalance::new(destination.balance.value() + source.balance.value()),
+            )?;
+        }
+        // Test existence after the beneficiary operation: a missing source that
+        // is also its own beneficiary was created by the touch above. Go tests
+        // IsNIL before that operation, so retain the original source fact.
+        if !source.exists {
+            return Ok(());
+        }
+        let account = self.accounts.get_mut(&address).expect("source was loaded");
+        self.undo.push(Undo::Suicide {
+            address,
+            previous: account.suicided,
+            balance: account.balance.clone(),
+        });
+        account.suicided = true;
+        account.balance = ExecutionBalance::default();
+        account.mod_count = account.mod_count.saturating_add(1);
+        Ok(())
+    }
+
     /// Installs runtime code through the ordinary rollback lane.
     ///
     /// Computes the Keccak-256 identity from nonempty code, matching the reference.
@@ -692,6 +751,10 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
     }
 
     /// Replaces current ordinary storage while retaining its first-read original value.
+    ///
+    /// Undo retains the restored value as a dirty-map entry, matching Go. It is
+    /// written only if a surviving mutation makes the account flush; reverting
+    /// account creation removes the whole ordinary map for that account.
     pub fn set_ordinary_storage(
         &mut self,
         address: JournalAddress,
@@ -723,7 +786,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         self.undo.push(Undo::Storage {
             address,
             key,
-            previous,
+            previous: cell.clone(),
         });
         cell.current = value;
         cell.dirty = true;
@@ -816,8 +879,10 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
 
     /// Settles one transaction and resets transaction-local facts.
     ///
-    /// Modified EIP-161-empty accounts are deleted and contribute no
-    /// storage writes. Ordinary values are emitted before raw values. Negative
+    /// Modified suicided or EIP-161-empty accounts are deleted and contribute no
+    /// storage writes. Storage rows, including restored ordinary values, are
+    /// emitted only for accounts that flush an update. Ordinary values precede
+    /// raw values. Negative
     /// balances fail explicitly at this unsupported persistence boundary.
     pub fn settle_transaction(&mut self) -> Result<SettledTransaction, JournalError> {
         if !self.checkpoints.is_empty() {
@@ -825,18 +890,18 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         }
 
         let mut writes = JournalWritePlan::default();
-        let mut discarded = Vec::new();
+        let mut updated = BTreeSet::new();
         for (address, account) in &self.accounts {
             if !account.exists {
                 continue;
             }
-            if account.mod_count != 0 && account.empty() {
-                discarded.push(*address);
+            if account.mod_count != 0 && (account.suicided || account.empty()) {
                 writes.accounts.push(JournalAccountWrite {
                     address: *address,
                     operation: JournalAccountOperation::Delete,
                 });
             } else if account.mod_count != 0 && account.mod_count != account.times_touched {
+                updated.insert(*address);
                 writes.accounts.push(JournalAccountWrite {
                     address: *address,
                     operation: JournalAccountOperation::Upsert {
@@ -859,7 +924,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
         }
 
         for ((address, key), cell) in &self.ordinary {
-            if cell.dirty && !discarded.contains(address) {
+            if cell.dirty && updated.contains(address) {
                 writes.ordinary_storage.push(JournalStorageWrite {
                     address: *address,
                     key: *key,
@@ -868,7 +933,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             }
         }
         for ((address, key), operation) in &self.raw {
-            if !discarded.contains(address) {
+            if updated.contains(address) {
                 writes.raw_storage.push(JournalRawWrite {
                     address: *address,
                     key: *key,
@@ -935,6 +1000,7 @@ impl<R: ConcreteExecutionRead> ExecutionJournal<R> {
             address,
             JournalAccount {
                 exists: true,
+                suicided: false,
                 mod_count: 1,
                 times_touched: 0,
                 nonce: FinalChainNonce::zero(),
@@ -1016,6 +1082,7 @@ fn read_account(
     match read {
         ConcreteRead::Present(record) => JournalAccount {
             exists: true,
+            suicided: false,
             mod_count: 0,
             times_touched: 0,
             nonce: record.account.nonce,
@@ -1027,6 +1094,7 @@ fn read_account(
         },
         ConcreteRead::Absent | ConcreteRead::Tombstone => JournalAccount {
             exists: false,
+            suicided: false,
             mod_count: 0,
             times_touched: 0,
             nonce: FinalChainNonce::zero(),

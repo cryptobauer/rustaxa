@@ -4,8 +4,8 @@
 //! stack requires a 256-bit word. It preserves journal storage, transient,
 //! refund and log ownership and fails explicitly when immutable state or code
 //! cannot be loaded. The execution driver routes ordinary nested frames around
-//! this host. SELFDESTRUCT and native dispatch remain explicit unavailable
-//! boundaries.
+//! this host and owns native dispatch. SELFDESTRUCT uses an execution-only
+//! quote/apply boundary so gas failure cannot leak account touch effects.
 //!
 //! During CALL-family opcode preparation only, the profile asks this host for
 //! metadata without referenced bytes. The driver discards that internal empty
@@ -37,7 +37,7 @@ use crate::{
         ExecutionTransaction,
     },
     journal::{ExecutionJournal, JournalError},
-    profile::DeferredCallCodeLoad,
+    profile::{DeferredCallCodeLoad, DeferredSelfDestruct},
 };
 
 /// A host-side failure that must abort the pending transaction/period.
@@ -47,8 +47,10 @@ pub enum HostError {
     Journal(JournalError),
     /// Canonical historical block data was unavailable or invalid.
     BlockHash(BlockHashReadError),
-    /// SELFDESTRUCT lifecycle parity is not implemented in this bounded host.
+    /// SELFDESTRUCT requires the execution table that defers mutation until gas admission.
     SelfDestructUnavailable,
+    /// A SELFDESTRUCT opcode has no existing execution account; the Go quote panics here.
+    SelfDestructSourceAbsent,
 }
 
 impl std::fmt::Display for HostError {
@@ -67,6 +69,8 @@ pub struct JournalHost<'a, R, B> {
     transaction: &'a ExecutionTransaction,
     gas_params: GasParams,
     defer_call_code_load: bool,
+    defer_selfdestruct: bool,
+    pending_selfdestruct: Option<([u8; 20], [u8; 20])>,
     fault: Option<HostError>,
 }
 
@@ -86,6 +90,8 @@ impl<'a, R: ConcreteExecutionRead, B: BlockHashRead> JournalHost<'a, R, B> {
             transaction,
             gas_params,
             defer_call_code_load: false,
+            defer_selfdestruct: false,
+            pending_selfdestruct: None,
             fault: None,
         }
     }
@@ -173,6 +179,24 @@ impl<R, B> DeferredCallCodeLoad for JournalHost<'_, R, B> {
     }
 }
 
+impl<R: ConcreteExecutionRead, B: BlockHashRead> DeferredSelfDestruct for JournalHost<'_, R, B> {
+    fn begin_selfdestruct(&mut self) {
+        self.defer_selfdestruct = true;
+        self.pending_selfdestruct = None;
+    }
+
+    fn finish_selfdestruct(&mut self, admitted: bool) -> Result<(), LoadError> {
+        self.defer_selfdestruct = false;
+        if let Some((address, beneficiary)) = self.pending_selfdestruct.take()
+            && admitted
+            && let Err(error) = self.journal.selfdestruct(address, beneficiary)
+        {
+            return self.fail(HostError::Journal(error));
+        }
+        Ok(())
+    }
+}
+
 impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> {
     fn basefee(&self) -> U256 {
         U256::ZERO
@@ -244,11 +268,38 @@ impl<R: ConcreteExecutionRead, B: BlockHashRead> Host for JournalHost<'_, R, B> 
 
     fn selfdestruct(
         &mut self,
-        _address: Address,
-        _target: Address,
+        address: Address,
+        target: Address,
         _skip_cold_load: bool,
     ) -> Result<StateLoad<SelfDestructResult>, LoadError> {
-        self.fail(HostError::SelfDestructUnavailable)
+        if !self.defer_selfdestruct {
+            return self.fail(HostError::SelfDestructUnavailable);
+        }
+        let source = match self.journal.account_metadata(address.into_array()) {
+            Ok(value) => value,
+            Err(error) => return self.fail(HostError::Journal(error)),
+        };
+        if !source.exists {
+            return self.fail(HostError::SelfDestructSourceAbsent);
+        }
+        let beneficiary = match self.journal.account_metadata(target.into_array()) {
+            Ok(value) => value,
+            Err(error) => return self.fail(HostError::Journal(error)),
+        };
+        let target_empty = beneficiary.nonce.is_zero()
+            && beneficiary.balance.value() == &num_bigint::BigInt::default()
+            && beneficiary.code_size == 0;
+        self.pending_selfdestruct = Some((address.into_array(), target.into_array()));
+        Ok(StateLoad::new(
+            SelfDestructResult {
+                had_value: source.balance.value() != &num_bigint::BigInt::default(),
+                target_exists: !target_empty,
+                // Preserve Go's IsNIL() && suicided: every existing source reports
+                // false, even after a previous suicide in this transaction.
+                previously_destroyed: false,
+            },
+            false,
+        ))
     }
 
     fn log(&mut self, log: Log) {

@@ -15,7 +15,8 @@ the supplied mainnet snapshot, and assigns implementation slices to agents/model
 
 Implementation evidence now includes [S0 snapshot qualification](s0_snapshot_qualification.md),
 [S1 contracts](s1_contracts.md), [S2 compatible reads](s2_compatible_reads.md),
-[the bounded S3 execution core](s3_execution_core.md), and
+[the bounded S3 execution core](s3_execution_core.md),
+[SELFDESTRUCT and restored-storage flush parity](s3_selfdestruct.md), and
 [the first persisted S4 FinalChain path](s4_persisted_period.md).
 The latter includes bounded interrupted-publication recovery. S5 adds the
 [four original stateless helpers](s5_original_stateless.md) and

@@ -5,9 +5,10 @@ transaction envelope, a concrete journal, a host-generic instruction profile and
 an iterative ordinary CALL/CREATE frame driver. Production routing is unchanged.
 Opt-in [native frame handling](s5_native_journal.md),
 [stateless dispatch](s5_stateless_frames.md) and
-[wide SSTORE comparisons](s3_wide_sstore.md) are now implemented with bounded
-evidence. SELFDESTRUCT, general period execution and full persisted executor
-parity remain open.
+[wide SSTORE comparisons](s3_wide_sstore.md), and
+[SELFDESTRUCT lifecycle handling](s3_selfdestruct.md) are now implemented with
+bounded evidence. General period execution and full persisted executor parity
+remain open.
 
 The journal preserves signed intermediate balances, arbitrary-width nonces,
 ordinary/raw visibility, irreversible raw and transient effects, nested ordinary
@@ -37,8 +38,8 @@ port. Full-width account emptiness is preserved separately from operand-stack
 values, including `EXTCODEHASH` on balance 2^256. Code reads validate physical
 hash, size and presence. Both runtime and initcode use legacy bytecode decoding:
 an `ef01` prefix cannot activate REVM's EIP-7702 parser or panic before ordinary
-invalid-opcode handling. SSTORE rejects original/current values above 256 bits
-before mutation because the full-width Go gas comparison is not implemented yet.
+invalid-opcode handling. SSTORE preserves full-width zero/equality relations
+for gas accounting while retaining actual stack-width new values in the journal.
 
 The CALL driver composes real interpreter execution with envelope settlement,
 including the zero-sender transfer exception and untouched absent recipients of

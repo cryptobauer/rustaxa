@@ -1621,7 +1621,7 @@ fn map_terminal(
 ) -> Result<Option<CodeExecutionError>, ExecutionDriverError> {
     use revm::interpreter::InstructionResult as I;
     let mapped = match result {
-        I::Stop | I::Return => None,
+        I::Stop | I::Return | I::SelfDestruct => None,
         I::Revert => Some(CodeExecutionError::Revert),
         I::OutOfGas
         | I::MemoryOOG
