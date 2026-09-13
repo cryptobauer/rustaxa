@@ -342,3 +342,71 @@ classifications. Slashing preimages belong to the separate slashing-account
 inventory and remain additional unresolved work. The result does not establish
 semantic snapshot completeness, deleted-key history, adoption authority, or
 production routing.
+
+## Address-seeded delegation expansion
+
+A second bounded run extended the same experimental diagnostic using only
+addresses already authenticated by the validator rows above. The seed set was
+the deterministic union of 196 validator addresses and 102 unique owner
+addresses: 188 validator-only, 94 owner-only, and eight in both groups, for 290
+candidates. This is an address sample with authoritative provenance, not a
+global delegator index.
+
+For each candidate, the diagnostic derived the `[2,1] || delegator` delegation
+iterable count. It enumerated only physically present counts that exactly
+matched the authenticated live inventory. A cumulative ceiling of 4,096
+entries was checked before reading item rows. Every discovered item and reverse
+row then had to agree, and its `[2,0] || validator || delegator` object had to be
+physically present, authenticated live, and exact canonical RLP
+`[stake,last_updated]`. The object derives one reward-reference key; non-live or
+unavailable references remain classified without a default value.
+
+The command was unchanged except for its distinct output file:
+
+```bash
+CARGO_TARGET_DIR=/tmp/rustaxa-snapshot-qualifier-target \
+  cargo run --locked \
+  --manifest-path experiments/evm_feasibility/snapshot_qualifier/Cargo.toml \
+  --bin native_inverse_coverage -- \
+  /tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy \
+  /tmp/n4_native_seeded_delegation_coverage_20260913.json
+```
+
+The exact expanded report is
+[`n4_native_seeded_delegation_coverage.json`](n4_native_seeded_delegation_coverage.json).
+Its source SHA-256 is
+`e89d9ccd38a42d466c97d4e97c2a4274c65a0119a5fd963e5204d10902de7d2a`,
+and the report file SHA-256 is
+`6209d3294747a14c52799a8ff08e447e33fb6a2310bd99823078461f00c9e735`.
+The earlier report remains separate evidence for the pre-expansion source and
+partition.
+
+Of the 290 count reads, 103 were physically present exact live matches and 187
+returned `HistoryUnavailable` at authenticated non-live paths. There were no
+count tombstones or orphan-present rows. Thirty live count rows held zero; the
+remaining 73 candidate delegators enumerated 108 delegations across 88
+validators. Counts ranged from one through eleven and remained far below the
+4,096-entry ceiling.
+
+All 108 item, reverse, and delegation-object rows were exact authenticated live
+matches. Their reward references reached 77 newly matched live nodes and 31
+live nodes already counted as validator current heads. No delegation reward
+reference was tombstoned, unavailable, pruned, orphan-present, or assigned a
+default. The full live partition therefore changed as follows:
+
+| Result | Before expansion | After expansion |
+| --- | ---: | ---: |
+| Known unique live rows | 1,561 | 2,065 |
+| Known exact value bytes | 30,066 | 35,694 |
+| Unexplained live rows | 21,717 | 21,213 |
+| Unexplained exact value bytes | 229,011 | 223,383 |
+
+The expanded unexplained-path SHA-256 is
+`550cd18055f2af54a7b47f194b194fc3ec55cfd4ea6f03fb150d7f17e193376a`;
+the expanded unexplained path/value SHA-256 is
+`e7463e3f7b89ef0b5f33192cee6b83eb7ac9fa6591a5bd57ee3bdae251e167ff`.
+The 187 unavailable count rows do not prove empty delegation maps or complete
+physical history. Other current delegator addresses can exist outside the
+validator/owner seed set, and no application-history scan was performed. This
+expansion does not establish global delegator discovery, semantic snapshot
+completeness, checkpoint adoption, or production routing.
