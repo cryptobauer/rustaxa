@@ -446,6 +446,43 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         Ok(())
     }
 
+    /// Subtracts a non-negative amount with the reference's zero-amount semantics.
+    ///
+    /// Zero ensures a missing account exists but does not dirty an existing
+    /// account. A nonzero amount may produce a signed intermediate balance.
+    pub fn subtract_balance(
+        &mut self,
+        address: JournalAddress,
+        amount: &BigUint,
+    ) -> Result<(), JournalError> {
+        self.ensure_account(address)?;
+        if amount == &BigUint::default() {
+            return Ok(());
+        }
+        let current = self.account(address)?.balance;
+        self.set_balance(
+            address,
+            ExecutionBalance::new(current.value().clone() - BigInt::from(amount.clone())),
+        )
+    }
+
+    /// Adds a non-negative amount with the reference's zero-amount touch behavior.
+    pub fn add_balance(
+        &mut self,
+        address: JournalAddress,
+        amount: &BigUint,
+    ) -> Result<(), JournalError> {
+        if amount == &BigUint::default() {
+            return self.touch_account(address);
+        }
+        self.ensure_account(address)?;
+        let current = self.account(address)?.balance;
+        self.set_balance(
+            address,
+            ExecutionBalance::new(current.value().clone() + BigInt::from(amount.clone())),
+        )
+    }
+
     /// Installs runtime code through the ordinary rollback lane.
     ///
     /// Computes the Keccak-256 identity from nonempty code, matching the reference.
