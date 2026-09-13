@@ -3,8 +3,9 @@
 //! The host projects arbitrary-width Taraxa values only where the EVM operand
 //! stack requires a 256-bit word. It preserves journal storage, transient,
 //! refund and log ownership and fails explicitly when immutable state or code
-//! cannot be loaded. This first host slice intentionally has no self-destruct,
-//! native-dispatch or nested-frame implementation.
+//! cannot be loaded. The execution driver routes ordinary nested frames around
+//! this host. SELFDESTRUCT and native dispatch remain explicit unavailable
+//! boundaries.
 
 use std::borrow::Cow;
 
@@ -60,7 +61,7 @@ impl std::fmt::Display for HostError {
 
 impl std::error::Error for HostError {}
 
-/// REVM host for one top-level bytecode call.
+/// REVM host for one active bytecode frame.
 pub struct JournalHost<'a, R, B> {
     journal: &'a mut ExecutionJournal<R>,
     block_hashes: &'a B,

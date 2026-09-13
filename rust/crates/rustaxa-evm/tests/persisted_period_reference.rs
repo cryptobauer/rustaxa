@@ -311,6 +311,7 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 ExecutionTransactionKind::Create => execute_top_level_create(
                     &mut journal,
                     &ChainHashes(self.chain),
+                    &FixtureNatives,
                     &block,
                     &decoded,
                     EnvelopeRules { cornus: true },
