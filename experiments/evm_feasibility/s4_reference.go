@@ -478,9 +478,22 @@ func compareExecutionModes(concrete, legacy map[string]any) map[string]any {
 			additionalMainNodes = append(additionalMainNodes, key)
 		}
 	}
-	for key := range legacyRows[state_db.COL_main_trie_node] {
-		if _, present := concreteRows[state_db.COL_main_trie_node][key]; !present {
+	for key, legacyValue := range legacyRows[state_db.COL_main_trie_node] {
+		concreteValue, present := concreteRows[state_db.COL_main_trie_node][key]
+		if !present {
 			panic("legacy batch contains a CF2 node absent from concrete observer mode")
+		}
+		if concreteValue != legacyValue {
+			panic("execution modes disagree on a shared physical CF2 node")
+		}
+	}
+	for key, legacyValue := range legacyLatest[state_db.COL_main_trie_node] {
+		concreteValue, present := concreteLatest[state_db.COL_main_trie_node][key]
+		if !present {
+			panic("legacy batch contains a latest CF2 node absent from concrete observer mode")
+		}
+		if concreteValue != legacyValue {
+			panic("execution modes disagree on a shared latest CF2 node")
 		}
 	}
 	sort.Strings(additionalMainNodes)
