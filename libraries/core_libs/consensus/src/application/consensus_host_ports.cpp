@@ -435,8 +435,8 @@ rustaxa::HostFinalChainStateCommitReport ExternalEvmPort::consensusCommitFinalCh
 }
 
 rustaxa::HostFinalChainPreflightReport ExternalEvmPort::consensusDiscardFinalChainState(
-    const rustaxa::CanonicalBytes& concrete_marker) const {
-  return impl_->state->discardState(concrete_marker);
+    const rustaxa::HostFinalChainDiscardRequest& request) const {
+  return impl_->state->discardState(request);
 }
 
 class ConsensusProcess::Impl final {

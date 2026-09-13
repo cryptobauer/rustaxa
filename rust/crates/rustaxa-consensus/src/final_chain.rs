@@ -3429,6 +3429,7 @@ impl FinalChain {
         committed_state_root: [u8; 32],
         observed_concrete_provenance_rlp: Vec<u8>,
         pending_concrete_marker_rlp: Vec<u8>,
+        state_api_epoch: u64,
     ) -> Result<FinalChainExternalEvmPublicationReport, anyhow::Error> {
         let Some(raw) = self
             .storage
@@ -3506,7 +3507,11 @@ impl FinalChain {
         let recovery = validate_external_evm_recovery_fact(&recovery_fact);
         if recovery.status == FINAL_CHAIN_EVM_RECOVERY_DECISION_CLEAR_UNCOMMITTED {
             if !pending_concrete_marker_rlp.is_empty() {
-                let discard = external_evm_recovery_discard_request(&recovery_fact, &recovery)?;
+                let discard = external_evm_recovery_discard_request(
+                    &recovery_fact,
+                    &recovery,
+                    state_api_epoch,
+                )?;
                 let concrete_chain_identity =
                     decode_concrete_execution_marker(&discard.concrete_marker_rlp)?
                         .identity
@@ -9777,6 +9782,10 @@ fn decode_external_evm_state_commit_intent(
     let post_rewards_state_root =
         decode_fixed_hash(&rlp.at(7)?, "external EVM state commit post-rewards root")?;
     Ok(FinalChainExternalEvmStateCommitIntent {
+        // The process-local StateAPI epoch is deliberately excluded from the
+        // durable publication marker. Recovery binds to the epoch observed
+        // from the live owner instead of trusting serialized runtime identity.
+        state_api_epoch: 0,
         request_id: decode_fixed_hash(&rlp.at(0)?, "external EVM state commit request id")?,
         plan_id: decode_fixed_hash(&rlp.at(1)?, "external EVM state commit plan id")?,
         period: FinalChainBlockNumber::from(rlp.val_at::<u64>(2)?),
