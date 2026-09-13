@@ -211,13 +211,6 @@ fn profile_executes_seeded_sstore_rows_from_go() {
         };
         let spent = gas_cap - result.gas.remaining();
         let refund = u64::try_from(result.gas.refunded()).unwrap();
-        if row["case"] == "sentry-2300" {
-            // Pinned Go accepts exactly 2300 gas at SSTORE; REVM's Istanbul
-            // implementation enforces the EIP-2200 sentry and consumes all gas.
-            // Preserve this differential for a lead/reviewer policy decision.
-            assert_eq!(spent, gas_cap, "REVM sentry differential changed");
-            continue;
-        }
         assert_eq!(
             spent - refund.min(spent / 2),
             row["gas_used"].as_u64().unwrap(),
