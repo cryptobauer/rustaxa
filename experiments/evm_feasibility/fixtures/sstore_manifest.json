@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Synthetic direct Go EVM/state_evm SSTORE sequences; no full E3/frame/routing claim",
+  "sha256": {
+    "public": "f5327e11c3e98b62c6cdd8a634e269a9746ab5515c689c2ccf46bb03f2677794",
+    "local": "f5327e11c3e98b62c6cdd8a634e269a9746ab5515c689c2ccf46bb03f2677794"
+  },
+  "exporter_sha256": "279478453fdd17b50b5230d0e6d7c106fd04054a0a0130944f3fa8f6ca0a94fc"
+}
