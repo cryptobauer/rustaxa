@@ -81,6 +81,11 @@ and `state_db_rocksdb/db.go`, reviewed independently against the Rust contract.
 
 ## Journal and native settlement invariants
 
+The [native result adapter](s5_native_journal.md) now applies this contract to
+the real journal. It validates quote/result gas before effects and retains exact
+native failure/remaining-gas facts; native dispatcher and frame integration are
+separate steps.
+
 - Ordinary balance, nonce, storage and logs follow reference frame undo.
   Envelope effects outside the frame survive its undo. Store original,
   current and new slot values separately for gas/refund evaluation.
