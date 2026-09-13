@@ -1,0 +1,683 @@
+//! Driver/native boundary checks for explicit opt-in consensus-native routing.
+//!
+//! These tests use a scripted port to isolate frame bookkeeping. They do not
+//! register production addresses or claim compatibility for a native kernel.
+
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
+use num_bigint::BigUint;
+use revm::primitives::keccak256;
+use rustaxa_evm::{
+    contracts::{
+        BlockHashRead, BlockHashReadError, CodeExecutionError, CodeExecutionStatus,
+        ExecutionBlockContext, ExecutionGasPrice, ExecutionTransaction, ExecutionTransactionKind,
+        ExecutionValue, NativeContractFailure, NativeExecutionPort, NativeGasQuote,
+        NativeInvocation, NativeInvocationResult, NativeJournalRead, NativeOutcome,
+        NativePortError, NativeStatus, TransactionExecutionResult,
+    },
+    driver::{
+        ExecutionDriverError, NativeAddressClassifier, PeriodConsensusSequence,
+        execute_top_level_call_with_native, execute_top_level_create_with_native,
+    },
+    envelope::EnvelopeRules,
+    journal::ExecutionJournal,
+    profile::TaraxaProfile,
+};
+use rustaxa_types::{
+    FinalChainBlockNumber, FinalChainGas, FinalChainNonce, FinalChainTransactionPosition,
+    concrete_state::{
+        ConcreteAccount, ConcreteAccountBalance, ConcreteAccountRecord, ConcreteRead,
+        ConcreteReadError, ConcreteStateIdentity, ConcreteStateRead, ConcreteStorageKey,
+    },
+};
+
+const SENDER: [u8; 20] = [0xaa; 20];
+const PARENT: [u8; 20] = [0xbb; 20];
+const NATIVE: [u8; 20] = [0xcc; 20];
+
+struct Reader {
+    accounts: BTreeMap<[u8; 20], ConcreteAccount>,
+    codes: BTreeMap<[u8; 32], Vec<u8>>,
+    code_reads: Arc<AtomicUsize>,
+}
+
+impl ConcreteStateRead for Reader {
+    fn identity(&self) -> ConcreteStateIdentity {
+        ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(7),
+            state_root: [0x44; 32],
+        }
+    }
+
+    fn account(
+        &self,
+        address: [u8; 20],
+    ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
+        Ok(self
+            .accounts
+            .get(&address)
+            .cloned()
+            .map_or(ConcreteRead::Absent, |account| {
+                ConcreteRead::Present(ConcreteAccountRecord {
+                    account,
+                    physical_rlp: vec![0xc0],
+                })
+            }))
+    }
+
+    fn storage(
+        &self,
+        _address: [u8; 20],
+        _key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        Ok(ConcreteRead::Absent)
+    }
+
+    fn code(&self, hash: [u8; 32]) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        self.code_reads.fetch_add(1, Ordering::Relaxed);
+        Ok(self
+            .codes
+            .get(&hash)
+            .cloned()
+            .map_or(ConcreteRead::Absent, ConcreteRead::Present))
+    }
+}
+
+struct NoHistory;
+
+impl BlockHashRead for NoHistory {
+    fn block_hash(&self, _number: FinalChainBlockNumber) -> Result<[u8; 32], BlockHashReadError> {
+        unreachable!("test bytecode does not execute BLOCKHASH")
+    }
+}
+
+struct AddressSet(Vec<[u8; 20]>);
+
+impl NativeAddressClassifier for AddressSet {
+    fn is_native_address(&self, _period: FinalChainBlockNumber, address: [u8; 20]) -> bool {
+        self.0.contains(&address)
+    }
+}
+
+struct ScriptedPort {
+    required_gas: FinalChainGas,
+    result: NativeInvocationResult,
+    invocations: Mutex<Vec<NativeInvocation>>,
+}
+
+impl ScriptedPort {
+    fn completed(status: NativeStatus, output: Vec<u8>) -> Self {
+        Self {
+            required_gas: FinalChainGas::new(20),
+            result: NativeInvocationResult::Completed(NativeOutcome {
+                status,
+                gas_used: FinalChainGas::new(20),
+                output,
+                account_mutations: Vec::new(),
+                raw_mutations: Vec::new(),
+                logs: Vec::new(),
+                diagnostic: None,
+            }),
+            invocations: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn insufficient(required_gas: u64) -> Self {
+        Self {
+            required_gas: FinalChainGas::new(required_gas),
+            result: NativeInvocationResult::InsufficientGas {
+                required_gas: FinalChainGas::new(required_gas),
+            },
+            invocations: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl NativeExecutionPort for ScriptedPort {
+    fn prepare(
+        &mut self,
+        invocation: &NativeInvocation,
+        _journal: &dyn NativeJournalRead,
+    ) -> Result<NativeGasQuote, NativePortError> {
+        Ok(NativeGasQuote {
+            invocation: invocation.id,
+            required_gas: self.required_gas,
+        })
+    }
+
+    fn invoke(
+        &mut self,
+        invocation: &NativeInvocation,
+        _quote: NativeGasQuote,
+        _journal: &dyn NativeJournalRead,
+    ) -> Result<NativeInvocationResult, NativePortError> {
+        self.invocations.lock().unwrap().push(invocation.clone());
+        Ok(self.result.clone())
+    }
+}
+
+#[test]
+fn native_failure_keeps_returndata_without_copying_output_memory() {
+    let parent = parent_call_then_return_memory(NATIVE);
+    let mut journal = journal_with_parent(parent);
+    let mut port = ScriptedPort::completed(
+        NativeStatus::ContractFailure(NativeContractFailure {
+            error: "execution reverted".into(),
+        }),
+        hex::decode("deadbeef").unwrap(),
+    );
+    let mut sequence = PeriodConsensusSequence::new(FinalChainBlockNumber::new(7));
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![NATIVE]),
+        &AddressSet(vec![NATIVE]),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &transaction(PARENT, ExecutionValue::default()),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("must execute parent")
+    };
+    assert_eq!(result.status, CodeExecutionStatus::Success);
+    let failure_gas_used = result.gas_used;
+    assert_eq!(
+        result.output,
+        hex::decode("eeeeeeee deadbeef".replace(' ', "")).unwrap()
+    );
+    assert_eq!(sequence.next_sequence(), 1);
+    let invocations = port.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].id.sequence, 0);
+    assert_eq!(invocations[0].depth, 1);
+    assert_eq!(invocations[0].contract, NATIVE);
+    assert_eq!(invocations[0].state_address, NATIVE);
+    drop(invocations);
+
+    let mut journal = journal_with_parent(parent_call_then_return_memory(NATIVE));
+    let mut port = ScriptedPort::completed(NativeStatus::Success, hex::decode("deadbeef").unwrap());
+    let mut sequence = PeriodConsensusSequence::new(FinalChainBlockNumber::new(7));
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![NATIVE]),
+        &AddressSet(vec![NATIVE]),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &transaction(PARENT, ExecutionValue::default()),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("must execute parent")
+    };
+    assert_eq!(
+        result.output,
+        hex::decode("deadeeee deadbeef".replace(' ', "")).unwrap()
+    );
+    assert_eq!(result.gas_used, failure_gas_used);
+}
+
+#[test]
+fn consensus_classifier_must_be_a_subset_of_all_native_addresses() {
+    let mut journal = journal_with_parent(parent_call_then_stop(NATIVE, 0, false));
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(FinalChainBlockNumber::new(7));
+    assert_eq!(
+        execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(Vec::new()),
+            &AddressSet(vec![NATIVE]),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &transaction(PARENT, ExecutionValue::default()),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        ),
+        Err(ExecutionDriverError::NativeClassifierMismatch { address: NATIVE })
+    );
+    assert_eq!(sequence.next_sequence(), 0);
+    assert!(port.invocations.lock().unwrap().is_empty());
+}
+
+#[test]
+fn sequence_survives_outer_revert_but_not_funds_rejection() {
+    let mut journal = journal_with_parent(parent_call_then_stop(NATIVE, 0, true));
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(FinalChainBlockNumber::new(7));
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![NATIVE]),
+        &AddressSet(vec![NATIVE]),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &transaction(PARENT, ExecutionValue::default()),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    assert!(matches!(
+        result,
+        TransactionExecutionResult::Executed(ref result)
+            if result.status == CodeExecutionStatus::Failure(CodeExecutionError::Revert)
+    ));
+    assert_eq!(sequence.next_sequence(), 1);
+
+    let mut journal = journal_with_parent(parent_call_then_stop(NATIVE, 1, false));
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![NATIVE]),
+        &AddressSet(vec![NATIVE]),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &transaction(PARENT, ExecutionValue::default()),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    assert!(matches!(
+        result,
+        TransactionExecutionResult::Executed(ref result)
+            if result.status == CodeExecutionStatus::Success
+    ));
+    assert_eq!(sequence.next_sequence(), 1);
+    assert_eq!(port.invocations.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn depth_rejection_does_not_allocate_a_native_sequence() {
+    let addresses: Vec<[u8; 20]> = (0..1_025).map(chain_address).collect();
+    let code_reads = Arc::new(AtomicUsize::new(0));
+    let mut reader = Reader {
+        accounts: BTreeMap::from([(
+            SENDER,
+            ConcreteAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::new(BigUint::from(1_000_000_u64)),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+            },
+        )]),
+        codes: BTreeMap::new(),
+        code_reads: Arc::clone(&code_reads),
+    };
+    for (index, address) in addresses.iter().enumerate() {
+        let callee = addresses.get(index + 1).copied().unwrap_or(NATIVE);
+        let mut code = hex::decode("6000600060006000600073").unwrap();
+        code.extend_from_slice(&callee);
+        code.extend_from_slice(&[0x5a, 0xf1, 0x50, 0x00]);
+        let hash = keccak256(&code).0;
+        reader.accounts.insert(
+            *address,
+            ConcreteAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::default(),
+                storage_root: None,
+                code_hash: Some(hash),
+                code_size: code.len() as u64,
+            },
+        );
+        reader.codes.insert(hash, code);
+    }
+    let mut journal = ExecutionJournal::new(reader);
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(FinalChainBlockNumber::new(7));
+    let mut transaction = transaction(addresses[0], ExecutionValue::default());
+    transaction.gas_limit = FinalChainGas::new(u64::MAX);
+    transaction.gas_price = ExecutionGasPrice::new(BigUint::default());
+    let mut block = block();
+    block.gas_limit = FinalChainGas::new(u64::MAX);
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![NATIVE]),
+        &AddressSet(vec![NATIVE]),
+        &mut port,
+        &mut sequence,
+        &block,
+        &transaction,
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    assert!(matches!(
+        result,
+        TransactionExecutionResult::Executed(ref result)
+            if result.status == CodeExecutionStatus::Success
+    ));
+    assert_eq!(sequence.next_sequence(), 0);
+    assert!(port.invocations.lock().unwrap().is_empty());
+    assert_eq!(code_reads.load(Ordering::Relaxed), 1_025);
+}
+
+#[test]
+fn direct_native_failure_settles_exact_output_gas_and_depth_zero() {
+    let mut journal = journal_without_parent();
+    let failure = NativeContractFailure {
+        error: "native failure".into(),
+    };
+    let mut port = ScriptedPort::completed(
+        NativeStatus::ContractFailure(failure.clone()),
+        vec![0x44, 0x55],
+    );
+    let mut sequence = PeriodConsensusSequence::new(FinalChainBlockNumber::new(7));
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![NATIVE]),
+        &AddressSet(vec![NATIVE]),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &transaction(NATIVE, ExecutionValue::default()),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("must execute native")
+    };
+    assert_eq!(
+        result.status,
+        CodeExecutionStatus::Failure(CodeExecutionError::Native(failure))
+    );
+    assert_eq!(result.output, vec![0x44, 0x55]);
+    assert_eq!(result.gas_used, FinalChainGas::new(21_020));
+    assert_eq!(port.invocations.lock().unwrap()[0].depth, 0);
+    assert_eq!(sequence.next_sequence(), 1);
+}
+
+#[test]
+fn native_quote_out_of_gas_consumes_sequence_and_returns_all_supplied_gas() {
+    let mut journal = journal_without_parent();
+    let mut port = ScriptedPort::insufficient(80_000);
+    let mut sequence = PeriodConsensusSequence::new(FinalChainBlockNumber::new(7));
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![NATIVE]),
+        &AddressSet(vec![NATIVE]),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &transaction(NATIVE, ExecutionValue::default()),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("must execute native gas admission")
+    };
+    assert_eq!(
+        result.status,
+        CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas)
+    );
+    assert_eq!(result.gas_used, FinalChainGas::new(21_000));
+    assert!(result.output.is_empty());
+    assert_eq!(sequence.next_sequence(), 1);
+    assert_eq!(port.invocations.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn native_delegatecall_keeps_code_state_caller_and_full_value_distinct() {
+    let parent = parent_delegate_then_stop(NATIVE);
+    let value = (BigUint::from(1_u8) << 264) + BigUint::from(9_u8);
+    let mut journal = journal_with_parent_balance(parent, &value + BigUint::from(1_000_000_u64));
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(FinalChainBlockNumber::new(7));
+    let value = ExecutionValue::new(value);
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![NATIVE]),
+        &AddressSet(vec![NATIVE]),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &transaction(PARENT, value.clone()),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    assert!(matches!(
+        result,
+        TransactionExecutionResult::Executed(ref result)
+            if result.status == CodeExecutionStatus::Success
+    ));
+    let invocations = port.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(
+        invocations[0].kind,
+        rustaxa_evm::contracts::NativeCallKind::DelegateCall
+    );
+    assert_eq!(invocations[0].caller, SENDER);
+    assert_eq!(invocations[0].contract, NATIVE);
+    assert_eq!(invocations[0].state_address, PARENT);
+    assert_eq!(invocations[0].value, value);
+    assert_eq!(invocations[0].depth, 1);
+}
+
+#[test]
+fn unsupported_native_subset_and_wrong_period_fail_without_allocation() {
+    let mut journal = journal_without_parent();
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(FinalChainBlockNumber::new(7));
+    assert_eq!(
+        execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![NATIVE]),
+            &AddressSet(Vec::new()),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &transaction(NATIVE, ExecutionValue::default()),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        ),
+        Err(ExecutionDriverError::NativeCallUnavailable { address: NATIVE })
+    );
+    assert_eq!(sequence.next_sequence(), 0);
+
+    let mut wrong_period = PeriodConsensusSequence::new(FinalChainBlockNumber::new(6));
+    assert_eq!(
+        execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![NATIVE]),
+            &AddressSet(vec![NATIVE]),
+            &mut port,
+            &mut wrong_period,
+            &block(),
+            &transaction(NATIVE, ExecutionValue::default()),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        ),
+        Err(ExecutionDriverError::NativeSequencePeriod {
+            expected: FinalChainBlockNumber::new(6),
+            observed: FinalChainBlockNumber::new(7),
+        })
+    );
+    assert_eq!(wrong_period.next_sequence(), 0);
+    assert!(port.invocations.lock().unwrap().is_empty());
+}
+
+#[test]
+fn create_initcode_can_use_the_explicit_native_port() {
+    let initcode = parent_call_then_stop(NATIVE, 0, false);
+    let mut journal = journal_without_parent();
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(FinalChainBlockNumber::new(7));
+    let transaction = ExecutionTransaction {
+        position: FinalChainTransactionPosition::from(4_u32),
+        hash: [0x22; 32],
+        sender: SENDER,
+        receiver: None,
+        nonce: FinalChainNonce::from_u64(1),
+        gas_price: ExecutionGasPrice::new(BigUint::from(1_u8)),
+        gas_limit: FinalChainGas::new(100_000),
+        value: ExecutionValue::default(),
+        input: initcode,
+        canonical_rlp: None,
+        kind: ExecutionTransactionKind::Create,
+    };
+    let result = execute_top_level_create_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![NATIVE]),
+        &AddressSet(vec![NATIVE]),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &transaction,
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    assert!(matches!(
+        result,
+        TransactionExecutionResult::Executed(ref result)
+            if result.status == CodeExecutionStatus::Success
+    ));
+    assert_eq!(sequence.next_sequence(), 1);
+    let invocations = port.invocations.lock().unwrap();
+    assert_eq!(invocations[0].id.transaction, transaction.position);
+    assert_eq!(invocations[0].depth, 1);
+}
+
+fn journal_without_parent() -> ExecutionJournal<Reader> {
+    ExecutionJournal::new(Reader {
+        accounts: BTreeMap::from([(
+            SENDER,
+            ConcreteAccount {
+                nonce: FinalChainNonce::from_u64(1),
+                balance: ConcreteAccountBalance::new(BigUint::from(1_000_000_u64)),
+                storage_root: None,
+                code_hash: None,
+                code_size: 0,
+            },
+        )]),
+        codes: BTreeMap::new(),
+        code_reads: Arc::new(AtomicUsize::new(0)),
+    })
+}
+
+fn journal_with_parent(code: Vec<u8>) -> ExecutionJournal<Reader> {
+    journal_with_parent_balance(code, BigUint::from(1_000_000_u64))
+}
+
+fn journal_with_parent_balance(code: Vec<u8>, sender_balance: BigUint) -> ExecutionJournal<Reader> {
+    let hash = keccak256(&code).0;
+    let reader = Reader {
+        accounts: BTreeMap::from([
+            (
+                SENDER,
+                ConcreteAccount {
+                    nonce: FinalChainNonce::from_u64(1),
+                    balance: ConcreteAccountBalance::new(sender_balance),
+                    storage_root: None,
+                    code_hash: None,
+                    code_size: 0,
+                },
+            ),
+            (
+                PARENT,
+                ConcreteAccount {
+                    nonce: FinalChainNonce::from_u64(1),
+                    balance: ConcreteAccountBalance::default(),
+                    storage_root: None,
+                    code_hash: Some(hash),
+                    code_size: code.len() as u64,
+                },
+            ),
+        ]),
+        codes: BTreeMap::from([(hash, code)]),
+        code_reads: Arc::new(AtomicUsize::new(0)),
+    };
+    ExecutionJournal::new(reader)
+}
+
+fn parent_call_then_return_memory(target: [u8; 20]) -> Vec<u8> {
+    let mut code =
+        hex::decode("60ee60005360ee60015360ee60025360ee60035360026000600060006000").unwrap();
+    code.push(0x73);
+    code.extend_from_slice(&target);
+    code.extend_from_slice(&[
+        0x61, 0x03, 0xe8, 0xf1, 0x50, 0x3d, 0x60, 0x00, 0x60, 0x04, 0x3e, 0x60, 0x08, 0x60, 0x00,
+        0xf3,
+    ]);
+    code
+}
+
+fn parent_call_then_stop(target: [u8; 20], value: u8, revert: bool) -> Vec<u8> {
+    let mut code = hex::decode("6000600060006000").unwrap();
+    code.extend_from_slice(&[0x60, value, 0x73]);
+    code.extend_from_slice(&target);
+    code.extend_from_slice(&[0x61, 0x03, 0xe8, 0xf1, 0x50]);
+    if revert {
+        code.extend_from_slice(&[0x60, 0x00, 0x60, 0x00, 0xfd]);
+    } else {
+        code.push(0x00);
+    }
+    code
+}
+
+fn parent_delegate_then_stop(target: [u8; 20]) -> Vec<u8> {
+    let mut code = hex::decode("6000600060006000").unwrap();
+    code.push(0x73);
+    code.extend_from_slice(&target);
+    code.extend_from_slice(&[0x61, 0x03, 0xe8, 0xf4, 0x50, 0x00]);
+    code
+}
+
+fn chain_address(index: usize) -> [u8; 20] {
+    let mut address = [0xdd; 20];
+    address[12..].copy_from_slice(&(index as u64).to_be_bytes());
+    address
+}
+
+fn transaction(receiver: [u8; 20], value: ExecutionValue) -> ExecutionTransaction {
+    ExecutionTransaction {
+        position: FinalChainTransactionPosition::from(3_u32),
+        hash: [0x11; 32],
+        sender: SENDER,
+        receiver: Some(receiver),
+        nonce: FinalChainNonce::from_u64(1),
+        gas_price: ExecutionGasPrice::new(BigUint::from(1_u8)),
+        gas_limit: FinalChainGas::new(100_000),
+        value,
+        input: Vec::new(),
+        canonical_rlp: None,
+        kind: ExecutionTransactionKind::Call,
+    }
+}
+
+fn block() -> ExecutionBlockContext {
+    ExecutionBlockContext {
+        period: FinalChainBlockNumber::new(7),
+        author: [0_u8; 20],
+        timestamp: 0,
+        gas_limit: FinalChainGas::new(1_000_000),
+        chain_id: 1,
+        difficulty: BigUint::default(),
+    }
+}
