@@ -88,3 +88,77 @@ public genesis rows/root, not fabricated for the public API.
 M1 closes only after the actual oracle/Rust genesis and nonzero-reward witness, workload
 manifest and these contracts pass review. Subsequent slice status and reproduction evidence
 will be linked here; no root, replay or publication parity is claimed by this handoff alone.
+
+## Reviewed implementation checkpoints
+
+The initial witness is committed separately from the larger signed workload. Its three
+Go modes reproduce byte-for-byte with the normal and optimized Python runner:
+
+```sh
+python3 experiments/evm_feasibility/mixed_period_reference.py
+python3 -O experiments/evm_feasibility/mixed_period_reference.py
+cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus mixed_genesis
+```
+
+The witness binds execution fields to decoded signed transaction bytes, proves the local
+native catalog covers all 15 live genesis trie paths, and matches public/local batched
+CF1–CF5 exactly. Local observer execution retains one additional CF2 post-transaction
+node, named in `mixed_comparison.json`; execution, final root and all other physical rows
+agree. Actual fees are 21,000 and minted reward is 200. Rust independently derives the
+same complete validator reward-stat set from the declared finalized facts and existing
+rewards planner. This witness does not claim the arbitrary validator address `000…0031`
+is a recoverable PBFT signer.
+
+Actual Go initialization exposed an existing serializer mismatch: all five current DPoS
+iterable families construct prefixes with spare backing capacity. `IterableMapReader.Init`
+appends discriminator zero and then discriminator two to that same prefix; the latter
+overwrites the former. The scoped Rust DPoS helper now preserves the observed discriminator
+two for item-at-position keys. The witness requires every observed genesis row to match;
+V2 creation/deletion rows still require the mixed workload oracle.
+
+Completed reviewed chunks also share selected admission ordering and exact native errors,
+reject wrong transaction association or noncontiguous invocation sequence, introduce the
+full signed native account port, and distinguish a zero debit's ensure-existence behavior
+from a zero credit's touch behavior. Targeted tests and `make rewrite-validate-fast` pass
+through the iterable correction. These isolated checks do not establish persisted mixed
+parity or complete the milestone.
+
+The opt-in genesis metadata hydrator restores only configured accounts. The caller includes
+the declared zero-balance Cornus code accounts, establishes the concrete database pairing,
+resolves any pending publication, and then enriches the genesis snapshot from the fixed
+period-zero reader. Numeric balances and nonces must agree; code bytes/hash/size must agree.
+At a later head only historical snapshot zero changes. No database is adopted or written
+by this method. The existing bounded snapshot constructor alone still lacks this metadata.
+
+The composed workload uses a known PBFT signing key (`09` repeated 32 times), with validator
+address `58da990a8f4a3a6ca7cb6315d68a140105917352`. Its owner is the deterministic future
+contract created by sender key `01` at nonce eight. That contract calls DPoS through ordinary
+CALL, including calls whose ancestor reverts; native DELEGATECALL/CALLCODE remain rejected.
+The larger workload has separate fixtures and requalifies its changed allocations and
+validator/owner addresses before integration acceptance.
+
+## Opt-in replay and reward contract
+
+The application may pass a public opaque prepared reward plan to a Rust staged-native leaf;
+its fields and constructors remain crate-private. The session binds the request at begin,
+validates the actual plan's head/generation/period at finish, and is consumed once. The
+application still owns rewards-runtime updates, publication and recovery. Existing CXX
+payloads and request-only leaves retain their current behavior.
+
+The Rust-only sidecar binds the request ID and exact canonical projection digest. It carries
+one complete context per consensus invocation, unique actually consumed account/raw reads,
+and original ordered ordinary/raw effects; rewards have one terminal context. A second
+private native session replays those facts with the same business kernels and operation
+serializers. Ordinary scratch state is discarded between calls, while final transaction
+account projections own what survived rollback. Existing canonical semantic checks and
+the Go oracle remain independent evidence; reuse is not an independent serializer.
+
+Raw classifications follow their actual observation boundary. A deletion reads as
+`Present(empty)` immediately in a journal, but can become a physical tombstone or proved
+absence after settlement. No unavailable-history error is normalized. The bounded DPoS
+account has preexisting Cornus code and admitted calls cannot delete/recreate it; no claim
+is made that every raw mutation in an arbitrary account survives all EVM rollback.
+
+The aggregate eligible-vote and delegated-amount raw rows flush at Go `EndBlockCall`, not
+after each invocation or `PrepareIntermediateRoot`. Integration must preserve this deferred
+write behavior rather than require every semantic change to have an immediate raw row.

@@ -1,7 +1,7 @@
 # Milestone: persisted mixed-period parity
 
-Status: planned, not implemented or accepted. The task owner selected this outcome on
-2026-09-13. Planning baseline: `1c3f650b5` on `feat/rust/evm-state-db`.
+Status: implementation in progress; not accepted. The task owner authorized completion on
+2026-09-13. Current contracts and evidence: [M1 handoff](m1_mixed_contracts.md). Planning baseline: `1c3f650b5` on `feat/rust/evm-state-db`.
 This milestone groups reviewable implementation slices under the existing
 [implementation plan](08_implementation_plan.md); it does not replace its S0–S8 gates.
 
