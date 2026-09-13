@@ -1,12 +1,13 @@
 //! Ordered, unpublished execution of selected FinalChain native mutations.
 //!
-//! This module exposes a consensus-owned staged session for the post-Cornus
-//! `setCommission`, `delegate`, `undelegateV2`, and `confirmUndelegateV2` DPoS
-//! operations. The session reuses the existing decoder, gas policy, and
-//! mutation kernels. It binds each quote to an exact period-local invocation
-//! and validates operation-owned raw rows before advancing its private DPoS
-//! snapshot. Transaction fees, CALL value transfer, nonces, frame rollback,
-//! receipts, and publication remain outside this boundary.
+//! This module exposes consensus-owned staged sessions for DPoS reads and the
+//! post-Cornus `setCommission`, `delegate`, `undelegateV2`, and
+//! `confirmUndelegateV2` mutations. Sessions reuse existing decoders, gas policy
+//! and business kernels. Pending execution advances from the finalized parent;
+//! historical simulation starts from an exact finalized snapshot behind a
+//! wrapper that cannot finish rewards or publish. Transaction fees, CALL value
+//! transfer, nonces, frame rollback, receipts, and publication remain outside
+//! this boundary.
 
 use super::*;
 use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteStorageKey};
@@ -14,6 +15,7 @@ use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteSto
 pub(super) mod account;
 pub(super) mod context_replay;
 pub(super) mod custody;
+mod query;
 pub(super) mod raw;
 pub(super) mod rewards;
 
@@ -227,6 +229,13 @@ pub enum FinalChainNativeSessionError {
     PendingPeriodMismatch,
     /// This first adapter does not implement pre-Cornus native behavior.
     PreCornusUnsupported,
+    /// Historical simulation requested state beyond the committed finalized head.
+    HistoricalPeriodNotFinalized {
+        /// Historical period requested by the simulation caller.
+        requested: FinalChainBlockNumber,
+        /// Finalized head observed when the disposable session was created.
+        finalized_head: FinalChainBlockNumber,
+    },
     /// A request targeted a different pending period.
     PeriodMismatch,
     /// The request sequence is not the next session sequence.
@@ -297,6 +306,10 @@ enum PreparedKind {
     InsufficientGas,
     SetCommission(Box<PreparedSetCommission>),
     SelectedCustody(DposTransaction),
+    Query {
+        transaction: DposTransaction,
+        abi_data_len: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -320,9 +333,20 @@ pub struct FinalChainNativeSession<'a> {
     period_start_amount_delegated: U256,
     next_sequence: u64,
     dpos_state: DposSnapshot,
+    eligibility_state: DposSnapshot,
+    eligibility_period: FinalChainBlockNumber,
     prepared: Option<PreparedCall>,
     aborted: bool,
     finished_rewards: bool,
+}
+
+/// Disposable native execution over one finalized historical DPoS state.
+///
+/// This owning wrapper exposes the normal prepare/invoke protocol but no
+/// rewards, persistence, snapshot extraction or publication surface. Dropping
+/// it discards the complete staged DPoS state and invocation sequence.
+pub struct FinalChainNativeSimulation<'a> {
+    session: FinalChainNativeSession<'a>,
 }
 
 impl FinalChain {
@@ -355,6 +379,38 @@ impl FinalChain {
         self.begin_native_session_inner(Some(request_id), pending_period, expected_parent)
     }
 
+    /// Begins an unpublished native session over one exact finalized state.
+    ///
+    /// Unlike the pending-period constructors, this does not advance the reward
+    /// reference graph. Current-state queries and mutations start from the
+    /// requested finalized DPoS snapshot. Eligibility queries use an immutable
+    /// snapshot selected at `period - delegation_delay`, matching the public Go
+    /// dry runner rather than its trace runner's live-block reader. The returned
+    /// session has no persistence or publication capability and remains unbound
+    /// to terminal rewards.
+    pub fn begin_native_simulation(
+        &self,
+        period: FinalChainBlockNumber,
+    ) -> std::result::Result<FinalChainNativeSimulation<'_>, FinalChainNativeSessionError> {
+        if period < self.dpos_cornus_period {
+            return Err(FinalChainNativeSessionError::PreCornusUnsupported);
+        }
+        let finalized_head = self
+            .last_block_number_typed()
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        if period > finalized_head {
+            return Err(FinalChainNativeSessionError::HistoricalPeriodNotFinalized {
+                requested: period,
+                finalized_head,
+            });
+        }
+        let dpos_state = self
+            .dpos_snapshot_at_finalized_block(period)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        self.native_session_from_state(None, period, dpos_state)
+            .map(|session| FinalChainNativeSimulation { session })
+    }
+
     fn begin_native_session_inner(
         &self,
         request_id: Option<[u8; 32]>,
@@ -381,17 +437,36 @@ impl FinalChain {
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
         self.advance_reward_reference_graph_block(&mut dpos_state, pending_period)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        self.native_session_from_state(request_id, pending_period, dpos_state)
+    }
+
+    fn native_session_from_state(
+        &self,
+        request_id: Option<[u8; 32]>,
+        period: FinalChainBlockNumber,
+        dpos_state: DposSnapshot,
+    ) -> std::result::Result<FinalChainNativeSession<'_>, FinalChainNativeSessionError> {
+        let eligibility_period =
+            FinalChainBlockNumber::new(period.as_u64().saturating_sub(self.dpos_delegation_delay));
+        let eligibility_state = if eligibility_period == period {
+            dpos_state.clone()
+        } else {
+            self.dpos_snapshot_at_finalized_block(eligibility_period)
+                .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?
+        };
         let period_start_total_vote_count = dpos_state.total_vote_count;
         let period_start_amount_delegated = total_staked_amount(&dpos_state)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
         Ok(FinalChainNativeSession {
             final_chain: self,
             request_id,
-            pending_period,
+            pending_period: period,
             period_start_total_vote_count,
             period_start_amount_delegated,
             next_sequence: 0,
             dpos_state,
+            eligibility_state,
+            eligibility_period,
             prepared: None,
             aborted: false,
             finished_rewards: false,
@@ -399,14 +474,36 @@ impl FinalChain {
     }
 }
 
+impl FinalChainNativeSimulation<'_> {
+    /// Prepares one exact native request against this private historical view.
+    pub fn prepare(
+        &mut self,
+        request: &FinalChainNativeRequest,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> std::result::Result<FinalChainNativeGasQuote, FinalChainNativeSessionError> {
+        self.session.prepare(request, state)
+    }
+
+    /// Invokes the exact prepared request and advances only this private view.
+    pub fn invoke(
+        &mut self,
+        request: &FinalChainNativeRequest,
+        quote: FinalChainNativeGasQuote,
+        state: &dyn FinalChainNativeStateRead,
+    ) -> std::result::Result<FinalChainNativeInvocationResult, FinalChainNativeSessionError> {
+        self.session.invoke(request, quote, state)
+    }
+}
+
 impl FinalChainNativeSession<'_> {
     /// Prepares one exact supported native call and returns its gas quote.
     ///
     /// Nonzero value and insufficient-gas paths bind a terminal result before
-    /// any raw read. `setCommission` validates and retains its validator and
-    /// owner observations during preparation. Selected custody calls defer raw
-    /// and ordinary-account reads until invocation so business preflight errors
-    /// preserve the reference read order.
+    /// any raw read. Queries bind the current or frozen delayed session view.
+    /// `setCommission` validates and retains its validator and owner observations
+    /// during preparation. Selected custody calls defer raw and ordinary-account
+    /// reads until invocation so business preflight errors preserve the
+    /// reference read order.
     pub fn prepare(
         &mut self,
         request: &FinalChainNativeRequest,
@@ -439,6 +536,48 @@ impl FinalChainNativeSession<'_> {
             }
             DposTransaction::UndelegateV2 { .. } | DposTransaction::ConfirmUndelegateV2 { .. } => {
                 None
+            }
+            transaction if query::is_query(transaction) => {
+                let admission = match self.final_chain.native_invocation_admission(
+                    transaction,
+                    request.period,
+                    request.depth,
+                    request.value.value(),
+                    request.supplied_gas,
+                    Some(&self.dpos_state),
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.aborted = true;
+                        return Err(FinalChainNativeSessionError::Domain(error.to_string()));
+                    }
+                };
+                let quote = FinalChainNativeGasQuote {
+                    invocation: request.id,
+                    required_gas: admission.required_gas,
+                };
+                if let Some(failure) = admission.failure {
+                    use super::native_admission::NativeAdmissionFailure as Failure;
+                    self.prepared = Some(PreparedCall {
+                        request: request.clone(),
+                        quote,
+                        kind: match failure {
+                            Failure::InsufficientGas => PreparedKind::InsufficientGas,
+                            Failure::NestedBeforeFix => PreparedKind::NestedCallRejected,
+                            Failure::NonPayable => PreparedKind::NonPayable,
+                        },
+                    });
+                } else {
+                    self.prepared = Some(PreparedCall {
+                        request: request.clone(),
+                        quote,
+                        kind: PreparedKind::Query {
+                            transaction: (*transaction).clone(),
+                            abi_data_len: request.input.len().saturating_sub(4),
+                        },
+                    });
+                }
+                return Ok(quote);
             }
             _ => return Err(FinalChainNativeSessionError::UnsupportedOperation),
         };
@@ -586,6 +725,10 @@ impl FinalChainNativeSession<'_> {
             PreparedKind::SelectedCustody(transaction) => {
                 self.invoke_selected_custody(transaction, quote, state)
             }
+            PreparedKind::Query {
+                transaction,
+                abi_data_len,
+            } => self.invoke_query(transaction, abi_data_len, quote),
         };
         let result = match result {
             Ok(result) => result,
@@ -926,7 +1069,7 @@ fn checked_undelegations_count(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ethereum_types::H160;
+    use ethereum_types::{H160, H256};
     use rustaxa_storage::Config;
     use rustaxa_types::GenesisValidatorMetadata;
     use std::cell::{Cell, RefCell};
@@ -1150,6 +1293,29 @@ mod tests {
         ficus_activation_period: FinalChainBlockNumber,
         test: impl FnOnce(&FinalChain),
     ) {
+        with_chain_dpos_config(
+            test_name,
+            rewards_config,
+            ficus_activation_period,
+            GenesisDposConfig {
+                eligibility_balance_threshold: U256::from(1_000).into(),
+                vote_eligibility_balance_step: U256::from(1_000).into(),
+                validator_maximum_stake: U256::from(30_000).into(),
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                ..Default::default()
+            },
+            test,
+        );
+    }
+
+    fn with_chain_dpos_config(
+        test_name: &str,
+        rewards_config: FinalChainRewardsConfig,
+        ficus_activation_period: FinalChainBlockNumber,
+        dpos_config: GenesisDposConfig,
+        test: impl FnOnce(&FinalChain),
+    ) {
         let path = temp_db_path(test_name);
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new_with_rewards_config_and_ficus_activation(
@@ -1168,14 +1334,7 @@ mod tests {
                     ..Default::default()
                 },
             }],
-            GenesisDposConfig {
-                eligibility_balance_threshold: U256::from(1_000).into(),
-                vote_eligibility_balance_step: U256::from(1_000).into(),
-                validator_maximum_stake: U256::from(30_000).into(),
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                ..Default::default()
-            },
+            dpos_config,
             rewards_config,
             ficus_activation_period,
         )
@@ -1287,6 +1446,278 @@ mod tests {
         for mutation in &outcome.raw_mutations {
             state.apply(mutation);
         }
+    }
+
+    fn simulation_request(
+        period: FinalChainBlockNumber,
+        sequence: u64,
+        input: Vec<u8>,
+        supplied_gas: u64,
+    ) -> FinalChainNativeRequest {
+        FinalChainNativeRequest {
+            id: FinalChainNativeInvocationId {
+                transaction: FinalChainTransactionPosition::new(0),
+                sequence,
+            },
+            period,
+            depth: 0,
+            kind: FinalChainNativeCallKind::Call,
+            is_static: false,
+            caller: OWNER,
+            contract: DPOS_CONTRACT_ADDRESS,
+            state_address: DPOS_CONTRACT_ADDRESS,
+            value: FinalChainNativeValue::default(),
+            input,
+            supplied_gas: supplied_gas.into(),
+        }
+    }
+
+    #[test]
+    fn historical_simulation_reads_its_staged_snapshot_without_rewards_authority() {
+        with_chain(
+            "historical-query-after-mutation",
+            FinalChainBlockNumber::GENESIS,
+            |final_chain| {
+                let state = RawState::fixture();
+                let mut simulation = final_chain
+                    .begin_native_simulation(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let finalized = final_chain
+                    .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                assert_eq!(simulation.session.dpos_state, finalized);
+                assert_eq!(simulation.session.eligibility_state, finalized);
+                assert_eq!(
+                    simulation.session.eligibility_period,
+                    FinalChainBlockNumber::GENESIS
+                );
+                assert_eq!(simulation.session.request_id, None);
+
+                let read = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    0,
+                    address_word_input(DPOS_GET_VALIDATOR_SELECTOR, VALIDATOR),
+                    DPOS_GET_METHOD_GAS,
+                );
+                let quote = simulation.prepare(&read, &state).unwrap();
+                assert_eq!(quote.required_gas, DPOS_GET_METHOD_GAS.into());
+                let initial = completed(simulation.invoke(&read, quote, &state).unwrap());
+                assert_eq!(initial.status, FinalChainNativeStatus::Success);
+                assert_eq!(
+                    BigUint::from_bytes_be(&initial.output[96..128]),
+                    100_u32.into()
+                );
+                assert!(initial.account_mutations.is_empty());
+                assert!(initial.raw_mutations.is_empty());
+                assert!(initial.logs.is_empty());
+                assert_eq!(state.reads.get(), 0);
+
+                let mutation = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    1,
+                    commission_input(VALIDATOR, 200),
+                    DPOS_SET_COMMISSION_GAS,
+                );
+                let quote = simulation.prepare(&mutation, &state).unwrap();
+                let changed = completed(simulation.invoke(&mutation, quote, &state).unwrap());
+                assert_eq!(changed.status, FinalChainNativeStatus::Success);
+                assert_eq!(changed.raw_mutations.len(), 1);
+                apply_raw_mutations(&state, &changed);
+
+                let reread = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    2,
+                    address_word_input(DPOS_GET_VALIDATOR_SELECTOR, VALIDATOR),
+                    DPOS_GET_METHOD_GAS,
+                );
+                let quote = simulation.prepare(&reread, &state).unwrap();
+                let current = completed(simulation.invoke(&reread, quote, &state).unwrap());
+                assert_eq!(current.status, FinalChainNativeStatus::Success);
+                assert_eq!(
+                    BigUint::from_bytes_be(&current.output[96..128]),
+                    200_u32.into()
+                );
+                assert!(current.raw_mutations.is_empty());
+
+                // `accounts/abi/unpack.go::toGoType` reports the ABI data
+                // length after the selector and the first missing word end.
+                let malformed = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    3,
+                    DPOS_GET_TOTAL_DELEGATION_SELECTOR.to_vec(),
+                    0,
+                );
+                let quote = simulation.prepare(&malformed, &state).unwrap();
+                assert_eq!(quote.required_gas, FinalChainGas::ZERO);
+                let malformed = completed(simulation.invoke(&malformed, quote, &state).unwrap());
+                assert_eq!(
+                    malformed.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error:
+                            "abi: cannot marshal in to go type: length insufficient 0 require 32"
+                                .to_owned(),
+                    }
+                );
+
+                let missing = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    4,
+                    address_word_input(DPOS_GET_VALIDATOR_SELECTOR, [0x99; 20]),
+                    DPOS_GET_METHOD_GAS,
+                );
+                let quote = simulation.prepare(&missing, &state).unwrap();
+                let missing = completed(simulation.invoke(&missing, quote, &state).unwrap());
+                assert_eq!(
+                    missing.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error: "Validator does not exist".to_owned(),
+                    }
+                );
+
+                let short_page = simulation_request(
+                    FinalChainBlockNumber::GENESIS,
+                    5,
+                    address_word_input(DPOS_GET_DELEGATIONS_SELECTOR, OWNER),
+                    0,
+                );
+                let quote = simulation.prepare(&short_page, &state).unwrap();
+                let short_page = completed(simulation.invoke(&short_page, quote, &state).unwrap());
+                assert_eq!(
+                    short_page.status,
+                    FinalChainNativeStatus::ContractFailure {
+                        error:
+                            "abi: cannot marshal in to go type: length insufficient 32 require 64"
+                                .to_owned(),
+                    }
+                );
+
+                let mut padded_address =
+                    address_word_input(DPOS_GET_TOTAL_DELEGATION_SELECTOR, [0x99; 20]);
+                padded_address[4..16].fill(0xaa);
+                let padded_address =
+                    simulation_request(FinalChainBlockNumber::GENESIS, 6, padded_address, 0);
+                let quote = simulation.prepare(&padded_address, &state).unwrap();
+                let padded_address =
+                    completed(simulation.invoke(&padded_address, quote, &state).unwrap());
+                assert_eq!(padded_address.status, FinalChainNativeStatus::Success);
+                assert_eq!(padded_address.output, vec![0; 32]);
+
+                assert!(matches!(
+                    final_chain.begin_native_simulation(FinalChainBlockNumber::new(1)),
+                    Err(FinalChainNativeSessionError::HistoricalPeriodNotFinalized {
+                        requested,
+                        finalized_head,
+                    }) if requested == FinalChainBlockNumber::new(1)
+                        && finalized_head == FinalChainBlockNumber::GENESIS
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn historical_simulation_selects_exact_current_and_delayed_snapshots() {
+        let rewards = FinalChainRewardsConfig {
+            magnolia_period: FinalChainBlockNumber::GENESIS,
+            cornus_period: FinalChainBlockNumber::GENESIS,
+            cacti_period: FinalChainBlockNumber::MAX,
+            ..Default::default()
+        };
+        with_chain_dpos_config(
+            "historical-query-delayed-state",
+            rewards,
+            FinalChainBlockNumber::MAX,
+            GenesisDposConfig {
+                eligibility_balance_threshold: U256::from(1_000).into(),
+                vote_eligibility_balance_step: U256::from(1_000).into(),
+                validator_maximum_stake: U256::from(30_000).into(),
+                delegation_delay: 1,
+                ..Default::default()
+            },
+            |final_chain| {
+                let genesis = final_chain
+                    .dpos_snapshot_at_finalized_block(FinalChainBlockNumber::GENESIS)
+                    .unwrap();
+                let mut at_one = genesis.clone();
+                at_one
+                    .validator_metadata
+                    .get_mut(&VALIDATOR)
+                    .unwrap()
+                    .commission = 111;
+                at_one.vote_counts.insert(VALIDATOR, 11);
+                let mut at_two = at_one.clone();
+                at_two
+                    .validator_metadata
+                    .get_mut(&VALIDATOR)
+                    .unwrap()
+                    .commission = 222;
+                at_two.vote_counts.insert(VALIDATOR, 22);
+                final_chain
+                    .insert_dpos_snapshot(1.into(), at_one.clone())
+                    .unwrap();
+                final_chain
+                    .insert_dpos_snapshot(2.into(), at_two.clone())
+                    .unwrap();
+                final_chain
+                    .storage
+                    .final_chain()
+                    .write_block_header(1, H256::from_low_u64_be(1), &[0xc0], &[0xc0])
+                    .unwrap();
+                final_chain
+                    .storage
+                    .final_chain()
+                    .write_block_header(2, H256::from_low_u64_be(2), &[0xc0], &[0xc0])
+                    .unwrap();
+                assert_eq!(
+                    final_chain.last_block_number_typed().unwrap(),
+                    FinalChainBlockNumber::new(2)
+                );
+
+                let state = RawState::fixture();
+                let mut simulation = final_chain
+                    .begin_native_simulation(FinalChainBlockNumber::new(1))
+                    .unwrap();
+                assert_eq!(simulation.session.dpos_state, at_one);
+                assert_eq!(simulation.session.eligibility_state, genesis);
+                assert_eq!(
+                    simulation.session.eligibility_period,
+                    FinalChainBlockNumber::GENESIS
+                );
+
+                let validator = simulation_request(
+                    1.into(),
+                    0,
+                    address_word_input(DPOS_GET_VALIDATOR_SELECTOR, VALIDATOR),
+                    DPOS_GET_METHOD_GAS,
+                );
+                let quote = simulation.prepare(&validator, &state).unwrap();
+                let result = completed(simulation.invoke(&validator, quote, &state).unwrap());
+                assert_eq!(
+                    BigUint::from_bytes_be(&result.output[96..128]),
+                    111_u32.into()
+                );
+
+                let votes = simulation_request(
+                    1.into(),
+                    1,
+                    address_word_input(DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR, VALIDATOR),
+                    DPOS_DEFAULT_METHOD_GAS,
+                );
+                let quote = simulation.prepare(&votes, &state).unwrap();
+                let result = completed(simulation.invoke(&votes, quote, &state).unwrap());
+                assert_eq!(BigUint::from_bytes_be(&result.output), 10_u32.into());
+                drop(simulation);
+
+                final_chain
+                    .dpos_snapshots
+                    .lock()
+                    .unwrap()
+                    .remove(&FinalChainBlockNumber::new(1));
+                assert!(matches!(
+                    final_chain.begin_native_simulation(FinalChainBlockNumber::new(2)),
+                    Err(FinalChainNativeSessionError::Domain(_))
+                ));
+            },
+        );
     }
 
     #[test]
