@@ -42,9 +42,11 @@ pub struct AttemptedSstore {
 ///
 /// `gas_cost` and `refund` are supplied facts. The collector never derives them
 /// from gas deltas: failed admission and early validation paths can retain costs
-/// that are not represented by the interpreter's charged gas. `memory` is the
-/// pre-operation memory after any admitted expansion. `stack` is ordered from
-/// bottom to top.
+/// that are not represented by the interpreter's charged gas. For a
+/// [`TraceOpcodePhase::BeforeExecution`] row, stack and memory describe the
+/// pre-operation state after admitted memory expansion. A fault row describes
+/// the later stack and memory visible when the error callback runs. Stack words
+/// are ordered from bottom to top in both phases.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraceOpcode {
     /// Program counter of the attempted instruction.
@@ -59,9 +61,9 @@ pub struct TraceOpcode {
     pub depth: u16,
     /// Account whose storage context the instruction uses.
     pub state_address: TraceAddress,
-    /// Stack snapshot ordered from bottom to top.
+    /// Phase-dependent stack snapshot ordered from bottom to top.
     pub stack: Vec<TraceWord>,
-    /// Memory after admitted expansion and before instruction mutation.
+    /// Phase-dependent memory snapshot at callback time.
     pub memory: Vec<u8>,
     /// Refund counter visible when this row was captured.
     pub refund: u64,
@@ -206,6 +208,9 @@ mod tests {
         phase: TraceOpcodePhase,
         write: Option<AttemptedSstore>,
     ) -> TraceEvent {
+        let stack = write
+            .map(|write| vec![write.value, write.key])
+            .unwrap_or_default();
         TraceEvent::Opcode(TraceOpcode {
             pc: 7,
             opcode: 0x55,
@@ -213,7 +218,7 @@ mod tests {
             gas_cost: 5_000,
             depth: 1,
             state_address: address,
-            stack: vec![],
+            stack,
             memory: vec![0; 32],
             refund: 4_800,
             phase,
