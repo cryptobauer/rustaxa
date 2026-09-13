@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Ten additive reverse-order/nested/nil-root journal cases; no EVM envelope, RocksDB or network replay",
+  "exporter_sha256": "bf643a3fa848b27e165fcdacba8d6284d3cfe00f325f1a5607575e3b4dae1e26",
+  "sha256": {
+    "journal_extended_public.json": "9d70ad3424def23c7ffdbc5ae76b14a0acf239292f410f025fcba74307c06a32",
+    "journal_extended_local.json": "9d70ad3424def23c7ffdbc5ae76b14a0acf239292f410f025fcba74307c06a32"
+  }
+}

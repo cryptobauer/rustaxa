@@ -1,0 +1,2436 @@
+[
+  {
+    "after_transaction": {
+      "logs": 0,
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "17",
+      "original": "17",
+      "raw": {
+        "bytes": "11",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "reverse-existing-commit",
+    "exists": true,
+    "nil_root": false,
+    "prior_root": "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b",
+    "prior_rows": [
+      {},
+      {
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c8080"
+      },
+      {
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "11"
+      }
+    ],
+    "reopened": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "68",
+      "original": "68",
+      "raw": {
+        "bytes": "0044",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9",
+    "rows": [
+      {},
+      {
+        "b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9",
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a0f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e0538080"
+      },
+      {
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c",
+        "f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e053": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a0f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e053"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "0044"
+      }
+    ],
+    "steps": [
+      {
+        "op": "snapshot",
+        "value": 0,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "17",
+          "original": "17",
+          "raw": {
+            "bytes": "11",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0044",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "17",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "51",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "55",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 123,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "log",
+        "value": "66",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      }
+    ]
+  },
+  {
+    "after_transaction": {
+      "logs": 0,
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "17",
+      "original": "17",
+      "raw": {
+        "bytes": "11",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "reverse-existing-revert",
+    "exists": true,
+    "nil_root": false,
+    "prior_root": "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b",
+    "prior_rows": [
+      {},
+      {
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c8080"
+      },
+      {
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "11"
+      }
+    ],
+    "reopened": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "68",
+      "original": "68",
+      "raw": {
+        "bytes": "0044",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9",
+    "rows": [
+      {},
+      {
+        "b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9",
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a0f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e0538080"
+      },
+      {
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c",
+        "f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e053": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a0f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e053"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "0044"
+      }
+    ],
+    "steps": [
+      {
+        "op": "snapshot",
+        "value": 0,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "17",
+          "original": "17",
+          "raw": {
+            "bytes": "11",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0044",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "17",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "51",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "55",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 123,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "log",
+        "value": "66",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "revert",
+        "value": 0,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "17",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      }
+    ]
+  },
+  {
+    "after_transaction": {
+      "logs": 0,
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "0",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "reverse-new-commit",
+    "exists": false,
+    "nil_root": false,
+    "prior_root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "prior_rows": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "0",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "68",
+      "original": "68",
+      "raw": {
+        "bytes": "0044",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "198b3da25813758a0966456b03e999b64937281053d9078c33a0101032c8566b",
+    "rows": [
+      {},
+      {
+        "198b3da25813758a0966456b03e999b64937281053d9078c33a0101032c8566b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0198b3da25813758a0966456b03e999b64937281053d9078c33a0101032c8566b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50180a0f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e0538080"
+      },
+      {
+        "f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e053": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a0f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e053"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "0044"
+      }
+    ],
+    "steps": [
+      {
+        "op": "snapshot",
+        "value": 0,
+        "view": {
+          "balance": "0",
+          "exists": false,
+          "logs": 0,
+          "nonce": "0",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "",
+            "present": false
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "nonce",
+        "value": "1",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "",
+            "present": false
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0044",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "51",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "55",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 123,
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "log",
+        "value": "66",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      }
+    ]
+  },
+  {
+    "after_transaction": {
+      "logs": 0,
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "0",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "reverse-new-revert",
+    "exists": false,
+    "nil_root": false,
+    "prior_root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "prior_rows": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "0",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "rows": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ],
+    "steps": [
+      {
+        "op": "snapshot",
+        "value": 0,
+        "view": {
+          "balance": "0",
+          "exists": false,
+          "logs": 0,
+          "nonce": "0",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "",
+            "present": false
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "nonce",
+        "value": "1",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "",
+            "present": false
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0044",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "51",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "55",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 123,
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "log",
+        "value": "66",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "revert",
+        "value": 0,
+        "view": {
+          "balance": "0",
+          "exists": false,
+          "logs": 0,
+          "nonce": "0",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "",
+            "present": false
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      }
+    ]
+  },
+  {
+    "after_transaction": {
+      "logs": 0,
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "17",
+      "original": "17",
+      "raw": {
+        "bytes": "11",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "nested-existing-commit",
+    "exists": true,
+    "nil_root": false,
+    "prior_root": "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b",
+    "prior_rows": [
+      {},
+      {
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c8080"
+      },
+      {
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "11"
+      }
+    ],
+    "reopened": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "136",
+      "original": "136",
+      "raw": {
+        "bytes": "0088",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "0a189cdb4a67f6356ad37d237a8ee06f3d8733c1b08b3bf8dbea7c6665e5067a",
+    "rows": [
+      {},
+      {
+        "0a189cdb4a67f6356ad37d237a8ee06f3d8733c1b08b3bf8dbea7c6665e5067a": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a00a189cdb4a67f6356ad37d237a8ee06f3d8733c1b08b3bf8dbea7c6665e5067a",
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a00abbe816c80aee44e04345122038b2336807b9e5a848058fe91665a74aaabd8c8080"
+      },
+      {
+        "0abbe816c80aee44e04345122038b2336807b9e5a848058fe91665a74aaabd8c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a00abbe816c80aee44e04345122038b2336807b9e5a848058fe91665a74aaabd8c",
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "0088"
+      }
+    ],
+    "steps": [
+      {
+        "op": "snapshot",
+        "value": 0,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "17",
+          "original": "17",
+          "raw": {
+            "bytes": "11",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0044",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "17",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "51",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "55",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 123,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "log",
+        "value": "66",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "snapshot",
+        "value": 1,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "119",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0088",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "99",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 10,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 133,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "log",
+        "value": "aa",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 2,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 133,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "revert",
+        "value": 1,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      }
+    ]
+  },
+  {
+    "after_transaction": {
+      "logs": 0,
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "17",
+      "original": "17",
+      "raw": {
+        "bytes": "11",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "nested-existing-revert",
+    "exists": true,
+    "nil_root": false,
+    "prior_root": "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b",
+    "prior_rows": [
+      {},
+      {
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c8080"
+      },
+      {
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "11"
+      }
+    ],
+    "reopened": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "136",
+      "original": "136",
+      "raw": {
+        "bytes": "0088",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "0a189cdb4a67f6356ad37d237a8ee06f3d8733c1b08b3bf8dbea7c6665e5067a",
+    "rows": [
+      {},
+      {
+        "0a189cdb4a67f6356ad37d237a8ee06f3d8733c1b08b3bf8dbea7c6665e5067a": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a00a189cdb4a67f6356ad37d237a8ee06f3d8733c1b08b3bf8dbea7c6665e5067a",
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a00abbe816c80aee44e04345122038b2336807b9e5a848058fe91665a74aaabd8c8080"
+      },
+      {
+        "0abbe816c80aee44e04345122038b2336807b9e5a848058fe91665a74aaabd8c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a00abbe816c80aee44e04345122038b2336807b9e5a848058fe91665a74aaabd8c",
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "0088"
+      }
+    ],
+    "steps": [
+      {
+        "op": "snapshot",
+        "value": 0,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "17",
+          "original": "17",
+          "raw": {
+            "bytes": "11",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0044",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "17",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "51",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "55",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 123,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "log",
+        "value": "66",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "snapshot",
+        "value": 1,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "119",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "17",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0088",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "99",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 10,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 133,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "log",
+        "value": "aa",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 2,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 133,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "revert",
+        "value": 1,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "revert",
+        "value": 0,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "17",
+          "original": "17",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      }
+    ]
+  },
+  {
+    "after_transaction": {
+      "logs": 0,
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "0",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "nested-new-commit",
+    "exists": false,
+    "nil_root": false,
+    "prior_root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "prior_rows": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "0",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "136",
+      "original": "136",
+      "raw": {
+        "bytes": "0088",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "de7b57886022e213523956cdaf41e6f7a7f105554cf8c6353e7e543a45b8a858",
+    "rows": [
+      {},
+      {
+        "de7b57886022e213523956cdaf41e6f7a7f105554cf8c6353e7e543a45b8a858": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0de7b57886022e213523956cdaf41e6f7a7f105554cf8c6353e7e543a45b8a858"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50180a00abbe816c80aee44e04345122038b2336807b9e5a848058fe91665a74aaabd8c8080"
+      },
+      {
+        "0abbe816c80aee44e04345122038b2336807b9e5a848058fe91665a74aaabd8c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a00abbe816c80aee44e04345122038b2336807b9e5a848058fe91665a74aaabd8c"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "0088"
+      }
+    ],
+    "steps": [
+      {
+        "op": "snapshot",
+        "value": 0,
+        "view": {
+          "balance": "0",
+          "exists": false,
+          "logs": 0,
+          "nonce": "0",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "",
+            "present": false
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "nonce",
+        "value": "1",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "",
+            "present": false
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0044",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "51",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "55",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 123,
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "log",
+        "value": "66",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "snapshot",
+        "value": 1,
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "119",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0088",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "0",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "99",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "0",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 10,
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "0",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 133,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "log",
+        "value": "aa",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 2,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "0",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 133,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "revert",
+        "value": 1,
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      }
+    ]
+  },
+  {
+    "after_transaction": {
+      "logs": 0,
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "0",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "nested-new-revert",
+    "exists": false,
+    "nil_root": false,
+    "prior_root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "prior_rows": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "0",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "rows": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ],
+    "steps": [
+      {
+        "op": "snapshot",
+        "value": 0,
+        "view": {
+          "balance": "0",
+          "exists": false,
+          "logs": 0,
+          "nonce": "0",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "",
+            "present": false
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "nonce",
+        "value": "1",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "",
+            "present": false
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0044",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "51",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "55",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 123,
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "log",
+        "value": "66",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "snapshot",
+        "value": 1,
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "119",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0088",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "0",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "99",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "0",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 10,
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "0",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 133,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "log",
+        "value": "aa",
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 2,
+          "nonce": "1",
+          "ordinary": "119",
+          "original": "0",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 133,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "revert",
+        "value": 1,
+        "view": {
+          "balance": "0",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0088",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      },
+      {
+        "op": "revert",
+        "value": 0,
+        "view": {
+          "balance": "0",
+          "exists": false,
+          "logs": 0,
+          "nonce": "0",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "",
+            "present": false
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000099"
+        }
+      }
+    ]
+  },
+  {
+    "after_transaction": {
+      "logs": 0,
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "11",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "nil-root-commit",
+    "exists": true,
+    "nil_root": true,
+    "prior_root": "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a",
+    "prior_rows": [
+      {},
+      {
+        "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a",
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "c50164808080"
+      },
+      {
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "11"
+      }
+    ],
+    "reopened": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "68",
+      "original": "68",
+      "raw": {
+        "bytes": "0044",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9",
+    "rows": [
+      {},
+      {
+        "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a",
+        "b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9",
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a0f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e0538080"
+      },
+      {
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c",
+        "f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e053": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a0f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e053"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "0044"
+      }
+    ],
+    "steps": [
+      {
+        "op": "snapshot",
+        "value": 0,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "11",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0044",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "51",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "55",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 123,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "log",
+        "value": "66",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      }
+    ]
+  },
+  {
+    "after_transaction": {
+      "logs": 0,
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "11",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "nil-root-revert",
+    "exists": true,
+    "nil_root": true,
+    "prior_root": "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a",
+    "prior_rows": [
+      {},
+      {
+        "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a",
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "c50164808080"
+      },
+      {
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "11"
+      }
+    ],
+    "reopened": {
+      "balance": "100",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "68",
+      "original": "68",
+      "raw": {
+        "bytes": "0044",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9",
+    "rows": [
+      {},
+      {
+        "237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0237820c1eb1d743f94d99c8faf766e168377d9c2224b7a08ba3ce62b5ec6f97a",
+        "b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0b9d139c10bb0fe50e36d00dd6235a3b21b9c7ad871cee485b9af2efefffe10c9",
+        "e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0e8269fee2b975af999fca4ae0f98390c2b86a727e060065ecaf870aea2cf951b"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "e50164a0f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e0538080"
+      },
+      {
+        "6dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a06dcc37243a77dfcb10bff800d0ae99a7f0717898504f684e0bedb8a5228c041c",
+        "f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e053": "f843a120b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6a0f13607ab7039ea1720d1f953244ff09f8f93d403c1711b54f7c20cd84501e053"
+      },
+      {
+        "cc8822632e08e3384ca98629344b3f63c047bdcc4e35c489a7721cff93e91e64": "0044"
+      }
+    ],
+    "steps": [
+      {
+        "op": "snapshot",
+        "value": 0,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "11",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "raw",
+        "value": "0044",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "ordinary",
+        "value": "51",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "op": "transient",
+        "value": "55",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "refund",
+        "value": 123,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "log",
+        "value": "66",
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 1,
+          "nonce": "1",
+          "ordinary": "51",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 123,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      },
+      {
+        "op": "revert",
+        "value": 0,
+        "view": {
+          "balance": "100",
+          "exists": true,
+          "logs": 0,
+          "nonce": "1",
+          "ordinary": "0",
+          "original": "0",
+          "raw": {
+            "bytes": "0044",
+            "present": true
+          },
+          "refund": 0,
+          "transient": "0000000000000000000000000000000000000000000000000000000000000055"
+        }
+      }
+    ]
+  }
+]

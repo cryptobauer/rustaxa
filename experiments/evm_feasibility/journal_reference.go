@@ -90,6 +90,14 @@ func observe(s *state_evm.TransitionState) map[string]any {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "mutators" {
+		runMutators()
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "extended" {
+		runExtended()
+		return
+	}
 	var out []map[string]any
 	for _, c := range []struct {
 		name                    string
@@ -155,6 +163,224 @@ func main() {
 			"after_transaction": afterTransaction, "reopened": observe(&reopened),
 			"prior_rows": priorRows, "prior_root": hex.EncodeToString(priorRootValue[:]),
 			"rows": m.export(), "root": hex.EncodeToString(root[:]),
+		})
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		panic(err)
+	}
+}
+
+// Extended observations are additive: reverse write order, nested rollback and
+// an existing nil-storage-root account with a retained physical raw row. No
+// physical reads occur between transaction flush and the final sink join.
+func runExtended() {
+	var out []map[string]any
+	for _, c := range []struct {
+		name                                 string
+		exists, nested, revertOuter, nilRoot bool
+	}{
+		{"reverse-existing-commit", true, false, false, false},
+		{"reverse-existing-revert", true, false, true, false},
+		{"reverse-new-commit", false, false, false, false},
+		{"reverse-new-revert", false, false, true, false},
+		{"nested-existing-commit", true, true, false, false},
+		{"nested-existing-revert", true, true, true, false},
+		{"nested-new-commit", false, true, false, false},
+		{"nested-new-revert", false, true, true, false},
+		{"nil-root-commit", true, false, false, true},
+		{"nil-root-revert", true, false, true, true},
+	} {
+		m := newMemoryRows()
+		priorRoot := seed(m, c.exists)
+		if c.nilRoot {
+			// Leave the physical slot row in place but remove account reachability.
+			acc := state_db.Account{Nonce: big.NewInt(1), Balance: big.NewInt(100)}
+			main := new(trie.Writer).Init(state_db.MainTrieSchema{}, priorRoot, trie.WriterOpts{})
+			addrKey := crypto.Keccak256Hash(address[:])
+			mainIO := state_db.MainTrieIOAdapter{ReadWriter: m}
+			main.Put(mainIO, &addrKey, &acc)
+			priorRoot = main.Commit(mainIO)
+		}
+		priorRootValue := crypto.Keccak256Hash([]byte{0x80})
+		if priorRoot != nil {
+			priorRootValue = *priorRoot
+		}
+		priorRows := m.export()
+		var s state_evm.TransitionState
+		s.Init(state_evm.Opts{})
+		s.SetInput(state_db.ExtendedReader{Reader: m})
+		before := observe(&s)
+		var steps []map[string]any
+		record := func(op string, value any) {
+			steps = append(steps, map[string]any{"op": op, "value": value, "view": observe(&s)})
+		}
+		outer := s.Snapshot()
+		record("snapshot", 0)
+		if !c.exists {
+			s.GetAccountConcrete(&address).SetNonce(big.NewInt(1))
+			record("nonce", "1")
+		}
+		s.GetAccountConcrete(&address).SetStateRawIrreversibly(&key, []byte{0, 0x44})
+		record("raw", "0044")
+		s.GetAccountConcrete(&address).SetState(big.NewInt(1), big.NewInt(0x33))
+		record("ordinary", "51")
+		s.SetTransientState(&address, key, common.BytesToHash([]byte{0x55}))
+		record("transient", "55")
+		s.AddRefund(123)
+		record("refund", 123)
+		s.AddLog(vm.LogRecord{Address: address, Data: []byte{0x66}})
+		record("log", "66")
+		if c.nested {
+			inner := s.Snapshot()
+			record("snapshot", 1)
+			s.GetAccountConcrete(&address).SetState(big.NewInt(1), big.NewInt(0x77))
+			record("ordinary", "119")
+			s.GetAccountConcrete(&address).SetStateRawIrreversibly(&key, []byte{0, 0x88})
+			record("raw", "0088")
+			s.SetTransientState(&address, key, common.BytesToHash([]byte{0x99}))
+			record("transient", "99")
+			s.AddRefund(10)
+			record("refund", 10)
+			s.AddLog(vm.LogRecord{Address: address, Data: []byte{0xaa}})
+			record("log", "aa")
+			s.RevertToSnapshot(inner)
+			record("revert", 1)
+		}
+		if c.revertOuter {
+			s.RevertToSnapshot(outer)
+			record("revert", 0)
+		}
+		sink := new(state_transition.TrieSink).Init(priorRoot, state_transition.TrieSinkOpts{})
+		sink.SetIO(m)
+		s.CommitTransaction(sink)
+		transient := s.GetTransientState(&address, key)
+		afterTransaction := map[string]any{"transient": hex.EncodeToString(transient[:]), "logs": len(s.GetLogs()), "refund": s.GetRefund()}
+		s.Commit()
+		root := sink.Commit()
+		sink.Close()
+		var reopened state_evm.TransitionState
+		reopened.Init(state_evm.Opts{})
+		reopened.SetInput(state_db.ExtendedReader{Reader: m})
+		out = append(out, map[string]any{
+			"case": c.name, "exists": c.exists, "nil_root": c.nilRoot,
+			"before": before, "steps": steps, "after_transaction": afterTransaction,
+			"reopened": observe(&reopened), "prior_rows": priorRows,
+			"prior_root": hex.EncodeToString(priorRootValue[:]), "rows": m.export(), "root": hex.EncodeToString(root[:]),
+		})
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		panic(err)
+	}
+}
+
+// Mutator regressions exercise real account methods, including no-op behavior.
+// The deliberately rejected nonce is recovered as an observation; no Go source
+// assertion or validation is weakened to obtain the fixture.
+func runMutators() {
+	var out []map[string]any
+	for _, name := range []string{"storage-noop-leading-zero", "empty-by-balance", "existing-empty-touch", "existing-empty-raw", "empty-code-noop", "reverted-new", "nonce-decrease", "ripemd-touch-revert"} {
+		address = common.BytesToAddress([]byte{0xaa})
+		if name == "ripemd-touch-revert" {
+			address = common.BytesToAddress([]byte{3})
+		}
+		m := newMemoryRows()
+		var priorRoot *common.Hash
+		if name != "reverted-new" {
+			acc := state_db.Account{Nonce: big.NewInt(1), Balance: big.NewInt(100)}
+			if name == "empty-by-balance" {
+				acc.Nonce, acc.Balance = big.NewInt(0), big.NewInt(1)
+			}
+			if name == "existing-empty-touch" || name == "existing-empty-raw" || name == "ripemd-touch-revert" {
+				acc.Nonce, acc.Balance = big.NewInt(0), big.NewInt(0)
+			}
+			if name == "storage-noop-leading-zero" {
+				slot := new(trie.Writer).Init(state_db.AccountTrieSchema{}, nil, trie.WriterOpts{})
+				slotKey := crypto.Keccak256Hash(key[:])
+				slotIO := state_db.AccountTrieIOAdapter{Addr: &address, ReadWriter: m}
+				slot.Put(slotIO, &slotKey, state_db.NewAccStorageTrieValue([]byte{0, 0x11}))
+				acc.StorageRootHash = slot.Commit(slotIO)
+			}
+			if name == "empty-code-noop" {
+				code := []byte{0x60, 0}
+				hash := crypto.Keccak256Hash(code)
+				acc.CodeHash, acc.CodeSize = &hash, uint64(len(code))
+				m.Put(state_db.COL_code, &hash, code)
+			}
+			main := new(trie.Writer).Init(state_db.MainTrieSchema{}, nil, trie.WriterOpts{})
+			addrKey := crypto.Keccak256Hash(address[:])
+			mainIO := state_db.MainTrieIOAdapter{ReadWriter: m}
+			main.Put(mainIO, &addrKey, &acc)
+			priorRoot = main.Commit(mainIO)
+		}
+		priorRootValue := crypto.Keccak256Hash([]byte{0x80})
+		if priorRoot != nil {
+			priorRootValue = *priorRoot
+		}
+		priorRows := m.export()
+		var s state_evm.TransitionState
+		s.Init(state_evm.Opts{})
+		s.SetInput(state_db.ExtendedReader{Reader: m})
+		view := func(state *state_evm.TransitionState) map[string]any {
+			v := observe(state)
+			v["code"] = hex.EncodeToString(state.GetAccountConcrete(&address).GetCode())
+			return v
+		}
+		before := view(&s)
+		checkpoint := s.Snapshot()
+		a := s.GetAccountConcrete(&address)
+		panicked := false
+		func() {
+			defer func() {
+				if cause := recover(); cause != nil {
+					if name != "nonce-decrease" {
+						panic(cause)
+					}
+					panicked = true
+				}
+			}()
+			switch name {
+			case "storage-noop-leading-zero":
+				a.SetState(big.NewInt(1), big.NewInt(0x11))
+			case "empty-by-balance":
+				a.SubBalance(big.NewInt(1))
+			case "existing-empty-touch", "ripemd-touch-revert":
+				a.AddBalance(big.NewInt(0))
+			case "existing-empty-raw":
+				a.SetStateRawIrreversibly(&key, []byte{0x44})
+			case "empty-code-noop":
+				a.SetCode(nil)
+			case "reverted-new":
+				a.SetNonce(big.NewInt(1))
+			case "nonce-decrease":
+				a.SetNonce(big.NewInt(0))
+			}
+		}()
+		if name == "nonce-decrease" && !panicked {
+			panic("expected decreasing nonce to be rejected")
+		}
+		afterMutation := view(&s)
+		if name == "reverted-new" || name == "ripemd-touch-revert" {
+			s.RevertToSnapshot(checkpoint)
+		}
+		afterFrame := view(&s)
+		sink := new(state_transition.TrieSink).Init(priorRoot, state_transition.TrieSinkOpts{})
+		sink.SetIO(m)
+		s.CommitTransaction(sink)
+		s.Commit()
+		root := sink.Commit()
+		sink.Close()
+		var reopened state_evm.TransitionState
+		reopened.Init(state_evm.Opts{})
+		reopened.SetInput(state_db.ExtendedReader{Reader: m})
+		out = append(out, map[string]any{
+			"case": name, "address": hex.EncodeToString(address[:]), "before": before,
+			"after_mutation": afterMutation, "after_frame": afterFrame, "panicked": panicked,
+			"prior_rows": priorRows, "prior_root": hex.EncodeToString(priorRootValue[:]),
+			"rows": m.export(), "root": hex.EncodeToString(root[:]), "reopened": view(&reopened),
 		})
 	}
 	enc := json.NewEncoder(os.Stdout)
