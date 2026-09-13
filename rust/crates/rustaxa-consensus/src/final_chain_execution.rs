@@ -1682,6 +1682,26 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit(
     session: &mut FinalChainExecutionSession,
     proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
 ) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
+    final_chain_execution_session_prepare_external_evm_state_commit_with_native_context(
+        final_chain,
+        session,
+        proposal_period_update,
+        None,
+    )
+}
+
+/// Prepares the existing publication lane with invocation-time Rust context.
+///
+/// Context is optional only for legacy execution leaves. An opt-in staged native
+/// adapter supplies it even for an empty invocation stream. Binding and semantic
+/// validation complete before the existing durable publication intent is written;
+/// the sidecar itself never becomes a second recovery or publication owner.
+pub fn final_chain_execution_session_prepare_external_evm_state_commit_with_native_context(
+    final_chain: &FinalChain,
+    session: &mut FinalChainExecutionSession,
+    proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
+    native_context: Option<&crate::native_projection_context::FinalChainNativeProjectionContext>,
+) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
     let prepared_rewards_stats_plan = session_external_evm_rewards_stats_plan(session)?.clone();
     let rewards_stats_update = final_chain
         .validate_external_evm_rewards_stats_plan(&prepared_rewards_stats_plan)
@@ -1766,6 +1786,9 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit(
         .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_PROJECTION_WITHOUT_COMMIT_PLAN"))?
         .total_reward
         .clone();
+    if let Some(context) = native_context {
+        context.validate_binding(evm_request.request_id, &projection)?;
+    }
     let (dpos_snapshot_rlp, account_snapshot_rlp) = final_chain.external_evm_concrete_projection(
         session.block_number,
         evm_request.block_author,
@@ -1773,6 +1796,7 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit(
         &projection,
         &prepared_rewards_stats_plan,
         &reported_total_reward,
+        native_context,
     )?;
     let concrete_provenance_rlp =
         encode_concrete_state_provenance(&FinalChainConcreteStateProvenance {
@@ -2472,6 +2496,35 @@ pub trait FinalChainExecutionLeaf {
         request: &FinalChainEvmRewardsRequest,
     ) -> Result<FinalChainEvmRewardsReport, anyhow::Error>;
 
+    /// Applies rewards with the exact opaque plan owned by the application session.
+    ///
+    /// A staged native leaf consumes its native session using this plan. Legacy
+    /// leaves retain their existing rewards request behavior. Borrowing the plan
+    /// grants no ability to commit the rewards runtime or publish FinalChain.
+    fn distribute_rewards_with_native_plan(
+        &self,
+        request: &FinalChainEvmRewardsRequest,
+        _plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
+    ) -> Result<FinalChainEvmRewardsReport, anyhow::Error> {
+        self.distribute_rewards(request)
+    }
+
+    /// Returns exact invocation-time context for a Rust staged-native adapter.
+    ///
+    /// Legacy leaves return `None`. Opt-in adapters must error if their context
+    /// is unavailable and return `Some` even for an empty call stream. This read
+    /// cannot execute more code, mutate staged state, or publish either database.
+    fn native_projection_context(
+        &self,
+        _request_id: [u8; 32],
+        _projection_hash: [u8; 32],
+    ) -> Result<
+        Option<crate::native_projection_context::FinalChainNativeProjectionContext>,
+        anyhow::Error,
+    > {
+        Ok(None)
+    }
+
     /// Attempts the already-approved concrete commit and reports the exact
     /// descriptor observed afterward. It must not publish FinalChain storage.
     fn commit_staged_state(
@@ -3015,7 +3068,20 @@ pub fn execute_final_chain_application_task<E: FinalChainExecutionLeaf>(
             error,
         ));
     }
-    let rewards_report = match leaf.distribute_rewards(&step.evm_rewards_request) {
+    let prepared_rewards_plan = match session_external_evm_rewards_stats_plan(&session) {
+        Ok(plan) => plan.clone(),
+        Err(error) => {
+            return Err(discard_concrete_after_failure(
+                final_chain,
+                leaf,
+                &bound_evm_request,
+                error,
+            ));
+        }
+    };
+    let rewards_report = match leaf
+        .distribute_rewards_with_native_plan(&step.evm_rewards_request, &prepared_rewards_plan)
+    {
         Ok(report) => report,
         Err(error) => {
             return Err(discard_concrete_after_failure(
@@ -3039,12 +3105,11 @@ pub fn execute_final_chain_application_task<E: FinalChainExecutionLeaf>(
             ),
         ));
     }
-    let intent = match final_chain_execution_session_prepare_external_evm_state_commit(
-        final_chain,
-        &mut session,
-        proposal_period_update,
+    let native_context = match leaf.native_projection_context(
+        bound_evm_request.request_id,
+        commit_plan.concrete_projection_hash,
     ) {
-        Ok(intent) => intent,
+        Ok(context) => context,
         Err(error) => {
             return Err(discard_concrete_after_failure(
                 final_chain,
@@ -3054,6 +3119,23 @@ pub fn execute_final_chain_application_task<E: FinalChainExecutionLeaf>(
             ));
         }
     };
+    let intent =
+        match final_chain_execution_session_prepare_external_evm_state_commit_with_native_context(
+            final_chain,
+            &mut session,
+            proposal_period_update,
+            native_context.as_ref(),
+        ) {
+            Ok(intent) => intent,
+            Err(error) => {
+                return Err(discard_concrete_after_failure(
+                    final_chain,
+                    leaf,
+                    &bound_evm_request,
+                    error,
+                ));
+            }
+        };
     if intent.status != FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT
         || !intent.error_code.is_empty()
     {
