@@ -1,6 +1,6 @@
 //! Descriptor-pinned RocksDB implementation of the concrete-state read port.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rocksdb::{ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options};
@@ -39,6 +39,21 @@ pub struct ConcreteStateReader {
     identity: ConcreteStateIdentity,
 }
 
+/// One read-only concrete database shared by an explicit set of retained identities.
+///
+/// Construction pins the durable descriptor independently from the caller's retained
+/// roots and authenticates every supplied root before returning. Point reads require an
+/// exact listed period/root pair. The handle does not discover a retention range, cache
+/// account absence across roots, create database state, or expose mutation/publication
+/// authority. Root traversal proves that supplied bytes are accessible and internally
+/// consistent; the application remains responsible for sourcing each historical
+/// period/root pair from its authoritative finalized header.
+pub struct ConcreteCheckpointReaders {
+    db: DB,
+    committed: ConcreteStateIdentity,
+    retained: BTreeMap<FinalChainBlockNumber, ConcreteStateIdentity>,
+}
+
 /// Authenticated logical result for one storage path. This diagnostic is
 /// separate from [`ConcreteStateRead::storage`], which exposes retained physical
 /// history even when a row is orphaned from the current account trie.
@@ -69,28 +84,8 @@ impl ConcreteStateReader {
         committed: ConcreteStateIdentity,
         requested: ConcreteStateIdentity,
     ) -> Result<Self, ConcreteReadError> {
-        let mut options = Options::default();
-        options.create_if_missing(false);
-        options.create_missing_column_families(false);
-        let columns = DB::list_cf(&options, path.as_ref()).map_err(io)?;
-        let present = columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
-        for required in REQUIRED_COLUMNS {
-            if !present.contains(required) {
-                return Err(ConcreteReadError::Corrupt(format!(
-                    "concrete state column family {required:?} is missing"
-                )));
-            }
-        }
-        let descriptors = columns
-            .iter()
-            .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
-        let db = DB::open_cf_descriptors_read_only(&options, path.as_ref(), descriptors, false)
-            .map_err(io)?;
-        let descriptor = db
-            .get(DESCRIPTOR_KEY)
-            .map_err(io)?
-            .ok_or_else(|| ConcreteReadError::Corrupt("concrete descriptor is missing".into()))?;
-        let observed = decode_descriptor(&descriptor)?;
+        let db = open_database_read_only(path.as_ref())?;
+        let observed = current_identity(&db)?;
         if committed.period.as_u64() > observed.period.as_u64() {
             return Err(ConcreteReadError::FuturePeriod {
                 requested: committed.period,
@@ -121,43 +116,6 @@ impl ConcreteStateReader {
         })
     }
 
-    fn version(
-        &self,
-        column: &str,
-        prefix: [u8; 32],
-    ) -> Result<Option<SelectedVersion>, ConcreteReadError> {
-        <Self as PhysicalTrieStore>::value(self, column, prefix, self.identity.period)
-    }
-
-    fn reconcile<T>(
-        &self,
-        proof: PathProof,
-        selected: Option<SelectedVersion>,
-        decode: impl FnOnce(Vec<u8>) -> Result<T, ConcreteReadError>,
-    ) -> Result<ConcreteRead<T>, ConcreteReadError> {
-        match (proof, selected) {
-            (PathProof::Member(proved), Some(selected)) if selected.value == proved => {
-                if proved.is_empty() {
-                    Err(ConcreteReadError::Corrupt(
-                        "trie membership selected an empty version".into(),
-                    ))
-                } else {
-                    decode(proved).map(ConcreteRead::Present)
-                }
-            }
-            (PathProof::Member(_), _) => Err(ConcreteReadError::Corrupt(
-                "trie member and selected physical version differ".into(),
-            )),
-            (PathProof::NonMember, Some(selected)) if selected.value.is_empty() => {
-                Ok(ConcreteRead::Tombstone)
-            }
-            (PathProof::NonMember, Some(_)) => Err(ConcreteReadError::Corrupt(
-                "trie non-membership conflicts with a live physical version".into(),
-            )),
-            (PathProof::NonMember, None) => Ok(ConcreteRead::Absent),
-        }
-    }
-
     /// Verifies the logical slot path under the pinned account storage root.
     /// Account or slot non-membership is returned independently of any retained
     /// orphan physical row. Missing nodes or referenced values fail closed.
@@ -166,30 +124,310 @@ impl ConcreteStateReader {
         address: [u8; 20],
         key: ConcreteStorageKey,
     ) -> Result<ConcreteStoragePath, ConcreteReadError> {
-        let root = match self.account(address)? {
-            ConcreteRead::Present(record) => record.account.storage_root,
-            ConcreteRead::Absent | ConcreteRead::Tombstone => {
-                return Ok(ConcreteStoragePath::NonMember);
+        verify_storage_path(self, address, key)
+    }
+}
+
+impl ConcreteCheckpointReaders {
+    /// Opens one existing database read-only for exact caller-authorized identities.
+    ///
+    /// `committed` must equal the durable descriptor. `retained` must contain that exact
+    /// identity, may contain older identities, and must not repeat a period. Each root is
+    /// authenticated through a deterministic account path during construction, so even an
+    /// empty later workload cannot turn an injected root into a retention claim.
+    pub fn open_read_only(
+        path: impl AsRef<Path>,
+        committed: ConcreteStateIdentity,
+        retained: impl IntoIterator<Item = ConcreteStateIdentity>,
+    ) -> Result<Self, ConcreteReadError> {
+        let db = open_database_read_only(path.as_ref())?;
+        let observed = current_identity(&db)?;
+        if committed.period.as_u64() > observed.period.as_u64() {
+            return Err(ConcreteReadError::FuturePeriod {
+                requested: committed.period,
+                committed: observed.period,
+            });
+        }
+        if committed != observed {
+            return Err(ConcreteReadError::IdentityMismatch {
+                expected: committed,
+                observed,
+            });
+        }
+
+        let mut identities = BTreeMap::new();
+        for identity in retained {
+            if identity.period.as_u64() > committed.period.as_u64() {
+                return Err(ConcreteReadError::FuturePeriod {
+                    requested: identity.period,
+                    committed: committed.period,
+                });
             }
-        };
-        let Some(root) = root else {
-            return Ok(ConcreteStoragePath::NonMember);
-        };
-        let path = storage_trie_path(key);
-        verify_path(
-            self,
-            root,
-            path,
-            "4",
-            "5",
-            |leaf_path| storage_prefix_for_path(address, leaf_path),
-            TrieSchema::Storage,
-        )
-        .map(|proof| match proof {
-            PathProof::Member(value) => ConcreteStoragePath::Member(value),
-            PathProof::NonMember => ConcreteStoragePath::NonMember,
+            if let Some(previous) = identities.insert(identity.period, identity) {
+                return Err(ConcreteReadError::Corrupt(format!(
+                    "duplicate retained concrete period {} (roots equal: {})",
+                    identity.period.as_u64(),
+                    previous.state_root == identity.state_root,
+                )));
+            }
+        }
+        if identities.get(&committed.period) != Some(&committed) {
+            return Err(ConcreteReadError::Corrupt(
+                "retained concrete identities do not include the durable descriptor".into(),
+            ));
+        }
+        for identity in identities.values().copied() {
+            let pinned = PinnedDatabase { db: &db, identity };
+            read_account(&pinned, [0; 20])?;
+        }
+
+        Ok(Self {
+            db,
+            committed,
+            retained: identities,
         })
     }
+
+    /// Returns the exact descriptor independently observed when the handle opened.
+    pub fn committed_identity(&self) -> ConcreteStateIdentity {
+        self.committed
+    }
+
+    /// Returns the exact authenticated identities accepted at construction in period order.
+    pub fn retained_identities(&self) -> Vec<ConcreteStateIdentity> {
+        self.retained.values().copied().collect()
+    }
+
+    /// Reads one account at an exact retained identity.
+    pub fn account_at(
+        &self,
+        identity: ConcreteStateIdentity,
+        address: [u8; 20],
+    ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
+        let pinned = self.pinned(identity)?;
+        read_account(&pinned, address)
+    }
+
+    /// Reads one selected physical storage value at an exact retained identity.
+    ///
+    /// As with [`ConcreteStateRead::storage`], callers that need logical membership must
+    /// separately call [`Self::verify_storage_path_at`].
+    pub fn storage_at(
+        &self,
+        identity: ConcreteStateIdentity,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        let pinned = self.pinned(identity)?;
+        read_storage(&pinned, address, key)
+    }
+
+    /// Authenticates one logical storage path at an exact retained identity.
+    pub fn verify_storage_path_at(
+        &self,
+        identity: ConcreteStateIdentity,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteStoragePath, ConcreteReadError> {
+        let pinned = self.pinned(identity)?;
+        verify_storage_path(&pinned, address, key)
+    }
+
+    /// Reads immutable code while requiring an exact retained identity selection.
+    ///
+    /// Code rows are unversioned; the identity requirement prevents a caller from using
+    /// this handle as an unbound database reader. Semantic reachability still comes from
+    /// an account read at the same identity.
+    pub fn code_at(
+        &self,
+        identity: ConcreteStateIdentity,
+        code_hash: [u8; 32],
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        self.pinned(identity)?;
+        read_code(&self.db, identity, code_hash)
+    }
+
+    fn pinned(
+        &self,
+        identity: ConcreteStateIdentity,
+    ) -> Result<PinnedDatabase<'_>, ConcreteReadError> {
+        if self.retained.get(&identity.period) != Some(&identity) {
+            return Err(ConcreteReadError::HistoryUnavailable(identity));
+        }
+        Ok(PinnedDatabase {
+            db: &self.db,
+            identity,
+        })
+    }
+}
+
+struct PinnedDatabase<'a> {
+    db: &'a DB,
+    identity: ConcreteStateIdentity,
+}
+
+impl PhysicalTrieStore for PinnedDatabase<'_> {
+    fn identity(&self) -> ConcreteStateIdentity {
+        self.identity
+    }
+
+    fn node(&self, column: &str, hash: [u8; 32]) -> Result<Option<Vec<u8>>, ConcreteReadError> {
+        let handle = self.db.cf_handle(column).ok_or_else(|| {
+            ConcreteReadError::Corrupt(format!("node column family {column:?} is missing"))
+        })?;
+        self.db.get_cf(&handle, hash).map_err(io)
+    }
+
+    fn value(
+        &self,
+        column: &str,
+        prefix: [u8; 32],
+        period: FinalChainBlockNumber,
+    ) -> Result<Option<SelectedVersion>, ConcreteReadError> {
+        selected_version(self.db, column, prefix, period)
+    }
+}
+
+fn read_account<S: PhysicalTrieStore>(
+    store: &S,
+    address: [u8; 20],
+) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
+    let prefix = account_version_prefix(address);
+    let selected = store.value("3", prefix, store.identity().period)?;
+    let proof = verify_path(
+        store,
+        store.identity().state_root,
+        prefix,
+        "2",
+        "3",
+        |path| path,
+        TrieSchema::Account,
+    )?;
+    reconcile(proof, selected, |bytes| decode_physical_account(&bytes))
+}
+
+fn read_storage<S: PhysicalTrieStore>(
+    store: &S,
+    address: [u8; 20],
+    key: ConcreteStorageKey,
+) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+    let selected = store.value(
+        "5",
+        storage_version_prefix(address, key),
+        store.identity().period,
+    )?;
+    let Some(selected) = selected else {
+        return Err(ConcreteReadError::HistoryUnavailable(store.identity()));
+    };
+    if selected.value.is_empty() {
+        Ok(ConcreteRead::Tombstone)
+    } else {
+        Ok(ConcreteRead::Present(selected.value))
+    }
+}
+
+fn verify_storage_path<S: PhysicalTrieStore>(
+    store: &S,
+    address: [u8; 20],
+    key: ConcreteStorageKey,
+) -> Result<ConcreteStoragePath, ConcreteReadError> {
+    let root = match read_account(store, address)? {
+        ConcreteRead::Present(record) => record.account.storage_root,
+        ConcreteRead::Absent | ConcreteRead::Tombstone => {
+            return Ok(ConcreteStoragePath::NonMember);
+        }
+    };
+    let Some(root) = root else {
+        return Ok(ConcreteStoragePath::NonMember);
+    };
+    let path = storage_trie_path(key);
+    verify_path(
+        store,
+        root,
+        path,
+        "4",
+        "5",
+        |leaf_path| storage_prefix_for_path(address, leaf_path),
+        TrieSchema::Storage,
+    )
+    .map(|proof| match proof {
+        PathProof::Member(value) => ConcreteStoragePath::Member(value),
+        PathProof::NonMember => ConcreteStoragePath::NonMember,
+    })
+}
+
+fn reconcile<T>(
+    proof: PathProof,
+    selected: Option<SelectedVersion>,
+    decode: impl FnOnce(Vec<u8>) -> Result<T, ConcreteReadError>,
+) -> Result<ConcreteRead<T>, ConcreteReadError> {
+    match (proof, selected) {
+        (PathProof::Member(proved), Some(selected)) if selected.value == proved => {
+            if proved.is_empty() {
+                Err(ConcreteReadError::Corrupt(
+                    "trie membership selected an empty version".into(),
+                ))
+            } else {
+                decode(proved).map(ConcreteRead::Present)
+            }
+        }
+        (PathProof::Member(_), _) => Err(ConcreteReadError::Corrupt(
+            "trie member and selected physical version differ".into(),
+        )),
+        (PathProof::NonMember, Some(selected)) if selected.value.is_empty() => {
+            Ok(ConcreteRead::Tombstone)
+        }
+        (PathProof::NonMember, Some(_)) => Err(ConcreteReadError::Corrupt(
+            "trie non-membership conflicts with a live physical version".into(),
+        )),
+        (PathProof::NonMember, None) => Ok(ConcreteRead::Absent),
+    }
+}
+
+fn read_code(
+    db: &DB,
+    identity: ConcreteStateIdentity,
+    code_hash: [u8; 32],
+) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+    let handle = db
+        .cf_handle("1")
+        .ok_or_else(|| ConcreteReadError::Corrupt("code column family is missing".into()))?;
+    let Some(code) = db.get_cf(&handle, code_hash).map_err(io)? else {
+        return Err(ConcreteReadError::HistoryUnavailable(identity));
+    };
+    if keccak256(&code) != code_hash {
+        return Err(ConcreteReadError::Corrupt(
+            "code bytes do not match their Keccak-256 key".into(),
+        ));
+    }
+    Ok(ConcreteRead::Present(code))
+}
+
+fn open_database_read_only(path: &Path) -> Result<DB, ConcreteReadError> {
+    let mut options = Options::default();
+    options.create_if_missing(false);
+    options.create_missing_column_families(false);
+    let columns = DB::list_cf(&options, path).map_err(io)?;
+    let present = columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    for required in REQUIRED_COLUMNS {
+        if !present.contains(required) {
+            return Err(ConcreteReadError::Corrupt(format!(
+                "concrete state column family {required:?} is missing"
+            )));
+        }
+    }
+    let descriptors = columns
+        .iter()
+        .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
+    DB::open_cf_descriptors_read_only(&options, path, descriptors, false).map_err(io)
+}
+
+fn current_identity(db: &DB) -> Result<ConcreteStateIdentity, ConcreteReadError> {
+    let descriptor = db
+        .get(DESCRIPTOR_KEY)
+        .map_err(io)?
+        .ok_or_else(|| ConcreteReadError::Corrupt("concrete descriptor is missing".into()))?;
+    decode_descriptor(&descriptor)
 }
 
 impl ConcreteStateRead for ConcreteStateReader {
@@ -201,18 +439,7 @@ impl ConcreteStateRead for ConcreteStateReader {
         &self,
         address: [u8; 20],
     ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
-        let prefix = account_version_prefix(address);
-        let selected = self.version("3", prefix)?;
-        let proof = verify_path(
-            self,
-            self.identity.state_root,
-            prefix,
-            "2",
-            "3",
-            |path| path,
-            TrieSchema::Account,
-        )?;
-        self.reconcile(proof, selected, |bytes| decode_physical_account(&bytes))
+        read_account(self, address)
     }
 
     fn storage(
@@ -220,31 +447,11 @@ impl ConcreteStateRead for ConcreteStateReader {
         address: [u8; 20],
         key: ConcreteStorageKey,
     ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
-        let selected = self.version("5", storage_version_prefix(address, key))?;
-        let Some(selected) = selected else {
-            return Err(ConcreteReadError::HistoryUnavailable(self.identity));
-        };
-        if selected.value.is_empty() {
-            Ok(ConcreteRead::Tombstone)
-        } else {
-            Ok(ConcreteRead::Present(selected.value))
-        }
+        read_storage(self, address, key)
     }
 
     fn code(&self, code_hash: [u8; 32]) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
-        let handle = self
-            .db
-            .cf_handle("1")
-            .ok_or_else(|| ConcreteReadError::Corrupt("code column family is missing".into()))?;
-        let Some(code) = self.db.get_cf(&handle, code_hash).map_err(io)? else {
-            return Err(ConcreteReadError::HistoryUnavailable(self.identity));
-        };
-        if keccak256(&code) != code_hash {
-            return Err(ConcreteReadError::Corrupt(
-                "code bytes do not match their Keccak-256 key".into(),
-            ));
-        }
-        Ok(ConcreteRead::Present(code))
+        read_code(&self.db, self.identity, code_hash)
     }
 }
 
@@ -266,32 +473,39 @@ impl PhysicalTrieStore for ConcreteStateReader {
         prefix: [u8; 32],
         period: FinalChainBlockNumber,
     ) -> Result<Option<SelectedVersion>, ConcreteReadError> {
-        let handle = self.db.cf_handle(column).ok_or_else(|| {
-            ConcreteReadError::Corrupt(format!("value column family {column:?} is missing"))
-        })?;
-        let target = versioned_key(prefix, period);
-        let mut iterator = self
-            .db
-            .iterator_cf(&handle, IteratorMode::From(&target, Direction::Reverse));
-        let Some(entry) = iterator.next() else {
-            return Ok(None);
-        };
-        let (key, value) = entry.map_err(io)?;
-        if key.len() != 40 {
-            if key.starts_with(&prefix) {
-                return Err(ConcreteReadError::Corrupt(format!(
-                    "versioned value key in column {column:?} is not 40 bytes"
-                )));
-            }
-            return Ok(None);
-        }
-        if key[..32] != prefix {
-            return Ok(None);
-        }
-        Ok(Some(SelectedVersion {
-            value: value.to_vec(),
-        }))
+        selected_version(&self.db, column, prefix, period)
     }
+}
+
+fn selected_version(
+    db: &DB,
+    column: &str,
+    prefix: [u8; 32],
+    period: FinalChainBlockNumber,
+) -> Result<Option<SelectedVersion>, ConcreteReadError> {
+    let handle = db.cf_handle(column).ok_or_else(|| {
+        ConcreteReadError::Corrupt(format!("value column family {column:?} is missing"))
+    })?;
+    let target = versioned_key(prefix, period);
+    let mut iterator = db.iterator_cf(&handle, IteratorMode::From(&target, Direction::Reverse));
+    let Some(entry) = iterator.next() else {
+        return Ok(None);
+    };
+    let (key, value) = entry.map_err(io)?;
+    if key.len() != 40 {
+        if key.starts_with(&prefix) {
+            return Err(ConcreteReadError::Corrupt(format!(
+                "versioned value key in column {column:?} is not 40 bytes"
+            )));
+        }
+        return Ok(None);
+    }
+    if key[..32] != prefix {
+        return Ok(None);
+    }
+    Ok(Some(SelectedVersion {
+        value: value.to_vec(),
+    }))
 }
 
 fn io(error: impl std::fmt::Display) -> ConcreteReadError {
@@ -483,6 +697,168 @@ mod tests {
         assert_eq!(
             historical.verify_storage_path(address, slot).unwrap(),
             ConcreteStoragePath::Member(storage_value)
+        );
+    }
+
+    #[test]
+    fn checkpoint_readers_pin_exact_current_and_historical_identities() {
+        let address = [0x42; 20];
+        let account_path = account_version_prefix(address);
+        let prior_period = FinalChainBlockNumber::new(16);
+        let current_period = FinalChainBlockNumber::new(17);
+        let code = vec![0x60, 0, 0x60, 1, 1];
+        let code_hash = keccak256(&code);
+        let prior_bytes = physical_account(&[1], &[2], None, Some(code_hash), code.len() as u64);
+        let current_bytes = physical_account(&[2], &[3], None, Some(code_hash), code.len() as u64);
+        let prior_account = decode_physical_account(&prior_bytes).unwrap();
+        let current_account = decode_physical_account(&current_bytes).unwrap();
+        let (prior_root, prior_node) = physical_leaf(
+            account_path,
+            &account_commitment_rlp(&prior_account).unwrap(),
+            true,
+        );
+        let (current_root, current_node) = physical_leaf(
+            account_path,
+            &account_commitment_rlp(&current_account).unwrap(),
+            true,
+        );
+        let prior = ConcreteStateIdentity {
+            period: prior_period,
+            state_root: prior_root,
+        };
+        let current = ConcreteStateIdentity {
+            period: current_period,
+            state_root: current_root,
+        };
+        let mut database = TestDb::new();
+        database.put_descriptor(current);
+        database.put("2", &prior_root, &prior_node);
+        database.put("2", &current_root, &current_node);
+        database.put(
+            "3",
+            &versioned_key(account_path, prior_period),
+            &prior_bytes,
+        );
+        database.put(
+            "3",
+            &versioned_key(account_path, current_period),
+            &current_bytes,
+        );
+        database.put("1", &code_hash, &code);
+        database.close();
+
+        let readers =
+            ConcreteCheckpointReaders::open_read_only(&database.path, current, [current, prior])
+                .unwrap();
+        assert_eq!(readers.committed_identity(), current);
+        assert_eq!(readers.retained_identities(), vec![prior, current]);
+        let ConcreteRead::Present(prior_read) = readers.account_at(prior, address).unwrap() else {
+            panic!("prior account was not present")
+        };
+        let ConcreteRead::Present(current_read) = readers.account_at(current, address).unwrap()
+        else {
+            panic!("current account was not present")
+        };
+        assert_eq!(prior_read.physical_rlp, prior_bytes);
+        assert_eq!(current_read.physical_rlp, current_bytes);
+        assert_eq!(
+            readers.code_at(prior, code_hash).unwrap(),
+            ConcreteRead::Present(code)
+        );
+
+        let unlisted = ConcreteStateIdentity {
+            period: prior_period,
+            state_root: [0x77; 32],
+        };
+        let slot = ConcreteStorageKey([9; 32]);
+        assert_eq!(
+            readers.account_at(unlisted, address),
+            Err(ConcreteReadError::HistoryUnavailable(unlisted))
+        );
+        assert_eq!(
+            readers.storage_at(unlisted, address, slot),
+            Err(ConcreteReadError::HistoryUnavailable(unlisted))
+        );
+        assert_eq!(
+            readers.verify_storage_path_at(unlisted, address, slot),
+            Err(ConcreteReadError::HistoryUnavailable(unlisted))
+        );
+        assert_eq!(
+            readers.code_at(unlisted, code_hash),
+            Err(ConcreteReadError::HistoryUnavailable(unlisted))
+        );
+        assert_eq!(
+            readers.code_at(prior, [0x55; 32]),
+            Err(ConcreteReadError::HistoryUnavailable(prior))
+        );
+    }
+
+    #[test]
+    fn checkpoint_readers_reject_ambiguous_or_unverified_identity_sets() {
+        let prior = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(8),
+            state_root: empty_trie_root(),
+        };
+        let current = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(9),
+            state_root: empty_trie_root(),
+        };
+        let future = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(10),
+            state_root: empty_trie_root(),
+        };
+        let inaccessible = ConcreteStateIdentity {
+            period: prior.period,
+            state_root: [0x99; 32],
+        };
+        let wrong_current = ConcreteStateIdentity {
+            period: current.period,
+            state_root: [0x88; 32],
+        };
+        let mut database = TestDb::new();
+        database.put_descriptor(current);
+        database.close();
+
+        assert!(matches!(
+            ConcreteCheckpointReaders::open_read_only(&database.path, current, [prior]),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+        assert!(matches!(
+            ConcreteCheckpointReaders::open_read_only(
+                &database.path,
+                current,
+                [current, prior, prior]
+            ),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+        assert!(matches!(
+            ConcreteCheckpointReaders::open_read_only(
+                &database.path,
+                current,
+                [current, prior, inaccessible]
+            ),
+            Err(ConcreteReadError::Corrupt(_))
+        ));
+        assert!(matches!(
+            ConcreteCheckpointReaders::open_read_only(&database.path, current, [current, future]),
+            Err(ConcreteReadError::FuturePeriod { .. })
+        ));
+        assert!(matches!(
+            ConcreteCheckpointReaders::open_read_only(
+                &database.path,
+                wrong_current,
+                [wrong_current]
+            ),
+            Err(ConcreteReadError::IdentityMismatch { .. })
+        ));
+        assert_eq!(
+            ConcreteCheckpointReaders::open_read_only(
+                &database.path,
+                current,
+                [current, inaccessible]
+            )
+            .err(),
+            Some(ConcreteReadError::HistoryUnavailable(inaccessible))
         );
     }
 

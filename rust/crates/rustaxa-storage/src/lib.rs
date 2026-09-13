@@ -13,11 +13,11 @@ mod transaction;
 pub(crate) const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
 
 pub use concrete_state::{
-    ConcreteAccountMutation, ConcreteCodeInsertion, ConcreteCommitApproval,
-    ConcreteLifecycleObservation, ConcreteObserverAccountChange, ConcreteObserverPhaseDelta,
-    ConcreteObserverPhaseOutput, ConcreteStateLifecycle, ConcreteStateMutationBatch,
-    ConcreteStateReader, ConcreteStateWriter, ConcreteStorageMutation, ConcreteStoragePath,
-    HistoricalConcreteAccountChange, HistoricalConcretePreparation,
+    ConcreteAccountMutation, ConcreteCheckpointReaders, ConcreteCodeInsertion,
+    ConcreteCommitApproval, ConcreteLifecycleObservation, ConcreteObserverAccountChange,
+    ConcreteObserverPhaseDelta, ConcreteObserverPhaseOutput, ConcreteStateLifecycle,
+    ConcreteStateMutationBatch, ConcreteStateReader, ConcreteStateWriter, ConcreteStorageMutation,
+    ConcreteStoragePath, HistoricalConcreteAccountChange, HistoricalConcretePreparation,
     HistoricalConcretePreparationSummary, PreparedConcreteState, PreparedConcreteView,
     account_commitment_rlp, account_version_prefix, decode_physical_account,
     storage_version_prefix, versioned_key,
