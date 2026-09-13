@@ -48,7 +48,7 @@ def main():
         "schema": 1,
         "references": REVISIONS,
         "go_version": subprocess.check_output(["go", "version"], text=True).strip(),
-        "scope": ("Ten additive reverse-order/nested/nil-root journal cases" if args.extended else "Eight additive mutator/no-op/lifecycle journal cases" if args.mutators else "Ten synthetic journal/physical TrieSink cases") + "; no EVM envelope, RocksDB or network replay",
+        "scope": ("Twelve additive reverse-order/nested/orphan-root journal cases" if args.extended else "Nine additive mutator/no-op/lifecycle journal cases" if args.mutators else "Ten synthetic journal/physical TrieSink cases") + "; no EVM envelope, RocksDB or network replay",
         "exporter_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "sha256": {name: hashlib.sha256(data).hexdigest() for name, data in artifacts.items()},
     }

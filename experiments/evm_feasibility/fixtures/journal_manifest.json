@@ -6,7 +6,7 @@
   },
   "go_version": "go version go1.24.4 linux/amd64",
   "scope": "Ten synthetic journal/physical TrieSink cases; no EVM envelope, RocksDB or network replay",
-  "exporter_sha256": "bf643a3fa848b27e165fcdacba8d6284d3cfe00f325f1a5607575e3b4dae1e26",
+  "exporter_sha256": "a95488cdfd10b5e38baf1418540676692b63fc002f9c5ea31496e3b8ec152cfc",
   "sha256": {
     "journal_public.json": "92c218f3548e1491ec42964d34d894adf131cde82b82e4adbbf4b42696e604f2",
     "journal_local.json": "92c218f3548e1491ec42964d34d894adf131cde82b82e4adbbf4b42696e604f2"

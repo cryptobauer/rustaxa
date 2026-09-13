@@ -714,5 +714,94 @@
       {},
       {}
     ]
+  },
+  {
+    "address": "00000000000000000000000000000000000000aa",
+    "after_frame": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "44",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "after_mutation": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "1",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "44",
+        "present": true
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "before": {
+      "balance": "0",
+      "code": "",
+      "exists": true,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "case": "empty-nonce-raw-revert",
+    "panicked": false,
+    "prior_root": "d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9",
+    "prior_rows": [
+      {},
+      {
+        "d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": "c58080808080"
+      },
+      {},
+      {}
+    ],
+    "reopened": {
+      "balance": "0",
+      "code": "",
+      "exists": false,
+      "logs": 0,
+      "nonce": "0",
+      "ordinary": "0",
+      "original": "0",
+      "raw": {
+        "bytes": "",
+        "present": false
+      },
+      "refund": 0,
+      "transient": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+    "rows": [
+      {},
+      {
+        "d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9": "f843a120528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2a0d19ce1029baed4f403d79aa7ca90db9f8101d372f569bffc7d4c4a561e0b90b9"
+      },
+      {
+        "528b55564e8518548e42b534da3a526179b820f264ee7c6929d00b0b6a31cfc2": ""
+      },
+      {},
+      {}
+    ]
   }
 ]
