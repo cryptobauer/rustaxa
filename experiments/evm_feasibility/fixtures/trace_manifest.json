@@ -5,11 +5,11 @@
     "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
   },
   "sha256": {
-    "public": "253617f4588898f2f5f6422c952c997d0e857e9543ab9b2961d471fae882c1f0",
-    "local": "253617f4588898f2f5f6422c952c997d0e857e9543ab9b2961d471fae882c1f0"
+    "public": "833649ed8d298c2ff6be1776515c92be4821152e91cfbf2583289bbd4a27337e",
+    "local": "833649ed8d298c2ff6be1776515c92be4821152e91cfbf2583289bbd4a27337e"
   },
   "source_sha256": {
-    "api_reference.go": "ca1bffec8a9845b4bff6d818fb57b7ab0fdfa5bd116bca6e98421b4c86ee3052",
+    "api_reference.go": "576433b5ba0de27fb17facd40d6006e54e1160620705e5f61ccbd7d1352c1587",
     "trace_reference.go": "1796cf62028768f0efc7a4cf6ed7ac4e0519249ac435a0817d8a2c928f35ba9e"
   },
   "scope": "actual TraceRunner, seven ordinary scenarios and five tracer modes; no Rust parity claimed by this oracle alone"

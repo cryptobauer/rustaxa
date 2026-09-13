@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"os"
 	"reflect"
+	"sort"
 	"sync"
 
 	"github.com/Taraxa-project/taraxa-evm/common"
@@ -169,7 +170,16 @@ type apiAccountObservation struct {
 	Code        string `json:"code,omitempty"`
 }
 
+// Raw TrieSink rows before the concrete DB adds period suffixes to CF3/CF5.
+// They support independent persisted-reader materialization in Rust tests.
+type apiSeedRow struct {
+	Column byte   `json:"column"`
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+}
+
 type apiStateObservation struct {
+	SeedRows []apiSeedRow            `json:"seed_rows"`
 	Period   uint64                  `json:"period"`
 	Root     string                  `json:"root"`
 	Accounts []apiAccountObservation `json:"accounts"`
@@ -208,6 +218,21 @@ func apiObserve(memory *apiMemory) apiStateObservation {
 	reader.GetAccountStorage(&apiTarget, &apiSlot, func(value []byte) {
 		observation.Slot.Present = true
 		observation.Slot.Value = apiHex(value)
+	})
+
+	memory.mu.Lock()
+	for column, rows := range memory.columns {
+		for key, value := range rows {
+			observation.SeedRows = append(observation.SeedRows, apiSeedRow{column, apiHex(key[:]), apiHex(value)})
+		}
+	}
+	memory.mu.Unlock()
+	sort.Slice(observation.SeedRows, func(i, j int) bool {
+		a, b := observation.SeedRows[i], observation.SeedRows[j]
+		if a.Column != b.Column {
+			return a.Column < b.Column
+		}
+		return a.Key < b.Key
 	})
 	return observation
 }

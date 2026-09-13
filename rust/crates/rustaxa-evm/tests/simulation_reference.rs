@@ -5,8 +5,9 @@
 //! account/code/slot seed as an immutable Rust reader, compare ordinary CALL
 //! and CREATE results, prove supplied nonces are ignored, and ensure identity
 //! mismatches fail before any state read. Fresh estimator probes are composed here.
-//! RPC defaults, full RPC estimate behavior, traces,
-//! native calls, persistence, and production routing are outside this test.
+//! Persisted fixtures additionally prove historical selection, reopen and missing-
+//! dependency behavior without committed writes. RPC defaults, full RPC estimate
+//! behavior, traces, native calls and production routing are outside this test.
 
 use std::{cell::Cell, collections::BTreeMap};
 
@@ -459,4 +460,344 @@ fn nonce(value: &Value) -> FinalChainNonce {
         number.to_bytes_be()
     };
     FinalChainNonce::from_bytes(&bytes).expect("canonical nonce")
+}
+
+/// A disposable persisted fixture built from actual Go TrieSink rows. This is
+/// test materialization, with the reference DB's CF mapping/version suffixes;
+/// it is not legacy-database adoption or a publication API.
+struct PersistedApiFixture(std::path::PathBuf);
+
+impl PersistedApiFixture {
+    fn materialize(fixture: &Value) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "rustaxa-api-reopen-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        assert!(
+            !path.exists(),
+            "unique fixture path must not replace existing data"
+        );
+        let mut options = rocksdb::Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        let db = rocksdb::DB::open_cf(&options, &path, ["1", "2", "3", "4", "5", "6", "7", "8"])
+            .unwrap();
+        let period =
+            FinalChainBlockNumber::new(fixture["state_before"]["period"].as_u64().unwrap());
+        for row in fixture["state_before"]["seed_rows"].as_array().unwrap() {
+            // state_db/db.go enum order -> existing concrete RocksDB CF names.
+            let column = match row["column"].as_u64().unwrap() {
+                0 => "1",
+                1 => "2",
+                2 => "3",
+                3 => "4",
+                4 => "5",
+                _ => panic!("unknown Go column"),
+            };
+            let key = if matches!(column, "3" | "5") {
+                rustaxa_storage::versioned_key(hash(&row["key"]), period).to_vec()
+            } else {
+                bytes(&row["key"])
+            };
+            db.put_cf(&db.cf_handle(column).unwrap(), key, bytes(&row["value"]))
+                .unwrap();
+        }
+        let mut descriptor = rlp::RlpStream::new_list(2);
+        descriptor.append(&period.as_u64());
+        descriptor.append(&bytes(&fixture["state_before"]["root"]).as_slice());
+        db.put(b"last_committed_descriptor", descriptor.out())
+            .unwrap();
+        db.flush().unwrap();
+        drop(db);
+        Self(path)
+    }
+
+    // Add a distinct newer state using the existing compatible writer. Only
+    // this test fixture sets the descriptor directly; no adoption is authorized.
+    fn append_newer_sender(&self, fixture: &Value) -> ConcreteStateIdentity {
+        let original = FixtureReader::from_fixture(fixture);
+        let sender = transaction(&fixture["cases"][0]).sender;
+        let prior = &original.accounts[&sender];
+        let original_rlp = rlp::Rlp::new(&prior.physical_rlp);
+        let mut updated = rlp::RlpStream::new_list(5);
+        for index in 0..5 {
+            if index == 1 {
+                updated.append(&0_u8);
+            } else {
+                updated.append_raw(original_rlp.at(index).unwrap().as_raw(), 1);
+            }
+        }
+        let account = rustaxa_storage::decode_physical_account(&updated.out()).unwrap();
+        let writer =
+            rustaxa_storage::ConcreteStateWriter::open(&self.0, original.identity).unwrap();
+        let prepared = writer
+            .prepare(
+                FinalChainBlockNumber::new(8),
+                rustaxa_storage::ConcreteStateMutationBatch {
+                    accounts: vec![rustaxa_storage::ConcreteAccountMutation::Upsert {
+                        address: sender,
+                        record: account,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let next = prepared.next_identity();
+        assert_ne!(next.state_root, original.identity.state_root);
+        writer.persist_contents(&prepared).unwrap();
+        drop(writer);
+        let db = rocksdb::DB::open_cf(
+            &rocksdb::Options::default(),
+            &self.0,
+            ["1", "2", "3", "4", "5", "6", "7", "8"],
+        )
+        .unwrap();
+        let mut descriptor = rlp::RlpStream::new_list(2);
+        descriptor.append(&next.period.as_u64());
+        descriptor.append(&next.state_root.as_slice());
+        db.put(b"last_committed_descriptor", descriptor.out())
+            .unwrap();
+        db.flush().unwrap();
+        next
+    }
+
+    fn rows(&self) -> Vec<(String, Vec<u8>, Vec<u8>)> {
+        let options = rocksdb::Options::default();
+        let columns = ["default", "1", "2", "3", "4", "5", "6", "7", "8"];
+        let descriptors = columns
+            .iter()
+            .map(|name| rocksdb::ColumnFamilyDescriptor::new(*name, rocksdb::Options::default()));
+        let db = rocksdb::DB::open_cf_descriptors_read_only(&options, &self.0, descriptors, false)
+            .unwrap();
+        let mut rows = Vec::new();
+        for column in columns {
+            for row in db.iterator_cf(&db.cf_handle(column).unwrap(), rocksdb::IteratorMode::Start)
+            {
+                let (key, value) = row.unwrap();
+                rows.push((column.into(), key.to_vec(), value.to_vec()));
+            }
+        }
+        rows
+    }
+}
+
+impl Drop for PersistedApiFixture {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+#[test]
+fn persisted_go_state_reopens_for_queries_and_disposable_simulations() {
+    use rustaxa_storage::ConcreteStateReader;
+    let fixture = fixture("public");
+    let expected = FixtureReader::from_fixture(&fixture);
+    let db = PersistedApiFixture::materialize(&fixture);
+    let committed = db.append_newer_sender(&fixture);
+    let latest = ConcreteStateReader::open_read_only(&db.0, committed).unwrap();
+    let ConcreteRead::Present(sender) = latest
+        .account(transaction(&fixture["cases"][0]).sender)
+        .unwrap()
+    else {
+        panic!("latest sender")
+    };
+    assert_eq!(
+        sender.account.balance,
+        ConcreteAccountBalance::new(BigUint::default())
+    );
+    drop(latest);
+    let before = db.rows();
+    for _ in 0..2 {
+        let reader =
+            ConcreteStateReader::open_historical_read_only(&db.0, committed, expected.identity)
+                .unwrap();
+        for (address, account) in &expected.accounts {
+            assert_eq!(
+                reader.account(*address).unwrap(),
+                ConcreteRead::Present(account.clone())
+            );
+        }
+        for (hash, code) in &expected.codes {
+            assert_eq!(
+                reader.code(*hash).unwrap(),
+                ConcreteRead::Present(code.clone())
+            );
+        }
+        for ((address, key), value) in &expected.storage {
+            assert_eq!(
+                reader.storage(*address, *key).unwrap(),
+                ConcreteRead::Present(value.clone())
+            );
+            assert_eq!(
+                reader.verify_storage_path(*address, *key).unwrap(),
+                rustaxa_storage::ConcreteStoragePath::Member(value.clone())
+            );
+        }
+        for case in fixture["cases"].as_array().unwrap() {
+            for _ in 0..2 {
+                let result = simulate_ordinary(
+                    &reader,
+                    &NoHistory,
+                    &NoNative,
+                    &block(&fixture),
+                    &transaction(case),
+                    EnvelopeRules { cornus: true },
+                    TaraxaProfile::new(false),
+                )
+                .unwrap();
+                assert_eq!(result.state, expected.identity);
+                compare_execution(
+                    case["name"].as_str().unwrap(),
+                    &result.execution,
+                    &case["output"],
+                );
+            }
+        }
+        let mut request = transaction(&fixture["cases"][0]);
+        let mut probes = Vec::new();
+        let estimate = rustaxa_evm::estimate::estimate_gas(request.gas_limit.as_u64(), |gas| {
+            probes.push(gas);
+            request.gas_limit = gas.into();
+            let simulation = simulate_ordinary(
+                &reader,
+                &NoHistory,
+                &NoNative,
+                &block(&fixture),
+                &request,
+                EnvelopeRules { cornus: true },
+                TaraxaProfile::new(false),
+            )?;
+            let TransactionExecutionResult::Executed(executed) = simulation.execution else {
+                panic!("historical probe admission")
+            };
+            assert_eq!(executed.status, CodeExecutionStatus::Success);
+            assert_eq!(
+                BigUint::from_bytes_be(&executed.output[..32]),
+                BigUint::from(8_u8)
+            );
+            Ok::<_, SimulationError>(rustaxa_evm::estimate::EstimateProbe::Success {
+                gas_used: executed.gas_used.as_u64(),
+            })
+        })
+        .unwrap();
+        assert_eq!(estimate, 29_373);
+        assert_eq!(
+            probes,
+            vec![100_000, 64_126, 46_189, 37_220, 32_736, 30_494, 29_373]
+        );
+        drop(reader);
+        assert_eq!(
+            db.rows(),
+            before,
+            "all persisted rows and descriptor must remain identical"
+        );
+    }
+}
+
+#[test]
+fn persisted_missing_sender_version_stays_unavailable_after_reopen() {
+    use rustaxa_evm::journal::JournalError;
+    use rustaxa_storage::ConcreteStateReader;
+    let fixture = fixture("public");
+    let identity = FixtureReader::from_fixture(&fixture).identity;
+    let db = PersistedApiFixture::materialize(&fixture);
+    let case = &fixture["cases"][0];
+    let key = rustaxa_storage::versioned_key(
+        rustaxa_storage::account_version_prefix(transaction(case).sender),
+        identity.period,
+    );
+    {
+        let writable = rocksdb::DB::open_cf(
+            &rocksdb::Options::default(),
+            &db.0,
+            ["1", "2", "3", "4", "5", "6", "7", "8"],
+        )
+        .unwrap();
+        writable
+            .delete_cf(&writable.cf_handle("3").unwrap(), key)
+            .unwrap();
+        writable.flush().unwrap();
+    }
+    let before = db.rows();
+    let reader = ConcreteStateReader::open_historical_read_only(&db.0, identity, identity).unwrap();
+    let error = simulate_ordinary(
+        &reader,
+        &NoHistory,
+        &NoNative,
+        &block(&fixture),
+        &transaction(case),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            SimulationError::Sender(JournalError::State(
+                ConcreteReadError::HistoryUnavailable { .. }
+            ))
+        ),
+        "{error:?}"
+    );
+    drop(reader);
+    assert_eq!(db.rows(), before);
+}
+
+#[test]
+fn persisted_missing_code_or_slot_aborts_simulation_without_state_changes() {
+    use rustaxa_evm::{driver::ExecutionDriverError, host::HostError, journal::JournalError};
+    let fixture = fixture("public");
+    let expected = FixtureReader::from_fixture(&fixture);
+    let case = &fixture["cases"][0];
+    let target = transaction(case).receiver.unwrap();
+    let code_key = expected.accounts[&target]
+        .account
+        .code_hash
+        .unwrap()
+        .to_vec();
+    let slot_key = rustaxa_storage::versioned_key(
+        rustaxa_storage::storage_version_prefix(target, ConcreteStorageKey([0; 32])),
+        expected.identity.period,
+    )
+    .to_vec();
+    for (column, key) in [("1", code_key), ("5", slot_key)] {
+        let db = PersistedApiFixture::materialize(&fixture);
+        {
+            let writable = rocksdb::DB::open_cf(
+                &rocksdb::Options::default(),
+                &db.0,
+                ["1", "2", "3", "4", "5", "6", "7", "8"],
+            )
+            .unwrap();
+            writable
+                .delete_cf(&writable.cf_handle(column).unwrap(), key)
+                .unwrap();
+            writable.flush().unwrap();
+        }
+        let before = db.rows();
+        let reader =
+            rustaxa_storage::ConcreteStateReader::open_read_only(&db.0, expected.identity).unwrap();
+        let error = simulate_ordinary(
+            &reader,
+            &NoHistory,
+            &NoNative,
+            &block(&fixture),
+            &transaction(case),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )
+        .unwrap_err();
+        let unavailable =
+            JournalError::State(ConcreteReadError::HistoryUnavailable(expected.identity));
+        let expected_error = if column == "1" {
+            SimulationError::Execution(ExecutionDriverError::Journal(unavailable))
+        } else {
+            SimulationError::Execution(ExecutionDriverError::Host(HostError::Journal(unavailable)))
+        };
+        assert_eq!(error, expected_error);
+        drop(reader);
+        assert_eq!(db.rows(), before);
+    }
 }

@@ -1,7 +1,8 @@
 # N3 API implementation evidence
 
-Status: gas-search kernel and bounded ordinary simulation implemented. Full N3 remains open, including native
-simulation, historical query composition, trace schemas and persisted API tests.
+Status: gas search and bounded ordinary simulation, including persisted historical
+reads and reopen, are implemented. Full N3 remains open, including native
+simulation, complete historical API policy and Rust trace collection/serialization.
 
 ## Existing ownership and contracts
 
@@ -79,10 +80,10 @@ and after repeated calls are identical. Rust compares status, gas, output and
 creation addresses. Exact RPC revert-string presentation is not yet implemented.
 
 The return-data bounds case maps REVM `OutOfOffset` to the typed
-`ReturnDataOutOfBounds` execution failure. Combined invalid-source and
-unaffordable-memory cases remain an explicit gap: Go charges memory expansion
-before bounds checking, while the default REVM opcode checks bounds first.
-This fixture does not establish parity for that precedence.
+`ReturnDataOutOfBounds` execution failure. The follow-up
+[RETURNDATACOPY slice](s3_returndatacopy.md) implements Go's memory/gas-before-
+bounds ordering, including overflow and reference-panic distinctions, and
+compares 69 full-frame programs. Independent closeout review remains pending.
 
 An integrated gas-search test runs seven fresh Rust simulations against the same
 Go-derived state. Every probe sees the original slot seven and privately writes
@@ -98,8 +99,8 @@ cargo test --manifest-path rust/Cargo.toml -p rustaxa-evm --test simulation_refe
 Sol authored the independent public API oracle and initial comparisons in
 `task/evm-api-oracle`; Astra authored the facade and integrated probe/negative
 tests. The fixture manifest records exact hashes and source pins. This is
-immutable in-memory state evidence; persisted historical API/reopen tests,
-native simulation, traces and complete RPC behavior remain required.
+immutable in-memory state evidence, extended by the persisted historical tests
+below. Native simulation, traces and complete RPC behavior remain required.
 
 
 ## Trace reference and required observer boundary
@@ -142,3 +143,27 @@ comparison are still required before N3 acceptance.
 ```sh
 python3 experiments/evm_feasibility/trace_reference.py
 ```
+
+
+## Persisted historical simulation and queries
+
+The API oracle now exports its actual TrieSink seed rows. Rust materializes those
+bytes in a disposable RocksDB using the existing Go-column/CF mapping and period
+suffix codec, rather than rebuilding expected trie nodes. The existing Rust
+concrete writer creates a distinct newer state with a zero-balance sender.
+Tests open the older Go state through `ConcreteStateReader` while pinning that
+newer committed descriptor; older reads and execution must not see the newer
+balance. Test-only descriptor setup is not an adoption or publication API.
+
+Across two reader reopens, tests compare exact account RLP, code bytes, physical
+slot values and authenticated logical slot membership, then all six Go calls
+twice and the seven-probe gas search. Every probe still sees slot seven and
+privately writes eight. All default/CF1–CF8 key/value rows remain byte-identical.
+Separate fixtures remove a required sender version, code row or slot row and
+prove the exact unavailable-history error survives simulation and reopen without
+committed mutations. Previous Go API and trace observations/results remain
+unchanged; only the seed rows were added to their state observations.
+
+This closes the bounded ordinary persisted-reader/reopen evidence gap. It does
+not close native simulation, public RPC block/default/error policy, Rust tracing,
+legacy bootstrap, full retention qualification or reference-binary reopen.
