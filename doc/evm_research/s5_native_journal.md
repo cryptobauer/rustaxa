@@ -59,8 +59,9 @@ make rewrite-validate-fast
 ```
 
 The opt-in driver checks that the consensus-native classifier is a subset of the
-full native registry. Classified stateless addresses remain explicitly unavailable
-in this route. Consensus sequence advances after generic depth/funds admission,
+full native registry. The [stateless route](s5_stateless_frames.md) handles the
+reviewed helpers separately and cannot enter this port or its sequence.
+Consensus sequence advances after generic depth/funds admission,
 including quote underfunding and native business failure, and survives enclosing
 ordinary rollback. Native failures retain returndata and unused gas but do not
 copy bytes into the CALL output region. Nine targeted driver tests cover these

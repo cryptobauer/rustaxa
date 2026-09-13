@@ -5,7 +5,7 @@
 //! drives nested ordinary CALL/CREATE frames iteratively, and settles interpreter
 //! gas/refunds once. The default entry points keep native dispatch unavailable;
 //! explicit opt-in entry points accept a consensus-native port and period-local
-//! sequence. They also route the reviewed stateless addresses 1–5 without using
+//! sequence. They also route the reviewed stateless addresses 1–9 without using
 //! that port or sequence. SELFDESTRUCT remains unavailable.
 //!
 //! CALL-family opcode preparation reads authoritative account metadata while
@@ -37,6 +37,7 @@ use crate::{
         NativePortError, NativeResultValidationError, NativeStatus, StatelessInvocation,
         StatelessInvocationId, TransactionExecutionResult,
     },
+    curve_precompiles::{OriginalCurvePrecompile, PreparedCurvePrecompileCall},
     envelope::{
         AdmittedTransaction, EnvelopeAdmission, EnvelopeError, EnvelopeRules, FrameSettlement,
         FrameSettlementStatus, IntrinsicGasSchedule, admit, settle,
@@ -95,7 +96,7 @@ pub enum ExecutionDriverError {
     Stateless(NativePortError),
     /// A stateless helper returned a result inconsistent with its exact quote.
     StatelessResult(NativeResultValidationError),
-    /// Addresses 1–5 returned state, log or contract-failure effects outside their pure contract.
+    /// A stateless helper returned state or log effects outside its pure contract.
     StatelessEffects { address: [u8; 20] },
     /// REVM yielded a malformed or explicitly unsupported frame action.
     PendingFrameUnavailable(PendingFrameKind),
@@ -154,6 +155,7 @@ impl TransactionStatelessSequence {
 fn is_reviewed_stateless_address(address: [u8; 20]) -> bool {
     OriginalStatelessPrecompile::at_address(address).is_some()
         || (address[..19] == [0; 19] && address[19] == 5)
+        || OriginalCurvePrecompile::at_address(address).is_some()
 }
 
 fn validate_native_period(
@@ -217,9 +219,15 @@ fn invoke_stateless(
         let quote = prepared.quote();
         let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
         (quote, result)
-    } else {
+    } else if invocation.contract[..19] == [0; 19] && invocation.contract[19] == 5 {
         let prepared =
             PreparedModexpCall::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    } else {
+        let prepared = PreparedCurvePrecompileCall::prepare(invocation)
+            .map_err(ExecutionDriverError::Stateless)?;
         let quote = prepared.quote();
         let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
         (quote, result)
@@ -235,8 +243,7 @@ fn invoke_stateless(
             output: Vec::new(),
         });
     };
-    if outcome.status != NativeStatus::Success
-        || !outcome.account_mutations.is_empty()
+    if !outcome.account_mutations.is_empty()
         || !outcome.raw_mutations.is_empty()
         || !outcome.logs.is_empty()
     {
@@ -245,7 +252,12 @@ fn invoke_stateless(
         });
     }
     Ok(NativeFrameOutcome {
-        status: CodeExecutionStatus::Success,
+        status: match outcome.status {
+            NativeStatus::Success => CodeExecutionStatus::Success,
+            NativeStatus::ContractFailure(error) => {
+                CodeExecutionStatus::Failure(CodeExecutionError::Native(error))
+            }
+        },
         required_gas: quote.required_gas,
         gas_left: FinalChainGas::new(expected.supplied_gas.as_u64() - quote.required_gas.as_u64()),
         output: outcome.output,
@@ -385,7 +397,8 @@ pub fn execute_top_level_call<
 /// `all_native_addresses` is the complete native/precompile set for the period;
 /// `consensus_native_addresses` is the subset owned by `native_port`. An address
 /// selected only by the complete set uses a reviewed stateless helper at exact
-/// addresses 1–5; other such addresses remain unavailable. Classifier overlap
+/// addresses 1–9; other such addresses remain unavailable. The full classifier
+/// owns historical activation, including whether Ficus enables address 9. Overlap
 /// between consensus and reviewed stateless addresses is an integrity error.
 /// The caller owns one [`PeriodConsensusSequence`] for the pending period and must
 /// discard the journal, port and sequence together after any returned error.
@@ -495,7 +508,7 @@ pub fn execute_top_level_create<
 ///
 /// The classifiers and period-local sequence have the same invariants as
 /// [`execute_top_level_call_with_native`]. CREATE itself is ordinary; this port
-/// and reviewed helpers at addresses 1–5 are available to CALL-family actions
+/// and reviewed helpers at addresses 1–9 are available to CALL-family actions
 /// yielded by its initcode descendants.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_top_level_create_with_native<

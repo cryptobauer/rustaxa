@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Direct Californicum addresses 6..8 and Ficus address 9 RequiredGas/Run; bounded inputs, no EVM admission, activation, registry routing, or state claim",
+  "max_blake2f_rounds": 12,
+  "sha256": {
+    "public": "3e8f4ec245bf0ec35b2774d9cc148420ed1d1cd14cc5a0822c72958736c28181",
+    "local": "3e8f4ec245bf0ec35b2774d9cc148420ed1d1cd14cc5a0822c72958736c28181"
+  },
+  "exporter_sha256": "d6245c4b8fe39e7392cd3bec0881b1410226a82632745d5fdb50ef33981b8acd"
+}

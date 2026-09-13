@@ -2,6 +2,9 @@
 
 The opt-in CALL/CREATE entry points now execute the reviewed stateless helpers
 at exact addresses 1–5 when the caller's full native classifier selects them.
+The subsequent [BN254/BLAKE2F slice](s5_curve_precompiles.md) extends that same path
+through address 9, including typed, gas-charged malformed-input failures. The
+caller still owns historical activation; this helper set is not a fork registry.
 They retain the existing consensus-native port and period sequence. The default
 entry points still refuse native addresses; no production classifier, historical
 fork selection or routing is added.

@@ -994,3 +994,96 @@ fn stateless_funds_rejection_does_not_touch_callee_or_consensus_sequence() {
             .is_empty()
     );
 }
+
+#[test]
+fn curve_calls_preserve_funded_errors_gas_and_value_rollback_without_consensus_facts() {
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/curve_precompiles_reference_public.json"
+    ))
+    .unwrap();
+    for row in corpus["curve_precompiles"].as_array().unwrap() {
+        let target = primitive_address(row["address"].as_u64().unwrap() as u8);
+        let mut tx = transaction(target, ExecutionValue::new(BigUint::from(7_u8)));
+        tx.input = hex::decode(row["input"].as_str().unwrap()).unwrap();
+        let intrinsic = rustaxa_types::transaction::intrinsic_gas(&tx.input, false).unwrap();
+        let required = row["required_gas"].as_u64().unwrap();
+        tx.gas_limit = (intrinsic + required + 100).into();
+        let mut journal = journal_without_parent();
+        let mut port = ScriptedPort::completed(NativeStatus::Success, vec![0xff]);
+        let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+        let result = execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![target]),
+            &AddressSet(Vec::new()),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &tx,
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )
+        .unwrap();
+        let TransactionExecutionResult::Executed(result) = result else {
+            panic!("must execute")
+        };
+        let error = row["error"].as_str().unwrap();
+        let expected_status = if error.is_empty() {
+            CodeExecutionStatus::Success
+        } else {
+            CodeExecutionStatus::Failure(CodeExecutionError::Native(NativeContractFailure {
+                error: error.into(),
+            }))
+        };
+        assert_eq!(result.status, expected_status, "{}", row["name"]);
+        assert_eq!(
+            result.output,
+            hex::decode(row["output"].as_str().unwrap()).unwrap()
+        );
+        assert_eq!(result.gas_used.as_u64(), intrinsic + required);
+        assert_eq!(
+            journal.account(target).unwrap().balance.value(),
+            &num_bigint::BigInt::from(if error.is_empty() { 7 } else { 0 })
+        );
+        assert!(port.invocations.lock().unwrap().is_empty());
+        assert_eq!(sequence.next_sequence(), 0);
+        assert!(
+            journal
+                .settle_transaction()
+                .unwrap()
+                .native_invocations
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn blake_activation_remains_owned_by_the_supplied_classifier() {
+    let target = primitive_address(9);
+    let mut journal = journal_without_parent();
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(Vec::new()),
+        &AddressSet(Vec::new()),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &transaction(target, ExecutionValue::default()),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("must execute")
+    };
+    // Without registry activation this is an empty ordinary account call.
+    // Activated BLAKE2F instead rejects this empty input, as the curve corpus proves.
+    assert_eq!(result.status, CodeExecutionStatus::Success);
+    assert!(result.output.is_empty());
+    assert_eq!(result.gas_used.as_u64(), 21_000);
+    assert!(port.invocations.lock().unwrap().is_empty());
+    assert_eq!(sequence.next_sequence(), 0);
+}
