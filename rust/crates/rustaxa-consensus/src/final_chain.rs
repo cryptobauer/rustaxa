@@ -3057,6 +3057,37 @@ impl FinalChain {
         })
     }
 
+    /// Verifies that an execution leaf's commit intent is the exact durable
+    /// pending publication accepted by this FinalChain generation.
+    ///
+    /// Reads and validates the existing marker codec, compares every intent
+    /// field, and requires the published descriptor still to equal its prior
+    /// state. Missing/corrupt markers, a foreign intent or an advanced head are
+    /// errors. This read does not prepare an intent, commit concrete state or
+    /// publish application storage; the application pipeline retains ownership.
+    /// The caller must stay inside that owner's serialized lifecycle: this
+    /// observation is not an authorization token safe across concurrent writers.
+    pub fn validate_pending_external_evm_commit(
+        &self,
+        intent: &FinalChainExternalEvmStateCommitIntent,
+    ) -> Result<(), anyhow::Error> {
+        let raw = self
+            .storage
+            .final_chain()
+            .external_evm_pending_publication_raw()?
+            .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_CONCRETE_PENDING_INTENT_MISSING"))?;
+        let marker = decode_external_evm_pending_publication_marker(&raw)?;
+        anyhow::ensure!(
+            marker.state_commit_intent == *intent,
+            "FINAL_CHAIN_CONCRETE_PENDING_INTENT_MISMATCH"
+        );
+        anyhow::ensure!(
+            self.committed_state_descriptor()? == intent.prior_state,
+            "FINAL_CHAIN_CONCRETE_PENDING_INTENT_PRIOR_MISMATCH"
+        );
+        Ok(())
+    }
+
     /// Clears the pending external-EVM publication marker after Rust receives
     /// an explicit discarded staged-state outcome.
     ///

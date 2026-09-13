@@ -34,7 +34,8 @@ def main() -> None:
     parser.add_argument("--record", action="store_true")
     args = parser.parse_args()
     artifacts = {label: run_reference(revision) for label, revision in REVISIONS.items()}
-    assert artifacts["public"] == artifacts["local"], "pinned Go S4 outputs disagree"
+    if artifacts["public"] != artifacts["local"]:
+        raise RuntimeError("pinned Go S4 outputs disagree")
 
     manifest = {
         "schema": 1,
@@ -56,9 +57,11 @@ def main() -> None:
         (FIXTURES / "s4_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     else:
         saved = json.loads((FIXTURES / "s4_manifest.json").read_text())
-        assert saved == manifest, "saved S4 metadata differs"
+        if saved != manifest:
+            raise RuntimeError("saved S4 metadata differs")
         for label, data in artifacts.items():
-            assert data == (FIXTURES / f"s4_{label}.json").read_bytes(), f"saved {label} fixture differs"
+            if data != (FIXTURES / f"s4_{label}.json").read_bytes():
+                raise RuntimeError(f"saved {label} fixture differs")
     print("Both pinned S4 references executed and " + ("recorded" if args.record else "reproduced"))
 
 
