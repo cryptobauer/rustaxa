@@ -4,8 +4,8 @@ use num_bigint::BigUint;
 use rustaxa_evm::{
     contracts::CodeExecutionError,
     frame::{
-        ChildFrameResult, ChildFrameStatus, CodeDepositResult, CreateScheme, create_address,
-        settle_code_deposit, settle_create_child,
+        ChildFrameResult, ChildFrameStatus, ChildPreEntryError, CodeDepositResult, CreateScheme,
+        create_address, settle_code_deposit, settle_create_child,
     },
 };
 use rustaxa_types::{FinalChainGas, FinalChainNonce};
@@ -71,6 +71,31 @@ fn create2_addresses_match_success_and_revert_reference_vectors() {
 }
 
 #[test]
+fn create_addresses_match_long_nonce_rlp_boundaries() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/creation_address_public.json"
+    ))
+    .unwrap();
+    for row in fixture["creation_addresses"].as_array().unwrap() {
+        let creator: [u8; 20] = hex::decode(row["creator"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let nonce = BigUint::parse_bytes(row["nonce"].as_str().unwrap().as_bytes(), 10).unwrap();
+        assert_eq!(
+            hex::encode(create_address(
+                creator,
+                &CreateScheme::Create {
+                    nonce: nonce_type(nonce)
+                },
+                &[]
+            )),
+            row["address"].as_str().unwrap()
+        );
+    }
+}
+
+#[test]
 fn create_child_and_code_deposit_settlement_keep_error_paths_distinct() {
     let address = [0x44; 20];
     let reverted = settle_create_child(
@@ -95,6 +120,23 @@ fn create_child_and_code_deposit_settlement_keep_error_paths_distinct() {
     );
     assert_eq!(exceptional.returned_gas, FinalChainGas::ZERO);
     assert!(exceptional.return_data.is_empty());
+
+    for error in [
+        ChildPreEntryError::Depth,
+        ChildPreEntryError::InsufficientBalance,
+    ] {
+        let rejected = settle_create_child(
+            address,
+            ChildFrameResult {
+                status: ChildFrameStatus::PreEntryRejected(error),
+                gas_remaining: FinalChainGas::new(7),
+                output: vec![0xcc],
+            },
+        );
+        assert_eq!(rejected.returned_gas, FinalChainGas::new(7));
+        assert!(rejected.return_data.is_empty());
+        assert_eq!(rejected.created_address, None);
+    }
 
     assert_eq!(
         settle_code_deposit(vec![0x60], FinalChainGas::new(199), 24_576, 200),

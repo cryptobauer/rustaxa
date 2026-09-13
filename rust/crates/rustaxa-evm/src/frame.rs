@@ -6,6 +6,7 @@
 //! not execute bytecode or route production execution.
 
 use revm::primitives::keccak256;
+use rlp::RlpStream;
 use rustaxa_types::{FinalChainGas, FinalChainNonce};
 
 use crate::contracts::CodeExecutionError;
@@ -24,9 +25,11 @@ pub enum CreateScheme {
 pub fn create_address(creator: [u8; 20], scheme: &CreateScheme, init_code: &[u8]) -> [u8; 20] {
     let hash = match scheme {
         CreateScheme::Create { nonce } => {
-            let mut payload = rlp_bytes(&creator);
-            payload.extend_from_slice(&rlp_bytes(&nonce.to_bytes()));
-            keccak256(rlp_list(&payload))
+            let nonce = nonce.to_bytes();
+            let mut stream = RlpStream::new_list(2);
+            stream.append(&creator.as_slice());
+            stream.append(&nonce.as_slice());
+            keccak256(stream.out())
         }
         CreateScheme::Create2 { salt } => {
             let init_hash = keccak256(init_code);
@@ -50,6 +53,17 @@ pub enum ChildFrameStatus {
     Revert,
     /// Child halted exceptionally and consumes all supplied child gas.
     Exceptional(CodeExecutionError),
+    /// Frame entry was rejected before any child gas or state was consumed.
+    PreEntryRejected(ChildPreEntryError),
+}
+
+/// CREATE-family rejection before the child interpreter starts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildPreEntryError {
+    /// The next frame would exceed the depth limit.
+    Depth,
+    /// The creator cannot transfer the requested value.
+    InsufficientBalance,
 }
 
 /// Completed child facts supplied to the parent frame.
@@ -96,6 +110,11 @@ pub fn settle_create_child(
             return_data: Vec::new(),
             created_address: None,
         },
+        ChildFrameStatus::PreEntryRejected(_) => SettledCreateChild {
+            returned_gas: child.gas_remaining,
+            return_data: Vec::new(),
+            created_address: None,
+        },
     }
 }
 
@@ -138,37 +157,4 @@ pub fn settle_code_deposit(
         result: Ok(runtime_code),
         gas_remaining: remaining,
     }
-}
-
-fn rlp_bytes(bytes: &[u8]) -> Vec<u8> {
-    if bytes.len() == 1 && bytes[0] < 0x80 {
-        return bytes.to_vec();
-    }
-    rlp_payload(0x80, 0xb7, bytes)
-}
-
-fn rlp_list(payload: &[u8]) -> Vec<u8> {
-    rlp_payload(0xc0, 0xf7, payload)
-}
-
-fn rlp_payload(short_base: u8, long_base: u8, payload: &[u8]) -> Vec<u8> {
-    let mut output = Vec::new();
-    if payload.len() <= 55 {
-        output.push(short_base + payload.len() as u8);
-    } else {
-        let length = minimal_usize_bytes(payload.len());
-        output.push(long_base + length.len() as u8);
-        output.extend_from_slice(&length);
-    }
-    output.extend_from_slice(payload);
-    output
-}
-
-fn minimal_usize_bytes(value: usize) -> Vec<u8> {
-    let bytes = value.to_be_bytes();
-    bytes[bytes
-        .iter()
-        .position(|byte| *byte != 0)
-        .unwrap_or(bytes.len() - 1)..]
-        .to_vec()
 }
