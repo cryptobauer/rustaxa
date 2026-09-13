@@ -177,13 +177,12 @@ After S1 lands, the following files form the proposed boundary below
 | File | Responsibility |
 | --- | --- |
 | `lib.rs` | Lead-owned documented public exports and crate invariants only. |
-| `types.rs` | Lead-owned execution/native contracts: wide transaction/block/frame/result values and explicit conversion to/from current Rustaxa types. |
+| `contracts.rs` | Lead-owned execution/native contracts: wide transaction/block/frame/result values, block/native ports and explicit conversion to/from current Rustaxa types. |
 | `envelope.rs` | Ordered transaction admission, fee/nonce/intrinsic-gas behavior, simulation distinctions and result settlement. |
 | `profile.rs` | Taraxa activation flags, instruction table and gas schedule construction. |
 | `journal.rs` | Account lifecycle, original/current/new ordinary storage, raw and transient overlays, logs/refunds and checkpoints. |
 | `host.rs` | Narrow REVM `Host` implementation over the journal and lead-owned external block-hash/native ports. |
 | `frame.rs` | Frame stack, all call/create kinds, gas/value/return-data/code settlement. |
-| `native.rs` | Lead-owned native invocation port contract; no FinalChain kernel implementation. |
 | `result.rs` | Receipt-facing typed status/log/output conversion and invariants. |
 
 The lead retains workspace manifests/lockfiles, shared `rustaxa-types` contracts,
