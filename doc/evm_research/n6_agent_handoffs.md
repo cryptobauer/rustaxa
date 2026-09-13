@@ -148,3 +148,23 @@ production routing remain unauthorized.
 
 No new agent was spawned, no new routing failure occurred, and no Luna slot or
 billing/quota usage is inferred from these assignments.
+
+
+## Cancellation and structured trace integration
+
+- Sol high native owner ran and produced `588a2175b3`, integrated as `cb8016217`.
+  Independent review approved same-block zero-yield V1/V2 cancellation only.
+  Root's 54 integrated native-session tests, dual-pin optimized reproduction,
+  fast gate, Rust-enabled bridge build and all four focused bridge tests passed.
+  Cross-period accrued-reward custody remains the same owner's next task.
+- Sol high execution owner ran and produced `4a3dd1813`, integrated as
+  `9edaa820f`. Three default serializer comparisons pass. The seven-scenario
+  representation test consumes supplied Go facts; it is not additional execution
+  evidence by itself. Independent review approved that stated scope.
+- Astra lead added actual driver-to-JSON comparisons for four Go scenarios and
+  an independently reviewed four-program raw refund oracle. Seven driver tests,
+  three serializer tests, strict affected clippy and optimized dual-pin refund
+  reproduction pass. Nested traces remain unsupported where facts are unproved.
+
+No new thread, model substitution or routing failure occurred. Assignments and
+successful runs do not establish billing or quota consumption.

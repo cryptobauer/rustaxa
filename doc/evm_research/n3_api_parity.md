@@ -2,8 +2,8 @@
 
 Status: gas search, bounded ordinary simulation and staged native simulation
 are implemented, including persisted historical reads and reopen. Full N3
-remains open: complete native coverage, historical API policy and Rust trace
-collection/serialization.
+remains open: complete native coverage, historical API composition and complete
+Rust trace execution modes.
 
 ## Existing ownership and contracts
 
@@ -115,7 +115,7 @@ OpenEthereum `trace`, `vmTrace`, combined and neither-selected configurations.
 Both pins emit identical artifacts and leave committed observations unchanged.
 This is reference evidence. A typed append-only Rust trace collector now exists
 (`trace.rs`), with phase-dependent opcode facts and attempted storage tracking.
-Driver hooks and exact Go-compatible serializers remain under implementation;
+Bounded driver hooks and the default structured serializer are implemented;
 the collector alone does not establish trace API parity.
 
 Unlike `DryRunner.Apply`, tracing starts at `max(block - 1, 0)` and preserves
@@ -283,14 +283,30 @@ the C++ clamped future branch and ordinary historical branch catch leaf errors
 differently. Missing historical data never becomes a future-request constant.
 
 The reviewed driver now emits bounded opcode facts from the same interpreter.
-Six focused tests cover four actual Go scenarios, unsupported gas/nested-frame
+Seven focused tests cover four actual Go scenarios, unsupported gas/nested-frame
 paths, and exact host-error precedence. It preserves duplicate fault rows for
 REVERT and return-data bounds, and emits no guessed row for unsupported gas,
-early-fault or CALL/CREATE suspension paths. Frame settlement events and complete
-structured/OpenEthereum output remain separate work. Current oracle refund
-witnesses are zero; nonzero refund timing is source-reviewed only.
+early-fault or CALL/CREATE suspension paths. Frame settlement events, the complete TraceRunner and OpenEthereum output
+remain separate work. The default structured serializer now matches Go JSON
+representation for all seven fixtures, with actual driver-to-JSON comparisons
+for storage, REVERT, return-data bounds and CREATE.
 
 ```sh
 python3 -O experiments/evm_feasibility/query_policy_reference.py
 cargo test --locked --manifest-path rust/Cargo.toml -p rustaxa-evm --test query_policy_reference --test trace_driver_reference
+```
+
+
+The raw refund oracle independently exposes actual Go `StructLogger` entries
+through two uniquely guarded export-only substitutions in disposable source
+archives. Execution and CaptureState remain unchanged. Four slot-seven programs
+clear, restore, clear again or revert; exact raw refunds include 15,000, 4,800 and
+19,800. Both REVERT rows retain 15,000 before outer rollback. Rust compares
+opcode facts and settled transaction gas/output/status against both pins, and
+committed Go seed observations remain identical. This does not change the
+formatted trace JSON authority or establish nested-frame refund behavior.
+
+```sh
+python3 -O experiments/evm_feasibility/trace_refund_reference.py
+cargo test --locked --manifest-path rust/Cargo.toml -p rustaxa-evm --test trace_driver_reference --test trace_structured_reference
 ```

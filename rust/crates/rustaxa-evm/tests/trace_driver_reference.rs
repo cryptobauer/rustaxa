@@ -6,8 +6,9 @@ use num_bigint::BigUint;
 use revm::{interpreter::InstructionResult, primitives::keccak256};
 use rustaxa_evm::{
     contracts::{
-        BlockHashRead, BlockHashReadError, ExecutionBlockContext, ExecutionGasPrice,
-        ExecutionTransaction, ExecutionTransactionKind, ExecutionValue,
+        BlockHashRead, BlockHashReadError, CodeExecutionStatus, ExecutionBlockContext,
+        ExecutionGasPrice, ExecutionTransaction, ExecutionTransactionKind, ExecutionValue,
+        TransactionExecutionResult,
     },
     driver::{
         ExecutionDriverError, NativeAddressClassifier, execute_top_level_call_with_trace,
@@ -17,6 +18,7 @@ use rustaxa_evm::{
     host::HostError,
     journal::ExecutionJournal,
     profile::TaraxaProfile,
+    structured_trace::{StructuredTraceResult, serialize_structured_results},
     trace::{TraceCollector, TraceEvent, TraceOpcode, TraceOpcodePhase},
 };
 use rustaxa_types::{
@@ -423,6 +425,25 @@ fn host_failure_keeps_exact_error_and_emits_no_opcode_row() {
     assert_eq!(rows[0].opcode, 0x60);
 }
 
+fn compare_execution_json(
+    result: &TransactionExecutionResult,
+    collector: &TraceCollector,
+    expected: &Value,
+) {
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("witness must pass admission");
+    };
+    let encoded = serialize_structured_results(&[StructuredTraceResult {
+        gas_used: result.gas_used.as_u64(),
+        failed: result.status != CodeExecutionStatus::Success,
+        return_value: &result.output,
+        events: collector.events(),
+    }])
+    .unwrap();
+    let actual: Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(actual, expected["outputs"]["struct"]["result"]);
+}
+
 #[test]
 fn storage_call_matches_pinned_go_opcode_facts() {
     let fixture = fixture();
@@ -432,7 +453,7 @@ fn storage_call_matches_pinned_go_opcode_facts() {
     let mut journal = ExecutionJournal::new(reader(&fixture, target, code, Some(7)));
     let mut collector = TraceCollector::default();
 
-    execute_top_level_call_with_trace(
+    let result = execute_top_level_call_with_trace(
         &mut journal,
         &BlockHashes,
         &NoNative,
@@ -444,6 +465,7 @@ fn storage_call_matches_pinned_go_opcode_facts() {
     )
     .unwrap();
 
+    compare_execution_json(&result, &collector, expected);
     let rows = opcode_rows(&collector);
     compare_struct_rows(&rows, expected, InstructionResult::Revert);
     assert_eq!(rows[6].opcode, 0x55);
@@ -471,7 +493,7 @@ fn revert_and_return_bounds_match_pinned_go_duplicate_fault_rows() {
         let mut journal = ExecutionJournal::new(reader(&fixture, target, code, None));
         let mut collector = TraceCollector::default();
 
-        execute_top_level_call_with_trace(
+        let result = execute_top_level_call_with_trace(
             &mut journal,
             &BlockHashes,
             &NoNative,
@@ -483,6 +505,7 @@ fn revert_and_return_bounds_match_pinned_go_duplicate_fault_rows() {
         )
         .unwrap();
 
+        compare_execution_json(&result, &collector, scenario(&fixture, name));
         compare_struct_rows(&opcode_rows(&collector), scenario(&fixture, name), fault);
     }
 }
@@ -520,7 +543,7 @@ fn create_initcode_matches_pinned_go_opcode_facts() {
     });
     let mut collector = TraceCollector::default();
 
-    execute_top_level_create_with_trace(
+    let result = execute_top_level_create_with_trace(
         &mut journal,
         &BlockHashes,
         &NoNative,
@@ -532,9 +555,99 @@ fn create_initcode_matches_pinned_go_opcode_facts() {
     )
     .unwrap();
 
+    compare_execution_json(&result, &collector, scenario(&fixture, "create"));
     compare_struct_rows(
         &opcode_rows(&collector),
         scenario(&fixture, "create"),
         InstructionResult::Revert,
     );
+}
+
+/// Raw Go logger observations prove refund changes at the same opcode boundary,
+/// including the duplicate REVERT row before outer rollback clears the refund.
+#[test]
+fn nonzero_refund_trace_facts_match_actual_go_logger() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/trace_refund/public.json"
+    ))
+    .unwrap();
+    let local: Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/trace_refund/local.json"
+    ))
+    .unwrap();
+    assert_eq!(cases, local);
+    assert_eq!(cases.as_array().unwrap().len(), 4);
+    for case in cases.as_array().unwrap() {
+        assert_eq!(case["state_before"], case["state_after"]);
+        let target = address(0xbb);
+        let mut journal = ExecutionJournal::new(reader(
+            case,
+            target,
+            hex::decode(case["code"].as_str().unwrap()).unwrap(),
+            Some(7),
+        ));
+        let mut collector = TraceCollector::default();
+        let result = execute_top_level_call_with_trace(
+            &mut journal,
+            &BlockHashes,
+            &NoNative,
+            &block(),
+            &transaction(case, Some(target), vec![]),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+            &mut collector,
+        )
+        .unwrap();
+        let TransactionExecutionResult::Executed(result) = result else {
+            panic!("refund witness must pass admission");
+        };
+        let expected = &case["result"][0];
+        assert_eq!(result.gas_used.as_u64(), expected["gas"].as_u64().unwrap());
+        assert_eq!(
+            result.status != CodeExecutionStatus::Success,
+            expected["failed"].as_bool().unwrap()
+        );
+        assert_eq!(hex::encode(&result.output), expected["returnValue"]);
+        let actual = opcode_rows(&collector);
+        let expected_rows = expected["structLogs"].as_array().unwrap();
+        assert_eq!(actual.len(), expected_rows.len());
+        assert!(
+            expected_rows
+                .iter()
+                .any(|row| row["refund"].as_u64().unwrap() > 0)
+        );
+        for (index, (actual, expected)) in actual.iter().zip(expected_rows).enumerate() {
+            assert_eq!(actual.pc, expected["pc"].as_u64().unwrap());
+            assert_eq!(actual.opcode as u64, expected["op"].as_u64().unwrap());
+            assert_eq!(actual.gas, expected["gas"].as_u64().unwrap());
+            assert_eq!(actual.gas_cost, expected["gasCost"].as_u64().unwrap());
+            assert_eq!(actual.depth as u64, expected["depth"].as_u64().unwrap());
+            assert_eq!(actual.refund, expected["refund"].as_u64().unwrap());
+            assert_eq!(actual.state_address, target);
+            // All four input programs leave memory empty; raw Go []byte JSON is base64.
+            assert_eq!(expected["memory"], "");
+            assert_eq!(expected["memSize"], 0);
+            assert!(actual.memory.is_empty());
+            let stack = expected["stack"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|word| {
+                    let bytes = decimal(word.as_str().unwrap()).to_bytes_be();
+                    let mut value = [0; 32];
+                    value[32 - bytes.len()..].copy_from_slice(&bytes);
+                    value
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual.stack, stack);
+            assert_eq!(
+                actual.phase,
+                if case["name"] == "clear_revert" && index + 1 == expected_rows.len() {
+                    TraceOpcodePhase::Fault(InstructionResult::Revert)
+                } else {
+                    TraceOpcodePhase::BeforeExecution
+                }
+            );
+        }
+    }
 }
