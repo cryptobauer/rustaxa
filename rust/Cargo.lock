@@ -2939,6 +2939,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ethereum-types",
+ "hex",
  "k256",
  "num-bigint",
  "revm",
@@ -2956,6 +2957,7 @@ dependencies = [
  "anyhow",
  "ethereum-types",
  "k256",
+ "num-bigint",
  "rlp 0.6.1",
  "rocksdb",
  "rustaxa-types",
