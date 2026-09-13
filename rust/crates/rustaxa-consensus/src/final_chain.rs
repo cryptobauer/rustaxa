@@ -8251,10 +8251,17 @@ impl FinalChain {
         ]))
     }
 
+    /// Cancels one legacy V1 undelegation into the supplied account view.
+    ///
+    /// Missing queue and validator states are ordered status-zero contract
+    /// failures. Success removes the single V1 custody entry, restores or
+    /// creates the delegation, claims any accrued reward through `accounts`,
+    /// restores validator stake, and emits the legacy cancellation log.
+    /// Snapshot, account-read, and checked-arithmetic failures are hard errors.
     fn apply_dpos_cancel_undelegate(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         delegator: [u8; 20],
         validator: [u8; 20],
     ) -> Result<DposApplyOutcome, anyhow::Error> {
@@ -8434,10 +8441,17 @@ impl FinalChain {
         ]))
     }
 
+    /// Cancels one Cornus V2 undelegation into the supplied account view.
+    ///
+    /// Missing queue and validator states are ordered status-zero contract
+    /// failures. Success restores or creates the delegation, claims any
+    /// accrued reward through `accounts`, restores validator stake, removes
+    /// the selected V2 queue id, and emits its id-bearing cancellation log.
+    /// Snapshot, account-read, and checked-arithmetic failures are hard errors.
     fn apply_dpos_cancel_undelegate_v2(
         &self,
         snapshot: &mut DposSnapshot,
-        accounts: &mut HashMap<[u8; 20], Account>,
+        accounts: &mut (impl DposAccountPort + ?Sized),
         delegator: [u8; 20],
         validator: [u8; 20],
         id: u64,

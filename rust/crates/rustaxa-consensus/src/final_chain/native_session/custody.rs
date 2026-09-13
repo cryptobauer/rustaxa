@@ -1,10 +1,11 @@
 //! Ordered raw serialization for the first staged DPoS custody mutations.
 //!
 //! The semantic transition reuses FinalChain's existing delegate and V1/V2
-//! undelegation and confirmation kernels. This module independently emits
-//! the pinned Go storage-wrapper call order from the semantic state before and
-//! after that transition. Aggregate vote and delegated-amount rows remain
-//! deferred to [`FinalChainNativeSession::finish_rewards`]. V1/V2 confirmation
+//! undelegation, confirmation, and cancellation kernels. This module
+//! independently emits the pinned Go storage-wrapper call order from the
+//! semantic state before and after that transition. Aggregate vote and
+//! delegated-amount rows remain deferred to
+//! [`FinalChainNativeSession::finish_rewards`]. V1/V2 confirmation
 //! rewrites a surviving validator only once the immutable FinalChain Ficus
 //! boundary is active, matching the reference's conditional storage call. The
 //! bounded pre-Ficus check covers that omitted operation only: the reference
@@ -19,6 +20,19 @@ use super::raw::FinalChainNativeRawTrace;
 use super::*;
 use crate::dpos_reward_graph::{Node, NodeKey};
 use std::collections::BTreeMap;
+
+#[derive(Clone, Copy)]
+struct V2QueueEntry {
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    id: u64,
+}
+
+#[derive(Clone, Copy)]
+enum QueueRemovalPurpose {
+    Confirmation,
+    Cancellation,
+}
 
 impl FinalChainNativeSession<'_> {
     pub(super) fn invoke_selected_custody(
@@ -80,6 +94,15 @@ impl FinalChainNativeSession<'_> {
                 validator,
                 self.pending_period,
             ),
+            DposTransaction::CancelUndelegate {
+                delegator,
+                validator,
+            } => self.final_chain.apply_dpos_cancel_undelegate(
+                &mut next,
+                &mut accounts,
+                delegator,
+                validator,
+            ),
             DposTransaction::ConfirmUndelegateV2 {
                 delegator,
                 validator,
@@ -91,6 +114,17 @@ impl FinalChainNativeSession<'_> {
                 validator,
                 id,
                 self.pending_period,
+            ),
+            DposTransaction::CancelUndelegateV2 {
+                delegator,
+                validator,
+                id,
+            } => self.final_chain.apply_dpos_cancel_undelegate_v2(
+                &mut next,
+                &mut accounts,
+                delegator,
+                validator,
+                id,
             ),
             _ => return Err(FinalChainNativeSessionError::UnsupportedOperation),
         }
@@ -163,11 +197,20 @@ impl FinalChainNativeSession<'_> {
                 delegator,
                 validator,
             } => self.serialize_confirm_v1(*delegator, *validator, before, after, trace),
+            DposTransaction::CancelUndelegate {
+                delegator,
+                validator,
+            } => self.serialize_cancel_v1(*delegator, *validator, before, after, trace),
             DposTransaction::ConfirmUndelegateV2 {
                 delegator,
                 validator,
                 id,
             } => self.serialize_confirm_v2(*delegator, *validator, *id, before, after, trace),
+            DposTransaction::CancelUndelegateV2 {
+                delegator,
+                validator,
+                id,
+            } => self.serialize_cancel_v2(*delegator, *validator, *id, before, after, trace),
             _ => Err(FinalChainNativeSessionError::UnsupportedOperation),
         }
     }
@@ -332,30 +375,13 @@ impl FinalChainNativeSession<'_> {
         after: &DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
-        let entry = find_undelegation(before, delegator, validator)
-            .ok_or_else(|| domain("successful V1 confirmation lost its prior queue entry"))?;
-        checked_put(
+        self.serialize_remove_v1_queue(
+            delegator,
+            validator,
+            before,
             trace,
-            undelegation_v1_key(delegator, validator),
-            ExpectedRaw::Exact(encode_undelegation_v1(entry)),
-            Vec::new(),
+            "successful V1 confirmation lost its prior queue entry",
             "confirmed V1 undelegation",
-        )?;
-
-        let before_entries = before
-            .undelegations
-            .get(&delegator)
-            .cloned()
-            .unwrap_or_default();
-        let validators = before_entries
-            .iter()
-            .map(|entry| entry.validator.to_vec())
-            .collect::<Vec<_>>();
-        remove_iterable(
-            trace,
-            &undelegation_v1_validators_prefix(delegator),
-            &validators,
-            &validator,
         )?;
 
         if after.total_stakes.contains_key(&validator) {
@@ -372,6 +398,61 @@ impl FinalChainNativeSession<'_> {
             // Magnolia validator branch when that legacy object is confirmed.
             Ok(())
         }
+    }
+
+    fn serialize_cancel_v1(
+        &self,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        before: &DposSnapshot,
+        after: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        self.serialize_remove_v1_queue(
+            delegator,
+            validator,
+            before,
+            trace,
+            "successful V1 cancellation lost its prior queue entry",
+            "canceled V1 undelegation",
+        )?;
+        self.serialize_delegate(delegator, validator, before, after, trace)
+    }
+
+    fn serialize_remove_v1_queue(
+        &self,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        before: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+        missing_entry: &'static str,
+        row_label: &'static str,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        let entry =
+            find_undelegation(before, delegator, validator).ok_or_else(|| domain(missing_entry))?;
+        checked_put(
+            trace,
+            undelegation_v1_key(delegator, validator),
+            ExpectedRaw::Exact(encode_undelegation_v1(entry)),
+            Vec::new(),
+            row_label,
+        )?;
+
+        let before_entries = before
+            .undelegations
+            .get(&delegator)
+            .cloned()
+            .unwrap_or_default();
+        let validators = before_entries
+            .iter()
+            .map(|entry| entry.validator.to_vec())
+            .collect::<Vec<_>>();
+        remove_iterable(
+            trace,
+            &undelegation_v1_validators_prefix(delegator),
+            &validators,
+            &validator,
+        )
     }
 
     fn serialize_deleted_validator(
@@ -446,14 +527,85 @@ impl FinalChainNativeSession<'_> {
         after: &DposSnapshot,
         trace: &mut FinalChainNativeRawTrace<'_>,
     ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        self.serialize_remove_v2_queue(
+            V2QueueEntry {
+                delegator,
+                validator,
+                id,
+            },
+            before,
+            after,
+            trace,
+            QueueRemovalPurpose::Confirmation,
+        )?;
+
+        if after.total_stakes.contains_key(&validator) {
+            if self.final_chain.ficus_active_at(self.pending_period) {
+                self.put_validator(before, after, validator, trace)
+            } else {
+                Ok(())
+            }
+        } else {
+            Err(FinalChainNativeSessionError::CustodyScopeUnsupported)
+        }
+    }
+
+    fn serialize_cancel_v2(
+        &self,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        id: u64,
+        before: &DposSnapshot,
+        after: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        self.serialize_remove_v2_queue(
+            V2QueueEntry {
+                delegator,
+                validator,
+                id,
+            },
+            before,
+            after,
+            trace,
+            QueueRemovalPurpose::Cancellation,
+        )?;
+        self.serialize_delegate(delegator, validator, before, after, trace)
+    }
+
+    fn serialize_remove_v2_queue(
+        &self,
+        entry_key: V2QueueEntry,
+        before: &DposSnapshot,
+        after: &DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+        purpose: QueueRemovalPurpose,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        let V2QueueEntry {
+            delegator,
+            validator,
+            id,
+        } = entry_key;
+        let (missing_entry, row_label, missing_validator_queue) = match purpose {
+            QueueRemovalPurpose::Confirmation => (
+                "successful confirmation lost its prior queue entry",
+                "confirmed V2 undelegation",
+                "successful confirmation has no prior validator queue",
+            ),
+            QueueRemovalPurpose::Cancellation => (
+                "successful V2 cancellation lost its prior queue entry",
+                "canceled V2 undelegation",
+                "successful cancellation has no prior validator queue",
+            ),
+        };
         let entry = find_undelegation_v2(before, delegator, validator, id)
-            .ok_or_else(|| domain("successful confirmation lost its prior queue entry"))?;
+            .ok_or_else(|| domain(missing_entry))?;
         checked_put(
             trace,
             undelegation_v2_key(delegator, validator, id),
             ExpectedRaw::Exact(encode_undelegation_v2(entry)),
             Vec::new(),
-            "confirmed V2 undelegation",
+            row_label,
         )?;
 
         let before_groups = before
@@ -464,7 +616,7 @@ impl FinalChainNativeSession<'_> {
         let group = before_groups
             .iter()
             .find(|group| group.validator == validator)
-            .ok_or_else(|| domain("successful confirmation has no prior validator queue"))?;
+            .ok_or_else(|| domain(missing_validator_queue))?;
         let ids = group
             .entries
             .iter()
@@ -492,16 +644,7 @@ impl FinalChainNativeSession<'_> {
                 &validator,
             )?;
         }
-
-        if after.total_stakes.contains_key(&validator) {
-            if self.final_chain.ficus_active_at(self.pending_period) {
-                self.put_validator(before, after, validator, trace)
-            } else {
-                Ok(())
-            }
-        } else {
-            Err(FinalChainNativeSessionError::CustodyScopeUnsupported)
-        }
+        Ok(())
     }
 
     fn put_validator(

@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Actual StateTransition V1/V2 cancelUndelegate custody, ordered raw-write instrumentation, existing/recreated delegation and V2 non-last/last queue removal; pre-Magnolia missing-validator observation is reference-only and no production routing is claimed",
+  "instrumentation": {
+    "target": "taraxa/state/state_evm/account.go",
+    "sha256": "070a30bd1f0d8a34ca4e0037346f181a946944f8e38a25b32ec91e68d7577568",
+    "observer_sha256": "d6e0276bb4342b886d68168dad0d74e0ae53b39a9bc2456495b010530dfd76ec",
+    "insertion": "synchronous copy-only observer before irreversible raw mutation body"
+  },
+  "support_sha256": "e5bb91c092024b2891ac6217369584588c0798de358d017323b2726016cfff60",
+  "v1_support_sha256": "4e8227c57133f09354d585367ac9be2fa1baa15ef6e0726d7b42d9089a9f7cec",
+  "public_local_byte_identical": true,
+  "sha256": {
+    "public": "12808dffae3a3bece2532aeea9ad036a8a008ca57e2f2c185e6381930399e6c7",
+    "local": "12808dffae3a3bece2532aeea9ad036a8a008ca57e2f2c185e6381930399e6c7"
+  },
+  "exporter_sha256": "a2fca6ab33287899dafb38a48c6b41dcf6e605932cf150d4c7360604c48ab238",
+  "harness_sha256": "38b3b8008bf53df58cda9329ae5b0d9dafb348df97e92b7b325f346f0cf6fa6f"
+}
