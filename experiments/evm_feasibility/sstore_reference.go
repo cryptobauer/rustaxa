@@ -78,7 +78,11 @@ func sstoreRun(name string, original byte, code []byte, gas uint64) map[string]a
 	if err != nil {
 		errText = err.Error()
 	}
-	return map[string]any{"case": name, "original": original, "code": hex.EncodeToString(code), "gas_cap": gas, "gas_at_sstore": gas - 21000 - uint64((len(code)-1)/5)*6, "gas_used": result.GasUsed, "refund": state.GetRefund(), "execution_error": result.ExecutionErr, "consensus_error": result.ConsensusErr, "error": errText, "return": hex.EncodeToString(result.CodeRetval), "storage": state.GetAccountConcrete(&sstoreTarget).GetState(big.NewInt(0)).String()}
+	row := map[string]any{"case": name, "original": original, "code": hex.EncodeToString(code), "gas_cap": gas, "gas_used": result.GasUsed, "refund": state.GetRefund(), "execution_error": result.ExecutionErr, "consensus_error": result.ConsensusErr, "error": errText, "return": hex.EncodeToString(result.CodeRetval), "storage": state.GetAccountConcrete(&sstoreTarget).GetState(big.NewInt(0)).String()}
+	if name == "sentry-2300" || name == "sentry-2301" {
+		row["gas_at_sstore"] = gas - 21000 - 6
+	}
+	return row
 }
 func sstoreFixtures() []map[string]any {
 	rows := []map[string]any{}

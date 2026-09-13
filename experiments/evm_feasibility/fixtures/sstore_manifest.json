@@ -7,8 +7,8 @@
   "go_version": "go version go1.24.4 linux/amd64",
   "scope": "Synthetic direct Go EVM/state_evm SSTORE sequences; no full E3/frame/routing claim",
   "sha256": {
-    "public": "f5327e11c3e98b62c6cdd8a634e269a9746ab5515c689c2ccf46bb03f2677794",
-    "local": "f5327e11c3e98b62c6cdd8a634e269a9746ab5515c689c2ccf46bb03f2677794"
+    "public": "b8fc97d8e3fef452b86d85f6a16889892f27e5310fd4cef13095833cb0fef051",
+    "local": "b8fc97d8e3fef452b86d85f6a16889892f27e5310fd4cef13095833cb0fef051"
   },
-  "exporter_sha256": "d16d94abfbdd5728171191847b75ea084e0bb47718a770b55ee52d96435491da"
+  "exporter_sha256": "3858f1780f80804ae7e1bc48d09085ca4723369a7747d386da92a243cf1e4839"
 }
