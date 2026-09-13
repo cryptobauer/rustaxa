@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "references": {
+    "public": "6c7e5338b22d5e596cc2365a88d1f94840e1ee1b",
+    "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
+  },
+  "go_version": "go version go1.24.4 linux/amd64",
+  "scope": "Direct Californicum address5 RequiredGas/Run bounded MODEXP primitives; no EVM admission or routing claim",
+  "sha256": {
+    "public": "caba2fd4483f9e53fc65442e95b10ee16cd45231dbd3a0f4314a13b88f203a0c",
+    "local": "caba2fd4483f9e53fc65442e95b10ee16cd45231dbd3a0f4314a13b88f203a0c"
+  },
+  "exporter_sha256": "f0ba135efac3305908eceed87167c54958c4e0153fa20098325cd373ecea05eb"
+}
