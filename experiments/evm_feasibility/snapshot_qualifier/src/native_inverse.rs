@@ -21,6 +21,9 @@ use tiny_keccak::{Hasher, Keccak};
 /// Highest validator count accepted by the bounded diagnostic.
 pub const MAX_VALIDATORS: u32 = 4_096;
 
+/// Highest cumulative delegation count accepted for address-seeded expansion.
+pub const MAX_SEEDED_DELEGATIONS: u32 = 4_096;
+
 /// DPoS native-contract address.
 pub const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe,
@@ -59,12 +62,47 @@ pub struct ScalarInverseFact {
     pub value_hex: Option<String>,
 }
 
+/// Delegation-map classification for one already authenticated address.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SeededDelegatorFact {
+    pub address_hex: String,
+    pub sources: Vec<&'static str>,
+    pub delegation_count_result: &'static str,
+    pub delegation_count: Option<u32>,
+}
+
+/// One live delegation reached through an address-seeded iterable map.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SeededDelegationFact {
+    pub delegator_hex: String,
+    pub validator_hex: String,
+    pub position: u32,
+    pub stake_hex: String,
+    pub last_updated: u64,
+    pub reward_node_result: &'static str,
+    pub reward_per_stake_hex: Option<String>,
+    pub reward_node_count: Option<u32>,
+}
+
+/// Bounded partial expansion rooted only in validator and owner addresses.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SeededDelegationCoverage {
+    pub candidate_count: u32,
+    pub max_delegation_entries: u32,
+    pub live_delegation_entries: u32,
+    pub count_results: BTreeMap<String, u64>,
+    pub candidates: Vec<SeededDelegatorFact>,
+    pub delegations: Vec<SeededDelegationFact>,
+    pub global_delegator_set_complete: bool,
+}
+
 /// Exact current live coverage explained by the bounded inverse.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct NativeInverseCoverage {
     pub validator_count: u32,
     pub validators: Vec<ValidatorInverseFact>,
     pub scalars: Vec<ScalarInverseFact>,
+    pub seeded_delegations: SeededDelegationCoverage,
     pub matched_live_entries: u64,
     pub matched_live_value_bytes: u64,
     pub matched_by_family: BTreeMap<String, u64>,
@@ -85,6 +123,16 @@ struct ValidatorRow {
     last_commission_change: u64,
     reward_head: u64,
     undelegations_count: Option<u16>,
+}
+
+struct DelegationRow {
+    stake: BigUint,
+    last_updated: u64,
+}
+
+struct PhysicalProbe {
+    result: &'static str,
+    value: Option<Vec<u8>>,
 }
 
 struct Analyzer<'a, F> {
@@ -170,6 +218,76 @@ where
         Ok(())
     }
 
+    fn physical_probe(
+        &mut self,
+        family: &'static str,
+        key: ConcreteStorageKey,
+        repeated_live_reference_allowed: bool,
+    ) -> Result<PhysicalProbe> {
+        let path = keccak256(&key.0);
+        match (self.read)(key) {
+            Ok(ConcreteRead::Present(value)) => match self.inventory.get(&path) {
+                Some(inventory_value) => {
+                    ensure!(
+                        *inventory_value == value,
+                        "derived {family} row differs from live inventory"
+                    );
+                    if self.known.contains_key(&path) {
+                        ensure!(
+                            repeated_live_reference_allowed,
+                            "derived {family} path was already classified"
+                        );
+                        Ok(PhysicalProbe {
+                            result: "live_present_already_matched",
+                            value: Some(value),
+                        })
+                    } else {
+                        self.match_live(family, key, &value)?;
+                        Ok(PhysicalProbe {
+                            result: "live_present",
+                            value: Some(value),
+                        })
+                    }
+                }
+                None => Ok(PhysicalProbe {
+                    result: "orphan_present",
+                    value: Some(value),
+                }),
+            },
+            Ok(ConcreteRead::Absent) => {
+                self.ensure_not_live(family, key, "absent")?;
+                Ok(PhysicalProbe {
+                    result: "absent",
+                    value: None,
+                })
+            }
+            Ok(ConcreteRead::Tombstone) => {
+                self.ensure_not_live(family, key, "tombstone")?;
+                Ok(PhysicalProbe {
+                    result: "tombstone",
+                    value: None,
+                })
+            }
+            Err(ConcreteReadError::HistoryUnavailable(_)) => {
+                self.ensure_not_live(family, key, "history_unavailable")?;
+                Ok(PhysicalProbe {
+                    result: "history_unavailable",
+                    value: None,
+                })
+            }
+            Err(ConcreteReadError::Pruned(_)) => {
+                self.ensure_not_live(family, key, "pruned")?;
+                Ok(PhysicalProbe {
+                    result: "pruned",
+                    value: None,
+                })
+            }
+            Err(error) => Err(anyhow::Error::new(error)).with_context(|| {
+                format!("read derived {family} logical key {}", hex::encode(key.0))
+            }),
+        }
+    }
+
     fn scalar(&mut self, field: u8, name: &'static str) -> Result<ScalarInverseFact> {
         let key = storage_key(&[&[field]]);
         let read = self.classified("global_scalar", key)?;
@@ -236,6 +354,7 @@ where
         validator_count: u32,
         validators: Vec<ValidatorInverseFact>,
         scalars: Vec<ScalarInverseFact>,
+        seeded_delegations: SeededDelegationCoverage,
     ) -> Result<NativeInverseCoverage> {
         let unexplained = self
             .inventory
@@ -268,6 +387,7 @@ where
             validator_count,
             validators,
             scalars,
+            seeded_delegations,
             matched_live_entries,
             matched_live_value_bytes: self.matched_value_bytes,
             matched_by_family: self.matched_by_family,
@@ -330,6 +450,7 @@ where
     );
 
     let mut seen = BTreeSet::new();
+    let mut seeded_addresses = BTreeMap::<[u8; 20], BTreeSet<&'static str>>::new();
     let mut validators = Vec::with_capacity(usize::try_from(validator_count)?);
     for position in 1..=validator_count {
         let address_bytes =
@@ -341,6 +462,10 @@ where
             seen.insert(address),
             "duplicate validator address in global iterable"
         );
+        seeded_addresses
+            .entry(address)
+            .or_default()
+            .insert("validator");
 
         let reverse =
             analyzer.required("validator_index_reverse", iterable_position_key(address))?;
@@ -370,6 +495,7 @@ where
             analyzer.required("validator_owner", storage_key(&[&[0, 3], &address]))?,
             "validator owner",
         )?;
+        seeded_addresses.entry(owner).or_default().insert("owner");
         let vrf = exact_bytes::<32>(
             analyzer.required("validator_vrf", storage_key(&[&[0, 4], &address]))?,
             "validator VRF",
@@ -416,7 +542,126 @@ where
         scalars.push(analyzer.scalar(field, name)?);
     }
 
-    analyzer.finish(validator_count, validators, scalars)
+    let seeded_delegations = analyze_seeded_delegations(&mut analyzer, seeded_addresses)?;
+
+    analyzer.finish(validator_count, validators, scalars, seeded_delegations)
+}
+
+fn analyze_seeded_delegations<F>(
+    analyzer: &mut Analyzer<'_, F>,
+    seeded_addresses: BTreeMap<[u8; 20], BTreeSet<&'static str>>,
+) -> Result<SeededDelegationCoverage>
+where
+    F: FnMut(ConcreteStorageKey) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError>,
+{
+    let candidate_count = u32::try_from(seeded_addresses.len())?;
+    let mut total_entries = 0_u32;
+    let mut count_results = BTreeMap::<String, u64>::new();
+    let mut candidates = Vec::with_capacity(seeded_addresses.len());
+    let mut delegations = Vec::new();
+
+    for (delegator, sources) in seeded_addresses {
+        let prefix = delegator_validators_prefix(delegator);
+        let count_probe = analyzer.physical_probe(
+            "seeded_delegation_count",
+            iterable_count_key_for(&prefix),
+            false,
+        )?;
+        *count_results
+            .entry(count_probe.result.to_owned())
+            .or_default() += 1;
+        let delegation_count = if count_probe.result == "live_present" {
+            let value = count_probe
+                .value
+                .as_deref()
+                .context("live delegation count has no value")?;
+            let count = decode_le_u32(value, "seeded delegation count")?;
+            total_entries = total_entries
+                .checked_add(count)
+                .context("seeded delegation count overflow")?;
+            ensure!(
+                total_entries <= MAX_SEEDED_DELEGATIONS,
+                "seeded delegation entries {total_entries} exceed diagnostic limit {MAX_SEEDED_DELEGATIONS}"
+            );
+            Some(count)
+        } else {
+            None
+        };
+
+        candidates.push(SeededDelegatorFact {
+            address_hex: hex::encode(delegator),
+            sources: sources.into_iter().collect(),
+            delegation_count_result: count_probe.result,
+            delegation_count,
+        });
+
+        let Some(delegation_count) = delegation_count else {
+            continue;
+        };
+        let mut seen_validators = BTreeSet::new();
+        for position in 1..=delegation_count {
+            let validator = exact_bytes::<20>(
+                analyzer.required(
+                    "seeded_delegation_item",
+                    iterable_item_key_for(&prefix, position),
+                )?,
+                "seeded delegation validator",
+            )?;
+            ensure!(
+                seen_validators.insert(validator),
+                "duplicate validator in seeded delegation iterable"
+            );
+            let reverse = analyzer.required(
+                "seeded_delegation_reverse",
+                iterable_position_key_for(&prefix, &validator),
+            )?;
+            ensure!(
+                decode_le_u32(&reverse, "seeded delegation reverse position")? == position,
+                "seeded delegation reverse index disagrees with forward position"
+            );
+            let row = decode_delegation(&analyzer.required(
+                "seeded_delegation_record",
+                storage_key(&[&[2, 0], &validator, &delegator]),
+            )?)?;
+            let reward_probe = analyzer.physical_probe(
+                "seeded_delegation_reward_node",
+                storage_key(&[&[1], &validator, &compact_u64_bytes(row.last_updated)]),
+                true,
+            )?;
+            let (reward_per_stake, reward_node_count) = match reward_probe.result {
+                "live_present" | "live_present_already_matched" => {
+                    let (reward_per_stake, count) = decode_reward_node(
+                        reward_probe
+                            .value
+                            .as_deref()
+                            .context("live delegation reward node has no value")?,
+                    )?;
+                    (Some(uint_hex(&reward_per_stake)), Some(count))
+                }
+                _ => (None, None),
+            };
+            delegations.push(SeededDelegationFact {
+                delegator_hex: hex::encode(delegator),
+                validator_hex: hex::encode(validator),
+                position,
+                stake_hex: uint_hex(&row.stake),
+                last_updated: row.last_updated,
+                reward_node_result: reward_probe.result,
+                reward_per_stake_hex: reward_per_stake,
+                reward_node_count,
+            });
+        }
+    }
+
+    Ok(SeededDelegationCoverage {
+        candidate_count,
+        max_delegation_entries: MAX_SEEDED_DELEGATIONS,
+        live_delegation_entries: total_entries,
+        count_results,
+        candidates,
+        delegations,
+        global_delegator_set_complete: false,
+    })
 }
 
 /// Deterministic SHA-256 over sorted inventory path/value entries.
@@ -439,18 +684,36 @@ fn digest_paths(entries: &[ConcreteStorageInventoryEntry]) -> String {
 }
 
 fn iterable_count_key() -> ConcreteStorageKey {
-    storage_key(&[VALIDATORS_PREFIX, &[1]])
+    iterable_count_key_for(VALIDATORS_PREFIX)
 }
 
 fn iterable_item_key(position: u32) -> ConcreteStorageKey {
     // The pinned Go constructors reuse spare prefix capacity. Initializing the
     // reverse key overwrites the item discriminator zero with two, so actual
     // retained rows use discriminator two for both directions.
-    storage_key(&[VALIDATORS_PREFIX, &[2], &position.to_le_bytes()])
+    iterable_item_key_for(VALIDATORS_PREFIX, position)
 }
 
 fn iterable_position_key(address: [u8; 20]) -> ConcreteStorageKey {
-    storage_key(&[VALIDATORS_PREFIX, &[2], &address])
+    iterable_position_key_for(VALIDATORS_PREFIX, &address)
+}
+
+fn iterable_count_key_for(prefix: &[u8]) -> ConcreteStorageKey {
+    storage_key(&[prefix, &[1]])
+}
+
+fn iterable_item_key_for(prefix: &[u8], position: u32) -> ConcreteStorageKey {
+    // Every pinned AddressesIMap constructor aliases the spare discriminator
+    // byte while initializing the reverse prefix, as described above.
+    storage_key(&[prefix, &[2], &position.to_le_bytes()])
+}
+
+fn iterable_position_key_for(prefix: &[u8], item: &[u8]) -> ConcreteStorageKey {
+    storage_key(&[prefix, &[2], item])
+}
+
+fn delegator_validators_prefix(delegator: [u8; 20]) -> Vec<u8> {
+    [&[2, 1][..], &delegator].concat()
 }
 
 fn storage_key(parts: &[&[u8]]) -> ConcreteStorageKey {
@@ -536,6 +799,28 @@ fn decode_validator(bytes: &[u8]) -> Result<ValidatorRow> {
         last_commission_change,
         reward_head,
         undelegations_count,
+    })
+}
+
+fn decode_delegation(bytes: &[u8]) -> Result<DelegationRow> {
+    let row = exact_rlp(bytes, "delegation")?;
+    ensure!(row.item_count()? == 2, "delegation must have two fields");
+    let stake = decode_uint_item(&row.at(0)?, "delegation stake")?;
+    let last_updated_item = row.at(1)?;
+    require_data(&last_updated_item, "delegation last updated")?;
+    let last_updated = last_updated_item
+        .as_val()
+        .context("delegation last updated")?;
+    let mut canonical = RlpStream::new_list(2);
+    append_uint(&mut canonical, &stake);
+    canonical.append(&last_updated);
+    ensure!(
+        canonical.out().as_ref() == bytes,
+        "delegation is not canonical or completely consumed"
+    );
+    Ok(DelegationRow {
+        stake,
+        last_updated,
     })
 }
 
@@ -828,6 +1113,32 @@ mod tests {
             storage_key(&[&[8]]),
             ConcreteRead::Present(rlp::encode(&4_u64).to_vec()),
         );
+        let delegation_prefix = delegator_validators_prefix(validator);
+        rows.insert(
+            iterable_count_key_for(&delegation_prefix),
+            ConcreteRead::Present(1_u32.to_le_bytes().to_vec()),
+        );
+        rows.insert(
+            iterable_item_key_for(&delegation_prefix, 1),
+            ConcreteRead::Present(validator.to_vec()),
+        );
+        rows.insert(
+            iterable_position_key_for(&delegation_prefix, &validator),
+            ConcreteRead::Present(1_u32.to_le_bytes().to_vec()),
+        );
+        let mut delegation = RlpStream::new_list(2);
+        delegation.append(&50_u64).append(&30_u64);
+        rows.insert(
+            storage_key(&[&[2, 0], &validator, &validator]),
+            ConcreteRead::Present(delegation.out().to_vec()),
+        );
+        let mut delegation_reward = RlpStream::new_list(2);
+        delegation_reward.append(&[0x22].as_slice()).append(&1_u32);
+        let delegation_reward_key = storage_key(&[&[1], &validator, &compact_u64_bytes(30)]);
+        rows.insert(
+            delegation_reward_key,
+            ConcreteRead::Present(delegation_reward.out().to_vec()),
+        );
 
         let mut entries = rows
             .iter()
@@ -861,10 +1172,52 @@ mod tests {
         })
         .unwrap();
         assert_eq!(coverage.validator_count, 1);
-        assert_eq!(coverage.matched_live_entries, 13);
+        assert_eq!(coverage.matched_live_entries, 18);
         assert_eq!(coverage.unexplained_live_entries, 1);
         assert!(coverage.live_partition_exact);
         assert!(!coverage.semantic_snapshot_complete);
+        assert_eq!(coverage.seeded_delegations.candidate_count, 2);
+        assert_eq!(coverage.seeded_delegations.live_delegation_entries, 1);
+        assert_eq!(coverage.seeded_delegations.delegations.len(), 1);
+        assert_eq!(coverage.seeded_delegations.delegations[0].stake_hex, "32");
+        assert_eq!(
+            coverage.seeded_delegations.count_results,
+            BTreeMap::from([("absent".to_owned(), 1), ("live_present".to_owned(), 1)])
+        );
+
+        let mut inventory_without_delegation_reward = inventory.clone();
+        inventory_without_delegation_reward
+            .entries
+            .retain(|entry| entry.hashed_path != keccak256(&delegation_reward_key.0));
+        let orphan_reward = analyze_native_head(&inventory_without_delegation_reward, |key| {
+            Ok(rows.get(&key).cloned().unwrap_or(ConcreteRead::Absent))
+        })
+        .unwrap();
+        assert_eq!(
+            orphan_reward.seeded_delegations.delegations[0].reward_node_result,
+            "orphan_present"
+        );
+        assert_eq!(
+            orphan_reward.seeded_delegations.delegations[0].reward_per_stake_hex,
+            None
+        );
+
+        let owner_count_key = iterable_count_key_for(&delegator_validators_prefix(owner));
+        rows.insert(
+            owner_count_key,
+            ConcreteRead::Present(0_u32.to_le_bytes().to_vec()),
+        );
+        let orphan_count = analyze_native_head(&inventory, |key| {
+            Ok(rows.get(&key).cloned().unwrap_or(ConcreteRead::Absent))
+        })
+        .unwrap();
+        assert_eq!(
+            orphan_count.seeded_delegations.count_results,
+            BTreeMap::from([
+                ("live_present".to_owned(), 1),
+                ("orphan_present".to_owned(), 1),
+            ])
+        );
 
         let mut inventory_without_graph = inventory.clone();
         inventory_without_graph
@@ -904,6 +1257,28 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("but its path is live")
+        );
+
+        let delegation_count_key = iterable_count_key_for(&delegation_prefix);
+        let over_limit = (MAX_SEEDED_DELEGATIONS + 1).to_le_bytes().to_vec();
+        rows.insert(
+            delegation_count_key,
+            ConcreteRead::Present(over_limit.clone()),
+        );
+        let mut over_limit_inventory = inventory.clone();
+        over_limit_inventory
+            .entries
+            .iter_mut()
+            .find(|entry| entry.hashed_path == keccak256(&delegation_count_key.0))
+            .unwrap()
+            .value = over_limit;
+        assert!(
+            analyze_native_head(&over_limit_inventory, |key| {
+                Ok(rows.get(&key).cloned().unwrap_or(ConcreteRead::Absent))
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("exceed diagnostic limit")
         );
 
         let reverse_key = iterable_position_key(validator);
