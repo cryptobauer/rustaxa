@@ -34,8 +34,8 @@ use rustaxa_storage::{Config, StatusField, Storage};
 use rustaxa_types::LegacyTransactionEnvelope;
 use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp;
 use rustaxa_types::{
-    FinalChainGas, FinalChainRewardsConfig, GenesisAccount, GenesisDposConfig, GenesisValidator,
-    StoredFinalChainBlockHeader,
+    FinalChainBlockNumber, FinalChainGas, FinalChainRewardsConfig, GenesisAccount,
+    GenesisDposConfig, GenesisValidator, StoredFinalChainBlockHeader,
 };
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -132,6 +132,11 @@ pub struct ConsensusFinalChainConfig {
     pub genesis_dpos: GenesisDposConfig,
     /// Rewards, hardfork, supply, and locking policy for native finalization.
     pub rewards: FinalChainRewardsConfig,
+    /// First period where Ficus-specific native DPoS serialization is active.
+    ///
+    /// This is copied from the immutable PBFT configuration at the Rust bridge
+    /// boundary. `FinalChainBlockNumber::MAX` disables the compatibility rule.
+    pub ficus_activation_period: FinalChainBlockNumber,
 }
 
 /// Consumed native bootstrap for one complete consensus application.
@@ -197,7 +202,7 @@ impl ConsensusApplicationBootstrap {
             }
         };
         let final_chain = Arc::new(
-            FinalChain::new_with_genesis_state_root(
+            FinalChain::new_with_genesis_state_root_and_ficus_activation(
                 storage.clone(),
                 self.final_chain.block_gas_limit,
                 self.final_chain.genesis_timestamp,
@@ -207,6 +212,7 @@ impl ConsensusApplicationBootstrap {
                 self.final_chain.genesis_validators,
                 self.final_chain.genesis_dpos,
                 self.final_chain.rewards,
+                self.final_chain.ficus_activation_period,
             )
             .context("CONSENSUS_APPLICATION_FINAL_CHAIN_RESTORE_FAILED")?,
         );
@@ -1551,6 +1557,7 @@ pub fn consensus_application_test_bootstrap(
                 aspen_part_one_period: u64::MAX.into(),
                 ..FinalChainRewardsConfig::default()
             },
+            ficus_activation_period: FinalChainBlockNumber::MAX,
         },
         consensus,
     }
@@ -1758,6 +1765,7 @@ mod tests {
                 genesis_validators: Vec::new(),
                 genesis_dpos: GenesisDposConfig::default(),
                 rewards: FinalChainRewardsConfig::default(),
+                ficus_activation_period: FinalChainBlockNumber::MAX,
             },
             consensus: deterministic_test_config(),
         }
