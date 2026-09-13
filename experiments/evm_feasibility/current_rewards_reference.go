@@ -7,21 +7,28 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/Taraxa-project/taraxa-evm/accounts/abi"
 	"github.com/Taraxa-project/taraxa-evm/common"
 	"github.com/Taraxa-project/taraxa-evm/core"
 	"github.com/Taraxa-project/taraxa-evm/core/vm"
+	"github.com/Taraxa-project/taraxa-evm/crypto/secp256k1"
 	"github.com/Taraxa-project/taraxa-evm/params"
+	"github.com/Taraxa-project/taraxa-evm/rlp"
 	"github.com/Taraxa-project/taraxa-evm/taraxa/state/chain_config"
 	dpos "github.com/Taraxa-project/taraxa-evm/taraxa/state/contracts/dpos/precompiled"
+	slashing "github.com/Taraxa-project/taraxa-evm/taraxa/state/contracts/slashing/precompiled"
+	slashing_sol "github.com/Taraxa-project/taraxa-evm/taraxa/state/contracts/slashing/solidity"
 	contract_storage "github.com/Taraxa-project/taraxa-evm/taraxa/state/contracts/storage"
 	"github.com/Taraxa-project/taraxa-evm/taraxa/state/rewards_stats"
 	"github.com/Taraxa-project/taraxa-evm/taraxa/state/state_db"
 	"github.com/Taraxa-project/taraxa-evm/taraxa/state/state_evm"
+	"github.com/Taraxa-project/taraxa-evm/taraxa/state/state_transition"
 )
 
 var (
@@ -31,6 +38,7 @@ var (
 	currentDelegatorTwo  = common.HexToAddress("0x0000000000000000000000000000000000000042")
 	currentMissingAuthor = common.HexToAddress("0x0000000000000000000000000000000000000051")
 	currentDpos          = common.HexToAddress("0x00000000000000000000000000000000000000fe")
+	currentSlashing      = common.HexToAddress("0x00000000000000000000000000000000000000ee")
 )
 
 type currentPermutationTrial struct {
@@ -187,7 +195,7 @@ func runCurrentRewardsWitness() map[string]any {
 	}
 	return map[string]any{
 		"schema": 1,
-		"scope":  "synthetic Aspen-part-two activation at period 1, disabled-yield EndBlock flush, and two observed multi-validator Go map orders; no snapshot, production route, jailed cleanup, redelegation fix, or canonical map-order claim",
+		"scope":  "synthetic Aspen-part-two activation at period 1, disabled-yield EndBlock flush, two observed multi-validator Go map orders, and jailed-validator EndBlock cleanup including process-local scheduling across a jail-duration fork; no snapshot, production route, redelegation fix, or canonical map-order claim",
 		"configuration": map[string]any{
 			"period": 1, "chain_id": chainID, "genesis_balance_sum": "5000", "aspen_generated_rewards": "0",
 			"aspen_max_supply": "6000", "aspen_part_one": 0, "aspen_part_two": 1, "cacti": maxPeriod,
@@ -215,6 +223,7 @@ func runCurrentRewardsWitness() map[string]any {
 		},
 		"zero_yield_end_block":         runZeroYieldEndBlockWitness(),
 		"multi_validator_permutations": runMultiValidatorPermutationWitness(),
+		"jailed_validator_cleanup":     runJailedValidatorCleanupWitness(),
 	}
 }
 
@@ -439,6 +448,234 @@ func runZeroYieldEndBlockWitness() map[string]any {
 		"before":        before, "distribution_return": nil, "distribution_ordered_raw_writes": distributionWrites,
 		"end_block_ordered_raw_writes": endBlockWrites, "after": after,
 		"contract": "RewardsEnabled is false, so StateTransition.DistributeRewards returns nil without calling the DPoS contract; EndBlock still flushes DPoS counters changed by the preceding delegate transaction",
+	}
+}
+
+func currentJailedListKey() common.Hash { return common.BytesToHash([]byte{2}) }
+
+func currentJailBlockKey(validator common.Address) common.Hash {
+	return *contract_storage.Stor_k_1([]byte{0}, validator[:])
+}
+
+func currentRawObservation(get func(*common.Hash, func([]byte)), name string, key common.Hash) map[string]any {
+	row := map[string]any{"name": name, "key": hex.EncodeToString(key[:]), "present": false, "value": ""}
+	get(&key, func(value []byte) {
+		row["present"] = true
+		row["value"] = hex.EncodeToString(value)
+	})
+	return row
+}
+
+func currentSlashingObservations(get func(*common.Hash, func([]byte)), validator common.Address) []map[string]any {
+	rows := []map[string]any{currentRawObservation(get, "jailed_validators", currentJailedListKey())}
+	rows = append(rows, currentRawObservation(get, "validator_jail_block", currentJailBlockKey(validator)))
+	return rows
+}
+
+func jailedRewardsConfig(validator common.Address) chain_config.ChainConfig {
+	cfg := currentRewardsConfig()
+	cfg.GenesisBalances[validator] = big.NewInt(1_000_000)
+	cfg.DPOS.InitialValidators = append(cfg.DPOS.InitialValidators, chain_config.GenesisValidator{
+		Address: validator, Owner: validator, VrfKey: make([]byte, 32), Commission: 0,
+		Delegations: core.BalanceMap{validator: big.NewInt(1_000)},
+	})
+	cfg.Hardforks.CactiHf.BlockNum = 0
+	cfg.Hardforks.CactiHf.JailTime = 4
+	cfg.Hardforks.AspenHf.MaxSupply = big.NewInt(1_010_000)
+	return cfg
+}
+
+func currentSignedVoteForPeriod(block byte, period uint64) slashing.Vote {
+	sortition := slashing.VrfPbftSortition{Period: period, Round: 2, Step: 2, Proof: [80]byte{1, 2, 3}}
+	vote := slashing.Vote{BlockHash: common.Hash{block}, VrfSortitionBytes: rlp.MustEncodeToBytes(sortition), VrfSortition: sortition}
+	signature, err := secp256k1.Sign(vote.GetHash().Bytes(), testPrivateKey)
+	must(err)
+	copy(vote.Signature[:], signature)
+	return vote
+}
+
+func currentDoubleVotingProofInputForPeriod(period uint64) []byte {
+	contractABI, err := abi.JSON(strings.NewReader(slashing_sol.TaraxaSlashingClientMetaData))
+	must(err)
+	voteA := currentSignedVoteForPeriod(1, period)
+	voteB := currentSignedVoteForPeriod(2, period)
+	input, err := contractABI.Pack("commitDoubleVotingProof", rlp.MustEncodeToBytes(voteA), rlp.MustEncodeToBytes(voteB))
+	must(err)
+	return input
+}
+
+func currentDoubleVotingProofInput() []byte { return currentDoubleVotingProofInputForPeriod(7) }
+
+func currentCommittedSlashingObservations(latest *memoryLatest, period uint64, validator common.Address) []map[string]any {
+	reader := state_db.ExtendedReader{Reader: latest.readerAt(period)}
+	return currentSlashingObservations(func(key *common.Hash, callback func([]byte)) {
+		reader.GetAccountStorage(&currentSlashing, key, callback)
+	}, validator)
+}
+
+func runCurrentCleanupEndBlock(transition *state_transition.StateTransition, latest *memoryLatest, period uint64, validator common.Address) map[string]any {
+	transition.BeginBlock(&vm.BlockInfo{Author: currentMissingAuthor, GasLimit: blockGas, Difficulty: new(big.Int)})
+	before := currentCommittedSlashingObservations(latest, period-1, validator)
+	beginCurrentRawWrites()
+	transition.EndBlock()
+	writes := finishCurrentRawWrites()
+	root := transition.Commit()
+	return map[string]any{
+		"period": period, "before_end_block": before, "ordered_raw_writes": writes,
+		"after": map[string]any{
+			"descriptor": map[string]any{"period": period, "root": hex.EncodeToString(root[:])},
+			"slots":      currentCommittedSlashingObservations(latest, period, validator),
+		},
+	}
+}
+
+func runJailedValidatorCleanupWitness() map[string]any {
+	validator := testSender()
+	cfg := jailedRewardsConfig(validator)
+	latest := newMemoryLatest()
+	transition := newStateTransition(latest, &cfg)
+	transition.BeginBlock(&vm.BlockInfo{Author: currentMissingAuthor, GasLimit: blockGas, Difficulty: new(big.Int)})
+	spec := transactionSpec{Name: "commit-double-voting-proof", Nonce: 0, GasPrice: 1, Gas: transactionGas, To: &currentSlashing, Input: currentDoubleVotingProofInput()}
+	signed := signTransaction(spec, validator, testPrivateKey)
+	tx := transactionFromSigned(spec, signed, validator)
+	beginCurrentRawWrites()
+	result := transition.ExecuteTransaction(&tx)
+	transactionWrites := finishCurrentRawWrites()
+	if result.ConsensusErr != "" || result.ExecutionErr != "" {
+		panic(fmt.Sprintf("double-voting proof failed: consensus=%q execution=%q", result.ConsensusErr, result.ExecutionErr))
+	}
+	transaction := transactionRow(spec, signed, tx, result, transition.GetEvmState().GetRefund())
+	beforeFirstEndBlock := currentSlashingObservations(transition.GetEvmState().GetAccountConcrete(&currentSlashing).GetRawState, validator)
+	beginCurrentRawWrites()
+	transition.EndBlock()
+	firstWrites := finishCurrentRawWrites()
+	firstRoot := transition.Commit()
+	periods := []map[string]any{{
+		"period": 1, "before_end_block": beforeFirstEndBlock, "ordered_raw_writes": firstWrites,
+		"after": map[string]any{
+			"descriptor": map[string]any{"period": 1, "root": hex.EncodeToString(firstRoot[:])},
+			"slots":      currentCommittedSlashingObservations(latest, 1, validator),
+		},
+	}}
+	for period := uint64(2); period <= 6; period++ {
+		periods = append(periods, runCurrentCleanupEndBlock(transition, latest, period, validator))
+	}
+	transition.Close()
+	listKeyHash := currentJailedListKey()
+	listKey := hex.EncodeToString(listKeyHash[:])
+	jailedValue := "d594" + hex.EncodeToString(validator[:])
+	if len(firstWrites) != 0 {
+		panic(fmt.Sprintf("same-period checkpoint unexpectedly exposed jailed rows to cleanup: %#v", firstWrites))
+	}
+	for _, expected := range []struct {
+		index int
+		value string
+	}{{1, jailedValue}, {4, "c0"}} {
+		writes := periods[expected.index]["ordered_raw_writes"].([]currentRawWrite)
+		if len(writes) != 1 || writes[0].Address != hex.EncodeToString(currentSlashing[:]) || writes[0].Key != listKey || writes[0].Value != expected.value {
+			panic(fmt.Sprintf("period %d jailed cleanup mismatch: writes=%#v before=%#v", expected.index+1, writes, periods[expected.index]["before_end_block"]))
+		}
+	}
+	for _, index := range []int{0, 2, 3, 5} {
+		if writes := periods[index]["ordered_raw_writes"].([]currentRawWrite); len(writes) != 0 {
+			panic(fmt.Sprintf("period %d unexpectedly emitted jailed cleanup writes: %#v", index+1, writes))
+		}
+	}
+	return map[string]any{
+		"configuration":                  map[string]any{"jail_transaction_period": 1, "jail_time": 4, "jail_end_period": 5, "magnolia": 0, "cacti": 0, "fix_redelegate": maxPeriod},
+		"validator":                      hex.EncodeToString(validator[:]),
+		"transaction":                    transaction,
+		"transaction_ordered_raw_writes": transactionWrites,
+		"periods":                        periods,
+		"contract": map[string]any{
+			"go_sources":  []string{"taraxa/state/state_transition/state_transition.go:StateTransition.EndBlock", "taraxa/state/contracts/slashing/precompiled/slashing_contract.go:Contract.CleanupJailedValidators"},
+			"go_order":    "StateTransition.EndBlock invokes DPoS EndBlockCall first, then Slashing CleanupJailedValidators, then one EVM checkpoint",
+			"selection":   "a nonempty stored list retains addresses in its existing order only when the current jail-block row is strictly greater than the current block; equality expires",
+			"writes":      "the first committed-list cleanup at period 2 rewrites the unchanged list and caches nextCleanUpBlock=5; the same long-lived Contract skips periods 3 and 4, writes RLP c0 at equality in period 5, and emits no period-6 write; the validator jail-block row remains present",
+			"scheduler":   "nextCleanUpBlock is process-local Contract state and is not persisted in the authenticated storage rows; exact all-future raw-write parity therefore depends on runtime lifecycle provenance",
+			"same_period": "the proof transaction checkpoint does not make its raw rows visible to CleanupJailedValidators in that same StateTransition period, so period 1 emits no cleanup write; this slice begins from the committed period-1 list",
+			"seed_scope":  "the list and jail-block rows are produced by an actual successful commitDoubleVotingProof transaction; every cleanup observation invokes the actual StateTransition.EndBlock path",
+		},
+		"decreasing_jail_duration_scheduler": runDecreasingJailDurationSchedulerWitness(),
+	}
+}
+
+func runDecreasingJailDurationSchedulerWitness() map[string]any {
+	validator := testSender()
+	cfg := jailedRewardsConfig(validator)
+	cfg.Hardforks.CactiHf.BlockNum = 3
+	cfg.Hardforks.MagnoliaHf.JailTime = 100
+	cfg.Hardforks.CactiHf.JailTime = 1
+	latest := newMemoryLatest()
+	transition := newStateTransition(latest, &cfg)
+
+	transition.BeginBlock(&vm.BlockInfo{Author: currentMissingAuthor, GasLimit: blockGas, Difficulty: new(big.Int)})
+	firstSpec := transactionSpec{Name: "magnolia-double-voting-proof", Nonce: 0, GasPrice: 1, Gas: transactionGas, To: &currentSlashing, Input: currentDoubleVotingProofInputForPeriod(7)}
+	firstSigned := signTransaction(firstSpec, validator, testPrivateKey)
+	firstTx := transactionFromSigned(firstSpec, firstSigned, validator)
+	firstResult := transition.ExecuteTransaction(&firstTx)
+	if firstResult.ConsensusErr != "" || firstResult.ExecutionErr != "" {
+		panic(fmt.Sprintf("Magnolia double-voting proof failed: consensus=%q execution=%q", firstResult.ConsensusErr, firstResult.ExecutionErr))
+	}
+	transition.EndBlock()
+	transition.Commit()
+
+	periodTwo := runCurrentCleanupEndBlock(transition, latest, 2, validator)
+	periodTwoWrites := periodTwo["ordered_raw_writes"].([]currentRawWrite)
+	if len(periodTwoWrites) != 1 {
+		panic(fmt.Sprintf("period 2 did not seed the long-lived cleanup scheduler: %#v", periodTwoWrites))
+	}
+
+	transition.BeginBlock(&vm.BlockInfo{Author: currentMissingAuthor, GasLimit: blockGas, Difficulty: new(big.Int)})
+	secondSpec := transactionSpec{Name: "cacti-double-voting-proof", Nonce: 1, GasPrice: 1, Gas: transactionGas, To: &currentSlashing, Input: currentDoubleVotingProofInputForPeriod(8)}
+	secondSigned := signTransaction(secondSpec, validator, testPrivateKey)
+	secondTx := transactionFromSigned(secondSpec, secondSigned, validator)
+	beginCurrentRawWrites()
+	secondResult := transition.ExecuteTransaction(&secondTx)
+	secondTransactionWrites := finishCurrentRawWrites()
+	if secondResult.ConsensusErr != "" || secondResult.ExecutionErr != "" {
+		panic(fmt.Sprintf("Cacti double-voting proof failed: consensus=%q execution=%q", secondResult.ConsensusErr, secondResult.ExecutionErr))
+	}
+	beginCurrentRawWrites()
+	transition.EndBlock()
+	periodThreeWrites := finishCurrentRawWrites()
+	periodThreeRoot := transition.Commit()
+	periodThree := map[string]any{
+		"period":                         3,
+		"transaction":                    transactionRow(secondSpec, secondSigned, secondTx, secondResult, transition.GetEvmState().GetRefund()),
+		"transaction_ordered_raw_writes": secondTransactionWrites,
+		"end_block_ordered_raw_writes":   periodThreeWrites,
+		"after": map[string]any{
+			"descriptor": map[string]any{"period": 3, "root": hex.EncodeToString(periodThreeRoot[:])},
+			"slots":      currentCommittedSlashingObservations(latest, 3, validator),
+		},
+	}
+	periodFour := runCurrentCleanupEndBlock(transition, latest, 4, validator)
+	transition.Close()
+	if len(periodThreeWrites) != 0 || len(periodFour["ordered_raw_writes"].([]currentRawWrite)) != 0 {
+		panic(fmt.Sprintf("decreasing-duration scheduler unexpectedly cleaned at period 3 or 4: period3=%#v period4=%#v", periodThreeWrites, periodFour["ordered_raw_writes"]))
+	}
+	jailKeyHash := currentJailBlockKey(validator)
+	jailKey := hex.EncodeToString(jailKeyHash[:])
+	foundShortExpiry := false
+	for _, write := range secondTransactionWrites {
+		if write.Address == hex.EncodeToString(currentSlashing[:]) && write.Key == jailKey && write.Value == "04" {
+			foundShortExpiry = true
+		}
+	}
+	if !foundShortExpiry {
+		panic(fmt.Sprintf("Cacti re-jail did not write shortened expiry 4: %#v", secondTransactionWrites))
+	}
+	return map[string]any{
+		"configuration":    map[string]any{"magnolia": 0, "magnolia_jail_time": 100, "cacti": 3, "cacti_jail_time": 1},
+		"period_2_cleanup": periodTwo,
+		"period_3_rejail":  periodThree,
+		"period_4_cleanup": periodFour,
+		"contract": map[string]any{
+			"go_sources": []string{"taraxa/state/contracts/slashing/precompiled/slashing_contract.go:Contract.jailValidator", "taraxa/state/contracts/slashing/precompiled/slashing_contract.go:Contract.CleanupJailedValidators"},
+			"observed":   "period 2 caches nextCleanUpBlock=101; period 3 Cacti re-jailing overwrites the committed validator expiry with 4, but CleanupJailedValidators never lowers its cache, so periods 3 and 4 skip and retain the expired address",
+			"scope":      "no configuration invariant in the Go API forbids a Cacti jail duration below Magnolia; the Rust adapter must reject this policy without scheduler provenance",
+		},
 	}
 }
 

@@ -206,6 +206,500 @@
     }
   ],
   "end_block_ordered_raw_writes": [],
+  "jailed_validator_cleanup": {
+    "configuration": {
+      "cacti": 0,
+      "fix_redelegate": 18446744073709551615,
+      "jail_end_period": 5,
+      "jail_time": 4,
+      "jail_transaction_period": 1,
+      "magnolia": 0
+    },
+    "contract": {
+      "go_order": "StateTransition.EndBlock invokes DPoS EndBlockCall first, then Slashing CleanupJailedValidators, then one EVM checkpoint",
+      "go_sources": [
+        "taraxa/state/state_transition/state_transition.go:StateTransition.EndBlock",
+        "taraxa/state/contracts/slashing/precompiled/slashing_contract.go:Contract.CleanupJailedValidators"
+      ],
+      "same_period": "the proof transaction checkpoint does not make its raw rows visible to CleanupJailedValidators in that same StateTransition period, so period 1 emits no cleanup write; this slice begins from the committed period-1 list",
+      "scheduler": "nextCleanUpBlock is process-local Contract state and is not persisted in the authenticated storage rows; exact all-future raw-write parity therefore depends on runtime lifecycle provenance",
+      "seed_scope": "the list and jail-block rows are produced by an actual successful commitDoubleVotingProof transaction; every cleanup observation invokes the actual StateTransition.EndBlock path",
+      "selection": "a nonempty stored list retains addresses in its existing order only when the current jail-block row is strictly greater than the current block; equality expires",
+      "writes": "the first committed-list cleanup at period 2 rewrites the unchanged list and caches nextCleanUpBlock=5; the same long-lived Contract skips periods 3 and 4, writes RLP c0 at equality in period 5, and emits no period-6 write; the validator jail-block row remains present"
+    },
+    "decreasing_jail_duration_scheduler": {
+      "configuration": {
+        "cacti": 3,
+        "cacti_jail_time": 1,
+        "magnolia": 0,
+        "magnolia_jail_time": 100
+      },
+      "contract": {
+        "go_sources": [
+          "taraxa/state/contracts/slashing/precompiled/slashing_contract.go:Contract.jailValidator",
+          "taraxa/state/contracts/slashing/precompiled/slashing_contract.go:Contract.CleanupJailedValidators"
+        ],
+        "observed": "period 2 caches nextCleanUpBlock=101; period 3 Cacti re-jailing overwrites the committed validator expiry with 4, but CleanupJailedValidators never lowers its cache, so periods 3 and 4 skip and retain the expired address",
+        "scope": "no configuration invariant in the Go API forbids a Cacti jail duration below Magnolia; the Rust adapter must reject this policy without scheduler provenance"
+      },
+      "period_2_cleanup": {
+        "after": {
+          "descriptor": {
+            "period": 2,
+            "root": "a7837451cc168c98c416b80355a6637fac5d652c5907f1e00283155ceb5a6e17"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "65"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": true,
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": true,
+            "value": "65"
+          }
+        ],
+        "ordered_raw_writes": [
+          {
+            "address": "00000000000000000000000000000000000000ee",
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          }
+        ],
+        "period": 2
+      },
+      "period_3_rejail": {
+        "after": {
+          "descriptor": {
+            "period": 3,
+            "root": "5310a1b49fde210dc7a303aa6ff7f052baa407d5c583678d2c1043768d5c25ff"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "04"
+            }
+          ]
+        },
+        "end_block_ordered_raw_writes": [],
+        "period": 3,
+        "transaction": {
+          "chain_id": 841,
+          "consensus_error": "",
+          "created": "0000000000000000000000000000000000000000",
+          "execution_error": "",
+          "gas_limit": 100000,
+          "gas_price": "1",
+          "gas_used": 54200,
+          "hash": "1ac90c833f170319597de6fe7da9b178501ed8d5bddc5b3932dd8a4065f365e3",
+          "index": 0,
+          "input": "fac7c94a0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000012000000000000000000000000000000000000000000000000000000000000000bff8bda00100000000000000000000000000000000000000000000000000000000000000b857f855080202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b8419df908667eaf17fa66b8d27c85ce8435bca3f4f47f2e537da9ea7adfcbef744525999cf95c9269cf932facbec8abf2f6fd0babacf15918d79cff1ac6ef19b0a7010000000000000000000000000000000000000000000000000000000000000000bff8bda00200000000000000000000000000000000000000000000000000000000000000b857f855080202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b841f56c31978cdf10576f7076162b4a312476eb57ed1befc6607bc73438100e57210cb9791b1df1e4d43611b95329e8e72d2d3137ba55a84726744be6adfd4a3fa20000",
+          "logs": [
+            {
+              "address": "00000000000000000000000000000000000000ee",
+              "data": "0000000000000000000000000000000000000000000000000000000000000001",
+              "topics": [
+                "9146fdb6f56d909ab959901fa529b5b08615ac9e7017c3a55ae860a9e9857e6c",
+                "0000000000000000000000001a642f0e3c3af545e7acbd38b07251b3990914f1",
+                "0000000000000000000000000000000000000000000000000000000000000003",
+                "0000000000000000000000000000000000000000000000000000000000000004"
+              ]
+            }
+          ],
+          "name": "cacti-double-voting-proof",
+          "nonce": 1,
+          "output": "",
+          "r": "17497348530880539997538794649054411382371376817887822235703975574646876644885",
+          "receipt_rlp": "f8c80182d3b882d3b8f8bef8bc9400000000000000000000000000000000000000eef884a09146fdb6f56d909ab959901fa529b5b08615ac9e7017c3a55ae860a9e9857e6ca00000000000000000000000001a642f0e3c3af545e7acbd38b07251b3990914f1a00000000000000000000000000000000000000000000000000000000000000003a00000000000000000000000000000000000000000000000000000000000000004a0000000000000000000000000000000000000000000000000000000000000000180",
+          "refund_after_transaction_commit": 0,
+          "s": "33912726859539863433000595772434014284036430418012981718821588904799125611082",
+          "sender": "1a642f0e3c3af545e7acbd38b07251b3990914f1",
+          "signed_rlp": "f902680101830186a09400000000000000000000000000000000000000ee80b90204fac7c94a0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000012000000000000000000000000000000000000000000000000000000000000000bff8bda00100000000000000000000000000000000000000000000000000000000000000b857f855080202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b8419df908667eaf17fa66b8d27c85ce8435bca3f4f47f2e537da9ea7adfcbef744525999cf95c9269cf932facbec8abf2f6fd0babacf15918d79cff1ac6ef19b0a7010000000000000000000000000000000000000000000000000000000000000000bff8bda00200000000000000000000000000000000000000000000000000000000000000b857f855080202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b841f56c31978cdf10576f7076162b4a312476eb57ed1befc6607bc73438100e57210cb9791b1df1e4d43611b95329e8e72d2d3137ba55a84726744be6adfd4a3fa200008206b5a026af25f7ea2598533a3763132b4dcfff397e3a9e4645e1d42823e4760d71a615a04af9ec568a356eaeff0a0595f77274f69f85f13b17da99ecf85441e6fbdba24a",
+          "state_api_execution_result_rlp": "f8db80940000000000000000000000000000000000000000f8bef8bc9400000000000000000000000000000000000000eef884a09146fdb6f56d909ab959901fa529b5b08615ac9e7017c3a55ae860a9e9857e6ca00000000000000000000000001a642f0e3c3af545e7acbd38b07251b3990914f1a00000000000000000000000000000000000000000000000000000000000000003a00000000000000000000000000000000000000000000000000000000000000004a0000000000000000000000000000000000000000000000000000000000000000182d3b88080",
+          "state_api_transaction_rlp": "f90238941a642f0e3c3af545e7acbd38b07251b3990914f1019400000000000000000000000000000000000000ee0180830186a0b90204fac7c94a0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000012000000000000000000000000000000000000000000000000000000000000000bff8bda00100000000000000000000000000000000000000000000000000000000000000b857f855080202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b8419df908667eaf17fa66b8d27c85ce8435bca3f4f47f2e537da9ea7adfcbef744525999cf95c9269cf932facbec8abf2f6fd0babacf15918d79cff1ac6ef19b0a7010000000000000000000000000000000000000000000000000000000000000000bff8bda00200000000000000000000000000000000000000000000000000000000000000b857f855080202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b841f56c31978cdf10576f7076162b4a312476eb57ed1befc6607bc73438100e57210cb9791b1df1e4d43611b95329e8e72d2d3137ba55a84726744be6adfd4a3fa20000",
+          "status": 1,
+          "to": "00000000000000000000000000000000000000ee",
+          "v": "1717",
+          "value": "0"
+        },
+        "transaction_ordered_raw_writes": [
+          {
+            "address": "00000000000000000000000000000000000000ee",
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "value": "04"
+          },
+          {
+            "address": "00000000000000000000000000000000000000ee",
+            "key": "e197f4b92267426cd5fcda4dfc112c6ea35e1258cfa1f40934d214e366e1e522",
+            "value": "01"
+          }
+        ]
+      },
+      "period_4_cleanup": {
+        "after": {
+          "descriptor": {
+            "period": 4,
+            "root": "5310a1b49fde210dc7a303aa6ff7f052baa407d5c583678d2c1043768d5c25ff"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "04"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": true,
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": true,
+            "value": "04"
+          }
+        ],
+        "ordered_raw_writes": [],
+        "period": 4
+      }
+    },
+    "periods": [
+      {
+        "after": {
+          "descriptor": {
+            "period": 1,
+            "root": "1f88f48cb362e8a5fdb11ff60e01827faa5acad6e1a868fc4b4c56e1a071ee67"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "05"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": false,
+            "value": ""
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": false,
+            "value": ""
+          }
+        ],
+        "ordered_raw_writes": [],
+        "period": 1
+      },
+      {
+        "after": {
+          "descriptor": {
+            "period": 2,
+            "root": "1f88f48cb362e8a5fdb11ff60e01827faa5acad6e1a868fc4b4c56e1a071ee67"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "05"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": true,
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": true,
+            "value": "05"
+          }
+        ],
+        "ordered_raw_writes": [
+          {
+            "address": "00000000000000000000000000000000000000ee",
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          }
+        ],
+        "period": 2
+      },
+      {
+        "after": {
+          "descriptor": {
+            "period": 3,
+            "root": "1f88f48cb362e8a5fdb11ff60e01827faa5acad6e1a868fc4b4c56e1a071ee67"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "05"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": true,
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": true,
+            "value": "05"
+          }
+        ],
+        "ordered_raw_writes": [],
+        "period": 3
+      },
+      {
+        "after": {
+          "descriptor": {
+            "period": 4,
+            "root": "1f88f48cb362e8a5fdb11ff60e01827faa5acad6e1a868fc4b4c56e1a071ee67"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "05"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": true,
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": true,
+            "value": "05"
+          }
+        ],
+        "ordered_raw_writes": [],
+        "period": 4
+      },
+      {
+        "after": {
+          "descriptor": {
+            "period": 5,
+            "root": "888078c3a539aa2020d8df3175b677c7627586ca9efc06d97f7689d96148551a"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "c0"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "05"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": true,
+            "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": true,
+            "value": "05"
+          }
+        ],
+        "ordered_raw_writes": [
+          {
+            "address": "00000000000000000000000000000000000000ee",
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "value": "c0"
+          }
+        ],
+        "period": 5
+      },
+      {
+        "after": {
+          "descriptor": {
+            "period": 6,
+            "root": "888078c3a539aa2020d8df3175b677c7627586ca9efc06d97f7689d96148551a"
+          },
+          "slots": [
+            {
+              "key": "0000000000000000000000000000000000000000000000000000000000000002",
+              "name": "jailed_validators",
+              "present": true,
+              "value": "c0"
+            },
+            {
+              "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+              "name": "validator_jail_block",
+              "present": true,
+              "value": "05"
+            }
+          ]
+        },
+        "before_end_block": [
+          {
+            "key": "0000000000000000000000000000000000000000000000000000000000000002",
+            "name": "jailed_validators",
+            "present": true,
+            "value": "c0"
+          },
+          {
+            "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+            "name": "validator_jail_block",
+            "present": true,
+            "value": "05"
+          }
+        ],
+        "ordered_raw_writes": [],
+        "period": 6
+      }
+    ],
+    "transaction": {
+      "chain_id": 841,
+      "consensus_error": "",
+      "created": "0000000000000000000000000000000000000000",
+      "execution_error": "",
+      "gas_limit": 100000,
+      "gas_price": "1",
+      "gas_used": 54200,
+      "hash": "f749042d47170608f02c7326bd138b61e5332a0bc131dea7e9e4bcd55d7e846a",
+      "index": 0,
+      "input": "fac7c94a0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000012000000000000000000000000000000000000000000000000000000000000000bff8bda00100000000000000000000000000000000000000000000000000000000000000b857f855070202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b8414f8b362167c6088e0c8d34b487a3aa6e10af672d9f7769d3463c875e586251aa1e8d722d5e74731697eea7a872dd3b6cc3c746f532e8652d0d9cabb04605299a010000000000000000000000000000000000000000000000000000000000000000bff8bda00200000000000000000000000000000000000000000000000000000000000000b857f855070202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b841ad789010efb9c9abee92afdb2553593a9f089828e7c01ba18dd286965bac169247586968e6fc4977522d7a8840c9c010e89929054576bededbbb9fd43a158ccc0000",
+      "logs": [
+        {
+          "address": "00000000000000000000000000000000000000ee",
+          "data": "0000000000000000000000000000000000000000000000000000000000000001",
+          "topics": [
+            "9146fdb6f56d909ab959901fa529b5b08615ac9e7017c3a55ae860a9e9857e6c",
+            "0000000000000000000000001a642f0e3c3af545e7acbd38b07251b3990914f1",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "0000000000000000000000000000000000000000000000000000000000000005"
+          ]
+        }
+      ],
+      "name": "commit-double-voting-proof",
+      "nonce": 0,
+      "output": "",
+      "r": "28553171122526678192163291601063140929192913017572082768697940704739274972360",
+      "receipt_rlp": "f8c80182d3b882d3b8f8bef8bc9400000000000000000000000000000000000000eef884a09146fdb6f56d909ab959901fa529b5b08615ac9e7017c3a55ae860a9e9857e6ca00000000000000000000000001a642f0e3c3af545e7acbd38b07251b3990914f1a00000000000000000000000000000000000000000000000000000000000000001a00000000000000000000000000000000000000000000000000000000000000005a0000000000000000000000000000000000000000000000000000000000000000180",
+      "refund_after_transaction_commit": 0,
+      "s": "10094169980446623732785945846346914884981341388988516386706209663197802304059",
+      "sender": "1a642f0e3c3af545e7acbd38b07251b3990914f1",
+      "signed_rlp": "f902688001830186a09400000000000000000000000000000000000000ee80b90204fac7c94a0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000012000000000000000000000000000000000000000000000000000000000000000bff8bda00100000000000000000000000000000000000000000000000000000000000000b857f855070202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b8414f8b362167c6088e0c8d34b487a3aa6e10af672d9f7769d3463c875e586251aa1e8d722d5e74731697eea7a872dd3b6cc3c746f532e8652d0d9cabb04605299a010000000000000000000000000000000000000000000000000000000000000000bff8bda00200000000000000000000000000000000000000000000000000000000000000b857f855070202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b841ad789010efb9c9abee92afdb2553593a9f089828e7c01ba18dd286965bac169247586968e6fc4977522d7a8840c9c010e89929054576bededbbb9fd43a158ccc00008206b6a03f2085ab7e3974601ef5c26477cfc49da68e87f40d57055ced93b8a4c046dcc8a016511905c68bb82775781cdf9f94ae928bbba6fb95dc060186ed17117e82923b",
+      "state_api_execution_result_rlp": "f8db80940000000000000000000000000000000000000000f8bef8bc9400000000000000000000000000000000000000eef884a09146fdb6f56d909ab959901fa529b5b08615ac9e7017c3a55ae860a9e9857e6ca00000000000000000000000001a642f0e3c3af545e7acbd38b07251b3990914f1a00000000000000000000000000000000000000000000000000000000000000001a00000000000000000000000000000000000000000000000000000000000000005a0000000000000000000000000000000000000000000000000000000000000000182d3b88080",
+      "state_api_transaction_rlp": "f90238941a642f0e3c3af545e7acbd38b07251b3990914f1019400000000000000000000000000000000000000ee8080830186a0b90204fac7c94a0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000012000000000000000000000000000000000000000000000000000000000000000bff8bda00100000000000000000000000000000000000000000000000000000000000000b857f855070202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b8414f8b362167c6088e0c8d34b487a3aa6e10af672d9f7769d3463c875e586251aa1e8d722d5e74731697eea7a872dd3b6cc3c746f532e8652d0d9cabb04605299a010000000000000000000000000000000000000000000000000000000000000000bff8bda00200000000000000000000000000000000000000000000000000000000000000b857f855070202b8500102030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b841ad789010efb9c9abee92afdb2553593a9f089828e7c01ba18dd286965bac169247586968e6fc4977522d7a8840c9c010e89929054576bededbbb9fd43a158ccc0000",
+      "status": 1,
+      "to": "00000000000000000000000000000000000000ee",
+      "v": "1718",
+      "value": "0"
+    },
+    "transaction_ordered_raw_writes": [
+      {
+        "address": "00000000000000000000000000000000000000ee",
+        "key": "504932d88196f3dec9d6d3bf0d8294d683a387e5cceab5057a253c1f302ab247",
+        "value": "05"
+      },
+      {
+        "address": "00000000000000000000000000000000000000ee",
+        "key": "0000000000000000000000000000000000000000000000000000000000000002",
+        "value": "d5941a642f0e3c3af545e7acbd38b07251b3990914f1"
+      },
+      {
+        "address": "00000000000000000000000000000000000000ee",
+        "key": "d78ebc19a2aafe5bb1aae619a963b0d4a4f029e0db728af5585587c8ef759e81",
+        "value": "01"
+      }
+    ],
+    "validator": "1a642f0e3c3af545e7acbd38b07251b3990914f1"
+  },
   "map_order": "each ValidatorsStats map intentionally has one entry; distribution slice order is exact, while Go multi-entry map iteration is not a stable protocol order",
   "multi_validator_permutations": {
     "bounded_attempt_limit": 128,
@@ -514,7 +1008,7 @@
     "physical_retention_limit": "this bounded witness does not prove equality of retained intermediate trie nodes or other physical database artifacts across multi-entry map orders; full acceptance must inventory those artifacts independently even though the committed root is order-independent"
   },
   "schema": 1,
-  "scope": "synthetic Aspen-part-two activation at period 1, disabled-yield EndBlock flush, and two observed multi-validator Go map orders; no snapshot, production route, jailed cleanup, redelegation fix, or canonical map-order claim",
+  "scope": "synthetic Aspen-part-two activation at period 1, disabled-yield EndBlock flush, two observed multi-validator Go map orders, and jailed-validator EndBlock cleanup including process-local scheduling across a jail-duration fork; no snapshot, production route, redelegation fix, or canonical map-order claim",
   "total_minted": "115",
   "validators": [
     {

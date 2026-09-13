@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce the bounded Aspen2 reward phase at both pinned Go revisions."""
+"""Reproduce bounded current-profile rewards and EndBlock at both Go pins."""
 
 import argparse
 import hashlib
@@ -108,9 +108,11 @@ def main() -> None:
         "go_version": subprocess.check_output(["go", "version"]).decode().strip(),
         "scope": (
             "Synthetic Aspen2 activation, disabled-yield EndBlock flush, and two actual multi-entry Go "
-            "validator-map orders with unnormalized raw traces and complete logical/physical row comparison; "
-            "no canonical Go map order, snapshot, jailed cleanup, redelegation fix, general physical-retention, "
-            "persistence, or production claim"
+            "validator-map orders with unnormalized raw traces and complete logical/physical row comparison, "
+            "plus actual persisted jailed-list retention, equality expiry, empty-list behavior, and a "
+            "long-lived scheduler witness across decreasing Magnolia-to-Cacti jail duration; "
+            "no canonical Go map order, snapshot, redelegation fix, general physical-retention, persistence, "
+            "or production claim"
         ),
         "public_local_identical": artifacts["public"] == artifacts["local"],
         "sha256": {label: hashlib.sha256(data).hexdigest() for label, data in artifacts.items()},
@@ -133,7 +135,7 @@ def main() -> None:
         for label, data in artifacts.items():
             if data != (fixtures / f"current_rewards_{label}.json").read_bytes():
                 raise RuntimeError(f"reward fixture mismatch: {label}")
-    print("Both pinned Aspen2 reward references " + ("recorded" if args.record else "reproduced"))
+    print("Both pinned current reward references " + ("recorded" if args.record else "reproduced"))
     print("Public/local identical:", manifest["public_local_identical"])
 
 

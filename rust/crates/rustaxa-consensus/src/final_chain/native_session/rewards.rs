@@ -10,9 +10,15 @@
 //! Per-validator reward rows are disjoint, non-negative account additions and
 //! minted totals commute, and yield/supply writes surround the whole map loop;
 //! the final logical state and root are therefore order-independent even though
-//! intermediate raw and account mutations are not canonical. Ordinary custody
-//! effects remain full-width and raw effects retain repeated writes to the same
-//! validator-rewards row.
+//! intermediate raw and account mutations are not canonical. End-block
+//! processing also rewrites a previously committed slashing jailed list when
+//! at least one member expires, after the DPoS deferred rows and with every
+//! source jail-block row authenticated. An all-future nonempty list remains out
+//! of scope because Go's raw-write decision depends on process-local cleanup
+//! scheduling that is not persisted. A Cacti jail duration below Magnolia also
+//! remains out of scope: a new shorter expiry does not lower Go's cached cleanup
+//! block. Ordinary custody effects remain full-width and raw effects retain
+//! repeated writes to the same validator-rewards row.
 
 use super::account::{DposAccountPort, StagedDposAccountPort};
 use super::raw::FinalChainNativeRawTrace;
@@ -36,16 +42,22 @@ impl FinalChainNativeSession<'_> {
     ///
     /// The opaque plan must belong to this exact request and pending period. The
     /// current adapter accepts Magnolia reward periods and ordered zero-or-more
-    /// distribution rows with any number of validators, with no jailed-validator
-    /// cleanup or redelegation correction at this height. A zero configured
-    /// yield skips distributions exactly as `StateTransition::DistributeRewards`
-    /// does, while retaining deferred end-block writes. Enabled rewards emit
-    /// validator rows in Rust address order, one of the Go map loop's valid
-    /// permutations; callers must treat intermediate order as noncanonical.
-    /// Fixed-yield and Aspen part-two supply transitions are reconstructed. Any
-    /// state-read, planner, reconstruction, or raw-integrity error aborts the
-    /// session and exposes no result. Successful completion consumes the session
-    /// phase and cannot be repeated.
+    /// distribution rows with any number of validators and previously committed
+    /// jailed-validator lists whose membership changes at this period. An
+    /// all-future nonempty list, a decreasing Magnolia-to-Cacti jail duration,
+    /// any same-period slashing mutation, and redelegation correction at the
+    /// exact fix height remain unsupported. The parent snapshot rejects newly
+    /// staged slashing, while the scheduler guards avoid guessing Go's
+    /// process-local `nextCleanUpBlock`. A zero configured
+    /// yield skips distributions exactly as
+    /// `StateTransition::DistributeRewards` does, while retaining deferred
+    /// end-block and slashing-list writes. Enabled rewards emit validator rows in
+    /// Rust address order, one of the Go map loop's valid permutations; callers
+    /// must treat intermediate order as noncanonical. Fixed-yield and Aspen
+    /// part-two supply transitions are reconstructed. Any state-read, planner,
+    /// reconstruction, or raw-integrity error aborts the session and exposes no
+    /// result. Successful completion consumes the session phase and cannot be
+    /// repeated.
     pub fn finish_rewards(
         &mut self,
         plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
@@ -100,10 +112,10 @@ impl FinalChainNativeSession<'_> {
             .final_chain
             .pre_magnolia_fee_reward_period(self.pending_period)
             || self.pending_period == self.final_chain.rewards_config.fix_redelegate_block_num
-            || !self.dpos_state.slashing_jailed_validators.is_empty()
         {
             return Err(FinalChainNativeSessionError::RewardsScopeUnsupported);
         }
+        self.validate_committed_slashing_cleanup_scope()?;
         let distributions = decode_rewards_block_distributions(&plan.distribution_stats)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
         let rewards_enabled = self.final_chain.rewards_config.yield_percentage != 0;
@@ -143,6 +155,7 @@ impl FinalChainNativeSession<'_> {
             ));
         }
         self.serialize_deferred_end_block(&next, &mut trace)?;
+        self.serialize_slashing_cleanup(&mut next, &mut trace)?;
 
         let mut expected = self.dpos_state.clone();
         let mut expected_rewards = planned.dpos_rewards;
@@ -158,6 +171,7 @@ impl FinalChainNativeSession<'_> {
         self.final_chain
             .apply_dpos_reward_deltas(&mut expected, expected_rewards, planned.supply_after)
             .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        cleanup_slashing_jailed_validators(&mut expected, self.pending_period);
         if next != expected {
             return Err(FinalChainNativeSessionError::Domain(
                 "selected reward write reconstruction disagrees with FinalChain semantic kernel"
@@ -572,6 +586,105 @@ impl FinalChainNativeSession<'_> {
         }
         Ok(())
     }
+
+    /// Serializes the legacy slashing list cleanup after DPoS EndBlock writes.
+    ///
+    /// Go reads a previously committed nonempty list in stored order, retains
+    /// entries whose jail block is strictly greater than the current block, and
+    /// puts the resulting RLP list when its process-local scheduler runs.
+    /// Per-validator jail-block rows are authenticated and remain untouched,
+    /// including rows for validators removed from the list. An empty input list
+    /// returns without a raw write. An all-future list is rejected because the
+    /// authenticated state does not contain the scheduler needed to decide
+    /// whether Go rewrites or skips it. A Cacti jail duration below Magnolia is
+    /// also rejected: Go never lowers a previously cached Magnolia expiry when
+    /// a later Cacti transaction overwrites a jail row with an earlier block.
+    fn serialize_slashing_cleanup(
+        &self,
+        snapshot: &mut DposSnapshot,
+        trace: &mut FinalChainNativeRawTrace<'_>,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        if snapshot.slashing_jailed_validators.is_empty() {
+            return Ok(());
+        }
+        // With a fixed or nondecreasing jail duration, every jail row written
+        // after a cleanup scan expires later than that scan's cached minimum.
+        // A shorter Cacti duration breaks that ordering, while the cache itself
+        // is unavailable in authenticated state.
+        if self.final_chain.cacti_active(self.pending_period)
+            && self.final_chain.rewards_config.cacti_jail_time
+                < self.final_chain.rewards_config.magnolia_jail_time
+        {
+            return Err(FinalChainNativeSessionError::RewardsScopeUnsupported);
+        }
+        let key = ConcreteStorageKey(slashing_jailed_validators_key());
+        let before = encode_slashing_jailed_list(snapshot);
+        validate_raw_value(
+            &trace.current(SLASHING_CONTRACT_ADDRESS, key)?,
+            &before,
+            "slashing jailed validators",
+        )?;
+        let mut expires = false;
+        for validator in &snapshot.slashing_jailed_validators {
+            let jail_key = ConcreteStorageKey(concrete_storage_key(&[&[0], validator]));
+            let jail_block = snapshot.slashing_jail_blocks.get(validator).copied();
+            let expected = jail_block.map(concrete_rlp_u64).unwrap_or_default();
+            validate_raw_value(
+                &trace.current(SLASHING_CONTRACT_ADDRESS, jail_key)?,
+                &expected,
+                "slashing validator jail block",
+            )?;
+            expires |= jail_block
+                .map(|block| block <= self.pending_period.as_u64())
+                .unwrap_or(true);
+        }
+        if !expires {
+            return Err(FinalChainNativeSessionError::RewardsScopeUnsupported);
+        }
+        cleanup_slashing_jailed_validators(snapshot, self.pending_period);
+        trace.put(
+            SLASHING_CONTRACT_ADDRESS,
+            key,
+            encode_slashing_jailed_list(snapshot),
+        )
+    }
+
+    /// Rejects newly staged slashing rows until their same-period Go visibility
+    /// boundary has a dedicated native-session representation.
+    fn validate_committed_slashing_cleanup_scope(
+        &self,
+    ) -> std::result::Result<(), FinalChainNativeSessionError> {
+        let parent = self
+            .pending_period
+            .checked_sub_distance(1)
+            .ok_or(FinalChainNativeSessionError::RewardsScopeUnsupported)?;
+        let committed = self
+            .final_chain
+            .dpos_snapshot_at_finalized_block(parent)
+            .map_err(|error| FinalChainNativeSessionError::Domain(error.to_string()))?;
+        if self.dpos_state.slashing_jail_blocks != committed.slashing_jail_blocks
+            || self.dpos_state.slashing_jailed_validators != committed.slashing_jailed_validators
+            || self.dpos_state.slashing_double_voting_proofs
+                != committed.slashing_double_voting_proofs
+        {
+            return Err(FinalChainNativeSessionError::RewardsScopeUnsupported);
+        }
+        Ok(())
+    }
+}
+
+fn slashing_jailed_validators_key() -> [u8; 32] {
+    let mut key = [0_u8; 32];
+    key[31] = 2;
+    key
+}
+
+fn encode_slashing_jailed_list(snapshot: &DposSnapshot) -> Vec<u8> {
+    let mut list = rlp::RlpStream::new_list(snapshot.slashing_jailed_validators.len());
+    for validator in &snapshot.slashing_jailed_validators {
+        list.append(&validator.as_slice());
+    }
+    list.out().to_vec()
 }
 
 fn add_reward_pool(
@@ -765,6 +878,16 @@ mod tests {
     }
 
     fn with_reward_chain(yield_percentage: u16, test: impl FnOnce(&FinalChain)) {
+        with_reward_chain_and_jail_policy(yield_percentage, FinalChainBlockNumber::MAX, 0, 0, test);
+    }
+
+    fn with_reward_chain_and_jail_policy(
+        yield_percentage: u16,
+        cacti_period: FinalChainBlockNumber,
+        magnolia_jail_time: u64,
+        cacti_jail_time: u64,
+        test: impl FnOnce(&FinalChain),
+    ) {
         let path = temp_db_path();
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = |address, delegator, stake: u64, commission| GenesisValidator {
@@ -808,7 +931,9 @@ mod tests {
                 genesis_balance_sum: Some(DposTokenAmount::from(U256::from(5_000))),
                 aspen_max_supply: DposTokenAmount::from(U256::from(6_000)),
                 aspen_generated_rewards: DposTokenAmount::zero(),
-                cacti_period: FinalChainBlockNumber::MAX,
+                cacti_period,
+                magnolia_jail_time,
+                cacti_jail_time,
                 rewards_distribution_frequency: vec![(FinalChainBlockNumber::GENESIS, 1)],
                 ..Default::default()
             },
@@ -823,6 +948,30 @@ mod tests {
 
     fn with_current_reward_chain(test: impl FnOnce(&FinalChain)) {
         with_reward_chain(1, test);
+    }
+
+    fn seed_committed_jail(chain: &FinalChain, jail_block: u64) {
+        let mut snapshots = chain.dpos_snapshots.lock().unwrap();
+        let snapshot = snapshots
+            .get_mut(&FinalChainBlockNumber::GENESIS)
+            .expect("reward test chain has a genesis DPoS snapshot");
+        snapshot
+            .slashing_jail_blocks
+            .insert(ZERO_YIELD_DELEGATOR, jail_block);
+        snapshot
+            .slashing_jailed_validators
+            .push(ZERO_YIELD_DELEGATOR);
+    }
+
+    fn seed_committed_jail_list_without_block(chain: &FinalChain) {
+        chain
+            .dpos_snapshots
+            .lock()
+            .unwrap()
+            .get_mut(&FinalChainBlockNumber::GENESIS)
+            .expect("reward test chain has a genesis DPoS snapshot")
+            .slashing_jailed_validators
+            .push(ZERO_YIELD_DELEGATOR);
     }
 
     fn distribution_rlp(
@@ -1276,6 +1425,283 @@ mod tests {
                 outcome.dpos_snapshot.aspen_supply_state,
                 AspenSupplyState::Unmigrated { .. }
             ));
+        });
+    }
+
+    #[test]
+    fn expiring_jail_cleanup_follows_deferred_dpos_rows() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../experiments/evm_feasibility/fixtures/current_rewards_public.json"
+        )))
+        .unwrap();
+        let zero_yield = &fixture["zero_yield_end_block"];
+        let jail_expiry = fixture["jailed_validator_cleanup"]["periods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|period| period["period"] == 5)
+            .unwrap();
+
+        with_reward_chain(0, |chain| {
+            seed_committed_jail(chain, 1);
+            let reward_plan = plan(vec![distribution_rlp(1, VALIDATOR_ONE, VALIDATOR_ONE, 11)]);
+            let mut session = chain
+                .begin_native_session_bound(
+                    reward_plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            let state = RewardState::from_snapshot(&session.dpos_state);
+            let delegate = delegate_request();
+            let quote = session.prepare(&delegate, &state).unwrap();
+            let FinalChainNativeInvocationResult::Completed(delegate_outcome) =
+                session.invoke(&delegate, quote, &state).unwrap()
+            else {
+                panic!("delegate fixture has sufficient gas")
+            };
+            for mutation in &delegate_outcome.raw_mutations {
+                state.apply(mutation);
+            }
+            state.set_dpos_balance(3_100);
+
+            let outcome = session.finish_rewards(&reward_plan, &state).unwrap();
+            assert_eq!(outcome.raw_mutations.len(), 3);
+            let expected_dpos = zero_yield["end_block_ordered_raw_writes"]
+                .as_array()
+                .unwrap();
+            for (actual, expected) in outcome.raw_mutations[..2].iter().zip(expected_dpos) {
+                assert_eq!(hex_bytes(actual.address), expected["address"]);
+                assert_eq!(hex_bytes(actual.key.0), expected["key"]);
+                assert_eq!(hex_bytes(mutation_value(actual)), expected["value"]);
+            }
+            let expected_slashing = &jail_expiry["ordered_raw_writes"][0];
+            let actual_slashing = &outcome.raw_mutations[2];
+            assert_eq!(
+                hex_bytes(actual_slashing.address),
+                expected_slashing["address"]
+            );
+            assert_eq!(hex_bytes(actual_slashing.key.0), expected_slashing["key"]);
+            assert_eq!(
+                hex_bytes(mutation_value(actual_slashing)),
+                expected_slashing["value"]
+            );
+            assert_eq!(
+                actual_slashing.expected,
+                ConcreteRead::Present(hex_decode(
+                    jail_expiry["before_end_block"][0]["value"]
+                        .as_str()
+                        .unwrap()
+                ))
+            );
+            assert_eq!(
+                outcome.dpos_snapshot.slashing_jailed_validators,
+                Vec::<[u8; 20]>::new()
+            );
+            assert_eq!(
+                outcome.dpos_snapshot.slashing_jail_blocks[&ZERO_YIELD_DELEGATOR],
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn jailed_cleanup_expires_equality_but_preserves_jail_block_row() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../experiments/evm_feasibility/fixtures/current_rewards_public.json"
+        )))
+        .unwrap();
+        let jail_expiry = fixture["jailed_validator_cleanup"]["periods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|period| period["period"] == 5)
+            .unwrap();
+
+        with_current_reward_chain(|chain| {
+            seed_committed_jail(chain, 1);
+            let reward_plan = plan(Vec::new());
+            let mut session = chain
+                .begin_native_session_bound(
+                    reward_plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            let state = RewardState::from_snapshot(&session.dpos_state);
+            let outcome = session.finish_rewards(&reward_plan, &state).unwrap();
+
+            assert_eq!(outcome.raw_mutations.len(), 1);
+            let expected = &jail_expiry["ordered_raw_writes"][0];
+            let mutation = &outcome.raw_mutations[0];
+            assert_eq!(hex_bytes(mutation.address), expected["address"]);
+            assert_eq!(hex_bytes(mutation.key.0), expected["key"]);
+            assert_eq!(hex_bytes(mutation_value(mutation)), expected["value"]);
+            assert_eq!(
+                mutation.expected,
+                ConcreteRead::Present(hex_decode(
+                    jail_expiry["before_end_block"][0]["value"]
+                        .as_str()
+                        .unwrap()
+                ))
+            );
+            assert!(outcome.dpos_snapshot.slashing_jailed_validators.is_empty());
+            assert_eq!(
+                outcome.dpos_snapshot.slashing_jail_blocks[&ZERO_YIELD_DELEGATOR],
+                1
+            );
+            let canonical =
+                canonical_concrete_precompile_storage(&outcome.dpos_snapshot, true).unwrap();
+            let list_slot = jail_expiry["after"]["slots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|slot| slot["name"] == "jailed_validators")
+                .unwrap();
+            let key = fixed_hex::<32>(list_slot["key"].as_str().unwrap());
+            let actual = canonical
+                .get(&(SLASHING_CONTRACT_ADDRESS, key))
+                .and_then(|values| values.first())
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(actual, hex_decode(list_slot["value"].as_str().unwrap()));
+        });
+    }
+
+    #[test]
+    fn newly_staged_slashing_rows_remain_out_of_terminal_scope() {
+        with_current_reward_chain(|chain| {
+            let reward_plan = plan(Vec::new());
+            let mut session = chain
+                .begin_native_session_bound(
+                    reward_plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            session
+                .dpos_state
+                .slashing_jail_blocks
+                .insert(ZERO_YIELD_DELEGATOR, 3);
+            session
+                .dpos_state
+                .slashing_jailed_validators
+                .push(ZERO_YIELD_DELEGATOR);
+            let state = RewardState::from_snapshot(&session.dpos_state);
+
+            assert!(matches!(
+                session.finish_rewards(&reward_plan, &state),
+                Err(FinalChainNativeSessionError::RewardsScopeUnsupported)
+            ));
+            assert!(!session.finished_rewards);
+            assert!(!session.aborted);
+        });
+    }
+
+    #[test]
+    fn all_future_committed_jail_list_requires_scheduler_provenance() {
+        with_current_reward_chain(|chain| {
+            seed_committed_jail(chain, 3);
+            let reward_plan = plan(Vec::new());
+            let mut session = chain
+                .begin_native_session_bound(
+                    reward_plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            let state = RewardState::from_snapshot(&session.dpos_state);
+
+            assert!(matches!(
+                session.finish_rewards(&reward_plan, &state),
+                Err(FinalChainNativeSessionError::RewardsScopeUnsupported)
+            ));
+            assert!(!session.finished_rewards);
+            assert!(!session.aborted);
+        });
+    }
+
+    #[test]
+    fn decreasing_cacti_jail_duration_requires_scheduler_provenance() {
+        with_reward_chain_and_jail_policy(1, FinalChainBlockNumber::GENESIS, 100, 1, |chain| {
+            seed_committed_jail(chain, 1);
+            let reward_plan = plan(Vec::new());
+            let mut session = chain
+                .begin_native_session_bound(
+                    reward_plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            let state = RewardState::from_snapshot(&session.dpos_state);
+
+            assert!(matches!(
+                session.finish_rewards(&reward_plan, &state),
+                Err(FinalChainNativeSessionError::RewardsScopeUnsupported)
+            ));
+            assert!(!session.finished_rewards);
+            assert!(!session.aborted);
+        });
+    }
+
+    #[test]
+    fn jailed_cleanup_rejects_missing_or_mismatched_jail_block_row() {
+        with_current_reward_chain(|chain| {
+            seed_committed_jail(chain, 1);
+            let reward_plan = plan(Vec::new());
+            let jail_key = concrete_storage_key(&[&[0], &ZERO_YIELD_DELEGATOR]);
+            for observed in [ConcreteRead::Absent, ConcreteRead::Present(vec![2])] {
+                let mut session = chain
+                    .begin_native_session_bound(
+                        reward_plan.request_id,
+                        1.into(),
+                        FinalChainBlockNumber::GENESIS,
+                    )
+                    .unwrap();
+                let state = RewardState::from_snapshot(&session.dpos_state);
+                state
+                    .rows
+                    .borrow_mut()
+                    .insert((SLASHING_CONTRACT_ADDRESS, jail_key), observed);
+
+                assert!(matches!(
+                    session.finish_rewards(&reward_plan, &state),
+                    Err(FinalChainNativeSessionError::RawIntegrity(message))
+                        if message == "slashing validator jail block raw/domain facts disagree"
+                ));
+                assert!(session.aborted);
+            }
+        });
+    }
+
+    #[test]
+    fn jailed_cleanup_treats_authenticated_absent_jail_block_as_zero() {
+        with_current_reward_chain(|chain| {
+            seed_committed_jail_list_without_block(chain);
+            let reward_plan = plan(Vec::new());
+            let mut session = chain
+                .begin_native_session_bound(
+                    reward_plan.request_id,
+                    1.into(),
+                    FinalChainBlockNumber::GENESIS,
+                )
+                .unwrap();
+            let state = RewardState::from_snapshot(&session.dpos_state);
+            let jail_key = ConcreteStorageKey(concrete_storage_key(&[&[0], &ZERO_YIELD_DELEGATOR]));
+            assert_eq!(
+                state
+                    .raw_storage(SLASHING_CONTRACT_ADDRESS, &jail_key)
+                    .unwrap(),
+                ConcreteRead::Absent
+            );
+
+            let outcome = session.finish_rewards(&reward_plan, &state).unwrap();
+            assert_eq!(outcome.raw_mutations.len(), 1);
+            assert_eq!(mutation_value(&outcome.raw_mutations[0]), vec![0xc0]);
+            assert!(outcome.dpos_snapshot.slashing_jailed_validators.is_empty());
+            assert!(outcome.dpos_snapshot.slashing_jail_blocks.is_empty());
         });
     }
 }
