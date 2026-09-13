@@ -5,7 +5,7 @@
 //! canonical bytes; it does not approve an execution projection or publish the
 //! corresponding FinalChain application generation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rocksdb::{ColumnFamilyDescriptor, DB, Options, WriteBatch, WriteOptions};
@@ -25,7 +25,7 @@ use rustaxa_types::concrete_state::{
     ConcreteStateRead,
 };
 
-use super::codec::corrupt;
+use super::codec::{corrupt, decode_descriptor};
 use super::writer::{
     ConcreteStateMutationBatch, ConcreteStateWriter, PreparedConcreteState, REQUIRED_COLUMNS,
     RowKey, encode_descriptor,
@@ -74,6 +74,16 @@ pub struct ConcreteStateLifecycle {
     pending_rlp: Vec<u8>,
     intermediate_content: BTreeMap<RowKey, Vec<u8>>,
     poisoned: bool,
+}
+
+struct LoadedLifecycle {
+    provenance: FinalChainConcreteStateProvenance,
+    provenance_rlp: Vec<u8>,
+    catalog: Vec<ConcreteStorageSlot>,
+    catalog_rlp: Vec<u8>,
+    pending: Option<FinalChainConcreteExecutionMarker>,
+    pending_rlp: Vec<u8>,
+    committed: ConcreteStateIdentity,
 }
 
 impl ConcreteStateLifecycle {
@@ -147,38 +157,56 @@ impl ConcreteStateLifecycle {
         expected_committed: ConcreteStateIdentity,
     ) -> Result<Self, ConcreteReadError> {
         let writer = ConcreteStateWriter::open(path, expected_committed)?;
-        let provenance_rlp = required_default(&writer.db, PROVENANCE_KEY, "provenance")?;
-        let provenance = decode_concrete_state_provenance(&provenance_rlp).map_err(corrupt)?;
-        if provenance.identity.chain_id != expected_chain_id
-            || concrete_identity(provenance.committed_state) != expected_committed
-        {
-            return Err(corrupt(
-                "concrete lifecycle identity or descriptor mismatch",
-            ));
-        }
-        let catalog_rlp = required_default(&writer.db, CATALOG_KEY, "storage catalog")?;
-        let catalog = decode_concrete_storage_catalog(&catalog_rlp).map_err(corrupt)?;
-        if concrete_storage_slot_catalog_hash(catalog.iter().copied()) != provenance.catalog_hash {
-            return Err(corrupt("concrete lifecycle catalog hash mismatch"));
-        }
-        let pending_rlp = writer.db.get(PENDING_KEY).map_err(io)?.unwrap_or_default();
-        let pending = if pending_rlp.is_empty() {
-            None
-        } else {
-            let marker = decode_concrete_execution_marker(&pending_rlp).map_err(corrupt)?;
-            validate_marker(&provenance, &marker)?;
-            Some(marker)
-        };
+        let loaded = load_lifecycle(&writer.db, expected_chain_id, Some(expected_committed))?;
         Ok(Self {
             writer,
-            provenance,
-            provenance_rlp,
-            catalog,
-            catalog_rlp,
-            pending,
-            pending_rlp,
+            provenance: loaded.provenance,
+            provenance_rlp: loaded.provenance_rlp,
+            catalog: loaded.catalog,
+            catalog_rlp: loaded.catalog_rlp,
+            pending: loaded.pending,
+            pending_rlp: loaded.pending_rlp,
             intermediate_content: BTreeMap::new(),
             poisoned: false,
+        })
+    }
+
+    /// Inspects an existing concrete database through RocksDB's read-only API
+    /// without requiring an application-supplied expected root. The observed
+    /// descriptor must pair exactly with canonical provenance and catalog for
+    /// `expected_chain_id`; any pending marker must extend that descriptor.
+    /// This reports recovery facts only and never creates, repairs, adopts, or
+    /// publishes the database.
+    pub fn inspect_existing(
+        path: impl AsRef<Path>,
+        expected_chain_id: [u8; 32],
+    ) -> Result<ConcreteLifecycleObservation, ConcreteReadError> {
+        let path = path.as_ref();
+        let mut options = Options::default();
+        options.create_if_missing(false);
+        options.create_missing_column_families(false);
+        let columns = DB::list_cf(&options, path).map_err(io)?;
+        let present = columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        for required in REQUIRED_COLUMNS {
+            if !present.contains(required) {
+                return Err(corrupt(format!(
+                    "concrete state column family {required:?} is missing"
+                )));
+            }
+        }
+        let descriptors = columns
+            .iter()
+            .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
+        let db =
+            DB::open_cf_descriptors_read_only(&options, path, descriptors, false).map_err(io)?;
+        let loaded = load_lifecycle(&db, expected_chain_id, None)?;
+        Ok(ConcreteLifecycleObservation {
+            identity: loaded.provenance.identity,
+            committed: loaded.committed,
+            generation: loaded.provenance.generation,
+            provenance_rlp: loaded.provenance_rlp,
+            catalog_rlp: loaded.catalog_rlp,
+            pending_marker_rlp: loaded.pending_rlp,
         })
     }
 
@@ -432,6 +460,64 @@ fn concrete_identity(state: FinalChainConcreteState) -> ConcreteStateIdentity {
     }
 }
 
+fn load_lifecycle(
+    db: &DB,
+    expected_chain_id: [u8; 32],
+    expected_committed: Option<ConcreteStateIdentity>,
+) -> Result<LoadedLifecycle, ConcreteReadError> {
+    let descriptor_rlp = required_default(db, DESCRIPTOR_KEY, "descriptor")?;
+    let committed = decode_descriptor(&descriptor_rlp)?;
+    if encode_descriptor(committed) != descriptor_rlp {
+        return Err(corrupt(
+            "concrete lifecycle descriptor is not canonical RLP",
+        ));
+    }
+    if let Some(expected) = expected_committed
+        && committed != expected
+    {
+        return Err(ConcreteReadError::IdentityMismatch {
+            expected,
+            observed: committed,
+        });
+    }
+
+    let provenance_rlp = required_default(db, PROVENANCE_KEY, "provenance")?;
+    let provenance = decode_concrete_state_provenance(&provenance_rlp).map_err(corrupt)?;
+    if provenance.identity.chain_id != expected_chain_id {
+        return Err(corrupt("concrete lifecycle chain identity mismatch"));
+    }
+    if concrete_identity(provenance.committed_state) != committed {
+        return Err(corrupt(
+            "concrete lifecycle provenance does not match the committed descriptor",
+        ));
+    }
+
+    let catalog_rlp = required_default(db, CATALOG_KEY, "storage catalog")?;
+    let catalog = decode_concrete_storage_catalog(&catalog_rlp).map_err(corrupt)?;
+    if concrete_storage_slot_catalog_hash(catalog.iter().copied()) != provenance.catalog_hash {
+        return Err(corrupt("concrete lifecycle storage catalog hash mismatch"));
+    }
+
+    let (pending, pending_rlp) = match db.get(PENDING_KEY).map_err(io)? {
+        None => (None, Vec::new()),
+        Some(bytes) => {
+            let marker = decode_concrete_execution_marker(&bytes).map_err(corrupt)?;
+            validate_marker(&provenance, &marker)?;
+            (Some(marker), bytes)
+        }
+    };
+
+    Ok(LoadedLifecycle {
+        provenance,
+        provenance_rlp,
+        catalog,
+        catalog_rlp,
+        pending,
+        pending_rlp,
+        committed,
+    })
+}
+
 fn required_default(db: &DB, key: &[u8], label: &str) -> Result<Vec<u8>, ConcreteReadError> {
     db.get(key)
         .map_err(io)?
@@ -527,7 +613,7 @@ mod tests {
             }],
             code: Vec::new(),
         };
-        let mut lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
+        let lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
             &path.0,
             chain_id,
             genesis,
@@ -546,6 +632,13 @@ mod tests {
             lifecycle.prior_reader().storage(address, key).unwrap(),
             ConcreteRead::Present(vec![0x11])
         );
+        drop(lifecycle);
+        assert_eq!(
+            ConcreteStateLifecycle::inspect_existing(&path.0, chain_id).unwrap(),
+            genesis_observed
+        );
+        let mut lifecycle =
+            ConcreteStateLifecycle::open(&path.0, chain_id, genesis_observed.committed).unwrap();
 
         let marker = FinalChainConcreteExecutionMarker {
             identity: genesis_observed.identity,
@@ -560,6 +653,9 @@ mod tests {
         lifecycle.stage_execution(&marker_rlp).unwrap();
         lifecycle.stage_execution(&marker_rlp).unwrap();
         drop(lifecycle);
+        let staged = ConcreteStateLifecycle::inspect_existing(&path.0, chain_id).unwrap();
+        assert_eq!(staged.committed, genesis_observed.committed);
+        assert_eq!(staged.pending_marker_rlp, marker_rlp);
 
         let mut lifecycle =
             ConcreteStateLifecycle::open(&path.0, chain_id, genesis_observed.committed).unwrap();
@@ -627,6 +723,10 @@ mod tests {
         let committed = lifecycle.commit_approved(prepared, approval).unwrap();
         assert_eq!(committed.generation, 1);
         assert!(committed.pending_marker_rlp.is_empty());
+        assert_eq!(
+            ConcreteStateLifecycle::inspect_existing(&path.0, chain_id).unwrap(),
+            committed
+        );
 
         let mut lifecycle =
             ConcreteStateLifecycle::open(&path.0, chain_id, committed.committed).unwrap();
@@ -664,6 +764,55 @@ mod tests {
                 .pending_marker_rlp
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn inspection_rejects_foreign_chain_and_missing_or_corrupt_metadata() {
+        let missing = TestPath::new();
+        let chain_id = [0x31; 32];
+        let lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
+            &missing.0,
+            chain_id,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        drop(lifecycle);
+
+        assert!(ConcreteStateLifecycle::inspect_existing(&missing.0, [0x32; 32]).is_err());
+        mutate_default(&missing.0, PROVENANCE_KEY, None);
+        assert!(ConcreteStateLifecycle::inspect_existing(&missing.0, chain_id).is_err());
+
+        let corrupt_path = TestPath::new();
+        let lifecycle = ConcreteStateLifecycle::create_fresh_exclusive(
+            &corrupt_path.0,
+            chain_id,
+            ConcreteStateMutationBatch::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let observed = lifecycle.observation().unwrap();
+        drop(lifecycle);
+        mutate_default(&corrupt_path.0, CATALOG_KEY, Some(&[0xff]));
+        assert!(ConcreteStateLifecycle::inspect_existing(&corrupt_path.0, chain_id).is_err());
+        mutate_default(&corrupt_path.0, CATALOG_KEY, Some(&observed.catalog_rlp));
+        let mismatched = ConcreteStateIdentity {
+            period: FinalChainBlockNumber::new(1),
+            state_root: observed.committed.state_root,
+        };
+        mutate_default(
+            &corrupt_path.0,
+            DESCRIPTOR_KEY,
+            Some(&encode_descriptor(mismatched)),
+        );
+        assert!(ConcreteStateLifecycle::inspect_existing(&corrupt_path.0, chain_id).is_err());
+        mutate_default(
+            &corrupt_path.0,
+            DESCRIPTOR_KEY,
+            Some(&encode_descriptor(observed.committed)),
+        );
+        mutate_default(&corrupt_path.0, PENDING_KEY, Some(&[]));
+        assert!(ConcreteStateLifecycle::inspect_existing(&corrupt_path.0, chain_id).is_err());
     }
 
     #[test]
@@ -812,6 +961,21 @@ mod tests {
                 code_size: 0,
             },
             physical_rlp: stream.out().to_vec(),
+        }
+    }
+
+    fn mutate_default(path: &Path, key: &[u8], value: Option<&[u8]>) {
+        let mut options = Options::default();
+        options.create_if_missing(false);
+        options.create_missing_column_families(false);
+        let columns = DB::list_cf(&options, path).unwrap();
+        let descriptors = columns
+            .iter()
+            .map(|name| ColumnFamilyDescriptor::new(name, Options::default()));
+        let db = DB::open_cf_descriptors(&options, path, descriptors).unwrap();
+        match value {
+            Some(value) => db.put(key, value).unwrap(),
+            None => db.delete(key).unwrap(),
         }
     }
 }
