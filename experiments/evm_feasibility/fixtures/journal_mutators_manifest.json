@@ -5,10 +5,10 @@
     "local": "bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418"
   },
   "go_version": "go version go1.24.4 linux/amd64",
-  "scope": "Eight additive mutator/no-op/lifecycle journal cases; no EVM envelope, RocksDB or network replay",
-  "exporter_sha256": "bf643a3fa848b27e165fcdacba8d6284d3cfe00f325f1a5607575e3b4dae1e26",
+  "scope": "Nine additive mutator/no-op/lifecycle journal cases; no EVM envelope, RocksDB or network replay",
+  "exporter_sha256": "a95488cdfd10b5e38baf1418540676692b63fc002f9c5ea31496e3b8ec152cfc",
   "sha256": {
-    "journal_mutators_public.json": "172325647ce35c706548734da34f0264165fcff4dbb3e9da831f663cbb5194d3",
-    "journal_mutators_local.json": "172325647ce35c706548734da34f0264165fcff4dbb3e9da831f663cbb5194d3"
+    "journal_mutators_public.json": "4d841d8ea82c4592624623a5a08116e912134447876e5751b7b834c388674d37",
+    "journal_mutators_local.json": "4d841d8ea82c4592624623a5a08116e912134447876e5751b7b834c388674d37"
   }
 }

@@ -178,25 +178,37 @@ func main() {
 func runExtended() {
 	var out []map[string]any
 	for _, c := range []struct {
-		name                                 string
-		exists, nested, revertOuter, nilRoot bool
+		name                                             string
+		exists, nested, revertOuter, nilRoot, orphanRoot bool
 	}{
-		{"reverse-existing-commit", true, false, false, false},
-		{"reverse-existing-revert", true, false, true, false},
-		{"reverse-new-commit", false, false, false, false},
-		{"reverse-new-revert", false, false, true, false},
-		{"nested-existing-commit", true, true, false, false},
-		{"nested-existing-revert", true, true, true, false},
-		{"nested-new-commit", false, true, false, false},
-		{"nested-new-revert", false, true, true, false},
-		{"nil-root-commit", true, false, false, true},
-		{"nil-root-revert", true, false, true, true},
+		{"reverse-existing-commit", true, false, false, false, false},
+		{"reverse-existing-revert", true, false, true, false, false},
+		{"reverse-new-commit", false, false, false, false, false},
+		{"reverse-new-revert", false, false, true, false, false},
+		{"nested-existing-commit", true, true, false, false, false},
+		{"nested-existing-revert", true, true, true, false, false},
+		{"nested-new-commit", false, true, false, false, false},
+		{"nested-new-revert", false, true, true, false, false},
+		{"nil-root-commit", true, false, false, true, false},
+		{"nil-root-revert", true, false, true, true, false},
+		{"orphan-nonnil-root-commit", true, false, false, false, true},
+		{"orphan-nonnil-root-revert", true, false, true, false, true},
 	} {
 		m := newMemoryRows()
 		priorRoot := seed(m, c.exists)
-		if c.nilRoot {
+		if c.nilRoot || c.orphanRoot {
 			// Leave the physical slot row in place but remove account reachability.
 			acc := state_db.Account{Nonce: big.NewInt(1), Balance: big.NewInt(100)}
+			if c.orphanRoot {
+				// A new storage body references only slot 2; slot 1's old physical
+				// row remains readable by GetState and GetRawState alike.
+				slot := new(trie.Writer).Init(state_db.AccountTrieSchema{}, nil, trie.WriterOpts{})
+				otherKey := common.BytesToHash([]byte{2})
+				otherPath := crypto.Keccak256Hash(otherKey[:])
+				slotIO := state_db.AccountTrieIOAdapter{Addr: &address, ReadWriter: m}
+				slot.Put(slotIO, &otherPath, state_db.NewAccStorageTrieValue([]byte{0x22}))
+				acc.StorageRootHash = slot.Commit(slotIO)
+			}
 			main := new(trie.Writer).Init(state_db.MainTrieSchema{}, priorRoot, trie.WriterOpts{})
 			addrKey := crypto.Keccak256Hash(address[:])
 			mainIO := state_db.MainTrieIOAdapter{ReadWriter: m}
@@ -264,7 +276,7 @@ func runExtended() {
 		reopened.Init(state_evm.Opts{})
 		reopened.SetInput(state_db.ExtendedReader{Reader: m})
 		out = append(out, map[string]any{
-			"case": c.name, "exists": c.exists, "nil_root": c.nilRoot,
+			"case": c.name, "exists": c.exists, "nil_root": c.nilRoot, "orphan_root": c.orphanRoot,
 			"before": before, "steps": steps, "after_transaction": afterTransaction,
 			"reopened": observe(&reopened), "prior_rows": priorRows,
 			"prior_root": hex.EncodeToString(priorRootValue[:]), "rows": m.export(), "root": hex.EncodeToString(root[:]),
@@ -282,7 +294,7 @@ func runExtended() {
 // assertion or validation is weakened to obtain the fixture.
 func runMutators() {
 	var out []map[string]any
-	for _, name := range []string{"storage-noop-leading-zero", "empty-by-balance", "existing-empty-touch", "existing-empty-raw", "empty-code-noop", "reverted-new", "nonce-decrease", "ripemd-touch-revert"} {
+	for _, name := range []string{"storage-noop-leading-zero", "empty-by-balance", "existing-empty-touch", "existing-empty-raw", "empty-code-noop", "reverted-new", "nonce-decrease", "ripemd-touch-revert", "empty-nonce-raw-revert"} {
 		address = common.BytesToAddress([]byte{0xaa})
 		if name == "ripemd-touch-revert" {
 			address = common.BytesToAddress([]byte{3})
@@ -294,7 +306,7 @@ func runMutators() {
 			if name == "empty-by-balance" {
 				acc.Nonce, acc.Balance = big.NewInt(0), big.NewInt(1)
 			}
-			if name == "existing-empty-touch" || name == "existing-empty-raw" || name == "ripemd-touch-revert" {
+			if name == "existing-empty-touch" || name == "existing-empty-raw" || name == "ripemd-touch-revert" || name == "empty-nonce-raw-revert" {
 				acc.Nonce, acc.Balance = big.NewInt(0), big.NewInt(0)
 			}
 			if name == "storage-noop-leading-zero" {
@@ -357,13 +369,16 @@ func runMutators() {
 				a.SetNonce(big.NewInt(1))
 			case "nonce-decrease":
 				a.SetNonce(big.NewInt(0))
+			case "empty-nonce-raw-revert":
+				a.SetNonce(big.NewInt(1))
+				a.SetStateRawIrreversibly(&key, []byte{0x44})
 			}
 		}()
 		if name == "nonce-decrease" && !panicked {
 			panic("expected decreasing nonce to be rejected")
 		}
 		afterMutation := view(&s)
-		if name == "reverted-new" || name == "ripemd-touch-revert" {
+		if name == "reverted-new" || name == "ripemd-touch-revert" || name == "empty-nonce-raw-revert" {
 			s.RevertToSnapshot(checkpoint)
 		}
 		afterFrame := view(&s)
