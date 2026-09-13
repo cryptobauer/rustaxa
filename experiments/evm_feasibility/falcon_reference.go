@@ -29,6 +29,7 @@ type falconRow struct {
 	RequiredGas        uint64 `json:"required_gas"`
 	Output             string `json:"output"`
 	Error              string `json:"error"`
+	Panic              string `json:"panic"`
 	CryptographicValid bool   `json:"cryptographic_valid"`
 }
 
@@ -103,7 +104,7 @@ func vectors() []falconVector {
 			}
 		}
 		if seed == 3 {
-			message = append([]byte("implicit Go padding"), 0)
+			message = append([]byte("implicit Go padding"), 0, 0, 0, 0)
 		}
 		signature, err := fndsa.Sign(rng, sk, fndsa.DOMAIN_NONE, 0, message)
 		if err != nil {
@@ -130,6 +131,7 @@ func main() {
 	keyOffset := lowWord(canonical, 1)
 	messageOffset := lowWord(canonical, 2)
 	paddedMessageOffset := lowWord(paddedCanonical, 2)
+	rightPadded := paddedCanonical[:4+int(paddedMessageOffset)+32+len(paddedMessage.message)-4]
 	bodyLength := uint64(len(canonical) - 4)
 	mutatedSignature := falconVector{
 		key: cloneBytes(standard.key), signature: cloneBytes(standard.signature), message: cloneBytes(standard.message),
@@ -167,7 +169,7 @@ func main() {
 		{"historical-empty-message", falconABI(emptyMessage, []int{0, 1, 2}, 0, false, false, nil), true},
 		{"historical-valid", canonical, true},
 		{"historical-valid-long-message", longCanonical, true},
-		{"go-right-padded-message", paddedCanonical[:4+int(paddedMessageOffset)+32+len(paddedMessage.message)-1], true},
+		{"go-right-padded-message", rightPadded, true},
 		{"beyond-go-right-padding", paddedCanonical[:4+int(paddedMessageOffset)+32+len(paddedMessage.message)-5], true},
 		{"invalid-signature", falconABI(mutatedSignature, []int{0, 1, 2}, 0, false, false, nil), false},
 		{"invalid-message", falconABI(mutatedMessage, []int{0, 1, 2}, 0, false, false, nil), false},
@@ -177,19 +179,23 @@ func main() {
 		{"high-bits-lengths", falconABI(standard, []int{0, 1, 2}, 0, false, true, nil), true},
 		{"trailing-bytes", falconABI(standard, []int{0, 1, 2}, 0, false, false, []byte{0xaa, 0xbb, 0xcc}), true},
 	}
+	cases = append(cases,
+		inputCase{"signed-message-length-tail", setLowWord(rightPadded, 4+int(paddedMessageOffset), uint64(1)<<63), true},
+		inputCase{"wrapped-message-length-panic", setLowWord(rightPadded, 4+int(paddedMessageOffset), ^uint64(0)), true},
+	)
 
 	rows := make([]falconRow, 0, len(cases))
 	for _, item := range cases {
 		frame := vm.CallFrame{Input: item.input, Value: new(big.Int)}
 		requiredGas := contract.RequiredGas(frame, nil)
-		output, err := contract.Run(frame, nil)
+		output, err, panicText := runFalcon(contract, frame)
 		errorText := ""
 		if err != nil {
 			errorText = err.Error()
 		}
 		rows = append(rows, falconRow{
 			Name: item.name, Input: hex.EncodeToString(item.input), RequiredGas: requiredGas,
-			Output: hex.EncodeToString(output), Error: errorText, CryptographicValid: item.valid,
+			Output: hex.EncodeToString(output), Error: errorText, Panic: panicText, CryptographicValid: item.valid,
 		})
 	}
 	if len(standard.signature) != fndsa.SignatureSize(9) || len(standard.key) != fndsa.VerifyingKeySize(9) {
@@ -206,4 +212,16 @@ func main() {
 	if err := json.NewEncoder(os.Stdout).Encode(document); err != nil {
 		panic(err)
 	}
+}
+
+func runFalcon(contract vm.PrecompiledContract, frame vm.CallFrame) (output []byte, err error, panicText string) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			output = nil
+			err = nil
+			panicText = fmt.Sprint(recovered)
+		}
+	}()
+	output, err = contract.Run(frame, nil)
+	return
 }

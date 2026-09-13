@@ -14,8 +14,8 @@ mod falcon;
 use falcon::{FALCON_BASE_GAS, FALCON_PER_WORD_GAS, FALCON_VERIFY_ADDRESS, PreparedFalconCall};
 use num_bigint::BigUint;
 use rustaxa_evm::contracts::{
-    ExecutionValue, NativeCallKind, NativeInvocationResult, NativeStatus, StatelessInvocation,
-    StatelessInvocationId,
+    ExecutionValue, NativeCallKind, NativeInvocationResult, NativePortError, NativeStatus,
+    StatelessInvocation, StatelessInvocationId,
 };
 use serde_json::Value;
 
@@ -64,7 +64,7 @@ fn falcon_matches_go_quotes_abi_crypto_and_failures() {
     assert_eq!(corpus["verifying_key_size"], 897);
     assert_eq!(corpus["method_selector"], "de8f50a1");
     let rows = corpus["falcon"].as_array().expect("Falcon row array");
-    assert_eq!(rows.len(), 31);
+    assert_eq!(rows.len(), 33);
 
     for row in rows {
         let required = row["required_gas"].as_u64().expect("required gas");
@@ -89,9 +89,10 @@ fn falcon_matches_go_quotes_abi_crypto_and_failures() {
                 let quote = prepared.quote();
                 assert_eq!(quote.invocation, request.id, "{name}");
                 assert_eq!(quote.required_gas.as_u64(), required, "{name}");
-                let result = prepared.invoke().unwrap();
-                result.validate(&request, quote).unwrap();
+                let result = prepared.invoke();
                 if supplied < required {
+                    let result = result.unwrap();
+                    result.validate(&request, quote).unwrap();
                     assert_eq!(
                         result,
                         NativeInvocationResult::InsufficientGas {
@@ -101,6 +102,16 @@ fn falcon_matches_go_quotes_abi_crypto_and_failures() {
                     );
                     continue;
                 }
+                if !row["panic"].as_str().expect("panic text").is_empty() {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        NativePortError::Infrastructure("Falcon reference ABI would panic".into()),
+                        "{name}"
+                    );
+                    continue;
+                }
+                let result = result.unwrap();
+                result.validate(&request, quote).unwrap();
                 let NativeInvocationResult::Completed(outcome) = result else {
                     panic!("{name}: funded Falcon invocation did not complete")
                 };
@@ -147,10 +158,12 @@ fn falcon_corpus_pins_noncanonical_abi_and_empty_message() {
         "historical-valid",
         "historical-valid-long-message",
         "go-right-padded-message",
+        "signed-message-length-tail",
     ] {
         assert_eq!(row(name)["output"], valid_word, "{name}");
     }
     assert_eq!(row("beyond-go-right-padding")["output"], invalid_word);
+    assert_ne!(row("wrapped-message-length-panic")["panic"], "");
     for name in [
         "reordered-fields",
         "unaligned-fields",

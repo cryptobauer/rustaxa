@@ -23,7 +23,12 @@ The post-selector ABI has three 32-byte offset words for signature, verifying ke
 and raw message. Like Go `big.Int.Uint64`, each offset and length uses only its
 low 64 bits. Offsets need not be aligned, ordered, or canonical. Every offset and
 length must be nonzero and identify an in-bounds field after Go's post-selector
-`getData` call right-pads the view with four zero bytes. The signature must be
+`getData` call right-pads the view with four zero bytes. Go converts the outer
+bounds expression to signed `int`; consequently a message length with bit 63 set
+can bypass that check and consume the finite tail. The adapter preserves that
+accepted finite behavior. If unsigned start-plus-length wraps and the Go
+reference would panic while slicing, the adapter reports an explicit
+infrastructure error rather than inventing a normal invalid result. The signature must be
 exactly 666 bytes and the verifying key exactly 897 bytes. Empty messages are
 rejected before cryptography even when the signature is mathematically valid;
 trailing input is ignored.
@@ -51,17 +56,19 @@ both pinned Go revisions:
 - public `6c7e5338b22d5e596cc2365a88d1f94840e1ee1b`;
 - local `bb0ab67c8cda1220aed74ecb01d2c4ca7c9bb418`.
 
-Their 31-row artifacts are byte-identical with SHA-256
-`76637d00405e0bf02feed1048eaeed3ff33f8671cb6fd0e62c4fc48cf91c4182`.
+Their 33-row artifacts are byte-identical with SHA-256
+`0a2d8d4b9cb8a34951f1a4409eedf1ed021bf540be3c368364bfe5f300acd96d`.
 The exporter SHA-256 is
-`59c55f99ac99b57fb2d5b92c721cde101d147e1f8c6b2c5c789a729aa2fa122b`.
+`ab0beb5d67e7bcd4fa3b1a49f32b7b9e9437b2a6cc54570775dc8f7393f036b4`.
 The corpus covers empty and short input, the wrong selector, truncated headers,
 each zero/out-of-range offset, each zero/truncated length, wrong fixed field
 lengths, historical valid short and 257-byte messages, invalid signature/message,
 a historically valid empty message rejected by ABI, reordered and unaligned
 fields, nonzero high offset and length bits, and accepted trailing bytes. It also
 distinguishes a signed message reconstructed by Go's four-byte right-padding from
-a field extending beyond that padding.
+a field extending beyond that padding. It also proves that the signed `int`
+length edge can verify from the finite tail and records the unsigned-wrap panic
+as an explicit diagnostic fixture.
 
 The Rust test compares every row one gas below, exactly at, and one gas above its
 quote for CALL, CALLCODE, DELEGATECALL, and STATICCALL contexts. It validates the

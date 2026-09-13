@@ -7,8 +7,8 @@
   "go_version": "go version go1.24.4 linux/amd64",
   "scope": "Direct Cacti Falcon-512 RequiredGas/Run behavior at exact address 0xfa1c: selector errors, ABI offsets and lengths, historical crypto, empty message, invalid results and gas; no frame route or production claim",
   "sha256": {
-    "public": "76637d00405e0bf02feed1048eaeed3ff33f8671cb6fd0e62c4fc48cf91c4182",
-    "local": "76637d00405e0bf02feed1048eaeed3ff33f8671cb6fd0e62c4fc48cf91c4182"
+    "public": "0a2d8d4b9cb8a34951f1a4409eedf1ed021bf540be3c368364bfe5f300acd96d",
+    "local": "0a2d8d4b9cb8a34951f1a4409eedf1ed021bf540be3c368364bfe5f300acd96d"
   },
-  "exporter_sha256": "59c55f99ac99b57fb2d5b92c721cde101d147e1f8c6b2c5c789a729aa2fa122b"
+  "exporter_sha256": "ab0beb5d67e7bcd4fa3b1a49f32b7b9e9437b2a6cc54570775dc8f7393f036b4"
 }

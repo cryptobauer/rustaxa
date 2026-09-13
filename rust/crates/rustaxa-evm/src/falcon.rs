@@ -7,6 +7,8 @@
 //! `fn-dsa-vrfy` 0.3 implementation. It does not select the Cacti registry or
 //! settle CALL-family frames.
 
+use std::borrow::Cow;
+
 use fn_dsa_vrfy::{
     DOMAIN_NONE, FN_DSA_LOGN_512, HASH_ID_RAW, VerifyingKey as _, VerifyingKeyStandard,
     signature_size, vrfy_key_size,
@@ -108,8 +110,12 @@ impl PreparedFalconCall {
         }
         let mut body = input[VERIFY_SELECTOR.len()..].to_vec();
         body.resize(input.len(), 0);
-        let output = verify_abi(&body);
-        Ok(self.success(output))
+        match verify_abi(&body) {
+            Ok(output) => Ok(self.success(output)),
+            Err(AbiFailure::ReferencePanic) => Err(NativePortError::Infrastructure(
+                "Falcon reference ABI would panic".into(),
+            )),
+        }
     }
 
     fn success(&self, output: [u8; 32]) -> NativeInvocationResult {
@@ -139,47 +145,84 @@ impl PreparedFalconCall {
     }
 }
 
-fn verify_abi(input: &[u8]) -> [u8; 32] {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AbiFailure {
+    ReferencePanic,
+}
+
+fn verify_abi(input: &[u8]) -> Result<[u8; 32], AbiFailure> {
     let mut result = [0_u8; 32];
     result[31] = 1;
     let Some(header) = input.get(..96) else {
-        return result;
+        return Ok(result);
     };
-    let Some(signature) = dynamic(input, low_u64(&header[..32])) else {
-        return result;
+    let Some(signature) = dynamic(input, low_u64(&header[..32]))? else {
+        return Ok(result);
     };
     if signature.len() != signature_size(FN_DSA_LOGN_512) {
-        return result;
+        return Ok(result);
     }
-    let Some(key) = dynamic(input, low_u64(&header[32..64])) else {
-        return result;
+    let Some(key) = dynamic(input, low_u64(&header[32..64]))? else {
+        return Ok(result);
     };
     if key.len() != vrfy_key_size(FN_DSA_LOGN_512) {
-        return result;
+        return Ok(result);
     }
-    let Some(message) = dynamic(input, low_u64(&header[64..96])) else {
-        return result;
+    let Some(message) = dynamic(input, low_u64(&header[64..96]))? else {
+        return Ok(result);
     };
-    let valid = VerifyingKeyStandard::decode(key)
-        .is_some_and(|key| key.verify(signature, &DOMAIN_NONE, &HASH_ID_RAW, message));
+    let valid = VerifyingKeyStandard::decode(&key)
+        .is_some_and(|key| key.verify(&signature, &DOMAIN_NONE, &HASH_ID_RAW, &message));
     if valid {
         result[31] = 0;
     }
-    result
+    Ok(result)
 }
 
-fn dynamic(input: &[u8], offset: u64) -> Option<&[u8]> {
+fn dynamic(input: &[u8], offset: u64) -> Result<Option<Cow<'_, [u8]>>, AbiFailure> {
     if offset == 0 {
-        return None;
+        return Ok(None);
     }
-    let offset = usize::try_from(offset).ok()?;
-    let length_word = input.get(offset..offset.checked_add(32)?)?;
-    let length = usize::try_from(low_u64(length_word)).ok()?;
+    if go_len(input) < go_int(offset).wrapping_add(32) {
+        return Ok(None);
+    }
+    let length = low_u64(&go_data(input, offset, 32)?);
     if length == 0 {
-        return None;
+        return Ok(None);
     }
-    let start = offset.checked_add(32)?;
-    input.get(start..start.checked_add(length)?)
+    let declared_end = go_int(offset).wrapping_add(32).wrapping_add(go_int(length));
+    if go_len(input) < declared_end {
+        return Ok(None);
+    }
+    go_data(input, offset.wrapping_add(32), length).map(Some)
+}
+
+fn go_data(input: &[u8], start: u64, size: u64) -> Result<Cow<'_, [u8]>, AbiFailure> {
+    let input_len = u64::try_from(input.len()).expect("input length fits u64");
+    let start = start.min(input_len);
+    let mut end = start.wrapping_add(size);
+    if end > input_len {
+        end = input_len;
+    }
+    if end < start {
+        return Err(AbiFailure::ReferencePanic);
+    }
+    let bytes = &input[usize::try_from(start).unwrap()..usize::try_from(end).unwrap()];
+    let signed_size = go_int(size);
+    if signed_size < 0 || bytes.len() >= usize::try_from(signed_size).unwrap() {
+        return Ok(Cow::Borrowed(bytes));
+    }
+    let mut padded = bytes.to_vec();
+    padded.resize(usize::try_from(signed_size).unwrap(), 0);
+    Ok(Cow::Owned(padded))
+}
+
+fn go_len(input: &[u8]) -> i64 {
+    i64::try_from(input.len()).expect("host slice length fits Go int")
+}
+
+fn go_int(value: u64) -> i64 {
+    value as i64
 }
 
 fn low_u64(word: &[u8]) -> u64 {

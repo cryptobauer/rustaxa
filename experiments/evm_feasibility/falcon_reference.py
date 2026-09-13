@@ -49,6 +49,7 @@ def validate_artifact(label, data):
         "required_gas",
         "output",
         "error",
+        "panic",
         "cryptographic_valid",
     }
     for index, row in enumerate(rows):
@@ -66,13 +67,18 @@ def validate_artifact(label, data):
         expected_gas = 1465 + 6 * ((len(input_bytes) + 31) // 32)
         if row["required_gas"] != expected_gas:
             fail(f"{label} row {index} has an invalid gas quote")
-        if not isinstance(row["error"], str) or not isinstance(
-            row["cryptographic_valid"], bool
+        if (
+            not isinstance(row["error"], str)
+            or not isinstance(row["panic"], str)
+            or not isinstance(row["cryptographic_valid"], bool)
         ):
             fail(f"{label} row {index} has invalid result metadata")
-        if row["error"] and output:
-            fail(f"{label} row {index} returned output with a contract error")
-        if not row["error"] and output not in (bytes(32), bytes(31) + b"\x01"):
+        if (row["error"] or row["panic"]) and output:
+            fail(f"{label} row {index} returned output with an error or panic")
+        if not row["error"] and not row["panic"] and output not in (
+            bytes(32),
+            bytes(31) + b"\x01",
+        ):
             fail(f"{label} row {index} returned a noncanonical result word")
     needed = {
         "empty-input",
@@ -97,6 +103,8 @@ def validate_artifact(label, data):
         "historical-valid-long-message",
         "go-right-padded-message",
         "beyond-go-right-padding",
+        "signed-message-length-tail",
+        "wrapped-message-length-panic",
         "invalid-signature",
         "invalid-message",
         "reordered-fields",
