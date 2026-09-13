@@ -92,9 +92,16 @@ incompatible fallback order. Transaction-location evidence describes only decodi
 complete location row/key/position/system-flag validation was not performed.
 
 
-The owner additionally suspects that the producing validator used public address
+The owner additionally suspects that the node which created the snapshot was
+associated with public validator address
 `0xfbb85d00ca77b0d49da4f71a91de552bce88b083`, but explicitly cannot confirm it.
 This is an unverified provenance clue. A matching validator record in the copied
 network state can provide a cross-check, but cannot identify which node produced
 the snapshot or establish its build/capture procedure. No private signing keys
 are required for this check or native-state reconstruction.
+
+The owner clarifies that this node did not have enough stake to produce blocks
+or vote. Record this as owner-reported participation context. Its presence in
+the validator index establishes registration, not eligibility, block production
+or voting activity. Here “snapshot producer” means the node that created the
+database copy; it does not mean a consensus block producer.

@@ -265,3 +265,13 @@ native layout and compared with every live path in this inventory. Unknown live
 paths would have to reject that snapshot. Even an exact live match would still
 need a separate explicit policy for deleted history and checkpoint catalog
 lineage before offline adoption.
+
+
+## Owner clarification: candidate participation
+
+The owner reports that the node associated with the suspected address
+`0xfbb85d00ca77b0d49da4f71a91de552bce88b083` lacked enough stake to produce
+blocks or vote. The authenticated validator-index entry establishes registration
+only; it does not establish eligibility or active consensus participation.
+The address remains an uncertain attribution to the node that created the
+snapshot. Creating a snapshot does not require producing consensus blocks.
