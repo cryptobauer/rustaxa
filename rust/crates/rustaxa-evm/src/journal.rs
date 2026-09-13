@@ -192,9 +192,23 @@ struct StorageCell {
 
 #[derive(Clone, Debug)]
 enum Undo {
-    Account {
+    Creation {
         address: JournalAddress,
         previous: Option<JournalAccount>,
+    },
+    Touch {
+        address: JournalAddress,
+    },
+    Nonce {
+        address: JournalAddress,
+        previous: FinalChainNonce,
+    },
+    Balance {
+        address: JournalAddress,
+        previous: ExecutionBalance,
+    },
+    Code {
+        address: JournalAddress,
     },
     Storage {
         address: JournalAddress,
@@ -278,12 +292,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         let state = self.take_top(checkpoint)?;
         while self.undo.len() > state.undo_len {
             match self.undo.pop().expect("undo length checked") {
-                Undo::Account { address, previous } => {
-                    let removed_creation = self
-                        .accounts
-                        .get(&address)
-                        .is_some_and(|current| current.exists)
-                        && previous.as_ref().is_none_or(|prior| !prior.exists);
+                Undo::Creation { address, previous } => {
                     match previous {
                         Some(account) => {
                             self.accounts.insert(address, account);
@@ -292,22 +301,61 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
                             self.accounts.remove(&address);
                         }
                     }
-                    if removed_creation {
-                        self.raw.retain(|(owner, _), _| owner != &address);
-                    }
+                    self.raw.retain(|(owner, _), _| owner != &address);
+                }
+                Undo::Touch { address } => {
+                    let account = self
+                        .accounts
+                        .get_mut(&address)
+                        .expect("touched account exists");
+                    account.mod_count = account.mod_count.saturating_sub(1);
+                    account.times_touched = account.times_touched.saturating_sub(1);
+                }
+                Undo::Nonce { address, previous } => {
+                    let account = self
+                        .accounts
+                        .get_mut(&address)
+                        .expect("nonce account exists");
+                    account.nonce = previous;
+                    account.mod_count = account.mod_count.saturating_sub(1);
+                }
+                Undo::Balance { address, previous } => {
+                    let account = self
+                        .accounts
+                        .get_mut(&address)
+                        .expect("balance account exists");
+                    account.balance = previous;
+                    account.mod_count = account.mod_count.saturating_sub(1);
+                }
+                Undo::Code { address } => {
+                    let account = self
+                        .accounts
+                        .get_mut(&address)
+                        .expect("code account exists");
+                    account.code_hash = None;
+                    account.code_size = 0;
+                    account.code = None;
+                    account.mod_count = account.mod_count.saturating_sub(1);
                 }
                 Undo::Storage {
                     address,
                     key,
                     previous,
-                } => match previous {
-                    Some(cell) => {
-                        self.ordinary.insert((address, key), cell);
+                } => {
+                    match previous {
+                        Some(cell) => {
+                            self.ordinary.insert((address, key), cell);
+                        }
+                        None => {
+                            self.ordinary.remove(&(address, key));
+                        }
                     }
-                    None => {
-                        self.ordinary.remove(&(address, key));
-                    }
-                },
+                    let account = self
+                        .accounts
+                        .get_mut(&address)
+                        .expect("storage account exists");
+                    account.mod_count = account.mod_count.saturating_sub(1);
+                }
             }
         }
         self.logs.truncate(state.logs_len);
@@ -330,16 +378,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         if !current.empty() {
             return Ok(());
         }
-        let mut undo_account = current.clone();
-        if address == ripemd_address() {
-            // The pinned Go account carries this historical dirty increment
-            // outside the touch undo callback.
-            undo_account.mod_count = undo_account.mod_count.saturating_add(1);
-        }
-        self.undo.push(Undo::Account {
-            address,
-            previous: Some(undo_account),
-        });
+        self.undo.push(Undo::Touch { address });
         let account = self
             .accounts
             .get_mut(&address)
@@ -368,8 +407,13 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         {
             return Err(JournalError::NonceDecrease);
         }
-        let previous = self.accounts.get(&address).cloned();
-        self.undo.push(Undo::Account { address, previous });
+        let previous = self
+            .accounts
+            .get(&address)
+            .expect("account was ensured")
+            .nonce
+            .clone();
+        self.undo.push(Undo::Nonce { address, previous });
         let account = self
             .accounts
             .get_mut(&address)
@@ -386,8 +430,13 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         balance: ExecutionBalance,
     ) -> Result<(), JournalError> {
         self.ensure_account(address)?;
-        let previous = self.accounts.get(&address).cloned();
-        self.undo.push(Undo::Account { address, previous });
+        let previous = self
+            .accounts
+            .get(&address)
+            .expect("account was ensured")
+            .balance
+            .clone();
+        self.undo.push(Undo::Balance { address, previous });
         let account = self
             .accounts
             .get_mut(&address)
@@ -411,8 +460,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         if code.is_empty() {
             return Ok(());
         }
-        let previous = self.accounts.get(&address).cloned();
-        self.undo.push(Undo::Account { address, previous });
+        self.undo.push(Undo::Code { address });
         let account = self
             .accounts
             .get_mut(&address)
@@ -530,11 +578,6 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
         if cell.current == value {
             return Ok(());
         }
-        let account_previous = self.accounts.get(&address).cloned();
-        self.undo.push(Undo::Account {
-            address,
-            previous: account_previous,
-        });
         let account = self
             .accounts
             .get_mut(&address)
@@ -749,7 +792,7 @@ impl<R: ConcreteStateRead> ExecutionJournal<R> {
             return Ok(());
         }
         let previous = self.accounts.get(&address).cloned();
-        self.undo.push(Undo::Account { address, previous });
+        self.undo.push(Undo::Creation { address, previous });
         self.accounts.insert(
             address,
             JournalAccount {

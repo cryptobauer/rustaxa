@@ -299,7 +299,7 @@ fn journal_matches_mutator_edge_oracle() {
     ))
     .expect("parse mutator fixture");
     let cases = fixture.as_array().expect("fixture array");
-    assert_eq!(cases.len(), 8);
+    assert_eq!(cases.len(), 9);
 
     for case in cases {
         let address: [u8; 20] = parse_hex(case["address"].as_str().unwrap())
@@ -355,6 +355,20 @@ fn journal_matches_mutator_edge_oracle() {
                 journal.touch_account(address).unwrap();
                 journal.revert_checkpoint(checkpoint).unwrap();
             }
+            "empty-nonce-raw-revert" => {
+                let checkpoint = journal.checkpoint();
+                journal
+                    .set_nonce(address, FinalChainNonce::from_u64(1))
+                    .unwrap();
+                journal
+                    .set_raw_storage(
+                        address,
+                        KEY,
+                        NativeRawOperation::Put(NativeRawValue::new(vec![0x44]).unwrap()),
+                    )
+                    .unwrap();
+                journal.revert_checkpoint(checkpoint).unwrap();
+            }
             other => panic!("unknown mutator case {other}"),
         }
 
@@ -397,7 +411,7 @@ fn journal_matches_reverse_nested_and_nil_root_oracle() {
     ))
     .expect("parse extended fixture");
     let cases = fixture.as_array().expect("fixture array");
-    assert_eq!(cases.len(), 10);
+    assert_eq!(cases.len(), 12);
 
     for case in cases {
         let before = &case["before"];
