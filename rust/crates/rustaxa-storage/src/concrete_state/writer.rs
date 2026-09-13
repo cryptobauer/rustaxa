@@ -15,7 +15,7 @@ use rocksdb::{ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, Writ
 use rustaxa_types::FinalChainBlockNumber;
 use rustaxa_types::concrete_state::{
     ConcreteAccountRecord, ConcreteRead, ConcreteReadError, ConcreteStateIdentity,
-    ConcreteStorageKey,
+    ConcreteStateRead, ConcreteStorageKey,
 };
 
 use super::codec::{
@@ -28,7 +28,7 @@ use super::physical_node::{
 use super::trie_writer::{IncrementalTrie, TrieWriteStore};
 
 const DESCRIPTOR_KEY: &[u8] = b"last_committed_descriptor";
-const REQUIRED_COLUMNS: &[&str] = &["default", "1", "2", "3", "4", "5", "6", "7", "8"];
+pub(super) const REQUIRED_COLUMNS: &[&str] = &["default", "1", "2", "3", "4", "5", "6", "7", "8"];
 static NEXT_WRITER_ID: AtomicU64 = AtomicU64::new(1);
 
 /// One account-row change. Storage roots in upsert records are never trusted:
@@ -43,6 +43,56 @@ pub enum ConcreteAccountMutation {
     Delete {
         address: [u8; 20],
     },
+}
+
+impl ConcreteStateRead for ConcreteStateWriter {
+    fn identity(&self) -> ConcreteStateIdentity {
+        self.prior
+    }
+
+    fn account(
+        &self,
+        address: [u8; 20],
+    ) -> Result<ConcreteRead<ConcreteAccountRecord>, ConcreteReadError> {
+        self.verify_prior_account(address)?;
+        match select_version(
+            &self.db,
+            "3",
+            account_version_prefix(address),
+            self.prior.period,
+        )? {
+            Some(value) if value.is_empty() => Ok(ConcreteRead::Tombstone),
+            Some(value) => decode_physical_account(&value).map(ConcreteRead::Present),
+            None => Ok(ConcreteRead::Absent),
+        }
+    }
+
+    fn storage(
+        &self,
+        address: [u8; 20],
+        key: ConcreteStorageKey,
+    ) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        match select_version(
+            &self.db,
+            "5",
+            storage_version_prefix(address, key),
+            self.prior.period,
+        )? {
+            Some(value) if value.is_empty() => Ok(ConcreteRead::Tombstone),
+            Some(value) => Ok(ConcreteRead::Present(value)),
+            None => Err(ConcreteReadError::HistoryUnavailable(self.prior)),
+        }
+    }
+
+    fn code(&self, code_hash: [u8; 32]) -> Result<ConcreteRead<Vec<u8>>, ConcreteReadError> {
+        let Some(code) = self.get("1", &code_hash)? else {
+            return Err(ConcreteReadError::HistoryUnavailable(self.prior));
+        };
+        if keccak256(&code) != code_hash {
+            return Err(corrupt("code bytes do not match their Keccak-256 key"));
+        }
+        Ok(ConcreteRead::Present(code))
+    }
 }
 
 impl ConcreteAccountMutation {
@@ -89,7 +139,7 @@ pub struct PreparedConcreteState {
     next: ConcreteStateIdentity,
     writer_id: u64,
     sequence: u64,
-    rows: BTreeMap<RowKey, Vec<u8>>,
+    pub(super) rows: BTreeMap<RowKey, Vec<u8>>,
 }
 
 impl PreparedConcreteState {
@@ -106,16 +156,16 @@ impl PreparedConcreteState {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct RowKey {
-    column: &'static str,
-    key: Vec<u8>,
+pub(super) struct RowKey {
+    pub(super) column: &'static str,
+    pub(super) key: Vec<u8>,
 }
 
 /// Mutable handle for compatible concrete-state preparation. Opening requires
 /// an exact descriptor match. The handle neither creates a database nor
 /// publishes descriptors, provenance, catalogs, or application markers.
 pub struct ConcreteStateWriter {
-    db: DB,
+    pub(super) db: DB,
     path: PathBuf,
     prior: ConcreteStateIdentity,
     writer_id: u64,
@@ -171,13 +221,40 @@ impl ConcreteStateWriter {
         next_period: FinalChainBlockNumber,
         mutations: ConcreteStateMutationBatch,
     ) -> Result<PreparedConcreteState, ConcreteReadError> {
-        if self.prior.period.checked_next() != Some(next_period) {
-            return Err(corrupt(
-                "prepared state period must immediately follow its prior",
-            ));
-        }
-        if current_identity(&self.db)? != self.prior {
-            return Err(corrupt("concrete descriptor changed after writer open"));
+        self.prepare_inner(next_period, mutations, false)
+    }
+
+    pub(super) fn prepare_genesis(
+        &self,
+        mutations: ConcreteStateMutationBatch,
+    ) -> Result<PreparedConcreteState, ConcreteReadError> {
+        self.prepare_inner(FinalChainBlockNumber::GENESIS, mutations, true)
+    }
+
+    fn prepare_inner(
+        &self,
+        next_period: FinalChainBlockNumber,
+        mutations: ConcreteStateMutationBatch,
+        genesis: bool,
+    ) -> Result<PreparedConcreteState, ConcreteReadError> {
+        if genesis {
+            if self.prior.period != FinalChainBlockNumber::GENESIS
+                || self.prior.state_root != empty_trie_root()
+                || self.db.get(DESCRIPTOR_KEY).map_err(io)?.is_some()
+            {
+                return Err(corrupt(
+                    "genesis preparation requires a fresh descriptorless database",
+                ));
+            }
+        } else {
+            if self.prior.period.checked_next() != Some(next_period) {
+                return Err(corrupt(
+                    "prepared state period must immediately follow its prior",
+                ));
+            }
+            if current_identity(&self.db)? != self.prior {
+                return Err(corrupt("concrete descriptor changed after writer open"));
+            }
         }
         if self.persisted_sequence.get().is_some() {
             return Err(corrupt(
@@ -421,6 +498,35 @@ impl ConcreteStateWriter {
             return Err(corrupt("cannot stage rows after descriptor changed"));
         }
         let mut batch = WriteBatch::default();
+        self.append_prepared_contents(prepared, &mut batch, false)?;
+        self.db.write(batch).map_err(io)?;
+        self.persisted_sequence.set(Some(prepared.sequence));
+        Ok(())
+    }
+
+    pub(super) fn append_prepared_contents(
+        &self,
+        prepared: &PreparedConcreteState,
+        batch: &mut WriteBatch,
+        genesis: bool,
+    ) -> Result<(), ConcreteReadError> {
+        if prepared.writer_id != self.writer_id
+            || prepared.prior != self.prior
+            || prepared.sequence != self.sequence.get()
+        {
+            return Err(corrupt(
+                "prepared state is stale or belongs to another writer",
+            ));
+        }
+        if genesis {
+            if self.db.get(DESCRIPTOR_KEY).map_err(io)?.is_some() {
+                return Err(corrupt(
+                    "fresh database acquired a descriptor before genesis commit",
+                ));
+            }
+        } else if current_identity(&self.db)? != self.prior {
+            return Err(corrupt("cannot use prepared rows after descriptor changed"));
+        }
         for (row, value) in &prepared.rows {
             let handle = self
                 .db
@@ -439,8 +545,6 @@ impl ConcreteStateWriter {
             }
             batch.put_cf(&handle, &row.key, value);
         }
-        self.db.write(batch).map_err(io)?;
-        self.persisted_sequence.set(Some(prepared.sequence));
         Ok(())
     }
 
@@ -477,6 +581,30 @@ impl ConcreteStateWriter {
     /// Returns the database path this handle is pinned to.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(super) fn from_fresh_database(db: DB, path: PathBuf) -> Self {
+        Self {
+            db,
+            path,
+            prior: ConcreteStateIdentity {
+                period: FinalChainBlockNumber::GENESIS,
+                state_root: empty_trie_root(),
+            },
+            writer_id: NEXT_WRITER_ID.fetch_add(1, Ordering::Relaxed),
+            sequence: Cell::new(0),
+            persisted_sequence: Cell::new(None),
+        }
+    }
+
+    pub(super) fn invalidate_preparations(&self) -> Result<(), ConcreteReadError> {
+        let sequence = self
+            .sequence
+            .get()
+            .checked_add(1)
+            .ok_or_else(|| corrupt("concrete writer preparation sequence overflow"))?;
+        self.sequence.set(sequence);
+        Ok(())
     }
 
     fn select_account(
@@ -707,8 +835,7 @@ fn current_identity(db: &DB) -> Result<ConcreteStateIdentity, ConcreteReadError>
     decode_descriptor(&bytes)
 }
 
-#[cfg(test)]
-fn encode_descriptor(identity: ConcreteStateIdentity) -> Vec<u8> {
+pub(super) fn encode_descriptor(identity: ConcreteStateIdentity) -> Vec<u8> {
     let mut stream = RlpStream::new_list(2);
     stream.append(&identity.period.as_u64());
     stream.append(&identity.state_root.as_slice());
