@@ -45,7 +45,12 @@ use rustaxa_types::{
     StoredFinalChainBlockHeader,
 };
 use serde_json::Value;
-use std::{cell::RefCell, collections::BTreeMap, path::Path, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+    path::Path,
+    sync::Arc,
+};
 
 fn bytes(value: &Value) -> Vec<u8> {
     hex::decode(value.as_str().expect("fixture hex string")).unwrap()
@@ -162,12 +167,23 @@ struct Staged {
     projection: FinalChainConcreteStateProjection,
     provenance: Vec<u8>,
 }
+/// Deterministic test-only loss of the commit call/acknowledgment. Dropping the
+/// writer also makes immediate observation unavailable, leaving the application's
+/// real pending intent for recovery after both owners close. No disk-failure or
+/// process-kill behavior is simulated by this boundary injection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommitInterruption {
+    None,
+    BeforeCommit,
+    AfterCommit,
+}
 struct Adapter<'a> {
     chain: &'a FinalChain,
     application: &'a Storage,
     concrete: RefCell<Option<ConcreteStateLifecycle>>,
     staged: RefCell<Option<Staged>>,
     fixture: &'a Value,
+    interruption: CommitInterruption,
 }
 impl ConsensusExecutionPort for Adapter<'_> {
     fn load_final_chain_committed_state(
@@ -594,6 +610,10 @@ impl ConsensusExecutionPort for Adapter<'_> {
             .borrow_mut()
             .take()
             .ok_or_else(|| anyhow::anyhow!("fixture concrete handle unavailable"))?;
+        if self.interruption == CommitInterruption::BeforeCommit {
+            drop(concrete);
+            bail!("fixture interrupted before concrete commit");
+        }
         let catalog = concrete.observation()?.catalog_rlp;
         let observed = concrete.commit_approved(
             staged.prepared,
@@ -610,6 +630,9 @@ impl ConsensusExecutionPort for Adapter<'_> {
                 && observed.provenance_rlp == request.concrete_provenance_rlp,
             "concrete commit observation"
         );
+        if self.interruption == CommitInterruption::AfterCommit {
+            bail!("fixture interrupted after concrete commit");
+        }
         Ok(FinalChainExternalEvmStateCommitResult {
             request_id: request.request_id,
             plan_id: request.plan_id,
@@ -766,6 +789,419 @@ fn verify_receipts(storage: &Storage, period: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Recovery exposes durable observations and exact owner-authorized discard
+/// only. In particular it cannot reexecute a transaction or manufacture a new
+/// publication intent while reconciling the two databases.
+struct RecoveryLeaf<'a> {
+    path: &'a Path,
+    chain_id: [u8; 32],
+    discards: Cell<usize>,
+}
+impl FinalChainExecutionLeaf for RecoveryLeaf<'_> {
+    fn load_committed_state_descriptor(
+        &self,
+        request: &FinalChainExternalEvmPreflightRequest,
+    ) -> Result<FinalChainExternalEvmPreflightReport> {
+        ensure!(
+            request.concrete_chain_identity == self.chain_id,
+            "recovery chain"
+        );
+        let observed = ConcreteStateLifecycle::inspect_existing(self.path, self.chain_id)?;
+        Ok(FinalChainExternalEvmPreflightReport {
+            request_id: request.request_id,
+            committed: FinalChainExternalEvmCommittedStateDescriptor {
+                period: observed.committed.period,
+                state_root: observed.committed.state_root,
+            },
+            concrete_provenance_rlp: observed.provenance_rlp,
+            pending_concrete_marker_rlp: observed.pending_marker_rlp,
+            succeeded: true,
+            error_code: String::new(),
+        })
+    }
+    fn discard_staged_state(
+        &self,
+        request: &FinalChainExternalEvmDiscardRequest,
+    ) -> Result<FinalChainExternalEvmDiscardReport> {
+        let mut concrete = ConcreteStateLifecycle::open(
+            self.path,
+            self.chain_id,
+            ConcreteStateIdentity {
+                period: request.prior_state.period,
+                state_root: request.prior_state.state_root,
+            },
+        )?;
+        ensure!(
+            concrete_state_bytes_digest(&request.concrete_marker_rlp) == request.marker_hash,
+            "recovery discard marker hash"
+        );
+        concrete.discard_execution(&request.concrete_marker_rlp)?;
+        let observed = concrete.observation()?;
+        ensure!(
+            observed.pending_marker_rlp.is_empty(),
+            "recovery discard pending marker"
+        );
+        self.discards.set(self.discards.get() + 1);
+        Ok(FinalChainExternalEvmDiscardReport {
+            request_id: request.request_id,
+            period: request.period,
+            concrete_marker_rlp: request.concrete_marker_rlp.clone(),
+            marker_hash: request.marker_hash,
+            prior_state: request.prior_state,
+            committed_state: FinalChainExternalEvmCommittedStateDescriptor {
+                period: observed.committed.period,
+                state_root: observed.committed.state_root,
+            },
+            succeeded: true,
+            error_code: String::new(),
+        })
+    }
+    fn load_system_transaction_facts(
+        &self,
+        _: &FinalChainSystemTransactionFactsRequest,
+    ) -> Result<FinalChainSystemTransactionPlanFact> {
+        bail!("recovery cannot select system transactions")
+    }
+    fn execute_transactions(
+        &self,
+        _: &FinalChainEvmExecutionRequest,
+    ) -> Result<FinalChainEvmExecutionReport> {
+        bail!("recovery cannot reexecute transactions")
+    }
+    fn distribute_rewards(
+        &self,
+        _: &FinalChainEvmRewardsRequest,
+    ) -> Result<FinalChainEvmRewardsReport> {
+        bail!("recovery cannot reexecute rewards")
+    }
+    fn commit_staged_state(
+        &self,
+        _: &FinalChainExternalEvmStateCommitIntent,
+    ) -> Result<FinalChainExternalEvmStateCommitResult> {
+        bail!("recovery cannot commit a new concrete generation")
+    }
+}
+
+fn fresh_concrete(
+    path: &Path,
+    chain: &FinalChain,
+    fixture: &Value,
+) -> Result<ConcreteStateLifecycle> {
+    Ok(ConcreteStateLifecycle::create_fresh_exclusive(
+        path,
+        chain.concrete_chain_identity()?,
+        ConcreteStateMutationBatch {
+            accounts: vec![ConcreteAccountMutation::Upsert {
+                address: fixed(&fixture["inputs"]["sender"]),
+                record: record(
+                    FinalChainNonce::zero(),
+                    ConcreteAccountBalance::new(BigUint::from(1_000_000_u64)),
+                    None,
+                    0,
+                ),
+            }],
+            ..Default::default()
+        },
+        Vec::new(),
+    )?)
+}
+
+/// Exercise loss of a commit call and of a successful acknowledgment separately.
+/// Every assertion observes real RocksDB rows through the existing application
+/// owner; this is a bounded callback-interruption regression, not an I/O fault
+/// campaign or a claim about process-crash durability.
+#[test]
+fn interrupted_commit_reopens_reconciles_once_and_continues() -> Result<()> {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/s4_public.json"
+    ))?;
+    let first = &fixture["periods"][0];
+    for interruption in [
+        CommitInterruption::BeforeCommit,
+        CommitInterruption::AfterCommit,
+    ] {
+        let path = std::env::temp_dir().join(format!(
+            "rustaxa-evm-s4-recovery-{}-{interruption:?}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&path)?;
+        let application_path = path.join("application");
+        let concrete_path = path.join("state_db");
+        let (application, chain) = open_chain(&application_path, &fixture)?;
+        let concrete = fresh_concrete(&concrete_path, &chain, &fixture)?;
+        let genesis = concrete.observation()?;
+        ensure!(
+            genesis.committed.state_root == fixed::<32>(&first["prior_root"]),
+            "genesis root"
+        );
+        let adapter = Adapter {
+            chain: &chain,
+            application: &application,
+            concrete: RefCell::new(Some(concrete)),
+            staged: RefCell::new(None),
+            fixture: first,
+            interruption,
+        };
+        recover_final_chain_application_state(&chain, &adapter)?;
+        let error = execute_final_chain_application_task(
+            &chain,
+            request(first)?,
+            FinalChainProposalPeriodDagLevelUpdate::default(),
+            false,
+            [0x99; 20],
+            &adapter,
+        )
+        .expect_err("injected commit interruption must leave recovery work");
+        ensure!(
+            format!("{error:#}").contains("fixture interrupted"),
+            "unexpected failure: {error:#}"
+        );
+        ensure!(
+            chain.last_block_number_typed()? == FinalChainBlockNumber::GENESIS,
+            "premature publication"
+        );
+        ensure!(
+            application.final_chain().block_header_raw(1)?.is_none(),
+            "unpublished header visible"
+        );
+        for tx in first["transactions"].as_array().unwrap() {
+            ensure!(
+                application
+                    .final_chain()
+                    .receipt_by_trx_hash(H256(fixed(&tx["hash"])))?
+                    .is_none(),
+                "unpublished receipt visible"
+            );
+        }
+        let pending = application
+            .final_chain()
+            .external_evm_pending_publication_raw()?
+            .ok_or_else(|| anyhow::anyhow!("interruption lost durable publication intent"))?;
+        drop(adapter);
+        drop(chain);
+        drop(application);
+
+        let observed =
+            ConcreteStateLifecycle::inspect_existing(&concrete_path, genesis.identity.chain_id)?;
+        ensure!(
+            observed.identity == genesis.identity,
+            "interruption changed database identity"
+        );
+        let committed = interruption == CommitInterruption::AfterCommit;
+        ensure!(
+            observed.generation == u64::from(committed),
+            "interrupted generation"
+        );
+        ensure!(
+            observed.committed
+                == ConcreteStateIdentity {
+                    period: u64::from(committed).into(),
+                    state_root: if committed {
+                        fixed(&first["root"])
+                    } else {
+                        genesis.committed.state_root
+                    },
+                },
+            "interrupted committed descriptor"
+        );
+        ensure!(
+            observed.pending_marker_rlp.is_empty() == committed,
+            "interrupted marker boundary"
+        );
+        let expected_rows = if committed {
+            &first["rows"]
+        } else {
+            &fixture["genesis"]["rows"]
+        };
+        verify_physical_rows(&concrete_path, expected_rows)?;
+        let (application, chain) = open_chain(&application_path, &fixture)?;
+        ensure!(
+            application
+                .final_chain()
+                .external_evm_pending_publication_raw()?
+                == Some(pending),
+            "pending intent changed on reopen"
+        );
+        let recovery = RecoveryLeaf {
+            path: &concrete_path,
+            chain_id: genesis.identity.chain_id,
+            discards: Cell::new(0),
+        };
+        let report = recover_final_chain_application_state(&chain, &recovery)?;
+        ensure!(
+            report.error_code.is_empty(),
+            "recovery rejected: {}",
+            report.error_code
+        );
+        ensure!(
+            recovery.discards.get() == usize::from(!committed),
+            "wrong discard decision"
+        );
+        ensure!(
+            application
+                .final_chain()
+                .external_evm_pending_publication_raw()?
+                .is_none(),
+            "recovery left intent"
+        );
+        let after =
+            ConcreteStateLifecycle::inspect_existing(&concrete_path, genesis.identity.chain_id)?;
+        ensure!(
+            after.pending_marker_rlp.is_empty(),
+            "recovery left execution marker"
+        );
+        ensure!(
+            after.provenance_rlp == observed.provenance_rlp,
+            "recovery changed concrete provenance"
+        );
+        ensure!(
+            after.catalog_rlp == observed.catalog_rlp && after.committed == observed.committed,
+            "recovery changed concrete state"
+        );
+        if committed {
+            ensure!(
+                report.status == FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
+                "committed recovery did not publish"
+            );
+            ensure!(
+                chain.last_block_number_typed()?.as_u64() == 1,
+                "recovered head"
+            );
+            verify_receipts(&application, first)?;
+        } else {
+            ensure!(
+                report.status == FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
+                "uncommitted recovery status"
+            );
+            ensure!(
+                chain.last_block_number_typed()? == FinalChainBlockNumber::GENESIS,
+                "uncommitted state published"
+            );
+        }
+        let header_before = application.final_chain().block_header_raw(1)?;
+        let counts_before = chain.execution_status()?;
+        let receipts_before = first["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tx| {
+                application
+                    .final_chain()
+                    .receipt_by_trx_hash(H256(fixed(&tx["hash"])))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let repeated = recover_final_chain_application_state(&chain, &recovery)?;
+        ensure!(
+            repeated.status == FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
+                && repeated.error_code.is_empty(),
+            "repeat recovery status"
+        );
+        ensure!(
+            application.final_chain().block_header_raw(1)? == header_before,
+            "repeat recovery changed header"
+        );
+        ensure!(
+            chain.execution_status()? == counts_before,
+            "repeat recovery changed execution counters"
+        );
+        ensure!(
+            recovery.discards.get() == usize::from(!committed),
+            "repeat recovery discarded twice"
+        );
+        ensure!(
+            application
+                .final_chain()
+                .external_evm_pending_publication_raw()?
+                .is_none(),
+            "repeat recovery created publication intent"
+        );
+        for (tx, receipt) in first["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(receipts_before)
+        {
+            ensure!(
+                application
+                    .final_chain()
+                    .receipt_by_trx_hash(H256(fixed(&tx["hash"])))?
+                    == receipt,
+                "repeat recovery changed receipt"
+            );
+        }
+        let repeated_state =
+            ConcreteStateLifecycle::inspect_existing(&concrete_path, genesis.identity.chain_id)?;
+        ensure!(
+            repeated_state == after,
+            "repeat recovery changed concrete lifecycle metadata"
+        );
+        drop(chain);
+        drop(application);
+        verify_physical_rows(&concrete_path, expected_rows)?;
+
+        // The uncommitted case retries period one; the committed case resumes
+        // directly at period two. Both end at the identical reference history.
+        let start = usize::from(committed);
+        for period in &fixture["periods"].as_array().unwrap()[start..] {
+            let (application, chain) = open_chain(&application_path, &fixture)?;
+            let observed = ConcreteStateLifecycle::inspect_existing(
+                &concrete_path,
+                genesis.identity.chain_id,
+            )?;
+            let concrete = ConcreteStateLifecycle::open(
+                &concrete_path,
+                genesis.identity.chain_id,
+                observed.committed,
+            )?;
+            let adapter = Adapter {
+                chain: &chain,
+                application: &application,
+                concrete: RefCell::new(Some(concrete)),
+                staged: RefCell::new(None),
+                fixture: period,
+                interruption: CommitInterruption::None,
+            };
+            recover_final_chain_application_state(&chain, &adapter)?;
+            let report = execute_final_chain_application_task(
+                &chain,
+                request(period)?,
+                FinalChainProposalPeriodDagLevelUpdate::default(),
+                false,
+                [0x99; 20],
+                &adapter,
+            )?;
+            ensure!(
+                report.period.as_u64() == number(&period["period"]),
+                "continuation period"
+            );
+            for published in
+                &fixture["periods"].as_array().unwrap()[..report.period.as_u64() as usize]
+            {
+                verify_receipts(&application, published)?;
+            }
+            drop(adapter);
+            drop(chain);
+            drop(application);
+            verify_physical_rows(&concrete_path, &period["rows"])?;
+            let observed = ConcreteStateLifecycle::inspect_existing(
+                &concrete_path,
+                genesis.identity.chain_id,
+            )?;
+            ensure!(
+                observed.identity == genesis.identity
+                    && observed.generation == number(&period["period"]),
+                "continuation generation"
+            );
+            ensure!(
+                observed.committed.state_root == fixed::<32>(&period["root"]),
+                "continuation root"
+            );
+        }
+        std::fs::remove_dir_all(path)?;
+    }
+    Ok(())
+}
+
 /// Read-only diagnostic of this tiny exclusively created fixture. This is not
 /// an execution/storage port: it compares every historical row, including
 /// intermediate nodes and period suffixes, with the independently projected Go
@@ -861,6 +1297,7 @@ fn signed_periods_commit_through_final_chain_and_continue_after_reopen() -> Resu
             concrete: RefCell::new(Some(concrete)),
             staged: RefCell::new(None),
             fixture: period,
+            interruption: CommitInterruption::None,
         };
         recover_final_chain_application_state(&chain, &adapter)?;
         ensure!(

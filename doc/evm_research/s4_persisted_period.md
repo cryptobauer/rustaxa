@@ -46,8 +46,8 @@ rows, descriptor, exact application-approved provenance, monotonic catalog and
 pending-marker deletion. Only the existing FinalChain pipeline publishes the
 application generation. A read accessor cannot expose the underlying writer;
 discard invalidates older preparations, and uncertain metadata writes poison the
-handle until reopen. This fixture validates normal paired recovery and continuation,
-not interrupted-write or ambiguous-commit recovery.
+handle until reopen. The normal fixture validates paired recovery and continuation;
+the bounded callback-interruption cases below exercise ambiguous commit recovery.
 
 All application, lifecycle and concrete reader handles close. Both databases reopen,
 `recover_final_chain_application_state` validates the pair, and the second period runs
@@ -56,6 +56,34 @@ after reopening, published gas/root/hash and zero minted reward, exact account/c
 slot bytes, and every retained CF1–CF5 row. The finite complete-history read adapter is
 private to these exclusively created fixture databases; it is not an imported-state
 coverage flag or a general period accumulator.
+
+## Bounded interrupted publication
+
+Two additional synthetic cases interrupt the commit callback after the application
+has durably recorded its exact intent. One drops the concrete handle before writing
+prepared contents; the other performs the real atomic concrete commit and loses its
+acknowledgment. Immediate observation is unavailable in both cases, so the existing
+application classifier retains its pending intent. The test proves that no header or
+receipt is visible before publication, then closes both database owners.
+
+`ConcreteStateLifecycle::inspect_existing` reopens concrete state read-only without
+assuming the application's prior root. It validates existing canonical lifecycle
+metadata, chain identity and descriptor/provenance/catalog/marker consistency; it
+cannot create, repair, adopt or publish state. Mutable `open` still requires an exact
+expected committed descriptor. The supplied upstream snapshot has no Rustaxa
+provenance and cannot be adopted through either method.
+
+After reopening, the existing `recover_final_chain_application_state` owner discards
+the uncommitted marker and allows an explicit period retry, or publishes the exact
+already-committed period. Its recovery-only leaf refuses execution, rewards and new
+concrete commits. Exact CF1–CF5 maps match the Go genesis or committed-period rows at
+the interruption boundary. Repeated recovery preserves header/receipts, execution
+counters and all observed lifecycle metadata. Both cases continue to the same period
+two history and database identity, with one concrete generation per committed period.
+
+These are deterministic callback-interruption tests over real databases, not process
+kills, disk failures, torn writes or a general fault campaign. Full S7 durability,
+import, pruning and operational recovery acceptance remain open.
 
 ## Independent oracle
 
@@ -89,7 +117,7 @@ account deletion after earlier slot writes. Those remain explicit next-slice wor
 ## Reproduction and remaining gates
 
 Both Go references reproduced the committed bytes. The two focused execution
-tests, storage's 117 tests (one separate copied-snapshot test explicitly ignored),
+test targets, storage's 118 tests (one separate copied-snapshot test explicitly ignored),
 all four storage bridge tests and the repository fast gate passed. The changed
 composition test also passed strict targeted clippy. These checks use tiny
 synthetic data and do not replace the approval-gated campaigns below.

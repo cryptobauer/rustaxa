@@ -113,7 +113,10 @@ coverage remain open under the reviewed contracts. The [S4 integration map](s4_i
 existing application APIs. The [first persisted S4 path](s4_persisted_period.md)
 executes signed transfer/CREATE/reopened-CALL inputs through those owners and
 checks pinned Go results, roots, receipts and CF1–CF5 history. Full S3/S5 execution
-coverage and later acceptance gates remain open. Production routing remains unauthorized.
+coverage and later acceptance gates remain open. Bounded callback-interruption tests
+also cover discard/retry before concrete commit and exact publication after lost
+acknowledgment, using read-only lifecycle inspection and existing application recovery.
+They do not close the S7 fault/import/pruning campaign. Production routing remains unauthorized.
 
 | Slice | Dependencies / agent | Deliverable and exit criterion |
 | --- | --- | --- |
