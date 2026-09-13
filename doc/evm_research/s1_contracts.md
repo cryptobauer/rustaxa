@@ -14,6 +14,7 @@ this is not execution, persistence or production-routing acceptance.
 | Path | Writer | Responsibility |
 | --- | --- | --- |
 | `rust/crates/rustaxa-types/src/concrete_state.rs` | Lead | Shared concrete domain and read ports |
+| `rust/crates/rustaxa-types/src/concrete_lifecycle.rs` and `codec/rlp/concrete_lifecycle.rs` | Lead | Existing StateAPI identity, marker and provenance types/codecs shared with storage |
 | `rust/crates/rustaxa-evm/src/contracts.rs` | Lead after execution-worker draft review | Execution, block-hash and native invocation contracts |
 | `rust/crates/rustaxa-evm/src/{envelope,profile,journal,host,frame,result,types}.rs` | Execution worker | Taraxa mechanics over REVM interpreter components |
 | `rust/crates/rustaxa-storage/src/concrete_state/` | State worker | Compatible codecs, qualified versioned readers, later prepared writer |
@@ -29,6 +30,14 @@ for isolated tests. Existing `ConsensusExecutionPort`, its
 `FinalChainExecutionLeaf` implementation, FinalChain sessions, and
 `FinalChainExternalEvmStateCommitIntent` remain the composition and publication
 boundaries. No parallel application manager or commit identity is introduced.
+
+The lifecycle types and canonical codecs are extracted from the existing
+consensus projection module, which reexports their original public names.
+Projection/native validation remains in consensus; storage can reuse exact
+marker/provenance decoding without a dependency on consensus. The extraction
+preserves the existing field order, strict identity/width and canonical-RLP
+checks, and marker period-lineage validation. Encoding or decoding these facts
+does not authorize bootstrap, persistence or application publication.
 
 ## Reader and value invariants
 
