@@ -56,8 +56,10 @@ pub struct FinalChainConcreteExecutionMarker {
 /// One exact account value at the projection's post-rewards root.
 ///
 /// Rows are strictly address-ordered. An empty raw account RLP is a deletion
-/// tombstone; a non-empty payload must be the canonical six-field FinalChain
-/// account shape before it may update the native snapshot.
+/// tombstone; a non-empty payload uses the canonical five-field concrete
+/// main-trie account shape before it may update the native snapshot. This is
+/// the physical account RLP returned by StateAPI, not the separate FinalChain
+/// snapshot account encoding.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainConcreteAccountProjection {
     pub address: [u8; 20],
