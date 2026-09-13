@@ -13,6 +13,7 @@ use super::*;
 use rustaxa_types::concrete_state::{ConcreteRead, ConcreteReadError, ConcreteStorageKey};
 
 pub(super) mod account;
+mod concrete_checkpoint;
 pub(super) mod context_replay;
 pub(super) mod custody;
 mod query;
@@ -20,6 +21,7 @@ pub(super) mod raw;
 pub(super) mod rewards;
 
 pub use account::{FinalChainNativeAccount, FinalChainNativeOrdinaryMutation};
+pub use concrete_checkpoint::ConcreteCheckpointNativeStateRead;
 pub use raw::{
     FinalChainNativeRawMutation, FinalChainNativeRawOperation, FinalChainNativeRawValue,
     FinalChainNativeRawValueError,
