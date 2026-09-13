@@ -220,7 +220,10 @@ pub fn settle<R: ConcreteStateRead>(
     admitted: &AdmittedTransaction,
     frame: FrameSettlement,
 ) -> Result<TransactionExecutionResult, EnvelopeError> {
-    if admitted.action_gas > admitted.gas_limit || admitted.gas_limit != transaction.gas_limit {
+    if admitted.action_gas > admitted.gas_limit
+        || admitted.gas_limit != transaction.gas_limit
+        || frame.gas_left > admitted.action_gas
+    {
         return Err(EnvelopeError::GasInvariant);
     }
     if frame.status == FrameSettlementStatus::InsufficientBalanceForTransfer {
@@ -233,10 +236,6 @@ pub fn settle<R: ConcreteStateRead>(
             },
         ));
     }
-    if frame.gas_left > admitted.action_gas {
-        return Err(EnvelopeError::GasInvariant);
-    }
-
     let spent_before_refund = admitted
         .gas_limit
         .checked_sub(frame.gas_left)
