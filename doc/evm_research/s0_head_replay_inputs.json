@@ -1,0 +1,493 @@
+{
+  "schema": 1,
+  "tool_package_version": "0.0.0",
+  "tool_source_sha256": "3e8d9c11e30149aa8994264e52ae368c60ce7bf6736b5959c1e3437e8f7161f2",
+  "linked_rocksdb": "rocksdb crate 0.24.0 / librocksdb 10.4.2",
+  "input_copy": "/tmp/rustaxa-evm-s0/.snapshot-work/snapshot-litenode-copy",
+  "rocksdb_open": {
+    "mode": "DB::open_cf_descriptors_read_only",
+    "create_if_missing": false,
+    "create_missing_column_families": false,
+    "application_column_family_count": 36,
+    "state_column_family_count": 9,
+    "missing_current_rust_application_columns": [
+      "finalized_reward_vote_cursor"
+    ]
+  },
+  "period": 25706949,
+  "application_head": 25706949,
+  "period_data": {
+    "present": true,
+    "bytes": 7286,
+    "sha256": "bcb4b16bed154c41156ed87f6d020f5ed7fad96f0c7562af778aeefd474de11b"
+  },
+  "period_data_children": [
+    {
+      "index": 0,
+      "bytes": 850,
+      "sha256": "e9005f1c76b9cc958c62e60eddbe0dcb31fc47569da88f074271a00b829b7ff8"
+    },
+    {
+      "index": 1,
+      "bytes": 2915,
+      "sha256": "b939059d4f7a44449eff100aa63caab51c1ceaf11624f8f4f001aaf61a2c53f0"
+    },
+    {
+      "index": 2,
+      "bytes": 1482,
+      "sha256": "4a2b41434600bda1fcc69f37aa900880cb25892c93af599ebedac5fd4087a7ec"
+    },
+    {
+      "index": 3,
+      "bytes": 2036,
+      "sha256": "4d3434dab004a9fc94f0bd27db607b2c4e1f0732bb4ba4911e981a01c6352c98"
+    }
+  ],
+  "ordered_inputs": {
+    "regular_count": 19,
+    "system_count": 0,
+    "total_count": 19,
+    "system_hash_list": {
+      "present": false,
+      "bytes": 0,
+      "sha256": null
+    },
+    "system_hash_references_complete": true,
+    "storage_positions_complete": true,
+    "transaction_root_hex": "899f44457d384d45b5bd704ce5e091e966f00ed93dab3c62b73816cd867fe654",
+    "transaction_root_matches_header": true,
+    "concrete_transaction_bundle_keccak_hex": "be29b0050585ee61785b87eebff229c2f81bfcbe2bbf5beae9cb6dda61f7acad",
+    "observed_chain_ids": [
+      841
+    ],
+    "all_regular_signatures_valid": true,
+    "entries": [
+      {
+        "position": 0,
+        "kind": "regular",
+        "transaction_hash_hex": "269f9f6dd24528d800cb4a72a77b15ecc55ad3b4dcaae05389479c5d97964043",
+        "rlp_bytes": 107,
+        "rlp_sha256": "98bd96c1c9fc9117b3ff52a04d22a2aa143732058454b20b9b16f43017a6b312",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 1,
+        "kind": "regular",
+        "transaction_hash_hex": "922a722ba3f04a17aeb4247e70d68bc777a6f3d85ee1adbce2a974772d765f8b",
+        "rlp_bytes": 107,
+        "rlp_sha256": "bae8bcf81b215d7cc0ee3d1510170a821b7d593836eaca797d9eaeb65f40fff5",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 2,
+        "kind": "regular",
+        "transaction_hash_hex": "1b14137266e56f4f2697d1f5340d10493ca9209badad4bfad7d8a47996f54b17",
+        "rlp_bytes": 107,
+        "rlp_sha256": "ddfe20e8b21b6d001690ece007c02d396bcd11020c3cc6c93812ce1d26494c89",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 3,
+        "kind": "regular",
+        "transaction_hash_hex": "2d9cfb8baeab3e9d566421db3764f5705504ed59b560e5e7893831c9ec062b43",
+        "rlp_bytes": 107,
+        "rlp_sha256": "ebae740f13f8dd3ea6080b5b47622f10748aa900bde3caf171b43273199e1f09",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 4,
+        "kind": "regular",
+        "transaction_hash_hex": "81e68c472850b9b6f084c0938a61213d5135ed6262453b7a7c508886c0bddc74",
+        "rlp_bytes": 107,
+        "rlp_sha256": "d9294673bc11af6a1640712882b202d1a3bec6a10576c5d17f3f0bbe1f83da8f",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 5,
+        "kind": "regular",
+        "transaction_hash_hex": "5fe8bcdfe4f2f2b721e32ac6c6366521abe3831dc15b641b953387a428fb47ba",
+        "rlp_bytes": 107,
+        "rlp_sha256": "e45360d729e787cc5fd697007a19f8658227fd2dd789217584ffdb84197053d6",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 6,
+        "kind": "regular",
+        "transaction_hash_hex": "c6d4afe9c958b37dd7a906d28a970f8bc6974b410bd78c43a246f940ea7e2565",
+        "rlp_bytes": 107,
+        "rlp_sha256": "57be44f683e7eeb2cb2de483e5b75279a92abd0811bebd291db5e15a03f380c1",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 7,
+        "kind": "regular",
+        "transaction_hash_hex": "0f7465adfb4560646a7ee4ff089f8f1cbda565104d0aa95ab54cd52b81e47621",
+        "rlp_bytes": 107,
+        "rlp_sha256": "2dbe6d15034cb12168b98223b262d17b25377fc9506bcb503dc9a8a22c3abc2e",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 8,
+        "kind": "regular",
+        "transaction_hash_hex": "9c5f213e25e63f5e79e27b75c4df90e7c9320001dfd0853871e7e7313485f462",
+        "rlp_bytes": 107,
+        "rlp_sha256": "e0158b10b99b32189b3dcad7b811f73db84b3dfe2d1e70838b1187e8c465a286",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 9,
+        "kind": "regular",
+        "transaction_hash_hex": "79fb0147acd7d3c08b281c51ce4e4ab97e8856d01c62e1790c8cfca5e238e66a",
+        "rlp_bytes": 107,
+        "rlp_sha256": "7f35903d89d2279d17ee8c17d155acb0f5051ad3d1bd0a088423f2785e449a6d",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 10,
+        "kind": "regular",
+        "transaction_hash_hex": "11275dcac84144161d9c82ee0bae291437a45270e998cca301380a52bd846ccb",
+        "rlp_bytes": 107,
+        "rlp_sha256": "f614424c5370e32046c079670704b86afe1a072155f8d040f677ab991c420c5d",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 11,
+        "kind": "regular",
+        "transaction_hash_hex": "d749174c9e1d4cad05426472b0f5794ac541d08e3a216e03b2a4808348e64821",
+        "rlp_bytes": 107,
+        "rlp_sha256": "bf0bf5bd389f32c6e932bffe5dddf4fad0d4590d998498a0ac83386298332f3a",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 12,
+        "kind": "regular",
+        "transaction_hash_hex": "eeed07539dbd3d58df79a8a6ccc9bc82123f3f489efa79aa570ab71ed88bb6c7",
+        "rlp_bytes": 107,
+        "rlp_sha256": "8880ddec85a634b8ce0a8f6a55a07dc3d0b6e163a00a874b3e59f72eb28df5a8",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 13,
+        "kind": "regular",
+        "transaction_hash_hex": "107c27077f373ff76f898eee084dd60fec47a1f49788a0c13e25b327438c0189",
+        "rlp_bytes": 107,
+        "rlp_sha256": "615d207b377c9dbf780a4af775c25e01d7bf16b008634b1b8e93eff2f88fad47",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 14,
+        "kind": "regular",
+        "transaction_hash_hex": "9e470ba9961699c7b65872db9e4b68536754c4d63be4021ec41807176658a14f",
+        "rlp_bytes": 107,
+        "rlp_sha256": "1bc1099a2bf62f4d257babab9f92d4846062c4eb29883c36ce7d190a86c2a64f",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 15,
+        "kind": "regular",
+        "transaction_hash_hex": "9310b8d9df23e68123c5f87dd38bf2a7e78a675d4520c5f5b110fb87f6a8e1d1",
+        "rlp_bytes": 107,
+        "rlp_sha256": "5c137206a35351944744462b129d939ad293fd3d44d5bbd116d1523c6986e66d",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 16,
+        "kind": "regular",
+        "transaction_hash_hex": "d2a8ea86bd12ba12cd2bb59eb1abafa83525dc2b664173bb74089f38265f5393",
+        "rlp_bytes": 107,
+        "rlp_sha256": "69872be71bb66fd06f9dfcba6a8a9db4b56f26873ba733caef83f5d1a9007a1e",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 17,
+        "kind": "regular",
+        "transaction_hash_hex": "2851582edeec3963fb211de450cd6e46f3f4e97b4221b1f73e371e8a39c86a0f",
+        "rlp_bytes": 107,
+        "rlp_sha256": "91493b6de78d74a0f2d5b313fed1950c479ad0a3bedce3fbc584a838fec5339b",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      },
+      {
+        "position": 18,
+        "kind": "regular",
+        "transaction_hash_hex": "d556f276e637fd7504a747e7d9686761f11ec72ed1b1731be1e60581199183db",
+        "rlp_bytes": 107,
+        "rlp_sha256": "55c2dbae6aba5c7a69209ac87f83dc63b6f0a626805b9e6a02e333e55e387a61",
+        "chain_id": 841,
+        "signature_valid": true,
+        "location_present": true,
+        "location_matches_order": true,
+        "receipt_by_hash_present": false,
+        "receipt_by_hash_matches_period": false
+      }
+    ]
+  },
+  "receipts": {
+    "row": {
+      "present": true,
+      "bytes": 208,
+      "sha256": "a0cf47cce427e5517939c1eeaefc347184899e5fef60d6a580db109d30260aa1"
+    },
+    "count": 19,
+    "count_matches_inputs": true,
+    "ordered_root_hex": "84c077c745d619c706fb637ec0c68966e5a057ea63ed78e39e496d72f7a4f721",
+    "root_matches_header": true,
+    "every_hash_index_present": false,
+    "every_hash_index_matches_period": false,
+    "entries": [
+      {
+        "index": 0,
+        "bytes": 10,
+        "sha256": "b63232f7a0fabf3b9a10dced15756842007bf3458a2e7d90817e0ff001f66c4c"
+      },
+      {
+        "index": 1,
+        "bytes": 10,
+        "sha256": "56cc27945c5b23ee51d8e2d6514843955f4971399e1f1e5e67bf1697b9ffbf46"
+      },
+      {
+        "index": 2,
+        "bytes": 10,
+        "sha256": "620a855775d70064a98ad342a3dbf8980d5a0a2d600e0dc104c3c96b379ae9f7"
+      },
+      {
+        "index": 3,
+        "bytes": 11,
+        "sha256": "7363bda4e93e834000fe8d85cd57c3edd2ac12c3532a95c1b334650f27db0f51"
+      },
+      {
+        "index": 4,
+        "bytes": 11,
+        "sha256": "84112fee05c0fc717d6258b810109c7c380af9bb874118f04b0a7eefd772166b"
+      },
+      {
+        "index": 5,
+        "bytes": 11,
+        "sha256": "d4224d64ef64fd3ecf0ea9673fd31d67fc14ebe9653d75832395e99b0075bcff"
+      },
+      {
+        "index": 6,
+        "bytes": 11,
+        "sha256": "0623a193c3e990af90a62915227372d5cfec82f497797397cb0168290b2ca566"
+      },
+      {
+        "index": 7,
+        "bytes": 11,
+        "sha256": "6eb4b362a7fbad0ce02798a9366af6111bbc4f909dc05b32f64261b15367b2a6"
+      },
+      {
+        "index": 8,
+        "bytes": 11,
+        "sha256": "3fb64c5f7b7bb25a674c58c3bdc517576d162cf709e1ad51411b5c24de0ea928"
+      },
+      {
+        "index": 9,
+        "bytes": 11,
+        "sha256": "f357087c9fefed818fafc1301c9effdbc79c8bc02f131fedeaf766832c6ee9f5"
+      },
+      {
+        "index": 10,
+        "bytes": 11,
+        "sha256": "470d14c179bcae61221e6629b4b6f4783d16f954d0ae8cb95e6937490420e10e"
+      },
+      {
+        "index": 11,
+        "bytes": 11,
+        "sha256": "b20a9ccbcb60379c65f8d6647930757f5af13dd8e8f3fc742019d5d60fac322d"
+      },
+      {
+        "index": 12,
+        "bytes": 11,
+        "sha256": "95c609ddd27b3cee24037ea80eda70ef8af9a3c84559b1433e42dd193e1f667b"
+      },
+      {
+        "index": 13,
+        "bytes": 11,
+        "sha256": "140ac333a06a2d7b9e9d3795fd7a5acff0e04f761842e1f95657424bcee10aa2"
+      },
+      {
+        "index": 14,
+        "bytes": 11,
+        "sha256": "390b3ba068d735e4ff481afe6ea1e1a45999d9b2e5d2bee82ba649fc87b9f723"
+      },
+      {
+        "index": 15,
+        "bytes": 11,
+        "sha256": "922256033b13a6954487f61473886c98c8ae072ba24155379cb39e1e984b39d4"
+      },
+      {
+        "index": 16,
+        "bytes": 11,
+        "sha256": "7bb04cf8032e24f085cd6cf65b2732926c83243ecd446905050aafe0f86be00b"
+      },
+      {
+        "index": 17,
+        "bytes": 11,
+        "sha256": "6f34727bc6d23e2f0897457df89f88d6621ca33511a9e9ea34a87ce9405eae84"
+      },
+      {
+        "index": 18,
+        "bytes": 11,
+        "sha256": "01275ad925f39cbfc9027af5c5f8b34f5b33564504e9b399ce0f43da6bdb7d00"
+      }
+    ]
+  },
+  "header": {
+    "row": {
+      "present": true,
+      "bytes": 399,
+      "sha256": "1bebb6391e97caa4e8d34db4336810ec71eae83ef975d48bfb05e0b56e81363f"
+    },
+    "block_hash_hex": "e5b61be65207997d9d30536500b4bd8be3fc2bbe3ec00c38343f20282c6e5065",
+    "block_hash_recomputed": false,
+    "parent_hash_hex": "40fdf17fb90098b4e044bc51547c3bf6bc15f5e126797563c2e66510b8e637a2",
+    "parent_matches_prior_block_hash": true,
+    "state_root_hex": "b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227",
+    "transactions_root_hex": "899f44457d384d45b5bd704ce5e091e966f00ed93dab3c62b73816cd867fe654",
+    "receipts_root_hex": "84c077c745d619c706fb637ec0c68966e5a057ea63ed78e39e496d72f7a4f721",
+    "gas_used": 399000,
+    "total_reward_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "prior_state": {
+    "current_descriptor_period": 25706949,
+    "current_descriptor_root_hex": "b12e770de99e3ca011ea30d63b1321d4d7a7ca7dfa4ba189fc4e8ca4c73d0227",
+    "current_descriptor_matches_head_header": true,
+    "current_root_node_present": true,
+    "prior_period": 25706948,
+    "prior_header": {
+      "present": true,
+      "bytes": 398,
+      "sha256": "1e9c7f4e77cbbabad4ec2f8b065332aa998c881dff503c2fcbcfb0d21005adac"
+    },
+    "prior_root_hex": "926d41bdd76e2815dff741a33d66142546c57ae6a041e5d8d8cd5445aaf712e2",
+    "prior_root_node_present": true,
+    "historical_reader_constructor_accepted": true,
+    "prior_descriptor_available": true,
+    "complete_trie_closure_verified": false
+  },
+  "configuration": {
+    "database_genesis_hash_hex": "8129076db1332837152b0212faad56ab882c1d511e0aac495f200f0a08cb6377",
+    "documented_mainnet_genesis_hash_hex": "8129076db1332837152b0212faad56ab882c1d511e0aac495f200f0a08cb6377",
+    "documented_mainnet_genesis_matches": true,
+    "period_lambda_at_or_before": 1500,
+    "dynamic_lambda_round_count": 251,
+    "sortition_parameters": {
+      "present": true,
+      "bytes": 12,
+      "sha256": "8470da3dda11c5e27c80c6da5e62bce07acc2555dcdc17d1b7b087e1a1d6702c"
+    },
+    "block_rewards_stats": {
+      "present": true,
+      "bytes": 566,
+      "sha256": "18bb350916c3d85a52ec401cb2b898d2696b57e3859d5ff9dda1218a8ed05070"
+    },
+    "exact_static_node_config_qualified": false,
+    "previous_certificate_vote_payloads_and_weights_reconstructed": false
+  },
+  "qualification": {
+    "ordered_inputs_complete": true,
+    "receipts_complete": true,
+    "header_present_and_paired": true,
+    "prior_descriptor_available": true,
+    "bounded_head_bundle_complete": true,
+    "future_replay_ready": false
+  },
+  "gaps": [
+    "This bounded lookup did not recover the exact static execution, fork, gas-limit, rewards, or native-kernel configuration used by the producer.",
+    "PeriodData alone does not reconstruct the weighted previous-certificate vote payloads used by the current Rust FinalChain reward request.",
+    "The prior root-node key is present and the historical reader constructor accepts the descriptor pair; neither fact authenticates a replay state path or proves complete prior-trie closure.",
+    "Receipts and the final header are retained expected outputs; no execution or root reproduction was run.",
+    "The block hash is the stored number-to-hash index value; recomputing the contextual canonical header hash requires PBFT and configuration facts outside this bounded report.",
+    "The producer binary identity and exact paired checkpoint timing remain unverified.",
+    "Observed per-transaction receipt hash-index rows are incomplete; the complete ordered period receipt list is independently bound by the matching header receipt root."
+  ]
+}
