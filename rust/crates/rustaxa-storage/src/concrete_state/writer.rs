@@ -230,7 +230,9 @@ impl HistoricalConcretePreparationSummary {
 /// trie/value/code dependencies fail closed. Construction verifies one
 /// deterministic account path against the base root, so even an empty mutation
 /// batch cannot bless an arbitrary historical root; touched paths authenticate
-/// their complete demanded closure.
+/// their complete demanded closure. The caller must establish the historical
+/// period/root binding from qualified application headers; this path check does
+/// not prove that binding or retention of the entire trie.
 ///
 /// This surface deliberately cannot persist or publish:
 ///
