@@ -5,7 +5,8 @@
 //! drives nested ordinary CALL/CREATE frames iteratively, and settles interpreter
 //! gas/refunds once. The default entry points keep native dispatch unavailable;
 //! explicit opt-in entry points accept a consensus-native port and period-local
-//! sequence. Stateless native dispatch and SELFDESTRUCT remain unavailable.
+//! sequence. They also route the reviewed stateless addresses 1–5 without using
+//! that port or sequence. SELFDESTRUCT remains unavailable.
 //!
 //! CALL-family opcode preparation reads authoritative account metadata while
 //! deferring referenced code bytes. The driver applies Taraxa's depth and
@@ -32,7 +33,9 @@ use crate::{
     contracts::{
         BlockHashRead, CodeExecutionError, CodeExecutionStatus, ExecutionBlockContext,
         ExecutionTransaction, ExecutionTransactionKind, ExecutionValue, NativeCallKind,
-        NativeExecutionPort, NativeInvocation, NativeInvocationId, TransactionExecutionResult,
+        NativeExecutionPort, NativeInvocation, NativeInvocationId, NativeInvocationResult,
+        NativePortError, NativeResultValidationError, NativeStatus, StatelessInvocation,
+        StatelessInvocationId, TransactionExecutionResult,
     },
     envelope::{
         AdmittedTransaction, EnvelopeAdmission, EnvelopeError, EnvelopeRules, FrameSettlement,
@@ -41,8 +44,10 @@ use crate::{
     frame::{CreateScheme, create_address, settle_code_deposit},
     host::{HostError, JournalHost},
     journal::{ExecutionJournal, JournalCheckpoint, JournalError},
+    modexp::PreparedModexpCall,
     native::{NativeAdapterError, NativeFrameOutcome, invoke_native},
     profile::TaraxaProfile,
+    stateless::{OriginalStatelessPrecompile, PreparedStatelessCall},
 };
 
 /// Kind of interpreter frame request not yet implemented by this bounded driver.
@@ -71,6 +76,8 @@ pub enum ExecutionDriverError {
     NativeCallUnavailable { address: [u8; 20] },
     /// A consensus-native classifier selected an address outside the complete native set.
     NativeClassifierMismatch { address: [u8; 20] },
+    /// A reviewed stateless address was also selected by the consensus-native classifier.
+    NativeClassifierOverlap { address: [u8; 20] },
     /// The period-local native sequence was used with another pending period.
     NativeSequencePeriod {
         /// Period bound to the sequence owner.
@@ -80,8 +87,16 @@ pub enum ExecutionDriverError {
     },
     /// The period-local consensus-native sequence cannot advance further.
     NativeSequenceOverflow,
+    /// A transaction-local stateless invocation ordinal cannot advance further.
+    StatelessOrdinalOverflow,
     /// Native preparation, execution or effect application failed.
     Native(NativeAdapterError),
+    /// A stateless helper could not prepare or execute safely.
+    Stateless(NativePortError),
+    /// A stateless helper returned a result inconsistent with its exact quote.
+    StatelessResult(NativeResultValidationError),
+    /// Addresses 1–5 returned state, log or contract-failure effects outside their pure contract.
+    StatelessEffects { address: [u8; 20] },
     /// REVM yielded a malformed or explicitly unsupported frame action.
     PendingFrameUnavailable(PendingFrameKind),
     /// REVM returned a terminal category that has no reviewed Taraxa mapping yet.
@@ -104,13 +119,41 @@ struct NativeExecution<'a> {
     consensus_addresses: &'a dyn NativeAddressClassifier,
     port: &'a mut dyn NativeExecutionPort,
     sequence: &'a mut PeriodConsensusSequence,
+    stateless_sequence: TransactionStatelessSequence,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeRoute {
     Ordinary,
     Consensus,
+    Stateless,
     Unsupported,
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+struct TransactionStatelessSequence {
+    next_ordinal: u64,
+}
+
+impl TransactionStatelessSequence {
+    fn allocate(
+        &mut self,
+        transaction: rustaxa_types::FinalChainTransactionPosition,
+    ) -> Result<StatelessInvocationId, ExecutionDriverError> {
+        let ordinal = self.next_ordinal;
+        self.next_ordinal = ordinal
+            .checked_add(1)
+            .ok_or(ExecutionDriverError::StatelessOrdinalOverflow)?;
+        Ok(StatelessInvocationId {
+            transaction,
+            ordinal,
+        })
+    }
+}
+
+fn is_reviewed_stateless_address(address: [u8; 20]) -> bool {
+    OriginalStatelessPrecompile::at_address(address).is_some()
+        || (address[..19] == [0; 19] && address[19] == 5)
 }
 
 fn validate_native_period(
@@ -141,8 +184,14 @@ fn classify_native<N: NativeAddressClassifier>(
     if consensus_native && !all_native {
         return Err(ExecutionDriverError::NativeClassifierMismatch { address });
     }
+    let stateless = native.is_some() && all_native && is_reviewed_stateless_address(address);
+    if consensus_native && stateless {
+        return Err(ExecutionDriverError::NativeClassifierOverlap { address });
+    }
     Ok(if consensus_native {
         NativeRoute::Consensus
+    } else if stateless {
+        NativeRoute::Stateless
     } else if all_native {
         NativeRoute::Unsupported
     } else {
@@ -155,6 +204,52 @@ fn native_frame_status(outcome: &NativeFrameOutcome) -> FrameSettlementStatus {
         CodeExecutionStatus::Success => FrameSettlementStatus::Success,
         CodeExecutionStatus::Failure(error) => FrameSettlementStatus::CodeFailure(error.clone()),
     }
+}
+
+fn invoke_stateless(
+    invocation: StatelessInvocation,
+) -> Result<NativeFrameOutcome, ExecutionDriverError> {
+    let expected = invocation.clone();
+    let (quote, result) = if OriginalStatelessPrecompile::at_address(invocation.contract).is_some()
+    {
+        let prepared =
+            PreparedStatelessCall::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    } else {
+        let prepared =
+            PreparedModexpCall::prepare(invocation).map_err(ExecutionDriverError::Stateless)?;
+        let quote = prepared.quote();
+        let result = prepared.invoke().map_err(ExecutionDriverError::Stateless)?;
+        (quote, result)
+    };
+    result
+        .validate(&expected, quote)
+        .map_err(ExecutionDriverError::StatelessResult)?;
+    let NativeInvocationResult::Completed(outcome) = result else {
+        return Ok(NativeFrameOutcome {
+            status: CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas),
+            required_gas: quote.required_gas,
+            gas_left: expected.supplied_gas,
+            output: Vec::new(),
+        });
+    };
+    if outcome.status != NativeStatus::Success
+        || !outcome.account_mutations.is_empty()
+        || !outcome.raw_mutations.is_empty()
+        || !outcome.logs.is_empty()
+    {
+        return Err(ExecutionDriverError::StatelessEffects {
+            address: expected.contract,
+        });
+    }
+    Ok(NativeFrameOutcome {
+        status: CodeExecutionStatus::Success,
+        required_gas: quote.required_gas,
+        gas_left: FinalChainGas::new(expected.supplied_gas.as_u64() - quote.required_gas.as_u64()),
+        output: outcome.output,
+    })
 }
 
 impl std::fmt::Display for ExecutionDriverError {
@@ -285,12 +380,14 @@ pub fn execute_top_level_call<
     )
 }
 
-/// Executes a top-level CALL with an explicit consensus-native port.
+/// Executes CALL with an explicit consensus port and reviewed stateless helpers.
 ///
 /// `all_native_addresses` is the complete native/precompile set for the period;
 /// `consensus_native_addresses` is the subset owned by `native_port`. An address
-/// selected only by the complete set remains explicitly unavailable. The caller
-/// owns one [`PeriodConsensusSequence`] for the whole pending period and must
+/// selected only by the complete set uses a reviewed stateless helper at exact
+/// addresses 1–5; other such addresses remain unavailable. Classifier overlap
+/// between consensus and reviewed stateless addresses is an integrity error.
+/// The caller owns one [`PeriodConsensusSequence`] for the pending period and must
 /// discard the journal, port and sequence together after any returned error.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_top_level_call_with_native<
@@ -341,6 +438,7 @@ pub fn execute_top_level_call_with_native<
             consensus_addresses: consensus_native_addresses,
             port: native_port,
             sequence: native_sequence,
+            stateless_sequence: TransactionStatelessSequence::default(),
         }),
     )
 }
@@ -393,11 +491,12 @@ pub fn execute_top_level_create<
     )
 }
 
-/// Executes top-level CREATE initcode with an explicit consensus-native port.
+/// Executes CREATE initcode with consensus and reviewed stateless call handling.
 ///
 /// The classifiers and period-local sequence have the same invariants as
 /// [`execute_top_level_call_with_native`]. CREATE itself is ordinary; this port
-/// is available only to CALL-family actions yielded by its initcode descendants.
+/// and reviewed helpers at addresses 1–5 are available to CALL-family actions
+/// yielded by its initcode descendants.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_top_level_create_with_native<
     R: ConcreteExecutionRead,
@@ -447,6 +546,7 @@ pub fn execute_top_level_create_with_native<
             consensus_addresses: consensus_native_addresses,
             port: native_port,
             sequence: native_sequence,
+            stateless_sequence: TransactionStatelessSequence::default(),
         }),
     )
 }
@@ -641,50 +741,70 @@ fn execute_admitted_call<R: ConcreteExecutionRead, B: BlockHashRead, N: NativeAd
         )
         .map_err(Into::into);
     }
-    let native_id = if route == NativeRoute::Consensus {
-        match native
-            .as_mut()
-            .expect("consensus route has native execution")
-            .sequence
-            .allocate(block.period, transaction.position)
-        {
-            Ok(id) => Some(id),
-            Err(error) => {
-                journal.revert_checkpoint(checkpoint)?;
-                return Err(error);
-            }
-        }
-    } else {
-        None
-    };
     journal.subtract_balance(transaction.sender, transaction.value.value())?;
     journal.add_balance(target, transaction.value.value())?;
-    if route == NativeRoute::Consensus {
-        let invocation = NativeInvocation {
-            id: native_id.expect("consensus route allocated identity"),
-            period: block.period,
-            depth: 0,
-            kind: NativeCallKind::Call,
-            is_static: false,
-            caller: transaction.sender,
-            contract: target,
-            state_address: target,
-            value: transaction.value.clone(),
-            input: transaction.input.clone(),
-            supplied_gas: admitted.action_gas,
-        };
-        let outcome = match invoke_native(
-            journal,
-            native
+    let native_outcome = match route {
+        NativeRoute::Consensus => {
+            let native = native
                 .as_mut()
-                .expect("consensus route has native execution")
-                .port,
-            &invocation,
-        ) {
+                .expect("consensus route has native execution");
+            let id = match native.sequence.allocate(block.period, transaction.position) {
+                Ok(id) => id,
+                Err(error) => {
+                    journal.revert_checkpoint(checkpoint)?;
+                    return Err(error);
+                }
+            };
+            let invocation = NativeInvocation {
+                id,
+                period: block.period,
+                depth: 0,
+                kind: NativeCallKind::Call,
+                is_static: false,
+                caller: transaction.sender,
+                contract: target,
+                state_address: target,
+                value: transaction.value.clone(),
+                input: transaction.input.clone(),
+                supplied_gas: admitted.action_gas,
+            };
+            Some(invoke_native(journal, native.port, &invocation).map_err(Into::into))
+        }
+        NativeRoute::Stateless => {
+            let id = match native
+                .as_mut()
+                .expect("stateless route has native execution")
+                .stateless_sequence
+                .allocate(transaction.position)
+            {
+                Ok(id) => id,
+                Err(error) => {
+                    journal.revert_checkpoint(checkpoint)?;
+                    return Err(error);
+                }
+            };
+            Some(invoke_stateless(StatelessInvocation {
+                id,
+                period: block.period,
+                depth: 0,
+                kind: NativeCallKind::Call,
+                is_static: false,
+                caller: transaction.sender,
+                contract: target,
+                state_address: target,
+                value: transaction.value.clone(),
+                input: transaction.input.clone(),
+                supplied_gas: admitted.action_gas,
+            }))
+        }
+        NativeRoute::Ordinary | NativeRoute::Unsupported => None,
+    };
+    if let Some(outcome) = native_outcome {
+        let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
                 journal.revert_checkpoint(checkpoint)?;
-                return Err(error.into());
+                return Err(error);
             }
         };
         let status = native_frame_status(&outcome);
@@ -1064,44 +1184,68 @@ fn prepare_call_frame<R: ConcreteExecutionRead, N: NativeAddressClassifier>(
     } else {
         value
     };
-    if route == NativeRoute::Consensus {
-        let id = match native
-            .as_mut()
-            .expect("consensus route has native execution")
-            .sequence
-            .allocate(block.period, transaction_position)
-        {
-            Ok(id) => id,
-            Err(error) => {
-                journal.revert_checkpoint(checkpoint)?;
-                return Err(error);
-            }
-        };
-        let invocation = NativeInvocation {
-            id,
-            period: block.period,
-            depth: u16::try_from(child_depth).expect("bounded frame depth"),
-            kind: native_call_kind(inputs.scheme),
-            is_static: inputs.is_static,
-            caller: inputs.caller.into_array(),
-            contract: code_address,
-            state_address: inputs.target_address.into_array(),
-            value: ExecutionValue::new(full_value),
-            input: input.to_vec(),
-            supplied_gas: FinalChainGas::new(inputs.gas_limit),
-        };
-        let outcome = match invoke_native(
-            journal,
-            native
+    let native_outcome = match route {
+        NativeRoute::Consensus => {
+            let native = native
                 .as_mut()
-                .expect("consensus route has native execution")
-                .port,
-            &invocation,
-        ) {
+                .expect("consensus route has native execution");
+            let id = match native.sequence.allocate(block.period, transaction_position) {
+                Ok(id) => id,
+                Err(error) => {
+                    journal.revert_checkpoint(checkpoint)?;
+                    return Err(error);
+                }
+            };
+            let invocation = NativeInvocation {
+                id,
+                period: block.period,
+                depth: u16::try_from(child_depth).expect("bounded frame depth"),
+                kind: native_call_kind(inputs.scheme),
+                is_static: inputs.is_static,
+                caller: inputs.caller.into_array(),
+                contract: code_address,
+                state_address: inputs.target_address.into_array(),
+                value: ExecutionValue::new(full_value.clone()),
+                input: input.to_vec(),
+                supplied_gas: FinalChainGas::new(inputs.gas_limit),
+            };
+            Some(invoke_native(journal, native.port, &invocation).map_err(Into::into))
+        }
+        NativeRoute::Stateless => {
+            let id = match native
+                .as_mut()
+                .expect("stateless route has native execution")
+                .stateless_sequence
+                .allocate(transaction_position)
+            {
+                Ok(id) => id,
+                Err(error) => {
+                    journal.revert_checkpoint(checkpoint)?;
+                    return Err(error);
+                }
+            };
+            Some(invoke_stateless(StatelessInvocation {
+                id,
+                period: block.period,
+                depth: u16::try_from(child_depth).expect("bounded frame depth"),
+                kind: native_call_kind(inputs.scheme),
+                is_static: inputs.is_static,
+                caller: inputs.caller.into_array(),
+                contract: code_address,
+                state_address: inputs.target_address.into_array(),
+                value: ExecutionValue::new(full_value.clone()),
+                input: input.to_vec(),
+                supplied_gas: FinalChainGas::new(inputs.gas_limit),
+            }))
+        }
+        NativeRoute::Ordinary | NativeRoute::Unsupported => None,
+    };
+    if let Some(outcome) = native_outcome {
+        let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
                 journal.revert_checkpoint(checkpoint)?;
-                return Err(error.into());
+                return Err(error);
             }
         };
         if outcome.status == CodeExecutionStatus::Success {
@@ -1413,6 +1557,37 @@ fn unwind_active_frames<R: ConcreteExecutionRead>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod stateless_sequence_tests {
+    use super::*;
+
+    #[test]
+    fn transaction_stateless_sequence_is_zero_based_monotonic_and_checked() {
+        let transaction = rustaxa_types::FinalChainTransactionPosition::new(9);
+        let mut sequence = TransactionStatelessSequence::default();
+        assert_eq!(
+            sequence.allocate(transaction).unwrap(),
+            StatelessInvocationId {
+                transaction,
+                ordinal: 0,
+            }
+        );
+        assert_eq!(
+            sequence.allocate(transaction).unwrap(),
+            StatelessInvocationId {
+                transaction,
+                ordinal: 1,
+            }
+        );
+        sequence.next_ordinal = u64::MAX;
+        assert_eq!(
+            sequence.allocate(transaction),
+            Err(ExecutionDriverError::StatelessOrdinalOverflow)
+        );
+        assert_eq!(sequence.next_ordinal, u64::MAX);
+    }
 }
 
 fn low_word_bytes(value: &num_bigint::BigUint) -> [u8; 32] {

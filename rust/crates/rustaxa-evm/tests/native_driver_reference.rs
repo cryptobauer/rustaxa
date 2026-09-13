@@ -681,3 +681,316 @@ fn block() -> ExecutionBlockContext {
         difficulty: BigUint::default(),
     }
 }
+
+fn primitive_address(number: u8) -> [u8; 20] {
+    let mut address = [0; 20];
+    address[19] = number;
+    address
+}
+
+#[test]
+fn stateless_top_level_calls_match_primitive_fixtures_without_consensus_facts() {
+    let original: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/stateless_public.json"
+    ))
+    .unwrap();
+    let modexp: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../experiments/evm_feasibility/fixtures/modexp_public.json"
+    ))
+    .unwrap();
+    for (number, row) in original["stateless"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| (row["address"].as_u64().unwrap() as u8, row))
+        .chain(
+            modexp["modexp"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| (5, row)),
+        )
+    {
+        let required = row["required_gas"].as_u64().unwrap();
+        if required > 50_000 {
+            continue;
+        }
+        let target = primitive_address(number);
+        let mut tx = transaction(target, ExecutionValue::new(BigUint::from(7_u8)));
+        tx.input = hex::decode(row["input"].as_str().unwrap()).unwrap();
+        let intrinsic = rustaxa_types::transaction::intrinsic_gas(&tx.input, false).unwrap();
+        tx.gas_limit = (intrinsic + required + 100).into();
+        let mut journal = journal_without_parent();
+        let mut port = ScriptedPort::completed(NativeStatus::Success, vec![0xff]);
+        let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+        let result = execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![target]),
+            &AddressSet(Vec::new()),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &tx,
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )
+        .unwrap();
+        let TransactionExecutionResult::Executed(result) = result else {
+            panic!("must execute")
+        };
+        assert_eq!(result.status, CodeExecutionStatus::Success);
+        assert_eq!(
+            result.output,
+            hex::decode(row["output"].as_str().unwrap()).unwrap()
+        );
+        assert_eq!(result.gas_used.as_u64(), intrinsic + required);
+        assert_eq!(
+            journal.account(target).unwrap().balance.value(),
+            &num_bigint::BigInt::from(7)
+        );
+        assert!(port.invocations.lock().unwrap().is_empty());
+        assert_eq!(sequence.next_sequence(), 0);
+        assert!(
+            journal
+                .settle_transaction()
+                .unwrap()
+                .native_invocations
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn stateless_quote_underfunding_reverts_value_and_retains_action_gas() {
+    let target = primitive_address(1);
+    let mut tx = transaction(target, ExecutionValue::new(BigUint::from(7_u8)));
+    tx.gas_limit = 23_999_u64.into();
+    let mut journal = journal_without_parent();
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![target]),
+        &AddressSet(Vec::new()),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &tx,
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("must execute")
+    };
+    assert_eq!(
+        result.status,
+        CodeExecutionStatus::Failure(CodeExecutionError::OutOfGas)
+    );
+    assert_eq!(result.gas_used.as_u64(), 21_000);
+    assert!(!journal.account(target).unwrap().exists);
+    assert!(port.invocations.lock().unwrap().is_empty());
+    assert_eq!(sequence.next_sequence(), 0);
+    assert!(
+        journal
+            .settle_transaction()
+            .unwrap()
+            .native_invocations
+            .is_empty()
+    );
+}
+
+fn append_primitive_call(code: &mut Vec<u8>, target: [u8; 20], input_length: u8, gas: u16) {
+    code.extend_from_slice(&[0x60, 0, 0x60, 0, 0x60, input_length, 0x60, 0, 0x60, 0, 0x73]);
+    code.extend_from_slice(&target);
+    code.push(0x61);
+    code.extend_from_slice(&gas.to_be_bytes());
+    code.push(0xf1);
+}
+
+#[test]
+fn interleaved_stateless_calls_leave_consensus_sequence_contiguous_after_revert() {
+    let mut gas_used = Vec::new();
+    for funded in [false, true] {
+        let mut code = hex::decode("604060005260016020526001604052600360a053600d60a153").unwrap();
+        for (index, (address, length, gas)) in [
+            (primitive_address(2), 0, 1000),
+            (NATIVE, 0, 1000),
+            (primitive_address(5), 162, if funded { 204 } else { 203 }),
+            (NATIVE, 0, 1000),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            append_primitive_call(&mut code, address, length, gas);
+            code.push(0x61);
+            code.extend_from_slice(&(192_u16 + 32 * index as u16).to_be_bytes());
+            code.push(0x52);
+        }
+        code.extend_from_slice(&[0x60, 128, 0x60, 192, 0xfd]);
+        let mut journal = journal_with_parent(code);
+        let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+        let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+        let result = execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![NATIVE, primitive_address(2), primitive_address(5)]),
+            &AddressSet(vec![NATIVE]),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &transaction(PARENT, ExecutionValue::default()),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false),
+        )
+        .unwrap();
+        let TransactionExecutionResult::Executed(result) = result else {
+            panic!("must execute")
+        };
+        assert_eq!(
+            result.status,
+            CodeExecutionStatus::Failure(CodeExecutionError::Revert)
+        );
+        let mut expected = vec![0; 128];
+        for index in [31, 63, 127] {
+            expected[index] = 1;
+        }
+        expected[95] = u8::from(funded);
+        assert_eq!(result.output, expected);
+        gas_used.push(result.gas_used.as_u64());
+        let calls = port.invocations.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.id.sequence)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(sequence.next_sequence(), 2);
+        let facts = journal.settle_transaction().unwrap().native_invocations;
+        assert_eq!(facts.len(), 2);
+        for (index, fact) in facts.iter().enumerate() {
+            assert_eq!(fact.invocation, calls[index]);
+            assert_eq!(
+                fact.disposition,
+                rustaxa_evm::contracts::ConsensusNativeDisposition::OuterFrameReverted
+            );
+        }
+    }
+    assert_eq!(gas_used[1] - gas_used[0], 204);
+}
+
+#[test]
+fn stateless_overlap_is_rejected_and_default_entrypoint_stays_unavailable() {
+    let target = primitive_address(2);
+    let mut journal = journal_without_parent();
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+    assert_eq!(
+        execute_top_level_call_with_native(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![target]),
+            &AddressSet(vec![target]),
+            &mut port,
+            &mut sequence,
+            &block(),
+            &transaction(target, ExecutionValue::default()),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false)
+        ),
+        Err(ExecutionDriverError::NativeClassifierOverlap { address: target })
+    );
+    assert!(port.invocations.lock().unwrap().is_empty());
+    assert_eq!(sequence.next_sequence(), 0);
+    let mut journal = journal_without_parent();
+    assert_eq!(
+        rustaxa_evm::driver::execute_top_level_call(
+            &mut journal,
+            &NoHistory,
+            &AddressSet(vec![target]),
+            &block(),
+            &transaction(target, ExecutionValue::default()),
+            EnvelopeRules { cornus: true },
+            TaraxaProfile::new(false)
+        ),
+        Err(ExecutionDriverError::NativeCallUnavailable { address: target })
+    );
+}
+
+#[test]
+fn stateless_calls_from_create_initcode_install_the_returned_code() {
+    let target = primitive_address(4);
+    let mut code = hex::decode("602a6000536001600160016000600073").unwrap();
+    code.extend_from_slice(&target);
+    code.extend_from_slice(&[0x61, 0x03, 0xe8, 0xf1, 0x50, 0x60, 1, 0x60, 1, 0xf3]);
+    let mut tx = transaction(PARENT, ExecutionValue::default());
+    tx.kind = ExecutionTransactionKind::Create;
+    tx.receiver = None;
+    tx.input = code;
+    let mut journal = journal_without_parent();
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+    let result = execute_top_level_create_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![target]),
+        &AddressSet(Vec::new()),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &tx,
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("must create")
+    };
+    assert_eq!(result.status, CodeExecutionStatus::Success);
+    assert_eq!(result.output, vec![0x2a]);
+    assert!(result.attempted_contract_address.is_some());
+    assert!(port.invocations.lock().unwrap().is_empty());
+    assert_eq!(sequence.next_sequence(), 0);
+    let settled = journal.settle_transaction().unwrap();
+    assert!(settled.native_invocations.is_empty());
+    assert_eq!(settled.writes.code.len(), 1);
+    assert_eq!(settled.writes.code[0].code, vec![0x2a]);
+}
+
+#[test]
+fn stateless_funds_rejection_does_not_touch_callee_or_consensus_sequence() {
+    let target = primitive_address(2);
+    let mut journal = journal_with_parent(parent_call_then_stop(target, 1, false));
+    let mut port = ScriptedPort::completed(NativeStatus::Success, Vec::new());
+    let mut sequence = PeriodConsensusSequence::new(7_u64.into());
+    let result = execute_top_level_call_with_native(
+        &mut journal,
+        &NoHistory,
+        &AddressSet(vec![target]),
+        &AddressSet(Vec::new()),
+        &mut port,
+        &mut sequence,
+        &block(),
+        &transaction(PARENT, ExecutionValue::default()),
+        EnvelopeRules { cornus: true },
+        TaraxaProfile::new(false),
+    )
+    .unwrap();
+    let TransactionExecutionResult::Executed(result) = result else {
+        panic!("must execute parent")
+    };
+    assert_eq!(result.status, CodeExecutionStatus::Success);
+    assert!(!journal.account(target).unwrap().exists);
+    assert!(port.invocations.lock().unwrap().is_empty());
+    assert_eq!(sequence.next_sequence(), 0);
+    assert!(
+        journal
+            .settle_transaction()
+            .unwrap()
+            .native_invocations
+            .is_empty()
+    );
+}
