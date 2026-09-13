@@ -79,6 +79,8 @@ use triehash::ordered_trie_root;
 
 use self::native_session::account::{DposAccountPort, transfer_dpos_contract_balance};
 
+mod concrete_genesis;
+
 #[cfg(test)]
 mod mixed_genesis_tests;
 
