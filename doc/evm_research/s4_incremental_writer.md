@@ -31,6 +31,15 @@ generation-0 provenance, and the sorted storage catalog. Existing databases
 must already contain matching provenance and catalog; any pending marker is
 returned unchanged for FinalChain recovery.
 
+`inspect_existing` opens all existing column families through RocksDB's
+read-only API and reports the exact committed descriptor, provenance, catalog,
+and pending marker after checking their canonical encoding, chain identity,
+descriptor pairing, catalog hash, and marker lineage. It deliberately takes no
+expected state root, so recovery can observe a concrete commit whose matching
+FinalChain application generation was interrupted before publication. It does
+not create metadata for an imported database, choose or adopt a root, mutate a
+marker, or publish application state; missing provenance remains an error.
+
 Execution staging synchronously persists the exact canonical marker before
 preparation. Successive cumulative transaction preparations retain their
 content-addressed CF1/CF2/CF4 rows in memory so reference intermediate roots
@@ -106,7 +115,7 @@ Targeted validation:
 
 ```text
 cargo test -p rustaxa-storage concrete_state::
-16 passed; 0 failed; 1 ignored (qualified copied-snapshot test)
+17 passed; 0 failed; 1 ignored (qualified copied-snapshot test)
 ```
 
 Lead integration also passed the repository fast gate (the storage package has
