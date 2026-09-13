@@ -116,6 +116,7 @@ pub use dag_transaction_service::{
     TransactionGossipAccount, TransactionGossipEntry, TransactionPoolStatus,
 };
 pub use final_chain::FinalChain;
+pub use final_chain::native_session;
 pub use final_chain_execution::{
     FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH, FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED,
     FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED, FINAL_CHAIN_EVM_LIFECYCLE_STATUS_DISCARDED,
